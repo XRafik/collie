@@ -22,7 +22,7 @@ Runner source (Bun/TypeScript). Compiled to `bin/collie` per platform; see ADR-0
 | `ui/`              | The Collie tab: the card board and its drawer, plain state and commands, and the bridge               |
 | `views.ts`         | History, Workflows, Settings and a Run's detail, as state the app renders                             |
 | `board.ts`         | Builds the board from the files: one TaskView per Task and a card's sentence                          |
-| `board-model.ts`   | The board's Schemas and `FrontDoorRpcs`, and the pure section and header rules                        |
+| `board-model.ts`   | The board's Schemas, `FrontDoorRpcs`, pure rules, and the one reading of a merge request reference    |
 | `audit.ts`         | A Run's audit trail: each operation, the Actor that asked for it, and what came of it                 |
 | `attachments.ts`   | Files a Run is given: refused or copied into `runs/<id>/attachments/`, and listed for its prompts     |
 | `bridge.ts`        | `collie bridge`: a front door's stdio piped to this Machine's host, declared as it                    |

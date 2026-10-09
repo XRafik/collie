@@ -79,6 +79,7 @@ const IN_APP_TERMINAL = "go to pane opens the pane in Desktop (this MR)";
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const FORGES = "GitHub and GitLab, equally well (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -378,6 +379,19 @@ const FRONT_DOOR: readonly Check[] = [
       layer: "ui",
       file: "test/board.test.ts",
       name: "a Run whose work shipped by hand says so, without its status being edited",
+    },
+  },
+  {
+    id: "front-door/a-pull-request-url-from-the-home-is-placed-in-its-checkout",
+    statement:
+      "From the Home, a pull request URL typed as a review target starts in the checkout whose remote is that repository, with mr:github.com/<owner>/<repo>#<n> as its target, as a merge request URL does.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/launch.test.ts",
+      name: "a pull request URL is placed in the checkout whose remote it names",
     },
   },
 ];
@@ -698,6 +712,19 @@ const BACKEND: readonly Check[] = [
       layer: "backend",
       file: "test/attachments.test.ts",
       name: "an offer invoked from a Run with attachments gives the new Run copies of them beside its own",
+    },
+  },
+  {
+    id: "backend/a-merge-request-reference-is-read-in-one-place",
+    statement:
+      "A GitHub pull request URL or target reads as a merge request, and writes back its target, label, short label, URL, noun and checks word, as a GitLab one does.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/board-model.test.ts",
+      name: "a GitHub (target|URL) reads as one merge request and writes back",
     },
   },
 ];
@@ -1092,6 +1119,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On a Mac with bodil installed and BODIL_REMOTE_VM set, save the module from docs/sdk.md as `~/.collie/user/workflows/bodil.workflow.ts` and record that `collie workflow show bodil` lists plan, brands and name. Run `collie run start bodil --input plan=<a small plan> --input brands=happytiger --input name=collie-try`; record that `bodil ls` shows collie-try, that the implementer's pane works in `~/work/gitte/worktrees/collie-try/monorepo` on `dabo/collie-try`, and the merge request's source branch. When the Run finishes, record that `bodil ls` no longer lists collie-try and the worktree is still there. Record the revision.",
+    },
+  },
+  {
+    id: "operator/a-pull-request-url-starts-a-review-in-its-checkout",
+    statement:
+      "On a Machine with a cego/collie checkout under the Projects root, a review started from the Home with a cego/collie pull request URL starts in that checkout.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "From the Home, start review and type `https://github.com/cego/collie/pull/<n>` as its target. Record the checkout it says it starts in and the Run's target from `collie run show`, which reads `mr:github.com/cego/collie#<n>`. Record the revision.",
     },
   },
 ];

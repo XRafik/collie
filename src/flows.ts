@@ -90,7 +90,7 @@ import type { Focus } from "./ui/bridge";
 import { buildHistory, buildSettings, buildWorkflows } from "./views";
 import { nowIso } from "./time";
 import { repoArgs, shell } from "./mr";
-import { parseMrTarget } from "./board-model";
+import { parseMrTarget, readMrRef } from "./board-model";
 import type { ChildProcessSpawner } from "effect/process";
 import {
   agentForKey,
@@ -541,7 +541,7 @@ const wordsAre = Effect.fn("Flows.wordsAre")(function* (
   if (strategy === "goal" || strategy === "work-source") return true;
   if (strategy === "gitlab-repository") return /^(https?:\/\/|git@|\/)/.test(words);
   if (strategy !== "diff-target") return false;
-  if (/\/-\/merge_requests\/\d+/.test(words) || /^!?\d+$/.test(words)) return true;
+  if (readMrRef(words, { project: null }) !== null) return true;
   if (/\s/.test(words)) return false;
   const ref = yield* shell("git", ["rev-parse", "--verify", "--quiet", `${words}^{commit}`], cwd);
   return ref.code === 0;

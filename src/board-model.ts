@@ -1242,22 +1242,77 @@ export interface MrRef {
   iid: string;
 }
 
-/** `mr:gitlab.example.com/group/project!42`, or the bare `mr:42` that came before. */
-export function parseMrTarget(target: string): MrRef | null {
-  if (!target.startsWith("mr:")) return null;
-  const rest = target.slice(3);
-  const at = rest.lastIndexOf("!");
-  if (at < 0) return /^\d+$/.test(rest) ? { project: null, iid: rest } : null;
-  const iid = rest.slice(at + 1);
-  if (!/^\d+$/.test(iid)) return null;
-  const project = rest.slice(0, at);
-  return { project: project === "" ? null : project, iid };
+/** Which forge a merge request is on: GitHub on `github.com`, GitLab on any other host. */
+export type MrForge = "gitlab" | "github";
+
+export function forgeOfRef(ref: MrRef): MrForge {
+  return ref.project?.split("/")[0]?.toLowerCase() === "github.com" ? "github" : "gitlab";
 }
 
-/** `https://host/group/project/-/merge_requests/7`, the way glab reports what it opened. */
+const MR_TARGET = /^mr:(?:(.*)([!#]))?(\d+)$/;
+const MR_URL =
+  /^(?:https?:\/\/)?(?:(github\.com\/[^/\s]+\/[^/\s]+)\/pull|([^/\s]+\/.+?)\/-\/merge_requests)\/(\d+)(?:[/?#]|$)/i;
+
+/**
+ * The one reading of a merge request reference: an `mr:` target, a merge request or pull
+ * request URL, and, where `typedIn` says which checkout it was typed in, `!42`, `#42` or
+ * `42`. Null for anything else.
+ */
+export function readMrRef(
+  text: string,
+  typedIn?: { readonly project: string | null },
+): MrRef | null {
+  const said = text.trim();
+  const target = MR_TARGET.exec(said);
+  if (target) {
+    const [, project = "", sign, iid] = target;
+    if (project === "") return { project: null, iid: iid! };
+    const ref = { project, iid: iid! };
+    return (sign === "#") === (forgeOfRef(ref) === "github") ? ref : null;
+  }
+  const url = MR_URL.exec(said);
+  if (url) return { project: (url[1] ?? url[2])!, iid: url[3]! };
+  const typed = typedIn === undefined ? null : /^[!#]?(\d+)$/.exec(said);
+  return typed ? { project: typedIn!.project, iid: typed[1]! } : null;
+}
+
+/** `mr:gitlab.example.com/group/project!42`, `mr:github.com/owner/repo#30` or the bare `mr:42`. */
+export function parseMrTarget(target: string): MrRef | null {
+  return target.startsWith("mr:") ? readMrRef(target) : null;
+}
+
+/** A merge request or pull request URL, the way a forge reports what it opened. */
 export function parseMrUrl(url: string): MrRef | null {
-  const m = /^https?:\/\/([^/\s]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(url.trim());
-  return m ? { project: `${m[1]}/${m[2]}`, iid: m[3]! } : null;
+  return url.trim().startsWith("mr:") ? null : readMrRef(url);
+}
+
+/** `group/project` of `host/group/project`: the host is where, not what. */
+export function mrPath(ref: MrRef): string {
+  const project = ref.project ?? "";
+  return /^[^/]+\.[^/]+\/(.+)$/.exec(project)?.[1] ?? project;
+}
+
+/** The one writing of a merge request reference: each way Collie names one. */
+export function mrWords(ref: MrRef) {
+  const github = forgeOfRef(ref) === "github";
+  const sign = github ? "#" : "!";
+  const project = ref.project ?? "";
+  const path = mrPath(ref);
+  return {
+    target: ref.project === null ? `mr:${ref.iid}` : `mr:${project}${sign}${ref.iid}`,
+    label: ref.project === null ? ref.iid : `${path}${sign}${ref.iid}`,
+    short: `${project.split("/").pop()}${sign}${ref.iid}`,
+    url:
+      ref.project === null
+        ? null
+        : `https://${project}/${github ? "pull" : "-/merge_requests"}/${ref.iid}`,
+    noun: github ? "pull request" : "merge request",
+    checks: github ? "checks" : "pipeline",
+  };
+}
+
+export function mrTarget(project: string | null, iid: string): string {
+  return mrWords({ project: project || null, iid }).target;
 }
 
 /**
@@ -1309,12 +1364,12 @@ export function canResume(state: TaskState): boolean {
 
 /** However the Task names its merge request: the URL one opened, or the target one was pointed at. */
 export function mrRefOf(mr: string | null): MrRef | null {
-  return mr === null ? null : (parseMrUrl(mr) ?? parseMrTarget(mr));
+  return mr === null ? null : readMrRef(mr);
 }
 
 /** Where a merge request is read in a browser, where its target says which project. */
 export function mrUrlOf(ref: MrRef): string | null {
-  return ref.project === null ? null : `https://${ref.project}/-/merge_requests/${ref.iid}`;
+  return mrWords(ref).url;
 }
 
 type DispositionKind = "merged" | "abandoned" | "superseded";
@@ -1519,23 +1574,14 @@ export function headerSentence(views: ReadonlyArray<TaskView>, now?: number): He
   return { text: `${opening}${inHand} ${working.length} working${gone}.`, urgent: needs > 0 };
 }
 
-/** `https://github.com/owner/repo/pull/30` as its repository and number. */
-export function pullOf(mr: string): { readonly repo: string; readonly number: string } | null {
-  const pull = /^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(mr);
-  return pull ? { repo: pull[1]!, number: pull[2]! } : null;
-}
-
 /**
- * `group/project!42` from a GitLab URL or an `mr:` target, `owner/repo#30` from a GitHub
- * pull request URL; anything else as it is.
+ * `group/project!42` or `owner/repo#30` for a merge request, however it is named; anything
+ * else as it is.
  */
 export function mrLabel(mr: string): string {
-  const url = /^https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(mr);
-  if (url) return `${url[1]}!${url[2]}`;
-  const pull = pullOf(mr);
-  if (pull) return `${pull.repo}#${pull.number}`;
+  const ref = readMrRef(mr);
+  if (ref) return mrWords(ref).label;
   const bare = mr.startsWith("mr:") ? mr.slice(3) : mr;
-  // `host/group/project!42` reads as `group/project!42`: the host is where, not what.
   const host = /^[^/!]+\.[^/!]+\/(.+)$/.exec(bare);
   return host ? host[1]! : bare;
 }

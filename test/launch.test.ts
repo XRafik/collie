@@ -229,13 +229,16 @@ test(
 );
 
 /** Two checkouts under the Projects root, each pushing to a project of its own. */
-const projectsTree = Effect.fn("test.projectsTree")(function* (world: World) {
+const projectsTree = Effect.fn("test.projectsTree")(function* (
+  world: World,
+  host = "gitlab.example.com",
+) {
   const root = `${world.home}/projects`;
   for (const name of ["app", "api"]) {
     const dir = `${root}/team/${name}`;
     yield* exec(["mkdir", "-p", dir]);
     yield* exec(["git", "init", "-q"], { cwd: dir });
-    yield* exec(["git", "remote", "add", "origin", `git@gitlab.example.com:team/${name}.git`], {
+    yield* exec(["git", "remote", "add", "origin", `git@${host}:team/${name}.git`], {
       cwd: dir,
     });
   }
@@ -296,16 +299,22 @@ const withRouter = <A, E, R>(
     );
   });
 
-test(
-  "from the Home, a merge request URL is placed in the checkout whose remote it names, with no model asked",
-  () =>
+test.each([
+  [
+    "merge request",
+    "gitlab.example.com",
+    "https://gitlab.example.com/team/app/-/merge_requests/42",
+  ],
+  ["pull request", "github.com", "https://github.com/team/app/pull/42"],
+])(
+  "from the Home, a %s URL is placed in the checkout whose remote it names, with no model asked",
+  (_, host, url) =>
     launching("collie-launch-url-", (world) =>
       Effect.gen(function* () {
-        const tree = yield* projectsTree(world);
+        const tree = yield* projectsTree(world, host);
         const home = yield* atHome(world);
         yield* withRouter(world, { answer: "one", checkouts: [tree.api] }, (calls) =>
           Effect.gen(function* () {
-            const url = "https://gitlab.example.com/team/app/-/merge_requests/42";
             const { prompts, rows } = answering(["targeted", url, "start"]);
             expect(yield* pickFlow(new Herdr(home), home, prompts, "inline")).toBe(0);
             expect(rows.at(-1)?.title).toBe(`Starting in ${tree.app}`);
@@ -313,7 +322,7 @@ test(
             const run = (yield* runViews(home, null)).runs[0];
             expect(run).toMatchObject({
               cwd: tree.app,
-              input: { target: expect.stringContaining("!42") },
+              input: { target: expect.stringMatching(new RegExp(`^mr:${host}/team/app[!#]42$`)) },
               provenance: { workspace: "inferred", target: "typed" },
             });
           }),

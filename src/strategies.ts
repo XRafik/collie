@@ -5,8 +5,10 @@
 // fan-out, the previous review, the repository a roaming Run is cut from — finds the
 // field here rather than looking up a name the shipped workflows happen to use.
 //
-// Nothing is imported: this is read from definitions, records, launches and labels alike,
-// and a dependency in either direction would put a cycle between two of them.
+// Nothing else is imported: this is read from definitions, records, launches and labels
+// alike, and a dependency in either direction would put a cycle between two of them.
+
+import { parseMrTarget } from "./board-model";
 
 /** The name of one of `INPUT_STRATEGIES`; `definitions.ts` is where they are listed. */
 export type InputStrategy = string;
@@ -45,10 +47,10 @@ export type TargetKind = "mr" | "branch" | "worktree";
 /**
  * A diff target's kind is its value's shape; both the picker and a resume read it back.
  * Empty for any other shape, which is a target nobody normalised, never the working tree.
- * The one definition: an `mr:` is one `parseMrTarget` reads, so `mr:group/app` is none.
+ * An `mr:` is one `parseMrTarget` reads, on either forge, so `mr:group/app` is none.
  */
 export function targetKind(value: string): TargetKind | "" {
-  if (/^mr:(?:.*!)?\d+$/.test(value)) return "mr";
+  if (parseMrTarget(value) !== null) return "mr";
   if (value.startsWith("branch:")) return "branch";
   return value.trim() === "worktree" ? "worktree" : "";
 }
@@ -153,7 +155,7 @@ const STRATEGY_MEANINGS = new Map<InputStrategy, string>([
   ["plan-dir", "A plan directory, holding SPEC.md and issues/"],
   [
     "diff-target",
-    "The change to review: mr:<iid>, mr:<group/project>!<iid>, branch:<base>...<head>, or worktree",
+    "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, branch:<base>...<head>, or worktree",
   ],
   ["gitlab-repository", "A GitLab repository URL, or the absolute path of a local checkout"],
   ["flag", "true or false"],

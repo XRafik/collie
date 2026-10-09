@@ -5,11 +5,19 @@
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { type ForgeChecks, type ForgeFacts } from "./board";
-import { mrLabel } from "./board-model";
-import { pullOf, sectionOf, type MrPanel, type MrState, type TaskView } from "./board-model";
+import {
+  forgeOfRef,
+  mrLabel,
+  mrPath,
+  mrRefOf,
+  sectionOf,
+  type MrPanel,
+  type MrRef,
+  type MrState,
+  type TaskView,
+} from "./board-model";
 import { latest, readDispositions, recordDisposition } from "./disposition";
 import { liveTier, mrDetails, type Runner } from "./mr";
-import { parseMrTarget, type MrRef } from "./board-model";
 import { runDir } from "./engine";
 import { nowIso } from "./time";
 
@@ -32,7 +40,8 @@ export const watchedMr = Effect.fn("Merges.watchedMr")(function* <R>(opts: {
   readonly fresh: boolean;
 }) {
   const ref = mrRefOf(opts.target);
-  if (ref === null) return null;
+  // A pull request's panel is not read yet.
+  if (ref === null || forgeOfRef(ref) === "github") return null;
   const label = mrLabel(opts.target);
   const known = opts.panels.get(label);
   if (known !== undefined && !opts.fresh && known.at + MERGE_POLL_MS > opts.now) return known.panel;
@@ -123,7 +132,7 @@ export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
 
 /** What `gh` says about one pull request, or null where it cannot be asked: no gh, no login. */
 const pullFacts = Effect.fn("Merges.pullFacts")(function* <R>(
-  pull: { readonly repo: string; readonly number: string },
+  pull: MrRef,
   cwd: string,
   run: Runner<R>,
 ) {
@@ -132,9 +141,9 @@ const pullFacts = Effect.fn("Merges.pullFacts")(function* <R>(
     [
       "pr",
       "view",
-      pull.number,
+      pull.iid,
       "--repo",
-      pull.repo,
+      mrPath(pull),
       "--json",
       "state,mergeCommit,headRefOid,statusCheckRollup",
     ],
@@ -143,13 +152,6 @@ const pullFacts = Effect.fn("Merges.pullFacts")(function* <R>(
   if (view.code !== 0) return null;
   return Option.getOrNull(Schema.decodeUnknownOption(PullJson)(view.stdout));
 });
-
-/** `https://host/group/project/-/merge_requests/42` or `mr:host/group/project!42` as one ref. */
-export function mrRefOf(mr: string): MrRef | null {
-  const url = /^https?:\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(mr);
-  if (url) return { project: `${url[1]}/${url[2]}`, iid: url[3]! };
-  return parseMrTarget(mr.startsWith("mr:") ? mr : `mr:${mr}`);
-}
 
 function stateOf(state: string): MrState {
   const said = state.toLowerCase();
@@ -191,7 +193,7 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     const label = mrLabel(view.mr);
     if (opts.states.get(label) === "in-prod") continue;
     if ((opts.checked.get(label) ?? 0) + MERGE_POLL_MS > opts.now) continue;
-    if (pullOf(view.mr) === null && mrRefOf(view.mr) === null) continue;
+    if (mrRefOf(view.mr) === null) continue;
     // Stamped before asking: a forge that cannot be asked is not asked again every tick.
     opts.checked.set(label, opts.now);
     const answered = yield* forgeAnswer(view.mr, opts.cwd, opts.run, (panel) =>
@@ -237,9 +239,10 @@ const forgeAnswer = Effect.fn("Merges.forgeAnswer")(function* <R>(
   /** Keeps a GitLab panel read, for the drawer of the Run it belongs to. */
   remember: (panel: MrPanel) => void,
 ) {
-  const pull = pullOf(mr);
-  if (pull !== null) {
-    const said = yield* pullFacts(pull, cwd, run);
+  const ref = mrRefOf(mr);
+  if (ref === null) return null;
+  if (forgeOfRef(ref) === "github") {
+    const said = yield* pullFacts(ref, cwd, run);
     if (said === null) return null;
     return {
       state: stateOf(said.state),
@@ -247,8 +250,6 @@ const forgeAnswer = Effect.fn("Merges.forgeAnswer")(function* <R>(
       by: "github",
     };
   }
-  const ref = mrRefOf(mr);
-  if (ref === null) return null;
   const panel = yield* mrDetails(ref, cwd, run);
   remember(panel);
   if (panel._tag !== "Details") return null;

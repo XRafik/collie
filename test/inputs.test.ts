@@ -622,6 +622,18 @@ test("what the human types is classified as an MR, a range or a branch", () => {
   expect(classifyTarget("   ", "main")).toBeNull();
 });
 
+test("a pull request URL or GitHub target is a merge request, never a branch", () => {
+  expect(classifyTarget("https://github.com/cego/collie/pull/30/files", "main")).toMatchObject({
+    kind: "mr",
+    value: "mr:github.com/cego/collie#30",
+  });
+  expect(classifyTarget("#30", "main", "github.com/cego/collie")).toMatchObject({
+    kind: "mr",
+    value: "mr:github.com/cego/collie#30",
+  });
+  expect(targetKind("mr:github.com/cego/collie#30")).toBe("mr");
+});
+
 test("a diff-target given on the command line is normalised, not just shaped", () =>
   runEffect(
     Effect.gen(function* () {

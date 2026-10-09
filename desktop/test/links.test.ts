@@ -130,3 +130,14 @@ test("a URL is drawn without its scheme or a trailing slash, and elided in the m
   expect(shortUrl(`http://${"b".repeat(58)}.dk`)).toBe(`${"b".repeat(40)}…${"b".repeat(12)}.dk`);
   expect(shortUrl("http://example.com/")).toBe("example.com");
 });
+
+test("a merge request or pull request named in an Output is an mr card", () => {
+  expect(
+    webLinks({
+      texts: [
+        "Opened https://github.com/cego/collie/pull/30 and https://gitlab.cego.dk/cego/app/-/merge_requests/7",
+      ],
+      mr: null,
+    }).map((card) => card.kind),
+  ).toEqual(["mr", "mr"]);
+});

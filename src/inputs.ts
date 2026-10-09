@@ -12,7 +12,7 @@ import { targetLabel } from "./naming";
 import { FINDINGS_FILE, REVIEW_FILE } from "./output";
 import { ago } from "./time";
 import { type Runner, mrTarget, projectHere, shell as shellRun } from "./mr";
-import { parseMrTarget } from "./board-model";
+import { parseMrTarget, readMrRef } from "./board-model";
 
 const JsonId = Schema.Union([Schema.String, Schema.Number]);
 const MrViewJson = Schema.fromJsonString(
@@ -491,20 +491,13 @@ export function classifyTarget(
   if (text === "") return null;
   const source = "typed";
 
-  // A URL names its own project, which is the whole point of pasting one.
-  const url = /^(?:https?:\/\/)?([^/\s]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(text);
-  if (url) {
-    return {
-      kind: "mr",
-      value: mrTarget(`${url[1]}/${url[2]}`, url[3]!),
-      source,
-      label: `!${url[3]}`,
-    };
+  // A URL names its own project, which is the whole point of pasting one; a bare iid means
+  // one in the project this directory belongs to.
+  const mr = readMrRef(text, { project });
+  if (mr) {
+    const value = mrTarget(mr.project, mr.iid);
+    return { kind: "mr", value, source, label: `!${mr.iid}` };
   }
-
-  // A bare iid means one in the project this directory belongs to.
-  const iid = /^!?(\d+)$/.exec(text);
-  if (iid) return { kind: "mr", value: mrTarget(project, iid[1]!), source, label: `!${iid[1]}` };
 
   if (/^worktree$/i.test(text))
     return { kind: "worktree", value: "worktree", source, label: "working tree" };

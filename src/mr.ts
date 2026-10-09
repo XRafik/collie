@@ -13,6 +13,7 @@ import {
   type MrPanel,
   type MrRef,
   type MrUnavailable,
+  mrTarget,
   parseMrTarget,
   parseMrUrl,
 } from "./board-model";
@@ -143,11 +144,7 @@ export function postNote<R>(
   });
 }
 
-export function mrTarget(project: string | null, iid: string): string {
-  return project ? `mr:${project}!${iid}` : `mr:${iid}`;
-}
-
-export { targetKind };
+export { mrTarget, targetKind };
 
 /** The glab arguments that point a command at a project rather than at the cwd. */
 export function repoArgs(project: string | null): string[] {

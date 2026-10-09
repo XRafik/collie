@@ -44,6 +44,7 @@ import {
   writeIntentHeld,
   type Intent,
 } from "./intent";
+import { mrPath, parseMrUrl } from "./board-model";
 import { reason } from "./naming";
 import { appendPendingReport } from "./live";
 import { withDirLock, withLock } from "./lock";
@@ -269,11 +270,11 @@ export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched
   const verifications: Record<string, { exit: number; ref: string }> = {};
   const verified = yield* readVerifications(at.evidenceDir).pipe(Effect.orElseSucceed(() => []));
   for (const one of verified) verifications[one.name] = { exit: one.exit, ref: one.id };
-  const mr = /https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(at.mr ?? "");
+  const mr = parseMrUrl(at.mr ?? "");
   return {
     changedFiles: [...new Set(lines(`${committed.stdout}\n${dirty.stdout}\n${untracked.stdout}`))],
     branch: branch.code === 0 ? branch.stdout.trim() : null,
-    mrTarget: mr === null ? null : { project: mr[1]!, iid: mr[2]! },
+    mrTarget: mr?.project == null ? null : { project: mrPath(mr), iid: mr.iid },
     outputs,
     verifications,
   } satisfies RuleFacts;

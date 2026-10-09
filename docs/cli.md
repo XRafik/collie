@@ -406,6 +406,7 @@ Examples:
 
 ```sh
 collie run start review --input target=https://gitlab.example.com/acme/app/-/merge_requests/2 --input plan= --input proves=
+collie run start review --input target=https://github.com/acme/app/pull/30 --input plan= --input proves=
 collie run start review --input target=worktree --input plan= --input proves=
 collie run start implement --input plan=ENG-123
 collie run start plan --input goal="one registry" --input workspace=projects-root
@@ -428,7 +429,7 @@ root for `workspace`:
       "inputs": [
         {
           "name": "target",
-          "meaning": "The change to review: mr:<iid>, mr:<group/project>!<iid>, branch:<base>...<head>, or worktree",
+          "meaning": "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, branch:<base>...<head>, or worktree",
           "facts": ["mr:acme/app!2 (open merge request !2)"],
           "question": "review — an MR, a branch diff, or the working tree — target?",
           "required": true,

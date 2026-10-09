@@ -202,6 +202,10 @@ on send, never `corrected`: sending text is not the work changing.
 **Manual override** — An incarnation that received input Collie did not send. Automatic
 corrections to it stop until an explicit `run clear-override`; nothing times it back on.
 
+**Forge** — The service that hosts a repository and its **Merge requests**: GitLab or GitHub. A checkout's forge comes from the host of its `origin` remote, or of `upstream` where `origin` names none. `github.com` is GitHub. The Flock's `gitlab_host`, or any host whose name contains `gitlab`, is GitLab. Any other host has no forge, and a step that needs one says so. Collie reaches a forge only through that forge's adapter: `glab` for GitLab, `gh` for GitHub. The adapter also writes the commands an agent is told to run, so no prompt names a CLI of its own ([ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md)).
+
+**Merge request** — A proposed change to a repository's default branch, on its **Forge**. Collie's word covers a GitHub pull request too. A human is shown the forge's own word and name: merge request `group/app!42` on GitLab, pull request `owner/repo#30` on GitHub. A Run reviews one as the target `mr:<host>/<group>/<project>!<iid>` or `mr:github.com/<owner>/<repo>#<number>`. Collie reads for itself whether a merge request merged, closed, deployed or merges itself once green; none of these is taken from an agent's Output.
+
 **Disposition** — What became of a Run's work, which is not how its execution ended. Recorded by a human beside the Run's status and never over it — `merged`, `abandoned` or `superseded`, with the merge request, commit or Run that backs it up. A Run that failed still failed; its disposition says whether the work landed anyway. Append-only, so a correction keeps what was believed before. Nothing to do with **Delivery**, which is one message to one agent.
 
 **Verification** — An independently collected command result bound to the tree it ran on,
@@ -337,7 +341,7 @@ into another Run's pane on its behalf.
 
 **Worktree** — The checkout a mutating Run owns: one per branch, because git allows
 exactly one worktree per checked-out branch. The branch names the work rather than the path
-to it, and new work is generated as `<GitLab login>/<task>` rather than asked for, so two
+to it, and new work is generated as `<login>/<task>` — the login of the checkout's **Forge** — rather than asked for, so two
 Runs on different work can never key the same checkout
 ([the order it is resolved in](docs/cli.md#start-a-run)). Only the Run's cwd moves; its tabs stay in
 its Task's workspace and are `cd`-ed into the checkout, because a Run belongs where its
@@ -485,7 +489,7 @@ defaults and remembered values in `config.json`, and whether the harness is trus
 
 **Launch flow** — The two questions between "run a workflow" and a Run: which Workflow, and
 what the human wants, in their own words. The words fill the Workflow's launch Input — the
-one field it hints with `goal`, `work-source`, `diff-target` or `gitlab-repository` — where
+one field it hints with `goal`, `work-source`, `diff-target` or `repository` — where
 they are a value of its kind, and otherwise say where the work is; every other Input is
 inferred or left empty, and a start that still lacks one is
 refused with the reason rather than asked again. Where the work happens is never asked:
