@@ -9,7 +9,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { nowIso } from "./time";
 import { attentionFor } from "./attention";
 import type { PluginEnv } from "./env";
-import { Answered, mrLabel, ranOn, type FrontDoor } from "./board-model";
+import { Answered, mrLabel, mrNounOf, ranOn, type FrontDoor } from "./board-model";
 import { runAgents } from "./launches";
 import { readAudit, type AuditLine } from "./audit";
 import { readForge, readMrStates } from "./merges";
@@ -1025,7 +1025,8 @@ const mergeLines = Effect.fn("operations.mergeLines")(function* (env: PluginEnv,
     state === undefined
       ? "not watched"
       : `${state}, checks ${checks === undefined ? "not recorded" : checks.state === "failed" ? `failed (${checks.name})` : checks.state}`;
-  return [`Merge request: ${run.mr} — ${watched}`, ...lines];
+  const noun = mrNounOf(run.mr);
+  return [`${noun[0]!.toUpperCase()}${noun.slice(1)}: ${run.mr} — ${watched}`, ...lines];
 });
 
 /** The Run's own plan directory and how many tickets it holds. */

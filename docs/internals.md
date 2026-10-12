@@ -485,7 +485,7 @@ fake. `test/support/forge.ts` is a fake of each forge built on one model of a fo
 two faces: a Runner answering the argv its adapter uses, and a `FakeBin` executable on
 PATH answering from the same model for host-driven tests. `test/forge.test.ts` runs one
 contract against both. `test/forge-boundary.test.ts` fails on a `glab` or `gh` invocation
-in `src/` or `workflows/` outside its adapter, and on a prompt that names either; its
+in `src/` or `workflows/` outside its adapter, and on workflow content that names either; its
 allowlist names each file that still does, with the ticket that moves it.
 
 ## Definitions and layers

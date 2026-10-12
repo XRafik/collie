@@ -1,7 +1,7 @@
 // The web links a Run produced, as the record's cards show them.
 
 import { expect, test } from "bun:test";
-import { shortUrl, webLinks } from "../src/shared/links";
+import { mrHeading, mrTab, shortUrl, webLinks } from "../src/shared/links";
 
 const mr = {
   _tag: "Details",
@@ -140,4 +140,40 @@ test("a merge request or pull request named in an Output is an mr card", () => {
       mr: null,
     }).map((card) => card.kind),
   ).toEqual(["mr", "mr"]);
+});
+
+test("a pull request's card is titled #30 and its merge request's !7", () => {
+  expect(
+    webLinks({
+      texts: [
+        "Opened https://github.com/cego/collie/pull/30 and https://gitlab.cego.dk/cego/app/-/merge_requests/7",
+      ],
+      mr: null,
+    }).map((card) => card.title),
+  ).toEqual(["#30", "!7"]);
+});
+
+test("a pull request's checks are its card's and its panel's, as a merge request's pipeline is", () => {
+  const pull = {
+    ...mr,
+    project: "github.com/cego/collie",
+    iid: "30",
+    url: "https://github.com/cego/collie/pull/30",
+  };
+  expect(webLinks({ texts: [], mr: pull }).at(-1)).toMatchObject({
+    kind: "pipeline",
+    url: "https://github.com/cego/collie/pull/30/checks",
+    title: "Checks of #30",
+  });
+  expect(mrHeading(pull)).toEqual({ title: "#30", checks: "Checks" });
+  expect(mrHeading({ project: "gitlab.cego.dk/cego/app", iid: "7" })).toEqual({
+    title: "!7",
+    checks: "Pipeline",
+  });
+});
+
+test("a Run's record calls its tab what the forge calls the merge request", () => {
+  expect(mrTab("https://github.com/cego/collie/pull/30")).toBe("Pull request");
+  expect(mrTab("https://gitlab.cego.dk/cego/app/-/merge_requests/7")).toBe("Merge request");
+  expect(mrTab(null)).toBe("Merge request");
 });

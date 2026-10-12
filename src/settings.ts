@@ -209,7 +209,7 @@ const NOTIFICATION_WORDS = {
   "run-done": ["A Run finished", "a Run finishes well"],
   "run-failed": ["A Run failed", "a Run fails"],
   "output-unusable": ["An Output was unusable", "a Run stops on an agent's Output it cannot read"],
-  "mr-opened": ["A merge request opened", "a Run opens a merge request"],
+  "mr-opened": ["A merge request or pull request opened", "a Run opens a merge request or pull request"],
   "drift-unresolved": [
     "Drift nobody settled",
     "a Run drifted from what it was asked and Collie could not correct it",

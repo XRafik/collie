@@ -94,7 +94,7 @@ import type { CheckoutKind, InputStrategy } from "./definitions";
 import { noteVerification } from "./metrics";
 import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
-import { Notifier, SOUND, notificationTitle, wanted, type Sound } from "./notify";
+import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
 import {
   Oversight,
   cardCheckpoints,
@@ -2407,10 +2407,7 @@ export const hostLayer = (options: {
             Effect.andThen(
               notify(runId, "mr-opened", url, {
                 key: url,
-                subject: Option.fromNullishOr(parseMrUrl(url)).pipe(
-                  Option.map((mr) => `!${mr.iid}`),
-                  Option.getOrUndefined,
-                ),
+                subject: openedSubject(url),
               }),
             ),
           ),

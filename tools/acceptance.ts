@@ -382,6 +382,19 @@ const FRONT_DOOR: readonly Check[] = [
     },
   },
   {
+    id: "front-door/a-pull-requests-card-names-it-as-github-does-and-opens-it",
+    statement:
+      "A pull request's card names it as GitHub does — pull request cego/collie#30, its checks — offers Open pull request, and records collie#30 when disposed of; Desktop's link card, panel and record tab say the same.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/board.test.ts",
+      name: "a (gitlab|github) card names its merge request as its forge does",
+    },
+  },
+  {
     id: "front-door/a-pull-request-url-from-the-home-is-placed-in-its-checkout",
     statement:
       "From the Home, a pull request URL typed as a review target starts in the checkout whose remote is that repository, with mr:github.com/<owner>/<repo>#<n> as its target, as a merge request URL does.",

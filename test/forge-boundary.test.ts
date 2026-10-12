@@ -3,7 +3,7 @@ import { Effect, FileSystem, Path } from "effect";
 import { runEffect } from "./support/effect";
 
 // ADR-0050 D1: `glab` is run only by the GitLab adapter and `gh` only by the GitHub one,
-// and no prompt names either.
+// and no workflow's content names either.
 
 const ADAPTER = new Map([
   ["src/forge/gitlab.ts", "glab"],
@@ -16,32 +16,30 @@ const ALLOWED = new Map([
   ["src/onboard.ts", "permanent"],
   ["src/mr.ts", "08: pipelineStatus"],
   ["src/worktree.ts", "09: the roaming clone"],
-  ["src/cards.ts", "06: the inspect text"],
   ["src/doctor.ts", "07: the doctor"],
   ["workflows/renovate.md", "10: renovate's content per forge"],
-  ["prompts/collie-chat.md", "06: native chat names both forges"],
 ]);
 
 /** A command a TypeScript file runs: the CLI as an argument, or a command line in a string. */
 const INVOKES =
   /(["'])(glab|gh)\1|["'`](glab|gh) (?:mr|pr|api|auth|repo|issue|ci|release|run|workflow)\b/g;
-/** A prompt that names a CLI at all. */
+/** Workflow content that names a CLI at all. */
 const NAMES = /\b(glab|gh)\b/g;
 
 const matcherOf = (file: string) =>
   /^(src|workflows)\/.*\.tsx?$/.test(file)
     ? INVOKES
-    : /^(workflows|prompts)\/.*\.md$/.test(file)
+    : /^workflows\/.*\.md$/.test(file)
       ? NAMES
       : null;
 
-/** Each file under `src/`, `workflows/` and `prompts/` that runs or names a forge CLI, and which. */
+/** Each file under `src/` and `workflows/` that runs or names a forge CLI, and which. */
 const scan = Effect.fn("boundary.scan")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = path.dirname(yield* path.fromFileUrl(new URL("./", import.meta.url)));
   const found = new Map<string, Set<string>>();
-  for (const dir of ["src", "workflows", "prompts"]) {
+  for (const dir of ["src", "workflows"]) {
     for (const entry of yield* fs.readDirectory(path.join(root, dir), { recursive: true })) {
       const file = `${dir}/${entry}`;
       const matcher = matcherOf(file);

@@ -1404,15 +1404,25 @@ export type CardAction =
   | { readonly kind: "stop" }
   | { readonly kind: "dispose"; readonly disposition: DispositionKind; readonly ref: string };
 
-/** `collie!151` rather than the whole URL: a disposition's ref ends up in the card's sentence. */
+/** `collie!151` or `collie#30` rather than the whole URL: a disposition's ref ends up in the card's sentence. */
 const dispose = (view: TaskView, disposition: DispositionKind): CardAction => {
   const mr = mrRefOf(view.mr);
-  const ref =
-    disposition === "abandoned" || mr === null
-      ? ""
-      : `${(mr.project ?? "").split("/").at(-1)}!${mr.iid}`;
+  const ref = disposition === "abandoned" || mr === null ? "" : mrWords(mr).short;
   return { kind: "dispose", disposition, ref };
 };
+
+/** "merge request", or "pull request" for one on GitHub, however it is named. */
+export function mrNounOf(mr: string): string {
+  const ref = readMrRef(mr);
+  return ref === null ? "merge request" : mrWords(ref).noun;
+}
+
+/** The Open action's label, in the merge request's own forge's words. */
+export function openMrLabel(mr: MrRef, primary: boolean): string {
+  const github = forgeOfRef(mr) === "github";
+  if (primary) return github ? "Open PR" : "Open MR";
+  return github ? "Open pull request" : "Open merge request";
+}
 
 /**
  * What this Task can be asked for, in the order a menu shows it. Only what would work: an

@@ -36,6 +36,8 @@ import {
   Answered,
   EVIDENCE_GATE,
   mrLabel,
+  mrWords,
+  readMrRef,
   SECTIONS,
   sectionOf,
   sortBoard,
@@ -345,6 +347,11 @@ const short = (sha: string) => sha.slice(0, 7);
 /** An open merge request: whether it is ready, and the human's next move. */
 function openSentence(mr: string, checks: Checks | null, agent: string | null): string {
   const label = mrLabel(mr);
+  const ref = readMrRef(mr);
+  const running =
+    ref !== null && mrWords(ref).checks === "checks"
+      ? "its checks are still running"
+      : "its pipeline is still running";
   const handed = agent === null ? "" : `, or tell ${agent} to`;
   const seen: Checks = checks ?? { state: "unchecked" };
   switch (seen.state) {
@@ -353,7 +360,7 @@ function openSentence(mr: string, checks: Checks | null, agent: string | null): 
     case "failed":
       return `${label} is open, but ${seen.name} failed at ${short(seen.at)}. Next: fix ${seen.name}${handed}.`;
     case "running":
-      return `${label} is open; its pipeline is still running.`;
+      return `${label} is open; ${running}.`;
     case "unchecked":
       return `${label} is open; nothing has checked it.`;
   }
@@ -370,7 +377,11 @@ function doneSentence(
   if (disposition === null) {
     if (planReady) return "Plan ready to implement.";
     if (mr === null) return "Finished; nothing merged yet.";
-    if (mrState === "closed") return `Merge request ${mrLabel(mr)} closed without merging.`;
+    if (mrState === "closed") {
+      const ref = readMrRef(mr);
+      const noun = ref === null ? "merge request" : mrWords(ref).noun;
+      return `${noun[0]!.toUpperCase()}${noun.slice(1)} ${mrLabel(mr)} closed without merging.`;
+    }
     return openSentence(mr, checks, agent);
   }
   switch (disposition.kind) {

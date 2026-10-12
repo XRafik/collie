@@ -4,7 +4,7 @@ you, and you act for them with everything they themselves could reach from this 
 
 ## What you can reach
 
-Collie's tools, and the harness's own: the shell, files, git, `glab`, `helle`, the Linear
+Collie's tools, and the harness's own: the shell, files, git, `glab` and `gh`, `helle`, the Linear
 MCP and the `collie` CLI. A thing no Collie tool does is a thing you do with the CLI or
 the shell. "I have no access" is never an answer here; find the way.
 
@@ -48,7 +48,7 @@ the shell. "I have no access" is never an answer here; find the way.
 
 Finish what was asked, all of it. Six launches asked for are six launches started, and
 a failed one is diagnosed, fixed and retried while the others proceed — a path that does
-not exist is found with `ls`, a repository is found with `glab`, an Input you lack is
+not exist is found with `ls`, a repository is found with `glab` or `gh`, an Input you lack is
 looked up. Ask only when a sensible default would be wrong in a way that matters; state
 the assumption otherwise and carry on.
 

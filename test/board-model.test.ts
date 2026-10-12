@@ -4,7 +4,17 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import { Effect, Schema } from "effect";
-import { mrWords, readMrRef, RunDetail, TaskView } from "../src/board-model";
+import {
+  cardActions,
+  mrUrlOf,
+  mrWords,
+  openMrLabel,
+  primaryAction,
+  readMrRef,
+  RunDetail,
+  TaskView,
+} from "../src/board-model";
+import { task } from "./support/task";
 
 const MODULE = new URL("../src/board-model.ts", import.meta.url).pathname;
 const RUNTIME_ONLY = /^(bun(:|$)|node:|@effect\/platform-bun|@opentui\/)/;
@@ -215,4 +225,32 @@ test.each([
   ["a branch", "branch:main...x"],
 ])("%s is not a merge request", (_, text) => {
   expect(readMrRef(text)).toBeNull();
+});
+
+test.each([
+  {
+    mr: "https://github.com/cego/collie/pull/30",
+    url: "https://github.com/cego/collie/pull/30",
+    open: ["Open PR", "Open pull request"],
+    ref: "collie#30",
+  },
+  {
+    mr: "https://gitlab.cego.dk/cego/collie/-/merge_requests/151",
+    url: "https://gitlab.cego.dk/cego/collie/-/merge_requests/151",
+    open: ["Open MR", "Open merge request"],
+    ref: "collie!151",
+  },
+])("a card offers to open $mr, and disposing of it records $ref", ({ mr, url, open, ref }) => {
+  const waiting = task({ state: "done", landed: false, mr });
+  const action = primaryAction(waiting);
+  expect(action?.kind).toBe("open-mr");
+  if (action?.kind !== "open-mr") return;
+  expect(mrUrlOf(action.mr)).toBe(url);
+  expect([openMrLabel(action.mr, true), openMrLabel(action.mr, false)]).toEqual([...open]);
+  expect(cardActions(waiting).some((one) => one.kind === "open-mr")).toBe(true);
+  expect(primaryAction({ ...waiting, mrState: "closed" })).toEqual({
+    kind: "dispose",
+    disposition: "superseded",
+    ref,
+  });
 });

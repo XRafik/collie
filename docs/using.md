@@ -536,7 +536,7 @@ builder to.` The agent is named only while it is alive. A GitHub pull request re
 `owner/repo#30`, a GitLab merge request as `group/project!42`. A Run that ended with
 nothing to file — no branch, no merge request, no plan, no question — is finished, not
 waiting: fifty such cards are not fifty obligations. Each card's first button is the one
-action that ends its wait — Open MR, Resume, Mark superseded, or on a plan that is ready
+action that ends its wait — Open MR (Open PR for a pull request), Resume, Mark superseded, or on a plan that is ready
 the first offer its workflow declares, under the title it gave it (the shipped plan's is
 **Implement now**, refused with how to build it for a plan that spans repositories; a plan
 that declares none gets no button) — with Mark merged and Mark
@@ -1015,7 +1015,14 @@ and content hash. Each card's `⋯` menu offers what the TUI menu does, by the s
 Steer…, the Run's offers (asked of its host when opened, with a field for each argument),
 Resume, Follow-up, Hold or Release, Stop, and Mark merged, abandoned or superseded — and
 the card's first action is the TUI card's own. Following a check's output is not on Desktop
-yet. Open merge request opens it in your browser.
+yet. Open merge request — Open pull request on GitHub — opens it in your browser.
+
+Each card names its merge request as its forge does: "merge request `group/app!42`" and
+"its pipeline" on GitLab, "pull request `cego/collie#30`" and "its checks" on GitHub. The
+same words are in the drawer, the record's **Merge request** or **Pull request** tab, a
+link card (`!42` or `#30`), the "opened" notification, chat's line for a Run and
+`collie run show`. Marking one merged or superseded records its short label, `collie!151`
+or `collie#30`.
 
 **Go to pane** asks the card's Machine to focus the Run's newest live agent, or its
 workspace where it has none, on that Machine's own herdr, and opens the card's record on
@@ -1317,8 +1324,9 @@ from the network nor navigate away; the logs and files it kept, each read when o
 searchable; and its metrics as a table. A report that keeps its attachments in files beside
 it shows without them. **Log**
 follows the end of the Run's log as it is written, with a search that keeps only the lines
-that match. **Merge request** shows what the host's merge watch last read — title, state,
-pipeline, approvals and comments — with Open in browser. **Facts** shows the files the Run was
+that match. **Merge request** (**Pull request** for one on GitHub) shows what the host's
+merge watch last read — title, state, pipeline or checks, approvals and comments — with
+Open in browser. **Facts** shows the files the Run was
 given, when it was given any (an image as a thumbnail, any other file by its name, type and
 size), its **Agents** — one row per agent the Run started, in launch order, with the
 harness, model and effort it ran on — its intent, its steering cards and the card's TaskView as the host sent it. Markdown is rendered with

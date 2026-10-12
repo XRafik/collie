@@ -1,6 +1,31 @@
 // The web links a Run produced, as cards. No Bun-only import: the view bundles this.
 
-import { type MrDetails, type MrPanel, parseMrUrl } from "../../../src/board-model";
+import {
+  type MrDetails,
+  type MrPanel,
+  type MrRef,
+  mrWords,
+  parseMrUrl,
+  readMrRef,
+} from "../../../src/board-model";
+
+const capital = (text: string) => `${text[0]!.toUpperCase()}${text.slice(1)}`;
+
+/** What a Run's record calls its merge request's tab: `Merge request`, or `Pull request` on GitHub. */
+export const mrTab = (mr: string | null) => {
+  const ref = mr === null ? null : readMrRef(mr);
+  return capital(ref === null ? "merge request" : mrWords(ref).noun);
+};
+
+/** A merge request panel's title (`!42` or `#30`) and what its checks are called there. */
+export const mrHeading = (mr: MrRef) => {
+  const words = mrWords(mr);
+  return { title: `${words.sign}${mr.iid}`, checks: capital(words.checks) };
+};
+
+/** Where a merge request's checks are read: GitLab's pipelines, GitHub's checks tab. */
+const checksUrl = (mr: MrDetails) =>
+  `${mr.url}/${mrWords(mr).checks === "checks" ? "checks" : "pipelines"}`;
 
 export interface LinkCard {
   readonly kind: "artifact" | "mr" | "pipeline" | "link";
@@ -23,13 +48,20 @@ export const shortUrl = (url: string) => {
 
 const cardOf = (url: string, given: string | undefined, mr: MrDetails | null): LinkCard => {
   if (url === mr?.url) return { kind: "mr", url, title: mr.title, status: mr.state };
-  if (url === `${mr?.url}/pipelines`)
-    return { kind: "pipeline", url, title: `Pipeline of !${mr?.iid}`, status: mr?.pipeline };
+  if (mr !== null && url === checksUrl(mr)) {
+    const heading = mrHeading(mr);
+    return {
+      kind: "pipeline",
+      url,
+      title: `${heading.checks} of ${heading.title}`,
+      status: mr.pipeline,
+    };
+  }
   if (ARTIFACT.test(url)) return { kind: "artifact", url, title: given ?? "Claude artifact" };
   const pipeline = PIPELINE.exec(url);
   if (pipeline) return { kind: "pipeline", url, title: given ?? `Pipeline #${pipeline[1]}` };
   const other = parseMrUrl(url);
-  if (other) return { kind: "mr", url, title: given ?? `!${other.iid}` };
+  if (other) return { kind: "mr", url, title: given ?? mrHeading(other).title };
   return { kind: "link", url, title: given ?? where(url) };
 };
 
@@ -46,9 +78,7 @@ export const webLinks = ({
 }): ReadonlyArray<LinkCard> => {
   const details = mr?._tag === "Details" ? mr : null;
   const own =
-    details === null
-      ? []
-      : [details.url, details.pipeline === "" ? "" : `${details.url}/pipelines`];
+    details === null ? [] : [details.url, details.pipeline === "" ? "" : checksUrl(details)];
   const titles = new Map<string, string | undefined>();
   for (const text of [...texts, ...own])
     for (const [bare, given, marked] of text.matchAll(LINK)) {

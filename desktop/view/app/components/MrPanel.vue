@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { MrPanel } from "../../../../src/board-model";
+import { mrHeading } from "../../../src/shared/links";
 
 defineProps<{ mr: MrPanel }>();
 const { openLink } = useActions();
@@ -10,11 +11,11 @@ const { openLink } = useActions();
     <p v-if="mr._tag === 'Unavailable'" class="text-muted">{{ mr.reason }}</p>
     <template v-else>
       <div class="flex items-start justify-between gap-2">
-        <strong data-testid="mr-title">!{{ mr.iid }} {{ mr.title }}</strong>
+        <strong data-testid="mr-title">{{ mrHeading(mr).title }} {{ mr.title }}</strong>
         <UBadge variant="subtle" data-testid="mr-state" :label="mr.state" />
       </div>
       <dl class="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 wrap-anywhere">
-        <dt class="text-muted">Pipeline</dt>
+        <dt class="text-muted">{{ mrHeading(mr).checks }}</dt>
         <dd data-testid="mr-pipeline">{{ mr.pipeline || "none" }}</dd>
         <dt class="text-muted">Approvals</dt>
         <dd data-testid="mr-approvals">{{ mr.approvals }}</dd>

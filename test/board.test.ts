@@ -1488,6 +1488,47 @@ test("an open merge request says whether it is ready, what failed, and the next 
   );
 });
 
+test.each([
+  {
+    forge: "gitlab",
+    mr: "https://gitlab.cego.dk/mk/collie/-/merge_requests/65",
+    label: "mk/collie!65",
+    noun: "Merge request",
+    running: "its pipeline is still running",
+    by: "gitlab",
+  },
+  {
+    forge: "github",
+    mr: PR,
+    label: "cego/collie#30",
+    noun: "Pull request",
+    running: "its checks are still running",
+    by: "github",
+  },
+] as const)("a $forge card names its merge request as its forge does", (one) => {
+  const done = (over: Partial<Sentence>) =>
+    sentenceFor(facts({ state: "done", mr: one.mr, ...over }));
+  expect(done({ checks: { state: "passed", at: "1a2b3c4d5e" } })).toBe(
+    `Ready to release: ${one.label} is open and its checks passed at 1a2b3c4. Next: merge it.`,
+  );
+  expect(done({ checks: { state: "failed", name: "lint", at: "1a2b3c4d5e" } })).toBe(
+    `${one.label} is open, but lint failed at 1a2b3c4. Next: fix lint.`,
+  );
+  expect(done({ checks: { state: "running" } })).toBe(`${one.label} is open; ${one.running}.`);
+  expect(done({ checks: { state: "unchecked" } })).toBe(
+    `${one.label} is open; nothing has checked it.`,
+  );
+  expect(done({ mrState: "closed" })).toBe(`${one.noun} ${one.label} closed without merging.`);
+  const merged = (mrState: Sentence["mrState"]) =>
+    done({
+      mrState,
+      disposition: { kind: "merged", ref: one.label, ago: "an hour ago", by: one.by },
+    });
+  expect(merged("merged")).toBe(`Merged as ${one.label}.`);
+  expect(merged("on-stage")).toBe(`Merged as ${one.label}. On stage.`);
+  expect(merged("in-prod")).toBe(`Merged as ${one.label}. In production.`);
+});
+
 test("a GitHub pull request reads as owner/repo#N, and GitLab labels are unchanged", () => {
   expect(mrLabel(PR)).toBe("cego/collie#30");
   expect(mrLabel("https://gitlab.cego.dk/mk/collie/-/merge_requests/65")).toBe("mk/collie!65");
@@ -2151,3 +2192,11 @@ test("a hold left on a Run that ended is not drawn: it holds nothing now", () =>
       expect(views.find((one) => one.run === "r-ended")!.held).toBeNull();
     }),
   ));
+
+test("chat's line for a card names its merge request as the board does", () => {
+  const line = (mr: string) => herdLines([task({ id: "r1", state: "done", landed: false, mr })], 0);
+  expect(line(PR)).toContain(", pull request cego/collie#30");
+  expect(line("https://gitlab.cego.dk/mk/collie/-/merge_requests/65")).toContain(
+    ", merge request mk/collie!65",
+  );
+});
