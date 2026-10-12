@@ -10,9 +10,8 @@ For what a Workflow, an operation, a Choice or a Run _is_, see [`CONTEXT.md`](..
 
 ## Choosing one
 
-Each workflow's description says what it is for. A request that is not planning, building
-a change to a merge request, reviewing, renovating or an architecture survey is `general`,
-never `implement` or `plan` stretched to fit.
+A task that is not planning, building a change to a merge request, reviewing, renovating
+or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
 
 ## How inputs reach a run
 
