@@ -1015,8 +1015,11 @@ its SSH master, so going to a pane never asks for another login or SSO approval,
 local process for this computer. Nothing beyond Desktop is needed on this computer. Type
 into it as into herdr — Esc and Ctrl+C go to the agent, not to the record, and Ctrl+C
 copies instead while text is selected; a multi-line paste arrives as one paste; the wheel
-scrolls the pane's own history; and the pane follows the record's size. A link in it opens
-in your browser. A pane cannot write your clipboard.
+scrolls the pane's own history. The terminal fills the record below its tabs, and herdr's
+pane is resized to the cells drawn whenever the window, the Flock chat beside it or the Zoom
+changes. It takes the keyboard as it opens, after a pick or Reattach, and on any click in
+its box, and draws in CaskaydiaMono Nerd Font where it is installed, at 16 pixels, else in a
+common terminal font. A link in it opens in your browser. A pane cannot write your clipboard.
 Leaving the tab or closing the record gives the pane back, so a herdr window showing it
 returns to its own size. A terminal that ends says why — the pane closed, another client
 took it over, the Machine's connection dropped, or herdr refused — and **Reattach** finds

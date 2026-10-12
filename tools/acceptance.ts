@@ -76,6 +76,7 @@ const LAUNCH = "launch flow places human starts (this MR)";
 const RELEASE = "ready to release and checks you can see (this MR)";
 const ATTACHMENTS = "files in the Flock chat and its Runs (this MR)";
 const IN_APP_TERMINAL = "go to pane opens the pane in Desktop (this MR)";
+const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work (this MR)";
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
@@ -927,6 +928,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "Against vm-mk: connect Desktop (one SSO approval), Go to pane on a working Run, type to the agent, press Esc (the agent gets it and the drawer stays open) and paste two lines (they arrive as one paste), close the drawer, Go to pane again. Record that sso.cego.dk asked nothing after the first approval, that an open herdr window showed the pane at its own size again once the drawer closed, and the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-fills-takes-the-keys-and-opens-on-the-agent-at-work",
+    statement:
+      "The Terminal tab fills the record with no scrollbar and equal margins, herdr's pane follows the cells drawn through window, Flock chat and Zoom changes, it draws in CaskaydiaMono at Ghostty's size, it takes the keyboard on every way in and on any click in its box, and it opens on the Task's agent that is blocked, else working.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: Go to pane on a working Run — the box reaches the record's bottom margin, equal side margins, no scrollbar, no cut-off row, and on vm-mk `herdr pane get <pane>`'s `scroll.viewport_rows` equals the rows drawn; collapse, expand and pop out the Flock chat, resize the window, set Zoom 125% and back, and move between monitors — it re-fills each time. Beside Ghostty the glyphs match in face and size, and Settings' Drawn at line does not say the zoom has not taken. Click Terminal from Plan or Log, Go to pane, click the box's edge, pick an agent and Reattach, and type straight after each — it reaches the agent; Esc reaches the agent and the record stays open; typing in the Flock chat while the agent prints is never interrupted. With an idle planner and a working implementer the implementer is shown; a pick is forgotten after leaving the tab; a reviewer starting work switches nothing; a blocked agent wins; a Run with no live agent still opens herdr's client. Record each with the revision.",
     },
   },
   {
