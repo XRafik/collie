@@ -264,12 +264,14 @@ const MineJson = Schema.fromJsonString(
 
 const DeploymentsJson = Schema.fromJsonString(
   Schema.Array(
-    Schema.Struct({
-      id: Schema.Number,
-      sha: Schema.String,
-      environment: Schema.String,
-      production_environment: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
-    }),
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.Number,
+        sha: Schema.String,
+        environment: Schema.String,
+        production_environment: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+      }),
+    ),
   ),
 );
 const StatusesJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ state: Schema.String })));
@@ -302,11 +304,16 @@ function liveTier<R>(
     if (mergedSha === "" || ref.project === null) return null;
     const repo = `repos/${mrPath(ref)}`;
     const api = (route: string) => run("gh", ["api", `${repo}/${route}`], cwd);
-    const listed = yield* api("deployments?per_page=100");
+    const listed = yield* run(
+      "gh",
+      ["api", `${repo}/deployments?per_page=100`, "--paginate", "--slurp"],
+      cwd,
+    );
+    if (listed.code !== 0) return null;
     const deployments = Option.getOrElse(
       Schema.decodeUnknownOption(DeploymentsJson)(listed.stdout),
       () => [],
-    );
+    ).flat();
     // Newest first, so the first successful one seen per environment is what is live there.
     const live = new Map<string, { readonly sha: string; readonly tier: DeployTier }>();
     for (const deployment of deployments) {

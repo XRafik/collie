@@ -239,19 +239,23 @@ const deploymentsOf = (model: ForgeModel) =>
   ]);
 
 /** `gh api repos/<o>/<r>/…`, for deployments, compare and Actions runs. */
-function ghApi(model: ForgeModel, route: string): Answer {
+function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): Answer {
   if (model.deploysDown === true) return no();
   const tierOf = (name: string) =>
     (model.environments ?? []).find((env) => env.name === name)?.tier;
-  if (/\/deployments\?/.test(route))
-    return json(
-      deploymentsOf(model).map(({ id, sha, environment }) => ({
-        id,
-        sha,
-        environment,
-        production_environment: tierOf(environment) === "production",
-      })),
-    );
+  if (/\/deployments\?/.test(route)) {
+    const deployments = deploymentsOf(model).map(({ id, sha, environment }) => ({
+      id,
+      sha,
+      environment,
+      production_environment: tierOf(environment) === "production",
+    }));
+    if (!args.includes("--paginate")) return json(deployments.slice(0, 100));
+    const pages = [];
+    for (let at = 0; at < deployments.length; at += 100)
+      pages.push(deployments.slice(at, at + 100));
+    return args.includes("--slurp") ? json(pages) : no();
+  }
   const statuses = /\/deployments\/(\d+)\/statuses/.exec(route);
   if (statuses) {
     const one = deploymentsOf(model).find((deployment) => deployment.id === Number(statuses[1]));
@@ -289,7 +293,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     return model.login === null ? no() : json({ login: model.login });
   if (verb === "repo" && sub === "clone")
     return { ...ok(), cloned: `github.com/${args[2] ?? ""} ${args[3] ?? ""}` };
-  if (verb === "api") return ghApi(model, sub ?? "");
+  if (verb === "api") return ghApi(model, sub ?? "", args);
   if (verb === "repo" && sub === "view") {
     const repo = args[2] ?? "";
     return (model.unreadable ?? []).includes(repo) ? no() : json({ nameWithOwner: repo });

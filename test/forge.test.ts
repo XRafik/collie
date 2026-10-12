@@ -310,6 +310,28 @@ for (const name of ["gitlab", "github"] as const) {
     ));
 }
 
+test("GitHub finds production beyond a full page of newer deployments", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "github",
+        model("github", {
+          environments: [
+            ...Array.from({ length: 100 }, (_, at) => ({
+              name: `preview-${at}`,
+              tier: "development",
+              deployed: "preview",
+            })),
+            { name: "production", tier: "production", deployed: MERGED },
+          ],
+        }),
+      );
+      expect(yield* FORGES.github.liveTier(ref("github"), MERGED, "/w", fake.run)).toBe(
+        "production",
+      );
+    }),
+  ));
+
 test("a status context's state counts as a check run's conclusion does", () => {
   expect(rollupChecks([{ context: "ci/build", state: "PENDING" }])).toEqual({ state: "running" });
   expect(rollupChecks([{ context: "ci/build", state: "SUCCESS" }])).toEqual({ state: "passed" });
