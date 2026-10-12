@@ -1266,6 +1266,15 @@ scenario(
         const fix = yield* asked("r-fix-tree", "fix");
         expect(fix).toContain(`Project root: ${reviewed}`);
         expect(fix).toContain(`collie verify --run r-fix-tree --cwd ${reviewed} -- <command>`);
+        // Pushed to an open merge request, never forced, and never as a merge.
+        expect(fix).not.toContain("Do not push");
+        expect(fix).toContain("has an open merge request");
+        expect(fix).toContain("never force");
+        expect(fix).toContain("merges itself once green");
+        expect(fix).toContain("has no open merge request, do not push");
+        expect(fix).toContain("Never open or edit a merge request, and never comment");
+        const section = fix.slice(fix.indexOf("The review is written"), fix.indexOf("OUTPUT_PATH"));
+        expect(section).not.toMatch(/\b(glab|gh) /);
         expect(yield* asked("r-fix-tree", "review-2-1")).toContain(`Project root: ${reviewed}`);
 
         const row = yield* session(Store.pipe(Effect.flatMap((store) => store.run("r-fix-tree"))));

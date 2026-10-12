@@ -1729,8 +1729,11 @@ is never the one asked or handed work.
   as a fix round, `disputed` and all, and the fix is reviewed again at once. It works in the
   reviewed branch's checkout — the one that branch already has, or a new one cut from it —
   which becomes the review Run's own: your checkout is never switched under you, and
-  `collie verify --run <id> --cwd <that checkout>` is recorded rather than refused. A target
-  with no branch to fix starts no fixer, and the Run's log says why. The rally goes on by
+  `collie verify --run <id> --cwd <that checkout>` is recorded rather than refused. Where
+  that branch has an open merge request, each round's commits are pushed to it, never
+  forced, so its pipeline and the next review see them; not where it merges itself once
+  green, and nothing is pushed where there is no merge request. A target with no branch to
+  fix starts no fixer, and the Run's log says why. The rally goes on by
   itself until nothing blocking is left, it stops making progress, or four rounds have run,
   and then asks again. A hand-off offers **Review again** for when the implementer is done.
 - **Fix findings in a full implement run** — starts `implement` with the review itself as

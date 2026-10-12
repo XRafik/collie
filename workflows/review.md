@@ -163,12 +163,15 @@ silently skipped: record it under `disputed` with your reason, and the human see
 the project's checks through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`
 and say what you ran: what Collie watched is a verification, and anything else is a claim.
 
-**Do not push, do not open or update a merge request, and do not comment anywhere.**
-Someone asked for the findings fixed, not for the change shipped — and this is usually
-someone else's branch. Report `"pushed": false` and the `branch` your commits are on, so
-a local-only result is never mistaken for a landed one.
+At the end of the round, where `{{branch}}` has an open merge request (a pull request on
+GitHub), push this round's commits to it: a plain push, never forced. A rejected push is
+reported, never retried with force — someone else's commits may be on that branch. Where
+that merge request merges itself once green (auto-merge), do not push, and say that is
+why: that push would be a merge. Where `{{branch}}` has no open merge request, do not push.
+Never open or edit a merge request, and never comment anywhere. Report `"pushed"` and the
+`branch` your commits are on, so a local-only result is never mistaken for a landed one.
 
 Then write the Output JSON: `{"verdict": "clean", "findings": [], "fixed": ["what you
 changed", ...], "disputed": [{"file": "path", "severity": "minor", "title": "the
 finding", "detail": "why I disagree"}], "commits": ["<subject>", ...], "branch":
-"<branch>", "pushed": false, "tests": "what you ran and what it said"}`.
+"<branch>", "pushed": true, "tests": "what you ran and what it said"}`.

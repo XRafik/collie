@@ -202,7 +202,10 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
   verification of the Run work there
   ([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A target
   with no branch to fix — another project's merge request, `HEAD`, a sha range — starts no
-  fixer: the Run's log says why and the menu comes back. A fix Collie ran is reviewed again at once, and the rally
+  fixer: the Run's log says why and the menu comes back. Where the branch has an open merge
+  request, the fixer pushes each round's commits to it — plainly, never forced, and not where
+  the merge request merges itself once green; it never opens or edits one, or comments. A
+  fix Collie ran is reviewed again at once, and the rally
   goes on by itself, through the same `settleRound` as implement's, until nothing blocking
   is left, a round raises the same blockers, a dispute stands unanswered, or four rounds
   have run. Then the menu comes back. A hand-off to a live implementer offers **Review
