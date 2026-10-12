@@ -4,6 +4,7 @@
 
 import { homedir } from "node:os";
 import { Config, Effect, Option, Path } from "effect";
+import { withoutLauncher } from "../../../src/env";
 
 const BIN = Effect.runSync(
   Path.Path.pipe(
@@ -29,32 +30,6 @@ export const parseLoginEnv = (output: string) => {
     if (eq > 0) found.set(entry.slice(0, eq).replace(/^\n/, ""), entry.slice(eq + 1));
   }
   return found;
-};
-
-const LAUNCHER_PRELOADS = new Set(["./libcef.so", "./libvk_swiftshader.so"]);
-
-/** Removes Electrobun's launcher variables, preserving the user's surviving entries. */
-export const withoutLauncher = (env: Readonly<Record<string, string | undefined>>, bin: string) => {
-  const {
-    ELECTROBUN_LAUNCHER_PID: _pid,
-    ELECTROBUN_INSTALL_ROOT_NAME: _root,
-    LD_PRELOAD,
-    LD_LIBRARY_PATH,
-    ICU_DATA,
-    ...inherited
-  } = env;
-  const kept = { ...inherited };
-  const without = (list: string | undefined, launcher: (entry: string) => boolean) =>
-    (list ?? "")
-      .split(":")
-      .filter((entry) => !launcher(entry))
-      .join(":");
-  const preload = without(LD_PRELOAD, (entry) => LAUNCHER_PRELOADS.has(entry));
-  const libraries = without(LD_LIBRARY_PATH, (entry) => entry === bin);
-  if (preload !== "") kept.LD_PRELOAD = preload;
-  if (libraries !== "") kept.LD_LIBRARY_PATH = libraries;
-  if (ICU_DATA !== undefined && ICU_DATA !== "" && ICU_DATA !== bin) kept.ICU_DATA = ICU_DATA;
-  return kept;
 };
 
 /** Where children start: Desktop's own folder goes when an update replaces it. */

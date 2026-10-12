@@ -90,7 +90,7 @@ test(
 );
 
 test(
-  "a host started in a directory that is then deleted moves to its state directory",
+  "a host started in a directory that is then deleted moves to its state directory, without the launcher's LD_PRELOAD",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -105,15 +105,31 @@ test(
         const launcher = [
           "/bin/sh",
           "-c",
-          'mkdir -p "$GONE" && cd "$GONE" && rmdir "$GONE" && exec "$@"',
+          'env > "$GONE.env" && mkdir -p "$GONE" && cd "$GONE" && rmdir "$GONE" && exec "$@"',
           "sh",
           ...host,
         ];
+        // Desktop's launcher sets it, and an older Desktop passed it on.
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const was = Bun.env.LD_PRELOAD;
+            Bun.env.LD_PRELOAD = "./libcef.so:./libvk_swiftshader.so";
+            return was;
+          }),
+          (was) =>
+            Effect.sync(() => {
+              if (was === undefined) delete Bun.env.LD_PRELOAD;
+              else Bun.env.LD_PRELOAD = was;
+            }),
+        );
         const who = yield* Effect.scoped(
           connect(state, { hostEnv: { GONE: gone } }).pipe(
             Effect.flatMap((client) => client.identity()),
           ),
         ).pipe(Effect.provide(starts(launcher)), Effect.orDie);
+        const given = yield* fs.readFileString(`${gone}.env`);
+        expect(given).toContain(`GONE=${gone}`);
+        expect(given).not.toContain("LD_PRELOAD");
         if (process.platform === "linux") {
           expect(yield* fs.readLink(`/proc/${who.pid}/cwd`)).toBe(yield* fs.realPath(state));
         }

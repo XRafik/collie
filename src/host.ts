@@ -88,7 +88,7 @@ import {
 } from "./cleanup";
 import { once, recordAudit, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
-import { currentEnv } from "./env";
+import { currentEnv, withoutLauncher } from "./env";
 import { installation as installedRelease } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
@@ -2033,8 +2033,10 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
     const handle = yield* spawner.spawn(
       ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
         cwd: dir,
-        env: { ...hostEnv, HERDR_PLUGIN_ROOT: install },
-        extendEnv: true,
+        // A client started by Desktop may carry its launcher's LD_PRELOAD.
+        // oxlint-disable-next-line effecttsgo/process-env
+        env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+        extendEnv: false,
         detached: true,
         stdin: "ignore",
         stdout: "ignore",

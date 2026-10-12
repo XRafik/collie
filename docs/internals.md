@@ -44,7 +44,10 @@ starts the bridge, and every other child, in `$HOME` (`CHILD_CWD` in
 `desktop/src/bun/login-env.ts`), because its own `app/bin` folder is deleted when an update
 replaces it. A client starts the host in its state directory, and the host `chdir`s there
 itself as it starts, so a host started from any directory outlives that directory: one
-left in a deleted directory could not start `claude`, `git` or Bun's shell.
+left in a deleted directory could not start `claude`, `git` or Bun's shell. Electrobun's
+launcher variables (`ELECTROBUN_*` and CEF's `LD_PRELOAD`) are stripped from what Desktop
+gives a child, and again from what a client gives a host (`withoutLauncher` in
+`src/env.ts`), so neither the host nor anything it starts preloads CEF.
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
 whether the grace ran out, every warning the engine and the registry log — since its own
