@@ -921,9 +921,7 @@ once(
           expect(one.kind).toBe("pi");
           expect(one.args).toContain("--model openai-codex/gpt-6-astra --thinking max");
         }
-        const agents = yield* launched();
-        expect(agents).toHaveLength(1);
-        expect(agents[0]?.args).toContain("--model opus --effort medium");
+        expect(yield* launched()).toHaveLength(1);
         // What the reviewers are told is still the shipped review's.
         expect(yield* asked("r-review-pi", "review-1")).toContain(
           "Review target: branch:main...HEAD",
@@ -3227,7 +3225,9 @@ scenario(
         });
 
         expect(said(result)).toBe(DONE.summary);
-        expect(yield* launched()).toHaveLength(1);
+        const agents = yield* launched();
+        expect(agents).toHaveLength(1);
+        expect(agents[0]?.args).toContain("--model opus --effort medium");
         const work = yield* asked("r-general", "task");
         expect(work).toContain(CHORE);
         expect(work).toContain(`Project root: ${rig.projectDir}`);
