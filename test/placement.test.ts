@@ -1008,6 +1008,89 @@ test(
 );
 
 test(
+  "a roaming start is refused an ended Run's checkout while another Run works in it or is being placed in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const refusals = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const store = yield* Store;
+            const [roams, waits] = yield* loaded(registry, [
+              `${fixtures}/roams.workflow.ts`,
+              `${fixtures}/waits-here.workflow.ts`,
+            ]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+
+            // A Run that declares no checkout, started inside this one, records none.
+            const borrower = yield* start(waits!, {
+              request: "r2",
+              project: roaming,
+              text: { work: "wait" },
+            });
+            if (borrower._tag === "Failure") return yield* Effect.die(borrower.failure);
+            yield* until(
+              () => registry.view(borrower.success.runId),
+              (view) => view?.status.status === "suspended",
+            );
+            const whileBorrowed = refusedWith(
+              yield* start(roams!, { request: "r3", text: { work: "next" } }),
+            );
+            yield* registry.answer({
+              runId: borrower.success.runId,
+              decision: "go",
+              value: "yes",
+              request: "answer-go",
+            });
+            yield* finished(borrower.success.runId);
+
+            // A start that has taken the checkout over and not finished being placed.
+            const payload = { runId: "run-placing", input: { work: "next" } };
+            const placed = { cwd: roaming, branch: null, workspace: null };
+            yield* store.admit({
+              request: "r-placing",
+              run: "run-placing",
+              workflow: "roams",
+              project: rig.projectDir,
+              input: payload.input,
+              provenance: { work: "given" },
+              options: {},
+              placing: Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+                from: rig.projectDir,
+                taskLabel: null,
+                checkout: {
+                  placed: {
+                    ...placed,
+                    worktree: (yield* registry.view(first.success.runId))?.worktree,
+                  },
+                  opened: null,
+                },
+              }),
+              generation: roams!.name,
+              execution: yield* roams!.registration.workflow.executionId(payload),
+              task: null,
+              parent: null,
+            });
+            const whilePlacing = refusedWith(
+              yield* start(roams!, { request: "r4", text: { work: "next" } }),
+            );
+            return { whileBorrowed, whilePlacing };
+          }),
+        );
+
+        expect(refusals.whileBorrowed).toContain(`${roaming} is a checkout of`);
+        expect(refusals.whileBorrowed).toContain("has not ended");
+        expect(refusals.whilePlacing).toContain("recorded by Run run-placing");
+        expect(refusals.whilePlacing).toContain("run-placing has not ended");
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a stop closes the Run's agent and keeps its Task's workspace, and a resume starts the work again",
   () =>
     runEffect(

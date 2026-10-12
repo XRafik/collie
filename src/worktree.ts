@@ -137,6 +137,8 @@ export interface CheckoutAsk extends BranchAsk {
   stateDir: string;
   /** Which Run recorded the checkout at a path, where one did. */
   recordedBy?: RecordedBy;
+  /** Records a roaming checkout as this Run's while its destination is still locked. */
+  claimed?: (worktree: WorktreeRecord) => Effect.Effect<void>;
 }
 
 /** The Run that recorded a checkout, and how a new Run takes the checkout from it. */
@@ -762,6 +764,7 @@ const roamingCheckout = Effect.fn("worktree.roamingCheckout")(function* (opts: {
   worktrees: string;
   stateDir: string;
   recordedBy?: RecordedBy | undefined;
+  claimed?: ((worktree: WorktreeRecord) => Effect.Effect<void>) | undefined;
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>;
 }) {
   const path = yield* Path.Path;
@@ -773,14 +776,32 @@ const roamingCheckout = Effect.fn("worktree.roamingCheckout")(function* (opts: {
   // Looking and creating are one claim, under a lock keyed by the destination: two Runs
   // starting at once — on this repository or on another of the same name — would
   // otherwise both look, both find it free, and one would be handed the other's tree.
+  // The claim is recorded before the lock goes, so the next Run to look finds it taken.
   return yield* withLock(
     destinationLock(opts.stateDir, at),
     Effect.succeed({ refused: `${at} is being claimed by another Run starting now` }),
-    claimRoaming({
-      ...opts,
-      at,
-      repo: listing.repo,
-      listed: listing.checkouts.some((checkout) => checkout.path === at),
+    Effect.gen(function* () {
+      const made = yield* claimRoaming({
+        ...opts,
+        at,
+        repo: listing.repo,
+        listed: listing.checkouts.some((checkout) => checkout.path === at),
+      });
+      if (made.refused !== undefined) return made;
+      const worktree = {
+        path: made.path,
+        // No branch: this checkout roams across the Renovate branches it merges, and a
+        // branch in the record is one git would bind to this worktree alone.
+        branch: "",
+        managed_by: "git",
+        workspace_id: null,
+        created_by_collie: true,
+        made_at: yield* madeAt(made.path),
+        root_tab_id: null,
+        root_pane_id: null,
+      } satisfies WorktreeRecord;
+      if (opts.claimed !== undefined) yield* opts.claimed(worktree);
+      return { ...made, worktree };
     }),
   );
 });
@@ -799,19 +820,9 @@ const claimRoaming = Effect.fn("worktree.claimRoaming")(function* (opts: {
   const taken = yield* occupant(at);
   const recorded =
     taken === null || opts.recordedBy === undefined ? null : yield* opts.recordedBy(at);
-  if (taken !== null) {
-    const held = describeOccupied(at, taken.owner, recorded);
-    if (recorded === null || taken.owner !== opts.repo || !opts.listed) return { refused: held };
-    const kept = wouldLose(run, at).pipe(
-      Effect.map((lost) => (lost === null ? null : `${held}, kept: ${lost}`)),
-    );
-    const before = yield* kept;
-    if (before !== null) return { refused: before };
-    const released = yield* recorded.release;
-    if (released !== null) return { refused: `${held}: ${released}` };
-    // Again, now its agents are closed: one could have written to it until then.
-    const after = yield* kept;
-    if (after !== null) return { refused: after };
+  const held = taken === null ? "" : describeOccupied(at, taken.owner, recorded);
+  if (taken !== null && (recorded === null || taken.owner !== opts.repo || !opts.listed)) {
+    return { refused: held };
   }
 
   // "As the remote has it" is a fetch, not this checkout's memory of the last one: a
@@ -824,7 +835,19 @@ const claimRoaming = Effect.fn("worktree.claimRoaming")(function* (opts: {
   const tracked =
     (yield* run("git", ["rev-parse", "--verify", `origin/${head}`], opts.repo)).code === 0;
   const base = tracked ? `origin/${head}` : head;
+
   if (recorded !== null) {
+    // After the fetch, which can prune or rewrite the only ref a commit was on.
+    const kept = wouldLose(run, at).pipe(
+      Effect.map((lost) => (lost === null ? null : `${held}, kept: ${lost}`)),
+    );
+    const before = yield* kept;
+    if (before !== null) return { refused: before };
+    const released = yield* recorded.release;
+    if (released !== null) return { refused: `${held}: ${released}` };
+    // Again, now its agents are closed: one could have written to it until then.
+    const after = yield* kept;
+    if (after !== null) return { refused: after };
     const moved = yield* run("git", ["checkout", "--quiet", "--detach", base], at);
     if (moved.code !== 0) {
       return { refused: whatItSaid(moved) || `git would not move ${at} to ${base}` };
@@ -939,23 +962,13 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
       worktrees: yield* herdr.worktreesDirectory(),
       stateDir: opts.stateDir,
       recordedBy: opts.recordedBy,
+      claimed: opts.claimed,
       run: shell,
     });
     if (made.refused !== undefined) {
       return { ...here, refused: `no worktree for ${from}: ${made.refused}` };
     }
-    const worktree = {
-      path: made.path,
-      // No branch: this checkout roams across the Renovate branches it merges, and a
-      // branch in the record is one git would bind to this worktree alone.
-      branch: "",
-      managed_by: "git",
-      workspace_id: null,
-      created_by_collie: true,
-      made_at: yield* madeAt(made.path),
-      root_tab_id: null,
-      root_pane_id: null,
-    } satisfies WorktreeRecord;
+    const { worktree } = made;
     return {
       ...here,
       cwd: worktree.path,

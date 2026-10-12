@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { BunServices } from "@effect/platform-bun";
 import { Clock, DateTime, Effect, FileSystem, Option } from "effect";
 import { runEffect } from "./support/effect";
 import { Rig, TEST_LOGIN as LOGIN } from "./support/recorder";
@@ -31,6 +32,8 @@ let registered: AgentEntry[];
 /** What a Run that recorded a checkout answers when asked to give it up, and how often it was. */
 let releasedAs: string | null;
 let releases: number;
+/** Each roaming checkout recorded as a Run's, and whether its destination was locked then. */
+let claims: Array<{ path: string; locked: boolean }>;
 /** What the merge watch and the Tasks say, beside the checkouts themselves. */
 let settling: Settling;
 
@@ -64,6 +67,7 @@ beforeEach(() =>
       registered = [];
       releasedAs = null;
       releases = 0;
+      claims = [];
       settling = NOTHING_SETTLING;
     }),
   ),
@@ -1473,6 +1477,15 @@ const renovateCheckout = (inputs: Record<string, string> = {}, cwd = rig.project
         });
         return { run, release };
       }),
+    claimed: (worktree) =>
+      FileSystem.FileSystem.pipe(
+        Effect.flatMap((fs) => fs.exists(destinationLock(rig.stateDir, worktree.path))),
+        Effect.orElseSucceed(() => false),
+        Effect.map((locked) => {
+          claims.push({ path: worktree.path, locked });
+        }),
+        Effect.provide(BunServices.layer),
+      ),
   });
 
 test("a Renovate Run gets a detached checkout at the default branch, bound to no branch", () =>
@@ -1766,7 +1779,6 @@ test("a Renovate Run takes over the checkout an ended Run of the repository left
       expect(checkout.note).toBe(
         `took worktree ${taken} over from Run ${runId}, detached at origin/master`,
       );
-      // Its agents closed once, and the tree moved in place rather than made again.
       expect(releases).toBe(1);
       expect(yield* askedIn()).toContainEqual({
         cwd: taken,
@@ -1775,6 +1787,12 @@ test("a Renovate Run takes over the checkout an ended Run of the repository left
       const commands = yield* asked();
       expect(commands.some((c) => c.startsWith("worktree add"))).toBe(false);
       expect(commands.some((c) => c.startsWith("worktree remove"))).toBe(false);
+      // A fetch can prune the only ref a commit was on, so what would be lost is read after it.
+      const fetched = commands.indexOf("fetch --quiet origin");
+      expect(fetched).toBeGreaterThanOrEqual(0);
+      expect(commands.indexOf("rev-list HEAD --not --branches --remotes")).toBeGreaterThan(fetched);
+      // Recorded as the new Run's before the lock goes, so the next start finds it taken.
+      expect(claims).toEqual([{ path: taken, locked: true }]);
     }),
   ));
 

@@ -2929,6 +2929,13 @@ const encodePlacing = Schema.encodeSync(PlacingJson);
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 
+/** Where a row works: as placed, or, while it is being placed, as its receipt says so far. */
+const workingPlace = (row: RunRow): Placed => {
+  if (!unplaced(row)) return placedOf(row, {});
+  const receipt = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
+  return receipt?.checkout?.placed ?? { ...placedOf(row, {}), cwd: receipt?.from ?? row.project };
+};
+
 /** Where a Run works: as the host placed it, or for a row from before that, as it started. */
 const placedOf = (row: RunRow, options: Readonly<Record<string, string>>): Placed =>
   Option.getOrElse(decodePlaced(row.checkout ?? ""), () => ({
@@ -3692,15 +3699,32 @@ const makeRegistry: (
         recordedBy: (at) =>
           store.runs.pipe(
             Effect.map((rows) => {
-              const recorders = rows
-                .filter((row) => placedOf(row, {}).worktree?.path === at)
+              const others = rows.filter((row) => row.run !== ask.runId);
+              const recorders = others
+                .filter((row) => workingPlace(row).worktree?.path === at)
                 .map((row) => row.run);
               const latest = recorders.at(-1);
               if (latest === undefined) return null;
-              const runs = recorders.flatMap((run) => [run, ...descendantsOf(rows, run)]);
-              return { run: latest, release: releaseRuns(runs) };
+              // Whoever works in it, recorded or not, gives it up too.
+              const users = others
+                .filter((row) => {
+                  const cwd = workingPlace(row).cwd;
+                  return cwd === at || cwd.startsWith(`${at}/`);
+                })
+                .map((row) => row.run);
+              const runs = new Set(
+                [...recorders, ...users].flatMap((run) => [run, ...descendantsOf(rows, run)]),
+              );
+              return { run: latest, release: releaseRuns([...runs]) };
             }),
           ),
+        claimed: (worktree) =>
+          ask.record({
+            checkout: {
+              placed: { cwd: worktree.path, branch: null, workspace: null, worktree },
+              opened: null,
+            },
+          }),
       }).pipe(
         Effect.mapError(
           (cause) =>

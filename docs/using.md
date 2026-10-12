@@ -375,12 +375,15 @@ same one — and so is anything else in the way, rather than being built over.
 
 A run whose workflow has ended — failed or finished — does not keep the path from the next
 renovation of its repository. The new run takes the checkout over when git still lists it
-as one of that repository's and it holds nothing to lose: no uncommitted or untracked
-change, and no commit that only its detached `HEAD` reaches (a branch checked out in it
-keeps its commits as a branch). The ended runs' agents are closed first, as a stop closes
-them, and the tree is checked again after; then it is moved, detached, to the default
-branch as just fetched, and the log says whose it was. Anything less is a refusal naming
-what keeps it, and nothing is removed or forced.
+as one of that repository's, no other run that may go on works in it — recorded it or not,
+a run started inside it counts — and it holds nothing to lose: no uncommitted or untracked
+change, and no commit that only its detached `HEAD` reaches once the fetch is done (a
+branch checked out in it keeps its commits as a branch). The ended runs' agents are closed
+first, as a stop closes them, and the tree is checked again after; then it is moved,
+detached, to the default branch as just fetched, and the log says whose it was. It is
+recorded as the new run's before the lock on its path is let go, so a start right behind
+it finds it taken. Anything less is a refusal naming what keeps it, and nothing is removed
+or forced.
 
 A refusal says only what is known: which repository git says owns the path, which run
 recorded it where a run record proves one did, and why that run keeps it. Nothing is
