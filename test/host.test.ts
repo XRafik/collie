@@ -145,6 +145,37 @@ test(
 );
 
 test(
+  "a host given its state directory relatively owns it where it was named",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const { state } = yield* workspace("collie-host-relative-");
+        const binary = yield* Config.option(Config.String("COLLIE_TEST_BINARY"));
+        const [executable = "bun", ...prefix] = Option.isSome(binary)
+          ? [binary.value]
+          : [process.execPath, `${root}src/main.ts`];
+        const host = yield* spawner.spawn(
+          ChildProcess.make(executable, [...prefix, "host", "--dir", "state"], {
+            cwd: `${state}/..`,
+            env: { HERDR_PLUGIN_ROOT: root, COLLIE_TEST_ROOT: (yield* suiteEnv).COLLIE_TEST_ROOT },
+            extendEnv: true,
+            stdout: "ignore",
+            stderr: "ignore",
+          }),
+        );
+        const owner = yield* until(
+          () => ownerOf(state),
+          (owner) => owner !== null,
+        );
+        expect(owner?.pid).toBe(host.pid);
+        yield* stopHost(state);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a client that hangs up leaves its work, its registrations and the client watching it",
   () =>
     proves(
