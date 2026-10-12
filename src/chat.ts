@@ -636,7 +636,11 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
       if (decision.kind === "adopt")
         return { kind: "running", record: decision.record, next: decision.next } satisfies Ensured;
 
-      const unavailable = whyUnavailable(decision.harness, Bun.which(decision.harness));
+      // The PATH as it is now, which is what the launch's own processes are given.
+      const unavailable = whyUnavailable(
+        decision.harness,
+        Bun.which(decision.harness, { PATH: Bun.env.PATH ?? "" }),
+      );
       if (unavailable !== null) {
         yield* log(`chat: ${unavailable}`);
         return {
