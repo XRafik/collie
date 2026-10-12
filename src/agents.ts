@@ -1178,7 +1178,8 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     },
   ) {
     const found = yield* entryFor(about, about.agent, null);
-    if (found.entry === null) return { sent: false, why: found.reason ?? "no such agent" };
+    if (found.entry === null)
+      return { sent: false, why: found.reason ?? "no such agent", gone: true };
     const entry = found.entry;
     const draft: dispatch.DeliveryDraft = {
       run: about.runId,
@@ -1421,7 +1422,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     );
   });
 
-  const launch = (ask: AgentAsk) =>
+  /** `fresh` starts the agent even where herdr still lists it, as one gone at delivery. */
+  const launch = (
+    ask: AgentAsk,
+    fresh = false,
+  ): Effect.Effect<Launched, AgentUncertain | AgentParked> =>
     under(
       Effect.gen(function* () {
         // Derived, not minted: this is the name a replay looks for rather than starting
@@ -1438,7 +1443,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           });
         }
         const live = listing.success.find((one) => one.name === agent);
-        const alive = live !== undefined;
+        const alive = live !== undefined && !fresh;
         const fs = yield* FileSystem.FileSystem;
         // A launch file already here is this same work replayed, not new work for the agent.
         const replayed = yield* fs
@@ -1501,6 +1506,14 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const pointer = `${started}${stepPointer(file)}`;
         yield* write(sentPath(launched, "step"), pointer);
         const asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
+        // Nothing reached it, so a new one is this work's agent rather than a second.
+        if (alive && asked.gone === true) {
+          yield* log(
+            ask.runId,
+            `${agent}: ${asked.why} before it was given ${ask.operation}; starting it again`,
+          );
+          return yield* launch(ask, true);
+        }
         if (asked.refused) {
           return yield* refusedWith(ask, `${agent} was not given its work (${asked.why})`, file);
         }

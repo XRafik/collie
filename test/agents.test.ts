@@ -10,6 +10,7 @@
 // second engine on the same file rather than a second map.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import type { BunServices } from "@effect/platform-bun";
 import { Duration, Effect, FileSystem, Layer, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -341,6 +342,35 @@ test("an agent that is already there is reattached to rather than started a seco
       const result = yield* session(started("r1"));
       expect(result._tag === "Success" && result.success.note).toBe("reused");
       expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(0);
+    }),
+  ));
+
+/** herdr closing an agent's pane once Collie has decided to reuse it, as a stop does. */
+class ClosesOnceReused extends FakeHerdr {
+  closed = false;
+  constructor(
+    env: ConstructorParameters<typeof FakeHerdr>[0],
+    readonly pane: string,
+    readonly prompt: string,
+  ) {
+    super(env);
+  }
+  override agentList() {
+    if (this.closed || !existsSync(this.prompt)) return super.agentList();
+    this.closed = true;
+    return this.paneClose(this.pane).pipe(Effect.andThen(super.agentList()));
+  }
+}
+
+test("a reused agent that is gone before it was given its work is started again", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addAgent(agentFor("r1"), "1-9");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "started again" }]);
+      const herdr = new ClosesOnceReused(rig.pluginEnv(), "1-9", promptPath("r1"));
+      const result = yield* session(started("r1"), { herdr });
+      expect(result._tag === "Success" && result.success.note).toBe("started again");
+      expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
     }),
   ));
 
