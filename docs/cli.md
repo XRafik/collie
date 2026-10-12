@@ -550,7 +550,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `age`, `at`               | How long it has been going, and when it last changed.                                                                                                           |
 | `drift`, `held`           | The one line each carries, or `null`.                                                                                                                           |
 | `heldBy`                  | Who set the hold that stands — the front door it came through — and the reason given with it, or `null`.                                                        |
-| `decision`                | The question, proposal or gate waiting on you, or `null`. One of the two ways into Needs you.                                                                   |
+| `decision`                | The question or proposal waiting on you, or `null`. One of the two ways into Needs you.                                                                         |
 | `agents[]`                | The live agents on it, its Repo runs' included.                                                                                                                 |
 | `children[]`              | Its plan's repositories, in wave order: `repo`, its `run` (`null` until it starts), its `state` (`done`, `active`, `blocked`, `failed` or `todo`) and its `mr`. |
 | `mr`, `mrState`, `branch` | What it is building, where it can be read, and what the forge last said about the merge request.                                                                |
@@ -562,19 +562,6 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `check`                   | The check Collie is running for the leading Run, as `collie run checks` gives `running` (with its `log` and `lastLines`), or `null`.                            |
 | `reopened`                | A finished Run whose agent took a steer after it ended: the `delivery`, the `agent`, the first line it was `told` and its `status` now; else `null`.            |
 | `run`, `runs[]`           | The Run a card acts on, and every Run of the Task.                                                                                                              |
-
-A `gate` is a Run parked at its evidence gate with nothing approved, listing the checks its
-checkout's `.collie/verify.json` (or your config's `verify.json`) offers. Answer it with
-`collie run answer <run-id> approve --decision evidence-gate`, or `approve:<name>,<name>`
-for part of the list: the host grants those, as `run intent verification` does, and takes
-the Run up again. It is not skipped, since with nothing approved no check could prove it.
-
-A fan-out's own Run never parks, so where neither it nor any of its Runs asks anything, the
-first of its Repo runs in wave order parked at its gate is the Task's `decision`. That gate's
-`run` is the Repo run, which is the one an answer releases, and its `repo` names the
-repository, as the sentence does. A gate whose checkout and config offer no checks says so,
-and names how to grant one: chat's `set_verification`, or
-`collie run intent verification <run-id> --name <name> -- <command>`.
 
 A fan-out finds its plan from its work source even where the kind was never recorded with
 its input, as for an implement Run started from a plan's end menu: a plan directory is the
@@ -765,7 +752,7 @@ through a generated extension; this is the third way in.
 | `collie_herd`         | Every run in the Herd, bounded, saying how many it left out                                                                                                                                                                                  |
 | `collie_run`          | One run: its goal, constraints, the Choice it waits on and how to answer it, its answers with who and when, its result, the Runs it started, its merge request and branch, plan, findings, disposition, last log lines, cards and open drift |
 | `collie_workspaces`   | The workspaces this session has (the Home marked as no checkout), the Tasks whose workspace is open, the Projects root, and each workflow with its Inputs                                                                                    |
-| `collie_receipts`     | What one run waits on the human for — its Choice, an evidence gate, proposals — and what state each message to its agents actually reached                                                                                                   |
+| `collie_receipts`     | What one run waits on the human for — its Choice and proposals — and what state each message to its agents actually reached                                                                                                                  |
 | `collie_definitions`  | The Workflows and Personas there are; one resolved and checked, or one Persona's body                                                                                                                                                        |
 | `collie_installation` | What Collie needs, which workspace the Home is, what a cleanup would close, the defaults                                                                                                                                                     |
 | `collie_news`         | What this conversation has not been told; reading it settles those items for it                                                                                                                                                              |

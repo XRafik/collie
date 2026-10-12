@@ -295,14 +295,7 @@ const herd = Effect.fn("FlockTools.herd")(function* (flock: FlockChat) {
   const known = yield* boards(flock);
   const on = (machine: ChatMachine, run: string) => `${machine.name}:${run}`;
   const prefixed = known.flatMap(({ machine, board }) =>
-    (board?.tasks ?? []).map((task) => ({
-      ...task,
-      run: on(machine, task.run),
-      decision:
-        task.decision?.kind === "gate"
-          ? { ...task.decision, run: on(machine, task.decision.run) }
-          : task.decision,
-    })),
+    (board?.tasks ?? []).map((task) => ({ ...task, run: on(machine, task.run) })),
   );
   const lost = known.flatMap(({ unread }) => (unread === null ? [] : [`- (${unread})`]));
   return [herdLines(prefixed, yield* Clock.currentTimeMillis), ...lost].join("\n");

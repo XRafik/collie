@@ -460,7 +460,7 @@ test("a live Machine's board is read before its chat channel opens", () =>
     }).pipe(Effect.provide(BunServices.layer)),
   ));
 
-test("a Repo run's gate is named with its Machine, and answering it there reaches that Repo run", () =>
+test("a Repo run is reached on its Machine by its bare id", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const asked: Asked[] = [];
@@ -469,22 +469,12 @@ test("a Repo run's gate is named with its Machine, and answering it there reache
         run: "r-fan",
         runs: ["r-fan"],
         state: "blocked",
-        decision: {
-          kind: "gate",
-          run: "r-api",
-          id: "evidence-gate",
-          step: "evidence",
-          verifications: [],
-          repo: "api",
-        },
         children: [{ repo: "api", run: "r-api", state: "blocked", mr: null }],
       });
       const flock = {
         ...flockOf(asked),
         machines: () => [machine("mk-pc", [], asked), machine("vm-mk", [fan], asked)],
       };
-      const herd = yield* callFlockTool(flock, "collie_herd", {});
-      expect(herd).toContain("Its gate is answered on run vm-mk:r-api.");
       const bare = yield* callFlockTool(flock, "collie_hold", { run: "r-api" });
       expect(bare).toBe("Held r-api");
       expect(asked.at(-1)).toMatchObject({ machine: "vm-mk", op: "control" });

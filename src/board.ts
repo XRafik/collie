@@ -6,9 +6,7 @@
 
 import { Clock, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { AUDIT_FILE, readAudit } from "./audit";
-import { nothingApproved } from "./outcome";
 import { FINAL_DIFF, planDirOf } from "./run-detail";
-import { approvedFrom, type VerifySpec } from "./verify-spec";
 import { openReports, readDrift } from "./drift";
 import { describeAction } from "./lines";
 import type { PickItem } from "./inputs";
@@ -34,7 +32,6 @@ import { everyDelivery, SENT_STATES, toldIn, type Delivery } from "./steering";
 import { readCards } from "./cards";
 import {
   Answered,
-  EVIDENCE_GATE,
   mrLabel,
   SECTIONS,
   sectionOf,
@@ -45,7 +42,6 @@ import {
   type BoardStep,
   type Checks,
   type Decision,
-  type Gate,
   type MrState,
   type Proposal,
   type Question,
@@ -82,7 +78,7 @@ export const STEP_GLYPH_FOR: Readonly<Record<StepState, string>> = {
  */
 export interface PendingChoice {
   id: string;
-  kind: "menu" | "ask" | "gate";
+  kind: "menu" | "ask";
   run: string;
   step: string;
   header: string;
@@ -331,15 +327,6 @@ function decisionSentence(decision: Decision): string {
       return `Waiting on your answer about ${decision.topic}.`;
     case "proposal":
       return "Collie proposes a correction and waits for your yes.";
-    case "gate": {
-      const holding =
-        decision.repo === undefined
-          ? `Holding at the ${decision.step} gate`
-          : `${decision.repo} is holding at the ${decision.step} gate`;
-      return decision.verifications.length > 0
-        ? `${holding} until you approve the list.`
-        : `${holding}, and nothing is offered to approve. Grant a check with chat's set_verification, or collie run intent verification ${decision.run} --name <name> -- <command>.`;
-    }
   }
 }
 
@@ -627,37 +614,6 @@ function agentsOf(
   return [...found.values()];
 }
 
-/** A Run parked at its evidence gate, with the checks its checkout and config would approve. */
-export const gateOf = Effect.fn("Board.gateOf")(function* (run: RunFacts, userDir: string) {
-  if (run.parked !== nothingApproved(run.id)) return null;
-  const offered = yield* approvedFrom({ cwd: run.cwd, userDir }).pipe(
-    Effect.orElseSucceed((): ReadonlyArray<VerifySpec> => []),
-  );
-  const gate: Gate = {
-    kind: "gate",
-    run: run.id,
-    id: EVIDENCE_GATE,
-    // Words, not the workflow's id: the sentence reads "Holding at the evidence gate".
-    step: "evidence",
-    verifications: offered.map((spec) => spec.name),
-  };
-  return run.repo === null ? gate : { ...gate, repo: run.repo };
-});
-
-/** The first gate among a fan-out's Repo runs, in wave order. */
-const repoGateOf = Effect.fn("Board.repoGateOf")(function* (
-  rows: ReadonlyArray<BoardChild>,
-  children: ReadonlyArray<RunFacts>,
-  userDir: string,
-) {
-  for (const { run } of rows) {
-    const child = children.find((one) => one.id === run);
-    const gate = child === undefined ? null : yield* gateOf(child, userDir);
-    if (gate !== null) return gate;
-  }
-  return null;
-});
-
 /** Who set the hold that stands, and why, as the Run's audit trail recorded it. */
 const holderOf = Effect.fn("Board.holderOf")(function* (run: RunFacts) {
   const lines = yield* readAudit(run.dir).pipe(Effect.orElseSucceed(() => []));
@@ -917,9 +873,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
     const proposed = pending[0];
     const decision: Decision | null = proposed
       ? asProposal(proposed)
-      : (questionOf(everyRun) ??
-        (yield* gateOf(leader, opts.env.userDir)) ??
-        (yield* repoGateOf(fan?.children ?? [], children, opts.env.userDir)));
+      : questionOf(everyRun);
 
     const status = leader.state;
     // A fan-out waiting on its Repo runs writes nothing itself: their work is its work.

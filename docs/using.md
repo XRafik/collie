@@ -612,13 +612,6 @@ does not, with the proposal's id and hash beside **Confirm** — your yes is con
 payload, and nothing else on the card can give it. **Decline** declines it. Either way the
 card leaves Needs you and the header recounts.
 
-A run holding at its [evidence gate](cli.md#outcomes), parked because nothing is approved
-for Collie to run, is a decision card too, and says which checks its checkout's
-`.collie/verify.json` offers. **Approve** grants the list as it stands and takes the run up
-again, and **Edit the list** opens the record with the names to tick off — `Approve the
-list` grants what is left. There is no Skip: with nothing approved, no check could prove
-the run. The answer goes on the record under whoever gave it.
-
 The sentence is the step's own words where its workflow gives it a `summary`
 (the module says what it is doing), and the step kind's own verb where it does not. A
 step id never reaches it.
@@ -996,8 +989,7 @@ dimmed, marked "as of", until each Machine's connection is live; a board saved t
 machine herdr no longer lists is not shown.
 
 Every Decision and action the TUI board has is on Desktop's cards, and goes to the Machine
-the card is on. A question is answered with its options, or typed into where it has none;
-an evidence gate is approved with the checks still ticked; and a proposal is read in a
+the card is on. A question is answered with its options, or typed into where it has none; and a proposal is read in a
 drawer whose Confirm stays off until all of it has been on screen, then sent with its id
 and content hash. Each card's `⋯` menu offers what the TUI menu does, by the same rules —
 Steer…, the Run's offers (asked of its host when opened, with a field for each argument),

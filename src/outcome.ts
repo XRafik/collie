@@ -111,17 +111,6 @@ export function needsChecks(kind: Outcome): boolean {
 export const noCheckNamed =
   "no check is named for Collie to run, so nothing proves this Run: name the commands that prove work in this repository, each with `collie run intent verification <run> --name <name> [--cwd <dir>] -- <command>`";
 
-/** The park note the old evidence gate wrote, which a Run parked before ADR-0055 still carries. */
-export function nothingApproved(run = "<run>"): string {
-  return (
-    "nothing is approved for Collie to run, so no command can prove this Run. " +
-    `Grant it one with \`collie run intent verification ${run} --name <name> -- <command>\` ` +
-    `and \`collie run resume ${run}\`; for Runs started later, add .collie/verify.json, ` +
-    "or `collie run intent remember <run>` once a Run has them, for that repository's later Runs, " +
-    "or verify.json in your Collie config — a Run reads that file only when it starts"
-  );
-}
-
 /**
  * Every check, passing, on this exact tree. An empty set is a gap rather than a pass: it
  * would make this gate say yes to anything.

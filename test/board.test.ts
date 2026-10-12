@@ -20,7 +20,6 @@ import { mrLabel } from "../src/board-model";
 import {
   Answered,
   Controlled,
-  EVIDENCE_GATE,
   foldWaiting,
   headerSentence,
   matchesTask,
@@ -32,7 +31,6 @@ import {
 } from "../src/board-model";
 import { recordAudit } from "../src/audit";
 import { recordDisposition } from "../src/disposition";
-import { nothingApproved } from "../src/outcome";
 import {
   appendVerification,
   encodeVerifying,
@@ -123,14 +121,6 @@ const FORMS: Array<[string, Sentence, string]> = [
       },
     }),
     "Collie proposes a correction and waits for your yes.",
-  ],
-  [
-    "gate",
-    facts({
-      state: "blocked",
-      decision: { kind: "gate", run: "r1", id: "g1", step: "review", verifications: ["bun test"] },
-    }),
-    "Holding at the review gate until you approve the list.",
   ],
   [
     "failed",
@@ -1211,43 +1201,11 @@ test("a fan-out started from a plan's end menu lists every repository its plan n
     }),
   ));
 
-test("a Repo run parked with nothing approved is its fan-out's Decision, answered on that Repo run", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const { dir, env } = yield* scratch();
-      const { parent } = yield* startedFromPlan(dir);
-      const api = yield* madeRun(dir, {
-        id: "r-api",
-        task: "task-1",
-        parent: "r-fan",
-        repo: "api",
-        state: "waiting",
-        cwd: `${dir}/root/api`,
-        parked: nothingApproved("r-api"),
-      });
+/** The note a Run parked at the evidence gate before ADR-0055 still carries. */
+const OLD_GATE =
+  "nothing is approved for Collie to run, so no command can prove this Run. Grant it one with `collie run intent verification r-api --name <name> -- <command>` and `collie run resume r-api`";
 
-      const [view] = yield* board(env, [api, parent]);
-
-      expect(sectionOf(view!)).toBe("needs-you");
-      expect(view!.decision).toEqual({
-        kind: "gate",
-        run: "r-api",
-        id: EVIDENCE_GATE,
-        step: "evidence",
-        verifications: [],
-        repo: "api",
-      });
-      expect(view!.sentence).toBe(
-        "api is holding at the evidence gate, and nothing is offered to approve. Grant a check with chat's set_verification, or collie run intent verification r-api --name <name> -- <command>.",
-      );
-      // Chat is told which Run its answer goes to, as the card's buttons know.
-      expect(herdLines([view!], epochMs("2026-09-14T10:05:00Z"))).toContain(
-        "Its gate is answered on run r-api.",
-      );
-    }),
-  ));
-
-test("a Repo run's gate that offers checks names its repository and asks for the list", () =>
+test("a Repo run parked by the old evidence gate puts no Decision on its fan-out's card", () =>
   runEffect(
     Effect.gen(function* () {
       const { dir, env } = yield* scratch();
@@ -1265,15 +1223,13 @@ test("a Repo run's gate that offers checks names its repository and asks for the
         repo: "api",
         state: "waiting",
         cwd: `${root}/api`,
-        parked: nothingApproved("r-api"),
+        parked: OLD_GATE,
       });
 
       const [view] = yield* board(env, [api, parent]);
 
-      expect(view!.decision).toMatchObject({ run: "r-api", repo: "api", verifications: ["test"] });
-      expect(view!.sentence).toBe(
-        "api is holding at the evidence gate until you approve the list.",
-      );
+      expect(view!.decision).toBeNull();
+      expect(view!.sentence).not.toContain("gate");
     }),
   ));
 
@@ -1351,7 +1307,7 @@ test("a held card names who held it and why, from the hold its trail recorded", 
     }),
   ));
 
-test("a Run parked at its evidence gate is a gate decision listing the checks it could be held to", () =>
+test("a Run parked by the old evidence gate is no Decision, whatever its checkout offers", () =>
   runEffect(
     Effect.gen(function* () {
       const { dir, env } = yield* scratch();
@@ -1362,24 +1318,12 @@ test("a Run parked at its evidence gate is a gate decision listing the checks it
         `${cwd}/.collie/verify.json`,
         '[{"name":"test","executable":"bun","argv":["test"],"cwd":"worktree"}]',
       );
-      const run = yield* madeRun(dir, {
-        task: "task-1",
-        state: "waiting",
-        cwd,
-        parked: nothingApproved("r1"),
-      });
+      const run = yield* madeRun(dir, { task: "task-1", state: "waiting", cwd, parked: OLD_GATE });
 
       const [view] = yield* board(env, [run]);
 
-      expect(sectionOf(view!)).toBe("needs-you");
-      expect(view!.decision).toEqual({
-        kind: "gate",
-        run: "r1",
-        id: EVIDENCE_GATE,
-        step: "evidence",
-        verifications: ["test"],
-      });
-      expect(view!.sentence).toBe("Holding at the evidence gate until you approve the list.");
+      expect(view!.decision).toBeNull();
+      expect(view!.sentence).not.toContain("approve");
     }),
   ));
 

@@ -102,7 +102,6 @@ import {
   CleanupReport,
   Controlled,
   Disposition,
-  EVIDENCE_GATE,
   FrontDoorRpcs,
   HostRefused,
   NewsBatch,
@@ -159,15 +158,13 @@ import {
   reconcileStep,
   stepResults,
   type ProposalLine,
-  type Actor,
   type ProposalRecord,
   voiceOf,
   type Asker,
   type Voice,
 } from "./proposals";
 import { carryOut, carryOutAsked, followUpField } from "./run-actions";
-import { nothingApproved } from "./outcome";
-import { approvedFrom, VerifySpecSchema, type VerifySpec } from "./verify-spec";
+import { VerifySpecSchema } from "./verify-spec";
 import { everyRegistered } from "./registry";
 import { listTasks, readTask } from "./task";
 import { nowIso } from "./time";
@@ -849,58 +846,6 @@ const frontDoorHandlers = (
         registry.recover.pipe(
           Effect.andThen(registry.control({ runId, control: "stop", set: false })),
         );
-      /**
-       * A gate answered: the checks named, or every one the checkout and config offer, are
-       * granted as `set_verification` grants them, then the Run is taken up again.
-       */
-      const passGate = (runId: string, value: string, actor: Actor) =>
-        Effect.gen(function* () {
-          const run = factsOfView(env.stateDir, yield* known(runId));
-          if (run.parked !== nothingApproved(runId))
-            return yield* new HostRefused({
-              reason: `${runId} is not holding at its evidence gate`,
-            });
-          if (value !== "approve" && !value.startsWith("approve:"))
-            return yield* new HostRefused({
-              reason: `${REFUSED_INPUT}: the gate is answered with approve or approve:<name>,<name>; with nothing approved no check could prove this Run, so it is not skipped`,
-            });
-          const offered = yield* approvedFrom({ cwd: run.cwd, userDir: env.userDir }).pipe(
-            Effect.orElseSucceed((): ReadonlyArray<VerifySpec> => []),
-          );
-          const named =
-            value === "approve"
-              ? null
-              : value
-                  .slice("approve:".length)
-                  .split(",")
-                  .map((one) => one.trim());
-          const unknown = (named ?? []).filter(
-            (name) => !offered.some((spec) => spec.name === name),
-          );
-          if (unknown.length > 0)
-            return yield* new HostRefused({
-              reason: `${REFUSED_INPUT}: the gate offers no check called ${unknown.join(", ")}`,
-            });
-          const chosen = offered.filter((spec) => named === null || named.includes(spec.name));
-          if (chosen.length === 0)
-            return yield* new HostRefused({
-              reason: `${REFUSED_INPUT}: ${nothingApproved(runId)}`,
-            });
-          const granted = yield* carryOutAsked(
-            env,
-            chosen.map(({ name, ...command }) => ({
-              kind: "set_verification" as const,
-              run: runId,
-              name,
-              command,
-            })),
-            actor,
-          );
-          const failed = granted.find((one) => one.state !== "applied");
-          if (failed !== undefined) return yield* new HostRefused({ reason: failed.note });
-          yield* takeUp(runId);
-          return { runId, decision: EVIDENCE_GATE, value, fresh: true };
-        });
       // Debounced apart from the tick, so a burst of writes cannot hold the tick back.
       // Shared, so every subscriber rides one recursive watch: setting one up walks the tree.
       const changed = yield* Stream.mergeAll(
@@ -982,23 +927,11 @@ const frontDoorHandlers = (
             ),
           ),
         answer: ({ runId, decision, value, request }, { client }) =>
-          decision === EVIDENCE_GATE
-            ? once(
-                trail(runId),
-                {
-                  operation: "answer",
-                  request,
-                  ...whoOf(client),
-                  asked: { value },
-                  result: Answered,
-                },
-                passGate(runId, value, { ...whoOf(client), requestId: request }),
-              ).pipe(plainly)
-            : fresh(
-                () => runId,
-                { operation: "answer", request, ...whoOf(client), result: Answered },
-                registry.answer({ runId, decision, value, request }),
-              ),
+          fresh(
+            () => runId,
+            { operation: "answer", request, ...whoOf(client), result: Answered },
+            registry.answer({ runId, decision, value, request }),
+          ),
         control: ({ runId, control, set, request, reason }, { client }) =>
           auditedControl(
             runId,
