@@ -11,10 +11,9 @@ import {
 import { editSetting, NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import { levelPeer, peersOf, runShell, type Link } from "../src/peers";
 import { runEffect } from "./support/effect";
-import { root, until } from "./support/host";
-import { twoMachines } from "./support/peers";
+import { until } from "./support/host";
+import { releaseBinary, twoMachines } from "./support/peers";
 import { collieCommand } from "./support/world";
-import solidPlugin from "@opentui/solid/bun-plugin";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { TestClock } from "effect/testing";
 
@@ -192,30 +191,8 @@ test(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             const older = `${first.world.home}/older-collie`;
-            const manifest = yield* fs.readFileString(`${root}herdr-plugin.toml`);
             const newer = (yield* collieCommand)[0]!;
-            const build = yield* Effect.promise(() =>
-              Bun.build({
-                entrypoints: [`${root}src/main.ts`],
-                target: "bun",
-                bytecode: true,
-                format: "esm",
-                plugins: [
-                  solidPlugin,
-                  {
-                    name: "older-release",
-                    setup(builder) {
-                      builder.onLoad({ filter: /herdr-plugin\.toml$/ }, () => ({
-                        loader: "toml",
-                        contents: manifest.replace(/^version = ".*"/m, 'version = "0.0.1"'),
-                      }));
-                    },
-                  },
-                ],
-                compile: { outfile: older },
-              }),
-            );
-            expect(build.success).toBe(true);
+            yield* releaseBinary(older, "0.0.1");
             const bin = first.env.PATH!.split(":")[0]!;
             const log = `${first.world.home}/upgrades`;
             yield* fs.writeFileString(

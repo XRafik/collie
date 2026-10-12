@@ -911,6 +911,12 @@ export type ShellRequest = typeof ShellRequest.Type;
  * a request id: the same one twice is one operation, and with other arguments is refused.
  */
 export const FrontDoorRpcs = RpcGroup.make(
+  Rpc.make("refresh", {
+    payload: { request: Schema.String },
+    success: Schema.Boolean,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
+
   Rpc.make("shell", {
     payload: ShellRequest,
     success: ShellResult,

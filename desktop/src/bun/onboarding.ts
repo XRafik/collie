@@ -113,6 +113,7 @@ export const ranWith = (command: ReadonlyArray<string>, stdin?: Uint8Array) =>
   );
 
 export const shOn = (route: ShellRoute, script: string, stdin?: Uint8Array) =>
+  route.execute?.(script, stdin) ??
   Effect.flatMap(route.sh(script), (command) => ranWith(command, stdin));
 
 /** SHA-256 of stdin, as Linux and macOS each have it. */

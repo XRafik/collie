@@ -1740,11 +1740,12 @@ the human's message that turn as its tool host heard it; the host puts both in t
 everything done on that channel, the executors' own operations included.
 
 ```sh
-collie bridge --as <board|desktop|chat> [--client <name>]
+collie bridge --as <board|desktop|chat> [--client <name>] [--machine <name>]
 ```
 
 A front door on another computer reaches the host through this, run on the Machine — over
-SSH for Desktop, or spawned without it for Local. It starts the host if none runs, handing
+SSH for an unpaired Machine, or spawned locally for Local and a paired Machine.
+With `--machine`, it pipes Local's relay to the paired Machine. It starts the host if none runs, handing
 it the state directory and the herdr session socket (asked of `herdr status server` when a
 login shell sets none), declares the channel as the front door it was started as, prints
 `collie-bridge-ready` on a line of its own, and from then on copies bytes between its stdio
@@ -1916,7 +1917,7 @@ stdin are not copied into it. Desktop uses this operation for a paired Machine's
 commands and credentials.
 
 Hosts share settings without Desktop. When paired releases differ, the newer host
-upgrades the older one through `shell`. The internal `refresh` operation starts the
+upgrades the older one through `shell`. The `refresh` operation starts the
 older Machine's own new CLI detached; that client replaces its host. Clients wait for
 levelling within five seconds. Development checkouts are left alone and a mismatch names
 both builds.

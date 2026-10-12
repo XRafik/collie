@@ -964,11 +964,18 @@ the kind `desktop`, on a computer that has Desktop
 ([ADR-0045](adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md)).
 
 The Machines are this computer and every machine enabled in `herdr machine list`; Collie
-keeps no list of its own. At launch Desktop opens one SSH master per herdr machine, from
-its target and your own SSH config, so an SSO check is made once per machine, and keeps it
-open until Desktop quits. A Machine reached two ways — two herdr machines on one computer,
-or one pointing at this computer — is shown once, through the first in herdr's list (this
-computer before any). It is named by that herdr machine's label, or the hostname here, and
+keeps no list of its own. A paired Machine is reached through Local's host and its paired
+link, without an SSH login. Commands, upgrades, doctor and credentials use that host's
+shell operation. Desktop opens SSH for Go to pane, a login's port forward, and onboarding
+an unpaired Machine. Its master opens on first use, with your SSH config, and is kept
+until Desktop quits. When a link is away, Desktop falls back to SSH, which can start the
+far host. The Machines page says Paired link or SSH for the live route.
+
+Desktop pairs an unpaired Machine on the SSH master it already holds. An older Collie
+without `machine invite` is paired after upgrading; a failure is a notice and is retried
+on the next connection. A successful pairing uses the link on the next connection.
+A Machine reached two ways is shown once, preferring a paired
+link, then the first in herdr's list (this computer before SSH). It is named by that herdr machine's label, or the hostname here, and
 two Machines with one name show as `name (ssh target)`.
 
 A Machine Desktop cannot show live says why above the board, by name:

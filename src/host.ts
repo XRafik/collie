@@ -341,11 +341,6 @@ export const HostRpcs = RpcGroup.make(
   /** The peer asking has forgotten this Machine, so this one forgets it too. */
   Rpc.make("forget", { success: Schema.Void, error: HostRefused }),
   Rpc.make("peers", { success: Schema.Array(PeerView) }),
-  Rpc.make("refresh", {
-    payload: { request: Schema.String },
-    success: Schema.Boolean,
-    error: Schema.Union([HostRefused, RequestConflict]),
-  }),
 );
 
 /** Everything this build serves; a client of another build uses `FrontDoorRpcs` alone. */
@@ -460,29 +455,6 @@ const handlers = (
             : peers.forget(machine.installation);
         },
         peers: () => peers.list,
-        refresh: ({ request }, { client }) =>
-          once(
-            `${dir}/host`,
-            { operation: "refresh", request, ...stampIn(declared, client), result: Schema.Boolean },
-            Effect.gen(function* () {
-              const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-              const child = yield* spawner.spawn(
-                ChildProcess.make("collie", ["--json", "machine", "list"], {
-                  detached: true,
-                  stdin: "ignore",
-                  stdout: "ignore",
-                  stderr: "ignore",
-                  extendEnv: true,
-                }),
-              );
-              yield* child.unref;
-              return true;
-            }).pipe(
-              Effect.uninterruptible,
-              Effect.scoped,
-              Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
-            ),
-          ).pipe(Effect.provideContext(bun)),
         grant: ({ runId, name, command, request }, { client }) =>
           once(
             runDir(dir, runId),
@@ -789,7 +761,8 @@ const frontDoorHandlers = (
       /** The serving env in the herdr session the asking channel declared, where it named one. */
       const askerEnv = (client: { readonly id: number }) => {
         const session = sessions.get(client.id);
-        return session === undefined ? env : { ...env, socketPath: session };
+        const rooted = { ...env, hostStamp: stamp };
+        return session === undefined ? rooted : { ...rooted, socketPath: session };
       };
       const trail = (runId: string) => runDir(env.stateDir, runId);
       /** The Herd of the session the asker runs in, where it names none. */
@@ -1120,6 +1093,29 @@ const frontDoorHandlers = (
             ),
             Effect.provideContext(bun),
           ),
+        refresh: ({ request }, { client }) =>
+          once(
+            `${env.stateDir}/host`,
+            { operation: "refresh", request, ...whoOf(client), result: Schema.Boolean },
+            Effect.gen(function* () {
+              const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+              const child = yield* spawner.spawn(
+                ChildProcess.make("collie", ["--json", "machine", "list"], {
+                  detached: true,
+                  stdin: "ignore",
+                  stdout: "ignore",
+                  stderr: "ignore",
+                  extendEnv: true,
+                }),
+              );
+              yield* child.unref;
+              return true;
+            }).pipe(
+              Effect.uninterruptible,
+              Effect.scoped,
+              Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+            ),
+          ).pipe(Effect.provideContext(bun)),
         shell: ({ script, stdin, request }, { client }) =>
           plainly(
             recordingShell
@@ -1607,7 +1603,8 @@ const frontDoorHandlers = (
                   from,
                   dryRun,
                   requestId: request,
-                  ...askerOf(client),
+                  ...voiceOf(askerOf(client)),
+                  origin: doorOf(client),
                 });
                 if (!said.ok)
                   return yield* new SteerUnanswered({
@@ -2072,7 +2069,7 @@ export const frontDoor = (socket: string) => openGroup(socket, FrontDoorRpcs);
  * A connection through this Machine's relay to a peer, opened as the front door its
  * header names, once the relay says the peer answered.
  */
-const relayed = (stateDir: string, name: string, header: RelayHeader) =>
+export const peerChannel = (stateDir: string, name: string, header: RelayHeader) =>
   Effect.acquireRelease(
     Effect.callback<NetSocket, HostUnavailable | MachineUnreachable>((resume) => {
       const path = relayOf(stateDir, name);
@@ -2137,7 +2134,7 @@ export const connectPeer = (
   const build = options?.build ?? BUILD;
   let mismatch: HostVersionMismatch | undefined;
   return Effect.gen(function* () {
-    const conn = yield* relayed(stateDir, name, header);
+    const conn = yield* peerChannel(stateDir, name, header);
     const socket = yield* BunSocket.fromDuplex(Effect.succeed(conn));
     const client = yield* openGroup(
       relayOf(stateDir, name),

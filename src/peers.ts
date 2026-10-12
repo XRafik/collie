@@ -1019,23 +1019,27 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         ]);
       }),
     forget,
-    list: Effect.sync(() =>
-      peers.map((peer): PeerView => {
-        const standing = standings.get(peer.installation) ?? {
-          state: "connecting",
-          since: null,
-          failure: null,
-        };
-        return {
-          installation: peer.installation,
-          name: peer.name,
-          dials: peer.dials,
-          url: peer.url ?? null,
-          build: builds.get(peer.installation) ?? null,
-          ...standing,
-          failure: peer.dials === "in" && listening !== null ? listening : standing.failure,
-        };
-      }),
+    list: reconcileMachines.pipe(
+      Effect.andThen(
+        Effect.sync(() =>
+          peers.map((peer): PeerView => {
+            const standing = standings.get(peer.installation) ?? {
+              state: "connecting",
+              since: null,
+              failure: null,
+            };
+            return {
+              installation: peer.installation,
+              name: peer.name,
+              dials: peer.dials,
+              url: peer.url ?? null,
+              build: builds.get(peer.installation) ?? null,
+              ...standing,
+              failure: peer.dials === "in" && listening !== null ? listening : standing.failure,
+            };
+          }),
+        ),
+      ),
     ),
   };
   return peersModule;

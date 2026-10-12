@@ -4,6 +4,7 @@
 // sockets is faked: both hosts are the shipped `collie host`, started by the CLI as an
 // installation's are, and the link between them is the real listener on 127.0.0.1.
 
+import solidPlugin from "@opentui/solid/bun-plugin";
 import { createServer } from "node:net";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { Effect, FileSystem, Schema, type Scope } from "effect";
@@ -53,14 +54,24 @@ const fakeSsh = (log: string, env: Readonly<Record<string, string>>) => {
     .join(" ");
   return `#!/bin/sh
 if [ "$1" = "-G" ]; then printf 'hostname 127.0.0.1\\nport 22\\n'; exit 0; fi
+master=; control=; operation=
 while [ $# -gt 0 ]; do
   case "$1" in
-    -S|-o|-L) echo "option $1 $2" >> '${log}'; shift 2 ;;
-    -T|-N|-M) echo "option $1" >> '${log}'; shift ;;
+    -S) control="$2"; echo "option $1 $2" >> '${log}'; shift 2 ;;
+    -O) operation="$2"; shift 2 ;;
+    -o|-L) echo "option $1 $2" >> '${log}'; shift 2 ;;
+    -M) master=1; echo "option $1" >> '${log}'; shift ;;
+    -T|-N) echo "option $1" >> '${log}'; shift ;;
     *) break ;;
   esac
 done
 target="$1"; shift
+if [ -n "$master" ]; then
+  touch "$control"
+  trap 'rm -f "$control"; exit 0' TERM
+  while :; do sleep 1; done
+fi
+if [ -n "$operation" ]; then [ -e "$control" ]; exit; fi
 echo "login $target $*" >> '${log}'
 exec env -i ${exports} /bin/sh -c "$*"
 `;
@@ -154,3 +165,33 @@ export const twoMachines = <A, E>(
     });
     return yield* body(first.side, second.side);
   }).pipe(Effect.orDie);
+
+export const releaseBinary = Effect.fn("PeerTest.releaseBinary")(function* (
+  file: string,
+  version: string,
+) {
+  const manifest = yield* (yield* FileSystem.FileSystem).readFileString(`${root}herdr-plugin.toml`);
+  const built = yield* Effect.promise(() =>
+    Bun.build({
+      entrypoints: [`${root}src/main.ts`],
+      target: "bun",
+      bytecode: true,
+      format: "esm",
+      plugins: [
+        solidPlugin,
+        {
+          name: "peer-release",
+          setup(builder) {
+            builder.onLoad({ filter: /herdr-plugin\.toml$/ }, () => ({
+              loader: "toml",
+              contents: manifest.replace(/^version = ".*"/m, `version = "${version}"`),
+            }));
+          },
+        },
+      ],
+      compile: { outfile: file },
+    }),
+  );
+  if (!built.success)
+    return yield* Effect.fail(new Error(`could not build ${version}: ${built.logs.join("\n")}`));
+});

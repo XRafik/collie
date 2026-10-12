@@ -180,16 +180,19 @@ export type Door = FrontDoor | Asker;
 
 const isFrontDoor = Schema.is(FrontDoor);
 
-const declaring = (door: Door, session: string | null) =>
+const declaring = (door: Door, session: string | null, stamp?: string) =>
   isFrontDoor(door)
     ? { frontDoor: door, session }
-    : { frontDoor: door.origin, session, ...voiceOf(door) };
+    : { frontDoor: door.origin, session, from: door.from, stamp, ...voiceOf(door) };
 
 /**
  * A paired Machine by herdr's name for it: kept as it is, or paired now over its SSH login
  * by a front door that can show one. A host's own jobs never pair.
  */
-const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (env: PluginEnv, name: string) {
+export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
+  env: PluginEnv,
+  name: string,
+) {
   if ((yield* peersOf(env.stateDir)).some((peer) => peer.name === name)) return;
   const machine = (yield* herdrMachines(env)).find((one) => one.label === name);
   if (machine === undefined)
@@ -207,6 +210,7 @@ const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (env: PluginE
       const peer = yield* pairWith(machine, {
         installation: installation ?? "",
         name: machineName(),
+        control: env.raw.COLLIE_SSH_CONTROL,
       });
       yield* local.pair({ peer });
     }),
@@ -236,7 +240,9 @@ const reach = (
   machine === null
     ? connect(env.stateDir).pipe(
         Effect.tap((client) =>
-          door === undefined ? Effect.void : client.declare(declaring(door, env.socketPath)),
+          door === undefined
+            ? Effect.void
+            : client.declare(declaring(door, env.socketPath, env.hostStamp)),
         ),
       )
     : ensurePaired(env, machine).pipe(
@@ -289,7 +295,7 @@ const asksRun = <A>(
           asked.push(machine ?? machineName());
           if ((yield* client.run({ runId })) === null) return null;
           if (machine === null && door !== undefined)
-            yield* client.declare(declaring(door, env.socketPath));
+            yield* client.declare(declaring(door, env.socketPath, env.hostStamp));
           return { ok: true as const, value: yield* question(client), machine };
         }),
       ).pipe(

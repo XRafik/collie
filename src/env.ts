@@ -52,6 +52,7 @@ export interface PluginEnv {
   raw: Record<string, string>;
   /** The paired Machine a command was pointed at with `--machine`, for one that names no Run. */
   machine?: string;
+  hostStamp?: string;
   /** A front door that can show an SSH login, which pairing on first reach needs. */
   pairs?: boolean;
 }

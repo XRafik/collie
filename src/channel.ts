@@ -3,10 +3,11 @@
 // Machine's link its WebSocket (ADR-0054 D4). The declaration is made here, from what this
 // end knows, so nothing at the far end can change it.
 
-import { createConnection } from "node:net";
+import { createConnection, type Socket } from "node:net";
 import { Data, Effect, Option, Schema } from "effect";
 import type * as RpcMessage from "effect/rpc/RpcMessage";
 import type { Declaration } from "./board-model";
+import { isString } from "./schema";
 
 const DECLARE_REQUEST = "bridge";
 
@@ -55,10 +56,10 @@ const frameOf = (payload: Declaration) => {
  * Declares a channel on `socket`, then copies bytes both ways until either end hangs up.
  * Refused, with the host's words, when the declaration is not taken.
  */
-export const channelInto = (socket: string, declaration: Declaration, far: FarEnd) =>
+export const channelInto = (socket: string | Socket, declaration: Declaration, far: FarEnd) =>
   Effect.callback<void, ChannelRefused>((resume) => {
     const refuse = (reason: string) => resume(Effect.fail(new ChannelRefused({ reason })));
-    const conn = createConnection(socket);
+    const conn = isString(socket) ? createConnection(socket) : socket;
     let reply = "";
     let ready = false;
     const handshake = (chunk: Buffer) => {
@@ -85,11 +86,13 @@ export const channelInto = (socket: string, declaration: Declaration, far: FarEn
       );
     };
     conn.on("data", handshake);
-    conn.on("connect", () => conn.write(frameOf(declaration)));
+    if (conn.connecting) conn.once("connect", () => conn.write(frameOf(declaration)));
+    else conn.write(frameOf(declaration));
     conn.on("error", (cause) => refuse(String(cause)));
     conn.on("close", () => {
       if (!ready) return refuse("the host hung up before it answered the declaration");
       far.end(() => resume(Effect.void));
     });
+    conn.resume();
     return Effect.sync(() => conn.destroy());
   });

@@ -704,6 +704,30 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "ui/desktop-reaches-a-paired-machine-without-ssh",
+    statement:
+      "Desktop reaches a paired Machine, upgrades it and gives it credentials without SSH.",
+    owner: MACHINES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-peers.test.ts",
+      name: "Desktop reads a paired board and runs commands and credentials over its link, with SSH used only on demand",
+    },
+  },
+  {
+    id: "machines/desktop-opens-the-link-before-ssh",
+    statement:
+      "Desktop reopened on the laptop shows vm-mk live without SSO; Go to pane opens one SSH master on first use.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Quit and reopen Desktop on mk's laptop, record vm-mk live through Paired link without SSO, then Go to pane twice and record one approval per Desktop session. Record the revision.",
+    },
+  },
+  {
     id: "backend/a-command-reaches-the-machine-that-has-its-run",
     statement:
       "A command about a Run reaches the Machine that has it, recorded as its front door from this Machine.",

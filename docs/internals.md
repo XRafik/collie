@@ -316,7 +316,12 @@ util-linux or BSD `script` on that Machine, by `uname`. Where the list fails, it
 also asks `herdr --version`, so a herdr too old to have `herdr machine` is named as one. Desktop is another
 program, usually on another computer, and it is not talking to a session either: it keeps
 herdr's list and nothing else. Routing them through `herdr.ts` would bring Collie's locks
-into Desktop, which reaches a Machine only through `collie bridge`.
+into Desktop, which reaches a Machine only through `collie bridge`. For a paired Machine,
+that command runs locally with `--machine <name>` and pipes the Local host's relay; for
+SSH it runs on the far Machine. Bounded shell calls carry commands and credentials over
+the door. After an upgrade, `refresh` asks the far Machine to run its new CLI and replace
+its host. Interactive terminal commands and login forwarding retain SSH. Pairing
+uses `COLLIE_SSH_CONTROL` to reuse Desktop's existing master.
 
 Each Machine's `desktop` channel is its _door_, and Desktop holds one per shown Machine, by
 installation (`DoorMap` in `desktop/src/bun/machine.ts`), for as long as its board stream

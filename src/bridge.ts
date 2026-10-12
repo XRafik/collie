@@ -7,7 +7,9 @@ import { BRIDGE_READY, type Declaration, type FrontDoor, type Where } from "./bo
 import { channelInto } from "./channel";
 import { currentEnv } from "./env";
 import { Herdr } from "./herdr";
-import { HostUnavailable, connect, socketOf } from "./host";
+import { HostUnavailable, connect, peerChannel, socketOf } from "./host";
+import { ensurePaired } from "./lifecycle";
+import { machineName } from "./peers";
 /** Where this channel came from: the computer the front door names, and the SSH client sshd saw. */
 const whereFrom = Effect.fn("Bridge.whereFrom")(function* (client: string | null) {
   const connection = yield* Config.option(Config.String("SSH_CONNECTION")).pipe(
@@ -20,7 +22,11 @@ const whereFrom = Effect.fn("Bridge.whereFrom")(function* (client: string | null
   return Object.keys(where).length === 0 ? undefined : where;
 });
 
-export const bridge = Effect.fn("Bridge")(function* (as: FrontDoor, client: string | null) {
+export const bridge = Effect.fn("Bridge")(function* (
+  as: FrontDoor,
+  client: string | null,
+  machine: string | null = null,
+) {
   const env = yield* currentEnv.pipe(Effect.orDie);
   // A login over SSH is handed no herdr socket; herdr's own status says where it listens.
   const session =
@@ -41,7 +47,15 @@ export const bridge = Effect.fn("Bridge")(function* (as: FrontDoor, client: stri
   const from = yield* whereFrom(client);
   const declaration: Declaration =
     from === undefined ? { frontDoor: as, session } : { frontDoor: as, session, from };
-  return yield* channelInto(socketOf(env.stateDir), declaration, {
+  const socket =
+    machine === null
+      ? socketOf(env.stateDir)
+      : yield* ensurePaired({ ...env, pairs: true }, machine).pipe(
+          Effect.andThen(
+            peerChannel(env.stateDir, machine, { as, client: client ?? machineName() }),
+          ),
+        );
+  return yield* channelInto(socket, declaration, {
     ready: () => process.stdout.write(`${BRIDGE_READY}\n`),
     write: (chunk) => process.stdout.write(chunk),
     end: (done) => {
@@ -57,4 +71,4 @@ export const bridge = Effect.fn("Bridge")(function* (as: FrontDoor, client: stri
       (refused) => new HostUnavailable({ dir: env.stateDir, reason: refused.reason }),
     ),
   );
-});
+}, Effect.scoped);
