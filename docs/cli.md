@@ -1175,8 +1175,9 @@ before it builds. From then on the Intent is the set: `run intent verification` 
 or removes from it, whoever calls it, and an Intent whose list has been emptied is a run
 with no checks — the seed is not put back behind whoever removed them. A check whose
 directory is outside the run's tree — `worktree` is its worktree, anything else is resolved
-against its cwd — is refused when it is named, naming that directory and the run. A Run of a workflow module
-keeps its set with the host rather than in an Intent, and the same command amends it there.
+against its cwd — is refused when it is named, naming that directory and the run. A Run of
+a workflow module keeps its set with the host rather than in an Intent, and the same command
+amends it there.
 
 ```json
 [{ "name": "tests", "executable": "bun", "argv": ["test"], "cwd": "worktree" }]

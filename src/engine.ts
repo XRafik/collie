@@ -2908,7 +2908,6 @@ const encodePlacing = Schema.encodeSync(PlacingJson);
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 
-/** Where a Run works: as the host placed it, or for a row from before that, as it started. */
 /** The directories a Run owns: its cwd and its worktree, as its placement recorded them. */
 const treeOf = Effect.fn("Engine.treeOf")(function* (
   row: RunRow | null,
@@ -2927,6 +2926,7 @@ const treeOf = Effect.fn("Engine.treeOf")(function* (
   return { id: runId, cwd: placed?.cwd ?? dir, worktree: placed?.worktree?.path ?? null };
 });
 
+/** Where a Run works: as the host placed it, or for a row from before that, as it started. */
 const placedOf = (row: RunRow, options: Readonly<Record<string, string>>): Placed =>
   Option.getOrElse(decodePlaced(row.checkout ?? ""), () => ({
     cwd: options.workspace?.startsWith("/") ? options.workspace : row.project,
