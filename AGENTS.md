@@ -65,6 +65,11 @@ herdr actions, and the `collie` CLI.
   rather than a table of Runs
   ([ADR-0013](docs/adr/0013-the-board-is-cards-of-tasks.md), which supersedes what
   [ADR-0005](docs/adr/0005-collie-tab-is-an-application.md) says the tab draws).
+- **Changing how an agent reaches another** →
+  [ADR-0055](docs/adr/0055-an-agent-speaks-to-another-as-itself.md), alongside
+  `src/harness.ts` (tool wiring), `src/tools.ts` and `asksRun` in `src/lifecycle.ts`
+  (lookup), `src/dispatcher.ts` (sender line) and `src/handoff.ts` (planner address),
+  with `test/agent-origin.test.ts` and `test/mcp.test.ts`.
 - **Changing how a Machine reaches another** →
   [ADR-0054](docs/adr/0054-a-machine-reaches-another-over-a-paired-link.md) and
   [`docs/internals.md`](docs/internals.md#reaching-another-machine), alongside `src/peers.ts`

@@ -35,7 +35,8 @@ import { VerifySpecSchema } from "../../src/verify-spec";
 import { collect, readVerifications } from "../../src/verify";
 import { inputsFor, offersFrom } from "../../src/offers";
 import { Store } from "../../src/store";
-import { registerAgent, registryPath, scopeFor } from "../../src/registry";
+import { everyRegistered, registerAgent, registryPath, scopeFor } from "../../src/registry";
+import { deliveriesOf } from "../../src/steering";
 import { fixtures, until } from "./host";
 
 const ROOT = new URL("../../", import.meta.url).pathname;
@@ -463,6 +464,55 @@ scenario("a plan at the Projects root is told the root is not a repository", () 
       expect(interview).toContain("Each ticket's `Repo:` is a path relative to\nit.");
     }),
   ),
+);
+
+scenario(
+  "an implementer asks its live planner through a recorded Delivery",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([GRILLED, SPEC, TICKETS]);
+        yield* parked({ entry: shipped("plan"), runId: "r-plan", input: GOAL, decision: "next-1" });
+        const planner = (yield* everyRegistered(hostOf().env.stateDir)).find(
+          (one) => one.runId === "r-plan",
+        )!;
+        const route = yield* session(
+          Agents.pipe(Effect.flatMap((agents) => agents.askRoute("planner", ["r-impl", "r-plan"]))),
+        );
+        expect(route).toContain(`collie_do deliver to r-plan, agent ${planner.agent}`);
+        expect(route).not.toContain("herdr agent prompt");
+        const sent = yield* session(
+          Agents.pipe(
+            Effect.flatMap((agents) =>
+              agents.steer({
+                runId: "r-plan",
+                agent: planner.agent,
+                text: "Which ticket first?",
+                request: "planner-question",
+                mode: "boundary",
+                actor: {
+                  origin: "agent",
+                  from: {
+                    run: "r-impl",
+                    agent: "implementer",
+                    machine: { name: "laptop", installation: "laptop-installation" },
+                  },
+                },
+              }),
+            ),
+          ),
+        );
+        expect(sent.delivered).toBe(true);
+        expect((yield* prompts()).at(-1)).toContain("From implementer of r-impl on laptop.");
+        expect(
+          (yield* deliveriesOf(hostOf().env.stateDir, "r-plan")).some(
+            (one) =>
+              one.delivery.cause.ref === "planner-question" && one.delivery.state === "submitted",
+          ),
+        ).toBe(true);
+      }),
+    ),
+  120_000,
 );
 
 scenario(

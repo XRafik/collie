@@ -257,6 +257,19 @@ runs from a shell inside herdr: `herdr plugin action invoke cego.collie.pick`.
 The same operations are available without opening UI, which is how an agent drives Collie:
 see [CLI](cli.md).
 
+### Agents talking to each other
+
+Every Run's agent has Collie's tools and knows its own Run, agent name and Machine.
+To ask another agent, use `collie_do` with a `deliver` action naming its Run, agent and
+words. From a shell, use `collie run steer <run> --operation <agent> "<words>"`.
+The Run id finds the Machine that has it; no Machine prefix is needed.
+
+The message names its sender and gives the reply address. The answer is another recorded
+Delivery. An implementer asks its live planner this way, using the address in its prompt.
+`collie run show <run>` lists the agent names that both routes take. `collie run list`
+lists local and live peers' Runs, and says which peers were away. Native chat can read
+another Machine's Run the same way, and `collie_herd` can name a `machine`.
+
 ### Tasks: one workspace per piece of work
 
 Starting a workflow starts a **task**, and a task gets a herdr workspace of its own. It is

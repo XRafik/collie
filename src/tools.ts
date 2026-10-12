@@ -37,6 +37,8 @@ import { projectsRoot } from "./projects";
 import type { Action } from "./actions";
 import {
   boardSnapshot,
+  asksRun,
+  statusOf,
   confirmProposed,
   declineProposed,
   actAsked,
@@ -49,6 +51,7 @@ import {
   cleanupListing,
   type Door,
 } from "./lifecycle";
+import { peersOf } from "./peers";
 import { cleanupLines } from "./cleanup";
 import { taskOfWorkspace } from "./task";
 import { pendingFor, proposalsPath, read as readProposals } from "./proposals";
@@ -104,6 +107,15 @@ const said = <E, R>(effect: Effect.Effect<string, E, R>) =>
     Effect.catch((cause) => Effect.succeed(`Collie could not read that: ${String(cause)}`)),
   );
 
+const toolDoor = Effect.fn("Tools.door")(function* (env: PluginEnv) {
+  if (env.asker !== undefined) return env.asker;
+  const run = env.raw.COLLIE_RUN;
+  const agent = env.raw.COLLIE_AGENT;
+  return run && agent
+    ? { origin: "agent" as const, from: { run, agent } }
+    : { origin: "chat" as const, ...(yield* heardVoice(env)) };
+});
+
 const handlersFor = Effect.fn("Tools.handlers")(function* (
   env: PluginEnv,
   /** Whether the board's selection may stand in for a Run nobody named. */
@@ -114,7 +126,8 @@ const handlersFor = Effect.fn("Tools.handlers")(function* (
     effect: Effect.Effect<string, E, BunServices | ChildProcessSpawner.ChildProcessSpawner>,
   ) => said(effect).pipe(Effect.provideContext(services));
   return CollieTools.of({
-    collie_herd: () => answer(boardFacts(env)),
+    collie_herd: (input) =>
+      answer(boardFacts(input.machine === undefined ? env : { ...env, machine: input.machine })),
     collie_run: (input) =>
       answer(onSelectedRun(env, selected, input, "collie_run", (run) => said(runAnswer(env, run)))),
     collie_workspaces: () => answer(workspaceFacts(env)),
@@ -135,7 +148,7 @@ const handlersFor = Effect.fn("Tools.handlers")(function* (
           const herd = yield* herdOf(env.socketPath).pipe(Effect.catch(() => Effect.succeed(null)));
           const requestId = input.request_id ?? (yield* newRequestId());
           const done = yield* proposeActions(env, {
-            door: { origin: "chat", ...(yield* heardVoice(env)) },
+            door: yield* toolDoor(env),
             herd,
             interpretation: input.interpretation,
             actions: input.actions,
@@ -163,7 +176,26 @@ const answered = Effect.fn("Tools.answered")(
  * refusal in the tool's own terms, and a tool this build does not have answers nothing.
  */
 export const callTool = (env: PluginEnv, name: string, input: JsonObject) =>
-  isToolName(name) ? answered(env, name, input, true) : Effect.succeed("");
+  !isToolName(name)
+    ? Effect.succeed("")
+    : (name === "collie_run" || name === "collie_receipts") && isString(input.run)
+      ? Effect.gen(function* () {
+          const run = input.run;
+          if (!isString(run)) return "A Run id is required.";
+          if (
+            env.machine === undefined &&
+            ((yield* findRun(env, run)) !== null || (yield* peersOf(env.stateDir)).length === 0)
+          )
+            return yield* answered(env, name, input, true);
+          const found = yield* asksRun(
+            env,
+            run,
+            (client) => client.read({ tool: name, input }),
+            yield* toolDoor(env),
+          );
+          return found.ok ? found.value : found.error.message;
+        })
+      : answered(env, name, input, true);
 
 /**
  * One of the reads a Flock chat has this Machine's host answer, as Native chat answers
@@ -222,7 +254,7 @@ const carryOut = Effect.fn("Tools.carryOut")(function* (env: PluginEnv, input: J
   if (wrong.length > 0)
     return `collie_do does not carry out ${[...new Set(wrong.map((a) => a.kind))].join(", ")}: that is collie_propose's, which carries it out in the same call.`;
   const requestId = yield* (yield* Crypto.Crypto).randomUUIDv4;
-  const door: Door = { origin: "chat", ...(yield* heardVoice(env)) };
+  const door: Door = yield* toolDoor(env);
   const said: string[] =
     selected.on === null
       ? []
@@ -248,18 +280,29 @@ const settle = Effect.fn("Tools.settle")(function* (
   request: string,
 ) {
   if (action.kind === "disposition") {
-    const run = yield* findRun(env, action.run);
-    if (run === null) return { kind: action.kind, state: "failed", note: `no Run "${action.run}"` };
+    const found = yield* asksRun(
+      env,
+      action.run,
+      (client) => client.run({ runId: action.run }),
+      door,
+    );
+    if (!found.ok || found.value === null)
+      return {
+        kind: action.kind,
+        state: "failed",
+        note: found.ok ? `no Run "${action.run}"` : found.error.message,
+      };
+    const run = found.value;
     const done = yield* disposeRun(env, {
       door,
-      runId: run.id,
+      runId: action.run,
       kind: action.became,
       ref: action.ref ?? "",
       note: null,
       request,
     });
     return done.ok
-      ? { kind: action.kind, state: "applied", note: statusLine(run.state, done.value) }
+      ? { kind: action.kind, state: "applied", note: statusLine(statusOf(run), done.value) }
       : { kind: action.kind, state: "failed", note: done.error.message };
   }
   const done =
@@ -399,7 +442,7 @@ const hold = Effect.fn("Tools.hold")(function* (env: PluginEnv, input: typeof Ho
   // board and the CLI can do to it — including which Runs there are to do it to.
   const oneRun: Action = { kind: "hold", run: run!, reason: why };
   const held = yield* actAsked(env, {
-    door: { origin: "chat", ...(yield* heardVoice(env)) },
+    door: yield* toolDoor(env),
     actions: workspace === undefined ? [oneRun] : yield* holdsFor(env, workspace, why),
     request: requestId,
   });
@@ -482,7 +525,7 @@ const newsFacts = Effect.fn("Tools.news")(function* (env: PluginEnv) {
   const key = yield* herdOf(env.socketPath).pipe(Effect.catch(() => Effect.succeed(null)));
   if (key === null) return "Collie cannot reach herdr, so it has nothing to report.";
   const read = yield* settleNewsFor(env, {
-    door: { origin: "chat", ...(yield* heardVoice(env)) },
+    door: yield* toolDoor(env),
     herd: key,
     conversation: NATIVE,
     as: "read",

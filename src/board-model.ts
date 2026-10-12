@@ -794,6 +794,7 @@ export const FrontDoor = Schema.Literals([
   "driver",
   "evaluator",
   "chat",
+  "agent",
   /** A host's own call to a peer, such as a settings sync: never a human. */
   "host",
 ]);
@@ -811,6 +812,8 @@ export const Where = Schema.Struct({
   client: Schema.optionalKey(Schema.String),
   ssh: Schema.optionalKey(Schema.String),
   machine: Schema.optionalKey(MachineRef),
+  run: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(Schema.String),
 });
 export type Where = typeof Where.Type;
 

@@ -34,6 +34,7 @@ import {
 } from "./steering";
 import { gate, interruptKeys } from "./steering-caps";
 import { nowIso, took, epochMs } from "./time";
+import type { Asker } from "./proposals";
 
 /** How long a message may sit `reserved` before a later reader calls it `unknown`. */
 export const SUBMIT_TIMEOUT_MS = 60_000;
@@ -53,6 +54,7 @@ export interface DeliveryDraft {
   readonly intentVersion: number;
   readonly attempt: number;
   readonly requestId: string;
+  readonly actor?: Asker;
   readonly note?: string;
   /**
    * How long a refusal herdr calls momentary may hold before this sender gives up, from
@@ -212,8 +214,13 @@ export const transaction = Effect.fn("Dispatcher.transaction")(function* <A, E, 
       let closed = false;
       const channel: Channel = {
         agent: entry.agent,
-        submit: (text, draft) =>
+        submit: (words, draft) =>
           Effect.gen(function* () {
+            const sender = draft.actor?.origin === "agent" ? draft.actor.from : undefined;
+            const text =
+              sender?.run !== undefined && sender.agent !== undefined
+                ? `From ${sender.agent} of ${sender.run} on ${sender.machine?.name ?? sender.client ?? "this Machine"}. Answer with collie_do deliver to ${sender.run} (or collie run steer ${sender.run} --operation ${sender.agent} "…").\n${words}`
+                : words;
             if (closed)
               return yield* new DispatcherDefect({
                 why: `${entry.agent}'s channel was used after its transaction closed`,

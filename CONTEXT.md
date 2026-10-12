@@ -179,7 +179,7 @@ is required. Questions about a Herd are Native chat's, and about the whole Flock
 this record immediately. Unsolicited background suggestions remain pending.
 
 **Actor** — Who asked for an operation: the front door its channel declared (`board`,
-`desktop`, `cli-tty`, `cli`, `chat`, …) and the request id. The host records it in the Run's audit
+`desktop`, `cli-tty`, `cli`, `chat`, `agent`, …) and the request id. The host records it in the Run's audit
 trail with every start, answer, hold, stop, resume, offer invoked, grant, steer,
 disposition and follow-up. `board`, `desktop` and
 `cli-tty` are a human; `cli-tty` needs a terminal outside any agent's pane. A channel
@@ -187,7 +187,8 @@ reached through `collie bridge` is the front door it was started as, and `deskto
 where it came from: the computer it named and the SSH client the bridge saw. Every front
 door's Actor names `from.machine` where the channel came from a **Peer**, stamped by the
 host that authenticated the link and never by a caller, and a host's own call to a peer is
-the `host` front door, which is never a human. A chat's
+the `host` front door, which is never a human. An `agent` is never a human either;
+its `from.run` and `from.agent` name the launch or the registered pane. A chat's
 `collie_do` also names its conversation and carries the human's message from that turn,
 with the names of the **Attachments** it carried, attached by the tool host and never by
 the model.
@@ -205,6 +206,8 @@ delivery an older Collie held for the agent's next prompt), `reserved`, `deferre
 pane cannot take it yet, so it is tried again under the same id), `submitted`,
 `acknowledged`, `verified` and the terminal `failed`, `unknown`, `superseded`, `expired`.
 They are separate because they are separate facts. A `deliver` with no mode is `now`.
+A Delivery from an agent carries its sender line before the unchanged words: its agent,
+Run and Machine, and the tool and CLI address to answer.
 
 **Dispatcher** — The only code that sends text to an agent. Holds that agent's ledger lock
 across the compaction decision, the composition and the send.

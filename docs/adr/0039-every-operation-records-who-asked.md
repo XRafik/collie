@@ -74,3 +74,12 @@ the relay's header rather than declaring it
   reads the board through.
 - This keeps the record honest; it is not security. Anything that reaches the host's
   socket runs as the user.
+
+## Amended 2026-10-12: an agent names its address
+
+`agent` is a front door, never a human. A CLI command in a registered agent's pane
+names its Run through the host's ledger. An unknown pane stays `cli`. Collie's MCP
+and Pi extension read `COLLIE_RUN` and `COLLIE_AGENT` from the launch environment.
+The host records these as `from.run` and `from.agent`, beside the Machine. Tool arguments
+cannot name a sender. [ADR-0055](0055-an-agent-speaks-to-another-as-itself.md) records
+launch wiring, lookup by Run, and the sender line every agent Delivery carries.

@@ -87,8 +87,9 @@ pick one of:
 - Pass `--workspace <id>`, which re-roots the run at that workspace's directory as well as
   scoping to it.
 
-`collie run list` lists every run, unless the selected workspace is a task workspace — then
-it lists that Task's. See [Tasks](#tasks).
+`collie run list` lists local and live peers' Runs with their `machine`. Its JSON includes
+`machines`, naming any peer that was away. A selected Task narrows local Runs to that
+Task; peer Runs stay visible. `--machine` lists only that Machine. See [Tasks](#tasks).
 
 ## Discover what is available
 
@@ -381,7 +382,7 @@ renaming a task workspace by hand changes nothing about what belongs to it, and 
 does not rename it back. See [Using Collie](using.md#what-a-task-workspace-is-called).
 
 Runs are scoped by Task, not by workspace. `collie run list` inside a task workspace lists
-that Task's Runs; anywhere else it lists every Run, and a Run is reachable by id from the
+that Task's local Runs and live peers' Runs; elsewhere it lists every reachable Run. A Run is reachable by id from the
 workspace it was started in. `--workspace <id>` picks which workspace that is.
 
 Checkouts are unchanged: a mutating run still gets a worktree of its own, keyed by its
@@ -1921,3 +1922,11 @@ upgrades the older one through `shell`. The `refresh` operation starts the
 older Machine's own new CLI detached; that client replaces its host. Clients wait for
 levelling within five seconds. Development checkouts are left alone and a mismatch names
 both builds.
+
+## An agent's commands
+
+A CLI command in a registered Run agent's pane records `origin: "agent"`, with its Run,
+agent name and Machine. A pane herdr cannot name stays `cli`. MCP uses the same origin,
+from the environment Collie writes at launch. A tool argument cannot name a sender.
+`run show` lists the agent names that `--operation` and `collie_do deliver` take.
+See [agents talking to each other](using.md#agents-talking-to-each-other).

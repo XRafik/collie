@@ -182,3 +182,8 @@ proactive turn neither becomes blanket confirmation-only nor grants anything new
 started the turn is not an input to what is permitted. Testing this means testing the
 existing authority path, not asserting that nothing Collie says unprompted can have
 happened already — which would quietly revoke a grant the user chose to make.
+
+Agents on different Machines have a backend row proved by the real two-host conversation
+in `test/agent-origin.test.ts`. Its separate operator row needs a live laptop Claude
+implementer asking a VM planner and receiving the answer. That row stays pending until
+someone records the result at a revision.

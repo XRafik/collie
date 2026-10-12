@@ -34,6 +34,7 @@ import {
   steerRun,
   moduleFor,
   runViews,
+  flockRuns,
   isSettled,
   resumeRun,
   startRun,
@@ -427,13 +428,15 @@ const runList = Command.make("list", {}, () =>
         // Scoped to the Task whose workspace this is, where it is one: Runs belong to
         // Tasks now, and a workspace that is not a Task's narrows nothing.
         const task = yield* selectedTask(global);
-        const hosted = yield* runViews(resolved.env, task);
+        const hosted = yield* flockRuns(resolved.env, task);
         return {
           ok: true,
-          data: { runs: hosted.runs, unreadable: hosted.unreadable },
+          data: { runs: hosted.runs, unreadable: hosted.unreadable, machines: hosted.machines },
           human:
             [
-              ...hosted.runs.map((view) => `${view.runId}\t${statusOf(view)}\t${view.workflow}`),
+              ...hosted.runs.map(
+                (view) => `${view.runId}\t${view.machine}\t${statusOf(view)}\t${view.workflow}`,
+              ),
               ...(hosted.unreadable === null ? [] : [`runs: ${hosted.unreadable}`]),
             ].join("\n") || "No runs found.",
         };
@@ -445,7 +448,7 @@ const runList = Command.make("list", {}, () =>
 
 /** `run show`'s line for each agent: `  review  claude/opus xhigh`. */
 export const agentLines = (agents: ReadonlyArray<RunAgent>) =>
-  agents.map((agent) => `  ${agent.operation}  ${ranOn(agent)}`);
+  agents.map((agent) => `  ${agent.operation}  ${agent.agent}  ${ranOn(agent)}`);
 
 /** The Run this command is about, and the environment it was resolved in. */
 const resolveCommandRun = Effect.fn("collie.resolveCommandRun")(function* (

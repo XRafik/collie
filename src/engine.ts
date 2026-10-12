@@ -9,6 +9,7 @@
 // `docs/adr/0014-native-workflows-run-on-effects-own-engine.md` records why each of the
 // pieces below is upstream's rather than Collie's.
 
+import type { Asker } from "./proposals";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
@@ -3327,6 +3328,7 @@ export interface RegistryApi {
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: AgentsSdk.DeliveryMode;
+    readonly actor?: Asker;
   }) => Effect.Effect<typeof Steered.Type, HostRefused, HostServices>;
   /** Every question this run has been asked, answered or not, oldest first. */
   readonly waiting: (runId: string) => Effect.Effect<ReadonlyArray<OpenDecision>>;
@@ -4928,6 +4930,7 @@ const makeRegistry: (
       readonly operation?: string;
       readonly agent?: string;
       readonly mode?: AgentsSdk.DeliveryMode;
+      readonly actor?: Asker;
     }) {
       // A row is enough: a finished Run's agents need its launch journal, not its module.
       if ((yield* store.run(options.runId)) === null) {

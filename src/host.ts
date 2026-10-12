@@ -341,6 +341,10 @@ export const HostRpcs = RpcGroup.make(
   /** The peer asking has forgotten this Machine, so this one forgets it too. */
   Rpc.make("forget", { success: Schema.Void, error: HostRefused }),
   Rpc.make("peers", { success: Schema.Array(PeerView) }),
+  Rpc.make("agentRun", {
+    payload: { agent: Schema.String },
+    success: Schema.NullOr(Schema.String),
+  }),
 );
 
 /** Everything this build serves; a client of another build uses `FrontDoorRpcs` alone. */
@@ -455,6 +459,14 @@ const handlers = (
             : peers.forget(machine.installation);
         },
         peers: () => peers.list,
+        agentRun: ({ agent }) =>
+          everyRegistered(dir).pipe(
+            Effect.map(
+              (entries) => entries.findLast((entry) => entry.agent === agent)?.runId ?? null,
+            ),
+            Effect.orElseSucceed(() => null),
+            Effect.provideContext(bun),
+          ),
         grant: ({ runId, name, command, request }, { client }) =>
           once(
             runDir(dir, runId),
@@ -512,6 +524,7 @@ const handlers = (
                       operation,
                       agent,
                       mode,
+                      actor: stampIn(declared, client),
                     }),
                   ),
                 ),
@@ -761,7 +774,7 @@ const frontDoorHandlers = (
       /** The serving env in the herdr session the asking channel declared, where it named one. */
       const askerEnv = (client: { readonly id: number }) => {
         const session = sessions.get(client.id);
-        const rooted = { ...env, hostStamp: stamp };
+        const rooted = { ...env, hostStamp: stamp, asker: whoOf(client) };
         return session === undefined ? rooted : { ...rooted, socketPath: session };
       };
       const trail = (runId: string) => runDir(env.stateDir, runId);
@@ -998,14 +1011,33 @@ const frontDoorHandlers = (
               new HostRefused({ reason: `this channel is already ${already.frontDoor}` }),
             );
           }
-          return Effect.sync(() => {
-            // Only a chat speaks for the human it is talking to, and says each turn's words again.
+          return Effect.gen(function* () {
+            let where = from;
+            if (frontDoor === "agent" && from?.machine === undefined) {
+              const entry = (yield* everyRegistered(dir)).findLast(
+                (one) => one.agent === from?.agent,
+              );
+              if (entry === undefined || (from?.run !== undefined && from.run !== entry.runId))
+                return yield* new HostRefused({
+                  reason: "this agent's Run could not be named from its registration",
+                });
+              where = {
+                ...from,
+                run: entry.runId,
+                agent: entry.agent,
+                machine: { installation, name: machineName() },
+              };
+            }
             if (frontDoor === "chat") voices.set(client.id, voiceOf(voice));
-            // The first declaration stands, so a bridged channel stays what its bridge said.
             if (already !== undefined) return;
-            declared.set(client.id, { frontDoor, from });
+            declared.set(client.id, { frontDoor, from: where });
             if (session !== undefined && session !== null) sessions.set(client.id, session);
-          });
+          }).pipe(
+            Effect.mapError((cause) =>
+              Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
+            ),
+            Effect.provideContext(bun),
+          );
         },
         start: (
           {

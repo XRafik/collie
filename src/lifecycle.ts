@@ -38,7 +38,7 @@ import {
 } from "./host";
 import { Herdr } from "./herdr";
 import { machineName, pairWith, peersOf } from "./peers";
-import type { HerdrMachine, MachineUnreachable } from "./peers-model";
+import type { HerdrMachine, MachineUnreachable, RelayHeader } from "./peers-model";
 import {
   sortBoard,
   type BoardMessage,
@@ -46,6 +46,7 @@ import {
   type RunDetail,
   type Controlled,
   FrontDoor,
+  Declaration,
   HostRefused,
   type Disposition,
   type ProposalCarried,
@@ -180,10 +181,13 @@ export type Door = FrontDoor | Asker;
 
 const isFrontDoor = Schema.is(FrontDoor);
 
-const declaring = (door: Door, session: string | null, stamp?: string) =>
-  isFrontDoor(door)
-    ? { frontDoor: door, session }
-    : { frontDoor: door.origin, session, from: door.from, stamp, ...voiceOf(door) };
+const declaring = (door: Door, session: string | null, stamp?: string): typeof Declaration.Type => {
+  if (isFrontDoor(door)) return { frontDoor: door, session };
+  let declared: typeof Declaration.Type = { frontDoor: door.origin, session, ...voiceOf(door) };
+  if (door.from !== undefined) declared = { ...declared, from: door.from };
+  if (stamp !== undefined) declared = { ...declared, stamp };
+  return declared;
+};
 
 /**
  * A paired Machine by herdr's name for it: kept as it is, or paired now over its SSH login
@@ -225,8 +229,20 @@ const herdrMachines = (env: PluginEnv) =>
   );
 
 /** The front door a relay header names, for a door a channel would declare. */
-const relayDoor = (door: Door | undefined): FrontDoor =>
-  door === undefined ? "cli" : isFrontDoor(door) ? door : door.origin;
+const relayHeader = (door: Door | undefined): RelayHeader => {
+  let header: RelayHeader = {
+    as: door === undefined ? "cli" : isFrontDoor(door) ? door : door.origin,
+    client: machineName(),
+  };
+  if (
+    door !== undefined &&
+    !isFrontDoor(door) &&
+    door.from?.run !== undefined &&
+    door.from.agent !== undefined
+  )
+    header = { ...header, sender: { run: door.from.run, agent: door.from.agent } };
+  return header;
+};
 
 /**
  * This Machine's host, or the named peer's over its relay, opened as `door`: a relay's
@@ -246,9 +262,7 @@ const reach = (
         ),
       )
     : ensurePaired(env, machine).pipe(
-        Effect.andThen(
-          connectPeer(env.stateDir, machine, { as: relayDoor(door), client: machineName() }),
-        ),
+        Effect.andThen(connectPeer(env.stateDir, machine, relayHeader(door))),
       );
 
 /** An answer, and the Machine it came from: null for this one. */
@@ -277,7 +291,7 @@ const asks = <A>(
  * peer, then each machine herdr lists that is not paired yet, paired on the way. A Run id
  * names one Run, so where it is is never asked of the caller.
  */
-const asksRun = <A>(
+export const asksRun = <A>(
   env: PluginEnv,
   runId: string,
   question: (client: HostClient) => Effect.Effect<A, HostFailure>,
@@ -291,11 +305,9 @@ const asksRun = <A>(
     const tryOn = (machine: string | null) =>
       Effect.scoped(
         Effect.gen(function* () {
-          const client = yield* reach(env, machine);
+          const client = yield* reach(env, machine, door);
           asked.push(machine ?? machineName());
           if ((yield* client.run({ runId })) === null) return null;
-          if (machine === null && door !== undefined)
-            yield* client.declare(declaring(door, env.socketPath, env.hostStamp));
           return { ok: true as const, value: yield* question(client), machine };
         }),
       ).pipe(
@@ -480,6 +492,40 @@ export const runViews = (
         : Effect.succeed({ runs: [], unreadable: null }),
     ),
   );
+
+export const flockRuns = Effect.fn("Lifecycle.flockRuns")(function* (
+  env: PluginEnv,
+  task: string | null,
+) {
+  const local = yield* runViews(env, task);
+  const runs: Array<RunView & { readonly machine: string }> = local.runs.map((view) => ({
+    ...view,
+    machine: env.machine ?? machineName(),
+  }));
+  const machines: Array<{
+    readonly machine: string;
+    readonly state: "away";
+    readonly note: string;
+  }> = [];
+  if (env.machine !== undefined) return { ...local, runs, machines };
+  for (const peer of yield* peersOf(env.stateDir)) {
+    const read = yield* Effect.scoped(
+      connectPeer(env.stateDir, peer.name, { as: "cli", client: machineName() }).pipe(
+        Effect.flatMap((client) => client.runs({ task: null })),
+        Effect.result,
+      ),
+    );
+    if (read._tag === "Success")
+      runs.push(...read.success.map((view) => ({ ...view, machine: peer.name })));
+    else
+      machines.push({
+        machine: peer.name,
+        state: "away",
+        note: refusal(read.failure).error.message,
+      });
+  }
+  return { ...local, runs, machines };
+});
 
 /**
  * Every state this Run reaches, until `each` says the caller has what it came for. The
@@ -1326,10 +1372,18 @@ export const actAsked = (
     readonly request: string;
   },
 ): Effect.Effect<ReadonlyArray<ActionResult>, never, Client> =>
-  asks(
-    env,
-    (client) => client.act({ actions: options.actions, request: options.request }),
-    options.door,
+  (options.actions.length === 1 && "run" in options.actions[0]!
+    ? asksRun(
+        env,
+        options.actions[0]!.run,
+        (client) => client.act({ actions: options.actions, request: options.request }),
+        options.door,
+      )
+    : asks(
+        env,
+        (client) => client.act({ actions: options.actions, request: options.request }),
+        options.door,
+      )
   ).pipe(
     Effect.map((answered) =>
       answered.ok

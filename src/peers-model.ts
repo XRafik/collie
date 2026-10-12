@@ -50,8 +50,13 @@ export const Invited = Schema.Struct({
 export type Invited = typeof Invited.Type;
 
 /** The first line on a relay socket: the front door asking, and the computer it runs on. */
+export const AgentAddress = Schema.Struct({ run: Schema.String, agent: Schema.String });
+export type AgentAddress = typeof AgentAddress.Type;
+export const AgentAddressJson = Schema.fromJsonString(AgentAddress);
+
 export const RelayHeader = Schema.Struct({
   as: FrontDoor,
+  sender: Schema.optionalKey(AgentAddress),
   client: Schema.String,
   /** The relay's own host's, which a front door cannot know: what lets `as` be `host`. */
   stamp: Schema.optionalKey(Schema.String),

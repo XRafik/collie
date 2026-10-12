@@ -9,7 +9,9 @@ import { unsafePathComponent } from "../naming";
 import { err, resolveWorkspace, type Failure } from "../operations";
 import { evidenceDir, runDir, type Given, type RunView } from "../engine";
 import { runView } from "../lifecycle";
-import { actorName, type Actor } from "../proposals";
+import { FrontDoor } from "../board-model";
+import { connect } from "../host";
+import { actorName } from "../proposals";
 import { taskOfWorkspace } from "../task";
 import { attempt, mutation, type CollieError, type Result } from "../envelope";
 import type { YamlMap } from "../yaml";
@@ -347,19 +349,30 @@ export function cliOrigin(at: {
  */
 export const cliDoor = Effect.fn("Shared.cliDoor")(function* (env: PluginEnv) {
   const terminal = Boolean(process.stdin.isTTY || process.stdout.isTTY || process.stderr.isTTY);
-  const agentPanes =
-    !terminal || env.paneId === null
+  const agents =
+    env.paneId === null
       ? []
-      : yield* new Herdr(env).agentList().pipe(
-          Effect.map((agents) => agents.map((agent) => agent.paneId)),
-          Effect.orElseSucceed(() => null),
-        );
-  return cliOrigin({ terminal, pane: env.paneId, agentPanes });
+      : yield* new Herdr(env).agentList().pipe(Effect.orElseSucceed(() => null));
+  const agent = agents?.find((one) => one.paneId === env.paneId);
+  if (agent !== undefined) {
+    const run = yield* Effect.scoped(
+      connect(env.stateDir).pipe(
+        Effect.flatMap((client) => client.agentRun({ agent: agent.name })),
+      ),
+    ).pipe(Effect.orElseSucceed(() => null));
+    if (run !== null) return { origin: "agent" as const, from: { run, agent: agent.name } };
+  }
+  return cliOrigin({
+    terminal,
+    pane: env.paneId,
+    agentPanes: agents?.map((one) => one.paneId) ?? null,
+  });
 });
 
 /** Who is asking, for an operation of this command's own. */
 export const actorNow = Effect.fn("Shared.actorNow")(function* (env: PluginEnv, requestId: string) {
-  return { origin: yield* cliDoor(env), requestId } satisfies Actor;
+  const door = yield* cliDoor(env);
+  return Schema.is(FrontDoor)(door) ? { origin: door, requestId } : { ...door, requestId };
 });
 
 export { actorName };

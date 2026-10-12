@@ -43,6 +43,8 @@ import {
   PEER_PORT,
   PeersFile,
   RelayHeaderJson,
+  AgentAddress,
+  AgentAddressJson,
   type HerdrMachine,
   type Peer,
   type PeerView,
@@ -373,7 +375,12 @@ const pinnedSocket = (peer: Peer, url: string) =>
 
 /** What a listener sends over a control link: a dial-back asked for, or that it is there. */
 const ControlMessage = Schema.Union([
-  Schema.Struct({ dial: Schema.String, as: FrontDoor, client: Schema.String }),
+  Schema.Struct({
+    dial: Schema.String,
+    as: FrontDoor,
+    client: Schema.String,
+    sender: Schema.optionalKey(AgentAddress),
+  }),
   Schema.Struct({ beat: Schema.Literal(true) }),
 ]);
 const ControlJson = Schema.fromJsonString(ControlMessage);
@@ -598,14 +605,14 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     });
 
   /** A fresh `/channel` to a peer this Machine dials. */
-  const dialOut = (peer: Peer, as: FrontDoor, client: string) =>
+  const dialOut = (peer: Peer, as: FrontDoor, client: string, sender?: AgentAddress) =>
     opened(
       peer,
-      `${peer.url}/channel?as=${encodeURIComponent(as)}&client=${encodeURIComponent(client)}`,
+      `${peer.url}/channel?as=${encodeURIComponent(as)}&client=${encodeURIComponent(client)}${sender === undefined ? "" : `&sender=${encodeURIComponent(Schema.encodeSync(AgentAddressJson)(sender))}`}`,
     );
 
   /** A peer that dials in, asked over its control link to dial back for this channel. */
-  const dialBack = (peer: Peer, as: FrontDoor, client: string) =>
+  const dialBack = (peer: Peer, as: FrontDoor, client: string, sender?: AgentAddress) =>
     Effect.gen(function* () {
       const control = controls.get(peer.installation);
       if (control === undefined)
@@ -623,7 +630,11 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
           at: now,
           arrive: (far) => (waiting ? resume(Effect.succeed(far)) : far.close()),
         });
-        control.send(encodeControl({ dial: id, as, client }));
+        control.send(
+          encodeControl(
+            sender === undefined ? { dial: id, as, client } : { dial: id, as, client, sender },
+          ),
+        );
       }).pipe(Effect.timeoutOption(REACH_BOUND));
       waiting = false;
       if (Option.isSome(far)) return far.value;
@@ -644,7 +655,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       if (as === "host" && header.value.stamp !== link.stamp)
         return conn.end(answer({ ok: false, refused: "only this Machine's host speaks as host" }));
       const reach = peer.dials === "out" ? dialOut : dialBack;
-      const far = yield* reach(peer, as, client).pipe(Effect.result);
+      const far = yield* reach(peer, as, client, header.value.sender).pipe(Effect.result);
       if (far._tag === "Failure")
         return conn.end(answer({ ok: false, unreachable: far.failure.seen }));
       const ws = far.success;
@@ -665,12 +676,12 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     }).pipe(Effect.scoped);
 
   /** A channel from `peer` into this host, declared as coming from that Machine. */
-  const intoHost = (peer: Peer, as: FrontDoor, client: string, far: Far) =>
+  const intoHost = (peer: Peer, as: FrontDoor, client: string, far: Far, sender?: AgentAddress) =>
     channelInto(
       link.socket,
       {
         frontDoor: as,
-        from: { machine: { installation: peer.installation, name: peer.name }, client },
+        from: { machine: { installation: peer.installation, name: peer.name }, client, ...sender },
         stamp: link.stamp,
       },
       {
@@ -684,10 +695,16 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     );
 
   /** The dial-back a listener asked for: `/reverse` with its ticket, piped into this host. */
-  const dialledBack = (peer: Peer, dial: string, as: FrontDoor, client: string) =>
+  const dialledBack = (
+    peer: Peer,
+    dial: string,
+    as: FrontDoor,
+    client: string,
+    sender?: AgentAddress,
+  ) =>
     opened(peer, `${peer.url}/reverse?ticket=${encodeURIComponent(dial)}`).pipe(
       Effect.flatMap((far) =>
-        intoHost(peer, as, client, far).pipe(Effect.catch(() => Effect.sync(far.close))),
+        intoHost(peer, as, client, far, sender).pipe(Effect.catch(() => Effect.sync(far.close))),
       ),
       Effect.ignore,
       Effect.scoped,
@@ -715,7 +732,13 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         if (Option.isSome(said) && "dial" in said.value)
           void Effect.runFork(
             Effect.forkIn(
-              dialledBack(peer, said.value.dial, said.value.as, said.value.client),
+              dialledBack(
+                peer,
+                said.value.dial,
+                said.value.as,
+                said.value.client,
+                said.value.sender,
+              ),
               scope,
             ),
           );
@@ -801,18 +824,29 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   };
 
   /** A `/channel` a peer opened, declared into this host. */
-  const channelFrom = (peer: Peer, as: FrontDoor, client: string): Accepted => {
+  const channelFrom = (
+    peer: Peer,
+    as: FrontDoor,
+    client: string,
+    sender?: AgentAddress,
+  ): Accepted => {
     const inbox = held();
     return {
       peer,
       opened: (ws) =>
         void Effect.runFork(
           Effect.forkIn(
-            intoHost(peer, as, client, {
-              send: (chunk) => void ws.sendBinary(chunk),
-              close: () => ws.close(),
-              listen: inbox.listen,
-            }).pipe(Effect.catch((refused) => Effect.sync(() => ws.close(1011, refused.reason)))),
+            intoHost(
+              peer,
+              as,
+              client,
+              {
+                send: (chunk) => void ws.sendBinary(chunk),
+                close: () => ws.close(),
+                listen: inbox.listen,
+              },
+              sender,
+            ).pipe(Effect.catch((refused) => Effect.sync(() => ws.close(1011, refused.reason)))),
             scope,
           ),
         ),
@@ -869,7 +903,17 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         const as = url.searchParams.get("as") ?? "";
         if (!Schema.is(FrontDoor)(as))
           return new Response(`"${as}" is not a front door`, { status: 400 });
-        return channelFrom(peer, as, url.searchParams.get("client") ?? peer.name);
+        const encoded = url.searchParams.get("sender");
+        const sender =
+          encoded === null ? undefined : Schema.decodeUnknownOption(AgentAddressJson)(encoded);
+        if (sender !== undefined && Option.isNone(sender))
+          return new Response("invalid agent address", { status: 400 });
+        return channelFrom(
+          peer,
+          as,
+          url.searchParams.get("client") ?? peer.name,
+          sender === undefined ? undefined : sender.value,
+        );
       }
       case "/control":
         return controlFrom(peer);

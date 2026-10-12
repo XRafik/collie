@@ -777,6 +777,30 @@ const BACKEND: readonly Check[] = [
       name: "the newer paired release upgrades the older one, replaces its host and restores the link",
     },
   },
+  {
+    id: "backend/agents-on-different-machines-message-each-other",
+    statement:
+      "Two Runs' agents on different Machines message each other, and each message names its sender.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/agent-origin.test.ts",
+      name: "two paired hosts carry an agent conversation and resolve Native chat reads by Run",
+    },
+  },
+  {
+    id: "machines/an-implementer-asks-a-remote-planner",
+    statement:
+      "A live Claude implementer on the laptop asks a VM planner a question and gets the answer.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Ask the laptop implementer to message the VM planner using collie_do; record both sender lines, the reply and the revision.",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */

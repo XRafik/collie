@@ -264,6 +264,12 @@ different Layer for it. There is no step to patch and no engine to copy.
 agent, collects what it wrote, decodes it against your schema, and hands you a value of
 your own type.
 
+Every agent gets Native chat's whole Toolkit through its harness's MCP wiring, or Pi's
+extension. Its prompt names its Run, agent and Machine, with the tool and CLI reply
+address. `collie_installation` and `collie_definitions` read its own Machine. Tools naming
+a Run find the host that has it; agents push their branch before starting work elsewhere.
+See [agents talking to each other](using.md#agents-talking-to-each-other).
+
 ```ts
 const Verdict = Schema.Struct({
   verdict: Schema.Literals(["clean", "findings"]).annotate({

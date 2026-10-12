@@ -194,7 +194,7 @@ export const CollieTools = Toolkit.make(
       "the board is filtered to or which card is open; where more cards exist than fit, " +
       "the answer says how many were left out. Read this before answering anything about " +
       "the flock, and again when the answer has to be current.",
-    parameters: Tool.EmptyParams,
+    parameters: Schema.Struct({ machine: Schema.optionalKey(Schema.String) }),
   }),
   collieTool("collie_run", {
     readOnly: true,
@@ -331,7 +331,7 @@ export type ToolName = keyof typeof CollieTools.tools;
 
 /** What each tool says it takes when it refuses what it was given. */
 export const TAKES: Record<ToolName, string> = {
-  collie_herd: "It takes nothing.",
+  collie_herd: 'It takes nothing, or {"machine": "<name>"}.',
   collie_run: `It takes {"run": "<run id>"}, or nothing at all for the board's selection.`,
   collie_workspaces: "It takes nothing.",
   collie_receipts: `It takes {"run": "<run id>"}, or nothing at all for the board's selection.`,
