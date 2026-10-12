@@ -1091,6 +1091,45 @@ test(
 );
 
 test(
+  "a roaming start is refused an ended Run's checkout while a Run works in it through a symlink",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const link = `${rig.root}/roaming-link`;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams, waits] = yield* loaded(registry, [
+              `${fixtures}/roams.workflow.ts`,
+              `${fixtures}/waits-here.workflow.ts`,
+            ]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            yield* (yield* FileSystem.FileSystem).symlink(roaming, link);
+            const borrower = yield* start(waits!, {
+              request: "r2",
+              options: { workspace: link },
+              text: { work: "wait" },
+            });
+            if (borrower._tag === "Failure") return yield* Effect.die(borrower.failure);
+            yield* until(
+              () => registry.view(borrower.success.runId),
+              (view) => view?.status.status === "suspended",
+            );
+            return refusedWith(yield* start(roams!, { request: "r3", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("has not ended");
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a stop closes the Run's agent and keeps its Task's workspace, and a resume starts the work again",
   () =>
     runEffect(

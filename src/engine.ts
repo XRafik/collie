@@ -3697,27 +3697,27 @@ const makeRegistry: (
         explicit: ask.options.branch ?? null,
         login: placing.env.gitlabLogin,
         recordedBy: (at) =>
-          store.runs.pipe(
-            Effect.map((rows) => {
-              const others = rows.filter((row) => row.run !== ask.runId);
-              const recorders = others
-                .filter((row) => workingPlace(row).worktree?.path === at)
-                .map((row) => row.run);
-              const latest = recorders.at(-1);
-              if (latest === undefined) return null;
-              // Whoever works in it, recorded or not, gives it up too.
-              const users = others
-                .filter((row) => {
-                  const cwd = workingPlace(row).cwd;
-                  return cwd === at || cwd.startsWith(`${at}/`);
-                })
-                .map((row) => row.run);
-              const runs = new Set(
-                [...recorders, ...users].flatMap((run) => [run, ...descendantsOf(rows, run)]),
-              );
-              return { run: latest, release: releaseRuns([...runs]) };
-            }),
-          ),
+          Effect.gen(function* () {
+            const rows = yield* store.runs;
+            const others = rows.filter((row) => row.run !== ask.runId);
+            const recorders = others
+              .filter((row) => workingPlace(row).worktree?.path === at)
+              .map((row) => row.run);
+            const latest = recorders.at(-1);
+            if (latest === undefined) return null;
+            // Whoever works in it, recorded or not and by whatever path, gives it up too.
+            const real = (dir: string) => fs.realPath(dir).pipe(Effect.orElseSucceed(() => dir));
+            const here = yield* real(at);
+            const users: string[] = [];
+            for (const row of others) {
+              const cwd = yield* real(workingPlace(row).cwd);
+              if (cwd === here || cwd.startsWith(`${here}/`)) users.push(row.run);
+            }
+            const runs = new Set(
+              [...recorders, ...users].flatMap((run) => [run, ...descendantsOf(rows, run)]),
+            );
+            return { run: latest, release: releaseRuns([...runs]) };
+          }),
         claimed: (worktree) =>
           ask.record({
             checkout: {

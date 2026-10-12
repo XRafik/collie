@@ -376,7 +376,7 @@ same one — and so is anything else in the way, rather than being built over.
 A run whose workflow has ended — failed or finished — does not keep the path from the next
 renovation of its repository. The new run takes the checkout over when git still lists it
 as one of that repository's, no other run that may go on works in it — recorded it or not,
-a run started inside it counts — and it holds nothing to lose: no uncommitted or untracked
+a run started inside it, or through a link to it, counts — and it holds nothing to lose: no uncommitted or untracked
 change, and no commit that only its detached `HEAD` reaches once the fetch is done (a
 branch checked out in it keeps its commits as a branch). The ended runs' agents are closed
 first, as a stop closes them, and the tree is checked again after; then it is moved,
