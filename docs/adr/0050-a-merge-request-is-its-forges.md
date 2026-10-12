@@ -34,6 +34,15 @@ A test holds the boundary. The named exceptions are installation, not work:
 - Desktop giving the Flock's GitLab token to each Machine;
 - the installers fetching a release.
 
+_Amended 2026-10-12, in the architecture review:_ a workflow's content file written for
+one forge, named `<name>.gitlab.md` or `<name>.github.md`, may name that forge's CLI. It
+is that forge's adapter for content, and the boundary test reads its forge from its name:
+a `*.gitlab.md` may name `glab` and never `gh`, and a `*.github.md` the reverse. `renovate`
+is the first: its procedure differs between the forges, not only its commands. The
+doctor's checks for each forge sit beside that forge's adapter, in
+`src/forge/gitlab-checks.ts` and `src/forge/github-checks.ts`, and native chat's own
+prompt, which spans every checkout, names both CLIs.
+
 **D2. The remote decides the forge.** A checkout's forge is the forge of its `origin`
 remote, or of `upstream` where `origin` names none. Any other remote is not consulted. A
 merge request's forge is the forge of the host in its URL or target.

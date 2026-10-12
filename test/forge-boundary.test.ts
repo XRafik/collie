@@ -16,7 +16,6 @@ const ADAPTER = new Map([
 const ALLOWED = new Map([
   // Permanent (ADR-0050 D1): onboarding's GitLab login and SSH key.
   ["src/onboard.ts", "permanent"],
-  ["workflows/renovate.md", "10: renovate's content per forge"],
 ]);
 
 /** A command a TypeScript file runs: the CLI as an argument, or a command line in a string. */
@@ -33,6 +32,19 @@ const matcherOf = (file: string) =>
       : null;
 
 /** Each file under `src/` and `workflows/` that runs or names a forge CLI, and which. */
+/** A content file written for one forge (ADR-0050 D1): `<name>.gitlab.md` or `<name>.github.md`. */
+const CONTENT_FOR = /\.(gitlab|github)\.md$/;
+const CLI_OF = new Map([
+  ["gitlab", "glab"],
+  ["github", "gh"],
+]);
+
+/** The CLI a file may run or name: its adapter's, or its content's forge's. */
+const allowedIn = (file: string) => {
+  const forge = CONTENT_FOR.exec(file)?.[1];
+  return ADAPTER.get(file) ?? (forge === undefined ? undefined : CLI_OF.get(forge));
+};
+
 const scan = Effect.fn("boundary.scan")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -57,7 +69,7 @@ test("glab and gh are run only by their adapters, and only the allowlist still r
       const strays: string[] = [];
       for (const [file, clis] of yield* scan())
         for (const cli of clis)
-          if (ADAPTER.get(file) !== cli && !ALLOWED.has(file)) strays.push(`${file} runs ${cli}`);
+          if (allowedIn(file) !== cli && !ALLOWED.has(file)) strays.push(`${file} runs ${cli}`);
       expect(strays).toEqual([]);
     }),
   ));
@@ -69,3 +81,9 @@ test("every allowlisted file still runs a forge CLI, so a moved one leaves the l
       expect([...ALLOWED.keys()].filter((file) => !found.has(file))).toEqual([]);
     }),
   ));
+
+test("a content file for one forge may name that forge's CLI, and never the other's", () => {
+  expect(allowedIn("workflows/renovate.gitlab.md")).toBe("glab");
+  expect(allowedIn("workflows/renovate.github.md")).toBe("gh");
+  expect(allowedIn("workflows/implement.md")).toBeUndefined();
+});

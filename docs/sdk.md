@@ -250,8 +250,11 @@ export default defineWorkflow({ ...renovation(landing), id: "landing" });
 
 Everything the fork did not write — what it assesses, what it batches, the claim it takes,
 the teammate's approval it waits for — is the shipped orchestration, and a baseline change
-to any of it reaches the fork. `RENOVATE` holds the shipped sections as templates, so a fork
-keeps a section's words by starting from its `text` and adds its own sentence; `asRenovator`
+to any of it reaches the fork. `RENOVATE_ON.gitlab` and `RENOVATE_ON.github` hold each
+forge's shipped sections as templates, and `Landed.forge` says which forge a landing step's
+repository is on, so a fork keeps a section's words for either by starting from
+`RENOVATE_ON[at.forge].merge.text` and adds its own sentence. `RENOVATE` is still the GitLab
+sections, so a fork written before there were two reads what it read; `asRenovator`
 is who does the work and the `input` every shipped section reads.
 
 Nothing was added to Collie to make that possible, and nothing needs to be. A workflow

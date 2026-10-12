@@ -10,6 +10,12 @@ in the Markdown beside it, and yours is the same kind of thing — [the SDK](sdk
 reference for writing one, and the rest of this page is about where modules and personas
 live and how they are customized.
 
+A workflow whose procedure differs between forges may keep one content file per forge,
+named `<name>.gitlab.md` and `<name>.github.md`, and choose between them from `host.mr`'s
+`provider`, as `renovate` does. Such a file may name its own forge's CLI and never the
+other's ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1); any other content names
+no CLI, and gets the commands it needs from what the host writes for the forge.
+
 ## Writing one
 
 ```sh

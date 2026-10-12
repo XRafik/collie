@@ -844,6 +844,19 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/renovate-works-a-github-repository-with-its-github-content",
+    statement:
+      "renovate works a GitHub repository with its GitHub content and a GitLab one with its GitLab content, the same steps and the same Linear tracking in both, and refuses a checkout on neither forge.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "renovate on a (gitlab|github) checkout is given that forge's content",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
@@ -1270,6 +1283,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "Run `collie run start review --input target=https://github.com/cego/collie/pull/<n>` on a colleague's open pull request, and choose Post to pull request. Record the review GitHub shows, whether it approves, and the Run's last line. Repeat on a gitlab.cego.dk merge request and record its note. Record the revision.",
+    },
+  },
+  {
+    id: "operator/renovate-renovates-on-both-forges",
+    statement:
+      "renovate on a gitlab.cego.dk project still renovates as before, and on a GitHub repository with open Renovate pull requests it reaches its batch pull request with gh alone.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Run `collie run start renovate --input repository=https://gitlab.cego.dk/<a project>` and record that it renovates as before. Where a GitHub repository with open Renovate pull requests is at hand, start renovate on it and record the batch pull request it opens and that no glab call appears in its agent's pane. Record the revision.",
     },
   },
   {

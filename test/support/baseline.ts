@@ -3115,29 +3115,119 @@ const MERGED = {
 const RELEASED = { verdict: "clean", findings: [], version: "1.2.0", tagged: true };
 const RECORDED = { verdict: "clean", findings: [], checked_off: true, status: "renovated" };
 
+const RENOVATING = {
+  gitlab: {
+    origin: "git@gitlab.example.com:group/app.git",
+    preamble: "Repository checkout or GitLab URL",
+    create: "glab mr create --assignee whoever-is-configured",
+  },
+  github: {
+    origin: "git@github.com:owner/repo.git",
+    preamble: "Repository checkout or GitHub URL",
+    create: "gh pr create --assignee tester",
+  },
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  scenario(
+    `renovate on a ${name} checkout is given that forge's content, assigned as that forge assigns`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const bin = yield* renovatable();
+          yield* forgeOnPath(bin, name, {
+            installed: true,
+            loggedIn: [FORGE_HOST[name]],
+            login: "tester",
+            mrs: [],
+          });
+          yield* exec(["git", "remote", "set-url", "origin", RENOVATING[name].origin], {
+            cwd: rig.projectDir,
+          });
+          const runId = `r-ren-${name}`;
+          yield* rig.queueOutputs([
+            TRACKED,
+            { verdict: "clean", up_to_date: false, is_package: false, merge_requests: BUMPS },
+            { verdict: "clean", branch: "renovate/batch" },
+            { verdict: "clean", verified: false },
+          ]);
+          const result = yield* ran({
+            entry: shipped("renovate"),
+            runId,
+            input: {},
+            host: withoutHelle,
+          });
+          yield* bin.restore();
+          expect(reasonOf(result)).toContain("stage was not verified");
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["track", "assess", "batch", "stage"]) {
+            const prompt = yield* asked(runId, step);
+            expect(prompt).toContain(RENOVATING[name].preamble);
+            expect(prompt).not.toMatch(other);
+          }
+          expect(yield* asked(runId, "batch")).toContain(RENOVATING[name].create);
+        }),
+      ),
+    120_000,
+  );
+}
+
 scenario(
-  "renovate keeps its GitLab requirement when the origin is on GitHub",
+  "a fork's landing reads its forge, and gets the GitHub content on a GitHub checkout",
   () =>
     runEffect(
       Effect.gen(function* () {
-        const bin = yield* FakeBin.make(`${rig.root}/bin`);
-        yield* bin.add(
-          "gh",
-          `case "$1" in api) echo '{"login":"tester"}';; repo) echo '{"nameWithOwner":"team/project"}';; esac; exit 0`,
-        );
-        yield* repository();
-        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:team/project.git"], {
+        const fs = yield* FileSystem.FileSystem;
+        const fork = `${rig.root}/fork-on`;
+        yield* fs.makeDirectory(fork, { recursive: true });
+        for (const name of ["renovate.workflow.ts", "renovate.gitlab.md", "renovate.github.md"])
+          yield* fs.copyFile(`${ROOT}workflows/${name}`, `${fork}/${name}`);
+        yield* fs.copyFile(`${fixtures}/landing-on.workflow.ts`, `${fork}/landing-on.workflow.ts`);
+        const bin = yield* renovatable();
+        yield* forgeOnPath(bin, "github", {
+          installed: true,
+          loggedIn: ["github.com"],
+          login: "tester",
+          mrs: [],
+        });
+        yield* exec(["git", "remote", "set-url", "origin", RENOVATING.github.origin], {
           cwd: rig.projectDir,
         });
-        yield* rig.queueOutputs([
-          TRACKED,
-          { verdict: "clean", up_to_date: true, is_package: false },
-          { verdict: "clean", tagged: false, up_to_date: true },
-          RECORDED,
-        ]);
-        const result = yield* ran({ entry: shipped("renovate"), runId: "r-ren-github", input: {} });
+        yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        yield* ran({
+          entry: `${fork}/landing-on.workflow.ts`,
+          runId: "r-fork-on",
+          input: {},
+          host: withoutHelle,
+        });
         yield* bin.restore();
-        expect(said(result)).toBe("nothing to renovate here: renovate requires GitLab");
+        const merging = yield* asked("r-fork-on", "merge");
+        expect(merging).toContain("gh pr merge <n> --match-head-commit");
+        expect(merging).toContain("Here, squash every merge.");
+        expect(merging).not.toMatch(/\bglab\b/);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "renovate on a checkout on neither forge renovates nothing, and says why",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* renovatable();
+        yield* exec(["git", "remote", "set-url", "origin", "git@bitbucket.org:team/project.git"], {
+          cwd: rig.projectDir,
+        });
+        const result = yield* ran({
+          entry: shipped("renovate"),
+          runId: "r-ren-neither",
+          input: {},
+        });
+        yield* bin.restore();
+        expect(said(result)).toBe(
+          "nothing to renovate here: bitbucket.org is neither GitHub nor GitLab",
+        );
         expect(yield* prompts()).toHaveLength(0);
       }),
     ),
@@ -3328,7 +3418,7 @@ scenario(
         const fs = yield* FileSystem.FileSystem;
         const fork = `${rig.root}/fork`;
         yield* fs.makeDirectory(fork, { recursive: true });
-        for (const name of ["renovate.workflow.ts", "renovate.md"]) {
+        for (const name of ["renovate.workflow.ts", "renovate.gitlab.md", "renovate.github.md"]) {
           yield* fs.copyFile(`${ROOT}workflows/${name}`, `${fork}/${name}`);
         }
         yield* fs.copyFile(`${fixtures}/landing.workflow.ts`, `${fork}/landing.workflow.ts`);

@@ -25,9 +25,9 @@ import {
 } from "collie";
 import { Effect, Schema } from "effect";
 import type { WorkflowEngine, WorkflowInstance } from "effect/workflow/WorkflowEngine";
-import markdown from "./renovate.md" with { type: "text" };
+import onGitlab from "./renovate.gitlab.md" with { type: "text" };
+import onGithub from "./renovate.github.md" with { type: "text" };
 
-const content = contentOf(markdown);
 const text = Schema.String;
 
 /** What every step of a renovation is told, under the names its content asks for them by. */
@@ -41,17 +41,26 @@ export const RenovateInput = Schema.Struct({
   }),
 });
 
-/** Each step's section of the shipped content, under the preamble they share. */
-export const RENOVATE = {
-  track: content.template("track", RenovateInput.fields),
-  assess: content.template("assess", RenovateInput.fields),
-  batch: content.template("batch", RenovateInput.fields),
-  stage: content.template("stage", RenovateInput.fields),
-  approval: content.template("approval", RenovateInput.fields),
-  merge: content.template("merge", RenovateInput.fields),
-  release: content.template("release", RenovateInput.fields),
-  record: content.template("record", RenovateInput.fields),
+/** Each step's section of one forge's content, under the preamble they share. */
+const stepsOf = (markdown: string) => {
+  const content = contentOf(markdown);
+  return {
+    track: content.template("track", RenovateInput.fields),
+    assess: content.template("assess", RenovateInput.fields),
+    batch: content.template("batch", RenovateInput.fields),
+    stage: content.template("stage", RenovateInput.fields),
+    approval: content.template("approval", RenovateInput.fields),
+    merge: content.template("merge", RenovateInput.fields),
+    release: content.template("release", RenovateInput.fields),
+    record: content.template("record", RenovateInput.fields),
+  };
 };
+
+/** The shipped content per forge: the procedure differs, not only the commands (ADR-0050 D1). */
+export const RENOVATE_ON = { gitlab: stepsOf(onGitlab), github: stepsOf(onGithub) };
+
+/** The GitLab content, under the name a fork written before there were two still reads. */
+export const RENOVATE = RENOVATE_ON.gitlab;
 
 const verdict = {
   verdict: Schema.Literals(["clean", "findings"]),
@@ -184,6 +193,8 @@ export type Renovating = Run | Agents | Host | WorkflowEngine | WorkflowInstance
 /** Where a landing step stands: its Run's directory, its content, and what came before it. */
 export interface Landed {
   readonly dir: string;
+  /** The forge the repository is on, whose content its steps are given. */
+  readonly forge: keyof typeof RENOVATE_ON;
   /** What every step of this Run is told. */
   readonly input: typeof RenovateInput.Type;
   readonly tracked: typeof Tracked.Type;
@@ -220,19 +231,19 @@ export const shippedLanding: Landing = {
   merge: (at) =>
     agentWork({
       ...asRenovator(at, "merge"),
-      instructions: RENOVATE.merge,
+      instructions: RENOVATE_ON[at.forge].merge,
       output: Merged,
     }),
   release: (at) =>
     agentWork({
       ...asRenovator(at, "release"),
-      instructions: RENOVATE.release,
+      instructions: RENOVATE_ON[at.forge].release,
       output: Released,
     }),
   record: (at) =>
     agentWork({
       ...asRenovator(at, "record"),
-      instructions: RENOVATE.record,
+      instructions: RENOVATE_ON[at.forge].record,
       output: Recorded,
     }),
 };
@@ -246,7 +257,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
     id: "renovate",
     title: "renovate — merge the month's dependency updates, tag, release and record it",
     description:
-      "Assesses every Renovate Bot merge request, gathers an application's into one batch branch proven on stage under the shared claim and approved by a teammate, merges, tags and watches the release, then checks the repository off the team's shared Renovate issue in Linear.",
+      "Assesses every Renovate Bot merge request or pull request, gathers an application's into one batch branch proven on stage under the shared claim and approved by a teammate, merges, tags and watches the release, then checks the repository off the team's shared Renovate issue in Linear.",
     input: Schema.Struct({
       repository: Schema.optionalKey(
         Schema.String.annotate({
@@ -296,19 +307,20 @@ export const renovation = (landing: Landing = shippedLanding) =>
           team: asked.team ?? "",
           issue: asked.issue ?? "",
         };
-        // Everything from the assessment on is glab: what it cannot reach, it cannot read,
-        // merge or tag. Asked before an agent is started rather than discovered by one, and
-        // the same answer names whoever the batch merge request is assigned to.
-        const gitlab = yield* host.mr({ cwd });
-        if (!gitlab.ok || gitlab.provider === "github") {
-          const reason = gitlab.provider === "github" ? "renovate requires GitLab" : gitlab.reason;
+        // Everything from the assessment on is the forge's CLI: what it cannot reach, it
+        // cannot read, merge or tag. Asked before an agent is started rather than discovered
+        // by one, and the same answer names the forge and whoever the batch is assigned to.
+        const forge = yield* host.mr({ cwd });
+        if (!forge.ok || forge.provider === undefined) {
+          const reason = forge.ok ? "this checkout's forge could not be read" : forge.reason;
           yield* host.record(runId, `nothing to renovate here: ${reason}`);
           return `nothing to renovate here: ${reason}`;
         }
+        const steps = RENOVATE_ON[forge.provider];
         const input = {
           inputs,
           run: { dir: place.dir, id: runId },
-          mr: { assignee: gitlab.assignee },
+          mr: { assignee: forge.assignee },
           // What the operator configured, so nothing team-specific or company-specific
           // lives in the content: the fallback team, and where this installation's logs are.
           config: {
@@ -321,7 +333,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
           ...asRenovator(started, "track"),
           // Claude Code's configured auto mode; this agent is reused by every later step.
           permissions: "harness",
-          instructions: RENOVATE.track,
+          instructions: steps.track,
           output: Tracked,
         });
         // The issue this Run bound itself to, in the preamble every later step shares: a
@@ -330,10 +342,16 @@ export const renovation = (landing: Landing = shippedLanding) =>
         // Nothing shared is touched yet: no claim is held, so the assessment reads only.
         const assessed = yield* agentWork({
           ...asRenovator(bound, "assess"),
-          instructions: RENOVATE.assess,
+          instructions: steps.assess,
           output: Assessed,
         });
-        const here: Landed = { ...bound, dir: place.dir, tracked, assessed };
+        const here: Landed = {
+          ...bound,
+          dir: place.dir,
+          forge: forge.provider,
+          tracked,
+          assessed,
+        };
 
         // An empty batch is a finished Run in waiting, decided from the assessment's own
         // judgement: no tab is opened for the work that is skipped, and no Output is
@@ -367,13 +385,13 @@ export const renovation = (landing: Landing = shippedLanding) =>
           // proved on stage once and reviewed once.
           const batched = yield* agentWork({
             ...asRenovator(here, "batch"),
-            instructions: RENOVATE.batch,
+            instructions: steps.batch,
             output: Batched,
           });
           if (batched.mr_url !== undefined) yield* host.mergeRequest(runId, batched.mr_url);
           const staged = yield* agentWork({
             ...asRenovator(here, "stage"),
-            instructions: RENOVATE.stage,
+            instructions: steps.stage,
             output: Staged,
           });
           // Nothing here shows stage is back on its stable release, so the claim stays with
@@ -386,7 +404,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
           // The batch is approved by another team member, never by the Run that wrote it.
           const approval = yield* agentWork({
             ...asRenovator(here, "approval"),
-            instructions: RENOVATE.approval,
+            instructions: steps.approval,
             output: Approved,
           });
           if ((approval.approved_by ?? []).length === 0) {
