@@ -90,6 +90,8 @@ export function postNote<R>(
     readonly body: string;
     /** Approve it too, which a review with nothing live left asks for. */
     readonly approve?: boolean;
+    /** The Flock's GitLab, which is GitLab whatever its name. */
+    readonly gitlabHost?: string;
   },
   run: Runner<R>,
 ): Effect.Effect<Posted, never, R> {
@@ -99,7 +101,7 @@ export function postNote<R>(
       return { ok: false, message: `${options.target || "this run"} is not a merge request` };
     const here =
       mr.project === null
-        ? yield* forgeHere(options.cwd, run)
+        ? yield* forgeHere(options.cwd, run, options.gitlabHost)
         : { ok: true as const, forge: forgeOf(mr) };
     if (!here.ok) return { ok: false, message: here.reason };
     const forge = here.forge;
@@ -304,7 +306,11 @@ export function prepareMergeRequest<R>(
       ["rev-parse", "--abbrev-ref", "HEAD"],
       opts.cwd,
     )).stdout.trim();
-    const found = yield* forge.forBranch(project, branch, opts.cwd, run);
+    // A detached checkout, as renovate's is, is on no branch to have a merge request.
+    const found =
+      branch === "HEAD" || branch === ""
+        ? { ok: true as const, open: null }
+        : yield* forge.forBranch(project, branch, opts.cwd, run);
     if (!found.ok) return unavailable(found.reason);
     const work = {
       cwd: opts.cwd,

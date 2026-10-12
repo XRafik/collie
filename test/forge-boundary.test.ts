@@ -12,7 +12,7 @@ const ADAPTER = new Map([
   ["src/forge/github-checks.ts", "gh"],
 ]);
 
-/** Files that still reach a forge's CLI themselves, and the ticket that moves each. */
+/** Files outside the adapters that reach a forge's CLI themselves, and why. */
 const ALLOWED = new Map([
   // Permanent (ADR-0050 D1): onboarding's GitLab login and SSH key.
   ["src/onboard.ts", "permanent"],
@@ -31,7 +31,6 @@ const matcherOf = (file: string) =>
       ? NAMES
       : null;
 
-/** Each file under `src/` and `workflows/` that runs or names a forge CLI, and which. */
 /** A content file written for one forge (ADR-0050 D1): `<name>.gitlab.md` or `<name>.github.md`. */
 const CONTENT_FOR = /\.(gitlab|github)\.md$/;
 const CLI_OF = new Map([
@@ -45,6 +44,7 @@ const allowedIn = (file: string) => {
   return ADAPTER.get(file) ?? (forge === undefined ? undefined : CLI_OF.get(forge));
 };
 
+/** Each file under `src/` and `workflows/` that runs or names a forge CLI, and which. */
 const scan = Effect.fn("boundary.scan")(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -63,16 +63,36 @@ const scan = Effect.fn("boundary.scan")(function* () {
   return found;
 });
 
+/** Each CLI a file runs or names that neither its adapter, its forge nor the allowlist lets it. */
+const straysIn = (found: ReadonlyMap<string, ReadonlySet<string>>) =>
+  [...found].flatMap(([file, clis]) =>
+    [...clis]
+      .filter((cli) => allowedIn(file) !== cli && !ALLOWED.has(file))
+      .map((cli) => `${file} runs ${cli}`),
+  );
+
 test("glab and gh are run only by their adapters, and only the allowlist still runs either", () =>
   runEffect(
     Effect.gen(function* () {
-      const strays: string[] = [];
-      for (const [file, clis] of yield* scan())
-        for (const cli of clis)
-          if (allowedIn(file) !== cli && !ALLOWED.has(file)) strays.push(`${file} runs ${cli}`);
-      expect(strays).toEqual([]);
+      expect(straysIn(yield* scan())).toEqual([]);
     }),
   ));
+
+test("a content file for one forge that names the other forge's CLI is a stray", () => {
+  expect(
+    straysIn(
+      new Map([
+        ["workflows/renovate.github.md", new Set(["gh", "glab"])],
+        ["workflows/renovate.gitlab.md", new Set(["glab", "gh"])],
+        ["workflows/implement.md", new Set(["gh"])],
+      ]),
+    ),
+  ).toEqual([
+    "workflows/renovate.github.md runs glab",
+    "workflows/renovate.gitlab.md runs gh",
+    "workflows/implement.md runs gh",
+  ]);
+});
 
 test("every allowlisted file still runs a forge CLI, so a moved one leaves the list", () =>
   runEffect(
@@ -81,9 +101,3 @@ test("every allowlisted file still runs a forge CLI, so a moved one leaves the l
       expect([...ALLOWED.keys()].filter((file) => !found.has(file))).toEqual([]);
     }),
   ));
-
-test("a content file for one forge may name that forge's CLI, and never the other's", () => {
-  expect(allowedIn("workflows/renovate.gitlab.md")).toBe("glab");
-  expect(allowedIn("workflows/renovate.github.md")).toBe("gh");
-  expect(allowedIn("workflows/implement.md")).toBeUndefined();
-});

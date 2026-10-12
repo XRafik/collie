@@ -1,6 +1,7 @@
 // How Collie reaches a forge: one interface, a GitLab adapter and a GitHub adapter, and
-// the choice between them. `glab` is run only in `gitlab.ts` and `gh` only in `github.ts`
-// (ADR-0050 D1); a caller asks the forge of the reference or checkout in front of it.
+// the choice between them. `glab` is run only by the GitLab adapter (`gitlab.ts` and its
+// doctor checks) and `gh` only by the GitHub one (ADR-0050 D1); a caller asks the forge of
+// the reference or checkout in front of it.
 
 import type { Effect, FileSystem, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";

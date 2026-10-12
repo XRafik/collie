@@ -2422,9 +2422,17 @@ export const hostLayer = (options: {
           under(
             fs.readFileString(asked.file).pipe(
               Effect.flatMap((body) =>
-                postNote(
-                  { target: asked.target, cwd: asked.cwd, body, approve: asked.approve === true },
-                  runShell,
+                Effect.flatMap(loadDefaults(options.userDir ?? dir), (defaults) =>
+                  postNote(
+                    {
+                      target: asked.target,
+                      cwd: asked.cwd,
+                      body,
+                      approve: asked.approve === true,
+                      gitlabHost: defaults.gitlabHost,
+                    },
+                    runShell,
+                  ),
                 ),
               ),
               Effect.orElseSucceed(() => ({

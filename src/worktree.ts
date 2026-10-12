@@ -112,6 +112,8 @@ export interface BranchAsk {
   login?: string | null | undefined;
   /** The same on GitHub (`PluginEnv.githubLogin`); null or absent leaves it to gh. */
   githubLogin?: string | null | undefined;
+  /** The Flock's GitLab, which a checkout's or a repository URL's host is whatever its name. */
+  gitlabHost?: string | undefined;
   run?: Runner<ChildProcessSpawner.ChildProcessSpawner>;
 }
 
@@ -129,8 +131,6 @@ export interface CheckoutAsk extends BranchAsk {
   separate?: boolean;
   /** The workspace the Run lives in, which is its Task's. */
   workspaceId?: string | null;
-  /** The Flock's GitLab, which a roaming Run's repository is on whatever its name. */
-  gitlabHost?: string | undefined;
   workspaceLabel?: string | null;
   /** What to call a workspace herdr opens for this checkout, where it opens one. */
   openLabel?: string | null;
@@ -264,7 +264,7 @@ const whoami = Effect.fn("worktree.whoami")(function* (
   opts: BranchAsk,
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
 ) {
-  const here = yield* forgeHere(opts.cwd, run);
+  const here = yield* forgeHere(opts.cwd, run, opts.gitlabHost);
   // A checkout on neither forge is named as GitLab names it, as before there were two.
   const forge = here.ok ? here.forge : gitlab;
   const named = (forge.name === "github" ? opts.githubLogin : opts.login)?.trim();

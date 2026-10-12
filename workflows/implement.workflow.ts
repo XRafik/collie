@@ -97,6 +97,7 @@ const prompts = {
       create: text,
       comment: text,
     }),
+    target_repo: text,
   }),
 };
 
@@ -576,6 +577,8 @@ export default defineWorkflow({
             create: ready.commands?.create ?? "",
             comment: ready.commands?.comment ?? "",
           },
+          // Not read by the shipped content; a fork's may, and `--repo` suits both CLIs.
+          target_repo: ready.repository ? `--repo ${ready.repository}` : "",
         },
         output: Opened,
       });

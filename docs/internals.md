@@ -474,7 +474,10 @@ falls all the way through to the current directory.
 
 Collie reaches GitLab and GitHub through one interface, `Forge` in `src/forge/forge.ts`,
 with an adapter per forge: `src/forge/gitlab.ts` runs `glab`, and `src/forge/github.ts`
-runs `gh` ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1). A caller asks the
+runs `gh` ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1). Each forge's doctor
+checks sit beside its adapter, in `src/forge/gitlab-checks.ts` and
+`src/forge/github-checks.ts`, and a workflow's content file for one forge
+(`<name>.gitlab.md`, `<name>.github.md`) may name that forge's CLI. A caller asks the
 forge of the merge request in front of it (`forgeOf(ref)`, from the reference's host), and
 gets answers rather than CLI calls: whether the CLI is ready for a host, who it is logged
 in as, one merge request as the panel, how far a merged commit is deployed, and a note.

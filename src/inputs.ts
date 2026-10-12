@@ -97,6 +97,8 @@ export interface InferContext<R = ChildProcessSpawner.ChildProcessSpawner> {
    */
   task?: string | null;
   run?: Runner<R>;
+  /** The Flock's GitLab, which a checkout's remote is on whatever its name. */
+  gitlabHost?: string | undefined;
 }
 
 /** The one place a subprocess is started for inference; the MR step borrows it too. */
@@ -358,7 +360,7 @@ export function targetCandidates(
     const branch = inRepo
       ? (yield* run("git", ["rev-parse", "--abbrev-ref", "HEAD"], ctx.cwd)).stdout.trim()
       : "";
-    const here = inRepo ? yield* forgeHere(ctx.cwd, run) : null;
+    const here = inRepo ? yield* forgeHere(ctx.cwd, run, ctx.gitlabHost) : null;
     const forge = here?.ok === true ? here.forge : null;
     const found =
       forge !== null && project !== null && branch !== ""

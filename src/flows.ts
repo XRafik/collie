@@ -20,7 +20,7 @@ import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
 import { insideCheckout } from "./agent-start";
 import { placeableUnder, placedByUrl, routed, routerDeps } from "./route";
 import { offerFields, offerInput, StepResult, type RunDetail } from "./board-model";
-import { loadDefaults, setSetting } from "./config";
+import { gitlabHostOf, loadDefaults, setSetting } from "./config";
 import { parseSetting, settingText } from "./settings";
 import { herdOf } from "./steering";
 import { chatHarnessOf, ensureChatFor } from "./chat";
@@ -556,6 +556,7 @@ const infer = Effect.fn("Flows.infer")(function* (
     cwd: env.cwd,
     runs: yield* listRuns(env),
     task: opts.task.mode === "continue" ? opts.task.task.id : null,
+    gitlabHost: yield* gitlabHostOf(env).pipe(Effect.orElseSucceed(() => undefined)),
   }).pipe(Effect.orElseSucceed(() => null));
   if (settled === null || settled.needsAsking || settled.value === "") return null;
   return settled;

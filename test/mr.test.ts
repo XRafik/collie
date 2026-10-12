@@ -627,3 +627,20 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 }
+
+test("a bare !42 is posted on the Flock's GitLab even where its name does not say gitlab", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge("gitlab", {
+        installed: true,
+        loggedIn: ["code.example.com"],
+        login: "me",
+        origin: "git@code.example.com:group/app.git",
+        mrs: [{ project: "code.example.com/group/app", iid: "42", state: "open" }],
+      });
+      const post = (options: { readonly gitlabHost?: string }) =>
+        postNote({ target: "mr:42", cwd: "/w", body: "LGTM", ...options }, fake.run);
+      expect((yield* post({})).message).toBe("code.example.com is neither GitHub nor GitLab");
+      expect((yield* post({ gitlabHost: "code.example.com" })).ok).toBe(true);
+    }),
+  ));
