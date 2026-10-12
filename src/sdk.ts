@@ -50,7 +50,8 @@ export { SOURCES, SOURCE_NAMES, isSource, type Source } from "./offers";
  * What a review is about its target: which kind of change it names, and the glab
  * arguments that point a command at its project from anywhere.
  */
-export { repoArgs, targetKind } from "./mr";
+export { targetKind } from "./mr";
+export { repoArgs } from "./forge/gitlab";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";

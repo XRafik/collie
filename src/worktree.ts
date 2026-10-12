@@ -24,15 +24,13 @@ import { defaultBase, linearIssueOf } from "./inputs";
 import { disambiguate, GLYPH, tabLabel } from "./naming";
 import {
   branchTargetHead,
-  glabLogin,
-  hostOf,
   projectFromRemote,
   projectHere,
-  repoArgs,
   shell,
   whatItSaid,
   type Runner,
 } from "./mr";
+import { gitlab, hostOf, repoArgs } from "./forge/gitlab";
 import { parseMrTarget } from "./board-model";
 import { withLock } from "./lock";
 import type { AgentEntry } from "./registry";
@@ -268,7 +266,7 @@ const whoami = Effect.fn("worktree.whoami")(function* (
 ) {
   const named = opts.login?.trim();
   if (named) return named;
-  return yield* glabLogin(opts.cwd, run);
+  return yield* gitlab.login(opts.cwd, run);
 });
 
 /** What `branchName` answers with: a name and how to treat it, or why there is none. */

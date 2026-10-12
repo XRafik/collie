@@ -95,7 +95,10 @@ Runner source (Bun/TypeScript). Compiled to `bin/collie` per platform; see ADR-0
 | `route.ts`         | Where a start from the Home goes: a URL's checkout by remote, else one routing call                   |
 | `worktree.ts`      | The checkout a mutating Run owns, keyed by its branch, and pruning the settled ones                   |
 | `helle.ts`         | Helle as a client, and the gate a Step blocks on until it holds the project                           |
-| `mr.ts`            | Whether GitLab is reachable, who to assign, and which Linear tickets a branch answers                 |
+| `mr.ts`            | What a merge request step needs: assignee, template, the Linear tickets a branch answers              |
+| `forge/forge.ts`   | The forge interface, and which adapter a merge request is on (ADR-0050)                               |
+| `forge/gitlab.ts`  | The GitLab adapter: everything Collie asks GitLab, through `glab`                                     |
+| `forge/github.ts`  | The GitHub adapter: everything Collie asks GitHub, through `gh`                                       |
 | `template.ts`      | `{{a.b}}` prompt substitution                                                                         |
 | `config.ts`        | User defaults and remembered values in `config.json`                                                  |
 | `compaction.ts`    | One threshold, one work-boundary policy, and each agent's controls for its lifetime                   |

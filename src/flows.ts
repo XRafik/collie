@@ -89,7 +89,8 @@ import {
 import type { Focus } from "./ui/bridge";
 import { buildHistory, buildSettings, buildWorkflows } from "./views";
 import { nowIso } from "./time";
-import { repoArgs, shell } from "./mr";
+import { shell } from "./mr";
+import { repoArgs } from "./forge/gitlab";
 import { parseMrTarget, readMrRef } from "./board-model";
 import type { ChildProcessSpawner } from "effect/process";
 import {

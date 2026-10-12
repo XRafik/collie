@@ -29,7 +29,7 @@ import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
 import { shell } from "./mr";
-import type { OfferView } from "./board-model";
+import type { ForgeChecks, OfferView } from "./board-model";
 import { everyDelivery, SENT_STATES, toldIn, type Delivery } from "./steering";
 import { readCards } from "./cards";
 import {
@@ -147,10 +147,7 @@ const reopenedOf = Effect.fn("Board.reopenedOf")(function* (
   } satisfies Reopened;
 });
 
-/** What the forge said of a merge request's own checks: a pipeline or a check rollup. */
-export type ForgeChecks =
-  | { readonly state: "passed" | "running" | "unknown" }
-  | { readonly state: "failed"; readonly name: string };
+export type { ForgeChecks } from "./board-model";
 
 /** The forge's word on a merge request's checks, and the head revision it said it of. */
 export interface ForgeFacts {

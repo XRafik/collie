@@ -292,6 +292,13 @@ export const Metrics = Schema.Struct({
 });
 export type Metrics = typeof Metrics.Type;
 
+/** What the forge said of a merge request's own checks: a pipeline or a check rollup. */
+export const ForgeChecks = Schema.Union([
+  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown"]) }),
+  Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
+]);
+export type ForgeChecks = typeof ForgeChecks.Type;
+
 /**
  * The merge request behind a review, as the app's panel shows it. Every field but the
  * iid is optional on the wire — glab's shape varies with the GitLab version and what
@@ -314,6 +321,8 @@ export const MrDetails = Schema.TaggedStruct("Details", {
   targetBranch: Schema.String,
   /** The head pipeline's status, or `""` when there is no pipeline to report. */
   pipeline: Schema.String,
+  /** The forge's checks as the card reads them, where the forge said. */
+  checks: Schema.optionalKey(ForgeChecks),
   /** Phrased, because "2" alone does not say whether that is good. */
   approvals: Schema.String,
   /** Whether a discussion is still blocking, which is the one a reviewer chases. */

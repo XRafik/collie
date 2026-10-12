@@ -727,6 +727,32 @@ const BACKEND: readonly Check[] = [
       name: "a GitHub (target|URL) reads as one merge request and writes back",
     },
   },
+  {
+    id: "backend/one-forge-contract-holds-for-gitlab-and-github",
+    statement:
+      "The GitLab and GitHub adapters answer the same contract against a fake of each forge: readiness, login, a merge request's state and checks, a note, and how far a merge is deployed.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/forge.test.ts",
+      name: "the (gitlab|github) forge",
+    },
+  },
+  {
+    id: "backend/glab-and-gh-are-run-only-by-their-adapters",
+    statement:
+      "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/forge-boundary.test.ts",
+      name: "glab and gh are run only by their adapters",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */

@@ -197,6 +197,12 @@ herdr actions, and the `collie` CLI.
   `src/inputs.ts`, `src/engine.ts` and `test/strategies.test.ts`. What Collie does with an
   Input is the strategy's, never the field's name: read one with `workSourceOf`,
   `diffTargetOf` or `gitlabRepositoryOf` rather than by looking a name up.
+- **Changing how Collie reaches a forge — GitLab or GitHub, `glab` or `gh`** →
+  [ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md) and
+  [`docs/internals.md`](docs/internals.md#the-forge-boundary), alongside the interface in
+  `src/forge/forge.ts`, the adapters `src/forge/gitlab.ts` and `src/forge/github.ts`, the
+  fakes in `test/support/forge.ts`, the contract `test/forge.test.ts` and the boundary
+  `test/forge-boundary.test.ts`. A CLI is run only by its own adapter.
 - **Changing how a workflow runs an agent, builds its prompt or collects its
   Output** →
   [ADR-0020](docs/adr/0020-an-agent-is-launched-once-and-its-output-is-decoded.md) and
