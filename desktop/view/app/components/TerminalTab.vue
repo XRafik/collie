@@ -109,8 +109,18 @@ const shown = (event: TerminalEvent) => {
   }
 };
 
-/** After the gesture that opened the tab, whose own mousedown would otherwise take focus back. */
-const takeKeys = () => requestAnimationFrame(() => term?.focus());
+const typingElsewhere = () => {
+  const active = document.activeElement;
+  return (
+    active instanceof HTMLElement &&
+    (active.isContentEditable || active.matches("input, textarea, select")) &&
+    !host.value?.contains(active)
+  );
+};
+
+/** After the gesture, whose own mousedown would otherwise take focus back. */
+const takeKeys = () => requestAnimationFrame(() => typingElsewhere() || term?.focus());
+const pressed = () => requestAnimationFrame(() => term?.focus());
 
 const attach = () => {
   if (term === undefined) return;
@@ -118,9 +128,9 @@ const attach = () => {
   noPane.value = false;
   term.reset();
   const agents = props.placed.task.agents;
-  const working = atWork(agents, props.placed.task.run);
+  const busy = atWork(agents, props.placed.task.run);
   const agent =
-    chosen.value ?? agentTabs(agents, null).find((one) => one.name === working?.name) ?? null;
+    chosen.value ?? agentTabs(agents, null).find((one) => one.name === busy?.name) ?? null;
   asked.value = agent;
   fiber = Effect.runFork(
     terminal(
@@ -225,7 +235,7 @@ onMounted(() => {
   resized.observe(element);
   // A zoom changes the cell size too; refit once xterm has measured it again.
   const ratioChanged = () => {
-    requestAnimationFrame(() => fit.fit());
+    requestAnimationFrame(() => term && fit.fit());
     watchRatio();
   };
   const watchRatio = () => {
@@ -299,7 +309,7 @@ onBeforeUnmount(() => {
       :class="{ 'opacity-50': ended !== null }"
       data-testid="terminal"
       @keydown.stop
-      @click="takeKeys"
+      @pointerdown="pressed"
     >
       <!-- Unpadded, since the fit counts its parent's padding as room for cells. -->
       <div ref="host" class="size-full" />
