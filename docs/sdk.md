@@ -586,10 +586,16 @@ prose, so the same workflow is usable by somebody else.
 
 `host.mr({ cwd, target?, source? })` is whether a merge request can be opened from here and
 what it would carry: the configured assignee, the repository's own template, the issues the
-branch answers. One question rather than two, because a step that cannot reach GitLab has
+branch answers. Its optional `provider` is `github` or `gitlab` (absent on a GitLab-only
+host), and `repository` names GitHub's owner/repository for explicit `gh --repo` commands.
+A GitHub origin uses `gh`, checks its github.com login and repository access, and reads
+the authenticated assignee and the checkout's pull request template. GitLab retains
+the configured assignee and merge request template. One question rather than two,
+because a step that cannot reach its forge has
 nothing to fill in — check it before you start an agent, and say the reason where it is no.
 Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Run: its card
 links it, waits on it, and follows what the forge says of it.
+The shipped `renovate` workflow still requires GitLab for its merge and release commands.
 
 `host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on
 the repository it works in, and answers `null` where that repository has none. Waiting here
@@ -729,9 +735,10 @@ is, and why nothing here is a dependency resolver.
 A tool that makes a development environment often cuts the checkout too. bodil's
 `bodil remote up <brands> <name>` cuts `worktrees/<name>/monorepo` on a branch of its own,
 and `bodil remote down <name>` stops the instance. A workflow wraps such a tool around a
-child: its "up" in an Activity, the child given the tool's worktree as its `workspace` and
-the tool's branch as its `branch`, and its "down" in an Activity once the child has settled,
-however the child ended.
+child: its "up" in an Activity, and the child given the tool's worktree as its `workspace`
+and the tool's branch as its `branch`. Where the tool's instance should not outlive the work,
+its "down" goes in an Activity once the child has settled, however the child ended. bodil's
+is left up, because it is what the human checks the change in.
 
 The child's `checkout` resolves to the worktree the branch already has, as it does for any
 checkout already on the branch. Collie records it as not made by Collie
@@ -743,8 +750,8 @@ belongs with bodil's own install script and, until then, in
 
 ```ts
 // implement, in a bodil instance. `bodil remote up` cuts the worktree and its branch,
-// implement works there, and `bodil remote down` stops the instance once implement has
-// settled, however it ended. bodil reads the VM from BODIL_REMOTE_VM itself.
+// implement works there, and the instance is left up to check the change in.
+// bodil reads the VM from BODIL_REMOTE_VM itself.
 
 import { Host, Run, WorkflowError, child, defineWorkflow } from "collie";
 import { Effect, Schema, Stream } from "effect";
@@ -778,8 +785,7 @@ const sh = (command: string, args: ReadonlyArray<string>, cwd?: string) =>
 export default defineWorkflow({
   id: "bodil",
   title: "Implement a plan in a bodil instance",
-  description:
-    "Brings a bodil instance up, implements the plan in its worktree, and takes it down.",
+  description: "Brings a bodil instance up, implements the plan in its worktree, and leaves it up.",
   input: Schema.Struct({
     plan: Schema.String,
     /** What `bodil remote up` brings up, such as `happytiger`. */
@@ -800,48 +806,37 @@ export default defineWorkflow({
         name: "up",
         success: Schema.String,
         error: WorkflowError,
-        execute: sh("bodil", ["remote", "up", input.brands, name]),
+        execute: sh("bodil", ["remote", "up", input.brands, name, "--detach"]),
       });
-      // Everything after "up" is followed by "down", so a failure here leaves no instance up.
-      const built = yield* Effect.exit(
-        Effect.gen(function* () {
-          const checkout = yield* Activity.make({
-            name: "checkout",
-            success: Schema.Struct({ worktree: Schema.String, branch: Schema.String }),
-            error: WorkflowError,
-            execute: Effect.gen(function* () {
-              const worktree = `${yield* sh("bodil", ["root"])}/worktrees/${name}/monorepo`;
-              // Read, never derived, so bodil's rule for naming its branch stays bodil's.
-              const branch = yield* sh("git", ["branch", "--show-current"], worktree);
-              return { worktree, branch };
-            }),
-          });
-          return yield* child({
-            invocation: "implement",
-            workflow: "implement",
-            input: { plan: input.plan },
-            options: { workspace: checkout.worktree, branch: checkout.branch },
-          });
+      const checkout = yield* Activity.make({
+        name: "checkout",
+        success: Schema.Struct({ worktree: Schema.String, branch: Schema.String }),
+        error: WorkflowError,
+        execute: Effect.gen(function* () {
+          const worktree = `${yield* sh("bodil", ["root"])}/worktrees/${name}/monorepo`;
+          // Read, never derived, so bodil's rule for naming its branch stays bodil's.
+          const branch = yield* sh("git", ["branch", "--show-current"], worktree);
+          return { worktree, branch };
+        }),
+      });
+      return String(
+        yield* child({
+          invocation: "implement",
+          workflow: "implement",
+          input: { plan: input.plan },
+          options: { workspace: checkout.worktree, branch: checkout.branch },
         }),
       );
-      // Never `--purge`: the worktree outlives the instance until bodil removes it.
-      yield* Activity.make({
-        name: "down",
-        success: Schema.String,
-        error: WorkflowError,
-        execute: sh("bodil", ["remote", "down", name]),
-      });
-      return String(yield* built);
     }),
 });
 ```
 
 `name` is optional: without one the instance is named after the Run's task. The VM is
 bodil's own `BODIL_REMOTE_VM`, which bodil reads itself. The branch is read from the
-checkout rather than worked out again, so bodil's rule for naming it stays bodil's. `down`
-never passes `--purge`, so the worktree outlives the instance until bodil removes it. A
-`down` that fails fails the Run, even after implement succeeded, so a leftover instance is
-never quiet; a Run stopped part-way leaves the instance up, for `bodil remote down <name>`.
+checkout rather than worked out again, so bodil's rule for naming it stays bodil's. `up`
+passes `--detach` because bodil's foreground mode holds until it is stopped, so the Activity
+would never finish. The instance outlives the Run, however it ended, so the human can check
+the change in it; `bodil remote down <name>` takes it down once they are done.
 
 ## A list of work, one item at a time
 
@@ -974,9 +969,9 @@ sentence each, and empty where the evidence is there. It reads the journal, the 
 list, the Outputs you hold and the tickets you built — and it will not take a reviewer's
 judgement from an implementer's Output, because the agent that wrote the change cannot
 vouch for its own scope. Only the latest result for a check on the tree in front of it
-counts, so a pass a later fail on the same tree contradicts is not one. Pass `preexisting` with the approved checks that also failed where
-the branch leaves the default branch, and one that still fails is left out of the gaps for your Run
-to report instead.
+counts, so a pass a later fail on the same tree contradicts is not one. Baseline failures
+are diagnostic context: `preexisting` does not remove gaps. Each approved check and each
+ticket's promised check still needs a passing verification on the current tree.
 
 ```ts
 const gaps = evidenceGapsOf({

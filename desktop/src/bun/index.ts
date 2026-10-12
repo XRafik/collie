@@ -55,6 +55,7 @@ import {
 import { RELEASE_PUBLIC_KEY } from "../../../src/signing";
 import { pruneDesktop, sshControlsPrefix, sweepSshControls } from "../../../src/desktop";
 import { appWindowFor } from "./browser";
+import { applicationMenu } from "./menu";
 import { clipboardPaths } from "../shared/attachments";
 import { readAttachment, stageAttachment, stagePath } from "./attachments";
 import { type FlockConversation, openFlockChat, refusal, untilStarted } from "./chat";
@@ -288,7 +289,7 @@ const main = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   // Short, because a control socket's path is capped at about 100 bytes.
   // A Desktop that was killed left its own, and the masters in them, behind.
-  yield* sweepSshControls(tmpdir()).pipe(Effect.ignore);
+  yield* sweepSshControls(tmpdir(), childEnv()).pipe(Effect.ignore);
   const controls = yield* fs.makeTempDirectoryScoped({ prefix: sshControlsPrefix(process.pid) });
   // herdr's list is the only list of Machines there is.
   const listed = yield* herdrMachines("herdr", manifest.min_herdr_version).pipe(Effect.result);
@@ -1091,6 +1092,10 @@ const main = Effect.gen(function* () {
     );
   return yield* Layer.launch(servedOn(board.channel));
 }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
+
+// A Mac sends Cmd+C, Cmd+V, Cmd+Q and the rest through its menu bar, which is empty until set.
+if (process.platform === "darwin")
+  Electrobun.ApplicationMenu.setApplicationMenu(applicationMenu(process.platform));
 
 // Quitting may end the process before any scope closes, and an SSH master would outlive it.
 Electrobun.events.on("before-quit", endChildren);
