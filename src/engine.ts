@@ -2270,6 +2270,7 @@ export const hostLayer = (options: {
                     yield* readConfig(options.userDir ?? dir),
                     "gitlab.assignee",
                   ),
+                  gitlabHost: (yield* loadDefaults(options.userDir ?? dir)).gitlabHost,
                 },
                 runShell,
               );

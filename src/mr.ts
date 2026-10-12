@@ -8,8 +8,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { YamlValue } from "./yaml";
 import { isString } from "./schema";
 import { targetKind, workSourceOf, type Settled } from "./strategies";
-import { type MrDetails, type MrRef, mrTarget, parseMrTarget } from "./board-model";
-import { forgeOf } from "./forge/forge";
+import { type MrDetails, type MrRef, mrPath, mrTarget, parseMrTarget } from "./board-model";
+import { FORGES, forgeOf, forgeOfHost, type Forge } from "./forge/forge";
 import { github } from "./forge/github";
 import { gitlab } from "./forge/gitlab";
 import type { MrReady, Posted } from "./sdk";
@@ -88,7 +88,12 @@ export function postNote<R>(
     const mr = parseMrTarget(options.target);
     if (!mr)
       return { ok: false, message: `${options.target || "this run"} is not a merge request` };
-    const forge = forgeOf(mr);
+    const here =
+      mr.project === null
+        ? yield* forgeHere(options.cwd, run)
+        : { ok: true as const, forge: forgeOf(mr) };
+    if (!here.ok) return { ok: false, message: here.reason };
+    const forge = here.forge;
     const ready = yield* forge.ready(mr.project, options.cwd, run);
     if (!ready.ok) return { ok: false, message: ready.reason };
     const me = yield* forge.login(options.cwd, run);
@@ -175,6 +180,27 @@ export function projectHere<R>(
     return null;
   });
 }
+/** A checkout's forge and the project it pushes to, or why it has none. */
+export type ForgeHere =
+  | { readonly ok: true; readonly forge: Forge; readonly project: string }
+  | { readonly ok: false; readonly reason: string };
+
+/** The forge of the checkout at `cwd`: its `origin`'s host, else `upstream`'s (ADR-0050 D2). */
+export function forgeHere<R>(
+  cwd: string,
+  run: Runner<R>,
+  gitlabHost?: string,
+): Effect.Effect<ForgeHere, never, R> {
+  return Effect.map(projectHere(cwd, run), (project): ForgeHere => {
+    if (project === null) return { ok: false, reason: "this repo has no remote" };
+    const host = project.split("/")[0]!;
+    const name = forgeOfHost(host, gitlabHost);
+    return name === null
+      ? { ok: false, reason: `${host} is neither GitHub nor GitLab` }
+      : { ok: true, forge: FORGES[name], project };
+  });
+}
+
 /**
  * The line that decides whether to look again: has this merge request moved since the
  * review finished. GitLab's `updated_at` is what answers it in the one call the panel
@@ -272,6 +298,8 @@ export function prepareMergeRequest<R>(
     readonly target?: string;
     readonly source?: { readonly value: string; readonly kind: string };
     readonly configuredAssignee?: YamlValue;
+    /** The Flock's GitLab, which is GitLab whatever its name. */
+    readonly gitlabHost?: string;
   },
   run: Runner<R>,
 ): Effect.Effect<MrReady, PlatformError, FileSystem.FileSystem | Path.Path | R> {
@@ -288,19 +316,16 @@ export function prepareMergeRequest<R>(
       inputs: { source: opts.source?.value ?? "", source_kind: opts.source?.kind ?? "" },
       strategies: { source: "work-source" },
     };
-    const origin =
-      opts.target === undefined
-        ? yield* run("git", ["remote", "get-url", "origin"], opts.cwd)
-        : null;
-    const repository =
-      origin?.code === 0
-        ? /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(
-            origin.stdout.trim(),
-          )?.[1]
-        : undefined;
-    if (repository !== undefined) {
-      const ready = yield* github.ready(`github.com/${repository}`, opts.cwd, run);
-      if (!ready.ok) return unavailable(ready.reason);
+    const ref = opts.target === undefined ? null : parseMrTarget(opts.target);
+    const here =
+      ref?.project != null
+        ? { ok: true as const, forge: forgeOf(ref), project: ref.project }
+        : yield* forgeHere(opts.cwd, run, opts.gitlabHost);
+    if (!here.ok) return unavailable(here.reason);
+    const ready = yield* here.forge.ready(here.project, opts.cwd, run);
+    if (!ready.ok) return unavailable(ready.reason);
+    if (here.forge.name === "github") {
+      const repository = mrPath({ project: here.project, iid: "" });
       const login = yield* github.login(opts.cwd, run);
       if (login === null) return unavailable("gh did not report a GitHub login");
       const fs = yield* FileSystem.FileSystem;
@@ -326,12 +351,6 @@ export function prepareMergeRequest<R>(
         issues: yield* linearIssues(work, run),
       };
     }
-    const ready = yield* gitlab.ready(
-      opts.target === undefined ? null : (parseMrTarget(opts.target)?.project ?? null),
-      opts.cwd,
-      run,
-    );
-    if (!ready.ok) return unavailable(ready.reason);
     const facts = yield* mrFacts({ ...work, configuredAssignee: opts.configuredAssignee }, run);
     return {
       ok: true,

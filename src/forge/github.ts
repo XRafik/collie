@@ -10,28 +10,43 @@ import {
   type MrRef,
 } from "../board-model";
 import type { Runner } from "../mr";
+import { epochMs } from "../time";
 import type { Forge, Readiness } from "./forge";
 
 const HOST = "github.com";
 
+const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
+const Login = Schema.Struct({ login: optionalText });
+
 const PullJson = Schema.fromJsonString(
   Schema.Struct({
+    title: optionalText,
     state: Schema.String,
-    headRefOid: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    isDraft: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    author: Schema.optionalKey(Schema.NullOr(Login)),
+    assignees: Schema.optionalKey(Schema.NullOr(Schema.Array(Login))),
+    headRefName: optionalText,
+    baseRefName: optionalText,
+    headRefOid: optionalText,
     mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
     statusCheckRollup: Schema.optionalKey(
       Schema.NullOr(
         Schema.Array(
           Schema.Struct({
-            name: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            context: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            status: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            conclusion: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            state: Schema.optionalKey(Schema.NullOr(Schema.String)),
+            name: optionalText,
+            context: optionalText,
+            status: optionalText,
+            conclusion: optionalText,
+            state: optionalText,
           }),
         ),
       ),
     ),
+    reviewDecision: optionalText,
+    comments: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Unknown))),
+    updatedAt: optionalText,
+    url: optionalText,
+    autoMergeRequest: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
   }),
 );
 type Pull = typeof PullJson.Type;
@@ -63,24 +78,38 @@ export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
   return { state: "passed" };
 }
 
-/**
- * One pull request, in one `gh pr view` call. Only what the merge watch reads is asked:
- * state, checks, head and merged commit; the rest of the panel is empty.
- */
+const FIELDS = [
+  "title",
+  "state",
+  "isDraft",
+  "author",
+  "assignees",
+  "headRefName",
+  "baseRefName",
+  "headRefOid",
+  "mergeCommit",
+  "statusCheckRollup",
+  "reviewDecision",
+  "comments",
+  "updatedAt",
+  "url",
+  "autoMergeRequest",
+].join(",");
+
+/** GitHub's review decision, phrased as a GitLab panel phrases its approvals. */
+const APPROVALS = new Map([
+  ["APPROVED", "approved"],
+  ["CHANGES_REQUESTED", "changes requested"],
+  ["REVIEW_REQUIRED", "review required"],
+]);
+
+/** One pull request, in one `gh pr view` call. */
 function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPanel, never, R> {
   return Effect.gen(function* () {
     const where = mrWords(ref).label;
     const view = yield* run(
       "gh",
-      [
-        "pr",
-        "view",
-        ref.iid,
-        "--repo",
-        mrPath(ref),
-        "--json",
-        "state,mergeCommit,headRefOid,statusCheckRollup",
-      ],
+      ["pr", "view", ref.iid, "--repo", mrPath(ref), "--json", FIELDS],
       cwd,
     );
     if (view.code !== 0) return { _tag: "Unavailable", reason: `gh could not read ${where}` };
@@ -90,26 +119,28 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
     const pull = decoded.value;
     const checks = rollupChecks(pull.statusCheckRollup);
     const head = pull.headRefOid ?? "";
+    const updated = pull.updatedAt ? epochMs(pull.updatedAt) : Number.NaN;
     return {
       _tag: "Details",
       iid: ref.iid,
       project: ref.project,
-      title: "",
-      state: pull.state.toLowerCase(),
-      author: "",
-      assignees: [],
-      sourceBranch: "",
-      targetBranch: "",
+      title: pull.title ?? "",
+      state: pull.isDraft === true ? "draft" : pull.state.toLowerCase(),
+      author: pull.author?.login ?? "",
+      assignees: (pull.assignees ?? []).map((one) => one.login ?? "").filter((name) => name !== ""),
+      sourceBranch: pull.headRefName ?? "",
+      targetBranch: pull.baseRefName ?? "",
       pipeline: checks.state === "unknown" ? "" : checks.state,
       checks,
-      approvals: "",
+      approvals: APPROVALS.get(pull.reviewDecision ?? "") ?? "",
       unresolved: false,
-      notes: 0,
+      notes: pull.comments?.length ?? 0,
       headSha: head.slice(0, 7),
       head,
       mergedSha: pull.mergeCommit?.oid ?? "",
-      updatedAt: 0,
-      url: mrWords(ref).url ?? "",
+      updatedAt: Number.isFinite(updated) ? updated : 0,
+      url: pull.url ?? mrWords(ref).url ?? "",
+      autoMerge: pull.autoMergeRequest != null,
     } satisfies MrDetails;
   });
 }

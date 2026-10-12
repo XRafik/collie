@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { runEffect } from "./support/effect";
+import { forgeOfHost } from "../src/forge/forge";
 import {
   MR_TEMPLATE,
+  forgeHere,
   linearIssues,
   mrFacts,
   mrTarget,
@@ -15,13 +17,7 @@ import {
   whatItSaid,
 } from "../src/mr";
 import { parseMrUrl, parseMrTarget } from "../src/board-model";
-import {
-  gitlabForProject,
-  gitlabReadiness,
-  hostOf,
-  mrDetails,
-  repoArgs,
-} from "../src/forge/gitlab";
+import { gitlabForProject, hostOf, mrDetails, repoArgs } from "../src/forge/gitlab";
 import { Rig } from "./support/recorder";
 import { epochMs } from "../src/time";
 
@@ -61,40 +57,38 @@ function runner(table: Record<string, { code?: number; stdout?: string }>) {
     );
 }
 
-test("GitLab is ready only with glab installed and a GitLab remote", () =>
+test("a host's forge is GitHub on github.com, GitLab on the Flock's GitLab or a gitlab host, else none", () => {
+  expect(forgeOfHost("github.com")).toBe("github");
+  expect(forgeOfHost("gitlab.cego.dk")).toBe("gitlab");
+  expect(forgeOfHost("gitlab.example.com")).toBe("gitlab");
+  expect(forgeOfHost("code.example.com", "code.example.com")).toBe("gitlab");
+  expect(forgeOfHost("code.example.com")).toBeNull();
+  expect(forgeOfHost("bitbucket.org", "gitlab.cego.dk")).toBeNull();
+});
+
+test("a checkout's forge is its origin's, else its upstream's, whatever else it has", () =>
   runEffect(
     Effect.gen(function* () {
-      const ok = runner({
-        "glab --version": { stdout: "glab 1.40" },
-        "git remote -v": { stdout: "origin\tgit@gitlab.cego.dk:cego/herdr-plugin.git (fetch)\n" },
-      });
-      expect(yield* gitlabReadiness(rig.projectDir, ok)).toEqual({ ok: true, reason: "" });
-
-      const noGlab = runner({
-        "git remote -v": { stdout: "origin\tgit@gitlab.cego.dk:x.git (fetch)\n" },
-      });
-      expect(yield* gitlabReadiness(rig.projectDir, noGlab)).toMatchObject({
-        ok: false,
-        reason: "glab is not installed",
-      });
-
-      const noRemote = runner({
-        "glab --version": { stdout: "glab 1.40" },
-        "git remote -v": { stdout: "" },
-      });
-      expect(yield* gitlabReadiness(rig.projectDir, noRemote)).toMatchObject({
-        ok: false,
-        reason: "this repo has no remote",
-      });
-
-      const elsewhere = runner({
-        "glab --version": { stdout: "glab 1.40" },
-        "git remote -v": { stdout: "origin\tgit@github.com:someone/x.git (fetch)\n" },
-      });
-      expect(yield* gitlabReadiness(rig.projectDir, elsewhere)).toMatchObject({
-        ok: false,
-        reason: "no GitLab remote",
-      });
+      const here = (table: Record<string, { stdout?: string }>) =>
+        Effect.map(forgeHere("/w", runner(table)), (found) =>
+          found.ok ? [found.forge.name, found.project] : found.reason,
+        );
+      // cego/collie: a GitHub origin beside an old gitlab remote is GitHub.
+      expect(
+        yield* here({
+          "git remote get-url origin": { stdout: "git@github.com:cego/collie.git\n" },
+          "git remote get-url gitlab": { stdout: "git@gitlab.cego.dk:mk/collie.git\n" },
+        }),
+      ).toEqual(["github", "github.com/cego/collie"]);
+      expect(
+        yield* here({
+          "git remote get-url upstream": { stdout: "https://gitlab.cego.dk/cego/x.git" },
+        }),
+      ).toEqual(["gitlab", "gitlab.cego.dk/cego/x"]);
+      expect(yield* here({})).toBe("this repo has no remote");
+      expect(
+        yield* here({ "git remote get-url origin": { stdout: "git@bitbucket.org:a/b.git" } }),
+      ).toBe("bitbucket.org is neither GitHub nor GitLab");
     }),
   ));
 
@@ -245,7 +239,7 @@ test("a step pointed at a project needs glab logged in to that host, not a check
     }),
   ));
 
-test("not logged in to that host says so, and no project falls back to the checkout", () =>
+test("not logged in to that host says so, and no project leaves the checkout to detection", () =>
   runEffect(
     Effect.gen(function* () {
       const run = (cmd: string, args: string[]) =>
@@ -260,8 +254,8 @@ test("not logged in to that host says so, and no project falls back to the check
       expect((yield* gitlabForProject("gitlab.cego.dk/cego/x", "/x", run)).reason).toBe(
         "glab is not logged in to gitlab.cego.dk",
       );
-      // A target with no project can only be judged by the directory, as before.
-      expect((yield* gitlabForProject(null, "/x", run)).reason).toBe("this repo has no remote");
+      // A target with no project is judged by its checkout's forge, before the adapter is asked.
+      expect(yield* gitlabForProject(null, "/x", run)).toEqual({ ok: true, reason: "" });
     }),
   ));
 

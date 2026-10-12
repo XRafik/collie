@@ -56,3 +56,14 @@ export const FORGES: Readonly<Record<MrForge, Forge>> = { gitlab, github };
 export function forgeOf(ref: MrRef): Forge {
   return FORGES[forgeOfRef(ref)];
 }
+
+/**
+ * The forge a host is on (ADR-0050 D2): GitHub on `github.com`, GitLab on the Flock's
+ * GitLab host or any host whose name says `gitlab`, and none anywhere else.
+ */
+export function forgeOfHost(host: string, gitlabHost?: string): MrForge | null {
+  const name = host.toLowerCase();
+  if (name === "github.com") return "github";
+  if (name === gitlabHost?.toLowerCase() || name.includes("gitlab")) return "gitlab";
+  return null;
+}

@@ -3,7 +3,8 @@ import { Effect, FileSystem } from "effect";
 import { buildBoard } from "../src/board";
 import { sectionOf } from "../src/board-model";
 import { readDispositions } from "../src/disposition";
-import { readForge, readMrStates, settleMerges } from "../src/merges";
+import { readForge, readMrStates, settleMerges, watchedMr } from "../src/merges";
+import { sinceReview } from "../src/mr";
 import { appendVerification } from "../src/verify";
 import type { Runner } from "../src/mr";
 import { readEnv } from "../src/env";
@@ -404,5 +405,43 @@ test("green forge checks with Collie's evidence at an older head pass on the for
       const [card] = yield* buildBoard({ env, runs: [made], now });
       expect(card!.checks).toEqual({ state: "passed", at: HEAD });
       expect(card!.sentence).toContain("passed at 1a2b3c4.");
+    }),
+  ));
+
+test("a pull request's panel is read for the drawer as a merge request's is, and says whether it moved", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const reviewedAt = epochMs("2026-09-17T09:00:00Z");
+      for (const [target, run] of [
+        [MR, forge("gitlab", { mrs: [mr65({ head: HEAD, updatedAt: "2026-09-17T11:00:00Z" })] })],
+        [
+          PR,
+          forge("github", {
+            mrs: [
+              {
+                project: "github.com/cego/collie",
+                iid: "30",
+                state: "open",
+                title: "Cards",
+                head: HEAD,
+                updatedAt: "2026-09-17T11:00:00Z",
+              },
+            ],
+          }),
+        ],
+      ] as const) {
+        const panel = yield* watchedMr({
+          panels: new Map(),
+          target,
+          cwd: "/project",
+          run,
+          now: epochMs("2026-09-17T12:00:00Z"),
+          fresh: true,
+        });
+        expect(panel).toMatchObject({ _tag: "Details", title: "Cards", headSha: "1a2b3c4" });
+        expect(panel?._tag === "Details" ? sinceReview(panel, reviewedAt) : "").toBe(
+          "changed 2h after this review — head 1a2b3c4",
+        );
+      }
     }),
   ));

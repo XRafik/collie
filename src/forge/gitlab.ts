@@ -56,6 +56,7 @@ const MrDetailsJson = Schema.fromJsonString(
     head_pipeline: optionalStatus,
     pipeline: optionalStatus,
     blocking_discussions_resolved: optionalFlag,
+    merge_when_pipeline_succeeds: optionalFlag,
     user_notes_count: optionalCount,
     approvals_required: optionalCount,
     approvals_left: optionalCount,
@@ -125,6 +126,7 @@ export function mrDetails<R>(
         mr.state === "merged" ? (mr.merge_commit_sha ?? mr.squash_commit_sha ?? mr.sha ?? "") : "",
       updatedAt: Number.isFinite(updated) ? updated : 0,
       url: mr.web_url ?? "",
+      autoMerge: mr.merge_when_pipeline_succeeds === true,
     } satisfies MrDetails;
   });
 }
@@ -161,28 +163,10 @@ export function pipelineChecks(status: string): ForgeChecks {
   return { state: "unknown" };
 }
 
-/** glab has to exist and the repo has to actually be on GitLab. */
-export function gitlabReadiness<R>(
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<Readiness, never, R> {
-  return Effect.gen(function* () {
-    const glab = yield* run("glab", ["--version"], cwd);
-    if (glab.code !== 0) return { ok: false, reason: "glab is not installed" };
-
-    const remotes = yield* run("git", ["remote", "-v"], cwd);
-    if (remotes.code !== 0 || remotes.stdout.trim() === "") {
-      return { ok: false, reason: "this repo has no remote" };
-    }
-    if (!/gitlab/i.test(remotes.stdout)) return { ok: false, reason: "no GitLab remote" };
-    return { ok: true, reason: "" };
-  });
-}
-
 /**
- * What a step pointed at someone else's merge request needs: glab, and glab logged
- * in to that host. The cwd's remotes are none of its business — the whole point of
- * carrying the project is that no checkout is required.
+ * What a step pointed at a merge request needs: glab, and glab logged in to that host.
+ * The cwd's remotes are none of its business — which forge a checkout is on is decided
+ * before an adapter is asked.
  */
 export function gitlabForProject<R>(
   project: string | null,
@@ -194,10 +178,7 @@ export function gitlabForProject<R>(
     if (glab.code !== 0) return { ok: false, reason: "glab is not installed" };
 
     const host = hostOf(project);
-    if (!host) {
-      // No project to check against: fall back to what this directory can prove.
-      return yield* gitlabReadiness(cwd, run);
-    }
+    if (!host) return { ok: true, reason: "" };
     const auth = yield* run("glab", ["auth", "status", "--hostname", host], cwd);
     return auth.code === 0
       ? { ok: true, reason: "" }
@@ -289,8 +270,7 @@ export function liveTier<R>(
 
 export const gitlab: Forge = {
   name: "gitlab",
-  ready: (project, cwd, run) =>
-    project === null ? gitlabReadiness(cwd, run) : gitlabForProject(project, cwd, run),
+  ready: gitlabForProject,
   login: glabLogin,
   details: mrDetails,
   liveTier,

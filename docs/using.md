@@ -546,8 +546,9 @@ land, such as a review, or it ended with nothing to file — as one line, `3 fin
 1 failed`, until you click it open; anything older than a day is behind `older…`, which
 reads it from this checkout's history rather than carding every Run Collie has ever kept.
 
-Collie learns a merge by itself, whether or not a pane is open: the host asks GitLab
-(`glab`) or GitHub (`gh`) about each merge request in Waiting on you every 5 minutes; one
+Collie learns a merge by itself, whether or not a pane is open: the host asks the merge
+request's own forge, through that forge's adapter — GitLab with `glab`, GitHub with `gh` —
+about each merge request in Waiting on you every 5 minutes; one
 that merged gets its `merged` disposition recorded as that forge's word and its card moves
 to Finished. One that was closed without merging only changes its card's sentence: closing
 can mean superseded as easily as abandoned, and only you know which. The same answer
@@ -556,7 +557,16 @@ revision they ran at, which is the one Collie's own checks are counted at too: a
 one names itself (`cego/collie#30 is open, but lint failed at 1a2b3c4.`), a pending one
 reads `cego/collie#30 is open; its pipeline is still running.`, and Ready to release needs
 every check the card knows of to have passed. No `gh`, or one nobody logged in to, leaves
-the card `nothing has checked it` and says nothing about why.
+the card `nothing has checked it` and says nothing about why. A pull request's details —
+title, state, author and assignees, branches, checks, approval, comments, head and
+whether it moved since the review — show in the drawer and Desktop's record as a merge
+request's do.
+
+A checkout's forge is the forge of its `origin` remote's host, or `upstream`'s where it
+has no `origin` (ADR-0050 D2): `github.com` is GitHub, and the Flock's `gitlab_host` or a
+host whose name contains `gitlab` is GitLab. Another remote beside `origin` does not
+count, so a GitHub checkout that also has an old GitLab remote is GitHub. A checkout on
+any other host has no forge, and a merge request step there says so.
 
 The header sentence counts the whole Herd, not what the search left: `One task is
 waiting on you. 1 ready to release, 2 waiting on you. 4 working, 1 gone quiet.` — the

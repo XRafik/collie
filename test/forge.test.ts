@@ -5,6 +5,7 @@ import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
 import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
+import { epochMs } from "../src/time";
 import { runEffect } from "./support/effect";
 import {
   FORGE_HOST,
@@ -93,6 +94,40 @@ for (const name of ["gitlab", "github"] as const) {
             mergedSha: MERGED,
           });
           expect(yield* read({ state: "closed" })).toMatchObject({ state: "closed" });
+        }),
+      ));
+
+    test("reads the whole panel: draft, people, branches, approval, auto-merge and when it moved", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const read = (over: Partial<FakeMr>) =>
+            forge.details(
+              ref(name),
+              "/w",
+              fakeForge(name, model(name, { mrs: [mr(name, over)] })).run,
+            );
+          expect(
+            yield* read({
+              title: "Cards",
+              author: "ann",
+              assignees: ["me"],
+              sourceBranch: "me/cards",
+              targetBranch: "main",
+              approved: true,
+              autoMerge: true,
+              updatedAt: "2026-10-01T12:00:00Z",
+            }),
+          ).toMatchObject({
+            title: "Cards",
+            author: "ann",
+            assignees: ["me"],
+            sourceBranch: "me/cards",
+            targetBranch: "main",
+            approvals: "approved",
+            autoMerge: true,
+            updatedAt: epochMs("2026-10-01T12:00:00Z"),
+          });
+          expect(yield* read({ draft: true })).toMatchObject({ state: "draft", autoMerge: false });
         }),
       ));
 

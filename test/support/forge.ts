@@ -25,6 +25,11 @@ export const FakeMr = Schema.Struct({
   head: Schema.optionalKey(Schema.String),
   mergedSha: Schema.optionalKey(Schema.String),
   checks: Schema.optionalKey(Schema.Array(Check)),
+  sourceBranch: Schema.optionalKey(Schema.String),
+  targetBranch: Schema.optionalKey(Schema.String),
+  autoMerge: Schema.optionalKey(Schema.Boolean),
+  approved: Schema.optionalKey(Schema.Boolean),
+  updatedAt: Schema.optionalKey(Schema.String),
 });
 export type FakeMr = typeof FakeMr.Type;
 
@@ -118,6 +123,11 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       sha: mr.head ?? null,
       merge_commit_sha: mr.mergedSha ?? null,
       head_pipeline: pipeline === null ? null : { status: pipeline },
+      source_branch: mr.sourceBranch ?? null,
+      target_branch: mr.targetBranch ?? null,
+      merge_when_pipeline_succeeds: mr.autoMerge ?? false,
+      approvals_left: mr.approved === true ? 0 : null,
+      updated_at: mr.updatedAt ?? null,
       web_url: `https://${mr.project}/-/merge_requests/${mr.iid}`,
     });
   }
@@ -173,8 +183,18 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     const pull = pullAt(args[2]);
     if (pull === undefined) return no();
     return json({
+      title: pull.title ?? "",
       state: pull.state.toUpperCase(),
       isDraft: pull.draft ?? false,
+      author: { login: pull.author ?? "" },
+      assignees: (pull.assignees ?? []).map((login) => ({ login })),
+      headRefName: pull.sourceBranch ?? "",
+      baseRefName: pull.targetBranch ?? "",
+      reviewDecision: pull.approved === true ? "APPROVED" : "",
+      comments: [],
+      updatedAt: pull.updatedAt ?? null,
+      url: `https://${pull.project}/pull/${pull.iid}`,
+      autoMergeRequest: pull.autoMerge === true ? { enabledAt: "2026-10-01T00:00:00Z" } : null,
       headRefOid: pull.head ?? null,
       mergeCommit: pull.mergedSha === undefined ? null : { oid: pull.mergedSha },
       statusCheckRollup: (pull.checks ?? []).map((check) => ({

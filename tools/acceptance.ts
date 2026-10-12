@@ -741,6 +741,31 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/a-pull-requests-merge-is-learned-and-its-details-shown",
+    statement: "A pull request's merge is learned and its details shown as a merge request's are.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/merges.test.ts",
+      name: "(a merged GitHub pull request lands its card|a pull request's panel is read for the drawer)",
+    },
+  },
+  {
+    id: "backend/a-checkouts-forge-is-its-origins",
+    statement:
+      "A checkout's forge is its origin's host, else its upstream's: a GitHub origin beside a gitlab remote is GitHub, and a host on neither forge has none.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/mr.test.ts",
+      name: "(a host's forge is|a checkout's forge is)",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",

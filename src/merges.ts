@@ -7,7 +7,6 @@ import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { type ForgeFacts } from "./board";
 import {
   ForgeChecks,
-  forgeOfRef,
   mrLabel,
   mrRefOf,
   sectionOf,
@@ -40,8 +39,7 @@ export const watchedMr = Effect.fn("Merges.watchedMr")(function* <R>(opts: {
   readonly fresh: boolean;
 }) {
   const ref = mrRefOf(opts.target);
-  // A pull request's panel is not read yet.
-  if (ref === null || forgeOfRef(ref) === "github") return null;
+  if (ref === null) return null;
   const label = mrLabel(opts.target);
   const known = opts.panels.get(label);
   if (known !== undefined && !opts.fresh && known.at + MERGE_POLL_MS > opts.now) return known.panel;
