@@ -4,7 +4,7 @@
 // card or a report says is a claim nobody can check.
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { Clock, Context, Effect, FileSystem, Path, Schema } from "effect";
+import { Clock, Context, Data, Effect, FileSystem, Path, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { appendCard, buildCard, inspectFor, readCards, readCheckpoints, type Card } from "./cards";
 import {
@@ -247,15 +247,26 @@ const judgedOf = (at: Watched) =>
     Effect.orElseSucceed((): Judged => NOT_JUDGED),
   );
 
+class TreeUnread extends Data.TaggedError("TreeUnread")<{ reason: string }> {}
+
+/** What git says changed, or why it could not say: a failing `git diff` is not an unchanged tree. */
+const changed = Effect.fn("Oversight.changed")(function* (args: string[], cwd: string) {
+  const ran = yield* shell("git", args, cwd);
+  if (ran.code === 0) return ran.stdout;
+  return yield* new TreeUnread({
+    reason: `git ${args.join(" ")} exited ${ran.code}: ${(ran.stderr ?? "").trim().split("\n")[0]}`,
+  });
+});
+
 /** What a rule check compares against: the tree, every Output, and what was verified. */
 export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched) {
   const fs = yield* FileSystem.FileSystem;
   const base = yield* baseOf(at.cwd);
-  const committed = yield* shell("git", ["diff", "--name-only", `${base}..HEAD`], at.cwd);
-  const dirty = yield* shell("git", ["diff", "--name-only", "HEAD"], at.cwd);
+  const committed = yield* changed(["diff", "--name-only", `${base}..HEAD`], at.cwd);
+  const dirty = yield* changed(["diff", "--name-only", "HEAD"], at.cwd);
   // Untracked too: a file an agent created is exactly what a `protected_paths` rule is
   // for, and it is in no diff until somebody commits it.
-  const untracked = yield* shell("git", ["ls-files", "--others", "--exclude-standard"], at.cwd);
+  const untracked = yield* changed(["ls-files", "--others", "--exclude-standard"], at.cwd);
   const branch = yield* shell("git", ["rev-parse", "--abbrev-ref", "HEAD"], at.cwd);
   const outputs: Record<string, Record<string, string>> = {};
   const names = yield* fs.readDirectory(at.agentsDir).pipe(Effect.orElseSucceed(() => []));
@@ -271,7 +282,7 @@ export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched
   for (const one of verified) verifications[one.name] = { exit: one.exit, ref: one.id };
   const mr = /https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(at.mr ?? "");
   return {
-    changedFiles: [...new Set(lines(`${committed.stdout}\n${dirty.stdout}\n${untracked.stdout}`))],
+    changedFiles: [...new Set(lines(`${committed}\n${dirty}\n${untracked}`))],
     branch: branch.code === 0 ? branch.stdout.trim() : null,
     mrTarget: mr === null ? null : { project: mr[1]!, iid: mr[2]! },
     outputs,
@@ -285,7 +296,11 @@ const checkRuleDrift = Effect.fn("Oversight.checkRuleDrift")(function* (
   intent: Intent,
   where: string,
 ) {
-  const found = checkRules(intent, yield* ruleFacts(at), yield* nowIso());
+  const facts = yield* ruleFacts(at).pipe(Effect.result);
+  if (facts._tag === "Failure") {
+    return yield* said(at, `rule check skipped at ${where}: ${facts.failure.reason}`);
+  }
+  const found = checkRules(intent, facts.success, yield* nowIso());
   const before = yield* readDrift(at.runDir).pipe(Effect.orElseSucceed(() => []));
   for (const report of newReports(found, before)) {
     yield* appendDrift(at.runDir, report).pipe(Effect.ignore);

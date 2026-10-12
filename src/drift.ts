@@ -488,7 +488,10 @@ export const askJudgement = Effect.fn("Drift.askJudgement")(function* (
   run: string,
   pack: string,
 ) {
-  const missing = yield* flagsPresent(deps.evaluator);
+  const checked = yield* flagsPresent(deps.evaluator).pipe(Effect.result);
+  if (checked._tag === "Failure")
+    return notAsked(`the evaluator is unavailable: ${checked.failure.reason}`);
+  const missing = checked.success;
   if (missing.length > 0) return notAsked(`the evaluator is missing ${missing.join(", ")}`);
 
   // Written down before and after, as usage: what was asked, how long it took and what

@@ -305,6 +305,39 @@ test("a rule the work breaks is reported where it was collected, and cleared onc
     }),
   ));
 
+test("a rule check git cannot answer is skipped in git's words, and clears nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* repository();
+      yield* intended("r1", [
+        {
+          id: "src-only",
+          kind: "rule",
+          text: "only src changes",
+          severity: "block",
+          source: "human",
+          since: 1,
+          rule: { kind: "protected_paths", globs: ["src/**"] },
+        },
+      ]);
+      yield* fs.writeFileString(`${dir}/notes.txt`, "somewhere it should not be\n");
+      const checked = Oversight.pipe(
+        Effect.flatMap((one) => one.drift("r1", "build collected", "none")),
+      );
+      yield* session(checked);
+
+      yield* fs.remove(`${dir}/.git`, { recursive: true });
+      yield* session(checked);
+      expect(
+        currentReports(yield* readDrift(runDir(dir, "r1"))).map((one) => one.resolution),
+      ).toEqual(["open"]);
+      const log = yield* fs.readFileString(`${runDir(dir, "r1")}/log.txt`);
+      expect(log).toContain("rule check skipped at build collected: git diff");
+      expect(log).toContain("Not a git repository");
+    }),
+  ));
+
 test("a judgement no Herd can be charged for is recorded as skipped, and the card says so", () =>
   runEffect(
     Effect.gen(function* () {

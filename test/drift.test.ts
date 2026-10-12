@@ -28,7 +28,7 @@ import {
   type RuleFacts,
 } from "../src/drift";
 import { seedIntent, type Constraint, type Intent } from "../src/intent";
-import type { DriftReport } from "../src/evaluator";
+import { EvaluatorUnavailable, type DriftReport } from "../src/evaluator";
 import { exec } from "./support/command";
 import { runEffect } from "./support/effect";
 import { readBudget } from "../src/steering";
@@ -426,6 +426,28 @@ test("a judgement with no evaluator is skipped, and skipped is not passed", () =
         expect.stringContaining("the evaluator is missing"),
       ]);
       expect(alignment(semanticIntent(), lines, out.judged).aligned).toBe("unverified");
+    }),
+  ));
+
+test("a judgement whose evaluator cannot run is skipped saying why, not as missing its flags", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-judge-" });
+      const deps = judgementDeps(dir);
+      const reason = "claude --help exited 1: The current working directory was deleted";
+      yield* judge(
+        {
+          ...deps,
+          evaluator: { ...deps.evaluator, help: Effect.fail(new EvaluatorUnavailable({ reason })) },
+        },
+        semanticIntent(),
+        { runDir: dir, worktree: dir, base: "HEAD", at: "t0" },
+      );
+      const lines = yield* readDrift(dir);
+      expect(lines.map((line) => (line.kind === "skipped" ? line.reason : ""))).toEqual([
+        `the evaluator is unavailable: ${reason}`,
+      ]);
     }),
   ));
 

@@ -199,7 +199,7 @@ export function structuredFrom<A, I>(
 
 export interface EvaluatorDeps {
   /** `claude --help`, however the caller gets it; checked for every required flag. */
-  readonly help: Effect.Effect<string>;
+  readonly help: Effect.Effect<string, EvaluatorUnavailable>;
   /** Where the frozen system prompt lives. Repo content, never anything an agent wrote. */
   readonly systemPromptFile: string;
   readonly limits: CallLimits;
@@ -215,6 +215,33 @@ export function missingFlags(help: string): string[] {
   const named = help.replace(/(--[a-z-]+)\[(-[a-z-]+)\]/g, "$1 $1$2");
   return REQUIRED_FLAGS.filter((flag) => !named.includes(flag));
 }
+
+/** How much of a failing `--help`'s stderr its reason keeps. */
+const HELP_TAIL = 500;
+
+/**
+ * `<command> --help`, or why it could not be read: a CLI that fails or prints nothing has
+ * not dropped its flags, and saying it had would hide the reason.
+ */
+export const helpOf = (command: ReadonlyArray<string>) =>
+  Effect.tryPromise({
+    try: () => Bun.$`${command} --help`.nothrow().quiet(),
+    catch: (cause) =>
+      new EvaluatorUnavailable({
+        reason: `${command.join(" ")} --help did not start: ${String(cause)}`,
+      }),
+  }).pipe(
+    Effect.flatMap((ran) => {
+      const help = ran.stdout.toString();
+      if (ran.exitCode === 0 && help.trim() !== "") return Effect.succeed(help);
+      const said = ran.stderr.toString().trim().slice(-HELP_TAIL);
+      return Effect.fail(
+        new EvaluatorUnavailable({
+          reason: `${command.join(" ")} --help exited ${ran.exitCode}${said === "" ? " and printed nothing" : `: ${said}`}`,
+        }),
+      );
+    }),
+  );
 
 export const flagsPresent = Effect.fn("Evaluator.flagsPresent")(function* (deps: EvaluatorDeps) {
   return missingFlags(yield* deps.help);
@@ -479,7 +506,7 @@ export const evaluationDeps = Effect.fn("Evaluator.evaluationDeps")(function* (e
   return {
     herdKey: env.herdKey ?? (yield* herdOf(env.socketPath)),
     evaluator: {
-      help: Effect.promise(() => Bun.$`claude --help`.text().catch(() => "")),
+      help: helpOf(["claude"]),
       systemPromptFile: path.join(env.pluginRoot, "prompts", "steward.md"),
       limits,
     },
