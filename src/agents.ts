@@ -1179,7 +1179,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
   ) {
     const found = yield* entryFor(about, about.agent, null);
     if (found.entry === null)
-      return { sent: false, why: found.reason ?? "no such agent", gone: true };
+      return { sent: false, why: found.reason ?? "no such agent", gone: found.gone };
     const entry = found.entry;
     const draft: dispatch.DeliveryDraft = {
       run: about.runId,

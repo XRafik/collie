@@ -397,6 +397,7 @@ export const awaitReady = Effect.fn("Compaction.awaitReady")(function* (
   let why = "";
   for (;;) {
     const up = yield* ready(record).pipe(
+      Effect.tap(() => Effect.sync(() => (why = ""))),
       Effect.catch((cause) => {
         why = reason(cause);
         return Effect.succeed(false);

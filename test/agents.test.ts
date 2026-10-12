@@ -370,6 +370,7 @@ test("a reused agent that is gone before it was given its work is started again"
       const result = yield* session(started("r1"), { herdr });
       expect(result._tag === "Success" && result.success.note).toBe("started again");
       expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
     }),
   ));
 
