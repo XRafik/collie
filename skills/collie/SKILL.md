@@ -100,7 +100,7 @@ should be relaying. Read `data.run`:
   [Answer a question](#answer-a-question).
 - `controls` names a `hold` or a `stop` someone set over it.
 - `parked` is why the Run parked its own work and what picks it up again — a pane that
-  would not take a prompt, a check that still fails after its gate fixes, a workspace that closed with its
+  would not take a prompt, a check that still fails, or none named, after its gate fixes, a workspace that closed with its
   checkout gone. Relay it as written; it names the repair.
 - `diagnostic` is why the engine could not be asked, such as a module that is missing,
   with the file named.

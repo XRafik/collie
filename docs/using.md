@@ -1692,7 +1692,7 @@ survives the picker closing, the Control Plane closing, and the terminal being d
 The detail panel of a run that stopped opens with **Stopped**: one line saying why — the
 review loop out of iterations or making no progress, a blocking finding the implementer
 disputed, a last fix whose own account did not hold up, a stop someone asked for, or work
-the run parked itself — a pane that would not take a prompt, a check that still fails after its gate fixes,
+the run parked itself — a pane that would not take a prompt, a check that still fails, or none named, after its gate fixes,
 a workspace that closed with its checkout gone — then which actions are safe right now. Where nothing recorded says why, it says that rather than guessing.
 
 It is the same classification `collie run show` and `collie run wait --until attention`

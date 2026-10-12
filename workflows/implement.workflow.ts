@@ -358,11 +358,10 @@ export default defineWorkflow({
 
       // The gate: Collie's own run of every check, on this tree, and then what this kind of
       // result still has no evidence for. An Output saying the tests pass is a claim; a
-      // record in the journal, bound to this tree, is not.
-      //
-      // Each pass is journaled, so a replay follows the results the merge request will
-      // cite rather than a fresh run of checks that may come out differently. What passed
-      // is not run again until a gate fix changes the tree.
+      // record in the journal, bound to this tree, is not. Each pass is journaled, so a
+      // replay follows the results the merge request will cite rather than a fresh run of
+      // checks that may come out differently. What passed is not run again until a gate fix
+      // changes the tree.
       let passes = 0;
       let passed: ReadonlyArray<string> = [];
       let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
@@ -396,14 +395,14 @@ export default defineWorkflow({
             passed: Schema.Array(Schema.String),
           }),
           execute: Effect.gen(function* () {
-            const granted = yield* host.approved(runId);
+            const checks = yield* host.approved(runId);
             const now = [...passed];
-            for (const spec of granted) {
+            for (const spec of checks) {
               if (now.includes(spec.name)) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(granted, rallied.reviewed)), passed: now };
+            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
@@ -445,7 +444,7 @@ export default defineWorkflow({
         const findings = gaps.fixable.map((gap) => ({
           severity: "blocker",
           title: gap,
-          detail: "Collie ran this Run's checks on this tree, and this is what they did not prove.",
+          detail: "Collie read this Run's checks on this tree, and this is what is still unproved.",
         }));
         const fixed = yield* agentWork({
           operation: `gate-fix-${at}`,

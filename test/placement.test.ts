@@ -732,14 +732,21 @@ test(
                 task: null,
               })
               .pipe(Effect.result);
+            const started = yield* start(implement!, { request: "r1", text: { plan } });
+            const rows = yield* (yield* Store).runs;
+            yield* fs.writeFileString(`${rig.projectDir}/web/.collie/verify.json`, '[{"name":');
             return {
               verified,
-              started: yield* start(implement!, { request: "r1", text: { plan } }),
+              started,
+              rows,
+              unreadable: yield* start(implement!, { request: "r2", text: { plan } }),
             };
           }),
         );
         expect(refusedWith(outcome.verified)).toContain("this plan spans repositories");
         expect(refusedWith(outcome.started)).toBe("");
+        expect(outcome.rows.length).toBeGreaterThan(0);
+        expect(refusedWith(outcome.unreadable)).toContain("web/.collie/verify.json");
       }),
     ),
   120_000,

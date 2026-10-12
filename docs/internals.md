@@ -67,7 +67,7 @@ A human's controls are the host's to settle, whichever door they come in by
 plain Effect at its next boundary and suspends on; release clears it and resumes. A stop is
 read inside the Activity that waits on an agent and suspends that Activity's own instance,
 so a resume reattaches to the launch already recorded. A Run that cannot go on by itself — a
-pane that will not take a prompt, a check that still fails after its gate fixes, a workspace closed with its
+pane that will not take a prompt, a check that still fails, or none named, after its gate fixes, a workspace closed with its
 checkout gone — parks with the reason and the repair, and `run resume` picks it up.
 
 Beside the database, a Run's files are its audit trail: `agents/<run>/<operation>.prompt.md`

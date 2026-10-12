@@ -2799,7 +2799,10 @@ scenario(
         expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
         yield* bin.restore();
         expect(yield* parkedWhy("r-impl-none")).toBe("");
-        expect(yield* asked("r-impl-none", "mr")).toMatch(/- unit: \S*true \(in /);
+        const opening = yield* asked("r-impl-none", "mr");
+        expect(opening).toMatch(/- unit: \S*true \(in /);
+        expect(opening).toContain("- unit: pass (by collie)");
+        expect((yield* prompts()).filter((one) => one.includes("build-step-1"))).toHaveLength(1);
       }),
     ),
   120_000,
