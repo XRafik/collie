@@ -12,7 +12,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { connect, ownerOf } from "../src/host";
 import { signalProcess } from "../src/lock";
 import { exec } from "./support/command";
-import { runEffect, suiteEnv } from "./support/effect";
+import { fastForward, runEffect, suiteEnv } from "./support/effect";
 import { stopHost, until } from "./support/host";
 
 const root = new URL("../", import.meta.url).pathname;
@@ -379,6 +379,8 @@ test(
         yield* until(() => fs.exists(marker), Boolean);
 
         const refused = yield* Effect.scoped(connect(state, { build: "999.0.0" })).pipe(
+          // Move the client's timers slowly enough for the real replacement to start.
+          (effect) => fastForward(effect, 5),
           Effect.flip,
         );
         expect(refused._tag).toBe("HostVersionMismatch");
@@ -402,6 +404,7 @@ test(
         // Its socket still accepts, and nothing behind it reads.
         yield* signalProcess(who.pid, "SIGSTOP");
         const refused = yield* Effect.scoped(connect(state)).pipe(
+          fastForward,
           Effect.flip,
           Effect.ensuring(signalProcess(who.pid, "SIGCONT")),
         );
@@ -427,6 +430,7 @@ test(
         yield* signalProcess(old.pid, "SIGSTOP");
 
         const refused = yield* Effect.scoped(connect(state, { build: "999.0.0" })).pipe(
+          (effect) => fastForward(effect, 5),
           Effect.flip,
         );
         expect(refused._tag).toBe("HostVersionMismatch");
