@@ -1920,9 +1920,10 @@ So two compactions are at work, and they are set apart:
 - Claude Code's own compaction happens whenever a conversation fills its auto-compact
   window, which is `claude_auto_compact_window` ("Claude Code's auto-compact window" under
   Settings). Collie starts every Claude Code agent of a Run, and the Home's native chat
-  on Claude Code, with it as `--autocompact <value>`: 400000 until set, or `auto` for the model's own tuned window, which on a 1M
-  model is about 967K. The flag is for that launch alone, outranks your
-  `~/.claude/settings.json` and managed settings, and writes nothing to `~/.claude`. It is
+  on Claude Code, with it as `--autocompact <value>`: 400000 until set, or `auto` for the
+  model's own tuned window, which on a 1M model is about 967K. The flag is for that launch
+  alone, outranks your `~/.claude/settings.json` and managed settings, and writes nothing
+  to `~/.claude`. It is
   read at each start, so an edit reaches the next agent without restarting the host; an
   agent already running keeps the window it was started with.
 

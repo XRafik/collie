@@ -1353,7 +1353,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
       autoCompactWindowAsWritten(config.claude_auto_compact_window),
       host.help ?? installedHelp,
     );
-    // Parked rather than started on the default: a window meant earlier would come later.
+    // Parked, never started on the default: 400000 would replace a window meant smaller.
     if ("refused" in window)
       return yield* new AgentParked({
         operation: ask.operation,

@@ -228,15 +228,23 @@ export function startArgs(
   ];
 }
 
-/** A harness's `--help` as installed; empty where it cannot be run. */
-export const installedHelp = (kind: string) =>
-  Effect.promise(() =>
+/** Asked once per harness per process, as its version is: the binary does not change under a host. */
+const helps = new Map<string, string>();
+
+/** A harness's `--help` as installed; empty, and asked again, where it cannot be run. */
+export const installedHelp = Effect.fn("Harness.installedHelp")(function* (kind: string) {
+  const known = helps.get(kind);
+  if (known !== undefined) return known;
+  const help = yield* Effect.promise(() =>
     Bun.$`${kind} --help`
       .quiet()
       .nothrow()
       .text()
       .catch(() => ""),
   );
+  if (help !== "") helps.set(kind, help);
+  return help;
+});
 
 /**
  * The auto-compact window a harness is started with: the configured one as written, left
@@ -251,7 +259,7 @@ export const autoCompactWindowFor = Effect.fn("Harness.autoCompactWindowFor")(fu
   if (flag === undefined) return { passed: null, leftOff: null };
   const window = autoCompactWindowOf(String(written));
   if ("refused" in window) return window;
-  return (yield* help(harness.kind)).includes(flag)
+  return new RegExp(`${flag}(?![\\w-])`).test(yield* help(harness.kind))
     ? { passed: window.window, leftOff: null }
     : { passed: null, leftOff: `${harness.kind} --help does not list ${flag}` };
 });

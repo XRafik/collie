@@ -15,7 +15,7 @@
 // else's conversation.
 
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
-import { loadDefaults, readConfig } from "./config";
+import { autoCompactWindowAsWritten, readConfig } from "./config";
 import { redact } from "./conversation";
 import { NATIVE, newsPath } from "./news";
 import { selfCommand, type PluginEnv } from "./env";
@@ -25,6 +25,7 @@ import { ensureLockDir, withLock } from "./lock";
 import { reason, shellQuote } from "./naming";
 import { isString, type JsonObject } from "./schema";
 import type { AutoCompactWindow } from "./settings";
+import type { YamlMap } from "./yaml";
 import { herdDir, herdOf } from "./steering";
 import { nowIso } from "./time";
 import { TOOLS } from "./tools";
@@ -651,7 +652,10 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
           ? { passed: null, leftOff: null }
           : yield* autoCompactWindowFor(
               adapter,
-              (yield* loadDefaults(env.userDir)).claudeAutoCompactWindow,
+              autoCompactWindowAsWritten(
+                (yield* readConfig(env.userDir).pipe(Effect.orElseSucceed((): YamlMap => ({}))))
+                  .claude_auto_compact_window,
+              ),
               help,
             );
       if ("refused" in window) {

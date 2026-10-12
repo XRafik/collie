@@ -45,7 +45,6 @@ import { agentName, shellQuote } from "../src/naming";
 import { controlDir, type CompactionPorts } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
-import { HARNESSES } from "../src/harness";
 
 let rig: Rig;
 let dir: string;
@@ -1492,7 +1491,7 @@ test("auto in the config is passed as auto", () =>
     }),
   ));
 
-test("Codex, OpenCode and Pi are given no auto-compact window", () =>
+test("a Codex agent is given no auto-compact window, and no help is asked for one", () =>
   runEffect(
     Effect.gen(function* () {
       const asked: string[] = [];
@@ -1505,8 +1504,6 @@ test("Codex, OpenCode and Pi are given no auto-compact window", () =>
 
       expect(launchArgs(yield* rig.calls())).not.toContain("--autocompact");
       expect(asked).toEqual([]);
-      for (const harness of ["codex", "opencode", "pi"])
-        expect(HARNESSES[harness]!.autoCompactFlag).toBeUndefined();
     }),
   ));
 

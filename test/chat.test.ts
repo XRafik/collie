@@ -11,6 +11,7 @@ import {
   chatPath,
   decideChat,
   DEFAULT_CHAT_HARNESS,
+  ensureChatFor,
   mcpConfig,
   piExtension,
   preferredHarness,
@@ -21,7 +22,6 @@ import {
   type ChatRecord,
 } from "../src/chat";
 import { writeConfigValue } from "../src/config";
-import { ensureChatFor } from "../src/chat";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
 import { FakeBin } from "./support/bin";
 import type { AgentInfo, PaneInfo } from "../src/herdr";

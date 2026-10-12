@@ -93,8 +93,9 @@ export const save = (into: string, names: ReadonlyArray<string>) =>
   }).pipe(Effect.orDie);
 
 /**
- * The fake herdr on `HERDR_BIN_PATH`, set in the process environment too while the world
- * lasts: a host is a child that inherits it, not a reader of this world's Config.
+ * The fake herdr on `HERDR_BIN_PATH`, and a stand-in claude on `PATH`, set in the process
+ * environment too while the world lasts: a host is a child that inherits them, not a reader
+ * of this world's Config.
  */
 const fakeHerdrIn = Effect.fn("World.fakeHerdrIn")(function* (dir: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -103,14 +104,26 @@ const fakeHerdrIn = Effect.fn("World.fakeHerdrIn")(function* (dir: string) {
   yield* fs
     .writeFileString(bin, `#!/bin/sh\nexec ${fakeHerdrCommand(fake)} "$@"\n`, { mode: 0o755 })
     .pipe(Effect.orDie);
+  // A host asks `claude --help` before an agent starts; the operator's claude, run under a
+  // loaded suite, is slow enough to time a test out. Anything else fails, as on CI.
+  const harnesses = `${dir}/harnesses`;
+  yield* fs.makeDirectory(harnesses).pipe(Effect.orDie);
+  yield* fs
+    .writeFileString(
+      `${harnesses}/claude`,
+      `#!/bin/sh\n[ "$1" = --help ] && echo "  --autocompact <auto|tokens>" && exit 0\nexit 1\n`,
+      { mode: 0o755 },
+    )
+    .pipe(Effect.orDie);
   const set = { HERDR_BIN_PATH: bin, FAKE_HERDR_LOG: `${dir}/herdr-calls.jsonl` };
   yield* Effect.acquireRelease(
     Effect.sync(() => {
       const before = {
         HERDR_BIN_PATH: Bun.env.HERDR_BIN_PATH,
         FAKE_HERDR_LOG: Bun.env.FAKE_HERDR_LOG,
+        PATH: Bun.env.PATH,
       };
-      Object.assign(Bun.env, set);
+      Object.assign(Bun.env, set, { PATH: `${harnesses}:${Bun.env.PATH ?? ""}` });
       return before;
     }),
     (before) =>
