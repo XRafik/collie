@@ -564,6 +564,16 @@ title, state, author and assignees, branches, checks, approval, comments, head a
 whether it moved since the review — show in the drawer and Desktop's record as a merge
 request's do.
 
+A merged one is followed as far as its deploys go, on either forge: its card says "On
+stage." or "In production." once the newest successful deployment to that environment
+carries its merge commit, and production is as far as it is asked about. On GitLab that is
+an environment's tier, `staging` or `production`, and GitLab's merge-base. On GitHub it is
+the repository's deployments: production is a deployment marked as production or an
+environment named `production` or `prod`, staging one named `staging` or `stage`, and
+"carries" is GitHub's compare saying `identical` or `ahead`. A newer deployment that failed
+is not what is live. A repository with no such environment, or a forge that does not
+answer, leaves the card at "Merged."
+
 A checkout's forge is the forge of its `origin` remote's host, or `upstream`'s where it
 has no `origin` (ADR-0050 D2): `github.com` is GitHub, and the Flock's `gitlab_host` or a
 host whose name contains `gitlab` is GitLab. Another remote beside `origin` does not
@@ -1316,7 +1326,8 @@ verifications as a checklist, those that did not do what they were expected to f
 already open with their output in its terminal colours; then every web link the Run's
 Outputs, handoffs, review and findings name, as a card: a Claude artifact by the title its
 link was given, the merge request with its state, its pipelines with the head pipeline's
-status, and any other pipeline with the status GitLab gives it where `glab` is signed in to its host; its screenshots as a
+status, and any other pipeline with the status GitLab gives it where `glab` is signed in to
+its host, or a GitHub Actions run with its conclusion where `gh` is; its screenshots as a
 gallery, a `before` beside its `after` where their names pair them, twelve to a page; its
 videos, read and played when asked; its HTML reports, such as Lighthouse, in a sandboxed
 frame that runs their scripts in an origin of their own, which may neither load anything

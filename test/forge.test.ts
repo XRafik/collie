@@ -240,51 +240,70 @@ for (const name of ["gitlab", "github"] as const) {
   });
 }
 
-describe("the gitlab forge's deploys", () => {
-  const tierOf = (over: Partial<ForgeModel>) =>
-    FORGES.gitlab.liveTier(
-      ref("gitlab"),
-      MERGED,
-      "/w",
-      fakeForge("gitlab", model("gitlab", over)).run,
-    );
-  const environments = (stage: string, prod: string) => [
-    { name: "stage", tier: "staging", deployed: stage },
-    { name: "prod", tier: "production", deployed: prod },
-  ];
+const URLS = {
+  gitlab: {
+    run: "https://gitlab.example.com/group/app/-/pipelines/7",
+    other: "https://github.com/owner/repo/actions/runs/7",
+  },
+  github: {
+    run: "https://github.com/owner/repo/actions/runs/7",
+    other: "https://gitlab.example.com/group/app/-/pipelines/7",
+  },
+} as const;
 
-  test("say production, then stage, then nothing, and nothing where GitLab does not answer", () =>
+for (const name of ["gitlab", "github"] as const) {
+  const forge = FORGES[name];
+
+  describe(`the ${name} forge's deploys`, () => {
+    const tierOf = (over: Partial<ForgeModel>) =>
+      forge.liveTier(ref(name), MERGED, "/w", fakeForge(name, model(name, over)).run);
+    const environments = (stage: string, prod: string, failed = "") => [
+      { name: "stage", tier: "staging", deployed: stage },
+      { name: "production", tier: "production", deployed: prod, failed },
+    ];
+    const ancestry = { child: [MERGED] };
+
+    test("say production, then stage, then nothing, and nothing where the forge does not answer", () =>
+      runEffect(
+        Effect.gen(function* () {
+          expect(yield* tierOf({ environments: environments("child", MERGED), ancestry })).toBe(
+            "production",
+          );
+          expect(yield* tierOf({ environments: environments("child", "0ld"), ancestry })).toBe(
+            "staging",
+          );
+          expect(yield* tierOf({ environments: environments("0ld", "0ld"), ancestry })).toBe(null);
+          expect(yield* tierOf({ environments: [] })).toBe(null);
+          expect(
+            yield* tierOf({ environments: environments(MERGED, MERGED), deploysDown: true }),
+          ).toBe(null);
+        }),
+      ));
+
+    test("go by what is live, not by a newer deployment that failed", () =>
+      runEffect(
+        Effect.gen(function* () {
+          expect(
+            yield* tierOf({ environments: environments("0ld", "0ld", MERGED), ancestry }),
+          ).toBe(null);
+        }),
+      ));
+  });
+
+  test(`the ${name} forge says how its own pipeline or Actions run went, and nothing of the other's`, () =>
     runEffect(
       Effect.gen(function* () {
-        const ancestry = { child: [MERGED] };
-        expect(yield* tierOf({ environments: environments("child", MERGED), ancestry })).toBe(
-          "production",
-        );
-        expect(yield* tierOf({ environments: environments("child", "0ld"), ancestry })).toBe(
-          "staging",
-        );
-        expect(yield* tierOf({ environments: environments("0ld", "0ld"), ancestry })).toBe(null);
-        expect(yield* tierOf({ environments: [] })).toBe(null);
+        const status = (url: string, runs: ForgeModel["runs"]) =>
+          forge.runStatus(url, "/w", fakeForge(name, model(name, { runs })).run);
         expect(
-          yield* tierOf({ environments: environments(MERGED, MERGED), deploysDown: true }),
-        ).toBe(null);
+          yield* status(URLS[name].run, { "7": { status: "completed", conclusion: "success" } }),
+        ).toBe(name === "gitlab" ? "completed" : "success");
+        expect(yield* status(URLS[name].run, { "7": { status: "running" } })).toBe("running");
+        expect(yield* status(URLS[name].other, { "7": { status: "running" } })).toBe(null);
+        expect(yield* status(URLS[name].run, {})).toBe(null);
       }),
     ));
-});
-
-test("the github forge's deploys are not read yet", () =>
-  runEffect(
-    Effect.gen(function* () {
-      expect(
-        yield* FORGES.github.liveTier(
-          ref("github"),
-          MERGED,
-          "/w",
-          fakeForge("github", model("github")).run,
-        ),
-      ).toBe(null);
-    }),
-  ));
+}
 
 test("a status context's state counts as a check run's conclusion does", () => {
   expect(rollupChecks([{ context: "ci/build", state: "PENDING" }])).toEqual({ state: "running" });

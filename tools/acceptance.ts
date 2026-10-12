@@ -818,6 +818,19 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/a-merged-pull-request-is-followed-to-stage-and-production",
+    statement:
+      "A merged pull request is followed to stage and production through GitHub's deployments, as a merge request is through GitLab's, and a pipeline: reference to an Actions run says how it went.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/merges.test.ts",
+      name: "a merged pull request is followed to stage",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",

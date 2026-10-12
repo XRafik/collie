@@ -445,3 +445,60 @@ test("a pull request's panel is read for the drawer as a merge request's is, and
       }
     }),
   ));
+
+test("a merged pull request is followed to stage, then production, then asked no more", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-pr-deploys-" });
+      const env = readEnv({ HERDR_PLUGIN_STATE_DIR: stateDir, COLLIE_CWD: "/project" });
+      const made = yield* madeRun(stateDir, {
+        state: "succeeded",
+        mr: PR,
+        created: "2026-09-17T09:00:00Z",
+      });
+      const states = new Map();
+      const checked = new Map<string, number>();
+      let now = epochMs("2026-09-17T10:00:00Z");
+      const deployedTo = (prod: string, log: string[] = []) =>
+        forge(
+          "github",
+          {
+            mrs: [
+              { project: "github.com/cego/collie", iid: "30", state: "merged", mergedSha: HEAD },
+            ],
+            environments: [
+              { name: "staging", tier: "staging", deployed: "child" },
+              { name: "production", tier: "production", deployed: prod },
+            ],
+            ancestry: { child: [HEAD] },
+          },
+          log,
+        );
+      const settle = (run: Runner) =>
+        Effect.gen(function* () {
+          yield* settleMerges({
+            stateDir,
+            cwd: "/project",
+            run,
+            views: yield* buildBoard({ env, runs: [made], mrStates: states, now }),
+            now,
+            checked,
+            states,
+            panels: new Map(),
+          });
+          return (yield* buildBoard({ env, runs: [made], now }))[0]!;
+        });
+      expect((yield* settle(deployedTo("0ld"))).sentence).toBe(
+        "Merged as cego/collie#30. On stage.",
+      );
+      now += 6 * 60_000;
+      expect((yield* settle(deployedTo(HEAD))).sentence).toBe(
+        "Merged as cego/collie#30. In production.",
+      );
+      now += 6 * 60_000;
+      const log: string[] = [];
+      yield* settle(deployedTo(HEAD, log));
+      expect(log).toEqual([]);
+    }),
+  ));

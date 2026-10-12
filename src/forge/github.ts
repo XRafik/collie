@@ -11,7 +11,7 @@ import {
 } from "../board-model";
 import type { Runner } from "../mr";
 import { epochMs } from "../time";
-import type { Forge, ForBranch, Readiness } from "./forge";
+import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 
 const HOST = "github.com";
 
@@ -262,6 +262,98 @@ const MineJson = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ number: Schema.Number, title: optionalText })),
 );
 
+const DeploymentsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      id: Schema.Number,
+      sha: Schema.String,
+      environment: Schema.String,
+      production_environment: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    }),
+  ),
+);
+const StatusesJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ state: Schema.String })));
+const CompareJson = Schema.fromJsonString(Schema.Struct({ status: Schema.String }));
+const RunJson = Schema.fromJsonString(
+  Schema.Struct({ status: Schema.String, conclusion: optionalText }),
+);
+
+/** Production by the flag or by name, staging by name; any other environment is neither. */
+function tierOf(environment: string, production: boolean): DeployTier | null {
+  const name = environment.toLowerCase();
+  if (production || name === "production" || name === "prod") return "production";
+  if (name === "staging" || name === "stage") return "staging";
+  return null;
+}
+
+/**
+ * How far a merged commit has got on GitHub (ADR-0050 D7): the newest deployment of each
+ * environment whose latest status is `success` is what is live there, and it carries the
+ * merge where GitHub's compare of the two says `identical` or `ahead`. No such
+ * environment, or no answer, is null, and the card says "Merged." and nothing more.
+ */
+function liveTier<R>(
+  ref: MrRef,
+  mergedSha: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<DeployTier | null, never, R> {
+  return Effect.gen(function* () {
+    if (mergedSha === "" || ref.project === null) return null;
+    const repo = `repos/${mrPath(ref)}`;
+    const api = (route: string) => run("gh", ["api", `${repo}/${route}`], cwd);
+    const listed = yield* api("deployments?per_page=100");
+    const deployments = Option.getOrElse(
+      Schema.decodeUnknownOption(DeploymentsJson)(listed.stdout),
+      () => [],
+    );
+    // Newest first, so the first successful one seen per environment is what is live there.
+    const live = new Map<string, { readonly sha: string; readonly tier: DeployTier }>();
+    for (const deployment of deployments) {
+      const tier = tierOf(deployment.environment, deployment.production_environment === true);
+      if (tier === null || live.has(deployment.environment)) continue;
+      const statuses = yield* api(`deployments/${deployment.id}/statuses?per_page=1`);
+      const [latest] = Option.getOrElse(
+        Schema.decodeUnknownOption(StatusesJson)(statuses.stdout),
+        () => [],
+      );
+      if (latest?.state === "success")
+        live.set(deployment.environment, { sha: deployment.sha, tier });
+    }
+    const carries = (sha: string) =>
+      Effect.gen(function* () {
+        if (sha === mergedSha) return true;
+        const compared = yield* api(`compare/${mergedSha}...${sha}`);
+        const status = Option.getOrNull(Schema.decodeUnknownOption(CompareJson)(compared.stdout));
+        return status?.status === "identical" || status?.status === "ahead";
+      });
+    for (const tier of ["production", "staging"] as const)
+      for (const one of live.values())
+        if (one.tier === tier && (yield* carries(one.sha))) return tier;
+    return null;
+  });
+}
+
+/** `https://github.com/<o>/<r>/actions/runs/<id>`'s conclusion, or its status while it runs. */
+function runStatus<R>(
+  url: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<string | null, never, R> {
+  return Effect.gen(function* () {
+    const m =
+      /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/(\d+)(?:[/?#]\S*)?$/.exec(
+        url.trim(),
+      );
+    if (!m) return null;
+    if ((yield* run("gh", ["auth", "status", "--hostname", HOST], cwd)).code !== 0) return null;
+    const answer = yield* run("gh", ["api", `repos/${m[1]}/actions/runs/${m[2]}`], cwd);
+    if (answer.code !== 0) return null;
+    const said = Option.getOrNull(Schema.decodeUnknownOption(RunJson)(answer.stdout));
+    return said === null ? null : (said.conclusion ?? said.status);
+  });
+}
+
 export const github: Forge = {
   name: "github",
   display: "GitHub",
@@ -279,7 +371,8 @@ export const github: Forge = {
   ready,
   login,
   details,
-  liveTier: () => Effect.succeed(null),
+  liveTier,
+  runStatus,
   post: (ref, body, approve, cwd, run) =>
     Effect.gen(function* () {
       const where = mrWords(ref).label;

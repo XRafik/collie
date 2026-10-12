@@ -8,7 +8,6 @@ import {
   prepareMergeRequest,
   linearIssues,
   mrTarget,
-  pipelineStatus,
   postNote,
   projectFromRemote,
   resolveAssignee,
@@ -569,7 +568,7 @@ test("a pipeline's status is read from GitLab by its address", () =>
           stdout: '{"id":77,"status":"failed"}',
         },
       });
-      const status = (url: string) => pipelineStatus(url, "/w", glab.run);
+      const status = (url: string) => gitlab.runStatus(url, "/w", glab.run);
       expect(yield* status("https://gitlab.example.com/g/p/-/pipelines/77")).toBe("failed");
       expect(yield* status("https://gitlab.example.com/g/p/-/pipelines/77/failures")).toBe(
         "failed",
@@ -589,7 +588,7 @@ test("a pipeline on a host glab is not logged in to is never asked about", () =>
         },
       });
       expect(
-        yield* pipelineStatus("https://elsewhere.example/x/y/-/pipelines/1", "/w", glab.run),
+        yield* gitlab.runStatus("https://elsewhere.example/x/y/-/pipelines/1", "/w", glab.run),
       ).toBeNull();
       expect(glab.calls.filter(([, verb]) => verb === "api")).toEqual([]);
     }),

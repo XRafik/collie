@@ -1754,7 +1754,7 @@ without being read. The review's findings come as
 a list. The merge request is what the merge watch last read, asked again after 5 minutes or
 when `refreshMr` is set. Large items are fetched by reference with `runFile`: `log`,
 `review`, `diff:<path>`, `evidence:<name>`, `verification:<id>`, `plan:<file>`, `attachment:<name>` (one of the Run's attachments), `file:<path>` (read
-only, from the Run's checkout) and `pipeline:<url>` (the status glab reads for that pipeline), text as it is and anything else as base64. Each answer is
+only, from the Run's checkout) and `pipeline:<url>` (the status glab reads for a GitLab pipeline, or gh for a GitHub Actions run), text as it is and anything else as base64. Each answer is
 at most 4 MiB from `offset` (or `length` bytes where asked) and says the item's whole
 `size`, so a long log or a video is read in parts. A part of an item is base64 whatever it
 is, so a character split across two parts is whole once they are joined. A reference is refused where it leaves

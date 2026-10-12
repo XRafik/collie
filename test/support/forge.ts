@@ -50,7 +50,16 @@ export const ForgeModel = Schema.Struct({
         name: Schema.String,
         tier: Schema.String,
         deployed: Schema.optionalKey(Schema.String),
+        /** A newer deployment there that failed, which is not what is live. */
+        failed: Schema.optionalKey(Schema.String),
       }),
+    ),
+  ),
+  /** Pipelines and Actions runs, by id. */
+  runs: Schema.optionalKey(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({ status: Schema.String, conclusion: Schema.optionalKey(Schema.String) }),
     ),
   ),
   /** The shas each sha descends from. */
@@ -196,12 +205,68 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
             : [{ sha: env.deployed, environment: { name: env.name } }],
         ),
       );
+    const pipeline = /\/pipelines\/(\d+)$/.exec(route);
+    if (pipeline) {
+      const said = model.runs?.[pipeline[1]!];
+      return said === undefined ? no() : json({ status: said.status });
+    }
     const base = /merge_base\?refs\[\]=([^&]+)&refs\[\]=(.+)$/.exec(route);
     if (base) {
       const [, merged = "", live = ""] = base;
       const carries = live === merged || (model.ancestry?.[live] ?? []).includes(merged);
       return json({ id: carries ? merged : "0000000" });
     }
+  }
+  return no();
+}
+
+/** Each environment's deployments, newest first: a failed newer one, then what is live. */
+const deploymentsOf = (model: ForgeModel) =>
+  (model.environments ?? []).flatMap((env, at) => [
+    ...(env.failed === undefined || env.failed === ""
+      ? []
+      : [{ id: at * 10 + 1, sha: env.failed, environment: env.name, state: "failure" }]),
+    ...(env.deployed === undefined
+      ? []
+      : [{ id: at * 10 + 2, sha: env.deployed, environment: env.name, state: "success" }]),
+  ]);
+
+/** `gh api repos/<o>/<r>/…`, for deployments, compare and Actions runs. */
+function ghApi(model: ForgeModel, route: string): Answer {
+  if (model.deploysDown === true) return no();
+  const tierOf = (name: string) =>
+    (model.environments ?? []).find((env) => env.name === name)?.tier;
+  if (/\/deployments\?/.test(route))
+    return json(
+      deploymentsOf(model).map(({ id, sha, environment }) => ({
+        id,
+        sha,
+        environment,
+        production_environment: tierOf(environment) === "production",
+      })),
+    );
+  const statuses = /\/deployments\/(\d+)\/statuses/.exec(route);
+  if (statuses) {
+    const one = deploymentsOf(model).find((deployment) => deployment.id === Number(statuses[1]));
+    return one === undefined ? no() : json([{ state: one.state }]);
+  }
+  const compare = /\/compare\/([^.]+)\.\.\.(.+)$/.exec(route);
+  if (compare) {
+    const [, merged = "", live = ""] = compare;
+    const status =
+      merged === live
+        ? "identical"
+        : (model.ancestry?.[live] ?? []).includes(merged)
+          ? "ahead"
+          : "behind";
+    return json({ status });
+  }
+  const runs = /\/actions\/runs\/(\d+)$/.exec(route);
+  if (runs) {
+    const said = model.runs?.[runs[1]!];
+    return said === undefined
+      ? no()
+      : json({ status: said.status, conclusion: said.conclusion ?? null });
   }
   return no();
 }
@@ -215,6 +280,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (!model.loggedIn.includes(FORGE_HOST.github)) return no(4);
   if (verb === "api" && sub === "user")
     return model.login === null ? no() : json({ login: model.login });
+  if (verb === "api") return ghApi(model, sub ?? "");
   if (verb === "repo" && sub === "view") {
     const repo = args[2] ?? "";
     return (model.unreadable ?? []).includes(repo) ? no() : json({ nameWithOwner: repo });

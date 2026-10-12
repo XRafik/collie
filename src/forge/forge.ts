@@ -86,6 +86,12 @@ export interface Forge {
     readonly assignee: string;
     readonly existing: string | null;
   }) => Commands;
+  /** How a pipeline or Actions run at `url` went, or null where the forge does not say. */
+  readonly runStatus: <R>(
+    url: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<string | null, never, R>;
   /** "GitLab" or "GitHub". */
   readonly display: string;
   /** "merge request" or "pull request". */
@@ -111,6 +117,11 @@ export interface Forge {
 }
 
 export const FORGES: Readonly<Record<MrForge, Forge>> = { gitlab, github };
+
+/** The forge a pipeline or Actions run's URL is on: GitHub on github.com, GitLab elsewhere. */
+export function forgeOfUrl(url: string): Forge {
+  return /^https?:\/\/github\.com\//i.test(url.trim()) ? github : gitlab;
+}
 
 /** The forge a merge request is on. */
 export function forgeOf(ref: MrRef): Forge {
