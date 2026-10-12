@@ -59,7 +59,7 @@ import { clipboardPaths } from "../shared/attachments";
 import { readAttachment, stageAttachment, stagePath } from "./attachments";
 import { type FlockConversation, openFlockChat, refusal, untilStarted } from "./chat";
 import { claudeCode } from "./claude";
-import { childEnv, takeLoginEnv, which } from "./login-env";
+import { childEnv, localShell, takeLoginEnv, which } from "./login-env";
 import { type ChatMachine, chatDoor } from "./flock-tools";
 import { readSettings, writeSettings } from "./settings";
 import { followWindow, zoomWindow } from "./scale";
@@ -154,19 +154,6 @@ const windowOn = (url: string, title: string, frame: BrowserWindow["frame"]) => 
 
 const VIEW = "views://mainview/index.html";
 
-/**
- * How a script is run here. A login shell's profile may reset PATH, so once Desktop holds the
- * interactive login environment a plain shell keeps it; otherwise a login shell, as SSH would.
- */
-const LocalShell = (tookLoginEnv: boolean) =>
-  tookLoginEnv
-    ? Config.succeed(["/bin/sh", "-c"])
-    : Config.String("SHELL").pipe(
-        Config.withDefault("/bin/sh"),
-        Config.map((shell) => [shell, "-lc"]),
-      );
-
-/** How `collie` is run here. */
 const Collie = (shell: ReadonlyArray<string>) =>
   Config.schema(Schema.fromJsonString(Schema.Array(Schema.String)), "COLLIE_DESKTOP_COLLIE").pipe(
     Config.orElse(() => Config.succeed([...shell, 'exec collie "$@"', "collie"])),
@@ -218,7 +205,7 @@ const main = Effect.gen(function* () {
   const board = windowOn(VIEW, "Collie", { width: 1200, height: 800, x: 120, y: 80 });
   const updates = yield* updatesOf(updater, manifest.version);
   const local = hostname();
-  const shell = yield* LocalShell(tookLoginEnv);
+  const shell = yield* localShell(tookLoginEnv);
   const collie = yield* Collie(shell);
   const releases = yield* Config.String("COLLIE_DESKTOP_RELEASES").pipe(
     Config.withDefault(RELEASES),

@@ -1,6 +1,3 @@
-// A workflow whose Activity dies of a refusal, as the implement gate does when a check
-// cannot be run. The Run's failure has to keep the refusal's reason.
-
 import { WorkflowError, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 import * as Activity from "effect/workflow/Activity";

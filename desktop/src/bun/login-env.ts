@@ -1,7 +1,3 @@
-// What an app launched from a desktop is missing: the interactive shell's environment.
-// launchd, or a session's launcher, gives it none of the rc files, so a tool a version
-// manager puts on PATH would look uninstalled. Desktop reads it once, as it starts.
-
 import { Config, type Duration, Effect, Option, Path } from "effect";
 
 const BIN = Effect.runSync(
@@ -72,16 +68,18 @@ export const readLoginEnv = (shell: string, limit: Duration.Input = LIMIT) =>
     const child = Bun.spawn(
       [shell, "-ilc", `printf '%s' '${BEGIN}'; env -0; printf '%s' '${END}'`],
       {
+        env: childEnv(),
         stdin: "ignore",
         stdout: "pipe",
         stderr: "ignore",
       },
     );
-    const output = yield* Effect.promise(() => new Response(child.stdout).text()).pipe(
-      Effect.timeoutOption(limit),
-      Effect.ensuring(Effect.sync(() => child.kill())),
-    );
-    return Option.isSome(output) ? parseLoginEnv(output.value) : new Map<string, string>();
+    const output = yield* Effect.promise(() =>
+      Promise.all([new Response(child.stdout).text(), child.exited]),
+    ).pipe(Effect.timeoutOption(limit), Effect.ensuring(Effect.sync(() => child.kill())));
+    return Option.isSome(output) && output.value[1] === 0
+      ? parseLoginEnv(output.value[0])
+      : new Map<string, string>();
   }).pipe(
     Effect.catchCause((cause) =>
       Effect.logWarning(`Login shell environment not read from ${shell}`, cause).pipe(
@@ -90,10 +88,7 @@ export const readLoginEnv = (shell: string, limit: Duration.Input = LIMIT) =>
     ),
   );
 
-/**
- * Merges the interactive login shell's environment into Desktop's own, so children get the
- * PATH a terminal has, version managers included; true where it was taken.
- */
+/** Merges the interactive login environment into Desktop's; true where it was taken. */
 export const takeLoginEnv = Effect.gen(function* () {
   const shell = yield* Config.String("SHELL").pipe(
     Config.withDefault(process.platform === "darwin" ? "/bin/zsh" : "/bin/sh"),
@@ -107,3 +102,12 @@ export const takeLoginEnv = Effect.gen(function* () {
   for (const [name, value] of taken) env[name] = value;
   return true;
 }).pipe(Effect.orElseSucceed(() => false));
+
+/** A plain shell preserves the resolved PATH; login profiles may reset it. */
+export const localShell = (tookLoginEnv: boolean) =>
+  tookLoginEnv
+    ? Config.succeed(["/bin/sh", "-c"])
+    : Config.String("SHELL").pipe(
+        Config.withDefault("/bin/sh"),
+        Config.map((shell) => [shell, "-lc"]),
+      );
