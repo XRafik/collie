@@ -167,6 +167,14 @@ test("a project with no group falls back to a slug equal to the repository name"
   });
 });
 
+test("a project with no group is matched by the GitLab path's name, not the clone's", () => {
+  const projects = [project("monolith"), project("spilnu", "spilnu/frontend")];
+  expect(resolveProject(projects, "gitlab.cego.dk/cego/monolith", "70d48e486933e63")).toEqual({
+    _tag: "Project",
+    slug: "monolith",
+  });
+});
+
 test("no match means the repository has no Helle project", () => {
   expect(
     resolveProject([project("spilnu", "spilnu/frontend")], "gitlab.cego.dk/cego/collie", "collie"),
