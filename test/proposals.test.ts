@@ -591,6 +591,18 @@ test(
           { name: "unit", executable: "true", argv: [], cwd: "worktree" },
         ]);
 
+        const away = yield* confirm({
+          kind: "set_verification",
+          run: run.id,
+          name: "away",
+          command: { executable: "true", argv: [], cwd: "/" },
+        });
+        expect(away.ok).toBe(false);
+        expect(JSON.stringify(away)).toContain(`is not inside run ${run.id}`);
+        expect((yield* readIntent(run.dir))?.authority.run_verification).toEqual([
+          { name: "unit", executable: "true", argv: [], cwd: "worktree" },
+        ]);
+
         const withdrawn = yield* confirm({ kind: "set_verification", run: run.id, name: "unit" });
         expect(withdrawn.ok).toBe(true);
         expect((yield* readIntent(run.dir))?.authority.run_verification).toEqual([]);

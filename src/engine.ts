@@ -2082,18 +2082,7 @@ export const hostLayer = (options: {
               });
             }
             // The workflow's checkout has to be the Run's own; the grant's directory is resolved from it.
-            const row = yield* store.run(asked.runId);
-            const placed =
-              row === null
-                ? null
-                : placedOf(
-                    row,
-                    yield* decodeStrings(row.options ?? "{}").pipe(
-                      Effect.orElseSucceed((): Record<string, string> => ({})),
-                    ),
-                  );
-            const worktree = placed?.worktree?.path ?? null;
-            const own = { id: asked.runId, cwd: placed?.cwd ?? dir, worktree };
+            const own = yield* treeOf(yield* store.run(asked.runId), asked.runId, dir);
             if (!(yield* insideRun(asked.cwd, own))) {
               return yield* new WorkflowError({
                 reason: `"${asked.cwd}" is not inside run ${asked.runId}`,
@@ -2920,6 +2909,24 @@ const encodePlacing = Schema.encodeSync(PlacingJson);
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 
 /** Where a Run works: as the host placed it, or for a row from before that, as it started. */
+/** The directories a Run owns: its cwd and its worktree, as its placement recorded them. */
+const treeOf = Effect.fn("Engine.treeOf")(function* (
+  row: RunRow | null,
+  runId: string,
+  dir: string,
+) {
+  const placed =
+    row === null
+      ? null
+      : placedOf(
+          row,
+          yield* decodeStrings(row.options ?? "{}").pipe(
+            Effect.orElseSucceed((): Record<string, string> => ({})),
+          ),
+        );
+  return { id: runId, cwd: placed?.cwd ?? dir, worktree: placed?.worktree?.path ?? null };
+});
+
 const placedOf = (row: RunRow, options: Readonly<Record<string, string>>): Placed =>
   Option.getOrElse(decodePlaced(row.checkout ?? ""), () => ({
     cwd: options.workspace?.startsWith("/") ? options.workspace : row.project,
@@ -4879,8 +4886,21 @@ const makeRegistry: (
       readonly name: string;
       readonly command: Omit<VerifySpec, "name"> | null;
     }) {
-      if ((yield* store.run(options.runId)) === null) {
+      const row = yield* store.run(options.runId);
+      if (row === null) {
         return yield* new HostRefused({ reason: `no run "${options.runId}" was started here` });
+      }
+      // Resolved as the gate resolves it, so a check that could never run is refused now.
+      if (options.command !== null) {
+        const own = yield* treeOf(row, options.runId, dir);
+        const at =
+          options.command.cwd === "worktree"
+            ? (own.worktree ?? own.cwd)
+            : (yield* Path.Path).resolve(own.cwd, options.command.cwd);
+        if (!(yield* insideRun(at, own)))
+          return yield* new HostRefused({
+            reason: `${REFUSED_INPUT}: check "${options.name}" would run in "${at}", which is not inside run ${options.runId}`,
+          });
       }
       return yield* granting.withPermits(1)(
         Effect.gen(function* () {

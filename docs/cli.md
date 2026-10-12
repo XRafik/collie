@@ -1173,7 +1173,9 @@ for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, by `origi
 running one. Where none of those has any, the run starts anyway and its agent names them
 before it builds. From then on the Intent is the set: `run intent verification` adds to it
 or removes from it, whoever calls it, and an Intent whose list has been emptied is a run
-with no checks — the seed is not put back behind whoever removed them. A Run of a workflow module
+with no checks — the seed is not put back behind whoever removed them. A check whose
+directory is outside the run's tree — `worktree` is its worktree, anything else is resolved
+against its cwd — is refused when it is named, naming that directory and the run. A Run of a workflow module
 keeps its set with the host rather than in an Intent, and the same command amends it there.
 
 ```json
