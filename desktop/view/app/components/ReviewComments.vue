@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { BoardAgent, RunAgent } from "../../../../src/board-model";
 import { recipients } from "../../../src/shared/record-terminal";
-import { compose, locationOf } from "../../../src/shared/review-comments";
+import { compose, counted, locationOf, quoteOf } from "../../../src/shared/review-comments";
 
 const props = defineProps<{
   installation: string;
@@ -24,7 +24,7 @@ const agent = computed(() =>
 const sending = ref(false);
 const send = async () => {
   if (agent.value === undefined) return;
-  const sent = new Set(drafts.value.map((draft) => draft.id));
+  const sent = [...drafts.value];
   sending.value = true;
   const delivered = await run(props.installation, {
     _tag: "Deliver",
@@ -43,30 +43,17 @@ const send = async () => {
     data-testid="review-comments"
     class="flex flex-col gap-3 rounded border border-default p-3"
   >
-    <h3 class="text-sm font-medium">
-      {{ drafts.length }} review comment{{ drafts.length === 1 ? "" : "s" }}
-    </h3>
+    <h3 class="text-sm font-medium">{{ counted(drafts) }}</h3>
     <ul class="flex flex-col gap-3">
       <li v-for="draft in drafts" :key="draft.id" class="flex flex-col gap-1" data-testid="draft">
-        <div class="flex items-center justify-between gap-2">
-          <span class="text-xs text-muted">{{ locationOf(draft.anchor) }}</span>
-          <UButton
-            size="xs"
-            variant="ghost"
-            icon="i-lucide-trash-2"
-            aria-label="Remove comment"
-            data-testid="remove-draft"
-            @click="remove(draft.id)"
-          />
-        </div>
+        <span class="text-xs text-muted">{{ locationOf(draft.anchor) }}</span>
         <blockquote class="line-clamp-3 border-l-2 border-default pl-2 text-xs text-muted">
-          {{ draft.anchor.quote }}
+          {{ quoteOf(draft.anchor) }}
         </blockquote>
-        <UTextarea
-          :model-value="draft.text"
-          autoresize
-          :rows="2"
-          @update:model-value="(text: string) => edit(draft.id, text)"
+        <DraftEdit
+          :text="draft.text"
+          @edit="(text) => edit(draft.id, text)"
+          @remove="remove(draft.id)"
         />
       </li>
     </ul>

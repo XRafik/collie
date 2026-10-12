@@ -1288,8 +1288,8 @@ that file at the top of the tab. **Review** renders the review, read whole the s
 **Diff** at that line, or a read-only view of the file from the Run's checkout where no
 hunk shows it. **Diff** is the Run's branch against its merge base — live while the Run
 works, final after — as a file tree beside each file's diff, unified or side by side, kept
-as you left it while the record is open. Shiki colours each side of a hunk as one text, so
-a comment spanning its lines is coloured on all of them. A file is read from the host when
+as you left it while the record is open, drawn with `@pierre/diffs` in the github-light
+and github-dark colours as Desktop's theme follows. A file is read from the host when
 it is opened, and again when the Run changes how many lines it adds or removes, with no
 line cap; a file with more than
 500 changed lines, or a binary one, starts collapsed. **Evidence** shows the Run's
@@ -1317,16 +1317,22 @@ rendered markdown is kept inside its own box. A web link in it opens in your bro
 in Desktop.
 
 On the **Plan** tab you can write a Review comment on what you read: select text in the spec,
-in an expanded ticket or in a plan file a link opened, and **Comment** opens beside it. Each
+in an expanded ticket or in a plan file a link opened, and a comment box with **Comment**
+opens at the top of the tab. On
+the **Diff** tab, select a line or a range of lines on either side, unified or side by
+side, or press the gutter's button beside a line, and the comment opens under those lines;
+once added it stays drawn there, where you can edit or remove it too. Each
 comment is a draft that Desktop keeps for that Run while it runs, through tab switches and
 closing the record, and sends to no host until you send it. While a Run has drafts, the
 Plan and Diff tabs show them in one list, where you can edit or remove each, choose which
 of the Run's live agents gets them (labelled as the Terminal tab labels them; the newest,
 the one Go to pane opens, by default), and **Send**. Every draft goes as one message, word
-for word, each item naming the plan file, quoting what you selected and giving your words;
+for word, each item naming the plan file, or `path:line` with `(as it was)` for removed
+lines, quoting what you selected and giving your words;
 a message over 8 KiB arrives as a file in the Run. Only the drafts that were sent are
-cleared; if the host refuses, its words are shown and every draft is kept. With no live
-agent, Send says "This Run has no live agent to tell". Desktop never edits the plan: the
+cleared; if the host refuses, its words are shown and every draft is kept, as is one you
+edited while it was sending. With no live agent, Send is disabled and the list says "This
+Run has no live agent to tell". Desktop never edits the plan: the
 agent does, and the Plan tab shows its rewrite. An agent sends the same kind of message with
 `collie run steer --agent`.
 

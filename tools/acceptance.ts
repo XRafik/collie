@@ -84,6 +84,18 @@ const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
   {
+    id: "front-door/the-diff-tab-takes-a-comment-on-either-side",
+    statement: "The Diff tab takes a comment on a line range on either side.",
+    owner: REVIEW_COMMENTS,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "desktop/test/review-comments.test.ts",
+      name: "the Diff tab takes a comment on a line range on either side",
+    },
+  },
+  {
     id: "front-door/review-comments-reach-the-chosen-agent-word-for-word",
     statement: "Review comments reach the chosen agent word for word as one delivery.",
     owner: REVIEW_COMMENTS,
@@ -903,6 +915,17 @@ const WORKFLOWS: readonly Check[] = [
 
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
+  {
+    id: "desktop/review-comments-reach-a-remote-runs-agent-and-its-rewrite-shows",
+    statement:
+      "On a remote Machine, review comments on a plan and on a diff reach the Run's agent whole, and the Plan tab shows the agent's rewrite without a ticket being closed.",
+    owner: REVIEW_COMMENTS,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In Desktop with a remote Machine reached: on a plan Run waiting at its menu, comment on `SPEC.md` and on an expanded ticket with more than 8 KiB in all, then Send; record that the planner's pane names the attached file, that the file holds the comments as written, and that the Plan tab shows the rewritten plan, the expanded ticket included, without closing it. On an implement Run's Diff tab, comment on an added line and on a removed line, then Send, and record the same. Record the revision.",
+    },
+  },
   {
     id: "flock-chat/a-machine-on-an-older-collie-is-told-to-upgrade",
     statement:

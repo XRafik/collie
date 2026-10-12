@@ -25,6 +25,6 @@ export const useReviewDrafts = (run: () => { installation: string; runId: string
       change((now) => addDraft(now, { id: String(++made), anchor, text })),
     edit: (id: string, text: string) => change((now) => editDraft(now, id, text)),
     remove: (id: string) => change((now) => removeDraft(now, id)),
-    clear: (sent: ReadonlySet<string>) => change((now) => clearSent(now, sent)),
+    clear: (sent: ReadonlyArray<Draft>) => change((now) => clearSent(now, sent)),
   };
 };

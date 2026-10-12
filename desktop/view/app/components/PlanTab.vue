@@ -61,7 +61,6 @@ watch([expanded, opened, stamps], () => {
 const { add } = useReviewDrafts(() => props);
 /** The span last selected in a plan file, until it is commented on or let go. */
 const selected = ref<PlanAnchor | null>(null);
-const words = ref("");
 const select = (file: string, event: MouseEvent) => {
   const selection = window.getSelection();
   const inside =
@@ -72,37 +71,23 @@ const select = (file: string, event: MouseEvent) => {
   const anchor = inside ? planAnchor(file, selection.toString()) : null;
   if (anchor !== null) selected.value = anchor;
 };
-const comment = () => {
-  if (selected.value === null) return;
-  add(selected.value, words.value);
+const comment = (text: string) => {
+  if (selected.value !== null) add(selected.value, text);
   selected.value = null;
-  words.value = "";
 };
 </script>
 
 <template>
   <div data-testid="plan" class="flex flex-col gap-4">
-    <section
+    <CommentComposer
       v-if="selected !== null"
+      class="sticky top-0 z-10"
       data-testid="plan-comment"
-      class="sticky top-0 z-10 flex flex-col gap-2 rounded border border-default bg-default p-3"
-    >
-      <span class="text-xs text-muted">Comment on {{ locationOf(selected) }}</span>
-      <blockquote class="line-clamp-3 border-l-2 border-default pl-2 text-xs text-muted">
-        {{ selected.quote }}
-      </blockquote>
-      <UTextarea v-model="words" autofocus autoresize :rows="2" data-testid="comment-words" />
-      <div class="flex gap-2">
-        <UButton
-          label="Comment"
-          size="sm"
-          :disabled="words.trim() === ''"
-          data-testid="add-comment"
-          @click="comment"
-        />
-        <UButton label="Cancel" size="sm" variant="ghost" @click="selected = null" />
-      </div>
-    </section>
+      :location="locationOf(selected)"
+      :quote="selected.quote"
+      @add="comment"
+      @cancel="selected = null"
+    />
     <section
       v-if="opened !== null"
       data-testid="plan-file"
