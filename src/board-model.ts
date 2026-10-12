@@ -794,13 +794,23 @@ export const FrontDoor = Schema.Literals([
   "driver",
   "evaluator",
   "chat",
+  /** A host's own call to a peer, such as a settings sync: never a human. */
+  "host",
 ]);
 export type FrontDoor = typeof FrontDoor.Type;
 
-/** Where a bridged channel came from: the computer its front door named, and the SSH client the bridge saw. */
+/** A paired Machine, by its installation and the name herdr gives it. */
+export const MachineRef = Schema.Struct({ installation: Schema.String, name: Schema.String });
+export type MachineRef = typeof MachineRef.Type;
+
+/**
+ * Where a channel came from: the computer its front door named, the SSH client a bridge
+ * saw, and the paired Machine a link authenticated, which only this host's own link sets.
+ */
 export const Where = Schema.Struct({
   client: Schema.optionalKey(Schema.String),
   ssh: Schema.optionalKey(Schema.String),
+  machine: Schema.optionalKey(MachineRef),
 });
 export type Where = typeof Where.Type;
 
@@ -818,6 +828,8 @@ export const Declaration = Schema.Struct({
   said: Schema.optionalKey(Schema.String),
   /** The names of the files the human's message carried. */
   attachments: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** The host's own, which only its link knows: what lets `from` name a Machine. */
+  stamp: Schema.optionalKey(Schema.String),
 });
 export type Declaration = typeof Declaration.Type;
 

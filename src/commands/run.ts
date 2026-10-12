@@ -39,7 +39,9 @@ import {
   startRun,
   statusOf,
   watchRun,
+  runShown,
 } from "../lifecycle";
+import { unsafePathComponent } from "../naming";
 import type { Given, RunView } from "../engine";
 import { RESERVED_INPUTS } from "../sdk";
 import {
@@ -95,6 +97,7 @@ import {
   mutating,
   parseInput,
   locateRun,
+  outsideTask,
   runFacts,
   requestIdFlag,
   runIdArg,
@@ -337,7 +340,11 @@ const runStart = Command.make(
               const task = yield* chosenTask(resolved.env, taskId, continueTask, here);
               if (!task.ok) return task.error;
               // What an id runs is the module saved for this project.
-              const saved = yield* moduleFor(resolved.env, workflow);
+              // A Machine named with --machine has its own modules, and says what it lacks.
+              const saved =
+                resolved.env.machine === undefined
+                  ? yield* moduleFor(resolved.env, workflow)
+                  : { id: workflow };
               if (saved !== null) {
                 const unsupported = unsupportedDecide(decide);
                 if (unsupported !== null) return unsupported;
@@ -486,13 +493,19 @@ const runShow = Command.make(
       const global = yield* root;
       yield* attempt(
         Effect.gen(function* () {
-          const resolved = yield* resolveCommandRun(global, runId);
-          if (resolved._tag === "RunFailure") return resolved.result;
+          const resolved = yield* context(global, false);
+          if (resolved._tag === "ContextFailure") return resolved.result;
+          if (unsafePathComponent(runId))
+            return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
+          const shown = yield* runShown(resolved.env, runId);
+          if (!shown.ok) return shown;
+          const { view, agents, disposition, children, machine } = shown;
+          // A Task is this Machine's, so a Run on another is never outside it.
+          const task = yield* selectedTask(global);
+          if (machine === null && task !== null && view.task !== task)
+            return outsideTask(runId, task).result;
           // Both facts on the head line: how execution ended, and what became of the
           // work. A Run that failed and whose work shipped anyway says both.
-          const disposition = latest(yield* readDispositions(resolved.dir));
-          const view = resolved.view;
-          const agents = yield* runAgents(resolved.env.stateDir, view.runId);
           return {
             ok: true,
             data: {
@@ -502,9 +515,11 @@ const runShow = Command.make(
               outcome: view.outcome,
               waiting: view.waiting,
               next_action: view.waiting[0]?.name ?? null,
+              machine,
             },
             human: [
               `${view.runId}\t${statusLine(statusOf(view), disposition)}\t${view.workflow}`,
+              ...(machine === null ? [] : [`  on ${machine}`]),
               `  in ${view.cwd}${view.provenance["workspace"] === INFERRED ? " (inferred)" : ""}`,
               ...Object.entries(view.input).map(
                 ([name, value]) =>
@@ -512,7 +527,7 @@ const runShow = Command.make(
               ),
               ...agentLines(agents),
               ...describeWaiting(view),
-              ...(yield* childLines(resolved.env, runId)),
+              ...children.map((child) => `  ${child.runId}\t${child.workflow}\t${statusOf(child)}`),
             ].join("\n"),
           };
         }),
@@ -927,8 +942,11 @@ export const waitFor = Effect.fn("collie.waitFor")(function* (
   const untilResult = parseUntil(until);
   if (!untilResult.ok) return yield* printResult(untilResult.error, global.json);
   const wantsAttention = untilResult.until === "attention";
-  const located = yield* locateRun(resolved.env, runId, yield* selectedTask(global));
-  if (located._tag === "RunFailure") return yield* printResult(located.result, global.json);
+  const shown = yield* runShown(resolved.env, runId);
+  if (!shown.ok) return yield* printResult(shown, global.json);
+  const task = yield* selectedTask(global);
+  if (shown.machine === null && task !== null && shown.view.task !== task)
+    return yield* printResult(outsideTask(runId, task).result, global.json);
   return yield* waitForRun(global, resolved.env, runId, { follow, ms, wantsAttention });
 });
 
@@ -949,11 +967,7 @@ function runMutationCommand(
         const resolved = yield* context(global, false);
         if (resolved._tag === "ContextFailure") return resolved.result;
         return yield* mutation(resolved.env, operation, requestId, (id) =>
-          Effect.gen(function* () {
-            if (!(yield* anyRuns(resolved.env)))
-              return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
-            return yield* hosted(resolved.env, id);
-          }),
+          hosted(resolved.env, id),
         );
       }),
       global.json,
@@ -1011,9 +1025,6 @@ const runSteer = Command.make(
         Effect.gen(function* () {
           const resolved = yield* context(global, false);
           if (resolved._tag === "ContextFailure") return resolved.result;
-          if (!(yield* anyRuns(resolved.env))) {
-            return err("run_not_found", `No workflow host has a Run "${runId}".`, { run: runId });
-          }
           const door = yield* cliDoor(resolved.env);
           const attachments = yield* absolute(attach);
           return yield* mutation(resolved.env, "run-steer", requestId, (id) =>

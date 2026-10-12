@@ -35,6 +35,7 @@ import {
   type RunDetail,
 } from "../../../src/board-model";
 import type * as RpcClientError from "effect/rpc/RpcClientError";
+import { HerdrMachines, type HerdrMachine } from "../../../src/peers-model";
 import {
   ActionFailed,
   type Credential,
@@ -272,16 +273,7 @@ export const output = (command: ReadonlyArray<string>) =>
     ),
   );
 
-/** A saved herdr machine, as `herdr machine list --json` lists it. */
-const HerdrMachine = Schema.Struct({
-  id: Schema.String,
-  label: Schema.String,
-  target: Schema.String,
-  session: Schema.String,
-  enabled: Schema.Boolean,
-});
-export type HerdrMachine = typeof HerdrMachine.Type;
-const HerdrMachines = Schema.fromJsonString(Schema.Array(HerdrMachine));
+export type { HerdrMachine } from "../../../src/peers-model";
 
 const NO_SUBCOMMAND = /unrecognized subcommand|unknown (sub)?command|invalid subcommand/i;
 

@@ -50,6 +50,10 @@ export interface PluginEnv {
   cwdExplicit: boolean;
   context: PluginContext;
   raw: Record<string, string>;
+  /** The paired Machine a command was pointed at with `--machine`, for one that names no Run. */
+  machine?: string;
+  /** A front door that can show an SSH login, which pairing on first reach needs. */
+  pairs?: boolean;
 }
 
 function first(env: Record<string, string | undefined>, ...keys: string[]): string | null {

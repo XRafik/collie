@@ -57,6 +57,16 @@ turns — the Flock chat's bridge, declared `chat` by its bridge — declares ag
 operation with that turn's conversation and words, and the host takes the new voice; a
 declaration naming another front door is still refused.
 
+## Amended 2026-10-12: `from.machine`, and the `host` front door
+
+`from` is recorded for every front door, not only `desktop`. It gains `machine`, the paired
+Machine a channel came from by its installation and herdr's name for it, which only the
+host that authenticated the link stamps: a `declare` that sets it is refused. A host's own
+call to a peer, such as telling it that it was forgotten, is the `host` front door, which
+is never a human. A command in a terminal that reaches another Machine names its door in
+the relay's header rather than declaring it
+([ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md) D4, D8).
+
 ## Consequences
 
 - An audit names who stopped, held, resumed, answered, started or carried on with each Run.

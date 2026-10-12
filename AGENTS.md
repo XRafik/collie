@@ -65,6 +65,15 @@ herdr actions, and the `collie` CLI.
   rather than a table of Runs
   ([ADR-0013](docs/adr/0013-the-board-is-cards-of-tasks.md), which supersedes what
   [ADR-0005](docs/adr/0005-collie-tab-is-an-application.md) says the tab draws).
+- **Changing how a Machine reaches another** →
+  [ADR-0054](docs/adr/0054-a-machine-reaches-another-over-a-paired-link.md) and
+  [`docs/internals.md`](docs/internals.md#reaching-another-machine), alongside `src/peers.ts`
+  (the pairing, the listener and the relay sockets), `src/peers-model.ts` (what Desktop
+  shares of it), `src/channel.ts` (the one declare-then-pipe the bridge and the link use),
+  `connectPeer` in `src/host.ts` and `asksRun` in `src/lifecycle.ts` (a Run found on the
+  Machine that has it), with `test/peers.test.ts` and `test/support/peers.ts` (two real
+  hosts, a fake herdr each and a fake `ssh`). Adding a Machine to herdr pairs it; there is
+  no command to.
 - **Changing Desktop** → [`docs/using.md`](docs/using.md#collie-desktop), alongside
   `desktop/src/bun/machine.ts` (a Machine reached through `collie bridge`, never the host
   client) and `desktop/src/shared/` (the view's RPC and the Flock it folds), with the main

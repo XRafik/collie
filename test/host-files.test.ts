@@ -6,7 +6,7 @@ import { BunServices } from "@effect/platform-bun";
 import { Clock, Effect, FileSystem, Result, Schema, type Scope, Stream } from "effect";
 import { HostRefused } from "../src/board-model";
 import { readAudit } from "../src/audit";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { editString, globFiles, grepFiles, LINE_LIMIT, writeWhole } from "../src/host-files";
 import { receive } from "../src/uploads";
 import { uploadsSweeper } from "../src/cleanup";
@@ -25,7 +25,7 @@ test(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           yield* connect(world.state);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           yield* door.declare({
             frontDoor: "chat",
             conversation: "flock@mk-pc",
@@ -140,7 +140,7 @@ test(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           yield* connect(world.state);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           yield* door.declare({ frontDoor: "chat", conversation: "flock@mk-pc", said: "upload" });
           const bytes = new TextEncoder().encode("a screenshot, in two parts");
           const digest = sha256(bytes);

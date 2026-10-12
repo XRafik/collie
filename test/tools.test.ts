@@ -41,7 +41,7 @@ import { save, type World } from "./support/world";
 import { Herdr } from "../src/herdr";
 import { until } from "./support/host";
 import { exec } from "./support/command";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { runDir, type RunView } from "../src/engine";
 import { isSettled } from "../src/lifecycle";
 import { appendLog } from "../src/oversight";
@@ -1197,7 +1197,7 @@ const asking = (name: string) => (view: RunView) =>
 const answerAs = (as: typeof Declaration.Type, runId: string, decision: string, value: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(stateDir);
+      const door = yield* frontDoor(socketOf(stateDir));
       yield* door.declare(as);
       yield* door.answer({
         runId,
@@ -1545,7 +1545,7 @@ test("a start rooted in Collie's own state is refused, whether named by the Home
 const readThroughHost = (tool: (typeof FLOCK_READS)[number], input: JsonObject) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(stateDir);
+      const door = yield* frontDoor(socketOf(stateDir));
       return yield* door.read({ tool, input });
     }),
   ).pipe(Effect.orDie);

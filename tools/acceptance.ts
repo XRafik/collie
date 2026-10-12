@@ -79,6 +79,7 @@ const IN_APP_TERMINAL = "go to pane opens the pane in Desktop (this MR)";
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const MACHINES = "machines reach each other (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -700,6 +701,19 @@ const BACKEND: readonly Check[] = [
       name: "an offer invoked from a Run with attachments gives the new Run copies of them beside its own",
     },
   },
+  {
+    id: "backend/a-command-reaches-the-machine-that-has-its-run",
+    statement:
+      "A command about a Run reaches the Machine that has it, recorded as its front door from this Machine.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peers.test.ts",
+      name: "a command about a Run on a Machine herdr lists pairs the two by itself and reaches the Run, recorded as its front door from this Machine",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */
@@ -1092,6 +1106,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On a Mac with bodil installed and BODIL_REMOTE_VM set, save the module from docs/sdk.md as `~/.collie/user/workflows/bodil.workflow.ts` and record that `collie workflow show bodil` lists plan, brands and name. Run `collie run start bodil --input plan=<a small plan> --input brands=happytiger --input name=collie-try`; record that `bodil ls` shows collie-try, that the implementer's pane works in `~/work/gitte/worktrees/collie-try/monorepo` on `dabo/collie-try`, and the merge request's source branch. When the Run finishes, record that `bodil ls` no longer lists collie-try and the worktree is still there. Record the revision.",
+    },
+  },
+  {
+    id: "machines/a-steer-reaches-a-vm-run-from-the-laptop",
+    statement:
+      "With Desktop closed and vm-mk in the laptop's herdr, `collie run steer <a vm-mk Run> \"hello\"` on the laptop asks for one SSO approval the first time only and reaches that Run's agent; the Run's audit names the laptop, and `collie machine list` on both shows the other as live.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk's laptop, with Desktop closed, run `collie run steer <a vm-mk Run's id> \"hello\"` twice. Record the one SSO approval, that the VM agent's pane shows hello, the Run's `operations.jsonl` line with `from.machine`, and `collie machine list` on both Machines. Record the revision.",
     },
   },
 ];

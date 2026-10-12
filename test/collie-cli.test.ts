@@ -8,7 +8,7 @@ import { readIntent, seedIntent, writeIntent } from "../src/intent";
 import { appendMetric } from "../src/metrics";
 import { hosted, settledRun } from "./support/hosted";
 import { evidenceDir } from "../src/engine";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { readAudit } from "../src/audit";
 import { VerifySpecSchema } from "../src/verify-spec";
 
@@ -937,7 +937,7 @@ test("usage is each Subscription's reading in the standard envelope, and says wh
       ]);
 
       // Past the trail's length, reads at once each record and the trim keeps the newest.
-      const door = yield* frontDoor(state);
+      const door = yield* frontDoor(socketOf(state));
       yield* Effect.forEach(Array.from({ length: 230 }), () => door.usage(), {
         concurrency: "unbounded",
       });

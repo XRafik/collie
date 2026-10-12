@@ -31,7 +31,11 @@ export const stdinText = Effect.gen(function* () {
 export const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 export const PrettyUnknownJson = Schema.fromJsonString(Schema.Unknown, { space: 2 });
 
-export type Global = { readonly workspace: Option.Option<string>; readonly json: boolean };
+export type Global = {
+  readonly workspace: Option.Option<string>;
+  readonly machine: Option.Option<string>;
+  readonly json: boolean;
+};
 export const selected = Effect.fn("collie.selected")(function* (global: Global) {
   if (Option.isSome(global.workspace)) return global.workspace.value;
   return (yield* currentEnv).workspaceId;
@@ -88,7 +92,11 @@ export const context = Effect.fn("collie.context")(function* (
 ) {
   const id = yield* selected(global);
   const baseEnv = yield* currentEnv;
-  const base = { ...baseEnv, workspaceId: id };
+  // A terminal's command can show the SSH login that pairs a Machine on first reach.
+  const reach = Option.isSome(global.machine)
+    ? { pairs: true, machine: global.machine.value }
+    : { pairs: true };
+  const base = { ...baseEnv, workspaceId: id, ...reach };
   if (!id)
     return requireScope
       ? contextFailure(err("workspace_required", "This operation requires a workspace."))
@@ -190,7 +198,7 @@ export const locateRun = Effect.fn("collie.locateRun")(function* (
   return { _tag: "Hosted", view, dir, evidence: evidenceDir(env.stateDir, id) };
 });
 
-const outsideTask = (id: string, task: string): Located => ({
+export const outsideTask = (id: string, task: string): Located & { _tag: "RunFailure" } => ({
   _tag: "RunFailure",
   result: err("run_not_found", `Run "${id}" is not part of task "${task}".`, { run: id, task }),
 });
@@ -266,6 +274,12 @@ export const root = Command.make("collie").pipe(
     workspace: Flag.String("workspace").pipe(
       Flag.withDescription(
         "Scope to this herdr workspace id, and root the run at that workspace's directory",
+      ),
+      Flag.optional,
+    ),
+    machine: Flag.String("machine").pipe(
+      Flag.withDescription(
+        "Reach this paired Machine, by herdr's name for it, for a command that names no Run",
       ),
       Flag.optional,
     ),

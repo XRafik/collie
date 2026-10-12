@@ -61,9 +61,22 @@ are one Machine. Desktop names it by the label of the first enabled herdr machin
 reaches it, or by the hostname for Local, and adds its SSH target where two share a name.
 A computer Desktop reaches that has no Collie yet is known by its herdr profile id until a
 host there reports an installation id. Not the plugin installation a host serves, which
-`identity` calls `root`.
+`identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
+Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
 
-**Flock** — Every Herd on every Machine **Desktop** reaches.
+**Flock** — Every Herd on every Machine paired with this one, or reached by **Desktop**.
+
+**Peer** — A Machine paired with this one, known by its installation id and named by
+herdr's label for it. A peer this one can open a connection to listens and is dialled; one
+it cannot, such as a laptop, keeps a link open to it and is reached back over that link.
+Each host keeps a relay socket for each peer, `peers/<name>.sock`, that speaks what
+`host.sock` speaks ([ADR-0054](docs/adr/0054-a-machine-reaches-another-over-a-paired-link.md)).
+
+**Pairing** — The record each side of two **Peers** keeps in `peers.json`: who the other
+is, which side dials, and the secret and certificate the link is authenticated with. Made
+by itself the first time Collie reaches a herdr machine it has none for, over that
+machine's SSH login, and removed when herdr no longer lists the Machine. There is no
+command to pair or to forget.
 
 **Local** — The Machine Desktop runs on, reached through a bridge it starts without SSH and
 named by its hostname. Otherwise no different from any other Machine.
@@ -167,7 +180,10 @@ trail with every start, answer, hold, stop, resume, offer invoked, grant, steer,
 disposition and follow-up. `board`, `desktop` and
 `cli-tty` are a human; `cli-tty` needs a terminal outside any agent's pane. A channel
 reached through `collie bridge` is the front door it was started as, and `desktop` adds
-where it came from: the computer it named and the SSH client the bridge saw. A chat's
+where it came from: the computer it named and the SSH client the bridge saw. Every front
+door's Actor names `from.machine` where the channel came from a **Peer**, stamped by the
+host that authenticated the link and never by a caller, and a host's own call to a peer is
+the `host` front door, which is never a human. A chat's
 `collie_do` also names its conversation and carries the human's message from that turn,
 with the names of the **Attachments** it carried, attached by the tool host and never by
 the model.

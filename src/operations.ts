@@ -86,6 +86,8 @@ const ErrorCode = Schema.Literals([
   "target_exists",
   "needs_input",
   "timeout",
+  /** A paired Machine did not answer within its bound. */
+  "machine_unreachable",
   "invalid_state",
   /** The workflow a Run recorded is not the workflow its layers resolve to now. */
   "definition_changed",
@@ -977,17 +979,21 @@ export const choiceLines = (run: string, asked: Asked): string[] => [
 const decodeAnswered = Schema.decodeUnknownOption(Answered);
 
 /** Who an answer came from, in the words a human uses for the place they answered. */
-const answererOf = ({ origin, from, conversation }: AuditLine["actor"]): string => {
-  switch (origin) {
-    case "desktop":
-      return from?.client === undefined ? "desktop" : `desktop on ${from.client}`;
-    case "chat":
-      return conversation === undefined ? "chat" : `chat ${conversation}`;
-    case "cli-tty":
-      return "cli";
-    default:
-      return origin;
-  }
+const answererOf = (actor: AuditLine["actor"]): string => {
+  const { origin, from, conversation } = actor;
+  const door = (() => {
+    switch (origin) {
+      case "desktop":
+        return from?.client === undefined ? "desktop" : `desktop on ${from.client}`;
+      case "chat":
+        return conversation === undefined ? "chat" : `chat ${conversation}`;
+      case "cli-tty":
+        return "cli";
+      default:
+        return origin;
+    }
+  })();
+  return from?.machine === undefined ? door : `${door} from ${from.machine.name}`;
 };
 
 /** Each answered Choice, newest first, with who answered it and when as the audit trail has it. */

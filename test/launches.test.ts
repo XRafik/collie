@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Option, Schema, Stream } from "effect";
-import { frontDoor } from "../src/host";
+import { frontDoor, socketOf } from "../src/host";
 import { agentLines } from "../src/commands/run";
 import { LAUNCH_ORDER, launchDir, runAgents, type Launched } from "../src/launches";
 import { runFacts } from "../src/operations";
@@ -142,7 +142,7 @@ test(
         const run = yield* settledRun(world, "hello");
         yield* seed(world.state, run.id, twoAgents(run.id));
 
-        const detail = yield* (yield* frontDoor(world.state))
+        const detail = yield* (yield* frontDoor(socketOf(world.state)))
           .runDetail({ runId: run.id, tail: false, pages: 1, refreshMr: false })
           .pipe(Stream.runHead, Effect.timeout("30 seconds"));
         expect(Option.getOrNull(detail)?.agents?.map((one) => one.operation)).toEqual([

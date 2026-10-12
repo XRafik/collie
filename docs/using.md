@@ -102,6 +102,20 @@ alone. Login commands keep your session's environment so Claude Code can read it
 Keychain login. It adds no keybindings; the steps and their `--json` stream are in
 [the CLI reference](cli.md#onboarding-a-machine).
 
+### Your other Machine
+
+Adding a Machine to herdr (`herdr machine add`) is all it takes for Collie on this computer
+to reach Collie on that one. The first `collie` command about one of its Runs — `collie run
+steer <its Run> "…"`, say — or the first `collie --machine <name> …` pairs the two over that
+machine's SSH login, which asks for its approval once, and then goes on to do what it was
+asked. From then on the Machines talk over a TLS WebSocket the one you can dial (the VM)
+listens for, with no SSH and no approval. A command that names a Run finds the Machine
+that has it, so `--machine` is only for `board`, `run start` and `run list`. `collie machine
+list` says which Machines are paired and whether each answers. Removing the Machine from
+herdr forgets the pairing on both sides. Each Machine records who asked for what in the
+Run's audit, with the Machine it came from
+([the CLI reference](cli.md#another-machines-runs)).
+
 ### The skills
 
 The baseline workflows hard-require ten skills they do not ship, and a missing skill stops

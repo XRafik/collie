@@ -14,6 +14,7 @@
 // machine. `docs/adr/0015-one-local-host-owns-a-state-directory.md` is why each of those
 // is the way it is.
 
+import { createConnection, type Socket as NetSocket } from "node:net";
 import * as BunSocket from "@effect/platform-bun/BunSocket";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import * as BunSocketServer from "@effect/platform-bun/BunSocketServer";
@@ -39,6 +40,7 @@ import {
   Struct,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import * as Socket from "effect/socket/Socket";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type * as RpcClientError from "effect/rpc/RpcClientError";
@@ -99,6 +101,7 @@ import { buildRunDetail } from "./views";
 import {
   Answered,
   ASKED_KINDS,
+  RunAgent,
   CleanupReport,
   Controlled,
   Disposition,
@@ -175,6 +178,17 @@ import { reason } from "./naming";
 import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-files";
 import { receive, uploadsDir } from "./uploads";
 import { loadDefaults, SettingRefused, sharedSettings, takeShared } from "./config";
+import { decodeAnswer, machineName, relayOf, startPeers, type Peers } from "./peers";
+import {
+  Invited,
+  MachineUnreachable,
+  Peer,
+  PeerView,
+  RelayHeaderJson,
+  type RelayHeader,
+} from "./peers-model";
+import { latest, readDispositions } from "./disposition";
+import { runAgents } from "./launches";
 import { factsOfView, settled } from "./runs";
 import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
@@ -236,6 +250,13 @@ const Identity = Schema.Struct({
   protocol: Schema.optionalKey(Schema.Int),
   /** The state directory's own id; absent from a host older than the field. */
   installation: Schema.optionalKey(Schema.String),
+});
+
+const RunShown = Schema.Struct({
+  view: RunView,
+  agents: Schema.Array(RunAgent),
+  disposition: Schema.NullOr(Disposition),
+  children: Schema.Array(RunView),
 });
 
 const Loaded = Schema.Struct({
@@ -305,6 +326,19 @@ export const HostRpcs = RpcGroup.make(
     success: Steered,
     error: Schema.Union([HostRefused, RequestConflict]),
   }),
+  /** A Run as `run show` prints it: the read model, its agents, what became of it, its children. */
+  Rpc.make("shown", { payload: { runId: Schema.String }, success: Schema.NullOr(RunShown) }),
+  /** Pairs this Machine with the installation asking, over the SSH login that asked. */
+  Rpc.make("invite", {
+    payload: { for: Schema.String, name: Schema.String, address: Schema.NullOr(Schema.String) },
+    success: Invited,
+    error: HostRefused,
+  }),
+  /** Keeps a pairing this Machine made with a peer it dials. */
+  Rpc.make("pair", { payload: { peer: Peer }, success: Schema.Void, error: HostRefused }),
+  /** The peer asking has forgotten this Machine, so this one forgets it too. */
+  Rpc.make("forget", { success: Schema.Void, error: HostRefused }),
+  Rpc.make("peers", { success: Schema.Array(PeerView) }),
 );
 
 /** Everything this build serves; a client of another build uses `FrontDoorRpcs` alone. */
@@ -340,6 +374,7 @@ const handlers = (
   installation: string,
   development: Development,
   declared: Declared,
+  peers: Peers,
 ) =>
   HostRpcs.toLayer(
     Effect.gen(function* () {
@@ -394,6 +429,30 @@ const handlers = (
         runs: ({ task }) => registry.views(task),
         watch: ({ runId }) => registry.watch(runId),
         recover: () => registry.recover,
+        shown: ({ runId }) =>
+          Effect.gen(function* () {
+            const view = yield* registry.view(runId);
+            if (view === null) return null;
+            const all = yield* registry.views(null);
+            return {
+              view,
+              agents: yield* runAgents(dir, runId),
+              disposition: latest(
+                yield* readDispositions(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
+              ),
+              children: all.filter((one) => one.parent === runId),
+            };
+          }).pipe(Effect.provideContext(bun)),
+        invite: (asked) =>
+          peers.invite({ installation: asked.for, name: asked.name, address: asked.address }),
+        pair: ({ peer }) => peers.add(peer),
+        forget: (_, { client }) => {
+          const machine = stampIn(declared, client).from?.machine;
+          return machine === undefined
+            ? Effect.fail(new HostRefused({ reason: "only a paired Machine's link can forget it" }))
+            : peers.forget(machine.installation);
+        },
+        peers: () => peers.list,
         grant: ({ runId, name, command, request }, { client }) =>
           once(
             runDir(dir, runId),
@@ -657,6 +716,7 @@ const frontDoorHandlers = (
   development: Development,
   panels: MrPanels,
   declared: Declared,
+  stamp: string,
 ) =>
   FrontDoorRpcs.toLayer(
     Effect.gen(function* () {
@@ -920,7 +980,14 @@ const frontDoorHandlers = (
       ).pipe(Stream.share({ capacity: 1, strategy: "sliding" }));
       const boards = yield* shareBoard({ build, changed });
       return FrontDoorRpcs.of({
-        declare: ({ frontDoor, session, from, ...voice }, { client }) => {
+        declare: ({ frontDoor, session, from, stamp: stamped, ...voice }, { client }) => {
+          // Which Machine a channel came from is said by this host's own link, never by the channel.
+          if (from?.machine !== undefined && stamped !== stamp)
+            return Effect.fail(
+              new HostRefused({ reason: "a channel cannot say which Machine it came from" }),
+            );
+          if (frontDoor === "host" && stamped !== stamp)
+            return Effect.fail(new HostRefused({ reason: "only a host's own link is host" }));
           const already = declared.get(client.id);
           if (already !== undefined && already.frontDoor !== frontDoor) {
             return Effect.fail(
@@ -1781,12 +1848,35 @@ const own = (dir: string) =>
     const usage = yield* Usage;
     const panels: MrPanels = new Map();
     const declared: Declared = new Map();
+    const stamp = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie);
+    const peers = yield* startPeers({
+      dir,
+      installation,
+      stamp,
+      socket: socketOf(dir),
+      machines: herdr.machineList().pipe(
+        Effect.map((machines): ReadonlyArray<{ readonly label: string }> => machines),
+        Effect.orElseSucceed(() => null),
+        Effect.provideContext(bun),
+      ),
+      tell: (peer) =>
+        Effect.scoped(
+          connectPeer(dir, peer.name, { as: "host", client: machineName(), stamp }).pipe(
+            Effect.flatMap((client) => client.forget()),
+          ),
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning(`could not tell ${peer.name} it was forgotten: ${reason(cause)}`),
+          ),
+          Effect.provideContext(bun),
+        ),
+    });
     return yield* Layer.launch(
       RpcServer.layer(AllRpcs).pipe(
         Layer.provide(
           Layer.mergeAll(
-            handlers(dir, installation, development, declared),
-            frontDoorHandlers(dir, installation, development, panels, declared),
+            handlers(dir, installation, development, declared, peers),
+            frontDoorHandlers(dir, installation, development, panels, declared, stamp),
             sideJobsLayer(dir, panels),
           ).pipe(
             Layer.provide(
@@ -1893,24 +1983,125 @@ const stopOwner = Effect.fn("Host.stopOwner")(function* (dir: string, pid: numbe
 });
 
 /** One connection, in the caller's scope: theirs to keep, and theirs to close. */
-const openGroup = <Rpcs extends Rpc.Any>(dir: string, group: RpcGroup.RpcGroup<Rpcs>) =>
+const openGroup = <Rpcs extends Rpc.Any>(
+  socket: string,
+  group: RpcGroup.RpcGroup<Rpcs>,
+  through: Layer.Layer<Socket.Socket, Socket.SocketError> = BunSocket.layerNet({ path: socket }),
+) =>
   Effect.gen(function* () {
     const context = yield* Layer.build(
-      RpcClient.layerProtocolSocket().pipe(
-        Layer.provide(BunSocket.layerNet({ path: socketOf(dir) })),
-        Layer.provide(serialization),
-      ),
+      RpcClient.layerProtocolSocket().pipe(Layer.provide(through), Layer.provide(serialization)),
     );
     return yield* RpcClient.make(group).pipe(Effect.provideContext(context));
-  }).pipe(Effect.mapError((cause) => unavailable(dir, String(cause))));
+  }).pipe(Effect.mapError((cause) => unavailable(socket, String(cause))));
 
-const open = (dir: string) => openGroup(dir, AllRpcs);
+const open = (dir: string) => openGroup(socketOf(dir), AllRpcs);
 
 /**
- * The public door of the host already answering at `dir`. Nothing is started or stopped
+ * The public door of the host already answering at `socket`. Nothing is started or stopped
  * from here, so a client on another Machine can never reach for a process of its own.
  */
-export const frontDoor = (dir: string) => openGroup(dir, FrontDoorRpcs);
+export const frontDoor = (socket: string) => openGroup(socket, FrontDoorRpcs);
+
+/**
+ * A connection through this Machine's relay to a peer, opened as the front door its
+ * header names, once the relay says the peer answered.
+ */
+const relayed = (stateDir: string, name: string, header: RelayHeader) =>
+  Effect.acquireRelease(
+    Effect.callback<NetSocket, HostUnavailable | MachineUnreachable>((resume) => {
+      const path = relayOf(stateDir, name);
+      const conn = createConnection(path);
+      let seen = Buffer.alloc(0);
+      const take = (chunk: Buffer) => {
+        seen = Buffer.concat([seen, chunk]);
+        const end = seen.indexOf(10);
+        if (end === -1) return;
+        conn.off("data", take);
+        conn.pause();
+        const line = seen.subarray(0, end).toString("utf8");
+        const answer = decodeAnswer(line);
+        if (Option.isNone(answer) || (!answer.value.ok && answer.value.unreachable === undefined)) {
+          conn.destroy();
+          const said = Option.isSome(answer) ? (answer.value.refused ?? line) : line;
+          return resume(Effect.fail(unavailable(path, `the relay to ${name} refused: ${said}`)));
+        }
+        if (!answer.value.ok) {
+          conn.destroy();
+          return resume(
+            Effect.fail(new MachineUnreachable({ machine: name, seen: answer.value.unreachable! })),
+          );
+        }
+        const rest = seen.subarray(end + 1);
+        if (rest.length > 0) conn.unshift(rest);
+        resume(Effect.succeed(conn));
+      };
+      conn.on("data", take);
+      conn.once("connect", () => conn.write(`${encodeHeader(header)}\n`));
+      conn.once("error", (cause) =>
+        resume(
+          Effect.fail(
+            unavailable(path, `${name} is not paired with this Machine: ${cause.message}`),
+          ),
+        ),
+      );
+      conn.once("close", () =>
+        resume(Effect.fail(unavailable(path, `the relay to ${name} hung up`))),
+      );
+    }),
+    (conn) => Effect.sync(() => conn.destroy()),
+  );
+
+const encodeHeader = Schema.encodeSync(RelayHeaderJson);
+
+/**
+ * A client of a peer's host, over this Machine's relay to it. It is asked who it is and
+ * never started or stopped from here (ADR-0054 D6): another build is refused, naming both.
+ */
+export const connectPeer = (
+  stateDir: string,
+  name: string,
+  header: RelayHeader,
+  options?: { readonly build?: string },
+): Effect.Effect<
+  HostClient,
+  HostUnavailable | HostVersionMismatch | MachineUnreachable,
+  Scope.Scope
+> =>
+  Effect.gen(function* () {
+    const build = options?.build ?? BUILD;
+    const conn = yield* relayed(stateDir, name, header);
+    const socket = yield* BunSocket.fromDuplex(Effect.succeed(conn));
+    const client = yield* openGroup(
+      relayOf(stateDir, name),
+      AllRpcs,
+      Layer.succeed(Socket.Socket, socket),
+    );
+    const who = yield* client.identity().pipe(
+      Effect.timeoutOrElse({
+        duration: ASK_TIMEOUT,
+        orElse: () =>
+          Effect.fail(
+            new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+          ),
+      }),
+      Effect.mapError((cause) =>
+        Schema.is(MachineUnreachable)(cause) ? cause : unavailable(stateDir, reason(cause)),
+      ),
+    );
+    if (who.build !== build)
+      return yield* new HostVersionMismatch({
+        dir: who.dir,
+        host: who.build,
+        client: build,
+        pid: who.pid,
+        restart:
+          who.development !== undefined
+            ? `${name} runs a development checkout of collie (${who.development}) and this is ${build}; nothing upgrades a development checkout`
+            : `${name} runs collie ${who.build} and this is ${build}`,
+      });
+    return client;
+  });
 
 const unavailable = (dir: string, reason: string) => new HostUnavailable({ dir, reason });
 

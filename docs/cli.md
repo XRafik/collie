@@ -19,11 +19,57 @@ Put these before the subcommand:
 | ------------------- | ------------------------------------------------------------------ |
 | `--json`            | Emit one machine-readable envelope instead of text.                |
 | `--workspace <id>`  | Scope to that herdr workspace, and root the run at its directory.  |
+| `--machine <name>`  | Reach that paired Machine, by herdr's name for it.                 |
 | `--log-level <lvl>` | `all`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `none`. |
 
 ```sh
 collie --json --workspace wT run start plan --input goal="ship it"
 ```
+
+`--machine` is for a command that names no Run: `board`, `run start` and `run list`. A
+command that names a Run needs none (see [Another Machine's Runs](#another-machines-runs)).
+A start on another Machine opens its own Task there, so `--task`, `--continue-task` and
+`--here` are refused with it, and the module is the one that Machine has saved.
+
+## Another Machine's Runs
+
+A Run id names one Run, so a command about one goes to the Machine that has it: `run show`,
+`run wait`, `run steer`, `run answer`, `run hold`, `run stop`, `run resume`, `run action`
+and `run follow-up` ask this Machine's host first, then each paired Machine, then each
+machine herdr lists that is not paired yet, pairing it on the way. The envelope is the one
+the command gives at home; `run show` adds `machine`, the Machine the Run is on. A Run no
+Machine has is `run_not_found`, and its `details` name every Machine asked (`machines`) and
+any that did not answer (`away`).
+
+Adding a Machine to herdr (`herdr machine add`) is all it takes. The first command that
+reaches it pairs the two over its SSH login, which asks for that login's approval once,
+where the command runs; from then on the Machines talk over a TLS WebSocket the dialled
+one listens for on port 47217, with no SSH. Removing the Machine from herdr forgets the
+pairing on both sides. A host's own jobs never start an SSH login, so a Machine no command
+has reached yet is `invalid_state` for them: not paired yet.
+
+The receiving host records each operation as the front door that asked — `cli`, or
+`cli-tty` for a person at a terminal — with `from.machine` naming the Machine it came from
+(the installation id and the name it was paired under).
+
+### `collie machine`
+
+```sh
+collie machine list
+collie machine invite --for <installation> --name <name> [--address <host>]
+```
+
+`list` names each Machine paired with this one, which side dials (`out`: this one dials it;
+`in`: it dials this one), and whether it answers now. Its `data.machines` is each one's
+`installation`, `name`, `dials`, `url`, `state` (`live`, `connecting` or `away`), `since`
+and `failure`, never the secret. A listener that could not take its port says why in
+`failure`.
+
+`invite` is plumbing: it is what pairing runs on the other Machine over SSH, and nobody
+types it. It makes this Machine's certificate the first time (with `openssl`, an EC P-256
+key, its names and addresses and `--address` on it), mints a secret for the installation
+asking, keeps the pairing and starts the listener. Its `data` is this Machine's
+`installation`, the `port`, the `certificate` and the `secret`.
 
 ## Where a run roots
 
@@ -1295,6 +1341,7 @@ human line and a failure prints `error.message`.
 | `target_exists`       | A fork would overwrite a file that is already there.                                                                                                       |
 | `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                                                                     |
 | `timeout`             | `run wait --timeout` gave up.                                                                                                                              |
+| `machine_unreachable` | A paired Machine did not answer within its bound; `details` name the `machine` and what was `seen`.                                                        |
 | `invalid_state`       | The run, or the installation, is not in a state where that makes sense — resuming one that already succeeded, or `upgrade --to` on a development checkout. |
 | `invalid_input`       | A flag or argument was wrong.                                                                                                                              |
 | `operation_failed`    | Anything else, including a caught defect.                                                                                                                  |
@@ -1631,8 +1678,11 @@ over — by its recorded start time, so a pid that now belongs to an unrelated p
 never adopted and never signalled.
 
 Clients talk to it over a unix socket in that same directory, with Effect's own RPC: the
-same schemas at both ends, and nothing listening off this machine. It answers `identity`,
-`discover`, `load`, `registrations`, `status`, `run`, `runs`, `watch`, `recover`, `offers`, `grant` and `steer` — one
+same schemas at both ends. Nothing listens off the Machine until another Machine pairs with
+it and dials it; then the host also listens on port 47217, over TLS, for that paired
+installation alone, and declares each channel it takes on its own socket
+([ADR-0054](adr/0054-a-machine-reaches-another-over-a-paired-link.md)). It answers `identity`,
+`discover`, `load`, `registrations`, `status`, `run`, `runs`, `watch`, `recover`, `offers`, `grant`, `steer`, `shown` (what `run show` prints) and, for pairing, `invite`, `pair`, `forget` and `peers` — one
 registry, in front of as many clients as ask. `run` and `runs` are the read model the front
 doors show; `watch` streams it, current state first and a whole state each time; `recover`
 registers what current files now allow and hands over what is outstanding. One fiber in the

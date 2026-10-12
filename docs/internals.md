@@ -221,6 +221,48 @@ in a directory that had just been deleted was worse than a late clean-up. Nothin
 protected: a Control Plane showing a settled worktree removes it and herdr closes that
 workspace, which is what a merged branch is supposed to do.
 
+## Reaching another Machine
+
+Each host keeps its peers in `src/peers.ts`, started in the host's scope
+([ADR-0054](adr/0054-a-machine-reaches-another-over-a-paired-link.md)):
+
+- **The pairings,** in `peers.json` in the state directory (0600): each peer's
+  installation, name (herdr's label), which side dials, and for a peer this one dials its
+  `url`, its `certificate` and the `secret`.
+- **A relay socket per peer this Machine dials,** `peers/<name>.sock`. A client writes one
+  header line, `{"as": <front door>, "client": <name>}`, and is answered with one line —
+  `{"ok":true}`, or why not (`refused`, or `unreachable` with what was seen) — then speaks
+  the host protocol. Behind it the relay opens a fresh WebSocket to the peer's `/channel`,
+  pinning the peer's certificate as the only CA and sending the secret as a bearer, and
+  pipes bytes. `as: "host"` is taken only with the relay's own host's stamp.
+- **The listener,** on `0.0.0.0:47217` (`COLLIE_PEER_PORT` for a test), only while a peer
+  that dials in is paired. It finds the installation a bearer was minted for, and declares
+  the channel on a fresh `host.sock` connection as `{frontDoor: as, from: {machine,
+  client}}` with the host's per-process stamp, which is what lets `from.machine` through
+  `declare`: a channel that sets it without the stamp is refused.
+
+`src/channel.ts` is the one declare-then-pipe: `collie bridge` hands it stdio, the listener
+a WebSocket. The client side is `connectPeer` in `src/host.ts`, which opens the relay, asks
+`identity` and refuses a far host of another build, naming both, without ever starting or
+stopping it; and `asksRun` in `src/lifecycle.ts`, which asks this host, then each peer, then
+each herdr machine not paired yet, for the Run a command names.
+
+**Pairing.** `pairWith` resolves the herdr machine's `HostName` with `ssh -G` and runs
+`collie --json machine invite --for <installation> --name <this Machine> --address <HostName>`
+there over `ssh` — through a caller's SSH master where one is given, and as a plain login
+otherwise, whose output goes to the command's stderr so the human sees the approval it
+asks for. The invited host makes its certificate with `openssl` the first time (and again
+only when the address the asker dials is not on it), mints the secret, keeps the pairing
+and starts listening; the asker's host keeps its side and opens the relay. A relay path
+longer than a unix socket takes (104 bytes on macOS) is refused rather than truncated.
+Only a front door that can show the login pairs (`pairs` on its env): a host's own jobs
+are refused with "not paired yet".
+
+**Forgetting.** When the host that dials a peer starts and herdr no longer lists it, it
+tells the peer over the relay as `host` (`forget`, which the peer applies to the
+installation the link authenticated) and drops the pairing; a peer with nobody left
+dialling in closes its listener.
+
 ## The herdr boundary
 
 `herdr.ts` is the only channel to the herdr Collie is running inside: the `herdr` CLI at
@@ -234,6 +276,11 @@ can afford, because it is not talking to the session — no `HERDR_BIN_PATH`, no
 state, and a binary in a temp directory rather than the one the user is running. There is
 nothing above it to fake, and routing it through `herdr.ts` would mean asking the running
 herdr what some other version's schema says.
+
+The host and the CLI read herdr's list of saved machines through `herdr.ts` too
+(`machineList`, `herdr machine list --json`): it is the list of Machines a pairing may be
+made with, and a peer it no longer names is forgotten
+([Reaching another Machine](#reaching-another-machine)).
 
 Desktop's main process runs three more, all on herdr's list of saved machines:
 `herdr machine list --json`, which machines to reach, and `herdr machine remove`
@@ -351,6 +398,10 @@ the `prompt_box_body` rule's `evidence.region_preview`; the pinned 0.9.3 answers
 (`herdr agent explain --file <screen> --agent claude --json` checks a binary without a
 server), and a reply without it reads as a box nobody can see, which asks a
 human rather than pressing Enter.
+
+`machine list --json` is the third: a bare array of saved machines. Its struct,
+`HerdrMachine` in `src/peers-model.ts`, is what Desktop decodes too, and
+`test/herdr-contract.test.ts` holds it to what the pinned 0.9.3 prints.
 
 `session list --json` is the second: it answers with a bare `{ sessions }` rather than an
 envelope, so it is not in the socket schema either. The host reads it to find every running
