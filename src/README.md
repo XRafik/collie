@@ -8,6 +8,7 @@ Runner source (Bun/TypeScript). Compiled to `bin/collie` per platform; see ADR-0
 | `envelope.ts`      | CLI envelopes, stdout, exit statuses, request receipts, and mutation locks                            |
 | `operations.ts`    | Workspace resolution and Run mutations shared by both front doors                                     |
 | `doctor.ts`        | Every prerequisite an installation needs, checked in one pass, each with its fix                      |
+| `doctor-check.ts`  | What a doctor check is, shared by the doctor and each forge's own checks                              |
 | `flows.ts`         | What each action and pane entrypoint does                                                             |
 | `env.ts`           | The plugin environment herdr provides                                                                 |
 | `herdr.ts`         | The only channel to herdr: CLI at `HERDR_BIN_PATH`, socket for the rest, and its config               |
@@ -99,6 +100,7 @@ Runner source (Bun/TypeScript). Compiled to `bin/collie` per platform; see ADR-0
 | `forge/forge.ts`   | The forge interface, and which adapter a merge request is on (ADR-0050)                               |
 | `forge/gitlab.ts`  | The GitLab adapter: everything Collie asks GitLab, through `glab`                                     |
 | `forge/github.ts`  | The GitHub adapter: everything Collie asks GitHub, through `gh`                                       |
+| `forge/*-checks.ts`| Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                 |
 | `template.ts`      | `{{a.b}}` prompt substitution                                                                         |
 | `config.ts`        | User defaults and remembered values in `config.json`                                                  |
 | `compaction.ts`    | One threshold, one work-boundary policy, and each agent's controls for its lifetime                   |

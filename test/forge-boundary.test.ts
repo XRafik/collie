@@ -8,6 +8,8 @@ import { runEffect } from "./support/effect";
 const ADAPTER = new Map([
   ["src/forge/gitlab.ts", "glab"],
   ["src/forge/github.ts", "gh"],
+  ["src/forge/gitlab-checks.ts", "glab"],
+  ["src/forge/github-checks.ts", "gh"],
 ]);
 
 /** Files that still reach a forge's CLI themselves, and the ticket that moves each. */
@@ -16,7 +18,6 @@ const ALLOWED = new Map([
   ["src/onboard.ts", "permanent"],
   ["src/mr.ts", "08: pipelineStatus"],
   ["src/worktree.ts", "09: the roaming clone"],
-  ["src/doctor.ts", "07: the doctor"],
   ["workflows/renovate.md", "10: renovate's content per forge"],
 ]);
 

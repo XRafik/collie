@@ -884,3 +884,100 @@ test("--gitlab-host names the host doctor checks, and a URL is refused", () =>
       });
     }),
   ));
+
+/**
+ * A Projects root holding a checkout per name, each a `.git` directory, and a git that
+ * answers each one's `origin` (and, for `gh-and-old-gitlab`, a gitlab remote beside it).
+ */
+const checkouts = Effect.fn("doctorTest.checkouts")(function* (names: ReadonlyArray<string>) {
+  const fs = yield* FileSystem.FileSystem;
+  const root = `${rig.root}/projects`;
+  for (const name of names) yield* fs.makeDirectory(`${root}/${name}/.git`, { recursive: true });
+  yield* bin.add(
+    "git",
+    `case "$*" in
+      "remote get-url origin") case "$PWD" in
+        */gh-*) echo git@github.com:acme/app.git ;;
+        */gl-*) echo git@gitlab.example:acme/app.git ;;
+        *) exit 1 ;;
+      esac ;;
+      "remote get-url gitlab") echo git@gitlab.example:old/app.git ;;
+      *rev-list*) echo 0 ;;
+      *) exit 0 ;;
+    esac`,
+  );
+  return { GITTE_CWD: root };
+});
+
+const ghCheck = (result: OpResult) => reported(result).find((one) => one.name === "gh");
+
+test("a Machine with no GitHub checkout is not asked about gh, even with no gh at all", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      const root = yield* checkouts(["gl-app"]);
+      expect(ghCheck(yield* report(root))).toBeUndefined();
+    }),
+  ));
+
+test("a GitHub checkout with no gh fails with how to install it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      const root = yield* checkouts(["gh-app", "gl-app"]);
+      expect(ghCheck(yield* report(root))).toEqual({
+        name: "gh",
+        ok: false,
+        detail:
+          "not installed; Runs on GitHub repositories cannot open or review pull requests (used by 1 checkout)",
+        fix: "install gh — https://cli.github.com",
+      });
+    }),
+  ));
+
+test("gh logged out fails with the login that fixes it, and logged in passes", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      // origin is GitHub and an old gitlab remote sits beside it: GitHub's.
+      const root = yield* checkouts(["gh-and-old-gitlab", "gh-other"]);
+      yield* bin.add("gh", "exit 1");
+      expect(ghCheck(yield* report(root))).toMatchObject({
+        ok: false,
+        fix: "gh auth login --hostname github.com",
+      });
+      yield* bin.add("gh", `[ "$*" = "auth status --hostname github.com" ] && exit 0; exit 1`);
+      expect(ghCheck(yield* report(root))).toEqual({
+        name: "gh",
+        ok: true,
+        detail: "logged in to github.com, used by 2 checkouts",
+        fix: "",
+      });
+    }),
+  ));
+
+test("a gh that did not answer reads differently from one that said no", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      const root = yield* checkouts(["gh-app"]);
+      yield* bin.add("gh", "exit 0");
+      const pluginEnv = env({
+        FAKE_HERDR_PLUGINS: `cego.collie 0.1.0 [local:${rig.baselineDir}]`,
+        ...root,
+      });
+      const result = yield* doctor(
+        pluginEnv,
+        (cmd, args, cwd) =>
+          cmd === "gh"
+            ? Effect.succeed({ code: 124, stdout: "", stderr: "timed out" })
+            : shell(cmd, args, cwd),
+        new FakeHerdr(pluginEnv),
+      );
+      expect(ghCheck(result)).toMatchObject({
+        ok: false,
+        detail: "installed, but did not answer within 20 seconds",
+        fix: "gh auth status --hostname github.com",
+      });
+    }),
+  ));

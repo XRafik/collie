@@ -2204,7 +2204,8 @@ the shim's directory on PATH, the skills and harnesses your workflows name,
 whether this checkout is behind its remote, which Projects root a Run started from the Home
 is rooted at and where that came from (`projects.root` in `config.json`, else `GITTE_CWD`,
 else your home directory, which is shown as `!` with the fix of setting `projects.root`),
-and whether `glab` is logged in — and prints the command that fixes each. It exits non-zero when any check fails. Helle credentials and a
+whether `glab` is logged in, and — where any checkout under the Projects root is on GitHub
+— whether `gh` is installed and logged in to github.com; and prints the command that fixes each. It exits non-zero when any check fails. Helle credentials and a
 Linear MCP in Claude Code are reported too, as `!` when they are set up and not working, and
 never fail it: see [Optional integrations](#optional-integrations). It also names the
 workflows here: every one a user or project entry overrides — which is what a run in this

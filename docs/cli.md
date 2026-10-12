@@ -1577,7 +1577,12 @@ over SSH with its own key, or over HTTPS where glab configured git to use it. An
 forwarded into the session does not count, since it goes when the computer it came from
 sleeps. That host is `--gitlab-host`, else `GITLAB_HOST`, else the
 [`gitlab_host` setting](using.md#your-defaults). Any other host glab knows is named in one
-`other gitlabs` note, unchecked, and never fails the run.
+`other gitlabs` note, unchecked, and never fails the run. Where any checkout under the
+Projects root is on GitHub — its `origin`, else `upstream`, is on github.com — a `gh` check
+follows: `gh` on PATH, else a failure fixed by installing it from https://cli.github.com,
+and `gh auth status --hostname github.com`, whose failure's fix is `gh auth login
+--hostname github.com`. Its detail says how many checkouts use GitHub. A Machine with no
+GitHub checkout is not asked about `gh`.
 
 **herdr** names what upgrading does to the running panes. From a herdr before 0.9.0, the
 running server must stop once, which ends every program in its panes: `herdr update`, then

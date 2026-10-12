@@ -805,6 +805,19 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/the-doctor-checks-gh-where-a-checkout-is-on-github",
+    statement:
+      "The doctor checks gh where a checkout under the Projects root is on GitHub, fails with the command that fixes it, and asks a Machine with no GitHub checkout nothing about gh.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/doctor.test.ts",
+      name: "(GitHub checkout|gh logged out|gh that did not answer)",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
