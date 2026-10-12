@@ -28,6 +28,9 @@ let bin: FakeBin;
 /** The Runs and registered agents this test has, which is what pruning is given. */
 let recorded: RunFacts[];
 let registered: AgentEntry[];
+/** What a Run that recorded a checkout answers when asked to give it up, and how often it was. */
+let releasedAs: string | null;
+let releases: number;
 /** What the merge watch and the Tasks say, beside the checkouts themselves. */
 let settling: Settling;
 
@@ -59,6 +62,8 @@ beforeEach(() =>
       bin = yield* FakeBin.make(join(rig.root, "bin"));
       recorded = [];
       registered = [];
+      releasedAs = null;
+      releases = 0;
       settling = NOTHING_SETTLING;
     }),
   ),
@@ -1459,7 +1464,15 @@ const renovateCheckout = (inputs: Record<string, string> = {}, cwd = rig.project
     workspaceId: "wTasks",
     workspaceLabel: "Tasks",
     recordedBy: (at) =>
-      Effect.succeed(recorded.find((run) => run.worktree?.path === at)?.id ?? null),
+      Effect.sync(() => {
+        const run = recorded.find((one) => one.worktree?.path === at)?.id;
+        if (run === undefined) return null;
+        const release = Effect.sync(() => {
+          releases += 1;
+          return releasedAs;
+        });
+        return { run, release };
+      }),
   });
 
 test("a Renovate Run gets a detached checkout at the default branch, bound to no branch", () =>
@@ -1690,7 +1703,21 @@ const renovateRunAt = (at: string) =>
     return run.id;
   });
 
-test("a second Renovate Run on one repository is refused, never handed the first's tree", () =>
+/** A git listing this repository's roaming checkout, in whatever state `answers` says it is. */
+const fakeGitWithRoaming = (taken: string, answers: Record<string, string>) =>
+  fakeGitAnswering({
+    ...gitAnswers(),
+    "worktree list --porcelain": porcelain([
+      { path: rig.projectDir, branch: "master" },
+      { path: taken, branch: "master" },
+    ]),
+    "status --porcelain": "",
+    "rev-list HEAD --not --branches --remotes": "",
+    "checkout --quiet --detach": "",
+    ...answers,
+  });
+
+test("a second Renovate Run on one repository is refused while the first may go on, never handed its tree", () =>
   runEffect(
     Effect.gen(function* () {
       const taken = join(rig.root, ".herdr", "worktrees", "project", "roaming");
@@ -1698,17 +1725,15 @@ test("a second Renovate Run on one repository is refused, never handed the first
       // The earlier Run's own record, which is the only proof that this checkout is a
       // Renovate Run's rather than something that merely looks like one.
       const runId = yield* renovateRunAt(taken);
-      yield* fakeGitWithCheckouts([
-        { path: rig.projectDir, branch: "master" },
-        { path: taken, branch: "master" },
-      ]);
+      releasedAs = `${runId} has not ended and may still go on in it`;
+      yield* fakeGitWithRoaming(taken, {});
 
       const checkout = yield* renovateCheckout();
 
-      // What is known, and only that: which repository git says owns it, and the Run
-      // whose record proves it is a Renovate Run's rather than anyone's guess.
+      // What is known, and only that: which repository git says owns it, the Run whose
+      // record proves it is a Renovate Run's, and why that Run keeps it.
       expect(checkout.refused).toBe(
-        `no worktree for ${rig.projectDir}: ${taken} is a checkout of ${rig.projectDir}, recorded by Run ${runId}`,
+        `no worktree for ${rig.projectDir}: ${taken} is a checkout of ${rig.projectDir}, recorded by Run ${runId}: ${runId} has not ended and may still go on in it`,
       );
       expect(checkout.worktree).toBe(null);
       // Never the caller's own checkout: sharing one is the bug this exists to stop.
@@ -1718,9 +1743,63 @@ test("a second Renovate Run on one repository is refused, never handed the first
       const commands = yield* asked();
       expect(commands.some((c) => c.startsWith("worktree add"))).toBe(false);
       expect(commands.some((c) => c.startsWith("worktree remove"))).toBe(false);
+      expect(commands.some((c) => c.startsWith("checkout"))).toBe(false);
       expect(yield* (yield* FileSystem.FileSystem).readFileString(`${taken}/.git`)).toContain(
         `gitdir: ${rig.projectDir}/.git/worktrees/renovate`,
       );
+    }),
+  ));
+
+test("a Renovate Run takes over the checkout an ended Run of the repository left, at the default branch", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const taken = join(rig.root, ".herdr", "worktrees", "project", "roaming");
+      yield* worktreeOwnedBy(taken, rig.projectDir);
+      const runId = yield* renovateRunAt(taken);
+      yield* fakeGitWithRoaming(taken, {});
+
+      const checkout = yield* renovateCheckout();
+
+      expect(checkout.refused).toBe(null);
+      expect(checkout.cwd).toBe(taken);
+      expect(checkout.worktree).toMatchObject({ path: taken, branch: "", managed_by: "git" });
+      expect(checkout.note).toBe(
+        `took worktree ${taken} over from Run ${runId}, detached at origin/master`,
+      );
+      // Its agents closed once, and the tree moved in place rather than made again.
+      expect(releases).toBe(1);
+      expect(yield* askedIn()).toContainEqual({
+        cwd: taken,
+        command: "checkout --quiet --detach origin/master",
+      });
+      const commands = yield* asked();
+      expect(commands.some((c) => c.startsWith("worktree add"))).toBe(false);
+      expect(commands.some((c) => c.startsWith("worktree remove"))).toBe(false);
+    }),
+  ));
+
+test("an ended Run's checkout that holds work is kept for it, and its agents are left alone", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const taken = join(rig.root, ".herdr", "worktrees", "project", "roaming");
+      yield* worktreeOwnedBy(taken, rig.projectDir);
+      const runId = yield* renovateRunAt(taken);
+      const held = `${taken} is a checkout of ${rig.projectDir}, recorded by Run ${runId}, kept:`;
+
+      yield* fakeGitWithRoaming(taken, { "status --porcelain": " M package.json\n" });
+      const dirty = yield* renovateCheckout();
+      // Commits only its detached HEAD reaches, which moving it would leave behind.
+      yield* fakeGitWithRoaming(taken, {
+        "rev-list HEAD --not --branches --remotes": "a1\\nb2\\n",
+      });
+      const unpushed = yield* renovateCheckout();
+
+      expect(dirty.refused).toBe(`no worktree for ${rig.projectDir}: ${held} uncommitted changes`);
+      expect(unpushed.refused).toBe(
+        `no worktree for ${rig.projectDir}: ${held} 2 commit(s) on no branch or remote`,
+      );
+      expect(releases).toBe(0);
+      expect((yield* asked()).some((c) => c.startsWith("checkout"))).toBe(false);
     }),
   ));
 

@@ -1404,17 +1404,25 @@ scenario("what a finished Run of each shipped module offers is the module's own 
       expect(yield* declaredIn(shipped("architecture"))).toEqual([]);
 
       // A renovation that failed holding the claim offers to recover it, on the repository
-      // it was started on; one that failed holding nothing has nothing to recover.
+      // it was started on; one that failed holding nothing offers to renovate it again.
       const renovate = yield* declaredIn(shipped("renovate"));
       const failed = facts({ succeeded: false, claim: "project" });
       const recovery = offersFrom(renovate, failed, { self: idOf("renovate") });
       expect(recovery.map((offer) => [offer.id, offer.workflow])).toEqual([
         ["recover", idOf("renovate")],
       ]);
-      expect(offersFrom(renovate, facts({ succeeded: false }))).toEqual([]);
+      const unclaimed = facts({ succeeded: false });
+      const again = offersFrom(renovate, unclaimed, { self: idOf("renovate") });
+      expect(again.map((offer) => [offer.id, offer.workflow])).toEqual([
+        ["renovate-again", idOf("renovate")],
+      ]);
+      expect(offersFrom(renovate, facts({ succeeded: true }))).toEqual([]);
       const repository = "https://gitlab.example.com/team/project";
       expect(
         inputsFor(recovery[0]!, { runDir: "/r", facts: failed, input: { repository } }),
+      ).toEqual({ repository });
+      expect(
+        inputsFor(again[0]!, { runDir: "/r", facts: unclaimed, input: { repository } }),
       ).toEqual({ repository });
     }),
   ),

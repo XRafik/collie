@@ -368,16 +368,26 @@ it is and reported, never taken over.
 one the run was started in. The repository has to be checked out locally already — cloning
 from a URL is not something a run does. Two renovate runs on two repositories get two
 checkouts, one per repository. A second one on the _same_ repository is refused rather
-than handed the first's working tree. So are two repositories that share a name — the
-path is `<repo>` as the directory is called, so two `api`s want the same one — and so is
-anything else in the way, rather than being built over.
+than handed the first's working tree while the first may still go on — running, waiting,
+or stopped, since a resume picks a stopped run up again. So are two repositories that
+share a name — the path is `<repo>` as the directory is called, so two `api`s want the
+same one — and so is anything else in the way, rather than being built over.
 
-A refusal says only what is known: which repository git says owns the path, and which
-run recorded it where a run record proves one did. Nothing is guessed, and neither the
-checkout nor either repository is touched. Looking and creating happen under one lock
-keyed by that path, so two runs starting at the same moment cannot both find it free.
-The path is yours again once that run's checkout is removed or pruned; a resumed run
-reuses only the checkout it recorded itself, and never claims a new one.
+A run whose workflow has ended — failed or finished — does not keep the path from the next
+renovation of its repository. The new run takes the checkout over when git still lists it
+as one of that repository's and it holds nothing to lose: no uncommitted or untracked
+change, and no commit that only its detached `HEAD` reaches (a branch checked out in it
+keeps its commits as a branch). The ended runs' agents are closed first, as a stop closes
+them, and the tree is checked again after; then it is moved, detached, to the default
+branch as just fetched, and the log says whose it was. Anything less is a refusal naming
+what keeps it, and nothing is removed or forced.
+
+A refusal says only what is known: which repository git says owns the path, which run
+recorded it where a run record proves one did, and why that run keeps it. Nothing is
+guessed, and neither the checkout nor either repository is touched. Looking and creating
+happen under one lock keyed by that path, so two runs starting at the same moment cannot
+both find it free. A resumed run reuses only the checkout it recorded itself, and never
+claims a new one.
 
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds

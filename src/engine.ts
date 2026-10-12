@@ -3691,9 +3691,13 @@ const makeRegistry: (
         login: placing.env.gitlabLogin,
         recordedBy: (at) =>
           store.runs.pipe(
-            Effect.map(
-              (rows) => rows.find((row) => placedOf(row, {}).worktree?.path === at)?.run ?? null,
-            ),
+            Effect.map((rows) => {
+              const runs = rows
+                .filter((row) => placedOf(row, {}).worktree?.path === at)
+                .flatMap((row) => [row.run, ...descendantsOf(rows, row.run)]);
+              const latest = runs.at(-1);
+              return latest === undefined ? null : { run: latest, release: releaseRuns(runs) };
+            }),
           ),
       }).pipe(
         Effect.mapError(
@@ -4375,6 +4379,21 @@ const makeRegistry: (
     ).status;
     return status === "complete" || status === "failed";
   });
+
+  /**
+   * Closes the agents of Runs whose workflows have ended, so a new Run can take over what
+   * they held; null once they are closed, or why not. A stopped Run has not ended: a
+   * resume would go on where it left off.
+   */
+  const releaseRuns = Effect.fn("Engine.releaseRuns")(function* (runs: ReadonlyArray<string>) {
+    for (const runId of runs) {
+      if (!(yield* workflowEnded(runId))) return `${runId} has not ended and may still go on in it`;
+    }
+    const agents = yield* Agents;
+    const left: string[] = [];
+    for (const runId of runs) left.push(...(yield* agents.halt(runId)).left);
+    return left.length === 0 ? null : `its agents did not all close (${left.join("; ")})`;
+  }, Effect.provideContext(hostServices));
 
   /** Sets a control, and a stop over every child the Run started, then wakes what must look again. */
   const applyControl = Effect.fn("Engine.applyControl")(function* (
