@@ -72,6 +72,7 @@ const review = useWhole(
   () => ({ installation: props.placed.installation, runId: props.placed.task.run }),
   "review",
   () => detail.value?.review ?? { _tag: "None", reason: "" },
+  useActions().textOf,
 );
 const locationOf = (file: string, line: number | null) =>
   line === null ? file : `${file}:${line}`;

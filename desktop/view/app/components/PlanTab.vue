@@ -38,6 +38,8 @@ const wholeSpec = useWhole(
   () => props,
   `plan:${SPEC}`,
   () => props.plan.spec,
+  textOf,
+  () => props.plan.specStamp,
 );
 const spec = computed<PlanText>(() =>
   props.plan.spec._tag === "Text"

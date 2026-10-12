@@ -238,7 +238,7 @@ const buildPlan = Effect.fn("Views.buildPlan")(function* (run: RunFacts, cap: nu
       stamp: yield* stampOf(path.join(issues, file)),
     });
   }
-  return { spec, tickets };
+  return { spec, specStamp: yield* stampOf(path.join(dir, "SPEC.md")), tickets };
 });
 
 /** A file's size and modification time, read without reading the file; empty where it is gone. */

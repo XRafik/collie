@@ -53,7 +53,8 @@ A front door cannot write into a Run's directory
 ([ADR-0040](0040-the-host-is-the-only-writer.md)). A comment on the plan asks the agent to
 change it. Desktop never edits `SPEC.md` or a ticket itself. Each ticket in a Run's plan
 carries a stamp that changes whenever its file does, and the Plan tab reads an open ticket
-again when its stamp changes. A finished Run's agent can still be steered
+again when its stamp changes. `SPEC.md` carries a stamp too, so a rewrite beyond its
+displayed prefix invalidates the whole-file read. A finished Run's agent can still be steered
 ([ADR-0041](0041-a-finished-run-still-takes-steering.md)), so its plan can still change.
 The host reuses a finished Run's plan only while none of its files has changed.
 

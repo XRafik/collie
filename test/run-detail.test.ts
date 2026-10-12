@@ -428,6 +428,17 @@ test("a rewritten ticket, and a finished Run's rewritten plan, reach the record'
         const respecced = yield* planOf();
         expect(respecced?.spec).toMatchObject({ _tag: "Text", text: "# Spec, rewritten\n" });
         expect(yield* planOf()).toBe(respecced);
+
+        const prefix = "x".repeat(64 * 1024);
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, `${prefix}old tail`);
+        const long = yield* planOf();
+        expect(long?.spec).toEqual({ _tag: "Text", text: prefix, truncated: true });
+        expect(long?.specStamp).toBeString();
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, `${prefix}rewritten tail`);
+        const tailOnly = yield* planOf();
+        expect(tailOnly?.spec).toEqual(long?.spec);
+        expect(tailOnly?.specStamp).not.toBe(long?.specStamp);
+        expect(yield* planOf()).toBe(tailOnly);
       }),
     ),
   ));
