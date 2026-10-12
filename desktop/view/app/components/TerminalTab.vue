@@ -15,7 +15,8 @@ import { saidOf } from "../../../src/shared/said";
 import {
   type AgentTab,
   agentTabs,
-  atWork,
+  askedFor,
+  opensHerdrForNoPane,
   shownAgent,
   switches,
 } from "../../../src/shared/record-terminal";
@@ -41,8 +42,6 @@ const ended = ref<string | null>(null);
 const noPane = ref(false);
 /** The agent the human picked, which Reattach opens again; none means the agent at work. */
 const chosen = ref<AgentTab | null>(null);
-/** The agent last asked for; none means the Run's newest. */
-const asked = ref<AgentTab | null>(null);
 /** The herdr name of the agent whose pane the host says it focused. */
 const focused = ref<string>();
 let lastShown: BoardAgent | null = null;
@@ -106,7 +105,9 @@ const shown = (event: TerminalEvent) => {
       return;
     case "NoPane":
       noPane.value = true;
-      return props.wentToPane && asked.value === null ? panes.openInHerdr(props.placed) : undefined;
+      return opensHerdrForNoPane(props.wentToPane, chosen.value)
+        ? panes.openInHerdr(props.placed)
+        : undefined;
   }
 };
 
@@ -124,11 +125,7 @@ const attach = () => {
   ended.value = null;
   noPane.value = false;
   term.reset();
-  const agents = props.placed.task.agents;
-  const busy = atWork(agents, props.placed.task.run);
-  const agent =
-    chosen.value ?? agentTabs(agents, null).find((one) => one.name === busy?.name) ?? null;
-  asked.value = agent;
+  const agent = askedFor(props.placed.task.agents, props.placed.task.run, chosen.value);
   fiber = Effect.runFork(
     terminal(
       props.placed.installation,
@@ -294,9 +291,9 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="noPane" class="text-muted text-sm" data-testid="terminal-no-pane">
       {{
-        asked === null
+        chosen === null
           ? "This Run has no live agent's pane to show here; Open in herdr shows its workspace."
-          : `herdr no longer has ${asked.label}'s pane; pick another agent.`
+          : `herdr no longer has ${chosen.label}'s pane; pick another agent.`
       }}
     </p>
     <!-- Esc and Ctrl+C are the pane's while it has focus, not the record's. -->

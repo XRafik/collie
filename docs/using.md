@@ -1017,8 +1017,8 @@ into it as into herdr — Esc and Ctrl+C go to the agent, not to the record, and
 copies instead while text is selected; a multi-line paste arrives as one paste; the wheel
 scrolls the pane's own history. The terminal fills the record below its tabs, and herdr's
 pane is resized to the cells drawn whenever the window, the Flock chat beside it or the Zoom
-changes. It takes the keyboard as it opens, after a pick or Reattach, and on any click in
-its box, and draws in CaskaydiaMono Nerd Font where it is installed, at 16 pixels, else in a
+changes. It takes the keyboard as it opens, after a pick or Reattach — unless you are typing in a
+field outside it, such as the Flock chat — and on any click in its box, and draws in CaskaydiaMono Nerd Font where it is installed, at 16 pixels, else in a
 common terminal font. A link in it opens in your browser. A pane cannot write your clipboard.
 Leaving the tab or closing the record gives the pane back, so a herdr window showing it
 returns to its own size. A terminal that ends says why — the pane closed, another client
@@ -1036,8 +1036,9 @@ one, and Reattach then reopens the chosen agent rather than the agent at work. T
 never switches by itself: an agent starting or stopping work only changes its dot and word,
 and the switcher is how to look at any other live agent. An agent that ends while shown
 stays listed as **ended** until you pick another. Leaving the tab forgets the choice, so
-coming back, like Go to pane, shows the agent at work again. Where the agent asked for has
-no pane any more, the tab says so and asks you to pick another.
+coming back, like Go to pane, shows the agent at work again. Where an agent you picked has
+no pane any more, the tab says so and asks you to pick another; where the agent at work has
+none, Go to pane opens herdr's own client, as below.
 
 Where there is no pane to show — a Run with no live agent, or a Machine on a Collie whose
 focus does not name one — Go to pane does what it did before, and **Open in herdr** on the

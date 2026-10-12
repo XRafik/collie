@@ -4,8 +4,10 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
   agentTabs,
+  askedFor,
   atWork,
   offersTerminal,
+  opensHerdrForNoPane,
   shownAgent,
   opensHerdrWithoutPane,
   switches,
@@ -138,6 +140,21 @@ test.each([
   },
 ])("the tab opens on the agent at work: $case", ({ agents, chosen }) => {
   expect(atWork(agents, "run-1")?.name ?? null).toBe(chosen);
+});
+
+test("a pick is asked for over the agent at work, which is asked for as its tab, and else none", () => {
+  const agents = [live("plan-1", "planner"), live("impl-1", "implementer", "working")];
+  const [planner, implementer] = agentTabs(agents, null);
+  expect(askedFor(agents, "run-1", planner!)).toEqual(planner!);
+  expect(askedFor(agents, "run-1", null)).toEqual(implementer!);
+  expect(askedFor([live("plan-1", "planner")], "run-1", null)).toBeNull();
+});
+
+test("a pane not found opens herdr's client only for Go to pane before a pick", () => {
+  const picked = agentTabs([live("impl-1", "implementer", "working")], null)[0]!;
+  expect(opensHerdrForNoPane(true, null)).toBe(true);
+  expect(opensHerdrForNoPane(true, picked)).toBe(false);
+  expect(opensHerdrForNoPane(false, null)).toBe(false);
 });
 
 test("the agent shown is the board's entry for it, kept once it leaves, and none before it arrives", () => {

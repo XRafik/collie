@@ -126,14 +126,15 @@ from a backing store: xterm.js 6 draws with its DOM renderer, which has no canva
   agent that is `blocked`, else one that is `working`. Among several, the card's own Run
   comes first, then the agent registered last. Where none is either, the tab asks for the
   card's Run's newest live agent as before, so a Run with no live agent still opens herdr's
-  own client. This replaces the last bullet of the amendment above. The choice is read
+  own client. Before a pick, Go to pane opens herdr's own client wherever the agent asked
+  for has no pane, so a host whose `focus` names none still does. This replaces the last bullet of the amendment above. The choice is read
   from the statuses the board already carries, never from what a pane shows, so D3 holds.
   A pick lasts until the tab is left. The tab never switches by itself while it is shown.
 - **Size.** The tab fills the record below its tab bar, with the same margin on both sides
   and no scrolling. herdr's pane is resized to the cells drawn, and again after every change
   to the window, the Flock chat beside it, or Desktop's zoom.
 - **Keys.** The terminal takes the keyboard when the tab opens, after a pick or Reattach,
-  and on any click inside its box.
+  unless a field outside its box has it, and on any click inside its box.
 - **Type.** The terminal draws in CaskaydiaMono Nerd Font where it is installed, then in
   common terminal fonts, then in the platform's monospace. It draws at 16 CSS pixels:
   Ghostty's default 12pt on a 96-dpi Linux desktop. xterm.js keeps its DOM renderer. That

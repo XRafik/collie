@@ -74,6 +74,23 @@ export const atWork = (agents: ReadonlyArray<BoardAgent>, run: string): BoardAge
   return (own.length > 0 ? own : candidates).at(-1) ?? null;
 };
 
+/** The agent the tab asks for: the one picked, else the agent at work; null for the Run's newest. */
+export const askedFor = (
+  agents: ReadonlyArray<BoardAgent>,
+  run: string,
+  picked: AgentTab | null,
+): AgentTab | null => {
+  const busy = atWork(agents, run);
+  return picked ?? agentTabs(agents, null).find((one) => one.name === busy?.name) ?? null;
+};
+
+/**
+ * Whether a pane not found opens herdr's own client: for Go to pane until a pick, so a host
+ * whose focus names no pane still does what it did before.
+ */
+export const opensHerdrForNoPane = (wentToPane: boolean, picked: AgentTab | null) =>
+  wentToPane && picked === null;
+
 /**
  * The Terminal tab's switches between panes, each started once `release` has let the pane
  * before it go. Only the newest switch still waiting opens; a stop cancels any that wait.
