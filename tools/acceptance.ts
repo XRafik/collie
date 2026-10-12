@@ -385,7 +385,7 @@ const FRONT_DOOR: readonly Check[] = [
   {
     id: "front-door/a-pull-requests-card-names-it-as-github-does-and-opens-it",
     statement:
-      "A pull request's card names it as GitHub does — pull request cego/collie#30, its checks — offers Open pull request, and records collie#30 when disposed of; Desktop's link card, panel and record tab say the same.",
+      "A card's sentence names a GitHub pull request as pull request cego/collie#30 and its checks, and a GitLab merge request with its own noun and pipeline.",
     owner: FORGES,
     needs: "ui",
     proof: {
@@ -393,6 +393,32 @@ const FRONT_DOOR: readonly Check[] = [
       layer: "ui",
       file: "test/board.test.ts",
       name: "a (gitlab|github) card names its merge request as its forge does",
+    },
+  },
+  {
+    id: "front-door/a-pull-request-card-opens-and-disposes-of-its-own-reference",
+    statement:
+      "A card offers Open pull request for a GitHub pull request and records collie#30 when disposed of, as a GitLab card records its merge request reference.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/board-model.test.ts",
+      name: "a card offers to open .* and disposing of it records",
+    },
+  },
+  {
+    id: "front-door/desktop-names-a-pull-request-and-its-checks",
+    statement:
+      "Desktop's link card names a pull request #30, shows its checks, and names its record tab Pull request; a GitLab card keeps its own wording.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "desktop/test/links.test.ts",
+      name: "(a pull request's card is titled|a pull request's checks are|a Run's record calls its tab)",
     },
   },
   {

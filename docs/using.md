@@ -580,7 +580,8 @@ A checkout's forge is the forge of its `origin` remote's host, or `upstream`'s w
 has no `origin` (ADR-0050 D2): `github.com` is GitHub, and the Flock's `gitlab_host` or a
 host whose name contains `gitlab` is GitLab. Another remote beside `origin` does not
 count, so a GitHub checkout that also has an old GitLab remote is GitHub. A checkout on
-any other host has no forge, and a merge request step there says so.
+any other host has no forge; generated branch naming and the merge request step both
+refuse it and name the host.
 
 The header sentence counts the whole Herd, not what the search left: `One task is
 waiting on you. 1 ready to release, 2 waiting on you. 4 working, 1 gone quiet.` — the
@@ -1806,11 +1807,15 @@ your own open ones. The reviewers are handed the forge's own commands — `glab 
 checkout of that project is needed: you can review and comment on a colleague's change from
 a folder that is not a git repository at all.
 
+An older bare target such as `mr:42` still means GitLab. Posting or preparing delivery
+from a GitHub checkout refuses that target. Use `#42` or the pull request URL there.
+
 **Post to merge request** (**Post to pull request** on GitHub) puts the review on it as one
 note. Where nothing in the review is still live, it also approves it — on GitHub as one
 review that both comments and approves — and the message says whether the approval landed.
 With findings left, it notes and approves nothing. It refuses a merge request assigned to
-you, on either forge: those findings are yours to fix.
+you, on either forge: those findings are yours to fix. On GitLab, that comparison uses
+your login on the target's own host.
 
 Fixing one is a different matter. A fix round is an `implement` run, and a mutating run
 works in a checkout of its own branch — which `herdr worktree` can only cut from the
