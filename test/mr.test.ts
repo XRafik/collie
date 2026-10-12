@@ -642,10 +642,12 @@ test("posting checks the login on the target's GitLab host", () =>
         },
         "glab mr": { stdout: "" },
       });
-      expect(yield* postNote({ target, cwd: "/w", body: "LGTM", approve: true }, glab.run)).toEqual({
-        ok: false,
-        message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
-      });
+      expect(yield* postNote({ target, cwd: "/w", body: "LGTM", approve: true }, glab.run)).toEqual(
+        {
+          ok: false,
+          message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
+        },
+      );
       expect(glab.calls.some((call) => call[2] === "note" || call[2] === "approve")).toBe(false);
     }),
   ));

@@ -306,7 +306,13 @@ export function prepareMergeRequest<R>(
     const { forge, project } = here;
     const ready = yield* forge.ready(project, opts.cwd, run);
     if (!ready.ok) return unavailable(ready.reason);
-    const assignee = yield* resolveAssignee(opts.cwd, opts.assignees?.[forge.name], forge, run, project);
+    const assignee = yield* resolveAssignee(
+      opts.cwd,
+      opts.assignees?.[forge.name],
+      forge,
+      run,
+      project,
+    );
     if (assignee === null && forge.name === "github")
       return unavailable("gh did not report a GitHub login");
     const branch = (yield* run(
