@@ -235,3 +235,13 @@ export const withoutLauncher = (
   if (ICU_DATA !== undefined && ICU_DATA !== "" && ICU_DATA !== bin) kept.ICU_DATA = ICU_DATA;
   return kept;
 };
+
+/** Removes the launcher's variables from this process, so nothing it starts later is given them. */
+export const leaveLauncher = () => {
+  // Children are given the process environment, not an Effect Config.
+  // oxlint-disable-next-line effecttsgo/process-env
+  const env = process.env;
+  const kept = withoutLauncher(env);
+  for (const name of Object.keys(env)) if (!(name in kept)) delete env[name];
+  Object.assign(env, kept);
+};

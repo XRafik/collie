@@ -4,7 +4,7 @@
 // card or a report says is a claim nobody can check.
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { Clock, Context, Data, Effect, FileSystem, Path, Schema } from "effect";
+import { Clock, Context, Effect, FileSystem, Path, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { appendCard, buildCard, inspectFor, readCards, readCheckpoints, type Card } from "./cards";
 import {
@@ -34,6 +34,7 @@ import {
   staleSince,
   type Judged,
   type JudgementDeps,
+  gitOutput,
   type RuleFacts,
 } from "./drift";
 import {
@@ -247,26 +248,15 @@ const judgedOf = (at: Watched) =>
     Effect.orElseSucceed((): Judged => NOT_JUDGED),
   );
 
-class TreeUnread extends Data.TaggedError("TreeUnread")<{ reason: string }> {}
-
-/** What git says changed, or why it could not say: a failing `git diff` is not an unchanged tree. */
-const changed = Effect.fn("Oversight.changed")(function* (args: string[], cwd: string) {
-  const ran = yield* shell("git", args, cwd);
-  if (ran.code === 0) return ran.stdout;
-  return yield* new TreeUnread({
-    reason: `git ${args.join(" ")} exited ${ran.code}: ${(ran.stderr ?? "").trim().split("\n")[0]}`,
-  });
-});
-
 /** What a rule check compares against: the tree, every Output, and what was verified. */
 export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched) {
   const fs = yield* FileSystem.FileSystem;
   const base = yield* baseOf(at.cwd);
-  const committed = yield* changed(["diff", "--name-only", `${base}..HEAD`], at.cwd);
-  const dirty = yield* changed(["diff", "--name-only", "HEAD"], at.cwd);
+  const committed = yield* gitOutput(["diff", "--name-only", `${base}..HEAD`], at.cwd);
+  const dirty = yield* gitOutput(["diff", "--name-only", "HEAD"], at.cwd);
   // Untracked too: a file an agent created is exactly what a `protected_paths` rule is
   // for, and it is in no diff until somebody commits it.
-  const untracked = yield* changed(["ls-files", "--others", "--exclude-standard"], at.cwd);
+  const untracked = yield* gitOutput(["ls-files", "--others", "--exclude-standard"], at.cwd);
   const branch = yield* shell("git", ["rev-parse", "--abbrev-ref", "HEAD"], at.cwd);
   const outputs: Record<string, Record<string, string>> = {};
   const names = yield* fs.readDirectory(at.agentsDir).pipe(Effect.orElseSucceed(() => []));

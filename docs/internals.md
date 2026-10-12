@@ -46,8 +46,10 @@ replaces it. A client starts the host in its state directory, and the host `chdi
 itself as it starts, so a host started from any directory outlives that directory: one
 left in a deleted directory could not start `claude`, `git` or Bun's shell. Electrobun's
 launcher variables (`ELECTROBUN_*` and CEF's `LD_PRELOAD`) are stripped from what Desktop
-gives a child, and again from what a client gives a host (`withoutLauncher` in
-`src/env.ts`), so neither the host nor anything it starts preloads CEF.
+gives a child, again from what a client gives a host, and from the host's own environment
+as it starts (`withoutLauncher` and `leaveLauncher` in `src/env.ts`), so neither the host
+nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host keeps
+`LD_LIBRARY_PATH` and `ICU_DATA`.
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
 whether the grace ran out, every warning the engine and the registry log — since its own

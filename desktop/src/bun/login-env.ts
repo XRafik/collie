@@ -50,6 +50,7 @@ export const takeLoginEnv = Effect.gen(function* () {
   if (process.platform !== "darwin") return;
   const shell = yield* Config.String("SHELL").pipe(Config.withDefault("/bin/zsh"));
   const child = Bun.spawn([shell, "-ilc", `printf '%s' '${BEGIN}'; env -0; printf '%s' '${END}'`], {
+    cwd: CHILD_CWD,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "ignore",

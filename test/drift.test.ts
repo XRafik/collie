@@ -361,6 +361,28 @@ const FLAGS = [
   "--append-system-prompt-file",
 ].join(" ");
 
+/** A checkout with one commit, which is what a judgement reads its diff from. */
+const checkout = Effect.fn("DriftTest.checkout")(function* (prefix: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const dir = yield* fs.makeTempDirectoryScoped({ prefix });
+  for (const args of [
+    ["init", "-q"],
+    [
+      "-c",
+      "user.email=t@example.com",
+      "-c",
+      "user.name=t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "first",
+    ],
+  ])
+    yield* exec(["git", ...args], { cwd: dir });
+  return dir;
+});
+
 const judgementDeps = (dir: string, help = FLAGS) => ({
   evaluator: {
     help: Effect.succeed(help),
@@ -391,8 +413,7 @@ const semanticIntent = (over: Partial<Intent> = {}): Intent => ({
 test("nothing to judge is never a judgement that happened", () =>
   runEffect(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-judge-" });
+      const dir = yield* checkout("hw-judge-");
       // No semantic constraint and no goal: `alignment` never asks, so a call would buy
       // nothing but its own cost.
       const bare = { ...seedIntent("r1", {}), goal: null };
@@ -410,8 +431,7 @@ test("nothing to judge is never a judgement that happened", () =>
 test("a judgement with no evaluator is skipped, and skipped is not passed", () =>
   runEffect(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-judge-" });
+      const dir = yield* checkout("hw-judge-");
       const out = yield* judge(judgementDeps(dir, "--print"), semanticIntent(), {
         runDir: dir,
         worktree: dir,
@@ -432,8 +452,7 @@ test("a judgement with no evaluator is skipped, and skipped is not passed", () =
 test("a judgement whose evaluator cannot run is skipped saying why, not as missing its flags", () =>
   runEffect(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-judge-" });
+      const dir = yield* checkout("hw-judge-");
       const deps = judgementDeps(dir);
       const reason = "claude --help exited 1: The current working directory was deleted";
       yield* judge(
@@ -451,11 +470,28 @@ test("a judgement whose evaluator cannot run is skipped saying why, not as missi
     }),
   ));
 
-test("what the model returns is filed against this Run, at this version, and nowhere else", () =>
+test("a judgement whose diff git cannot read is skipped in git's words, never judged on nothing", () =>
   runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-judge-" });
+      yield* judge(judgementDeps(dir), semanticIntent(), {
+        runDir: dir,
+        worktree: dir,
+        base: "HEAD",
+        at: "t0",
+      });
+      const lines = yield* readDrift(dir);
+      expect(lines.map((line) => (line.kind === "skipped" ? line.reason : ""))).toEqual([
+        expect.stringContaining("the diff could not be read: git diff HEAD..HEAD"),
+      ]);
+    }),
+  ));
+
+test("what the model returns is filed against this Run, at this version, and nowhere else", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const dir = yield* checkout("hw-judge-");
       const evaluator = yield* fakeEvaluator(dir);
       // The model is asked which constraint and how bad. It does not get to say which
       // Run, which Intent version, when, or whether the thing is still open — a report
@@ -518,8 +554,7 @@ test("what the model returns is filed against this Run, at this version, and now
 test("every judgement is made and recorded; none is refused over how many came before", () =>
   runEffect(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-judge-" });
+      const dir = yield* checkout("hw-judge-");
       const evaluator = yield* fakeEvaluator(dir);
       yield* evaluator.reply(envelope({ result: { reports: [] }, total_cost_usd: 0.02 }));
 

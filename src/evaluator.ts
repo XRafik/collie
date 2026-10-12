@@ -216,13 +216,9 @@ export function missingFlags(help: string): string[] {
   return REQUIRED_FLAGS.filter((flag) => !named.includes(flag));
 }
 
-/** How much of a failing `--help`'s stderr its reason keeps. */
 const HELP_TAIL = 500;
 
-/**
- * `<command> --help`, or why it could not be read: a CLI that fails or prints nothing has
- * not dropped its flags, and saying it had would hide the reason.
- */
+/** `<command> --help`, or why it could not be read: a failing CLI has not dropped its flags. */
 export const helpOf = (command: ReadonlyArray<string>) =>
   Effect.tryPromise({
     try: () => Bun.$`${command} --help`.nothrow().quiet(),

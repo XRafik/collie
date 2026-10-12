@@ -88,7 +88,7 @@ import {
 } from "./cleanup";
 import { once, recordAudit, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
-import { currentEnv, withoutLauncher } from "./env";
+import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
@@ -1641,7 +1641,10 @@ export const serve = (dir: string): Effect.Effect<void, never, BunServices | Sco
     const fs = yield* FileSystem.FileSystem;
     yield* fs.makeDirectory(dir, { recursive: true });
     // Whatever it was started in may be deleted under it, as a Desktop update does its app folder.
-    yield* Effect.sync(() => process.chdir(dir));
+    yield* Effect.sync(() => {
+      process.chdir(dir);
+      leaveLauncher();
+    });
     const lock = lockOf(dir);
     yield* ensureLockDir(lock);
     // `withLock` breaks a claim whose holder is gone before its last attempt, so a host
