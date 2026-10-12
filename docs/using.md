@@ -1316,6 +1316,20 @@ on a page load from the network, and nothing may move Desktop's window off its o
 rendered markdown is kept inside its own box. A web link in it opens in your browser, never
 in Desktop.
 
+On the **Plan** tab you can write a Review comment on what you read: select text in the spec,
+in an expanded ticket or in a plan file a link opened, and **Comment** opens beside it. Each
+comment is a draft that Desktop keeps for that Run while it runs, through tab switches and
+closing the record, and sends to no host until you send it. While a Run has drafts, the
+Plan and Diff tabs show them in one list, where you can edit or remove each, choose which
+of the Run's live agents gets them (labelled as the Terminal tab labels them; the newest,
+the one Go to pane opens, by default), and **Send**. Every draft goes as one message, word
+for word, each item naming the plan file, quoting what you selected and giving your words;
+a message over 8 KiB arrives as a file in the Run. Only the drafts that were sent are
+cleared; if the host refuses, its words are shown and every draft is kept. With no live
+agent, Send says "This Run has no live agent to tell". Desktop never edits the plan: the
+agent does, and the Plan tab shows its rewrite. An agent sends the same kind of message with
+`collie run steer --agent`.
+
 Every link you press in Desktop opens in your default browser, as `xdg-settings get
 default-web-browser` names it, where you are already signed in. Chrome, Chromium, Brave,
 Edge and Vivaldi are started with `--app=<url>`, so the page gets a window of its own;

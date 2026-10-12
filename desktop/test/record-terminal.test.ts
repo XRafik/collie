@@ -7,6 +7,7 @@ import {
   offersTerminal,
   shownAgent,
   opensHerdrWithoutPane,
+  recipients,
   switches,
 } from "../src/shared/record-terminal";
 
@@ -110,5 +111,50 @@ test("a switch still waiting when the tab closes never opens", () => {
     Effect.promise(() => Promise.all([tab.to(() => log.push("review-1")), tab.stop()])).pipe(
       Effect.map(() => expect(log).toEqual(["let go", "let go"])),
     ),
+  );
+});
+
+const launched = (...agents: string[]) => agents.map((agent) => ({ agent }));
+
+test.each([
+  {
+    case: "the Run's agents herdr still has, in launch order, newest last",
+    launches: launched("plan-1", "review-1", "plan-2"),
+    live: [live("plan-1", "planner"), live("plan-2", "planner"), live("other-1", "reviewer")],
+    offered: [
+      ["plan-1", "planner 1"],
+      ["plan-2", "planner 2"],
+    ],
+  },
+  {
+    case: "an agent the board lists under another of the Task's Runs is still this Run's",
+    launches: launched("plan-1"),
+    live: [live("plan-1", "planner", "idle", "run-1.implement")],
+    offered: [["plan-1", "planner"]],
+  },
+  {
+    case: "an agent launched again counts at its newest launch",
+    launches: launched("plan-1", "review-1", "plan-1"),
+    live: [live("plan-1", "planner"), live("review-1", "reviewer")],
+    offered: [
+      ["review-1", "reviewer"],
+      ["plan-1", "planner"],
+    ],
+  },
+  {
+    case: "a live agent of the Task the Run never launched is not offered",
+    launches: launched("plan-1"),
+    live: [live("impl-1", "implementer")],
+    offered: [],
+  },
+  {
+    case: "a Run whose details name no agents has none",
+    launches: undefined,
+    live: [live("impl-1", "implementer")],
+    offered: [],
+  },
+])("$case", ({ launches, live: agents, offered }) => {
+  expect(recipients(launches, agents).map((one) => [one.name, one.label])).toEqual(
+    offered.map((entry) => [...entry]),
   );
 });

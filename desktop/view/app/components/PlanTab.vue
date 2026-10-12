@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PlanPanel } from "../../../../src/board-model";
+import { locationOf, type PlanAnchor, planAnchor } from "../../../src/shared/review-comments";
 import type { PlanText } from "./PlanFile.vue";
 
 const props = defineProps<{ plan: PlanPanel; installation: string; runId: string }>();
@@ -56,10 +57,52 @@ watch([expanded, opened, stamps], () => {
   expanded.value.forEach((file) => load(ticketFile(file)));
   if (opened.value !== null && opened.value !== SPEC) load(opened.value);
 });
+
+const { add } = useReviewDrafts(() => props);
+/** The span last selected in a plan file, until it is commented on or let go. */
+const selected = ref<PlanAnchor | null>(null);
+const words = ref("");
+const select = (file: string, event: MouseEvent) => {
+  const selection = window.getSelection();
+  const inside =
+    selection !== null &&
+    selection.rangeCount > 0 &&
+    event.currentTarget instanceof Node &&
+    event.currentTarget.contains(selection.getRangeAt(0).commonAncestorContainer);
+  const anchor = inside ? planAnchor(file, selection.toString()) : null;
+  if (anchor !== null) selected.value = anchor;
+};
+const comment = () => {
+  if (selected.value === null) return;
+  add(selected.value, words.value);
+  selected.value = null;
+  words.value = "";
+};
 </script>
 
 <template>
   <div data-testid="plan" class="flex flex-col gap-4">
+    <section
+      v-if="selected !== null"
+      data-testid="plan-comment"
+      class="sticky top-0 z-10 flex flex-col gap-2 rounded border border-default bg-default p-3"
+    >
+      <span class="text-xs text-muted">Comment on {{ locationOf(selected) }}</span>
+      <blockquote class="line-clamp-3 border-l-2 border-default pl-2 text-xs text-muted">
+        {{ selected.quote }}
+      </blockquote>
+      <UTextarea v-model="words" autofocus autoresize :rows="2" data-testid="comment-words" />
+      <div class="flex gap-2">
+        <UButton
+          label="Comment"
+          size="sm"
+          :disabled="words.trim() === ''"
+          data-testid="add-comment"
+          @click="comment"
+        />
+        <UButton label="Cancel" size="sm" variant="ghost" @click="selected = null" />
+      </div>
+    </section>
     <section
       v-if="opened !== null"
       data-testid="plan-file"
@@ -76,9 +119,13 @@ watch([expanded, opened, stamps], () => {
           @click="opened = null"
         />
       </div>
-      <PlanFile :file="opened === SPEC ? spec : read.get(opened)" :from="opened" />
+      <div @mouseup="select(opened, $event)">
+        <PlanFile :file="opened === SPEC ? spec : read.get(opened)" :from="opened" />
+      </div>
     </section>
-    <PlanFile :file="spec" :from="SPEC" />
+    <div @mouseup="select(SPEC, $event)">
+      <PlanFile :file="spec" :from="SPEC" />
+    </div>
     <UAccordion
       v-if="tickets.length > 0"
       v-model="expanded"
@@ -87,7 +134,10 @@ watch([expanded, opened, stamps], () => {
       data-testid="tickets"
     >
       <template #body="{ item }">
-        <div :data-testid="`ticket-${item.value}`">
+        <div
+          :data-testid="`ticket-${item.value}`"
+          @mouseup="select(ticketFile(item.value), $event)"
+        >
           <PlanFile :file="read.get(ticketFile(item.value))" :from="ticketFile(item.value)" />
         </div>
       </template>

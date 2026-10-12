@@ -238,6 +238,12 @@ export const DesktopAction = Schema.Union([
     ref: Schema.String,
   }),
   Schema.TaggedStruct("Steer", { runId: Schema.String, text: Schema.String }),
+  /** Said to `agent` word for word, as review comments are (ADR-0051). */
+  Schema.TaggedStruct("Deliver", {
+    runId: Schema.String,
+    agent: Schema.String,
+    text: Schema.String,
+  }),
   Schema.TaggedStruct("FollowUp", { runId: Schema.String, text: Schema.String }),
   Schema.TaggedStruct("Invoke", {
     runId: Schema.String,

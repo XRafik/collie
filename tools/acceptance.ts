@@ -84,6 +84,18 @@ const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
   {
+    id: "front-door/review-comments-reach-the-chosen-agent-word-for-word",
+    statement: "Review comments reach the chosen agent word for word as one delivery.",
+    owner: REVIEW_COMMENTS,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-deliver.test.ts",
+      name: "review comments reach the chosen agent word for word as one delivery, at any length",
+    },
+  },
+  {
     id: "front-door/a-file-too-large-for-a-message-is-refused",
     statement:
       "The Flock chat's composer refuses a file over 20 MB, or one that takes a message's files over 30 MB, naming the file or the total and the cap.",

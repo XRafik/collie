@@ -108,6 +108,13 @@ const locationOf = (file: string, line: number | null) =>
       </div>
       <div class="flex flex-col gap-4" :class="columnClass(tab ?? '')">
         <template v-if="detail !== null">
+          <ReviewComments
+            v-if="tab === 'plan' || tab === 'diff'"
+            :installation="placed.installation"
+            :run-id="detail.id"
+            :launches="detail.agents"
+            :live="placed.task.agents"
+          />
           <PlanTab
             v-if="tab === 'plan' && detail.plan"
             :plan="detail.plan"

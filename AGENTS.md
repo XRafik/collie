@@ -108,6 +108,13 @@ herdr actions, and the `collie` CLI.
   `src/harness.ts`, applied by `choose` in `src/agents.ts` against the `fallbacks` setting,
   with `test/fallback.test.ts`. Usage
   chooses where work runs, never whether it runs.
+- **Changing Review comments — drafts on a Run's plan, what is sent and to whom** →
+  [ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md), alongside
+  `desktop/src/shared/review-comments.ts` (drafts, anchors and the composed message, with
+  `desktop/test/review-comments.test.ts`), `recipients` in
+  `desktop/src/shared/record-terminal.ts` (who may get them) and the `Deliver` action in
+  `act` in `desktop/src/bun/machine.ts` (one `deliver`, word for word, with
+  `test/desktop-deliver.test.ts`). Desktop never knows the delivery cap.
 - **Changing how large Desktop draws, or its Zoom** →
   [ADR-0047](docs/adr/0047-desktop-draws-at-its-monitors-own-scale.md), alongside
   `desktop/src/shared/scale.ts` (the monitor of a window from `hyprctl -j`, the zoom and the

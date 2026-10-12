@@ -939,6 +939,24 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
                 : Effect.fail<Unsteered>({ _tag: "Unsteered", message: outcome.human }),
             ),
           );
+      case "Deliver":
+        return door
+          .act({
+            actions: [
+              { kind: "deliver", run: action.runId, agent: action.agent, text: action.text },
+            ],
+            request,
+          })
+          .pipe(
+            Effect.flatMap(([done]) =>
+              done?.state === "applied"
+                ? Effect.succeed(`Sent to ${action.agent}`)
+                : Effect.fail<Unsteered>({
+                    _tag: "Unsteered",
+                    message: done?.note || "the host said nothing about it",
+                  }),
+            ),
+          );
       case "FollowUp":
         return door
           .followUp({ runId: action.runId, text: action.text, request })

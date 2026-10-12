@@ -52,6 +52,22 @@ export const agentTabs = (
 };
 
 /**
+ * Who a Run's review comments can go to: its own launched agents the board lists live
+ * under any of the Task's Runs, labelled as `agentTabs` labels them, by newest launch last.
+ * The last is the default, as the host's `focus` picks it; any other agent the host refuses.
+ */
+export const recipients = (
+  launches: ReadonlyArray<{ readonly agent: string }> | undefined,
+  live: ReadonlyArray<BoardAgent>,
+): AgentTab[] => {
+  const tabs = new Map(agentTabs(live, null).map((tab) => [tab.name, tab]));
+  const names = (launches ?? []).map((launch) => launch.agent);
+  return names
+    .filter((name, at) => names.lastIndexOf(name) === at)
+    .flatMap((name) => tabs.get(name) ?? []);
+};
+
+/**
  * The agent `focused` names, as the board lists it, or as it was last listed once the board
  * no longer does; null until the board has listed it at all.
  */
