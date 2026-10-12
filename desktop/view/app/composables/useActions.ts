@@ -2,16 +2,10 @@
 // said in a toast, in the host's own words when it said no.
 
 import { AtomRegistry, injectRegistry, useAtomSet } from "@effect/atom-vue";
-import { Cause, Effect, Exit, Result, type Semaphore, Stream } from "effect";
+import { Cause, Effect, Exit, type Semaphore, Stream } from "effect";
 import * as Base64 from "effect/encoding/Base64";
-import type * as RpcClientError from "effect/rpc/RpcClientError";
-import type {
-  ActionFailed,
-  DesktopAction,
-  Skippable,
-  TerminalCommand,
-} from "../../../src/shared/flock";
-import { saidOf } from "../../../src/shared/said";
+import type { Skippable, TerminalCommand } from "../../../src/shared/flock";
+import { actionRunner, failureOf, type Failed } from "../../../src/shared/actions";
 import { FlockClient } from "../flock";
 
 const actAtom = FlockClient.mutation("act");
@@ -37,8 +31,6 @@ const copyTextAtom = FlockClient.mutation("copyText");
 const claudeLoginAtom = FlockClient.mutation("claudeLogin");
 const pasteCodeAtom = FlockClient.mutation("pasteCode");
 
-type Failed = ActionFailed | RpcClientError.RpcClientError;
-
 export interface ReadOptions {
   /** Bounds how many reads run at once. */
   readonly within?: Semaphore.Semaphore;
@@ -56,13 +48,6 @@ const joined = (parts: ReadonlyArray<Uint8Array>) => {
     at += part.length;
   }
   return whole;
-};
-
-const failureOf = (cause: Cause.Cause<Failed>) => {
-  const found = Cause.findError(cause);
-  return Result.isSuccess(found) && found.success._tag === "ActionFailed"
-    ? found.success
-    : { reason: saidOf(cause), request: undefined };
 };
 
 export const useActions = () => {
@@ -140,29 +125,7 @@ export const useActions = () => {
       }).then((exit) => read(exit, options.quiet));
     };
 
-  /**
-   * A failure offers to try again under the same request id, so a request the host did
-   * take before the reply was lost is not done twice.
-   */
-  const run = (installation: string, action: DesktopAction, again?: string): Promise<boolean> =>
-    act({
-      payload: { installation, action, request: again },
-    }).then((exit) => {
-      if (Exit.isSuccess(exit)) {
-        toast.add({ title: exit.value, color: "success" });
-        return true;
-      }
-      const { reason, request } = failureOf(exit.cause);
-      toast.add({
-        title: reason,
-        color: "error",
-        actions:
-          request === undefined
-            ? []
-            : [{ label: "Try again", onClick: () => void run(installation, action, request) }],
-      });
-      return false;
-    });
+  const run = actionRunner(act, (notice) => toast.add(notice));
 
   return {
     run,

@@ -1331,7 +1331,8 @@ for word, each item naming the plan file, or `path:line` with `(as it was)` for 
 lines, quoting what you selected and giving your words;
 a message over 8 KiB arrives as a file in the Run. Only the drafts that were sent are
 cleared; if the host refuses, its words are shown and every draft is kept, as is one you
-edited while it was sending. With no live agent, Send is disabled and the list says "This
+edited while it was sending. A successful **Try again** clears the original sent drafts
+and keeps any later edits. With no live agent, Send is disabled and the list says "This
 Run has no live agent to tell". Desktop never edits the plan: the
 agent does, and the Plan tab shows its rewrite. An agent sends the same kind of message with
 `collie run steer --agent`.

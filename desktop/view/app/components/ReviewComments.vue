@@ -26,14 +26,18 @@ const send = async () => {
   if (agent.value === undefined) return;
   const sent = [...drafts.value];
   sending.value = true;
-  const delivered = await run(props.installation, {
-    _tag: "Deliver",
-    runId: props.runId,
-    agent: agent.value,
-    text: compose(drafts.value),
-  });
+  await run(
+    props.installation,
+    {
+      _tag: "Deliver",
+      runId: props.runId,
+      agent: agent.value,
+      text: compose(sent),
+    },
+    undefined,
+    () => clear(sent),
+  );
   sending.value = false;
-  if (delivered) clear(sent);
 };
 </script>
 
