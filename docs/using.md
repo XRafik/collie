@@ -1005,20 +1005,25 @@ Resume, Follow-up, Hold or Release, Stop, and Mark merged, abandoned or supersed
 the card's first action is the TUI card's own. Following a check's output is not on Desktop
 yet. Open merge request opens it in your browser.
 
-**Go to pane** asks the card's Machine to focus the Run's newest live agent, or its
-workspace where it has none, on that Machine's own herdr, and opens the card's record on
-its **Terminal** tab, which shows that agent's pane. It is herdr's own controller for the
+**Go to pane** opens the card's record on its **Terminal** tab, and the tab asks the card's
+Machine to focus the Task's agent that is blocked waiting for you, else one that is
+working — the card's own Run's first, then the one registered last — else the Run's newest
+live agent, or its workspace where it has none, on that Machine's own herdr. The tab shows
+that agent's pane, and opening the tab by clicking it does the same. It is herdr's own controller for the
 pane, run over the connection Desktop already holds to the Machine: one more channel on
 its SSH master, so going to a pane never asks for another login or SSO approval, or a
 local process for this computer. Nothing beyond Desktop is needed on this computer. Type
 into it as into herdr — Esc and Ctrl+C go to the agent, not to the record, and Ctrl+C
 copies instead while text is selected; a multi-line paste arrives as one paste; the wheel
-scrolls the pane's own history; and the pane follows the record's size. A link in it opens
-in your browser. A pane cannot write your clipboard.
+scrolls the pane's own history. The terminal fills the record below its tabs, and herdr's
+pane is resized to the cells drawn whenever the window, the Flock chat beside it or the Zoom
+changes. It takes the keyboard as it opens, after a pick or Reattach — unless you are typing in a
+field outside it, such as the Flock chat — and on any click in its box, and draws in CaskaydiaMono Nerd Font where it is installed, at 16 pixels, else in a
+common terminal font. A link in it opens in your browser. A pane cannot write your clipboard.
 Leaving the tab or closing the record gives the pane back, so a herdr window showing it
 returns to its own size. A terminal that ends says why — the pane closed, another client
 took it over, the Machine's connection dropped, or herdr refused — and **Reattach** finds
-the Run's newest live agent again. The tab stays while its Machine is away, and Reattach
+the agent at work again, by the same rule. The tab stays while its Machine is away, and Reattach
 says that Machine is not connected until it is back. The card and the tab say where the pane is, as
 "vm-mk › workspace 3 › tab 2".
 
@@ -1027,9 +1032,13 @@ across a plan Run and its `.implement` Run — the tab lists every agent the car
 beside Open in herdr, each as its role (numbered where two share one, as "reviewer 1") with
 herdr's status, and its herdr name and terminal title on hover. The one marked is the pane
 the Machine says it focused. Picking another gives the shown pane back and opens the chosen
-one, and Reattach then reopens the chosen agent rather than the newest. An agent that ends
-while shown stays listed as **ended** until you pick another. Leaving the tab forgets the
-choice, so coming back, like Go to pane, shows the newest live agent again.
+one, and Reattach then reopens the chosen agent rather than the agent at work. The tab
+never switches by itself: an agent starting or stopping work only changes its dot and word,
+and the switcher is how to look at any other live agent. An agent that ends while shown
+stays listed as **ended** until you pick another. Leaving the tab forgets the choice, so
+coming back, like Go to pane, shows the agent at work again. Where an agent you picked has
+no pane any more, the tab says so and asks you to pick another; where the agent at work has
+none, Go to pane opens herdr's own client, as below.
 
 Where there is no pane to show — a Run with no live agent, or a Machine on a Collie whose
 focus does not name one — Go to pane does what it did before, and **Open in herdr** on the
