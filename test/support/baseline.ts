@@ -18,7 +18,7 @@ import { exec } from "./command";
 import { fastForward, runEffect } from "./effect";
 import { FakeBin } from "./bin";
 import { CLI, FORGE_HOST, PROJECT, forgeOnPath, type ForgeModel } from "./forge";
-import type { MrForge } from "../../src/board-model";
+import { mrTarget, type MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
 import { Children, Host, Run, WorkflowError, type ActionFacts, type ChildAsk } from "../../src/sdk";
@@ -1119,7 +1119,7 @@ scenario(
           input: { target },
           decision: "post-1",
         });
-        expect(optionsOf(rows, "post-1")).toContain("Post to MR");
+        expect(optionsOf(rows, "post-1")).toContain("Post to merge request");
 
         yield* answeredThen({
           entry: shipped("review"),
@@ -1134,7 +1134,7 @@ scenario(
         expect(yield* prompts()).toHaveLength(3);
         expect(yield* asked("r-review-mr", "review-2-1")).toContain("Iteration 2");
         expect(yield* asked("r-review-mr", "fix")).toContain(
-          "glab mr checkout <iid> --repo gitlab.example.com/group/project",
+          "glab mr checkout 42 --repo gitlab.example.com/group/project",
         );
         expect(yield* persona("r-review-mr", "fix")).toContain("You are an implementer");
         // Nothing is left to fix after a clean review, so fixing is not offered again.
@@ -1149,6 +1149,91 @@ scenario(
     ),
   120_000,
 );
+
+const REVIEWED = {
+  gitlab: {
+    diff: "glab mr diff 30 --repo gitlab.example.com/group/app",
+    view: "glab mr view 30 --repo gitlab.example.com/group/app",
+    other: "gh",
+  },
+  github: {
+    diff: "gh pr diff 30 --repo owner/repo",
+    view: "gh pr view 30 --repo owner/repo",
+    other: "glab",
+  },
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  const noun = name === "gitlab" ? "merge request" : "pull request";
+  const target = mrTarget(PROJECT[name], "30");
+  /** The forge on PATH, holding the one merge request this review is of. */
+  const reviewing = () =>
+    Effect.gen(function* () {
+      const bin = yield* FakeBin.make(`${rig.root}/bin`);
+      const forge = yield* forgeOnPath(bin, name, {
+        installed: true,
+        loggedIn: [FORGE_HOST[name]],
+        login: "tester",
+        mrs: [{ project: PROJECT[name], iid: "30", state: "open", author: "ann" }],
+      });
+      return { bin, forge };
+    });
+  const posted = (runId: string, synthesis: typeof SYNTHESIS) =>
+    Effect.gen(function* () {
+      const { bin, forge } = yield* reviewing();
+      yield* rig.queueOutputs([synthesis]);
+      const rows = yield* parked({
+        entry: shipped("review"),
+        runId,
+        input: { target },
+        decision: "post-1",
+      });
+      expect(optionsOf(rows, "post-1")).toContain(`Post to ${noun}`);
+      const review = yield* asked(runId, "review-1");
+      expect(review).toContain(REVIEWED[name].diff);
+      expect(review).toContain(REVIEWED[name].view);
+      expect(review).not.toMatch(new RegExp(`\\b${REVIEWED[name].other}\\b`));
+      const result = yield* answered({
+        entry: shipped("review"),
+        runId,
+        input: { target },
+        decision: "post-1",
+        value: `Post to ${noun}`,
+      });
+      yield* bin.restore();
+      return { said: said(result), model: yield* forge.model() };
+    });
+
+  scenario(
+    `a review of a ${name} ${noun} reads it with that forge's commands, and posting a clean one approves it`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const clean = { ...SYNTHESIS, verdict: "clean", findings: [] };
+          const { said: message, model } = yield* posted(`r-review-${name}-clean`, clean);
+          expect(message).toContain("and approved it");
+          expect(Object.values(model.notes ?? {})).toHaveLength(1);
+          expect(model.approved).toHaveLength(1);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `posting a review of a ${name} ${noun} with findings left notes it and approves nothing`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { said: message, model } = yield* posted(`r-review-${name}-findings`, SYNTHESIS);
+          expect(message).toContain("posted the review to");
+          expect(message).not.toContain("approve");
+          expect(Object.values(model.notes ?? {})).toHaveLength(1);
+          expect(model.approved ?? []).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+}
 
 scenario(
   "fix findings goes on by itself until a review is clean",

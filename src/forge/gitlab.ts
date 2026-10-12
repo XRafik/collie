@@ -323,6 +323,12 @@ function template(cwd: string) {
   });
 }
 
+const MineJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({ iid: Schema.Union([Schema.String, Schema.Number]), title: optionalText }),
+  ),
+);
+
 export const gitlab: Forge = {
   name: "gitlab",
   display: "GitLab",
@@ -340,13 +346,55 @@ export const gitlab: Forge = {
   login: glabLogin,
   details: mrDetails,
   liveTier,
-  note: (ref, body, cwd, run) =>
-    Effect.map(
+  post: (ref, body, approve, cwd, run) =>
+    Effect.gen(function* () {
+      const where = whereOf(ref);
       // `--repo` is what lets this work from a directory that is not that checkout.
-      run("glab", ["mr", "note", ref.iid, ...repoArgs(ref.project), "--message", body], cwd),
-      (note) =>
-        note.code === 0
-          ? { ok: true, message: `posted the review to ${whereOf(ref)}` }
-          : { ok: false, message: `glab mr note ${whereOf(ref)} failed (exit ${note.code})` },
-    ),
+      const note = yield* run(
+        "glab",
+        ["mr", "note", ref.iid, ...repoArgs(ref.project), "--message", body],
+        cwd,
+      );
+      if (note.code !== 0)
+        return { ok: false, message: `glab mr note ${where} failed (exit ${note.code})` };
+      if (!approve) return { ok: true, message: `posted the review to ${where}` };
+      const approved = yield* run(
+        "glab",
+        ["mr", "approve", ref.iid, ...repoArgs(ref.project)],
+        cwd,
+      );
+      return {
+        ok: true,
+        message:
+          approved.code === 0
+            ? `posted the review to ${where} and approved it`
+            : `posted the review to ${where} and did not approve it: glab mr approve failed (exit ${approved.code})`,
+      };
+    }),
+  mine: (_project, cwd, run) =>
+    Effect.gen(function* () {
+      const seen = new Map<string, string>();
+      for (const who of ["--assignee", "--author"]) {
+        const listed = yield* run("glab", ["mr", "list", who, "@me", "--output", "json"], cwd);
+        if (listed.code !== 0) continue;
+        for (const row of Option.getOrElse(
+          Schema.decodeUnknownOption(MineJson)(listed.stdout),
+          () => [],
+        ))
+          if (!seen.has(String(row.iid))) seen.set(String(row.iid), row.title ?? "");
+      }
+      return [...seen].map(([iid, title]) => ({ iid, title }));
+    }),
+  open: (ref, cwd, run) =>
+    run("glab", ["mr", "view", ref.iid, ...repoArgs(ref.project), "--web"], cwd),
+  review: (ref) => {
+    const repo = repoArgs(ref.project)
+      .map((arg) => ` ${arg}`)
+      .join("");
+    return {
+      diff: `glab mr diff ${ref.iid}${repo}`,
+      view: `glab mr view ${ref.iid}${repo} --comments`,
+      checkout: `glab mr checkout ${ref.iid}${repo}`,
+    };
+  },
 };

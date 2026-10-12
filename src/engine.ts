@@ -353,6 +353,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly target: string;
       readonly cwd: string;
       readonly file: string;
+      /** Approve the merge request too: a review with nothing live left to fix. */
+      readonly approve?: boolean;
     }) => Effect.Effect<Posted>;
     /** What this Run may have Collie run for it; a workflow cannot add to the list. */
     readonly approved: (runId: string) => Effect.Effect<ReadonlyArray<VerifySpec>>;
@@ -1031,6 +1033,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /** The glab arguments that point a command at a project rather than at the cwd. */
   export function repoArgs(project: string | null): string[];
+
+  /**
+   * An \`mr:\` target's forge as a prompt says it — its name and noun, and the commands that
+   * read the change and its description and check it out — or null for any other target.
+   */
+  export function mrForgeFacts(target: string): {
+    readonly forge: string;
+    readonly noun: string;
+    readonly diff: string;
+    readonly view: string;
+    readonly checkout: string;
+  } | null;
 
   /** A decoded review: the lists are the decoder's, not the reader's to change. */
   export interface ReviewReport extends Judgement {
@@ -2404,7 +2418,10 @@ export const hostLayer = (options: {
           under(
             fs.readFileString(asked.file).pipe(
               Effect.flatMap((body) =>
-                postNote({ target: asked.target, cwd: asked.cwd, body }, runShell),
+                postNote(
+                  { target: asked.target, cwd: asked.cwd, body, approve: asked.approve === true },
+                  runShell,
+                ),
               ),
               Effect.orElseSucceed(() => ({
                 ok: false,

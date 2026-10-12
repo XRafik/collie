@@ -84,7 +84,13 @@ export function assignedTo<R>(
  * rather than to write to themselves.
  */
 export function postNote<R>(
-  options: { readonly target: string; readonly cwd: string; readonly body: string },
+  options: {
+    readonly target: string;
+    readonly cwd: string;
+    readonly body: string;
+    /** Approve it too, which a review with nothing live left asks for. */
+    readonly approve?: boolean;
+  },
   run: Runner<R>,
 ): Effect.Effect<Posted, never, R> {
   return Effect.gen(function* () {
@@ -106,7 +112,7 @@ export function postNote<R>(
         message: `${options.target} is assigned to you, so its findings are yours to fix rather than to post`,
       };
     }
-    return yield* forge.note(mr, options.body, options.cwd, run);
+    return yield* forge.post(mr, options.body, options.approve === true, options.cwd, run);
   });
 }
 

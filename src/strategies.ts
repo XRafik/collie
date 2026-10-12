@@ -155,7 +155,7 @@ const STRATEGY_MEANINGS = new Map<InputStrategy, string>([
   ["plan-dir", "A plan directory, holding SPEC.md and issues/"],
   [
     "diff-target",
-    "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, branch:<base>...<head>, or worktree",
+    "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, <owner>/<repo>#<n>, branch:<base>...<head>, or worktree",
   ],
   ["gitlab-repository", "A GitLab repository URL, or the absolute path of a local checkout"],
   ["flag", "true or false"],

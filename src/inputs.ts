@@ -11,26 +11,10 @@ import { openFindingsIn } from "./output";
 import { targetLabel } from "./naming";
 import { FINDINGS_FILE, REVIEW_FILE } from "./output";
 import { ago } from "./time";
-import { type Runner, mrTarget, projectHere, shell as shellRun } from "./mr";
-import { parseMrTarget, readMrRef } from "./board-model";
+import { type Runner, forgeHere, projectHere, shell as shellRun } from "./mr";
+import type { Forge } from "./forge/forge";
+import { mrWords, readMrRef } from "./board-model";
 
-const JsonId = Schema.Union([Schema.String, Schema.Number]);
-const MrViewJson = Schema.fromJsonString(
-  Schema.Struct({
-    state: Schema.optionalKey(Schema.String),
-    iid: Schema.optionalKey(JsonId),
-    id: Schema.optionalKey(JsonId),
-  }),
-);
-const MrRowsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      iid: Schema.optionalKey(JsonId),
-      id: Schema.optionalKey(JsonId),
-      title: Schema.optionalKey(Schema.String),
-    }),
-  ),
-);
 /**
  * One thing a human may pick, whoever is drawing the list: a workflow, a candidate for
  * an Input, an option in a Choice. Here rather than with a renderer because both
@@ -241,18 +225,6 @@ export function inferInputs(
   );
 }
 
-function mrIid(stdout: string): string | null {
-  return Option.match(Schema.decodeUnknownOption(MrViewJson)(stdout), {
-    onNone: () => null,
-    onSome: (data) => {
-      if (data.state !== undefined && !["opened", "open"].includes(data.state.toLowerCase()))
-        return null;
-      const iid = data.iid ?? data.id;
-      return iid === undefined ? null : String(iid);
-    },
-  });
-}
-
 export function defaultBase(
   run: NonNullable<InferContext["run"]>,
   cwd: string,
@@ -386,21 +358,24 @@ export function targetCandidates(
     const branch = inRepo
       ? (yield* run("git", ["rev-parse", "--abbrev-ref", "HEAD"], ctx.cwd)).stdout.trim()
       : "";
-    const view = yield* run("glab", ["mr", "view", "--output", "json"], ctx.cwd);
-    const iid = view.code === 0 ? mrIid(view.stdout) : null;
-    if (iid) {
+    const here = inRepo ? yield* forgeHere(ctx.cwd, run) : null;
+    const forge = here?.ok === true ? here.forge : null;
+    const found =
+      forge !== null && project !== null && branch !== ""
+        ? yield* forge.forBranch(project, branch, ctx.cwd, run)
+        : null;
+    const open = found?.ok === true ? found.open : null;
+    if (forge !== null && open !== null) {
+      const words = mrWords({ project, iid: open.iid });
       out.push({
         kind: "mr",
-        value: mrTarget(project, iid),
-        source:
-          branch === ""
-            ? `open merge request !${iid}`
-            : `branch ${branch}'s open merge request !${iid}`,
-        label: `!${iid}`,
+        value: words.target,
+        source: `branch ${branch}'s open ${forge.noun} ${words.sign}${open.iid}`,
+        label: `${words.sign}${open.iid}`,
       });
-    } else {
-      // This branch has no MR, so offer the ones I would otherwise go looking for.
-      for (const mine of yield* myOpenMrs(run, ctx.cwd, project)) out.push(mine);
+    } else if (forge !== null) {
+      // This branch has none, so offer the ones I would otherwise go looking for.
+      for (const mine of yield* myOpenMrs(forge, run, ctx.cwd, project)) out.push(mine);
     }
 
     if (inRepo) {
@@ -444,38 +419,30 @@ export function targetCandidates(
   });
 }
 
-/** Open MRs I am on either side of, deduplicated by iid. */
+/** Open merge requests I am on either side of, in iid order. */
 function myOpenMrs(
+  forge: Forge,
   run: NonNullable<InferContext["run"]>,
   cwd: string,
   project: string | null,
 ): Effect.Effect<Candidate[], never, ChildProcessSpawner.ChildProcessSpawner> {
-  return Effect.gen(function* () {
-    const seen = new Map<string, Candidate>();
-    for (const who of ["--assignee", "--author"]) {
-      const res = yield* run("glab", ["mr", "list", who, "@me", "--output", "json"], cwd);
-      if (res.code !== 0) continue;
-      const parsedRows = Schema.decodeUnknownOption(MrRowsJson)(res.stdout);
-      if (Option.isNone(parsedRows)) continue;
-      for (const row of parsedRows.value) {
-        const id = row.iid ?? row.id;
-        if (id === undefined) continue;
-        const key = String(id);
-        if (seen.has(key)) continue;
-        const title = row.title ?? "";
-        seen.set(key, {
+  return Effect.map(forge.mine(project, cwd, run), (mine) =>
+    [...mine]
+      .sort((a, b) => Number(a.iid) - Number(b.iid))
+      .map(({ iid, title }) => {
+        const words = mrWords({ project, iid });
+        const short = forge.name === "github" ? "PR" : "MR";
+        return {
           kind: "mr",
-          value: mrTarget(project, key),
-          source: title ? `open MR !${key} — ${title}` : `open MR !${key}`,
-          label: `!${key}`,
+          value: words.target,
+          source: title
+            ? `open ${short} ${words.sign}${iid} — ${title}`
+            : `open ${short} ${words.sign}${iid}`,
+          label: `${words.sign}${iid}`,
           menuOnly: true,
-        });
-      }
-    }
-    return [...seen.values()].sort(
-      (a, b) => Number(parseMrTarget(a.value)?.iid ?? 0) - Number(parseMrTarget(b.value)?.iid ?? 0),
-    );
-  });
+        } satisfies Candidate;
+      }),
+  );
 }
 
 /**
@@ -495,8 +462,8 @@ export function classifyTarget(
   // one in the project this directory belongs to.
   const mr = readMrRef(text, { project });
   if (mr) {
-    const value = mrTarget(mr.project, mr.iid);
-    return { kind: "mr", value, source, label: `!${mr.iid}` };
+    const words = mrWords(mr);
+    return { kind: "mr", value: words.target, source, label: `${words.sign}${mr.iid}` };
   }
 
   if (/^worktree$/i.test(text))
@@ -605,7 +572,7 @@ const WORK_SOURCE_MENU: MenuSpec = {
 
 const TARGET_MENU: MenuSpec = {
   header: TARGET_QUESTION,
-  hint: "an MR iid or URL, or a base...head range",
+  hint: "!42, #30, owner/repo#30 or a merge or pull request URL, or a base...head range",
   question: "MR iid or URL, or a base...head range",
   classify: (typed, r) => Effect.succeed(classifyTarget(typed, r.base ?? "", r.project ?? null)),
 };

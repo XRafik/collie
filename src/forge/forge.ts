@@ -4,8 +4,8 @@
 
 import type { Effect, FileSystem, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";
-import { forgeOfRef, type MrForge, type MrPanel, type MrRef } from "../board-model";
-import type { Runner } from "../mr";
+import { forgeOfRef, parseMrTarget, type MrForge, type MrPanel, type MrRef } from "../board-model";
+import type { Ran, Runner } from "../mr";
 import type { Posted } from "../sdk";
 import { github } from "./github";
 import { gitlab } from "./gitlab";
@@ -29,6 +29,12 @@ export type ForBranch =
       } | null;
     }
   | { readonly ok: false; readonly reason: string };
+
+export interface ReviewCommands {
+  readonly diff: string;
+  readonly view: string;
+  readonly checkout: string;
+}
 
 /** The command lines an agent is told to run, written for the forge they run on. */
 export interface Commands {
@@ -84,13 +90,24 @@ export interface Forge {
   readonly display: string;
   /** "merge request" or "pull request". */
   readonly noun: string;
-  /** One note on the merge request. */
-  readonly note: <R>(
+  /** One note on the merge request, and its approval where `approve` asks for it. */
+  readonly post: <R>(
     ref: MrRef,
     body: string,
+    approve: boolean,
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<Posted, never, R>;
+  /** My open merge requests in `project`, as assignee or author, for a menu. */
+  readonly mine: <R>(
+    project: string | null,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<ReadonlyArray<{ readonly iid: string; readonly title: string }>, never, R>;
+  /** Opens the merge request in a browser. */
+  readonly open: <R>(ref: MrRef, cwd: string, run: Runner<R>) => Effect.Effect<Ran, never, R>;
+  /** What a reviewer runs to read the change and its description, and to check it out. */
+  readonly review: (ref: MrRef) => ReviewCommands;
 }
 
 export const FORGES: Readonly<Record<MrForge, Forge>> = { gitlab, github };
@@ -109,4 +126,15 @@ export function forgeOfHost(host: string, gitlabHost?: string): MrForge | null {
   if (name === "github.com") return "github";
   if (name === gitlabHost?.toLowerCase() || name.includes("gitlab")) return "gitlab";
   return null;
+}
+
+/**
+ * What a prompt says of an `mr:` target's forge: its name and noun, and the commands that
+ * read the change, its description, and check it out. Null for any other target.
+ */
+export function mrForgeFacts(target: string) {
+  const ref = parseMrTarget(target);
+  if (ref === null) return null;
+  const forge = forgeOf(ref);
+  return { forge: forge.display, noun: forge.noun, ...forge.review(ref) };
 }

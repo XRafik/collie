@@ -1765,25 +1765,35 @@ done.
 
 ## Reviewing someone else's merge request
 
-An MR target carries its project, not just its iid: `mr:<host>/<group>/<project>!<iid>`.
-Paste an MR URL and the project comes from the URL; type a bare `!42` and it comes from the
-remote of the directory you are in. Every `glab` call the run makes — and every command
-the review prompt hands the reviewers — then passes `--repo <host>/<group>/<project>`, so
-no checkout of that project is needed: you can review and comment on a colleague's MR from
-a group folder that is not a git repository at all.
+A merge request target carries its project, not just its number:
+`mr:<host>/<group>/<project>!<iid>` on GitLab, and `mr:github.com/<owner>/<repo>#<n>` for a
+GitHub pull request. Paste either forge's URL and the project comes from the URL; type
+`owner/repo#30` and it is that GitHub repository's; type `!42`, `#42` or a bare `42` and it
+is the merge request of the checkout you are in, in that checkout's forge. The target menu
+offers the current branch's open merge request or pull request and, where it has none,
+your own open ones. The reviewers are handed the forge's own commands — `glab mr diff` and
+`glab mr view` on GitLab, `gh pr diff` and `gh pr view` on GitHub — with `--repo`, so no
+checkout of that project is needed: you can review and comment on a colleague's change from
+a folder that is not a git repository at all.
+
+**Post to merge request** (**Post to pull request** on GitHub) puts the review on it as one
+note. Where nothing in the review is still live, it also approves it — on GitHub as one
+review that both comments and approves — and the message says whether the approval landed.
+With findings left, it notes and approves nothing. It refuses a merge request assigned to
+you, on either forge: those findings are yours to fix.
 
 Fixing one is a different matter. A fix round is an `implement` run, and a mutating run
 works in a checkout of its own branch — which `herdr worktree` can only cut from the
-repository it is asked in. So a review of a merge request in another project, or from a
+repository it is asked in. The fix round works on the merge request's source branch, or the
+pull request's head branch. So a review of a merge request in another project, or from a
 directory that is not a checkout of it, will review and comment fine, but chaining into
 `implement` from there stops and says so instead of building in the wrong repository.
 Clone that project and start the fix round from there.
 
-A step pointed at a merge request needs `glab` and `glab auth status --hostname <host>` for
-that host. The "does this directory have a GitLab remote" check stays where it belongs, on
-`implement`'s merge request, which is the one that pushes. In a directory that is not a
-checkout there is no branch and no working tree to review, so the target menu is one entry
-— **Type it…**.
+A step pointed at a merge request needs its forge's CLI logged in to its host: `glab` and
+`glab auth status --hostname <host>` on GitLab, `gh` and `gh auth status --hostname
+github.com` on GitHub. In a directory that is not a checkout there is no branch and no
+working tree to review, so the target menu is one entry — **Type it…**.
 
 ## Your defaults
 

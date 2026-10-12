@@ -575,9 +575,16 @@ host's, so they are never in your payload — a caller asking for extra review a
 an earlier Run to compare against is doing it there, and this is where you read it.
 
 `host.post` puts a file on the merge request a Run was pointed at, as one note Collie sends
-rather than an agent writes out again. Its refusal is its message: not a merge request, no
-`glab` for that project, or one assigned to whoever is running this — whose findings are
-theirs to fix rather than to post to themselves.
+rather than an agent writes out again, through the merge request's own forge. With
+`approve`, it approves it too — the shipped review passes it when nothing live is left to
+fix — and the message says whether the approval landed. Its refusal is its message: not a
+merge request, no CLI or login for its forge, or one assigned to whoever is running this —
+whose findings are theirs to fix rather than to post to themselves.
+
+`mrForgeFacts(target)` is pure: for an `mr:` target it gives the forge's name and noun and
+the `diff`, `view` and `checkout` command lines a prompt hands a reviewer, written by that
+forge's adapter, and null for any other target. `target_repo` is still filled in for a
+fork that reads it: `--repo <project>` is what both CLIs take.
 
 `host.config(dotted)` is one value from the operator's own configuration, and empty where
 they have set none. What a workflow must not hard-code — which team it files issues with,

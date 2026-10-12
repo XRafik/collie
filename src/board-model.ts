@@ -1266,7 +1266,7 @@ const MR_URL =
 
 /**
  * The one reading of a merge request reference: an `mr:` target, a merge request or pull
- * request URL, and, where `typedIn` says which checkout it was typed in, `!42`, `#42` or
+ * request URL, GitHub's `owner/repo#30`, and, where `typedIn` says which checkout it was typed in, `!42`, `#42` or
  * `42`. Null for anything else.
  */
 export function readMrRef(
@@ -1283,6 +1283,9 @@ export function readMrRef(
   }
   const url = MR_URL.exec(said);
   if (url) return { project: (url[1] ?? url[2])!, iid: url[3]! };
+  // `owner/repo#30` is how GitHub names a pull request, wherever it is typed.
+  const short = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(said);
+  if (short) return { project: `github.com/${short[1]}`, iid: short[2]! };
   const typed = typedIn === undefined ? null : /^[!#]?(\d+)$/.exec(said);
   return typed ? { project: typedIn!.project, iid: typed[1]! } : null;
 }
@@ -1319,6 +1322,7 @@ export function mrWords(ref: MrRef) {
         : `https://${project}/${github ? "pull" : "-/merge_requests"}/${ref.iid}`,
     noun: github ? "pull request" : "merge request",
     checks: github ? "checks" : "pipeline",
+    sign,
   };
 }
 

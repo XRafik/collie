@@ -258,6 +258,10 @@ function template(cwd: string) {
   });
 }
 
+const MineJson = Schema.fromJsonString(
+  Schema.Array(Schema.Struct({ number: Schema.Number, title: optionalText })),
+);
+
 export const github: Forge = {
   name: "github",
   display: "GitHub",
@@ -276,15 +280,64 @@ export const github: Forge = {
   login,
   details,
   liveTier: () => Effect.succeed(null),
-  note: (ref, body, cwd, run) =>
-    Effect.map(
-      run("gh", ["pr", "comment", ref.iid, "--repo", mrPath(ref), "--body", body], cwd),
-      (note) =>
-        note.code === 0
-          ? { ok: true, message: `posted the review to ${mrWords(ref).label}` }
-          : {
-              ok: false,
-              message: `gh pr comment ${mrWords(ref).label} failed (exit ${note.code})`,
-            },
-    ),
+  post: (ref, body, approve, cwd, run) =>
+    Effect.gen(function* () {
+      const where = mrWords(ref).label;
+      const repo = ["--repo", mrPath(ref)];
+      // One review that is both the note and the approval, as GitHub counts a review.
+      const reviewed = approve
+        ? yield* run("gh", ["pr", "review", ref.iid, ...repo, "--approve", "--body", body], cwd)
+        : null;
+      if (reviewed?.code === 0)
+        return { ok: true, message: `posted the review to ${where} and approved it` };
+      const note = yield* run("gh", ["pr", "comment", ref.iid, ...repo, "--body", body], cwd);
+      if (note.code !== 0)
+        return { ok: false, message: `gh pr comment ${where} failed (exit ${note.code})` };
+      return {
+        ok: true,
+        message:
+          reviewed === null
+            ? `posted the review to ${where}`
+            : `posted the review to ${where} and did not approve it: gh pr review --approve failed (exit ${reviewed.code})`,
+      };
+    }),
+  mine: (project, cwd, run) =>
+    Effect.gen(function* () {
+      if (project === null) return [];
+      const seen = new Map<string, string>();
+      for (const who of ["--assignee", "--author"]) {
+        const listed = yield* run(
+          "gh",
+          [
+            "pr",
+            "list",
+            "--repo",
+            mrPath({ project, iid: "" }),
+            who,
+            "@me",
+            "--state",
+            "open",
+            "--json",
+            "number,title",
+          ],
+          cwd,
+        );
+        if (listed.code !== 0) continue;
+        for (const row of Option.getOrElse(
+          Schema.decodeUnknownOption(MineJson)(listed.stdout),
+          () => [],
+        ))
+          if (!seen.has(String(row.number))) seen.set(String(row.number), row.title ?? "");
+      }
+      return [...seen].map(([iid, title]) => ({ iid, title }));
+    }),
+  open: (ref, cwd, run) => run("gh", ["pr", "view", ref.iid, "--repo", mrPath(ref), "--web"], cwd),
+  review: (ref) => {
+    const repo = `--repo ${mrPath(ref)}`;
+    return {
+      diff: `gh pr diff ${ref.iid} ${repo}`,
+      view: `gh pr view ${ref.iid} ${repo} --comments`,
+      checkout: `gh pr checkout ${ref.iid} ${repo}`,
+    };
+  },
 };

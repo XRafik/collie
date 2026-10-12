@@ -15,12 +15,9 @@ const ALLOWED = new Map([
   // Permanent (ADR-0050 D1): onboarding's GitLab login and SSH key.
   ["src/onboard.ts", "permanent"],
   ["src/mr.ts", "08: pipelineStatus"],
-  ["src/inputs.ts", "05: input inference"],
-  ["src/worktree.ts", "05: reviewedBranch; 09: the roaming clone"],
-  ["src/flows.ts", "05: OpenMr"],
+  ["src/worktree.ts", "09: the roaming clone"],
   ["src/cards.ts", "06: the inspect text"],
   ["src/doctor.ts", "07: the doctor"],
-  ["workflows/review.md", "05: the review prompts"],
   ["workflows/renovate.md", "10: renovate's content per forge"],
   ["prompts/collie-chat.md", "06: native chat names both forges"],
 ]);

@@ -52,15 +52,24 @@ afterEach(() =>
 
 const ctx = () => ({ cwd: rig.projectDir });
 
+/** A glab answering `mr list` for this branch, and for me as assignee and author. */
+const glabListing = (lists: { branch?: string; assignee?: string; author?: string }) =>
+  `case "$2 $3" in
+      "list --source-branch") echo '${lists.branch ?? "[]"}' ;;
+      "list --assignee") echo '${lists.assignee ?? "[]"}' ;;
+      "list --author") echo '${lists.author ?? "[]"}' ;;
+      *) exit 0 ;;
+    esac`;
+
 test("diff-target prefers the open merge request", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* bin.add("glab", `echo '{"iid": 42, "state": "opened", "title": "t"}'`);
-      yield* bin.add("git", `echo should-not-be-used; exit 1`);
+      yield* bin.add("glab", glabListing({ branch: '[{"iid": 42}]' }));
+      yield* bin.add("git", gitOn("add-picker"));
 
       expect(yield* inferInput("target", "diff-target", ctx())).toMatchObject({
-        value: "mr:42",
-        source: "open merge request !42",
+        value: "mr:gitlab.example.com/g/p!42",
+        source: "branch add-picker's open merge request !42",
         needsAsking: false,
       });
     }),
@@ -90,7 +99,8 @@ test("diff-target falls back to the branch diff when there is no open merge requ
 test("diff-target skips a merge request that is no longer open", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* bin.add("glab", `echo '{"iid": 7, "state": "merged"}'`);
+      // glab lists only open merge requests, so a merged one is not there.
+      yield* bin.add("glab", glabListing({}));
       yield* bin.add(
         "git",
         `case "$1 $2" in
@@ -494,6 +504,7 @@ function makePlanRun(
 function gitOn(branch: string, base = "origin/main", porcelain = " M src/x.ts") {
   return `case "$1 $2" in
       "rev-parse --git-dir") echo .git ;;
+      "remote get-url") [ "$3" = origin ] && echo git@gitlab.example.com:g/p.git || exit 1 ;;
       "rev-parse --abbrev-ref") echo ${branch} ;;
       "symbolic-ref --short") echo ${base} ;;
       "status --porcelain") echo "${porcelain}" ;;
@@ -504,16 +515,16 @@ function gitOn(branch: string, base = "origin/main", porcelain = " M src/x.ts") 
 test("diff-target offers the MR, the branch and the working tree, inference first", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* bin.add("glab", `echo '{"iid": 42, "state": "opened", "title": "t"}'`);
+      yield* bin.add("glab", glabListing({ branch: '[{"iid": 42}]' }));
       yield* bin.add("git", gitOn("add-picker"));
 
       const resolved = yield* inferInput("target", "diff-target", ctx());
 
       // The head of the list is what inference alone would have picked, so Enter keeps it.
-      expect(resolved.value).toBe("mr:42");
+      expect(resolved.value).toBe("mr:gitlab.example.com/g/p!42");
       expect(resolved.kind).toBe("mr");
       expect(resolved.candidates?.map((c) => [c.kind, c.value])).toEqual([
-        ["mr", "mr:42"],
+        ["mr", "mr:gitlab.example.com/g/p!42"],
         ["branch", "branch:main...add-picker"],
         ["worktree", "worktree"],
       ]);
@@ -525,13 +536,10 @@ test("with no MR for this branch, my own open MRs are offered instead", () =>
     Effect.gen(function* () {
       yield* bin.add(
         "glab",
-        `case "$2" in
-      view) exit 1 ;;
-      list) case "$3" in
-        --assignee) echo '[{"iid": 7, "title": "mine to review"}]' ;;
-        --author) echo '[{"iid": 7, "title": "mine to review"}, {"iid": 9, "title": "also mine"}]' ;;
-      esac ;;
-    esac`,
+        glabListing({
+          assignee: '[{"iid": 7, "title": "mine to review"}]',
+          author: '[{"iid": 7, "title": "mine to review"}, {"iid": 9, "title": "also mine"}]',
+        }),
       );
       yield* bin.add("git", gitOn("add-picker"));
 
@@ -539,8 +547,8 @@ test("with no MR for this branch, my own open MRs are offered instead", () =>
 
       // Deduplicated across assignee and author, and never ahead of the branch itself.
       expect(resolved.candidates?.map((c) => [c.kind, c.value])).toEqual([
-        ["mr", "mr:7"],
-        ["mr", "mr:9"],
+        ["mr", "mr:gitlab.example.com/g/p!7"],
+        ["mr", "mr:gitlab.example.com/g/p!9"],
         ["branch", "branch:main...add-picker"],
         ["worktree", "worktree"],
       ]);
@@ -556,20 +564,19 @@ test("my own open MRs are never what inference lands on by itself", () =>
       // The shape that reviewed the wrong merge request: standing on the default
       // branch with a clean tree, so the only candidates are my open MRs, and the
       // lowest iid is an unrelated one from months ago.
-      yield* bin.add(
-        "glab",
-        `case "$2" in
-      view) exit 1 ;;
-      list) echo '[{"iid": 41, "title": "something old"}, {"iid": 314, "title": "this work"}]' ;;
-    esac`,
-      );
+      const old = '[{"iid": 41, "title": "something old"}, {"iid": 314, "title": "this work"}]';
+      yield* bin.add("glab", glabListing({ assignee: old, author: old }));
       yield* bin.add("git", gitOn("main", "origin/main", ""));
 
       const resolved = yield* inferInput("target", "diff-target", ctx());
 
       // Both are on the menu, in iid order, and the working tree is there to be
       // inferred rather than !41.
-      expect(resolved.candidates?.map((c) => c.value)).toEqual(["mr:41", "mr:314", "worktree"]);
+      expect(resolved.candidates?.map((c) => c.value)).toEqual([
+        "mr:gitlab.example.com/g/p!41",
+        "mr:gitlab.example.com/g/p!314",
+        "worktree",
+      ]);
       expect(resolved.value).toBe("worktree");
       expect(resolved.needsAsking).toBeFalsy();
     }),
@@ -632,6 +639,19 @@ test("a pull request URL or GitHub target is a merge request, never a branch", (
     value: "mr:github.com/cego/collie#30",
   });
   expect(targetKind("mr:github.com/cego/collie#30")).toBe("mr");
+  expect(classifyTarget("cego/collie#30", "main", "gitlab.cego.dk/g/p")).toMatchObject({
+    kind: "mr",
+    value: "mr:github.com/cego/collie#30",
+    label: "#30",
+  });
+});
+
+test.each([
+  ["a GitHub checkout", "github.com/cego/collie", "mr:github.com/cego/collie#30", "#30"],
+  ["a GitLab checkout", "gitlab.cego.dk/cego/app", "mr:gitlab.cego.dk/cego/app!30", "!30"],
+])("#30, !30 and 30 typed in %s are its forge's own merge request", (_, project, value, label) => {
+  for (const typed of ["#30", "!30", "30"])
+    expect(classifyTarget(typed, "main", project)).toMatchObject({ kind: "mr", value, label });
 });
 
 test("a diff-target given on the command line is normalised, not just shaped", () =>
@@ -686,7 +706,11 @@ test("the target menu always shows, and Type it… classifies what comes back", 
 
       expect(ok).toBe(true);
       expect(titles).toEqual(["add-picker", "working tree", "Type it…"]);
-      expect(resolved).toMatchObject({ value: "mr:128", kind: "mr", source: "typed" });
+      expect(resolved).toMatchObject({
+        value: "mr:gitlab.example.com/g/p!128",
+        kind: "mr",
+        source: "typed",
+      });
     }),
   ));
 
@@ -739,11 +763,12 @@ test("targetCandidates offers nothing outside a checkout, and does not throw", (
 test("an MR candidate carries the project its checkout pushes to", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* bin.add("glab", `echo '{"iid": 42, "state": "opened", "title": "t"}'`);
+      yield* bin.add("glab", glabListing({ branch: '[{"iid": 42}]' }));
       yield* bin.add(
         "git",
         `case "$*" in
       "rev-parse --git-dir") echo .git ;;
+      "rev-parse --abbrev-ref HEAD") echo add-picker ;;
       "remote get-url origin") echo git@gitlab.cego.dk:cego/herdr-plugin.git ;;
       *) exit 1 ;;
     esac`,

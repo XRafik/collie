@@ -779,6 +779,19 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/a-pull-request-is-reviewed-and-a-clean-post-approves-it",
+    statement:
+      "A pull request is reviewed by URL or ref with gh's own commands, and Post posts the note and approves a clean one, as a merge request's does with glab.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "(a review of a|posting a review of a) (gitlab|github)",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
@@ -1194,6 +1207,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On vm-mk, start implement on a small change in a cego/collie checkout with no GITHUB_ACTOR set. Record the branch it names, the pull request it opens on GitHub and its assignee, and that the card says pull request. Repeat the start on mk-laptop with no GITLAB_USER_LOGIN and record that it names its branch. Record the revision.",
+    },
+  },
+  {
+    id: "operator/a-review-posted-to-a-pull-request-approves-a-clean-one",
+    statement:
+      "A review of a colleague's cego/collie pull request posts as one GitHub review, which approves it where the review was clean.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Run `collie run start review --input target=https://github.com/cego/collie/pull/<n>` on a colleague's open pull request, and choose Post to pull request. Record the review GitHub shows, whether it approves, and the Run's last line. Repeat on a gitlab.cego.dk merge request and record its note. Record the revision.",
     },
   },
   {

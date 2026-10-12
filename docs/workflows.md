@@ -205,8 +205,9 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
 - **Fix findings in a full implement run** — chains `implement` with this run as the work
   source. The build is placed on the branch this review was pointed at — a branch target's
   head, or a merge request's source branch — read from the review's own Run.
-- **Post to MR** — sends `review.md` to the merge request it reviewed, verbatim and as a
-  single note. Offered only where the target is a merge request and `glab` can reach it.
+- **Post to merge request** (or **Post to pull request**) — sends `review.md` to the merge
+  request it reviewed, verbatim and as a single note, and approves it where nothing live is
+  left to fix. Offered only where the target is a merge request, on either forge.
 - **Don't post** — ends the run.
 
 Module: [`workflows/review.workflow.ts`](../workflows/review.workflow.ts), with its prompts

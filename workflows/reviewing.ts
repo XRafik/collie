@@ -20,6 +20,7 @@ import {
   panelOf,
   formatFindings,
   leaveReview,
+  mrForgeFacts,
   parseMrTarget,
   repoArgs,
   riskLine,
@@ -37,7 +38,11 @@ const text = Schema.String;
 const change = {
   inputs: Schema.Struct({ target: text, target_kind: text, plan: text, outcome: text }),
   target_repo: text,
+  mr: Schema.Struct({ forge: text, noun: text, diff: text, view: text, checkout: text }),
 };
+
+/** What a prompt is told of a target that is not a merge request. */
+export const NO_MR = { forge: "", noun: "", diff: "", view: "", checkout: "" };
 
 /** A reviewer's round: the one before it, what was disputed, and where this Run keeps its work. */
 const REVIEW = content.template("review", {
@@ -115,6 +120,7 @@ const told = (ask: ReviewAsk, run: { readonly dir: string; readonly id: string }
   disputed: formatFindings(ask.disputed),
   risks: riskLine(ask.risks),
   target_repo: repoArgs(parseMrTarget(ask.target)?.project ?? null).join(" "),
+  mr: mrForgeFacts(ask.target) ?? NO_MR,
   obstacle: "",
 });
 

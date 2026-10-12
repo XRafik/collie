@@ -58,9 +58,13 @@ const withMergeRequest = <A, E, R>(world: World, effect: Effect.Effect<A, E, R>)
     yield* fs.makeDirectory(bin, { recursive: true });
     yield* fs.writeFileString(
       `${bin}/glab`,
-      `#!/bin/sh\necho '{"iid": 42, "state": "opened", "title": "t"}'\n`,
+      `#!/bin/sh\n[ "$1 $2 $3" = "mr list --source-branch" ] && echo '[{"iid": 42}]'\nexit 0\n`,
       { mode: 0o755 },
     );
+    // The checkout's forge is its origin's, which is what is asked for its open merge request.
+    yield* exec(["git", "remote", "add", "origin", "git@gitlab.example.com:group/app.git"], {
+      cwd: world.project,
+    });
     // As `FakeBin` does, but over the real PATH: this world's Config has none to read.
     const path = Bun.env.PATH;
     Bun.env.PATH = `${bin}:${path ?? ""}`;
@@ -126,7 +130,8 @@ test(
           expect(rows.at(-1)).toEqual({
             id: "start",
             title: `Starting in ${world.project}`,
-            subtitle: "target = mr:42 (inferred from branch feature/x's open merge request !42)",
+            subtitle:
+              "target = mr:gitlab.example.com/group/app!42 (inferred from branch feature/x's open merge request !42)",
           });
 
           const runs = (yield* runViews(env, null)).runs;

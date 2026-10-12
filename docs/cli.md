@@ -431,7 +431,7 @@ root for `workspace`:
       "inputs": [
         {
           "name": "target",
-          "meaning": "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, branch:<base>...<head>, or worktree",
+          "meaning": "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, <owner>/<repo>#<n>, branch:<base>...<head>, or worktree",
           "facts": ["mr:acme/app!2 (open merge request !2)"],
           "question": "review — an MR, a branch diff, or the working tree — target?",
           "required": true,

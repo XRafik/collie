@@ -169,22 +169,74 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
-    test("puts one note on a merge request, and says when it could not", () =>
+    test("posts one note, and approves only where asked, saying what landed", () =>
       runEffect(
         Effect.gen(function* () {
           const fake = fakeForge(name, model(name));
-          const posted = yield* forge.note(ref(name), "LGTM", "/w", fake.run);
-          expect(posted.ok).toBe(true);
-          expect(Object.values(fake.model().notes ?? {})).toEqual([["LGTM"]]);
-          const missed = yield* forge.note(
+          const noted = yield* forge.post(ref(name), "LGTM", false, "/w", fake.run);
+          expect(noted.ok).toBe(true);
+          expect(noted.message).not.toContain("approved");
+          expect(fake.model().approved ?? []).toEqual([]);
+          const approved = yield* forge.post(ref(name), "Clean", true, "/w", fake.run);
+          expect(approved.message).toContain("and approved it");
+          expect(Object.values(fake.model().notes ?? {})).toEqual([["LGTM", "Clean"]]);
+          expect(fake.model().approved?.length).toBe(1);
+          const missed = yield* forge.post(
             { project: PROJECT[name], iid: "99" },
             "LGTM",
+            false,
             "/w",
             fake.run,
           );
           expect(missed.ok).toBe(false);
         }),
       ));
+
+    test("reports an approval the forge refuses, with the note still posted", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(name, model(name, { refusesApproval: true }));
+          const posted = yield* forge.post(ref(name), "Clean", true, "/w", fake.run);
+          expect(posted.ok).toBe(true);
+          expect(posted.message).toContain("and did not approve it");
+          expect(Object.values(fake.model().notes ?? {})).toEqual([["Clean"]]);
+        }),
+      ));
+
+    test("lists my open merge requests, as assignee or author, once each", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const mrs = [
+            mr(name, { iid: "31", assignees: ["me"], title: "Mine" }),
+            mr(name, { iid: "32", author: "me", assignees: ["me"], title: "Both" }),
+            mr(name, { iid: "33", author: "ann" }),
+            mr(name, { iid: "34", author: "me", state: "merged" }),
+          ];
+          expect(
+            yield* forge.mine(PROJECT[name], "/w", fakeForge(name, model(name, { mrs })).run),
+          ).toEqual([
+            { iid: "31", title: "Mine" },
+            { iid: "32", title: "Both" },
+          ]);
+        }),
+      ));
+
+    test("opens one in a browser", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(name, model(name));
+          expect((yield* forge.open(ref(name), "/w", fake.run)).code).toBe(0);
+          expect(fake.calls.at(-1)).toContain("--web");
+        }),
+      ));
+
+    test("writes the commands a reviewer reads and checks one out with, for its own CLI", () => {
+      const said = forge.review(ref(name));
+      for (const line of [said.diff, said.view, said.checkout]) {
+        expect(line.startsWith(`${CLI[name]} `)).toBe(true);
+        expect(line).toContain("30");
+      }
+    });
   });
 }
 
@@ -255,7 +307,7 @@ test("each fake answers the same on PATH, logs what it got, and keeps what was p
             _tag: "Details",
             head: HEAD,
           });
-          expect((yield* FORGES[name].note(ref(name), "LGTM", "/", shell)).ok).toBe(true);
+          expect((yield* FORGES[name].post(ref(name), "LGTM", false, "/", shell)).ok).toBe(true);
           expect(Object.values((yield* onPath.model()).notes ?? {})).toEqual([["LGTM"]]);
           expect((yield* onPath.calls()).length).toBeGreaterThan(0);
         }

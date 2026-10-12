@@ -61,6 +61,10 @@ export const ForgeModel = Schema.Struct({
   deploysDown: Schema.optionalKey(Schema.Boolean),
   /** Notes posted, by `project!iid` or `project#iid`. */
   notes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+  /** Merge requests approved, by the same key. */
+  approved: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** The forge refuses an approval, as it does one by the author. */
+  refusesApproval: Schema.optionalKey(Schema.Boolean),
 });
 export type ForgeModel = typeof ForgeModel.Type;
 const ModelJson = Schema.fromJsonString(ForgeModel);
@@ -77,6 +81,7 @@ export const CLI = { gitlab: "glab", github: "gh" } as const;
 interface Answer {
   readonly ran: Ran;
   readonly noted?: { readonly key: string; readonly body: string };
+  readonly approved?: string;
 }
 
 const Json = Schema.fromJsonString(Schema.Json);
@@ -91,6 +96,17 @@ const flag = (args: ReadonlyArray<string>, name: string) => {
 
 const keyOf = (forge: MrForge, mr: FakeMr) =>
   `${mr.project}${forge === "github" ? "#" : "!"}${mr.iid}`;
+
+/** Open merge requests the logged-in user is assigned to (`--assignee`) or wrote (`--author`). */
+const mine = (model: ForgeModel, who: string | undefined) =>
+  model.mrs.filter(
+    (one) =>
+      one.state === "open" &&
+      model.login !== null &&
+      (who === "--assignee"
+        ? (one.assignees ?? []).includes(model.login)
+        : one.author === model.login),
+  );
 
 function pipelineOf(checks: ReadonlyArray<Check> | undefined): string | null {
   if (checks === undefined || checks.length === 0) return null;
@@ -152,6 +168,15 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
         })),
     );
   }
+  if (verb === "mr" && sub === "list" && args[3] === "@me")
+    return json(
+      mine(model, args[2]).map((one) => ({ iid: Number(one.iid), title: one.title ?? "" })),
+    );
+  if (verb === "mr" && sub === "approve") {
+    const mr = mrAt(args[2]);
+    if (mr === undefined || model.refusesApproval === true) return no();
+    return { ...ok(), approved: keyOf("gitlab", mr) };
+  }
   if (verb === "mr" && sub === "note") {
     const mr = mrAt(args[2]);
     if (mr === undefined) return no();
@@ -198,6 +223,17 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     model.mrs.find(
       (one) => one.iid === number && one.project === `github.com/${flag(args, "--repo")}`,
     );
+  if (verb === "pr" && sub === "view" && args.includes("--web"))
+    return pullAt(args[2]) ? ok() : no();
+  if (verb === "pr" && sub === "review" && args.includes("--approve")) {
+    const pull = pullAt(args[2]);
+    if (pull === undefined || model.refusesApproval === true) return no();
+    return {
+      ...ok(),
+      noted: { key: keyOf("github", pull), body: flag(args, "--body") ?? "" },
+      approved: keyOf("github", pull),
+    };
+  }
   if (verb === "pr" && sub === "view") {
     const pull = pullAt(args[2]);
     if (pull === undefined) return no();
@@ -224,6 +260,14 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
           check.state === "running" ? null : check.state === "passed" ? "SUCCESS" : "FAILURE",
       })),
     });
+  }
+  if (verb === "pr" && sub === "list" && args.includes("@me")) {
+    const who = args.includes("--assignee") ? "--assignee" : "--author";
+    return json(
+      mine(model, who)
+        .filter((one) => one.project === `github.com/${flag(args, "--repo")}`)
+        .map((one) => ({ number: Number(one.iid), title: one.title ?? "" })),
+    );
   }
   if (verb === "pr" && sub === "list") {
     const repo = `github.com/${flag(args, "--repo")}`;
@@ -280,13 +324,15 @@ export function answer(
   }
   if (cmd !== CLI[forge]) return { ran: no(127).ran, model };
   const said = forge === "gitlab" ? glab(model, args) : gh(model, args);
-  if (said.noted === undefined) return { ran: said.ran, model };
-  const { key, body } = said.noted;
-  const notes = model.notes ?? {};
-  return {
-    ran: said.ran,
-    model: { ...model, notes: { ...notes, [key]: [...(notes[key] ?? []), body] } },
-  };
+  let after = model;
+  if (said.noted !== undefined) {
+    const { key, body } = said.noted;
+    const notes = after.notes ?? {};
+    after = { ...after, notes: { ...notes, [key]: [...(notes[key] ?? []), body] } };
+  }
+  if (said.approved !== undefined)
+    after = { ...after, approved: [...(after.approved ?? []), said.approved] };
+  return { ran: said.ran, model: after };
 }
 
 /** The Runner face: answers from the model, and logs `cmd args…` to `calls`. */

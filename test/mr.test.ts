@@ -9,6 +9,7 @@ import {
   linearIssues,
   mrTarget,
   pipelineStatus,
+  postNote,
   projectFromRemote,
   resolveAssignee,
   shell,
@@ -603,3 +604,27 @@ test("a command's answer is its stdout, and a human is told both streams", () =>
       expect(whatItSaid(ran)).toBe("answer\nwarning");
     }),
   ));
+
+for (const name of ["gitlab", "github"] as const) {
+  test(`a ${name} merge request assigned to whoever posts is theirs to fix, so nothing is posted`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fake = fakeForge(name, {
+          installed: true,
+          loggedIn: [FORGE_HOST[name]],
+          login: "me",
+          mrs: [{ project: PROJECT[name], iid: "30", state: "open", assignees: ["me"] }],
+        });
+        const target = mrTarget(PROJECT[name], "30");
+        const posted = yield* postNote(
+          { target, cwd: "/w", body: "LGTM", approve: true },
+          fake.run,
+        );
+        expect(posted).toEqual({
+          ok: false,
+          message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
+        });
+        expect(fake.model().notes ?? {}).toEqual({});
+      }),
+    ));
+}

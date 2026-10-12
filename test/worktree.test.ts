@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Clock, DateTime, Effect, FileSystem, Option } from "effect";
 import { runEffect } from "./support/effect";
+import { forgeOnPath } from "./support/forge";
 import { Rig, TEST_LOGIN as LOGIN } from "./support/recorder";
 import { FakeBin } from "./support/bin";
 import {
@@ -1222,6 +1223,48 @@ test("a review of a merge request whose branch is only on the remote is cut from
     }),
   ));
 
+test("a review of a pull request is fixed on its head branch, read through gh", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering({
+        ...gitAnswers("somewhere-else", ["fix-the-parser"]),
+        "remote get-url origin": "git@github.com:acme/app.git",
+      });
+      yield* forgeOnPath(bin, "github", {
+        installed: true,
+        loggedIn: ["github.com"],
+        login: "tester",
+        mrs: [
+          {
+            project: "github.com/acme/app",
+            iid: "30",
+            state: "open",
+            sourceBranch: "fix-the-parser",
+          },
+        ],
+      });
+      expect(
+        yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:github.com/acme/app#30",
+          target_kind: "mr",
+        }),
+      ).toMatchObject({ branch: "fix-the-parser", source: "from the reviewed branch" });
+      // A pull request of another repository is refused in its own words.
+      expect(
+        (yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:github.com/cego/collie#30",
+          target_kind: "mr",
+        })).refused,
+      ).toBe(
+        "cego/collie#30 is in github.com/cego/collie, and this is a checkout of github.com/acme/app",
+      );
+    }),
+  ));
+
 test("a review whose target nobody normalised is refused, not fixed on the caller's branch", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1876,7 +1919,8 @@ test("a merge request Collie cannot read is a run that does not start", () =>
   runEffect(
     Effect.gen(function* () {
       yield* fakeGit("some-other-branch");
-      yield* bin.add("glab", `exit 1`);
+      // Installed and logged in, but the merge request will not be read.
+      yield* bin.add("glab", `[ "$1" = mr ] && exit 1; exit 0`);
 
       // Never `slugify(name)`: the fixes belong on the branch that was reviewed, and a
       // new branch named after the run would leave the merge request untouched.
@@ -1888,6 +1932,15 @@ test("a merge request Collie cannot read is a run that does not start", () =>
           target_kind: "mr",
         }),
       ).toMatchObject({ refused: "glab could not read !42" });
+      yield* bin.add("glab", `exit 1`);
+      expect(
+        yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:42",
+          target_kind: "mr",
+        }),
+      ).toMatchObject({ refused: "glab is not installed" });
     }),
   ));
 
@@ -1910,7 +1963,7 @@ test("a merge request in another project cannot be fixed from this checkout", ()
         }),
       ).toMatchObject({
         refused:
-          "!7 is in gitlab.example.com/other/thing, and this is a checkout of gitlab.example.com/acme/app",
+          "other/thing!7 is in gitlab.example.com/other/thing, and this is a checkout of gitlab.example.com/acme/app",
       });
     }),
   ));
@@ -2279,7 +2332,7 @@ test("a checkout with no GitLab remote cannot be shown to be the reviewed projec
           target_kind: "mr",
         }),
       ).toMatchObject({
-        refused: `${rig.projectDir} has no GitLab remote, so !42 may not be its own`,
+        refused: `${rig.projectDir} has no remote, so acme/app!42 may not be its own`,
       });
     }),
   ));

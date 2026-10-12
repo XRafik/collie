@@ -31,8 +31,9 @@ import {
   whatItSaid,
   type Runner,
 } from "./mr";
-import { gitlab, hostOf, repoArgs } from "./forge/gitlab";
-import { parseMrTarget } from "./board-model";
+import { gitlab, hostOf } from "./forge/gitlab";
+import { mrWords, parseMrTarget } from "./board-model";
+import { forgeOf } from "./forge/forge";
 import { withLock } from "./lock";
 import type { AgentEntry } from "./registry";
 import type { WorktreeRecord } from "./run";
@@ -86,10 +87,6 @@ export const destinationLock = (stateDir: string, at: string) =>
 
 /** Whether a state-directory entry is one of `destinationLock`'s. */
 export const isDestinationLock = (name: string) => /^worktree-[0-9a-f]+\.lock$/.test(name);
-
-const MrViewJson = Schema.fromJsonString(
-  Schema.Struct({ source_branch: Schema.optionalKey(Schema.String) }),
-);
 
 /** What deciding a Run's branch needs to know. */
 export interface BranchAsk {
@@ -467,26 +464,23 @@ const reviewedBranch = Effect.fn("worktree.reviewedBranch")(function* (
     // whose own project cannot be read is refused for the same reason: nothing here
     // says it is the project the merge request is in, and a bare `mr:42` came from
     // this directory's remote in the first place.
+    const words = mrWords(mr);
+    const named = mr.project === null ? `${words.sign}${mr.iid}` : words.label;
     if (mr.project) {
       const here = yield* projectHere(cwd, run);
       if (here === null) {
-        return { refused: `${cwd} has no GitLab remote, so !${mr.iid} may not be its own` };
+        return { refused: `${cwd} has no remote, so ${named} may not be its own` };
       }
       if (mr.project !== here) {
-        return { refused: `!${mr.iid} is in ${mr.project}, and this is a checkout of ${here}` };
+        return { refused: `${named} is in ${mr.project}, and this is a checkout of ${here}` };
       }
     }
-    const view = yield* run(
-      "glab",
-      ["mr", "view", mr.iid, ...repoArgs(mr.project), "--output", "json"],
-      cwd,
-    );
-    if (view.code !== 0) return { refused: `glab could not read !${mr.iid}` };
-    const seen = Schema.decodeUnknownOption(MrViewJson)(view.stdout).pipe(Option.getOrUndefined);
-    const source = seen?.source_branch?.trim();
+    const panel = yield* forgeOf(mr).details(mr, cwd, run);
+    if (panel._tag !== "Details") return { refused: panel.reason };
+    const source = panel.sourceBranch.trim();
     return source
       ? { branch: source, reviewed: true }
-      : { refused: `!${mr.iid} names no source branch` };
+      : { refused: `${named} names no source branch` };
   }
   const head = branchTargetHead(target);
   if (head !== null) {

@@ -90,7 +90,7 @@ import type { Focus } from "./ui/bridge";
 import { buildHistory, buildSettings, buildWorkflows } from "./views";
 import { nowIso } from "./time";
 import { shell } from "./mr";
-import { repoArgs } from "./forge/gitlab";
+import { forgeOf } from "./forge/forge";
 import { parseMrTarget, readMrRef } from "./board-model";
 import type { ChildProcessSpawner } from "effect/process";
 import {
@@ -1333,19 +1333,15 @@ export const runCommand = Effect.fn("Flows.runCommand")(function* (
     case "OpenMr": {
       const ref = parseMrTarget(command.target);
       if (!ref) return `${command.target} is not a merge request`;
-      // The run's own checkout, where it has one: `repoArgs` carries a qualified
-      // target, but an unqualified `mr:42` — every older run has one — is resolved by
-      // glab from the directory it runs in, so from a board of every workspace this
-      // used to open *this* repository's !42.
+      // The run's own checkout, where it has one: an unqualified `mr:42` — every older
+      // run has one — is resolved from the directory the CLI runs in, so from a board of
+      // every workspace this used to open *this* repository's !42.
       const run = command.runId === null ? null : yield* runOf(command.runId);
-      const opened = yield* shell(
-        "glab",
-        ["mr", "view", ref.iid, ...repoArgs(ref.project), "--web"],
-        run?.cwd ?? env.cwd,
-      );
+      const forge = forgeOf(ref);
+      const opened = yield* forge.open(ref, run?.cwd ?? env.cwd, shell);
       return opened.code === 0
         ? `opened ${command.target} in a browser`
-        : `glab could not open ${command.target} (exit ${opened.code})`;
+        : `${forge.display} could not open ${command.target} (exit ${opened.code})`;
     }
 
     case "SetDefault": {

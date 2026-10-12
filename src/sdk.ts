@@ -52,6 +52,7 @@ export { SOURCES, SOURCE_NAMES, isSource, type Source } from "./offers";
  */
 export { targetKind } from "./mr";
 export { repoArgs } from "./forge/gitlab";
+export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";
@@ -606,7 +607,8 @@ export interface HostApi {
    * Puts a note on the merge request a Run was pointed at, sent by Collie rather than
    * written out again by an agent — asking for a file to be repeated verbatim is how
    * verbatim stops being true. The refusal is the message: a target that is not a merge
-   * request, no `glab` for that project, or one assigned to whoever is running this.
+   * request, no CLI or login for its forge, or one assigned to whoever is running this.
+   * With `approve`, the merge request is approved too, and the message says whether it was.
    */
   readonly post: (options: {
     readonly runId: string;
@@ -614,6 +616,8 @@ export interface HostApi {
     readonly cwd: string;
     /** The file to send, as the Run wrote it. */
     readonly file: string;
+    /** Approve the merge request too: a review with nothing live left to fix. */
+    readonly approve?: boolean;
   }) => Effect.Effect<Posted>;
 }
 

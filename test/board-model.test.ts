@@ -157,6 +157,7 @@ const GITLAB_42 = {
   url: `https://${LAB}/-/merge_requests/42`,
   noun: "merge request",
   checks: "pipeline",
+  sign: "!",
 };
 const GITHUB_30 = {
   ref: { project: HUB, iid: "30" },
@@ -166,6 +167,7 @@ const GITHUB_30 = {
   url: `https://${HUB}/pull/30`,
   noun: "pull request",
   checks: "checks",
+  sign: "#",
 };
 
 test.each([
@@ -191,8 +193,10 @@ test.each([
       url: null,
       noun: "merge request",
       checks: "pipeline",
+      sign: "!",
     },
   ],
+  ["GitHub's owner/repo#n", "cego/collie#30", undefined, GITHUB_30],
 ])("%s reads as one merge request and writes back", (_, text, typedIn, want) => {
   const ref = readMrRef(text, typedIn);
   expect(ref).toEqual(want.ref);
