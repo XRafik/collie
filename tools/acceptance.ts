@@ -80,6 +80,7 @@ const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const GENERAL = "the general workflow (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -719,9 +720,22 @@ const WORKFLOWS: readonly Check[] = [
     },
   },
   {
+    id: "workflows/a-general-run-does-one-task-in-place",
+    statement:
+      "A general Run does one task in place with one agent and ends with its summary: it cuts no checkout, offers nothing, fails with the agent's reason where it was blocked, and at the Projects root its agent is told to find the repository.",
+    owner: GENERAL,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "a general Run",
+    },
+  },
+  {
     id: "workflows/generic-code-decides-nothing-by-a-workflow-name",
     statement:
-      "Nothing in the runtime or the board chooses a checkout, a card, a tab or an offer because a Run's workflow is called plan, implement, review, architecture or renovate. Workflows compose by id; Collie does not dispatch on one.",
+      "Nothing in the runtime or the board chooses a checkout, a card, a tab or an offer because a Run's workflow is called plan, implement, review, architecture, renovate or general. Workflows compose by id; Collie does not dispatch on one.",
     owner: MODULES,
     needs: "backend",
     proof: {

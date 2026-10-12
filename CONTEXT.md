@@ -344,7 +344,7 @@ its Task's workspace and are `cd`-ed into the checkout, because a Run belongs wh
 Task is (ADR-0006). A Workflow declares one — `checkout` in its metadata — and the host
 cuts it at admission, before the Run exists, from the checkout the Run starts from: a
 directory that is not a git checkout is refused, named. `implement` and `renovate` declare
-one; `plan`, `architecture` and `review` declare none, and the `implement` they chain into
+one; `plan`, `architecture`, `review` and `general` declare none, and the `implement` they chain into
 is placed by its own declaration, in the same Task. A Renovate Run's is the one that holds
 no branch — see Renovate Run.
 
@@ -437,6 +437,7 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 - `review` — standalone; you pick the target; one complete review, and a synthesis that reconciles the reviewers where more than one axis is asked for.
 - `architecture` — runs the architect over the project and reports into its Run's plan directory.
 - `renovate` — claims the repository in Helle, merges or accounts for every Renovate Bot merge request, tags and watches the release, and records the result on the team's Renovate issue.
+- `general` — one agent does one ad-hoc task in place, in the checkout it was started for or at the Projects root, and the Run ends with the agent's summary. It is for whatever is not planning, building to a merge request, reviewing, renovating or surveying architecture. Work that should land as a merge request is `implement`'s (ADR-0056).
 
 **Outcome** — The kind of result a Run has to prove, and the evidence that closes it: a feature names what it built, a bug reproduces before it is fixed, a refactor preserves behaviour, an investigation reaches a supported conclusion and may have no patch, docs run what they document, a migration proves it can go back. A Run nobody classified is `unspecified` and proves only its approved verifications — never a feature by default.
 

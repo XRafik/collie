@@ -542,6 +542,8 @@ export const workspace = Effect.fn("HostTest.workspace")(function* (prefix: stri
     "implement.md",
     "renovate.workflow.ts",
     "renovate.md",
+    "general.workflow.ts",
+    "general.md",
     "reviewing.ts",
   ]) {
     yield* fs.copyFile(`${root}workflows/${name}`, `${world.user}/${name}`);

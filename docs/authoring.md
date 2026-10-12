@@ -204,7 +204,7 @@ has the whole of it.
 The shipped workflows plan and design on `opus` at `xhigh` (plan's planner, architecture),
 build on `opus` at `medium` (the implementer, in implement and in review's fix) and review
 on `opus` at `xhigh` (every reviewer and synthesis, and plan's second opinion); renovate
-runs on the pinned default at `medium`. Each is a role in the workflow's `agents`, which is
+runs on the pinned default at `medium`, and general's one agent on `opus` at `medium`. Each is a role in the workflow's `agents`, which is
 what a fork overrides.
 
 The auto mode is passed unless `permissions` says `bypass` or `harness`, in your

@@ -1,12 +1,18 @@
 # Workflows
 
-Collie ships five workflows. This page is the "which one do I want" level: what each is
+Collie ships six workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
 away from being yours; see [Authoring](authoring.md).
 
 For what a Workflow, an operation, a Choice or a Run _is_, see [`CONTEXT.md`](../CONTEXT.md).
+
+## Choosing one
+
+Each workflow's description says what it is for. A request that is not planning, building
+a change to a merge request, reviewing, renovating or an architecture survey is `general`,
+never `implement` or `plan` stretched to fit.
 
 ## How inputs reach a run
 
@@ -288,6 +294,34 @@ every architecture run in a repo would be handed the same branch
 Module: [`workflows/architecture.workflow.ts`](../workflows/architecture.workflow.ts), with
 its prompts in [`workflows/architecture.md`](../workflows/architecture.md).
 
+## `general`
+
+**For:** one ad-hoc task that is none of the others — upgrade an install, find out why a
+job failed, bump one version and commit it. Not planning, not building a change to a merge
+request, not reviewing, renovating or an architecture survey: a change that should land as
+a merge request is `implement`'s.
+
+**Inputs:** `goal`, the task in your words.
+
+**Checkout:** none of its own. It works in place, in the checkout the run was started for;
+started from the Home, it works at the Projects root and its agent finds the repository the
+task is about. No branch is cut, so a run that changed no repository has nothing to file
+and lands in Finished by itself
+([ADR-0056](adr/0056-ad-hoc-work-is-a-general-run-in-place.md)).
+
+**What happens:** one agent does the task. It can ask you in its pane where a decision
+changes the result, and it does not push, open a merge request, merge, deploy to production
+or do anything irreversible unless the task or your own message in its session says so.
+Where it changed code and nothing names the run's checks, it names them with
+`collie run intent verification`, and Collie runs the granted checks when the run ends.
+
+**Ends:** when the agent writes its Output. Its `summary` is the run's result and what the
+card says — a claim, shown as one. A `blocked` reason fails the run with that reason. There
+is no menu, and the agent takes steering after the run has ended.
+
+Module: [`workflows/general.workflow.ts`](../workflows/general.workflow.ts), with its
+prompt in [`workflows/general.md`](../workflows/general.md).
+
 ## How they chain
 
 - `plan` → `implement`, with the plan directory forwarded as the work source.
@@ -300,6 +334,7 @@ its prompts in [`workflows/architecture.md`](../workflows/architecture.md).
   with the plan's own goal. It is a Choice a human takes, not a pass every build makes.
 - `review` → `implement`, from **Fix findings in a full implement run**. See
   [Hand-offs](using.md#hand-offs-between-runs).
+- `general` chains into nothing.
 
 A chained run is a child of the one that started it, its input decoded against the child's
 own schema before it is admitted. It has a card of its own, the parent waits for it and
