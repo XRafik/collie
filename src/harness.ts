@@ -4,7 +4,7 @@
 import { Effect, FileSystem, Option, Schema } from "effect";
 import type { PluginEnv } from "./env";
 import { isString } from "./schema";
-import { PERMISSION_MODES } from "./settings";
+import { type AutoCompactWindow, autoCompactWindowOf, PERMISSION_MODES } from "./settings";
 import { claudeTrust, type Trust } from "./trust";
 import { DEFAULT_MODEL, HARNESS_MODELS, type HarnessModels } from "./harness-choice";
 import type { YamlValue } from "./yaml";
@@ -111,6 +111,8 @@ export interface HarnessAdapter extends HarnessModels {
    * no flag overrides. A bypass they forbid is started in auto mode instead.
    */
   bypassForbidden?(env: PluginEnv): Effect.Effect<boolean, never, FileSystem.FileSystem>;
+  /** Present when the harness takes an auto-compact window: this flag, then the window. */
+  autoCompactFlag?: string;
   /** Present when the harness asks before it will work in a directory. */
   trust?(home: string, backupDir: string): Trust;
   /**
@@ -147,6 +149,7 @@ export const HARNESSES: Harnesses = {
       bypass: ["--permission-mode", "bypassPermissions"],
     },
     bypassForbidden: (env) => claudeForbidsBypass(env.claudeManagedDir),
+    autoCompactFlag: "--autocompact",
     trust: claudeTrust,
     ...HARNESS_MODELS.claude!,
   },
@@ -191,6 +194,7 @@ export function startArgs(
   personaFile: string,
   effort?: string,
   permissions: PermissionMode = "auto",
+  autoCompactWindow?: AutoCompactWindow,
 ): string[] {
   const selectedModel = model === DEFAULT_MODEL ? harness.defaultModel : model;
   return [
@@ -198,8 +202,47 @@ export function startArgs(
     ...(effort ? (harness.effortArgs?.(effort) ?? []) : []),
     ...(harness.personaArgs?.(personaFile) ?? []),
     ...(permissions === "harness" ? [] : (harness.permissionArgs?.[permissions] ?? [])),
+    ...(harness.autoCompactFlag && autoCompactWindow !== undefined
+      ? [harness.autoCompactFlag, String(autoCompactWindow)]
+      : []),
   ];
 }
+
+/** Asked once per harness per process, as its version is: the binary does not change under a host. */
+const helps = new Map<string, string>();
+
+/** A harness's `--help` as installed; empty, and asked again, where it cannot be run. */
+export const installedHelp = Effect.fn("Harness.installedHelp")(function* (kind: string) {
+  const known = helps.get(kind);
+  if (known !== undefined) return known;
+  const help = yield* Effect.promise(() =>
+    Bun.$`${kind} --help`
+      .quiet()
+      .nothrow()
+      .text()
+      .catch(() => ""),
+  );
+  if (help !== "") helps.set(kind, help);
+  return help;
+});
+
+/**
+ * The auto-compact window a harness is started with: the configured one as written, left
+ * off where its `--help` does not list the flag, and refused where it would not take it.
+ */
+export const autoCompactWindowFor = Effect.fn("Harness.autoCompactWindowFor")(function* (
+  harness: HarnessAdapter,
+  written: number | string,
+  help: (kind: string) => Effect.Effect<string>,
+) {
+  const flag = harness.autoCompactFlag;
+  if (flag === undefined) return { passed: null, leftOff: null };
+  const window = autoCompactWindowOf(String(written));
+  if ("refused" in window) return window;
+  return new RegExp(`${flag}(?![\\w-])`).test(yield* help(harness.kind))
+    ? { passed: window.window, leftOff: null }
+    : { passed: null, leftOff: `${harness.kind} --help does not list ${flag}` };
+});
 
 /** Persona text to prepend to the first prompt when the harness has no flag for it. */
 export function personaPrefix(harness: HarnessAdapter, persona: string): string {

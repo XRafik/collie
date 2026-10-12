@@ -80,6 +80,7 @@ const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -865,6 +866,17 @@ const WORKFLOWS: readonly Check[] = [
 
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
+  {
+    id: "agents/claude-code-runs-with-the-configured-auto-compact-window",
+    statement:
+      "Every Claude Code agent Collie starts, the Home's native chat among them, runs with the configured auto-compact window: 400000 until set, and a Desktop edit reaches the next agent without its host being restarted.",
+    owner: AUTO_COMPACT,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk and mk-laptop, against the built Collie, remove `autoCompactWindow` from `~/.claude/settings.json`. Start a Run whose step runs on Claude Code and record that its `claude` process's command line carries `--autocompact 400000`, that the pane's `/autocompact` reports a 400K window and that the Run's log line for that agent names 400000. Set the window to 500000 in Desktop's Settings, record that both Machines show it after a sync, and that the next Claude Code agent either starts carries `--autocompact 500000` with no host restarted. Set it to `auto` and record `--autocompact auto` on the next agent. Open the Home's native chat on Claude Code and record that its `claude` process carries the same flag. Record the Claude Code version and the revision.",
+    },
+  },
   {
     id: "flock-chat/pi-window-turn-and-restart",
     statement:

@@ -121,6 +121,19 @@ test("Settings shows every setting with its control, its value and its default",
     defaultSaid: "Default: 10 minutes",
   });
   expect(row("effort")).toMatchObject({ defaultSaid: "Unset: the harness decides" });
+  // Text rather than a number, so auto can be typed.
+  expect(row("claude_auto_compact_window")).toMatchObject({
+    group: "Agents",
+    kind: "text",
+    value: "",
+    fallback: "400000",
+    unit: "tokens",
+    defaultSaid: "Default: 400000 tokens",
+  });
+  expect(editSetting(flock, "claude_auto_compact_window", "50000", at(12))).toEqual({
+    refused:
+      'claude_auto_compact_window has to be a whole number of tokens from 100000 to 1000000, or auto, not "50000"',
+  });
   expect(row("models.claude")).toMatchObject({ value: "claude-x" });
   expect(row("proactive")).toMatchObject({ kind: "boolean", shared: true });
   // The Flock chat's own switch is this computer's, under Chat.
@@ -185,6 +198,7 @@ test("a Machine's GitLab host and a value its setting refuses are not the Flock'
     set("gitlab_host", "gitlab.elsewhere.com", 9),
     set("scope", "everywhere", 9),
     set("model", "sonnet", 9),
+    set("claude_auto_compact_window", 50000, 9),
   ]);
   expect(Object.keys(flock.settings)).toEqual(["model"]);
 });

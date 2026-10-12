@@ -1558,7 +1558,8 @@ though that was all of them. A follow-up is understood — the conversation is t
 own session, running for as long as its pane does. A chat that has to be started again —
 its process gone — starts a new conversation rather than resuming the last one, which
 would carry that whole history into every turn. Claude's runs on the latest Opus at
-medium effort.
+medium effort, with the auto-compact window a Run's agents get (see
+[Compaction between pieces of work](#compaction-between-pieces-of-work)).
 
 **Chat knows which card you have open.** Every message you send carries one line naming
 the open card, attached as you send it and never when you click — so opening ten cards and
@@ -1842,6 +1843,7 @@ checkout there is no branch and no working tree to review, so the target menu is
   "quiet_ms": 600000,
   "board_quiet_ms": 300000,
   "compact_at_tokens": 372000,
+  "claude_auto_compact_window": 400000,
   "notifications": { "run-done": false },
   "proactive": true,
   "models": { "opencode": ["mycorp/local-model"] },
@@ -1925,7 +1927,10 @@ reads `…but silent for 9m` and takes the quiet edge. Five minutes by default. 
 nudged and nothing is given up on — it is shown, so a hung run is visible before you notice
 by accident.
 
-`compact_at_tokens` is where compaction between pieces of work kicks in — see
+`compact_at_tokens` is where compaction between pieces of work kicks in, and
+`claude_auto_compact_window` is where Claude Code compacts by itself: 400000 tokens until
+set, `auto` for the model's own window, or a whole number from 100000 to 1000000. It is
+Claude Code's alone; Codex, OpenCode and Pi are passed nothing. See
 [Compaction between pieces of work](#compaction-between-pieces-of-work).
 
 `gitlab_host` is the one GitLab this Machine works against, `gitlab.cego.dk` unless you
@@ -1953,6 +1958,29 @@ This is the harnesses' own compaction, asked for through their own official inte
 and their automatic compaction is left switched on. A harness that compacts before
 Collie's threshold has already done the job; Collie's threshold is an extra floor, not a
 replacement.
+
+So two compactions are at work, and they are set apart:
+
+- `compact_at_tokens` is Collie's floor, checked only at a work boundary, before a reused
+  agent is given its next piece of work.
+- Claude Code's own compaction happens whenever a conversation fills its auto-compact
+  window, which is `claude_auto_compact_window` ("Claude Code's auto-compact window" under
+  Settings). Collie starts every Claude Code agent of a Run, and the Home's native chat
+  on Claude Code, with it as `--autocompact <value>`: 400000 until set, or `auto` for the
+  model's own tuned window, which on a 1M model is about 967K. The flag is for that launch
+  alone, outranks your `~/.claude/settings.json` and managed settings, and writes nothing
+  to `~/.claude`. It is
+  read at each start, so an edit reaches the next agent without restarting the host; an
+  agent already running keeps the window it was started with.
+
+A `CLAUDE_CODE_AUTO_COMPACT_WINDOW` exported on a Machine still overrides the setting, so
+look there first if an agent ignores it. Whether the installed `claude` takes
+`--autocompact` is read from its `--help`; one that does not is started without it and the
+Run's log, or the chat's, says so. A value in `config.json` Claude Code would not take —
+hand-edited to `50000`, say — stops that launch, naming the setting and the value (the
+native chat is then unavailable, the board unaffected), rather than being
+replaced by 400000. A window below `compact_at_tokens` only means Claude compacts first,
+which is fine.
 
 If a harness is too old for Collie's compaction controls, or its version cannot be
 checked, the Run still starts without those controls and logs the reason. Native

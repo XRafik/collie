@@ -8,7 +8,7 @@ import { followBoard } from "../../src/lifecycle";
 import { COLLIE_TAB } from "../../src/naming";
 import { scopeFor } from "../../src/registry";
 import { focus } from "../support/focus";
-import { stopHost } from "../support/host";
+import { stopHost, until } from "../support/host";
 import { collie, proves } from "../support/world";
 
 /** The text board, as a pane with no terminal prints it, from the host this world runs. */
@@ -103,12 +103,9 @@ test(
             blocked,
           );
           expect(started.envelope.ok).toBe(true);
-          const shown = yield* printed.pipe(
-            Effect.map(({ board }) => board),
-            Effect.repeat({
-              until: (board) => board.includes("Waiting for you in"),
-              times: 20,
-            }),
+          const shown = yield* until(
+            () => printed.pipe(Effect.map(({ board }) => board)),
+            (board) => board.includes("Waiting for you in"),
           );
           yield* stopHost(world.state);
           expect(shown).toContain("Needs you");
