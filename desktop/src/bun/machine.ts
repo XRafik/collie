@@ -28,7 +28,7 @@ import {
   type BoardSnapshot,
   PROTOCOL,
   FrontDoorRpcs,
-  type HostRefused,
+  HostRefused,
   type ProposalRefused,
   type RequestConflict,
   type RunDetail,
@@ -909,7 +909,13 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
       case "Resume":
         return door
           .resume({ runId: action.runId, request })
-          .pipe(Effect.map((done) => done.detail || `Resumed ${action.runId}`));
+          .pipe(
+            Effect.flatMap((done) =>
+              done.applied
+                ? Effect.succeed(done.detail || `Resumed ${action.runId}`)
+                : Effect.fail(new HostRefused({ reason: done.detail })),
+            ),
+          );
       case "Confirm":
         return door
           .confirm({ proposal: action.proposal, hash: action.hash, request })

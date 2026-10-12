@@ -665,6 +665,12 @@ already finished" is not offered at all. Nothing is offered on one board and wit
 another — there is one board and one set of actions on a card — and no herdr id is on
 screen anywhere: a Task is its name, a workspace is its project, an agent is its role.
 
+**Resume** succeeds when the host takes up suspended work or recovers the Run into the
+engine. The old park note clears before Output arrives; a new park shows its current
+reason. If the Run is already running, finished, failed, or still missing its module,
+Collie shows the refusal. Desktop does not announce “Resumed” for that refusal.
+See [Stop and resume](cli.md#stop-and-resume) for recovery and delivery reconciliation.
+
 The drawer's header carries the same as buttons, without the one that opens what is already
 open, and adds **Mark merged** and **Mark abandoned** once the work is over — recorded
 [beside the run's status, never over it](cli.md#what-became-of-the-work), with its merge request

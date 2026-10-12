@@ -554,7 +554,11 @@ function handle(
       if (code !== "" && code !== "timeout") return answered;
       // The text reached the pane and the harness never took it: `enter` leaves it in the
       // prompt box for an Enter to send, `text` loses it outright.
-      const lost = yield* envString("FAKE_HERDR_PROMPT_LOST");
+      const lostTimes = Number.parseInt(yield* envString("FAKE_HERDR_PROMPT_LOST_TIMES", "0"), 10);
+      const lost =
+        lostTimes > 0 && state.prompts > lostTimes
+          ? ""
+          : yield* envString("FAKE_HERDR_PROMPT_LOST");
       if (lost !== "") {
         if (lost === "enter") state.typed = argv[3] ?? "";
         yield* writeJson(statePath, state);

@@ -845,10 +845,7 @@ const frontDoorHandlers = (
           return yield* act(file, lines);
         }).pipe(plainly);
       /** A Run picked up again: what current files allow is registered, then its stop cleared. */
-      const takeUp = (runId: string) =>
-        registry.recover.pipe(
-          Effect.andThen(registry.control({ runId, control: "stop", set: false })),
-        );
+      const takeUp = (runId: string) => registry.resume(runId);
       /**
        * A gate answered: the checks named, or every one the checkout and config offer, are
        * granted as `set_verification` grants them, then the Run is taken up again.

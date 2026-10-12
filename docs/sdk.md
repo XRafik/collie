@@ -1005,7 +1005,9 @@ None of it is yours to implement, but it decides where your workflow can be inte
   and suspend _that_ Activity's own instance, never the workflow's — suspending the run from
   inside an Activity abandons the wait rather than parking it. `agentWork` does this while it
   is collecting, so a stop lands even mid-collection and what resumes reattaches to the
-  launch already recorded.
+  launch already recorded. Suspension interrupts the current fiber. A race waiting for
+  success can swallow that interruption while its other side keeps waiting. Use
+  `Effect.raceFirst` at such a boundary so suspension reaches the enclosing Run.
 - **Halting the agent is the host's half of a stop.** `run stop` also closes the panes of
   the Run's agents, and of the Runs it started, which is what stops them; the workspace
   keeps its own tab. When the Run resumes, work whose agent has gone and whose Output never

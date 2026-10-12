@@ -812,7 +812,7 @@ const stoppable = <A, E>(
 ): Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | WorkflowEngine.WorkflowInstance> =>
   Effect.gen(function* () {
     const wait = yield* WorkflowEngine.WorkflowInstance;
-    const raced = yield* Effect.race(
+    const raced = yield* Effect.raceFirst(
       collecting.pipe(
         Effect.exit,
         Effect.map((exit) => ({ collected: true as const, exit })),
