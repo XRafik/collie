@@ -931,14 +931,46 @@ const OPERATOR_CHECKS: readonly Check[] = [
     },
   },
   {
-    id: "desktop/terminal-tab-fills-takes-the-keys-and-opens-on-the-agent-at-work",
+    id: "desktop/terminal-tab-opens-on-the-agent-at-work",
     statement:
-      "The Terminal tab fills the record with no scrollbar and equal margins, herdr's pane follows the cells drawn through window, Flock chat and Zoom changes, it draws in CaskaydiaMono at Ghostty's size, it takes the keyboard on every way in and on any click in its box, and it opens on the Task's agent that is blocked, else working.",
+      "The Terminal tab opens on the Task's agent that is blocked, else working, keeps a pick until the tab is left, never switches by itself, and opens herdr's own client where Go to pane finds no pane before a pick.",
     owner: TERMINAL_TAB,
     needs: "operator",
     proof: {
       kind: "operator",
-      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: Go to pane on a working Run — the box reaches the record's bottom margin, equal side margins, no scrollbar, no cut-off row, and on vm-mk `herdr pane get <pane>`'s `scroll.viewport_rows` equals the rows drawn; collapse, expand and pop out the Flock chat, resize the window, set Zoom 125% and back, and move between monitors — it re-fills each time. Beside Ghostty the glyphs match in face and size, and Settings' Drawn at line does not say the zoom has not taken. Click Terminal from Plan or Log, Go to pane, click the box's edge, pick an agent and Reattach, and type straight after each — it reaches the agent; Esc reaches the agent and the record stays open; typing in the Flock chat while the agent prints is never interrupted. With an idle planner and a working implementer the implementer is shown; a pick is forgotten after leaving the tab; a reviewer starting work switches nothing; a blocked agent wins; a Run with no live agent still opens herdr's client. Record each with the revision.",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: with an idle planner and a working implementer, Go to pane shows the implementer; pick the planner and Reattach — the planner again; leave the tab and come back — the implementer; a reviewer starting work switches nothing; a blocked agent wins; a Run with no live agent, and a Machine whose Collie's focus names no pane, still open herdr's client. Record each with the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-fills-the-record",
+    statement:
+      "The Terminal tab fills the record with no scrollbar and equal margins, and herdr's pane follows the cells drawn through window, Flock chat and Zoom changes.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: Go to pane on a working Run — the box reaches the record's bottom margin, equal side margins, no scrollbar, no cut-off row, and on vm-mk `herdr pane get <pane>`'s `scroll.viewport_rows` equals the rows drawn; collapse, expand and pop out the Flock chat, resize the window, set Zoom 125% and back, and move between monitors — it re-fills each time. Record each with the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-takes-the-keys",
+    statement:
+      "The Terminal tab takes the keyboard on every way in and on any click in its box, unless a field outside it is being typed in.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: click Terminal from Plan or Log, Go to pane, click the box's edge, pick an agent and Reattach, and type straight after each — it reaches the agent; Esc reaches the agent and the record stays open; typing in the Flock chat while the agent prints, and during Reattach, is never interrupted. Record each with the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-draws-in-a-terminals-font",
+    statement: "The Terminal tab draws in CaskaydiaMono at Ghostty's size.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: beside Ghostty the glyphs match in face and size, and Settings' Drawn at line does not say the zoom has not taken. Record each with the revision.",
     },
   },
   {
