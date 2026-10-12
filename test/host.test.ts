@@ -90,7 +90,7 @@ test(
 );
 
 test(
-  "a host started in a directory that is then deleted moves to its state directory, without the launcher's LD_PRELOAD",
+  "a host started in a directory an update then deletes keeps answering from its state directory, without the launcher's LD_PRELOAD",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -101,11 +101,11 @@ test(
         const host = Option.isSome(binary)
           ? [binary.value]
           : [process.execPath, `${root}src/main.ts`];
-        // Started where Desktop's app folder was, which an update then deletes.
+        // Started in Desktop's app folder, as a bridge Desktop started there did.
         const launcher = [
           "/bin/sh",
           "-c",
-          'env > "$GONE.env" && mkdir -p "$GONE" && cd "$GONE" && rmdir "$GONE" && exec "$@"',
+          'env > "$GONE.env" && mkdir -p "$GONE" && cd "$GONE" && exec "$@"',
           "sh",
           ...host,
         ];
@@ -127,6 +127,11 @@ test(
             Effect.flatMap((client) => client.identity()),
           ),
         ).pipe(Effect.provide(starts(launcher)), Effect.orDie);
+        yield* fs.remove(gone, { recursive: true });
+        const after = yield* Effect.scoped(
+          connect(state).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.provide(starts(launcher)), Effect.orDie);
+        expect(after.pid).toBe(who.pid);
         const given = yield* fs.readFileString(`${gone}.env`);
         expect(given).toContain(`GONE=${gone}`);
         expect(given).not.toContain("LD_PRELOAD");
