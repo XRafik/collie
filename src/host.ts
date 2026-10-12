@@ -91,7 +91,7 @@ import {
 import { once, recordAudit, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv } from "./env";
-import { installation as installedRelease } from "./release";
+import { installation as installedRelease, RELEASE_TAG } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
 import { watchedMr, type MrPanels } from "./merges";
@@ -111,6 +111,7 @@ import {
   NewsBatch,
   PaneAt,
   SharedSettings,
+  ShellResult,
   PROTOCOL,
   ProposalRefused,
   PART_BYTES,
@@ -178,7 +179,7 @@ import { reason } from "./naming";
 import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-files";
 import { receive, uploadsDir } from "./uploads";
 import { loadDefaults, SettingRefused, sharedSettings, takeShared } from "./config";
-import { decodeAnswer, machineName, relayOf, startPeers, type Peers } from "./peers";
+import { decodeAnswer, machineName, relayOf, runShell, startPeers, type Peers } from "./peers";
 import {
   Invited,
   MachineUnreachable,
@@ -236,6 +237,7 @@ export class HostVersionMismatch extends Data.TaggedError("HostVersionMismatch")
   readonly client: string;
   readonly pid: number;
   readonly restart: string;
+  readonly development?: string;
 }> {}
 
 const Identity = Schema.Struct({
@@ -339,6 +341,11 @@ export const HostRpcs = RpcGroup.make(
   /** The peer asking has forgotten this Machine, so this one forgets it too. */
   Rpc.make("forget", { success: Schema.Void, error: HostRefused }),
   Rpc.make("peers", { success: Schema.Array(PeerView) }),
+  Rpc.make("refresh", {
+    payload: { request: Schema.String },
+    success: Schema.Boolean,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
 );
 
 /** Everything this build serves; a client of another build uses `FrontDoorRpcs` alone. */
@@ -453,6 +460,29 @@ const handlers = (
             : peers.forget(machine.installation);
         },
         peers: () => peers.list,
+        refresh: ({ request }, { client }) =>
+          once(
+            `${dir}/host`,
+            { operation: "refresh", request, ...stampIn(declared, client), result: Schema.Boolean },
+            Effect.gen(function* () {
+              const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+              const child = yield* spawner.spawn(
+                ChildProcess.make("collie", ["--json", "machine", "list"], {
+                  detached: true,
+                  stdin: "ignore",
+                  stdout: "ignore",
+                  stderr: "ignore",
+                  extendEnv: true,
+                }),
+              );
+              yield* child.unref;
+              return true;
+            }).pipe(
+              Effect.uninterruptible,
+              Effect.scoped,
+              Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+            ),
+          ).pipe(Effect.provideContext(bun)),
         grant: ({ runId, name, command, request }, { client }) =>
           once(
             runDir(dir, runId),
@@ -727,6 +757,7 @@ const frontDoorHandlers = (
       const usage = yield* Usage;
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
       const recordingUsage = yield* Semaphore.make(1);
+      const recordingShell = yield* Semaphore.make(1);
       // A finished Run's plan cannot change, so every drawer on it shares one read.
       // ponytail: kept for the host's life; evict by age if a host lives for months.
       const plans = new Map<string, PlanPanel | null>();
@@ -1089,6 +1120,32 @@ const frontDoorHandlers = (
             ),
             Effect.provideContext(bun),
           ),
+        shell: ({ script, stdin, request }, { client }) =>
+          plainly(
+            recordingShell
+              .withPermits(1)(
+                once(
+                  `${env.stateDir}/shell`,
+                  {
+                    operation: "shell",
+                    request,
+                    ...whoOf(client),
+                    asked: { script, stdinHash: stdin === undefined ? null : sha256Hex(stdin) },
+                    result: ShellResult,
+                  },
+                  runShell(script, stdin),
+                ),
+              )
+              .pipe(
+                Effect.timeoutOrElse({
+                  duration: "10 minutes",
+                  orElse: () =>
+                    Effect.fail(
+                      new HostRefused({ reason: "the shell did not finish within 10 minutes" }),
+                    ),
+                }),
+              ),
+          ),
         settings: () =>
           sharedSettings(env.userDir).pipe(
             Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
@@ -1111,7 +1168,11 @@ const frontDoorHandlers = (
                 takeShared(
                   env.userDir,
                   settings,
-                  who.origin === "desktop" ? (who.from?.client ?? who.origin) : null,
+                  who.origin === "host"
+                    ? (who.from?.machine?.name ?? who.origin)
+                    : who.origin === "desktop"
+                      ? (who.from?.client ?? who.origin)
+                      : null,
                   yield* nowIso(),
                 ).pipe(
                   Effect.mapError(
@@ -1851,6 +1912,10 @@ const own = (dir: string) =>
     const stamp = yield* (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie);
     const peers = yield* startPeers({
       dir,
+      userDir: env.userDir,
+      build: BUILD,
+      ...development,
+      connect: (peer) => connectPeer(dir, peer.name, { as: "host", client: machineName(), stamp }),
       installation,
       stamp,
       socket: socketOf(dir),
@@ -2068,9 +2133,10 @@ export const connectPeer = (
   HostClient,
   HostUnavailable | HostVersionMismatch | MachineUnreachable,
   Scope.Scope
-> =>
-  Effect.gen(function* () {
-    const build = options?.build ?? BUILD;
+> => {
+  const build = options?.build ?? BUILD;
+  let mismatch: HostVersionMismatch | undefined;
+  return Effect.gen(function* () {
     const conn = yield* relayed(stateDir, name, header);
     const socket = yield* BunSocket.fromDuplex(Effect.succeed(conn));
     const client = yield* openGroup(
@@ -2090,8 +2156,9 @@ export const connectPeer = (
         Schema.is(MachineUnreachable)(cause) ? cause : unavailable(stateDir, reason(cause)),
       ),
     );
-    if (who.build !== build)
+    if (who.build !== build && header.as !== "host")
       return yield* new HostVersionMismatch({
+        development: who.development,
         dir: who.dir,
         host: who.build,
         client: build,
@@ -2103,14 +2170,30 @@ export const connectPeer = (
       });
     return client;
   }).pipe(
+    Effect.tapError((cause) =>
+      Effect.sync(() => {
+        if (cause instanceof HostVersionMismatch) mismatch = cause;
+      }),
+    ),
+    Effect.retry({
+      while: () =>
+        mismatch !== undefined &&
+        mismatch.development === undefined &&
+        RELEASE_TAG.test(build) &&
+        RELEASE_TAG.test(mismatch.host) &&
+        newer(build, mismatch.host),
+      schedule: Schedule.spaced("200 millis"),
+    }),
     Effect.timeoutOrElse({
       duration: ASK_TIMEOUT,
       orElse: () =>
         Effect.fail(
-          new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+          mismatch ??
+            new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
         ),
     }),
   );
+};
 
 const unavailable = (dir: string, reason: string) => new HostUnavailable({ dir, reason });
 

@@ -2,7 +2,7 @@
 // of machines, the pairing each side keeps, and the line that opens a relay. Effect alone,
 // so Desktop decodes the same schemas.
 
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { FrontDoor } from "./board-model";
 
 /** A saved herdr machine, as `herdr machine list --json` lists it. */
@@ -70,6 +70,7 @@ export const PeerView = Schema.Struct({
   dials: Dials,
   url: Schema.NullOr(Schema.String),
   state: PeerState,
+  build: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** Since when it has been away, or what the last try saw. */
   since: Schema.NullOr(Schema.String),
   failure: Schema.NullOr(Schema.String),

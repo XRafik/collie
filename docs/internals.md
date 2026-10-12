@@ -276,6 +276,18 @@ tells the peer over the relay as `host` (`forget`, which the peer applies to the
 installation the link authenticated) and drops the pairing; a peer with nobody left
 dialling in closes its listener.
 
+**Keeping peers level.** `src/flock-settings.ts` holds the latest-edit merge shared with
+Desktop. On link-up, and when the host sees `config.json` or `settings-set.json` change,
+it takes later peer edits and gives the peer its later edits over a `host` channel.
+Each edit keeps its timestamp. `gitlab_host` is excluded in both directions.
+The receiving host's `flock.by` names the peer that shared the edits.
+
+On link-up between releases, the newer host runs an upgrade through `shell`, then asks
+`refresh` to start the older Machine's own new CLI detached. Awaiting that CLI inside a
+shell would let the old host kill it during shutdown. The newer host checks identity
+until the new host answers, within thirty seconds. Failures appear in `machine list`
+and are retried on the next link-up. Development checkouts never take part.
+
 ## The herdr boundary
 
 `herdr.ts` is the only channel to the herdr Collie is running inside: the `herdr` CLI at

@@ -91,8 +91,9 @@ setting, it was given the credentials Desktop holds now but those its onboarding
 development checkout, which nothing upgrades, is never behind on its version. Each part is
 read from what the Machine's host and doctor last told Desktop, and from what Desktop last
 gave it. A Machine that is not in sync is **behind** on each part it lacks, and each has its
-own fix. Desktop brings a Machine level as it connects — upgrading it, syncing its settings,
-giving it credentials — so one that stays behind is one where that failed. Not "up to date",
+own fix. Paired hosts keep settings and release versions level without Desktop.
+Desktop also brings a Machine level as it connects and gives it credentials, so one that
+stays behind is one where that failed. Not "up to date",
 which is Desktop's own check for a newer release of itself.
 
 **Machine rule** — The human's own words, kept in Desktop's settings, about which Machine

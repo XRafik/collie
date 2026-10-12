@@ -50,3 +50,10 @@ synced after Desktop upgrades it, as every older Machine already is.
   of one key can keep the earlier one. Collie does not correct for that.
 - A Machine's TUI Settings says a setting is shared with the Flock once a Desktop has synced
   it, and an edit there spreads to every Machine. Only a Desktop's sync records that.
+
+## Amended October 12, 2026: hosts sync their peers
+
+Each host also syncs its peers ([ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md)
+D9), using the same latest-edit merge as Desktop. A link-up or a local settings edit
+starts a sync without Desktop. Hosts neither take nor give `gitlab_host` to each other.
+A host's sync records the peer's Machine name in `flock.by`.

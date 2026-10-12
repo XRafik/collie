@@ -106,3 +106,8 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `codex.ts`         | Codex's App Server as a client: thread identity, its context, and its compactions                     |
 | `usage-model.ts`   | A Subscription's Usage reading: its Schemas, parsing, and Exhausted (pure)                            |
 | `usage.ts`         | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                    |
+
+The Machine link is `peers.ts`: pairing, TLS channels, relay sockets, dial-back and
+keeping paired Machines level. `peers-model.ts` holds the peer records and states
+Desktop shares. `flock-settings.ts` holds the latest-edit merge both hosts and Desktop
+use.

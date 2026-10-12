@@ -61,8 +61,8 @@ collie machine invite --for <installation> --name <name> [--address <host>]
 
 `list` names each Machine paired with this one, which side dials (`out`: this one dials it;
 `in`: it dials this one), and whether it answers now. Its `data.machines` is each one's
-`installation`, `name`, `dials`, `url`, `state` (`live`, `connecting` or `away`), `since`
-and `failure`, never the secret. A listener that could not take its port says why in
+`installation`, `name`, `dials`, `url`, `build` (last read, or null), `state` (`live`, `connecting` or `away`), `since`
+and `failure`, never the secret. `data.build` is this Machine's build. A listener that could not take its port says why in
 `failure`.
 
 `live` means the control link is up. `connecting` names the dialler's last failure while
@@ -1525,8 +1525,8 @@ it does on any platform; `upgrade` stages nothing for it.
 collie upgrade --to 0.27.0
 ```
 
-Moves a released install to exactly that version (fetching tags, then resetting to the
-tag), and reports the same way, with `data.version`. A development checkout — on a branch
+Moves a released install to exactly that version (fetching tags and resetting a checkout
+to the tag, or fetching the signed runner for a plain install), and reports the same way, with `data.version`. A development checkout — on a branch
 other than `master`, detached on a commit that is not a release, with uncommitted changes,
 or ahead of its remote — is refused as `invalid_state` with the reason, and its checkout is left as it was.
 A host's `identity` names such a checkout's build as `development: "<version>+<sha>"`.
@@ -1687,7 +1687,7 @@ same schemas at both ends. Nothing listens off the Machine until another Machine
 it and dials it; then the host also listens on port 47217, over TLS, for that paired
 installation alone, and declares each channel it takes on its own socket
 ([ADR-0054](adr/0054-a-machine-reaches-another-over-a-paired-link.md)). It answers `identity`,
-`discover`, `load`, `registrations`, `status`, `run`, `runs`, `watch`, `recover`, `offers`, `grant`, `steer`, `shown` (what `run show` prints) and, for pairing, `invite`, `pair`, `forget` and `peers` — one
+`discover`, `load`, `registrations`, `status`, `run`, `runs`, `watch`, `recover`, `offers`, `grant`, `steer`, `shown` (what `run show` prints) and, for pairing, `invite`, `pair`, `forget` and `peers`, plus `refresh` for release levelling — one
 registry, in front of as many clients as ask. `run` and `runs` are the read model the front
 doors show; `watch` streams it, current state first and a whole state each time; `recover`
 registers what current files now allow and hands over what is outstanding. One fiber in the
@@ -1904,3 +1904,19 @@ rather than a module reported as fine.
 The `effect` the toolchain pins is the one the host runs, and at runtime the executable
 serves its own `effect` and `collie` to the module it loads, so what an author typechecks
 against and what executes are the same Effect.
+
+### A shell over a front door
+
+`shell({script, stdin?, request})` runs a script in this Machine's login shell. It returns
+`{code, stdout, stderr}` and is bounded at ten minutes, including waiting for another
+shell call. More than 1 MiB of combined output is refused. A process that ignores termination
+is killed after one second. The host records its Actor and
+request in the shell audit. Stdin is hashed in the request record, so tokens passed on
+stdin are not copied into it. Desktop uses this operation for a paired Machine's
+commands and credentials.
+
+Hosts share settings without Desktop. When paired releases differ, the newer host
+upgrades the older one through `shell`. The internal `refresh` operation starts the
+older Machine's own new CLI detached; that client replaces its host. Clients wait for
+levelling within five seconds. Development checkouts are left alone and a mismatch names
+both builds.

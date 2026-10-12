@@ -356,15 +356,12 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     if (!RELEASE_TAG.test(to)) {
       return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
     }
-    if (!checkout) {
-      return err("invalid_state", `${root} is not a checkout, so it cannot be moved to ${to}.`, {
-        root,
-      });
+    if (checkout) {
+      before = yield* head();
+      const refused = yield* moveToRelease(root, to, run);
+      if (refused) return refused;
+      after = yield* head();
     }
-    before = yield* head();
-    const refused = yield* moveToRelease(root, to, run);
-    if (refused) return refused;
-    after = yield* head();
   } else if (checkout) {
     before = yield* head();
     // `--ff-only`: an upgrade that quietly merged or rebased someone's local work
@@ -379,7 +376,9 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     after = yield* head();
   }
 
-  const installed = yield* run("sh", ["prepare.sh"], root);
+  const installed = yield* to !== undefined && !checkout
+    ? run("env", [`COLLIE_VERSION=${to}`, "sh", "prepare.sh"], root)
+    : run("sh", ["prepare.sh"], root);
   if (installed.code !== 0) {
     return err("operation_failed", `Could not prepare ${root}.`, {
       root,

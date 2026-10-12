@@ -9,6 +9,7 @@ import type { ServerWebSocket } from "bun";
 import {
   Clock,
   Config,
+  Crypto,
   DateTime,
   Deferred,
   Effect,
@@ -18,10 +19,21 @@ import {
   Option,
   Schedule,
   Schema,
+  Semaphore,
+  Path,
+  type Scope,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { FrontDoor, HostRefused, type Declaration } from "./board-model";
+import {
+  FrontDoor,
+  HostRefused,
+  type BoardSnapshot,
+  type RequestConflict,
+  type SharedSettings,
+  type ShellResult,
+  type ShellRequest,
+} from "./board-model";
 import { channelInto } from "./channel";
 import { shell } from "./mr";
 import {
@@ -36,6 +48,12 @@ import {
   type PeerView,
 } from "./peers-model";
 import { reason } from "./naming";
+import { sharedSettings, takeShared } from "./config";
+import { takeFrom } from "./flock-settings";
+import { epochMs, nowIso } from "./time";
+import { RELEASE_TAG } from "./release";
+import type { HostUnavailable, HostVersionMismatch } from "./host";
+import type * as RpcClientError from "effect/rpc/RpcClientError";
 
 export const relayOf = (stateDir: string, name: string) => `${stateDir}/peers/${name}.sock`;
 const fileOf = (stateDir: string) => `${stateDir}/peers.json`;
@@ -47,6 +65,51 @@ const SOCKET_PATH_MAX = 104;
 
 /** This Machine as a peer names it, where nothing better is known. */
 export const machineName = () => hostname();
+
+export const runShell = Effect.fn("Peers.shell")(
+  function* (script: string, stdin?: string) {
+    const login = yield* Config.String("SHELL").pipe(Config.withDefault("/bin/sh"));
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* spawner.spawn(
+      ChildProcess.make(login, ["-lc", script], {
+        stdin: stdin === undefined ? "ignore" : Stream.make(new TextEncoder().encode(stdin)),
+        stdout: "pipe",
+        stderr: "pipe",
+        extendEnv: true,
+        forceKillAfter: "1 second",
+      }),
+    );
+    let bytes = 0;
+    const text = (stream: typeof child.stdout) =>
+      stream.pipe(
+        Stream.decodeText(),
+        Stream.runFoldEffect(
+          () => "",
+          (all, chunk) => {
+            bytes += Buffer.byteLength(chunk);
+            return bytes > 1_048_576
+              ? Effect.fail(new Error("the shell produced more than 1 MiB of output"))
+              : Effect.succeed(all + chunk);
+          },
+        ),
+      );
+    const [code, stdout, stderr] = yield* Effect.all(
+      [child.exitCode, text(child.stdout), text(child.stderr)],
+      { concurrency: "unbounded" },
+    );
+    return { code: Number(code), stdout, stderr };
+  },
+  (effect) =>
+    effect.pipe(
+      Effect.scoped,
+      Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+      Effect.timeoutOrElse({
+        duration: "10 minutes",
+        orElse: () =>
+          Effect.fail(new HostRefused({ reason: "the shell did not finish within 10 minutes" })),
+      }),
+    ),
+);
 
 const decodePeers = Schema.decodeUnknownEffect(PeersFile);
 const encodePeers = Schema.encodeSync(PeersFile);
@@ -157,9 +220,35 @@ const sanOf = (stateDir: string) =>
     ),
   );
 
+type PeerCallFailure = HostRefused | RequestConflict | RpcClientError.RpcClientError;
+export interface PeerClient {
+  readonly identity: () => Effect.Effect<
+    Pick<BoardSnapshot, "build" | "development">,
+    PeerCallFailure
+  >;
+  readonly shell: (asked: ShellRequest) => Effect.Effect<ShellResult, PeerCallFailure>;
+  readonly refresh: (
+    asked: Pick<ShellRequest, "request">,
+  ) => Effect.Effect<boolean, PeerCallFailure>;
+  readonly settings: () => Effect.Effect<SharedSettings, PeerCallFailure>;
+  readonly setSettings: (
+    asked: Pick<SharedSettings, "settings"> & Pick<ShellRequest, "request">,
+  ) => Effect.Effect<SharedSettings, PeerCallFailure>;
+}
+
 /** What a peer link reaches its own host with, which only it may declare `from.machine` with. */
 export interface Link {
   readonly dir: string;
+  readonly userDir: string;
+  readonly build: string;
+  readonly development?: string;
+  readonly connect: (
+    peer: Peer,
+  ) => Effect.Effect<
+    PeerClient,
+    HostUnavailable | HostVersionMismatch | MachineUnreachable,
+    Scope.Scope
+  >;
   readonly installation: string;
   /** This host's own, which a front door cannot know. */
   readonly stamp: string;
@@ -170,6 +259,53 @@ export interface Link {
   /** herdr's machines, or null where herdr could not say. */
   readonly machines: Effect.Effect<ReadonlyArray<{ readonly label: string }> | null>;
 }
+
+export const levelPeer = Effect.fn("Peers.level")(function* (link: Link, peer: Peer) {
+  const door = yield* link.connect(peer);
+  const who = yield* door.identity();
+  if (
+    link.development !== undefined ||
+    !RELEASE_TAG.test(link.build) ||
+    who.development !== undefined ||
+    !RELEASE_TAG.test(who.build) ||
+    Bun.semver.order(link.build, who.build) <= 0
+  )
+    return who.development ?? who.build;
+  yield* Effect.logInfo(`bringing ${peer.name} from ${who.build} to ${link.build}`);
+  const result = yield* door.shell({
+    script: `collie --json upgrade --to ${quoted(link.build)}`,
+    request: `level:${link.installation}:${yield* (yield* Crypto.Crypto).randomUUIDv4}`,
+  });
+  if (result.code !== 0)
+    return yield* new HostRefused({
+      reason: `upgrade to ${link.build} failed: ${result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`}`,
+    });
+  yield* door.refresh({
+    request: `refresh:${link.installation}:${yield* (yield* Crypto.Crypto).randomUUIDv4}`,
+  });
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const after = yield* link.connect(peer);
+      const now = yield* after.identity();
+      if (now.build !== link.build)
+        return yield* new HostRefused({
+          reason: `${peer.name} still runs ${now.build} after upgrading to ${link.build}`,
+        });
+      return now.build;
+    }),
+  ).pipe(
+    Effect.retry({ schedule: Schedule.spaced("500 millis") }),
+    Effect.timeoutOrElse({
+      duration: "30 seconds",
+      orElse: () =>
+        Effect.fail(
+          new HostRefused({
+            reason: `${peer.name} did not replace its host after upgrading to ${link.build}`,
+          }),
+        ),
+    }),
+  );
+}, Effect.scoped);
 
 /** What this host's peers module answers. */
 export interface Peers {
@@ -300,7 +436,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const scope = yield* Effect.scope;
   const clock = yield* Clock.Clock;
   const services = yield* Effect.context<
-    FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+    FileSystem.FileSystem | Path.Path | Crypto.Crypto | ChildProcessSpawner.ChildProcessSpawner
   >();
   const listenPort = yield* port;
   const listenHost = yield* bindHost;
@@ -313,6 +449,8 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const controls = new Map<string, ServerWebSocket<Accepted>>();
   const tickets = new Map<string, Ticket>();
   const standings = new Map<string, Standing>();
+  const builds = new Map<string, string>();
+  const syncing = yield* Semaphore.make(1);
   const connections = new Set<Socket>();
   let listener: ReturnType<typeof Bun.serve> | null = null;
   let listening: string | null = null;
@@ -321,6 +459,73 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
 
   const stand = (installation: string, standing: Standing) =>
     void standings.set(installation, standing);
+
+  const syncSettings = (peer: Peer) =>
+    syncing
+      .withPermits(1)(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const door = yield* link.connect(peer);
+            const mine = yield* sharedSettings(link.userDir);
+            const theirs = yield* door.settings();
+            const settings = Object.fromEntries(
+              mine.settings
+                .filter((one) => one.key !== "gitlab_host")
+                .map(({ key, value, at }) => [
+                  key,
+                  { value, at, from: machineName(), differed: false },
+                ]),
+            );
+            const merged = takeFrom({ settings, synced: [] }, peer.name, theirs.settings);
+            const take = Object.entries(merged.flock.settings).flatMap(([key, { value, at }]) => {
+              const kept = mine.settings.find((one) => one.key === key);
+              return kept === undefined || epochMs(at) > epochMs(kept.at)
+                ? [{ key, value, at }]
+                : [];
+            });
+            if (take.length > 0) yield* takeShared(link.userDir, take, peer.name, yield* nowIso());
+            if (merged.give.length > 0)
+              yield* door.setSettings({
+                settings: merged.give,
+                request: `sync:${link.installation}:${yield* (yield* Crypto.Crypto).randomUUIDv4}`,
+              });
+          }),
+        ),
+      )
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning(`settings not synced with ${peer.name}: ${reason(cause)}`),
+        ),
+        Effect.provideContext(services),
+      );
+
+  const level = (peer: Peer) =>
+    levelPeer(link, peer).pipe(
+      Effect.tap((build) => Effect.sync(() => builds.set(peer.installation, build))),
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          const failure = Schema.is(HostRefused)(cause) ? cause.reason : reason(cause);
+          const standing = standings.get(peer.installation);
+          if (standing !== undefined) stand(peer.installation, { ...standing, failure });
+          yield* Effect.logWarning(`could not level ${peer.name}: ${failure}`);
+        }),
+      ),
+      Effect.provideContext(services),
+    );
+
+  const onLink = (peer: Peer) =>
+    void Effect.runFork(
+      Effect.forkIn(
+        reconcileMachines.pipe(
+          Effect.andThen(() =>
+            peers.some((one) => one.installation === peer.installation)
+              ? level(peer).pipe(Effect.andThen(syncSettings(peer)))
+              : Effect.void,
+          ),
+        ),
+        scope,
+      ),
+    );
 
   const keep = (next: ReadonlyArray<Peer>) =>
     Effect.gen(function* () {
@@ -331,6 +536,20 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
       Effect.provideContext(services),
     );
+
+  const forget = (installation: string) =>
+    keep(peers.filter((peer) => peer.installation !== installation)).pipe(Effect.ignore);
+  const reconcileMachines = Effect.gen(function* () {
+    const listed = yield* link.machines;
+    if (listed !== null) {
+      const labels = new Set(listed.map((machine) => machine.label));
+      for (const peer of peers.filter((one) => one.dials === "out" && !labels.has(one.name))) {
+        yield* link.tell(peer);
+        yield* forget(peer.installation);
+        yield* Effect.logInfo(`forgot ${peer.name}: herdr no longer lists it`);
+      }
+    }
+  });
 
   const validateName = (name: string) =>
     Effect.gen(function* () {
@@ -488,6 +707,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         up = true;
         heard = clock.currentTimeMillisUnsafe();
         stand(peer.installation, { state: "live", since: null, failure: null });
+        onLink(peer);
       };
       ws.onmessage = (event) => {
         heard = clock.currentTimeMillisUnsafe();
@@ -570,6 +790,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       controls.get(installation)?.close();
       controls.delete(installation);
       standings.delete(installation);
+      builds.delete(installation);
     });
 
   /** Whom the listener lets in: the installation a bearer secret was minted for. */
@@ -608,6 +829,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       controls.set(peer.installation, ws);
       older?.close();
       stand(peer.installation, { state: "live", since: null, failure: null });
+      onLink(peer);
     },
     arrived: () => {},
     hungUp: (ws) => {
@@ -739,20 +961,27 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     scope,
   );
   yield* settle;
+  yield* fs.makeDirectory(link.userDir, { recursive: true });
+  yield* Effect.forkIn(
+    fs.watch(link.userDir).pipe(
+      Stream.filter(
+        (event) => event.path.endsWith("config.json") || event.path.endsWith("settings-set.json"),
+      ),
+      Stream.runForEach(() =>
+        Effect.forEach(
+          peers.filter((peer) => standings.get(peer.installation)?.state === "live"),
+          syncSettings,
+          { discard: true },
+        ),
+      ),
+      Effect.catch((cause) =>
+        Effect.logWarning(`could not watch shared settings: ${reason(cause)}`),
+      ),
+    ),
+    scope,
+  );
 
-  const forget = (installation: string) =>
-    keep(peers.filter((peer) => peer.installation !== installation)).pipe(Effect.ignore);
-
-  // A peer herdr no longer lists is forgotten, on both sides.
-  const listed = yield* link.machines;
-  if (listed !== null) {
-    const labels = new Set(listed.map((machine) => machine.label));
-    for (const peer of peers.filter((one) => one.dials === "out" && !labels.has(one.name))) {
-      yield* link.tell(peer);
-      yield* forget(peer.installation);
-      yield* Effect.logInfo(`forgot ${peer.name}: herdr no longer lists it`);
-    }
-  }
+  yield* reconcileMachines;
 
   const peersModule: Peers = {
     invite: (asker) =>
@@ -802,6 +1031,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
           name: peer.name,
           dials: peer.dials,
           url: peer.url ?? null,
+          build: builds.get(peer.installation) ?? null,
           ...standing,
           failure: peer.dials === "in" && listening !== null ? listening : standing.failure,
         };

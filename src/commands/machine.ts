@@ -5,6 +5,7 @@
 import { Effect, Option } from "effect";
 import { Command, Flag } from "effect/cli";
 import { inviteFrom, machineList } from "../lifecycle";
+import { BUILD } from "../host";
 import { answering } from "./shared";
 
 const list = Command.make("list", {}, () =>
@@ -15,22 +16,24 @@ const list = Command.make("list", {}, () =>
         const peers = read.value;
         return {
           ok: true as const,
-          data: { machines: peers },
+          data: { build: BUILD, machines: peers },
           human:
-            peers.length === 0
+            `This Machine: collie ${BUILD}\n` +
+            (peers.length === 0
               ? "No Machine is paired with this one."
               : peers
                   .map((peer) =>
                     [
                       peer.name,
                       peer.dials === "out" ? "dialled from here" : "dials in",
+                      peer.build === null ? "build not read" : `collie ${peer.build}`,
                       peer.state === "away" && peer.since !== null
                         ? `away since ${peer.since}`
                         : peer.state,
                       ...(peer.failure === null ? [] : [peer.failure]),
                     ].join("\t"),
                   )
-                  .join("\n"),
+                  .join("\n")),
         };
       }),
     ),

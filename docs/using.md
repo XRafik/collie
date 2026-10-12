@@ -1202,14 +1202,19 @@ descriptions or minutes yet. The ones every Machine shares are the Flock's: Desk
 Machine's host, never by editing a file over SSH. A Machine is synced each time it
 connects and after every edit in Settings, so one out of reach gets an edit when it is
 back, the way upgrades reach it. An edit on one Machine's own TUI Settings counts the
-same: Desktop takes it the next time it sees that Machine, or when Settings is opened, and
-spreads it. Each key is decided by whichever edit was made last, wherever it was made
+same. Paired hosts share edits when their link comes up and after a local edit, even
+with Desktop closed. Desktop also takes edits when it sees a Machine or Settings opens.
+Each key is decided by whichever edit was made last, wherever it was made
 ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)); on the first sync a key set
 on one Machine only is taken from it, and a key set differently on several takes the latest,
 with Settings saying beside it which Machine that came from. A value a Machine holds that
 its setting refuses, written into its file by hand, is not taken. What stays each Machine's own
 is everything else in its `config.json`: remembered answers such as `linear.team` and
 `gitlab.assignee`, `chat_harness`, and `projects.root`, which is a path on that Machine.
+
+Paired hosts also bring an older release to the newer one's version when their link
+comes up, without Desktop. A development checkout neither upgrades nor is upgraded.
+`collie machine list` names an upgrade failure; the next link-up tries it again.
 
 **Zoom**, under **Board** and for **This computer only**, is how large Desktop draws: 80%,
 90%, 100%, 110%, 125% or 150%, where 100% is the size of the other apps on the same monitor.
@@ -1233,8 +1238,9 @@ setting shows up in both. These are the Flock's: Desktop keeps them in
 Machine's host, never by editing a file over SSH. A Machine is synced each time it
 connects and after every edit in Settings, so one out of reach gets an edit when it is
 back, the way upgrades reach it. An edit on one Machine's own TUI Settings counts the
-same: Desktop takes it the next time it sees that Machine, or when Settings is opened, and
-spreads it. Each key is decided by whichever edit was made last, wherever it was made
+same. Paired hosts share edits when their link comes up and after a local edit, even
+with Desktop closed. Desktop also takes edits when it sees a Machine or Settings opens.
+Each key is decided by whichever edit was made last, wherever it was made
 ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)); on the first sync a key set
 on one Machine only is taken from it, and a key set differently on several takes the latest,
 with Settings saying beside it which Machine that came from. What stays each Machine's own

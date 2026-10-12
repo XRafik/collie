@@ -893,11 +893,29 @@ export const Attachments = Schema.Array(Schema.String);
 /** The Collie tools a Flock chat has a Machine's host answer, all of them reads. */
 export const FLOCK_READS = ["collie_run", "collie_receipts", "collie_workspaces"] as const;
 
+export const ShellResult = Schema.Struct({
+  code: Schema.Int,
+  stdout: Schema.String,
+  stderr: Schema.String,
+});
+export type ShellResult = typeof ShellResult.Type;
+export const ShellRequest = Schema.Struct({
+  script: Schema.String,
+  stdin: Schema.optionalKey(Schema.String),
+  request: Schema.String,
+});
+export type ShellRequest = typeof ShellRequest.Type;
+
 /**
  * What any front door, on this computer or another, may ask a host. Every operation takes
  * a request id: the same one twice is one operation, and with other arguments is refused.
  */
 export const FrontDoorRpcs = RpcGroup.make(
+  Rpc.make("shell", {
+    payload: ShellRequest,
+    success: ShellResult,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
   Rpc.make("board", { success: BoardMessage, stream: true }),
   /**
    * Once per channel, for good; a channel that never declares is stamped `cli`, never a

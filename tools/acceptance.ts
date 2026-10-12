@@ -729,6 +729,30 @@ const BACKEND: readonly Check[] = [
       name: "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
     },
   },
+  {
+    id: "backend/paired-machines-share-settings-without-desktop",
+    statement: "Paired Machines keep each other's settings level without Desktop.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peer-settings.test.ts",
+      name: "paired hosts share the latest settings without Desktop, keep edit times and leave gitlab_host local",
+    },
+  },
+  {
+    id: "backend/paired-machines-level-their-releases",
+    statement: "Paired Machines keep each other's release level without Desktop.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peer-settings.test.ts",
+      name: "the newer paired release upgrades the older one, replaces its host and restores the link",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */
@@ -1208,6 +1232,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On vm-mk run `collie --machine mk-laptop --json board`, start and steer a laptop Run. Close the laptop's lid for five minutes and reopen it. Record the board returning within a minute, no SSO prompt, and the revision.",
+    },
+  },
+  {
+    id: "machines/hosts-share-settings-and-releases-with-desktop-closed",
+    statement:
+      "With Desktop closed, an edit on vm-mk reaches the laptop and an upgrade on the laptop brings vm-mk along.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Change model in vm-mk's TUI Settings and read it on the laptop within a minute. Upgrade only the laptop; record both Machines on the same release within a minute, and the revision.",
     },
   },
 ];
