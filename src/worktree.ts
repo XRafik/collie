@@ -795,23 +795,23 @@ const claimRoaming = Effect.fn("worktree.claimRoaming")(function* (opts: {
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>;
 }) {
   const { at, run } = opts;
-  // Never a shared working tree. The one takeover is of this repository's checkout from
-  // Runs that have ended, with nothing in it to lose; anything else there — a Run that may
-  // go on, another repository of the same name, something that will not say — is a
-  // refusal that reports what is known about it.
+  // Never a shared working tree: only Runs that have ended give this repository's checkout up.
   const taken = yield* occupant(at);
   const recorded =
     taken === null || opts.recordedBy === undefined ? null : yield* opts.recordedBy(at);
   if (taken !== null) {
     const held = describeOccupied(at, taken.owner, recorded);
     if (recorded === null || taken.owner !== opts.repo || !opts.listed) return { refused: held };
-    const lost = yield* wouldLose(run, at);
-    if (lost !== null) return { refused: `${held}, kept: ${lost}` };
+    const kept = wouldLose(run, at).pipe(
+      Effect.map((lost) => (lost === null ? null : `${held}, kept: ${lost}`)),
+    );
+    const before = yield* kept;
+    if (before !== null) return { refused: before };
     const released = yield* recorded.release;
     if (released !== null) return { refused: `${held}: ${released}` };
     // Again, now its agents are closed: one could have written to it until then.
-    const late = yield* wouldLose(run, at);
-    if (late !== null) return { refused: `${held}, kept: ${late}` };
+    const after = yield* kept;
+    if (after !== null) return { refused: after };
   }
 
   // "As the remote has it" is a fetch, not this checkout's memory of the last one: a

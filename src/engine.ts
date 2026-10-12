@@ -3692,11 +3692,13 @@ const makeRegistry: (
         recordedBy: (at) =>
           store.runs.pipe(
             Effect.map((rows) => {
-              const runs = rows
+              const recorders = rows
                 .filter((row) => placedOf(row, {}).worktree?.path === at)
-                .flatMap((row) => [row.run, ...descendantsOf(rows, row.run)]);
-              const latest = runs.at(-1);
-              return latest === undefined ? null : { run: latest, release: releaseRuns(runs) };
+                .map((row) => row.run);
+              const latest = recorders.at(-1);
+              if (latest === undefined) return null;
+              const runs = recorders.flatMap((run) => [run, ...descendantsOf(rows, run)]);
+              return { run: latest, release: releaseRuns(runs) };
             }),
           ),
       }).pipe(

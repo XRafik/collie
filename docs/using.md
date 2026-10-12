@@ -358,7 +358,7 @@ stash stack — looks like, which is the thing this exists to prevent.
 `renovate` changes the repository too, but it does not build one branch — it moves across
 every Renovate Bot branch it merges. So it gets a checkout of its own that is **detached**
 at the repository's default branch as the remote has it, at
-`~/.herdr/worktrees/<repo>/renovate`, and no branch is created or claimed for the run.
+`~/.herdr/worktrees/<repo>/roaming`, and no branch is created or claimed for the run.
 There is no `--input branch=` for it, and nothing it does binds a branch to its worktree:
 it fetches and checks out each Renovate branch inside that one checkout and pushes with an
 explicit refspec, so a Renovate branch that already has a checkout of yours is left where

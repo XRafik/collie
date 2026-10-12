@@ -952,7 +952,7 @@ test(
 );
 
 test(
-  "a roaming start is refused the checkout of a Run that may still go on, and of one that left changes",
+  "a roaming start is refused the checkout of a Run that may still go on, stopped or waiting, and of one that left changes",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -973,6 +973,13 @@ test(
             const whileWaiting = refusedWith(
               yield* start(roams!, { request: "r2", text: { work: "next" } }),
             );
+            // A stopped Run has not ended either: a resume picks it up again in its checkout.
+            const runId = waiting.success.runId;
+            yield* registry.control({ runId, control: "stop", set: true });
+            const whileStopped = refusedWith(
+              yield* start(roams!, { request: "r2-stopped", text: { work: "next" } }),
+            );
+            yield* registry.control({ runId, control: "stop", set: false });
             yield* registry.answer({
               runId: waiting.success.runId,
               decision: "go",
@@ -984,12 +991,13 @@ test(
             const whileDirty = refusedWith(
               yield* start(roams!, { request: "r3", text: { work: "next" } }),
             );
-            return { whileWaiting, whileDirty };
+            return { whileWaiting, whileStopped, whileDirty };
           }),
         );
 
         expect(refusals.whileWaiting).toContain(`${roaming} is a checkout of`);
         expect(refusals.whileWaiting).toContain("has not ended");
+        expect(refusals.whileStopped).toContain("has not ended");
         expect(refusals.whileDirty).toContain("uncommitted changes");
         expect(yield* (yield* FileSystem.FileSystem).readFileString(`${roaming}/left.txt`)).toBe(
           "work",
