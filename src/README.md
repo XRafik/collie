@@ -45,6 +45,8 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `proposals.ts`     | Hash-bound proposals, and the Confirmation rule that a yes names its exact payload                    |
 | `executors.ts`     | Which action kinds this build can carry out; an unregistered one is refused, never faked              |
 | `drift.ts`         | Where the work and the Intent disagree: rules, judgement, and the correction loop                     |
+| `run-record.ts`    | Run records served by their owning host, including Outputs confined to the Run directory              |
+| `verify-model.ts`  | Verification and stream Schemas shared with front doors without loading the collector                 |
 | `verify.ts`        | A command's result bound to the tree it ran on, so a card can say verified not claimed                |
 | `verify-spec.ts`   | Which commands Collie may run itself for a Run, and where that permission came from                   |
 | `outcome.ts`       | What a Run must prove to close, per kind, and what is still missing                                   |
@@ -111,3 +113,8 @@ The Machine link is `peers.ts`: pairing, TLS channels, relay sockets, dial-back 
 keeping paired Machines level. `peers-model.ts` holds the peer records and states
 Desktop shares. `flock-settings.ts` holds the latest-edit merge both hosts and Desktop
 use.
+
+`reports.ts` sends a settled Run's result to its recorded requester once, through the
+Dispatcher, and closes a `closes: "reported"` Run's own agents and eligible Task workspace.
+Repository placement is resolved by `projects.ts` and fetched by `agent-start.ts`; the
+engine carries the fetched revision through admission and placement.

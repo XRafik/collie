@@ -4,6 +4,7 @@
 // prompting, rendering, and turning a result into text or JSON.
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
+import { repositoryCheckout } from "./projects";
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import { nowIso } from "./time";
@@ -172,6 +173,13 @@ export const workspaceNamed = Effect.fn("operations.workspaceNamed")(function* (
   if (matched.length === 0) {
     const opened = yield* workspaceForDirectory(env, wanted, all, panes);
     if (opened !== null) return opened;
+    const repository = yield* repositoryCheckout(env, wanted).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (repository !== null) {
+      if ("error" in repository) return refused(repository.error);
+      return yield* workspaceForDirectory(env, repository.path, all, panes);
+    }
     if (wanted.includes("/"))
       return refused(`no directory "${named}" on this Machine; ${yield* howToName(env)}`);
     const checkouts = yield* checkoutsNamed(env, wanted);
@@ -506,7 +514,12 @@ export const taskFor = Effect.fn("operations.taskFor")(function* (
     result: err("operation_failed", message, { cause }),
   });
   if (choice.mode === "here") return yield* taskHere(env, about);
-  if (env.workspaceId === null && env.socketPath === null)
+  if (
+    env.workspaceId === null &&
+    env.socketPath === null &&
+    env.machine === undefined &&
+    env.asker?.from?.machine === undefined
+  )
     return kept(choice.mode === "continue" ? choice.task : null);
   const herdr = new Herdr(env);
   // A workspace cleanup closed is reopened on the Run's checkout when its first agent starts.

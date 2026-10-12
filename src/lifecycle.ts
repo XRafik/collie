@@ -229,7 +229,7 @@ const herdrMachines = (env: PluginEnv) =>
   );
 
 /** The front door a relay header names, for a door a channel would declare. */
-const relayHeader = (door: Door | undefined): RelayHeader => {
+const relayHeader = (door: Door | undefined, stamp?: string): RelayHeader => {
   let header: RelayHeader = {
     as: door === undefined ? "cli" : isFrontDoor(door) ? door : door.origin,
     client: machineName(),
@@ -241,6 +241,7 @@ const relayHeader = (door: Door | undefined): RelayHeader => {
     door.from.agent !== undefined
   )
     header = { ...header, sender: { run: door.from.run, agent: door.from.agent } };
+  if (header.as === "host" && stamp !== undefined) header = { ...header, stamp };
   return header;
 };
 
@@ -262,7 +263,7 @@ const reach = (
         ),
       )
     : ensurePaired(env, machine).pipe(
-        Effect.andThen(connectPeer(env.stateDir, machine, relayHeader(door))),
+        Effect.andThen(connectPeer(env.stateDir, machine, relayHeader(door, env.hostStamp))),
       );
 
 /** An answer, and the Machine it came from: null for this one. */
@@ -1372,18 +1373,26 @@ export const actAsked = (
     readonly request: string;
   },
 ): Effect.Effect<ReadonlyArray<ActionResult>, never, Client> =>
-  (options.actions.length === 1 && "run" in options.actions[0]!
-    ? asksRun(
-        env,
-        options.actions[0]!.run,
+  (options.actions.length === 1 &&
+  options.actions[0]!.kind === "start" &&
+  options.actions[0]!.machine !== undefined
+    ? asks(
+        { ...env, machine: options.actions[0]!.machine },
         (client) => client.act({ actions: options.actions, request: options.request }),
         options.door,
       )
-    : asks(
-        env,
-        (client) => client.act({ actions: options.actions, request: options.request }),
-        options.door,
-      )
+    : options.actions.length === 1 && "run" in options.actions[0]!
+      ? asksRun(
+          env,
+          options.actions[0]!.run,
+          (client) => client.act({ actions: options.actions, request: options.request }),
+          options.door,
+        )
+      : asks(
+          env,
+          (client) => client.act({ actions: options.actions, request: options.request }),
+          options.door,
+        )
   ).pipe(
     Effect.map((answered) =>
       answered.ok
@@ -1508,3 +1517,30 @@ export const inviteFrom = (
   asks(env, (client) =>
     client.invite({ for: asker.installation, name: asker.name, address: asker.address }),
   );
+
+export const followCheckLog = Effect.fn("Lifecycle.followCheckLog")(function* (
+  env: PluginEnv,
+  runId: string,
+) {
+  const found = yield* asksRun(env, runId, () => Effect.void);
+  const client = yield* reach(env, found.ok ? found.machine : (env.machine ?? null));
+  return client.checkLog({ runId });
+});
+
+export const verifyRun = Effect.fn("Lifecycle.verifyRun")(function* (
+  env: PluginEnv,
+  request: {
+    runId: string;
+    name: string;
+    executable: string;
+    argv: ReadonlyArray<string>;
+    cwd?: string;
+    expect: "pass" | "fail";
+  },
+  door: Door,
+) {
+  const found = yield* asksRun(env, request.runId, () => Effect.void, door);
+  if (!found.ok) return found;
+  const client = yield* reach(env, found.machine, door);
+  return { ok: true as const, events: client.verify(request) };
+});

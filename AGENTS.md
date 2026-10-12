@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `investigate` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -79,6 +79,11 @@ herdr actions, and the `collie` CLI.
   Machine that has it), with `test/peers.test.ts` and `test/support/peers.ts` (two real
   hosts, a fake herdr each and a fake `ssh`). Adding a Machine to herdr pairs it; there is
   no command to.
+- **Changing how work an agent starts reports back or closes** →
+  [ADR-0055](docs/adr/0055-an-agent-speaks-to-another-as-itself.md), alongside
+  `src/reports.ts` (report delivery and closure), `requestedBy` in `src/engine.ts`,
+  `src/agent-start.ts` (repository and branch fetch) and `workflows/investigate.workflow.ts`,
+  with `test/reports.test.ts`. Another Run's live agent or a human pane keeps the workspace.
 - **Changing Desktop** → [`docs/using.md`](docs/using.md#collie-desktop), alongside
   `desktop/src/bun/machine.ts` (a Machine reached through `collie bridge`, never the host
   client) and `desktop/src/shared/` (the view's RPC and the Flock it folds), with the main
@@ -200,7 +205,7 @@ herdr actions, and the `collie` CLI.
   `src/board-model.ts`, `src/board-stream.ts` and `test/board-stream.test.ts`. An additive
   change keeps `PROTOCOL`; a removal or a change of meaning bumps it. Who an operation
   is recorded as is [ADR-0039](docs/adr/0039-every-operation-records-who-asked.md), with
-  `src/audit.ts` and `test/actor.test.ts`. Which writes a front door leaves to the host, and the two it
+  `src/audit.ts` and `test/actor.test.ts`. Which writes a front door leaves to the host, and the receipts it
   still makes itself, are [ADR-0040](docs/adr/0040-the-host-is-the-only-writer.md), with
   `test/only-writer.test.ts`.
   A drawer's details are `src/run-detail.ts` and `test/run-detail.test.ts`.
@@ -265,7 +270,7 @@ herdr actions, and the `collie` CLI.
 - **Changing what a shipped workflow does** →
   [ADR-0026](docs/adr/0026-a-shipped-workflow-is-a-module-like-any-other.md) and
   [`docs/sdk.md`](docs/sdk.md), alongside `workflows/*.workflow.ts`, their Markdown beside
-  them and the scenarios in `test/support/baseline.ts`. All five are modules loaded through the public
+  them and the scenarios in `test/support/baseline.ts`. All six are modules loaded through the public
   contract: the Markdown is content, what happens is TypeScript, and what each one proves
   and offers is its own declaration rather than its name. One that expects to be varied —
   `renovate` — takes the varying steps as ordinary functions, so a fork supplies three and

@@ -1,6 +1,6 @@
 # Workflows
 
-Collie ships five workflows. This page is the "which one do I want" level: what each is
+Collie ships six workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
@@ -304,3 +304,20 @@ its prompts in [`workflows/architecture.md`](../workflows/architecture.md).
 A chained run is a child of the one that started it, its input decoded against the child's
 own schema before it is admitted. It has a card of its own, the parent waits for it and
 ends with its result, and stopping the parent reaches it.
+
+## `investigate`
+
+**For:** reproducing a problem or gathering evidence on the Machine that can observe it.
+
+**Input:** `goal`. Name the checkout with the host's `workspace` launch option and,
+optionally, the branch with `branch`. A remote start can name the repository by URL or
+`owner/name`; push the named branch first.
+
+**What happens:** one investigator works in the Run's own checkout and returns
+`{ summary, findings: [{ what, evidence }] }`. It changes only what the goal asks,
+proves nothing beyond its decoded Output and offers no next steps. The host reports
+the result to the agent that started it, then closes the investigator and its Task
+workspace unless another Run or a human pane needs it (`closes: "reported"`).
+
+Module: [`workflows/investigate.workflow.ts`](../workflows/investigate.workflow.ts),
+with its prompt in [`workflows/investigate.md`](../workflows/investigate.md).

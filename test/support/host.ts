@@ -9,6 +9,7 @@
 import { Config, Effect, FileSystem, Option, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { CrashPoint } from "../../src/engine";
+import { holderLives, type LockHolder } from "../../src/lock";
 import { connect, ownerOf, type HostClient } from "../../src/host";
 import { collie, type World } from "./world";
 import { suiteEnv } from "./effect";
@@ -459,14 +460,14 @@ export const openHost = Effect.fn("HostTest.open")(function* (
 export const stopHost = Effect.fn("HostTest.stopHost")(function* (dir: string) {
   // A host that lost the race to start may still be booting, and takes the lock once its
   // owner has gone: whoever holds it is stopped, once each, until nobody does.
-  const stopped = new Set<number>();
+  const stopped = new Map<number, LockHolder>();
   yield* until(
     () =>
       ownerOf(dir).pipe(
         Effect.tap((owner) =>
           Effect.sync(() => {
             if (owner === null || stopped.has(owner.pid)) return;
-            stopped.add(owner.pid);
+            stopped.set(owner.pid, owner);
             try {
               process.kill(owner.pid, "SIGTERM");
             } catch {
@@ -474,8 +475,13 @@ export const stopHost = Effect.fn("HostTest.stopHost")(function* (dir: string) {
             }
           }),
         ),
+        Effect.flatMap((owner) =>
+          Effect.forEach([...stopped.values()], holderLives).pipe(
+            Effect.map((lives) => owner === null && lives.every((live) => !live)),
+          ),
+        ),
       ),
-    (holder) => holder === null,
+    (gone) => gone,
   );
 });
 

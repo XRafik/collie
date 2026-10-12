@@ -1,6 +1,6 @@
 # An agent speaks to another as itself, and work it starts reports back to it
 
-**Status: accepted.** D1–D5 implemented 2026-10-12. D6–D8 are the next ticket.
+**Status: accepted.** D1–D8 implemented 2026-10-12.
 
 It builds on [ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md), which lets
 a Machine reach its peer. It amends [ADR-0039](0039-every-operation-records-who-asked.md)
@@ -77,14 +77,14 @@ its Machine, beside how to message another Run's agent.
 - **The declaration.** A Workflow may declare `closes: "reported"`. Its Run's agents and
   its Task's workspace are then closed once D6's report has been delivered, or recorded
   as undeliverable.
-- **What keeps it open.** A pane a human opened in the workspace
+- **What keeps it open.** Another Run that needs the workspace, including a finished Run with a live agent, or a pane a human opened in the workspace
   ([ADR-0045](0045-collie-removes-what-it-made-once-nothing-needs-it.md)).
 - **Asking again** is a new start.
 - **`investigate`**, a shipped Workflow, is one: one agent, a goal, findings as its Output.
 
 **D8. A start from another Machine names its checkout by its repository.** The receiving
 host places the Run in its own checkout of that repository's remote under its Projects
-root, on the branch the start names. Where there is none, the refusal says what it looked
+root, on the branch the start names, fetched from the matched remote. A stale local branch or a dirty existing checkout is refused rather than overwritten. Where there is none, the refusal says what it looked
 for ([ADR-0033](0033-a-run-started-from-the-home-is-placed-not-asked.md)).
 
 ## Considered
@@ -109,5 +109,5 @@ for ([ADR-0033](0033-a-run-started-from-the-home-is-placed-not-asked.md)).
 - Each line of that conversation is recorded on the Run that received it, as the agent
   that sent it.
 - A Schedule on one Machine may manage another's through `--machine` once
-  [ADR-0052](0052-a-schedule-is-a-saved-start-its-host-fires.md) is built. A Schedule
+  ADR-0052 is built. A Schedule
   still belongs to the Machine that fires it.

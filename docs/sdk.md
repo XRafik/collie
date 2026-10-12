@@ -1068,6 +1068,7 @@ export default defineWorkflow({
   from a directory that is not a git checkout is refused naming that directory, and no
   Run, worktree, workspace or agent is left behind. Absent, the Run works where it was
   started.
+- **`closes: "reported"`** asks the host to close this Run's agents once its report is delivered or recorded as undelivered. It closes the Task workspace only when no other Run needs it and every remaining pane belongs to this Run or is the Task's shell. A human pane or another Run's live agent keeps the workspace. Without the declaration, reporting leaves the agents open.
 - **`verifies: true`** says the workflow's gate runs the approved set. A start of it whose
   outcome needs that set (anything but `investigation`, `plan` and `review`) and has nothing
   approved is refused as `invalid_input`, with the repair, before any Run, worktree or Task
@@ -1185,3 +1186,38 @@ Collie makes the common cases convenient; it does not stand between you and Effe
   in `layer`, wrapped in an Activity so replay hands back what it answered. Collie has no
   classifier API of its own, and preferring a harness or model never overrides a provider
   you supplied; `agentWork` is the way to reach the harness the operator configured.
+
+### Starting work on another Machine
+
+A `collie_do` `start` action may name `machine`, `workspace` and `inputs`, for example:
+
+```json
+{
+  "actions": [
+    {
+      "kind": "start",
+      "workflow": "investigate",
+      "machine": "mk-laptop",
+      "workspace": "cego/collie",
+      "inputs": { "goal": "Why is the Machines page behind?", "branch": "mk/desktop-fix" }
+    }
+  ]
+}
+```
+
+`workspace` also takes a remote URL, such as `https://github.com/cego/collie` or
+`git@github.com:cego/collie.git`. The receiving host finds a matching `origin` or `upstream`
+under its Projects root. Push the branch before starting work elsewhere. The host fetches
+it and cuts the worktree from that commit; a conflicting local branch or a checkout with
+local changes is refused. Missing or ambiguous checkouts are refused with where it looked.
+
+`workspace` and `branch` are host launch options, separate from a module's Input schema.
+`investigate` declares only `goal`; it returns `{ summary, findings: [{ what, evidence }] }`.
+
+A start by an agent records `requestedBy`: its Run, agent and Machine. When it settles,
+the host sends the requester the status, summary or failure reason and
+`collie run show <id>` for the full Output. The Delivery uses the agent's sender line and
+a request id derived from the started Run. A restart reuses that Delivery. Delivery uses
+`boundary`, supported by all harnesses. A gone agent, an unpaired Machine or a Machine
+that does not answer within fifteen seconds leaves an undelivered report with its reason;
+there is no retry queue. `run show` and the drawer show the requester and report.

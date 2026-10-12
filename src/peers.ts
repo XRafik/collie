@@ -939,23 +939,27 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     const cert = yield* fs.readFileString(certOf(link.dir));
     const key = yield* fs.readFileString(keyOf(link.dir));
     served = cert;
-    return Bun.serve<Accepted>({
-      hostname: listenHost,
-      port: listenPort,
-      tls: { cert, key },
-      fetch: (request, server) => {
-        const accepted = accept(request);
-        if (accepted instanceof Response) return accepted;
-        return server.upgrade(request, { data: accepted })
-          ? undefined
-          : new Response("", { status: 400 });
-      },
-      websocket: {
-        open: (ws) => ws.data.opened(ws),
-        message: (ws, message) =>
-          ws.data.arrived(Buffer.isBuffer(message) ? message : Buffer.from(message)),
-        close: (ws) => ws.data.hungUp(ws),
-      },
+    return yield* Effect.try({
+      try: () =>
+        Bun.serve<Accepted>({
+          hostname: listenHost,
+          port: listenPort,
+          tls: { cert, key },
+          fetch: (request, server) => {
+            const accepted = accept(request);
+            if (accepted instanceof Response) return accepted;
+            return server.upgrade(request, { data: accepted })
+              ? undefined
+              : new Response("", { status: 400 });
+          },
+          websocket: {
+            open: (ws) => ws.data.opened(ws),
+            message: (ws, message) =>
+              ws.data.arrived(Buffer.isBuffer(message) ? message : Buffer.from(message)),
+            close: (ws) => ws.data.hungUp(ws),
+          },
+        }),
+      catch: (cause) => new HostRefused({ reason: reason(cause) }),
     });
   });
 
@@ -1108,73 +1112,90 @@ const remoteCollie = (args: ReadonlyArray<string>) =>
  * this process's stderr, where the human who has to approve it is. Only a front door that
  * can show that login calls this; a host's own jobs never do.
  */
-export const pairWith = Effect.fn("Peers.pairWith")(function* (
-  machine: HerdrMachine,
-  asker: {
-    readonly installation: string;
-    readonly name: string;
-    /** An SSH master already open to the machine, whose login is reused. */
-    readonly control?: string;
+export const pairWith = Effect.fn("Peers.pairWith")(
+  function* (
+    machine: HerdrMachine,
+    asker: {
+      readonly installation: string;
+      readonly name: string;
+      /** An SSH master already open to the machine, whose login is reused. */
+      readonly control?: string;
+    },
+  ) {
+    const ssh = "ssh";
+    const resolved = yield* shell(ssh, ["-G", machine.target], ".");
+    const address =
+      /^hostname (.+)$/m.exec(resolved.stdout)?.[1]?.trim() ?? machine.target.replace(/^.*@/, "");
+    const through =
+      asker.control === undefined ? [] : ["-S", asker.control, "-o", "ControlMaster=no"];
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const said = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* spawner.spawn(
+          ChildProcess.make(
+            ssh,
+            [
+              ...through,
+              "-o",
+              "ConnectTimeout=10",
+              "-T",
+              machine.target,
+              remoteCollie([
+                "--json",
+                "machine",
+                "invite",
+                "--for",
+                asker.installation,
+                "--name",
+                asker.name,
+                "--address",
+                address,
+              ]),
+            ],
+            { stdin: "ignore", stdout: "pipe", stderr: "inherit", extendEnv: true },
+          ),
+        );
+        return yield* handle.stdout.pipe(
+          Stream.decodeText(),
+          Stream.runFold(
+            () => "",
+            (all, chunk) => all + chunk,
+          ),
+        );
+      }),
+    ).pipe(Effect.orElseSucceed(() => ""));
+    const last = said.trim().split("\n").at(-1) ?? "";
+    const invited = decodeInvited(last);
+    if (Option.isNone(invited))
+      return yield* new HostRefused({
+        reason: `${machine.label} did not pair: ${Option.match(decodeRefusal(last), {
+          onNone: () => (last === "" ? "its collie answered nothing over ssh" : last),
+          onSome: (refused) => refused.error.message,
+        })}`,
+      });
+    const { installation, port: at, certificate, secret } = invited.value.data;
+    const host = address.includes(":") ? `[${address}]` : address;
+    const peer: Peer = {
+      installation,
+      name: machine.label,
+      dials: "out",
+      url: `wss://${host}:${at}`,
+      certificate,
+      secret,
+    };
+    return peer;
   },
-) {
-  const ssh = "ssh";
-  const resolved = yield* shell(ssh, ["-G", machine.target], ".");
-  const address =
-    /^hostname (.+)$/m.exec(resolved.stdout)?.[1]?.trim() ?? machine.target.replace(/^.*@/, "");
-  const through =
-    asker.control === undefined ? [] : ["-S", asker.control, "-o", "ControlMaster=no"];
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const said = yield* Effect.scoped(
-    Effect.gen(function* () {
-      const handle = yield* spawner.spawn(
-        ChildProcess.make(
-          ssh,
-          [
-            ...through,
-            "-T",
-            machine.target,
-            remoteCollie([
-              "--json",
-              "machine",
-              "invite",
-              "--for",
-              asker.installation,
-              "--name",
-              asker.name,
-              "--address",
-              address,
-            ]),
-          ],
-          { stdin: "ignore", stdout: "pipe", stderr: "inherit", extendEnv: true },
-        ),
-      );
-      return yield* handle.stdout.pipe(
-        Stream.decodeText(),
-        Stream.runFold(
-          () => "",
-          (all, chunk) => all + chunk,
-        ),
-      );
-    }),
-  ).pipe(Effect.orElseSucceed(() => ""));
-  const last = said.trim().split("\n").at(-1) ?? "";
-  const invited = decodeInvited(last);
-  if (Option.isNone(invited))
-    return yield* new HostRefused({
-      reason: `${machine.label} did not pair: ${Option.match(decodeRefusal(last), {
-        onNone: () => (last === "" ? "its collie answered nothing over ssh" : last),
-        onSome: (refused) => refused.error.message,
-      })}`,
-    });
-  const { installation, port: at, certificate, secret } = invited.value.data;
-  const host = address.includes(":") ? `[${address}]` : address;
-  const peer: Peer = {
-    installation,
-    name: machine.label,
-    dials: "out",
-    url: `wss://${host}:${at}`,
-    certificate,
-    secret,
-  };
-  return peer;
-});
+  (effect, machine) =>
+    effect.pipe(
+      Effect.timeoutOption("2 minutes"),
+      Effect.flatMap((answer) =>
+        Option.isSome(answer)
+          ? Effect.succeed(answer.value)
+          : Effect.fail(
+              new HostRefused({
+                reason: `${machine.label} did not pair: SSH login or SSO approval did not finish within two minutes.`,
+              }),
+            ),
+      ),
+    ),
+);

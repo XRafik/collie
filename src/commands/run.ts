@@ -1,31 +1,14 @@
-import {
-  Cause,
-  Clock,
-  Duration,
-  Effect,
-  Exit,
-  FileSystem,
-  Option,
-  Path,
-  PlatformError,
-  Ref,
-  Schema,
-  Stdio,
-  Stream,
-} from "effect";
+import { Cause, Duration, Effect, Exit, Option, Path, Ref, Schema, Stdio, Stream } from "effect";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { Argument, Command, Flag } from "effect/cli";
-import { clearOverride, err, type Failure } from "../operations";
-import { withDirLock } from "../lock";
-import { GIVEN, INFERRED, evidenceDir, runDir } from "../engine";
-import { listRuns, textOf } from "../runs";
-import { donePasses, followLog, markersOf, runningCheck } from "../checks";
-import { Herdr } from "../herdr";
+import { err, type Failure } from "../operations";
+import { GIVEN, INFERRED } from "../engine";
+import { textOf } from "../runs";
 import {
+  asksRun,
+  followCheckLog,
   describeWaiting,
   answerRun,
-  grantRun,
-  rememberChecks,
   anyRuns,
   controlRun,
   disposeRun,
@@ -47,18 +30,13 @@ import type { Given, RunView } from "../engine";
 import { RESERVED_INPUTS } from "../sdk";
 import {
   EMPTY_DEFAULTS,
-  amend,
   defaultsPath,
   describeDefaults,
   authorityPatch,
   parseConstraint,
-  propagate,
   readDefaults,
-  readIntent,
   verificationGrant,
   writeDefaults,
-  writeIntent,
-  writeIntentHeld,
   type Change,
   type Constraint,
   type Defaults,
@@ -70,19 +48,19 @@ import { runDeliveries } from "./steer";
 import { givenVerifications } from "../verify-spec";
 import { agentStartRefusal, CLI_CHECKOUT_FIX, insideCheckout } from "../agent-start";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "../projects";
-import { currentReports, readDrift } from "../drift";
-import { newest, readCards } from "../cards";
-import { metricsOf, readMetrics } from "../metrics";
-import { ranOn, type Metrics, type RunAgent } from "../board-model";
-import { runAgents } from "../launches";
+import { currentReports } from "../drift";
+import { newest } from "../cards";
+import { metricsOf } from "../metrics";
+import { requestedByLine, ranOn, type Metrics, type RunAgent } from "../board-model";
 import { reportOf } from "../report";
-import { latest, readDispositions, statusLine } from "../disposition";
-import { nowIso, epochMs } from "../time";
+import { latest, statusLine } from "../disposition";
+import { epochMs } from "../time";
 import type { PluginEnv } from "../env";
 import {
   attempt,
   guarded,
   mutation,
+  ResultBoundary,
   printResult,
   say,
   type CollieError,
@@ -91,8 +69,6 @@ import {
 import {
   PrettyUnknownJson,
   UnknownJson,
-  actorName,
-  actorNow,
   cliDoor,
   context,
   mutating,
@@ -465,16 +441,6 @@ const resolveCommandRun = Effect.fn("collie.resolveCommandRun")(function* (
 });
 
 /**
- * A parent's Runs, one line each: an agent driving Collie follows a chain from here, and
- * work that spans repositories is several Runs whose relation is otherwise only in the
- * `--json` payload.
- */
-const childLines = Effect.fn("run.childLines")(function* (env: PluginEnv, runId: string) {
-  const children = (yield* runViews(env, null)).runs.filter((view) => view.parent === runId);
-  return children.map((view) => `  ${view.runId}\t${view.workflow}\t${statusOf(view)}`);
-});
-
-/**
  * The directory a CLI start names as its checkout, or null for none: its `workspace`
  * option, else the checkout the command was run in.
  */
@@ -528,6 +494,13 @@ const runShow = Command.make(
                 ([name, value]) =>
                   `  ${name} = ${textOf(value)} (${view.provenance[name] ?? GIVEN})`,
               ),
+              ...(view.requestedBy === undefined ? [] : [`  ${requestedByLine(view.requestedBy)}`]),
+              ...(view.report === undefined
+                ? []
+                : [
+                    `  Report ${view.report.state}: ${view.report.note}`,
+                    ...(view.report.closure === undefined ? [] : [`  ${view.report.closure}`]),
+                  ]),
               ...agentLines(agents),
               ...describeWaiting(view),
               ...children.map((child) => `  ${child.runId}\t${child.workflow}\t${statusOf(child)}`),
@@ -554,7 +527,11 @@ const runMetrics = Command.make(
           const resolved = yield* resolveCommandRun(global, runId);
           if (resolved._tag === "RunFailure") return resolved.result;
           const facts = runFacts(resolved);
-          const metrics = metricsOf(yield* readMetrics(resolved.evidence), facts.created);
+          const records = yield* asksRun(resolved.env, runId, (client) =>
+            client.runMetrics({ runId }),
+          );
+          if (!records.ok) return records;
+          const metrics = metricsOf(records.value, facts.created);
           const said = (value: number | null) =>
             value === null ? "not yet" : `${Math.round(value)}s`;
           return {
@@ -604,16 +581,11 @@ const runChecks = Command.make(
         Effect.gen(function* () {
           const resolved = yield* context(global, false);
           if (resolved._tag === "ContextFailure") return resolved.result;
-          const runs = yield* listRuns(resolved.env);
-          const run = runs.find((one) => one.id === runId);
-          if (run === undefined)
-            return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
-          const running = yield* runningCheck(
-            run,
-            runs,
-            yield* markersOf(runs),
-            yield* Clock.currentTimeMillis,
+          const records = yield* asksRun(resolved.env, runId, (client) =>
+            client.runChecks({ runId }),
           );
+          if (!records.ok) return records;
+          const running = records.value.running;
           if (follow) {
             if (running?.log == null)
               return {
@@ -621,8 +593,20 @@ const runChecks = Command.make(
                 data: { run: runId, ended: null },
                 human: `No check is running for ${runId}.`,
               };
-            yield* say(`${running.sentence}\n`);
-            const ended = yield* followLog(run, running.log, say);
+            const ended = yield* Effect.scoped(
+              Effect.gen(function* () {
+                const log = yield* followCheckLog(resolved.env, runId);
+                const last = yield* Stream.runFoldEffect(
+                  log,
+                  (): import("../verify").Verification | null => null,
+                  (last, event) =>
+                    event._tag === "Output"
+                      ? say(event.text).pipe(Effect.as(last))
+                      : Effect.succeed(event.check),
+                );
+                return last;
+              }),
+            );
             return {
               ok: true as const,
               data: { run: runId, ended },
@@ -632,7 +616,7 @@ const runChecks = Command.make(
                   : `${ended.name} ended ${ended.result} (exit ${ended.exit}) after ${Math.round(ended.seconds)}s.`,
             };
           }
-          const done = yield* donePasses(run);
+          const done = records.value.done;
           const passOf = (pass: string, round: number | null) =>
             round === null ? pass : `${pass} ${round}`;
           const human = [
@@ -684,14 +668,13 @@ const runReport = Command.make(
           if (resolved._tag === "ContextFailure") return resolved.result;
           const hosted = yield* runViews(resolved.env, null);
           const metrics = new Map<string, Metrics>();
-          for (const view of hosted.runs)
-            metrics.set(
-              view.runId,
-              metricsOf(
-                yield* readMetrics(evidenceDir(resolved.env.stateDir, view.runId)),
-                view.created,
-              ),
+          for (const view of hosted.runs) {
+            const records = yield* asksRun(resolved.env, view.runId, (client) =>
+              client.runMetrics({ runId: view.runId }),
             );
+            if (!records.ok) return records;
+            metrics.set(view.runId, metricsOf(records.value, view.created));
+          }
           const report = reportOf(hosted.runs, metrics, from);
           const unreadable = hosted.unreadable === null ? [] : [`runs: ${hosted.unreadable}`];
           const human =
@@ -743,19 +726,11 @@ const runOutput = Command.make(
         Effect.gen(function* () {
           const resolved = yield* resolveCommandRun(global, runId);
           if (resolved._tag === "RunFailure") return resolved.result;
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const outputs: Array<{ path: string; value?: unknown; error?: string }> = [];
-          for (const file of yield* outputFiles(resolved.dir)) {
-            const relative = path.relative(resolved.dir, file);
-            outputs.push(
-              yield* fs.readFileString(file).pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(UnknownJson)),
-                Effect.map((value) => ({ path: relative, value })),
-                Effect.catch((cause) => Effect.succeed({ path: relative, error: String(cause) })),
-              ),
-            );
-          }
+          const records = yield* asksRun(resolved.env, runId, (client) =>
+            client.runOutputs({ runId }),
+          );
+          if (!records.ok) return records;
+          const outputs = records.value;
           return {
             ok: true,
             data: { runId, outputs },
@@ -777,28 +752,6 @@ const runOutput = Command.make(
       );
     }),
 ).pipe(Command.withDescription("Print every Output this Run has written"));
-
-/** Every `.json` a Run left, wherever under its own directory it left it. */
-const outputFiles = Effect.fn("run.outputFiles")(function* (dir: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const found: string[] = [];
-  const walk = Effect.fn("run.outputFiles.walk")(function* (
-    at: string,
-    depth: number,
-  ): Generator<Effect.Effect<unknown, PlatformError.PlatformError, FileSystem.FileSystem>, void> {
-    if (depth > 4) return;
-    for (const name of yield* fs.readDirectory(at).pipe(Effect.catch(() => Effect.succeed([])))) {
-      const here = path.join(at, name);
-      const stat = yield* fs.stat(here).pipe(Effect.catch(() => Effect.succeed(null)));
-      if (stat === null) continue;
-      if (stat.type === "Directory") yield* walk(here, depth + 1);
-      else if (name.endsWith(".json")) found.push(here);
-    }
-  });
-  yield* walk(dir, 0);
-  return found.sort();
-});
 
 type ParsedTimeout = { ok: true; ms: number | null } | { ok: false; error: Result };
 
@@ -1182,9 +1135,16 @@ const runClearOverride = Command.make(
   },
   ({ runId, agent, requestId }) =>
     runMutationCommand("run-clear-override", runId, requestId, (env, id) =>
-      Effect.flatMap(actorNow(env, id), (actor) =>
-        clearOverride(env.stateDir, new Herdr(env), runId, agent, actorName(actor)),
-      ),
+      Effect.gen(function* () {
+        const result = yield* asksRun(
+          env,
+          runId,
+          (client) => client.clearOverride({ runId, agent, request: id }),
+          yield* cliDoor(env),
+        );
+        if (!result.ok) return result;
+        return Schema.decodeUnknownSync(ResultBoundary)(result.value);
+      }),
     ),
 ).pipe(
   Command.withDescription("Let Collie correct an agent again after someone typed into its pane"),
@@ -1225,7 +1185,11 @@ const runDisposition = Command.make(
           const status = statusOf(resolved.view);
           const kind = Option.getOrNull(as);
           if (kind === null) {
-            const lines = yield* readDispositions(resolved.dir);
+            const records = yield* asksRun(resolved.env, runId, (client) =>
+              client.runDispositions({ runId }),
+            );
+            if (!records.ok) return records;
+            const lines = records.value;
             return {
               ok: true,
               data: { run: facts.id, status, disposition: latest(lines), lines },
@@ -1265,7 +1229,9 @@ const runDrift = Command.make("drift", { runId: runIdArg }, ({ runId }) =>
       Effect.gen(function* () {
         const resolved = yield* resolveCommandRun(global, runId);
         if (resolved._tag === "RunFailure") return resolved.result;
-        const lines = yield* readDrift(resolved.dir);
+        const records = yield* asksRun(resolved.env, runId, (client) => client.runDrift({ runId }));
+        if (!records.ok) return records;
+        const lines = records.value;
         const reports = currentReports(lines);
         const skipped = lines.flatMap((line) => (line.kind === "skipped" ? [line] : []));
         return {
@@ -1297,7 +1263,9 @@ const runCards = Command.make("cards", { runId: runIdArg }, ({ runId }) =>
       Effect.gen(function* () {
         const resolved = yield* resolveCommandRun(global, runId);
         if (resolved._tag === "RunFailure") return resolved.result;
-        const cards = newest(yield* readCards(resolved.dir));
+        const records = yield* asksRun(resolved.env, runId, (client) => client.runCards({ runId }));
+        if (!records.ok) return records;
+        const cards = newest(records.value);
         return {
           ok: true,
           data: { cards },
@@ -1334,8 +1302,6 @@ const runActions = Command.make("actions", { runId: runIdArg }, ({ runId }) =>
         if (resolved._tag === "ContextFailure") return resolved.result;
         // Current code supplies the actions, so a Run whose module has gone offers
         // nothing and says why.
-        if (!(yield* anyRuns(resolved.env)))
-          return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
         return yield* showOffers(resolved.env, runId);
       }),
       global.json,
@@ -1390,8 +1356,6 @@ const runResume = Command.make("resume", mutationFlags, ({ runId, requestId }) =
         if (resolved._tag === "ContextFailure") return resolved.result;
         return yield* mutation(resolved.env, "run-resume", requestId, (request) =>
           Effect.gen(function* () {
-            if (!(yield* anyRuns(resolved.env)))
-              return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
             const recovered = yield* resumeRun(resolved.env, {
               door: yield* cliDoor(resolved.env),
               runId,
@@ -1425,7 +1389,10 @@ function intentChange(
   options: {
     readonly propagate?: boolean;
     /** What a hosted Run does instead, where it keeps this outside an Intent. */
-    readonly hosted?: (env: PluginEnv, id: string) => Effect.Effect<Result, never, BunServices>;
+    readonly verification?: {
+      readonly name: string;
+      readonly command: Omit<import("../verify-spec").VerifySpec, "name"> | null;
+    };
   } = {},
 ) {
   return Effect.gen(function* () {
@@ -1434,71 +1401,54 @@ function intentChange(
       Effect.gen(function* () {
         const resolved = yield* resolveCommandRun(global, runId);
         if (resolved._tag === "RunFailure") return resolved.result;
-        const hosted = options.hosted;
-        const dir = resolved.dir;
-        // Read, decide and write as one act. Two amendments that both read v1 would
-        // otherwise both report v2 and the later rename would erase the earlier one.
-        const amendHeld = (id: string) =>
-          withDirLock<
-            Failure | Intent,
-            Error | PlatformError.PlatformError,
-            FileSystem.FileSystem | Path.Path | BunServices
-          >(
-            dir,
-            Effect.gen(function* () {
-              const intent = yield* readIntent(dir).pipe(
-                Effect.mapError((cause) => new Error(String(cause))),
-              );
-              if (intent === null)
-                return err("invalid_state", `Run "${runId}" has no Intent to amend.`);
-              const wanted = change(intent);
-              if ("ok" in wanted) return wanted;
-              const next = amend(
-                intent,
-                wanted,
-                actorName(yield* actorNow(resolved.env, id)),
-                yield* nowIso(),
-              );
-              if (next !== intent) yield* writeIntentHeld(dir, next);
-              return next;
-            }),
+        let wanted: typeof import("../intent-model").IntentChangeSchema.Type;
+        if (options.verification !== undefined)
+          wanted = { kind: "verification", ...options.verification };
+        else {
+          const current = yield* asksRun(resolved.env, runId, (client) =>
+            client.runIntent({ runId }),
           );
-        if (hosted !== undefined)
-          return yield* mutation(resolved.env, operation, requestId, (id) =>
-            hosted(resolved.env, id).pipe(
-              // The host keeps what it acts on; the Intent says the same, so what `intent
-              // show` and oversight read is what the gate will run, not an empty list.
-              Effect.flatMap((result): Effect.Effect<Result, CollieError, BunServices> =>
-                Effect.gen(function* () {
-                  if (!result.ok) return result;
-                  const failed = yield* amendHeld(id).pipe(
-                    Effect.map((amended) => ("ok" in amended ? amended.error.message : "")),
-                    Effect.catch((cause) => Effect.succeed(String(cause))),
-                  );
-                  if (failed === "") return result;
-                  return {
-                    ...result,
-                    human: `${result.human}\nThe grant holds, but intent show will not list it: ${failed}`,
-                  };
-                }),
-              ),
-            ),
-          );
-        return yield* mutation(resolved.env, operation, requestId, (id) =>
+          if (!current.ok) return current;
+          if (current.value === null)
+            return err("invalid_state", `Run "${runId}" has no Intent to amend.`);
+          const chosen = change(current.value);
+          if ("ok" in chosen) return chosen;
+          wanted = chosen;
+        }
+        return yield* mutation(resolved.env, operation, requestId, (request) =>
           Effect.gen(function* () {
-            const amended = yield* amendHeld(id);
-            if ("ok" in amended) return amended;
-            // Nothing is told: a Run reads its Intent at its next boundary, from the file
-            // it has just been written to, which is what makes this one write rather than
-            // a write and a message that can disagree with it.
-            const propagated = options.propagate
-              ? yield* propagateToChildren(resolved.env, runId, amended)
-              : [];
-            return {
-              ok: true,
-              data: { runId, version: amended.version, propagated },
-              human: [`${runId}: intent v${amended.version}`, ...propagated].join("\n"),
-            };
+            const result = yield* asksRun(
+              resolved.env,
+              runId,
+              (client) =>
+                client.changeIntent({
+                  runId,
+                  change: wanted,
+                  propagate: options.propagate ?? false,
+                  request,
+                }),
+              yield* cliDoor(resolved.env),
+            );
+            if (!result.ok) return result;
+            const { version, propagated, approved, warning } = result.value;
+            return approved === undefined
+              ? {
+                  ok: true as const,
+                  data: { runId, version, propagated },
+                  human: [`${runId}: intent v${version}`, ...propagated].join("\n"),
+                }
+              : {
+                  ok: true as const,
+                  data: { run: runId, approved, warning },
+                  human: [
+                    `${runId} may have Collie run:`,
+                    ...approved.map(
+                      (one) =>
+                        `  ${one.name}: ${one.executable} ${one.argv.join(" ")} (in ${one.cwd})`,
+                    ),
+                    ...(warning === undefined ? [] : [warning]),
+                  ].join("\n"),
+                };
           }),
         );
       }),
@@ -1506,34 +1456,6 @@ function intentChange(
     );
   });
 }
-
-/**
- * The parent's amended Intent applied to every child that is still going. The child's own
- * entries are kept and conflicts are reported, never resolved — `propagate` decides that,
- * and this only writes what it decided. Each child picks the new version up at its next
- * boundary.
- */
-const propagateToChildren = Effect.fn("run.propagateToChildren")(function* (
-  env: PluginEnv,
-  parent: string,
-  intent: Intent,
-) {
-  const lines: string[] = [];
-  const children = (yield* runViews(env, null)).runs.filter(
-    (view) => view.parent === parent && !isSettled(view),
-  );
-  for (const child of children) {
-    const dir = runDir(env.stateDir, child.runId);
-    const current = yield* readIntent(dir).pipe(Effect.catch(() => Effect.succeed(null)));
-    if (current === null) continue;
-    const { intent: next, conflicts } = propagate(intent, current);
-    yield* writeIntent(dir, next);
-    lines.push(
-      `  ${child.runId}: propagated${conflicts.length ? ` (${conflicts.join("; ")})` : ""}`,
-    );
-  }
-  return lines;
-});
 
 const severityFlag = Flag.String("severity").pipe(
   Flag.withDescription("block or warn; warn is the default"),
@@ -1556,7 +1478,11 @@ const intentShow = Command.make("show", { runId: runIdArg }, ({ runId }) =>
       Effect.gen(function* () {
         const resolved = yield* resolveCommandRun(global, runId);
         if (resolved._tag === "RunFailure") return resolved.result;
-        const intent = yield* readIntent(resolved.dir);
+        const records = yield* asksRun(resolved.env, runId, (client) =>
+          client.runIntent({ runId }),
+        );
+        if (!records.ok) return records;
+        const intent = records.value;
         if (intent === null) return err("invalid_state", `Run "${runId}" has no Intent.`);
         return {
           ok: true,
@@ -1684,6 +1610,11 @@ const intentVerification = Command.make(
     const [executable, ...argv] = command;
     const granted = remove || executable === undefined ? null : { executable, argv, cwd };
     const missing = err("invalid_input", "A verification grant needs a command, after `--`.");
+    if (!remove && granted === null)
+      return Effect.gen(function* () {
+        const global = yield* root;
+        yield* printResult(missing, global.json);
+      });
     return intentChange(
       "run-intent-verification",
       runId,
@@ -1692,15 +1623,7 @@ const intentVerification = Command.make(
         !remove && granted === null ? missing : verificationGrant(intent, name, granted),
       {
         propagate: wants,
-        hosted: (env, request) =>
-          !remove && granted === null
-            ? Effect.succeed(missing)
-            : cliDoor(env).pipe(
-                Effect.orDie,
-                Effect.flatMap((door) =>
-                  grantRun(env, { runId, name, command: granted, request, door }),
-                ),
-              ),
+        verification: { name, command: granted },
       },
     );
   },
@@ -1723,11 +1646,15 @@ const intentRemember = Command.make(
         Effect.gen(function* () {
           const resolved = yield* resolveCommandRun(global, runId);
           if (resolved._tag === "RunFailure") return resolved.result;
-          return yield* mutation(resolved.env, "run-intent-remember", requestId, () =>
-            rememberChecks(resolved.env, {
-              runId,
-              checkouts: [resolved.view.cwd, resolved.view.project],
-              replace,
+          return yield* mutation(resolved.env, "run-intent-remember", requestId, (request) =>
+            Effect.gen(function* () {
+              const result = yield* asksRun(
+                resolved.env,
+                runId,
+                (client) => client.rememberVerification({ runId, replace, request }),
+                yield* cliDoor(resolved.env),
+              );
+              return result.ok ? Schema.decodeUnknownSync(ResultBoundary)(result.value) : result;
             }),
           );
         }),

@@ -223,6 +223,11 @@ workspace, which is what a merged branch is supposed to do.
 
 ## Reaching another Machine
 
+Run records are served by their owning host through `run-record.ts`. Intent changes,
+remembered checks and override clearing take the caller's Actor and request id there;
+verification runs in that host's checkout and streams its output. `verify-model.ts`
+keeps the shared Schemas separate from the collector.
+
 Each host keeps its peers in `src/peers.ts`, started in the host's scope
 ([ADR-0054](adr/0054-a-machine-reaches-another-over-a-paired-link.md)):
 
@@ -251,7 +256,8 @@ Both relay directions refuse with `MachineUnreachable` within five seconds.
 
 The listener sends a heartbeat every fifteen seconds. Silence past that interval ends a
 control link. Reconnection backs off from one second to one minute, resetting after a
-live link. `machine list` reports `live`, `connecting` with the last failure, or `away`
+live link. `doctor` reports a listener whose port is occupied, as does `machine list`.
+`machine list` reports `live`, `connecting` with the last failure, or `away`
 with its time and reason. Each host keeps running its local Runs while its peer is away.
 
 `src/channel.ts` is the one declare-then-pipe: `collie bridge` hands it stdio, the listener
@@ -264,7 +270,8 @@ each herdr machine not paired yet, for the Run a command names.
 `collie --json machine invite --for <installation> --name <this Machine> --address <HostName>`
 there over `ssh` — through a caller's SSH master where one is given, and as a plain login
 otherwise, whose output goes to the command's stderr so the human sees the approval it
-asks for. The invited host makes its certificate with `openssl` the first time (and again
+asks for. The first login, including SSO approval, is bounded to two minutes; a timeout
+closes the SSH process and says which Machine did not pair. The invited host makes its certificate with `openssl` the first time (and again
 only when the address the asker dials is not on it), mints the secret, keeps the pairing
 and starts listening; the asker's host keeps its side and opens the relay. A relay path
 longer than a unix socket takes (104 bytes on macOS) is refused rather than truncated.

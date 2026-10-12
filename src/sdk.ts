@@ -417,6 +417,7 @@ export interface Declarations {
   readonly checkout?: "branch" | "roaming";
   /** Its gate runs the approved set, so a start with nothing approved is refused. */
   readonly verifies?: boolean;
+  readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
 }
@@ -843,6 +844,7 @@ export interface WorkflowMetadata {
   readonly checkout?: typeof DeclaredCheckout.Type;
   /** Its gate runs the approved set, so a start with nothing approved is refused. */
   readonly verifies?: boolean;
+  readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
 }
@@ -944,6 +946,7 @@ const OfferFields = {
 const DeclaredMetadata = Schema.Struct({
   hints: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   verifies: Schema.optionalKey(Schema.Boolean),
+  closes: Schema.optionalKey(Schema.Literal("reported")),
   outcome: Schema.optionalKey(
     Schema.Struct({
       fixed: Schema.optionalKey(Schema.String),
@@ -1067,6 +1070,7 @@ export function describeMetadata(metadata: WorkflowMetadata | undefined): Schema
     outcome: metadata?.outcome?.fixed ?? null,
     selectable: [...(metadata?.outcome?.selectable ?? [])],
     checkout: metadata?.checkout ?? null,
+    closes: metadata?.closes ?? null,
     followUps: (metadata?.followUps ?? []).map((offer) => ({
       id: offer.id,
       title: offer.title,

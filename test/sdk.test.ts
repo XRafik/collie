@@ -263,6 +263,7 @@ test("what a card is given is ids, titles and projections — never the closures
     outcome: null,
     selectable: ["feature"],
     checkout: null,
+    closes: null,
     followUps: [{ id: "again", title: "Run again", workflow: "echo", when: "succeeded" }],
     actions: [
       {

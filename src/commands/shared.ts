@@ -8,7 +8,7 @@ import { Herdr, type WorkspaceInfo } from "../herdr";
 import { unsafePathComponent } from "../naming";
 import { err, resolveWorkspace, type Failure } from "../operations";
 import { evidenceDir, runDir, type Given, type RunView } from "../engine";
-import { runView } from "../lifecycle";
+import { asksRun } from "../lifecycle";
 import { FrontDoor } from "../board-model";
 import { connect } from "../host";
 import { actorName } from "../proposals";
@@ -186,7 +186,7 @@ export const locateRun = Effect.fn("collie.locateRun")(function* (
 ): Effect.fn.Return<
   Located,
   never,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | BunServices
 > {
   const missing: Located = {
     _tag: "RunFailure",
@@ -194,9 +194,11 @@ export const locateRun = Effect.fn("collie.locateRun")(function* (
   };
   if (unsafePathComponent(id)) return missing;
   const dir = runDir(env.stateDir, id);
-  const view = yield* runView(env, id);
-  if (view === null || !("runId" in view)) return missing;
-  if (task !== null && view.task !== task) return outsideTask(id, task);
+  const found = yield* asksRun(env, id, (client) => client.run({ runId: id }));
+  if (!found.ok) return { _tag: "RunFailure" as const, result: found };
+  const view = found.value;
+  if (view === null) return missing;
+  if (found.machine === null && task !== null && view.task !== task) return outsideTask(id, task);
   return { _tag: "Hosted", view, dir, evidence: evidenceDir(env.stateDir, id) };
 });
 

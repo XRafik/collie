@@ -71,6 +71,7 @@ export const ActionSchema = Schema.Union([
   }),
   Schema.Struct({
     kind: Schema.Literal("start"),
+    machine: Schema.optionalKey(Schema.String),
     workflow: Schema.String,
     inputs: Schema.Record(Schema.String, Schema.String),
     decisions: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),

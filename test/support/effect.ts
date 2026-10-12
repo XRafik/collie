@@ -19,6 +19,9 @@ export function runEffect<A, E>(
 export const suiteEnv = Config.all({
   COLLIE_HOST_WATCH_PID: Config.String("COLLIE_HOST_WATCH_PID").pipe(Config.withDefault("")),
   COLLIE_TEST_ROOT: Config.String("COLLIE_TEST_ROOT").pipe(Config.withDefault("")),
+  COLLIE_HOST_STOP_GRACE: Config.String("COLLIE_HOST_STOP_GRACE").pipe(
+    Config.withDefault("500 millis"),
+  ),
 });
 
 /**

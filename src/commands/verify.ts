@@ -1,23 +1,12 @@
-import { Effect, Option, Stdio, Stream } from "effect";
+import { Effect, Option, Schema, Stdio, Stream } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
-import type { PluginEnv } from "../env";
 import { err } from "../operations";
-import { runView, treeOf } from "../lifecycle";
-import { noteVerification } from "../metrics";
-import { evidenceDir } from "../engine";
-import { collect, insideRun, type Echo } from "../verify";
+import { verifyRun } from "../lifecycle";
+import { REFUSED_INPUT } from "../engine";
+import { HostRefused } from "../board-model";
+import { type Echo } from "../verify";
 import { printResult } from "../envelope";
-import { answering, root } from "./shared";
-
-/** A Run to verify against: where its journal goes, and the tree it is about. */
-interface Target {
-  readonly id: string;
-  readonly dir: string;
-  readonly cwd: string;
-  readonly worktree: string | null;
-  /** Whether the collector records the metric: a Run with steps does it at its gate. */
-  readonly note: boolean;
-}
+import { answering, cliDoor, root } from "./shared";
 
 /**
  * The command's own output, shown as it runs: a failure says why the first time, rather
@@ -33,20 +22,6 @@ const echoed = Effect.fn("collie.verify.echoed")(function* () {
     stdout: to(json ? "stderr" : "stdout"),
     stderr: to("stderr"),
   } satisfies Echo;
-});
-
-/** The Run this verification is about, as the host has it. Null where it has no such Run. */
-const targetOf = Effect.fn("collie.verify.target")(function* (env: PluginEnv, runId: string) {
-  const view = yield* runView(env, runId);
-  if (view === null || !("runId" in view)) return null;
-  const target: Target = {
-    id: view.runId,
-    dir: evidenceDir(env.stateDir, view.runId),
-    cwd: treeOf(view),
-    worktree: null,
-    note: true,
-  };
-  return target;
 });
 
 /**
@@ -92,30 +67,43 @@ export const verify = Command.make(
         err("invalid_input", `--expect is "pass" or "fail", not "${wanted}".`),
         true,
       );
-    const verified = Effect.fn("collie.verify.collect")(function* (target: Target) {
-      const where = Option.getOrElse(cwd, () => target.worktree ?? target.cwd);
-      if (!(yield* insideRun(where, { cwd: target.cwd, worktree: target.worktree })))
-        return err(
-          "invalid_input",
-          `"${where}" is not inside run ${target.id}; a verification names the tree it ran on.`,
-        );
-      return yield* collect(
-        target.dir,
-        {
-          run: target.id,
-          name: Option.getOrElse(name, () => executable),
-          executable,
-          argv,
-          cwd: where,
-          by: "agent",
-          expect: wanted,
-        },
-        yield* echoed(),
-      ).pipe(
-        Effect.tap((record) => (target.note ? noteVerification(target.dir, record) : Effect.void)),
-        Effect.map((record) => {
-          // The command's own exit, passed through: a wrapper around this must behave
-          // the way it would around the command itself.
+    return answering((env) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const request = {
+            runId,
+            name: Option.getOrElse(name, () => executable),
+            executable,
+            argv,
+            expect: wanted,
+          } satisfies Parameters<typeof verifyRun>[1];
+          const where = Option.getOrUndefined(cwd);
+          const opened = yield* verifyRun(
+            env,
+            where === undefined ? request : { ...request, cwd: where },
+            yield* cliDoor(env),
+          );
+          if (!opened.ok) return opened;
+          const echo = yield* echoed();
+          const record = yield* Stream.runFoldEffect(
+            opened.events,
+            (): import("../verify-model").Verification | null => null,
+            (last, event) =>
+              event._tag === "Output"
+                ? echo[event.stream](event.text).pipe(Effect.as(last))
+                : Effect.succeed(event.verification),
+          ).pipe(
+            Effect.catch((cause) =>
+              Effect.succeed(
+                Schema.is(HostRefused)(cause) && cause.reason.startsWith(`${REFUSED_INPUT}:`)
+                  ? err("invalid_input", cause.reason.slice(REFUSED_INPUT.length + 1).trim())
+                  : err("operation_failed", String(cause)),
+              ),
+            ),
+          );
+          if (record === null)
+            return err("operation_failed", "The verification ended without a record.");
+          if ("ok" in record) return record;
           process.exitCode = record.exit;
           return {
             ok: true as const,
@@ -123,18 +111,7 @@ export const verify = Command.make(
             human: `${record.name}: ${record.result} (exit ${record.exit})`,
           };
         }),
-        Effect.catchTag("VerifyRefused", (cause) =>
-          Effect.succeed(err("invalid_input", cause.why)),
-        ),
-      );
-    });
-    return answering((env) =>
-      Effect.gen(function* () {
-        const target = yield* targetOf(env, runId);
-        if (target === null)
-          return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
-        return yield* verified(target);
-      }),
+      ),
     );
   },
 ).pipe(

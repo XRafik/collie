@@ -869,6 +869,14 @@ function handle(
         }
         break;
       }
+      case "workspace close": {
+        const id = flag("--workspace");
+        state.workspaces = state.workspaces.filter((one) => one.workspace_id !== id);
+        state.closedWorkspaces.push(id ?? "");
+        state.paneList = state.paneList.filter((one) => one.workspace_id !== id);
+        result = { type: "ok" };
+        break;
+      }
       case "worktree remove": {
         const workspace = flag("--workspace");
         const gone = state.worktrees.find((w) => w.open_workspace_id === workspace);

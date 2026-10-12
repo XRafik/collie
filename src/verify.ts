@@ -15,7 +15,7 @@ import type { VerifySpec } from "./intent";
 import { appendJournal, readJournal } from "./journal";
 import { shell } from "./mr";
 import { nowIso, epochMs } from "./time";
-import { Pass } from "./board-model";
+import { Pass, VerificationSchema, type Snapshot } from "./verify-model";
 
 /** Over this many bytes of working-tree content, the tree is not fingerprinted at all. */
 export const FINGERPRINT_MAX_BYTES = 50 * 1024 * 1024;
@@ -33,48 +33,12 @@ export const LOG_BYTES = 8 * 1024 * 1024;
  */
 export const TOO_LARGE = "unstable:too-large";
 
-const SnapshotSchema = Schema.Struct({ head_sha: Schema.String, fingerprint: Schema.String });
-export type Snapshot = Schema.Schema.Type<typeof SnapshotSchema>;
-
-export { PASSES, Pass } from "./board-model";
-
+export { PASSES, Pass, VerificationSchema, type Snapshot } from "./verify-model";
 /** A pass, and the gate fix it follows where it is a `fix`. */
 export interface CheckPass {
   readonly pass: Pass;
   readonly round?: number;
 }
-
-const VerificationSchema = Schema.Struct({
-  id: Schema.String,
-  run: Schema.String,
-  name: Schema.String,
-  executable: Schema.String,
-  argv: Schema.Array(Schema.String),
-  cwd: Schema.String,
-  start: SnapshotSchema,
-  end: SnapshotSchema,
-  exit: Schema.Int,
-  seconds: Schema.Number,
-  tail: Schema.Struct({ stdout: Schema.String, stderr: Schema.String }),
-  /**
-   * What a pass looks like for this command. `fail` is how a bug is proved to exist: a
-   * regression test that exits non-zero on the tree before the fix is the evidence, and
-   * calling that a failure would make reproducing a bug indistinguishable from not
-   * having fixed it. Records written before this decode as `pass`, which is what they were.
-   */
-  expect: Schema.Literals(["pass", "fail"]).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed("pass" as const)),
-  ),
-  result: Schema.Literals(["pass", "fail", "unstable"]),
-  at: Schema.String,
-  /** Who collected it. An agent may run one; only Collie may run an approved spec. */
-  by: Schema.Literals(["agent", "collie"]),
-  /** Why Collie ran it; absent on an agent's and on records written before passes were. */
-  pass: Schema.optionalKey(Pass),
-  round: Schema.optionalKey(Schema.Int),
-  /** Where both streams were written as they arrived, up to `LOG_BYTES`. */
-  log: Schema.optionalKey(Schema.String),
-});
 export type Verification = Schema.Schema.Type<typeof VerificationSchema>;
 const VerificationJson = Schema.fromJsonString(VerificationSchema);
 

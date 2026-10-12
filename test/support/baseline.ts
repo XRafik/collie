@@ -47,6 +47,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  investigate: "find-the-cause",
 } as const;
 type Shipped = keyof typeof UNRELATED;
 
@@ -1533,6 +1534,35 @@ const ran = (options: {
     }),
     options.host,
   );
+
+scenario(
+  "investigate asks one investigator and returns findings without proof or offers",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const output = {
+          summary: "The peer build is stale",
+          findings: [{ what: "A cached build", evidence: "MachinesPage.vue:12" }],
+        };
+        yield* rig.queueOutputs([output]);
+        const result = yield* ran({
+          entry: shipped("investigate"),
+          runId: "r-investigate",
+          input: { goal: "Why is the peer behind?" },
+        });
+        expect(result).toMatchObject({ _tag: "Success", success: output });
+        const messages = yield* prompts();
+        expect(messages).toHaveLength(1);
+        expect(yield* asked("r-investigate", "investigate")).toContain("Why is the peer behind?");
+        expect(yield* persona("r-investigate", "investigate")).toContain("investigator");
+        const entry = yield* loadEntry(shipped("investigate"));
+        expect(entry.metadata?.closes).toBe("reported");
+        expect(entry.metadata?.outcome).toBeUndefined();
+        expect(entry.metadata?.followUps ?? []).toHaveLength(0);
+      }),
+    ),
+  120_000,
+);
 
 const asApproved = Schema.encodeSync(Schema.fromJsonString(Schema.Array(VerifySpecSchema)));
 const asJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Any));

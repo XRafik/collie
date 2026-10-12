@@ -31,6 +31,7 @@ import {
   Layer,
   Logger,
   Option,
+  Queue,
   Path,
   Schedule,
   Schema,
@@ -59,9 +60,35 @@ import {
   registryLayer,
   Registry,
   runDir,
+  evidenceDir,
   type HostServices,
   type Locate,
 } from "./engine";
+import { RequestedBy } from "./board-model";
+import {
+  RunMetrics,
+  RunCards,
+  RunDrift,
+  RunIntent,
+  RunDispositions,
+  RunOutputs,
+  RunChecks,
+  CheckEvent,
+  outputsOf,
+} from "./run-record";
+import { readMetrics } from "./metrics";
+import { readCards } from "./cards";
+import { readDrift } from "./drift";
+import {
+  readIntent,
+  amend,
+  verificationGrant,
+  writeIntentHeld,
+  propagate as propagateIntent,
+} from "./intent";
+import { ChangedIntent } from "./intent-model";
+import { donePasses, markersOf, runningCheck, followLog } from "./checks";
+import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
 import { hostLogger } from "./host-log";
 import { Catalogue, discover, searchPath } from "./discovery";
@@ -88,7 +115,7 @@ import {
   worktreesSweeper,
   type SweptBy,
 } from "./cleanup";
-import { once, recordAudit, trimAudit } from "./audit";
+import { once, readAudit, recordAudit, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
@@ -144,11 +171,12 @@ import {
 } from "./news";
 import { evaluationDeps } from "./evaluator";
 import { ActionSchema } from "./actions";
-import { err, request, steer, type OpResult } from "./operations";
+import { clearOverride, err, request, steer, type OpResult } from "./operations";
 import { REJECTED } from "./envelope";
 import {
   appendLine,
   deliveriesOf,
+  DeliverySchema,
   herdDir,
   herdOf,
   readLedger,
@@ -193,6 +221,7 @@ import { runAgents } from "./launches";
 import { factsOfView, settled } from "./runs";
 import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
+  withDirLock,
   currentPid,
   ensureLockDir,
   holderLives,
@@ -290,6 +319,51 @@ export const HostRpcs = RpcGroup.make(
   // The read model both front doors show. A run whose module is missing is still here,
   // with the file to repair named, rather than an error where its history was.
   Rpc.make("run", { payload: { runId: Schema.String }, success: Schema.NullOr(RunView) }),
+  Rpc.make("runMetrics", {
+    payload: { runId: Schema.String },
+    success: RunMetrics,
+    error: HostRefused,
+  }),
+  Rpc.make("runCards", {
+    payload: { runId: Schema.String },
+    success: RunCards,
+    error: HostRefused,
+  }),
+  Rpc.make("runDrift", {
+    payload: { runId: Schema.String },
+    success: RunDrift,
+    error: HostRefused,
+  }),
+  Rpc.make("runIntent", {
+    payload: { runId: Schema.String },
+    success: RunIntent,
+    error: HostRefused,
+  }),
+  Rpc.make("runDispositions", {
+    payload: { runId: Schema.String },
+    success: RunDispositions,
+    error: HostRefused,
+  }),
+  Rpc.make("runOutputs", {
+    payload: { runId: Schema.String },
+    success: RunOutputs,
+    error: HostRefused,
+  }),
+  Rpc.make("runChecks", {
+    payload: { runId: Schema.String },
+    success: RunChecks,
+    error: HostRefused,
+  }),
+  Rpc.make("checkLog", {
+    payload: { runId: Schema.String },
+    success: CheckEvent,
+    error: HostRefused,
+    stream: true,
+  }),
+  Rpc.make("deliveries", {
+    payload: { runId: Schema.String },
+    success: Schema.NullOr(Schema.Array(DeliverySchema)),
+  }),
   Rpc.make("runs", {
     payload: { task: Schema.NullOr(Schema.String) },
     success: Schema.Array(RunView),
@@ -392,6 +466,13 @@ const handlers = (
       const catalogue = (project: string) =>
         discover(searchPath({ pluginRoot: env.pluginRoot, userDir: env.userDir, project }));
 
+      const record = <A, E, R>(runId: string, read: Effect.Effect<A, E, R>) =>
+        registry.view(runId).pipe(
+          Effect.flatMap((view): Effect.Effect<A, E | HostRefused, R> =>
+            view === null ? Effect.fail(new HostRefused({ reason: `No Run "${runId}".` })) : read,
+          ),
+          Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+        );
       return HostRpcs.of({
         identity: () =>
           Effect.succeed({
@@ -432,6 +513,60 @@ const handlers = (
           ),
         status: ({ runId }) => registry.status(runId),
         run: ({ runId }) => registry.view(runId),
+        runMetrics: ({ runId }) => record(runId, readMetrics(evidenceDir(dir, runId))),
+        runCards: ({ runId }) => record(runId, readCards(runDir(dir, runId))),
+        runDrift: ({ runId }) => record(runId, readDrift(runDir(dir, runId))),
+        runIntent: ({ runId }) => record(runId, readIntent(runDir(dir, runId))),
+        runDispositions: ({ runId }) => record(runId, readDispositions(runDir(dir, runId))),
+        runOutputs: ({ runId }) => record(runId, outputsOf(dir, runId)),
+        runChecks: ({ runId }) =>
+          Effect.gen(function* () {
+            const views = yield* registry.views(null);
+            const runs = views.map((view) => factsOfView(dir, view));
+            const run = runs.find((one) => one.id === runId);
+            if (run === undefined) return yield* new HostRefused({ reason: `No Run "${runId}".` });
+            return {
+              running: yield* runningCheck(
+                run,
+                runs,
+                yield* markersOf(runs),
+                yield* Clock.currentTimeMillis,
+              ),
+              done: yield* donePasses(run),
+            };
+          }),
+        checkLog: ({ runId }) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const views = yield* registry.views(null);
+              const runs = views.map((view) => factsOfView(dir, view));
+              const run = runs.find((one) => one.id === runId);
+              if (run === undefined)
+                return yield* new HostRefused({ reason: `No Run "${runId}".` });
+              const running = yield* runningCheck(
+                run,
+                runs,
+                yield* markersOf(runs),
+                yield* Clock.currentTimeMillis,
+              );
+              if (running?.log == null) return Stream.make({ _tag: "Ended" as const, check: null });
+              return Stream.callback<typeof CheckEvent.Type>((emit) =>
+                Effect.gen(function* () {
+                  yield* Queue.offer(emit, { _tag: "Output", text: `${running.sentence}\n` });
+                  const ended = yield* followLog(run, running.log!, (text) =>
+                    Queue.offer(emit, { _tag: "Output", text }).pipe(Effect.orDie),
+                  );
+                  yield* Queue.offer(emit, { _tag: "Ended", check: ended });
+                  yield* Queue.end(emit);
+                }).pipe(Effect.provideContext(bun)),
+              );
+            }),
+          ),
+        deliveries: ({ runId }) =>
+          Effect.gen(function* () {
+            if ((yield* registry.view(runId)) === null) return null;
+            return (yield* deliveriesOf(dir, runId)).map((one) => one.delivery);
+          }),
         runs: ({ task }) => registry.views(task),
         watch: ({ runId }) => registry.watch(runId),
         recover: () => registry.recover,
@@ -1062,24 +1197,44 @@ const frontDoorHandlers = (
             fresh(
               (started) => started.runId,
               { operation: "start", request, ...whoOf(client), asked, result: Started },
-              registry.resolve({ project, id }).pipe(
-                Effect.flatMap((generation) =>
-                  registry.start({
-                    generation,
-                    project,
-                    request,
-                    input,
-                    text,
-                    inferred,
-                    root,
-                    options,
-                    task,
-                    taskLabel,
-                    parent,
-                    intent,
-                    verify,
-                    attachments,
-                  }),
+              startCheckout(
+                env,
+                project,
+                options,
+                whoOf(client).from?.machine !== undefined &&
+                  whoOf(client).from?.machine?.installation !== installation,
+              ).pipe(
+                Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+                Effect.flatMap((placed) =>
+                  "error" in placed
+                    ? Effect.fail(new HostRefused({ reason: `${REFUSED_INPUT}: ${placed.error}` }))
+                    : registry.resolve({ project: placed.project, id }).pipe(
+                        Effect.flatMap((generation) =>
+                          registry.start({
+                            generation,
+                            requestedBy:
+                              whoOf(client).origin === "agent"
+                                ? Option.getOrUndefined(
+                                    Schema.decodeUnknownOption(RequestedBy)(whoOf(client).from),
+                                  )
+                                : undefined,
+                            project: placed.project,
+                            request,
+                            input,
+                            text,
+                            inferred,
+                            root: placed.root ?? root,
+                            options: placed.options,
+                            branchBase: placed.branchBase,
+                            task,
+                            taskLabel,
+                            parent,
+                            intent,
+                            verify,
+                            attachments,
+                          }),
+                        ),
+                      ),
                 ),
               ),
             ),
@@ -1465,6 +1620,211 @@ const frontDoorHandlers = (
                   return { proposal };
                 }),
               );
+            }),
+          ),
+        verify: ({ runId, name, executable, argv, cwd, expect }, { client }) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              const view = yield* known(runId);
+              const { collect, insideRun } = yield* Effect.promise(() => import("./verify"));
+              const { noteVerification } = yield* Effect.promise(() => import("./metrics"));
+              const where = cwd ?? view.cwd;
+              if (!(yield* insideRun(where, { cwd: view.cwd, worktree: null })))
+                return yield* new HostRefused({
+                  reason: `${REFUSED_INPUT}: "${where}" is not inside run ${runId}; a verification names the tree it ran on.`,
+                });
+              return Stream.callback<typeof import("./verify-model").VerifyEvent.Type, HostRefused>(
+                (queue) =>
+                  Effect.gen(function* () {
+                    const echo = (stream: "stdout" | "stderr") => (text: string) =>
+                      Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
+                    const collected = yield* collect(
+                      evidenceDir(env.stateDir, runId),
+                      { run: runId, name, executable, argv, cwd: where, by: "agent", expect },
+                      { stdout: echo("stdout"), stderr: echo("stderr") },
+                    ).pipe(
+                      Effect.mapError(
+                        (cause) => new HostRefused({ reason: `${REFUSED_INPUT}: ${cause.why}` }),
+                      ),
+                      Effect.result,
+                    );
+                    if (collected._tag === "Failure") {
+                      yield* Queue.fail(queue, collected.failure);
+                      return;
+                    }
+                    yield* noteVerification(evidenceDir(env.stateDir, runId), collected.success);
+                    yield* recordAudit(trail(runId), {
+                      operation: "verify",
+                      request: collected.success.id,
+                      ...whoOf(client),
+                      asked: { name, executable, argv, cwd: where, expect },
+                      result: Schema.Json,
+                      value: fromText(toText(collected.success)),
+                    }).pipe(Effect.orDie);
+                    yield* Queue.offer(queue, { _tag: "Result", verification: collected.success });
+                    yield* Queue.end(queue);
+                  }).pipe(Effect.provideContext(hosted)),
+                { bufferSize: 16 },
+              );
+            }),
+          ),
+        rememberVerification: ({ runId, replace, request }, { client }) =>
+          plainly(
+            once(
+              trail(runId),
+              {
+                operation: "remember-verification",
+                request,
+                ...whoOf(client),
+                asked: { runId, replace },
+                result: Schema.Json,
+              },
+              Effect.gen(function* () {
+                const view = yield* known(runId);
+                const { rememberChecks } = yield* Effect.promise(() => import("./lifecycle"));
+                return fromText(
+                  toText(
+                    yield* rememberChecks(askerEnv(client), {
+                      runId,
+                      replace,
+                      checkouts: [view.cwd, view.project],
+                    }),
+                  ),
+                );
+              }),
+            ),
+          ),
+        clearOverride: ({ runId, agent, request }, { client }) =>
+          plainly(
+            once(
+              trail(runId),
+              {
+                operation: "clear-override",
+                request,
+                ...whoOf(client),
+                asked: { runId, agent },
+                result: Schema.Json,
+              },
+              known(runId).pipe(
+                Effect.andThen(
+                  clearOverride(
+                    env.stateDir,
+                    herdr,
+                    runId,
+                    agent,
+                    actorName({ ...whoOf(client), requestId: request }),
+                    voiceOf(whoOf(client)),
+                  ),
+                ),
+                Effect.map((value) => fromText(toText(value))),
+              ),
+            ),
+          ),
+        changeIntent: ({ runId, change, propagate: spread, request }, { client }) =>
+          plainly(
+            Effect.gen(function* () {
+              const edit = Effect.gen(function* () {
+                if ((yield* registry.view(runId)) === null)
+                  return yield* new HostRefused({ reason: `No Run "${runId}".` });
+                const by = { ...whoOf(client), requestId: request };
+                const approved =
+                  change.kind === "verification"
+                    ? yield* once(
+                        trail(runId),
+                        {
+                          operation: "grant",
+                          request,
+                          ...whoOf(client),
+                          asked: { name: change.name, command: fromText(toText(change.command)) },
+                          result: Schema.Array(VerifySpecSchema),
+                        },
+                        registry.grant({ runId, name: change.name, command: change.command }),
+                      )
+                    : undefined;
+                const updated = yield* withDirLock(
+                  runDir(env.stateDir, runId),
+                  Effect.gen(function* () {
+                    const current = yield* readIntent(runDir(env.stateDir, runId));
+                    if (current === null) return null;
+                    const recorded =
+                      change.kind === "verification"
+                        ? (yield* readAudit(trail(runId))).find((one) => one.request === request)
+                        : undefined;
+                    const amendedBy = recorded?.actor ?? by;
+                    if (
+                      change.kind === "verification" &&
+                      current.history.some((one) => one.by === actorName(amendedBy))
+                    )
+                      return current;
+                    const wanted =
+                      change.kind === "verification"
+                        ? verificationGrant(current, change.name, change.command)
+                        : change;
+                    const amended = amend(
+                      current,
+                      wanted,
+                      actorName(amendedBy),
+                      yield* nowIso(),
+                      voiceOf(amendedBy),
+                    );
+                    if (amended !== current)
+                      yield* writeIntentHeld(runDir(env.stateDir, runId), amended);
+                    return amended;
+                  }),
+                ).pipe(Effect.result);
+                if (updated._tag === "Failure") {
+                  if (approved === undefined)
+                    return yield* new HostRefused({ reason: reason(updated.failure) });
+                  return {
+                    version: null,
+                    propagated: [],
+                    approved,
+                    warning: `The grant holds, but intent show will not list it: ${reason(updated.failure)}`,
+                  };
+                }
+                const next = updated.success;
+                if (next === null && change.kind !== "verification")
+                  return yield* new HostRefused({
+                    reason: `Run "${runId}" has no Intent to amend.`,
+                  });
+                const propagated: string[] = [];
+                if (spread && next !== null)
+                  for (const child of (yield* registry.views(null)).filter(
+                    (view) =>
+                      view.parent === runId &&
+                      view.status.status !== "complete" &&
+                      view.status.status !== "failed",
+                  )) {
+                    const note = yield* withDirLock(
+                      runDir(env.stateDir, child.runId),
+                      Effect.gen(function* () {
+                        const current = yield* readIntent(runDir(env.stateDir, child.runId)).pipe(
+                          Effect.orElseSucceed(() => null),
+                        );
+                        if (current === null) return null;
+                        const carried = propagateIntent(next, current);
+                        yield* writeIntentHeld(runDir(env.stateDir, child.runId), carried.intent);
+                        return `  ${child.runId}: propagated${carried.conflicts.length ? ` (${carried.conflicts.join("; ")})` : ""}`;
+                      }),
+                    ).pipe(Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })));
+                    if (note !== null) propagated.push(note);
+                  }
+                const answer = { version: next?.version ?? null, propagated };
+                return approved === undefined ? answer : { ...answer, approved };
+              });
+              return yield* change.kind === "verification"
+                ? edit
+                : once(
+                    trail(runId),
+                    {
+                      operation: `intent-${change.kind}`,
+                      request,
+                      ...whoOf(client),
+                      asked: { runId, change, propagate: spread },
+                      result: ChangedIntent,
+                    },
+                    edit,
+                  );
             }),
           ),
         settleDelivery: ({ runId, delivery, as, request }, { client }) =>
@@ -1907,7 +2267,7 @@ const locateIn =
       }),
     );
 
-const isCrashPoint = Schema.is(Schema.Literals(["admitted", "executed", "answered"]));
+const isCrashPoint = Schema.is(Schema.Literals(["admitted", "executed", "answered", "reported"]));
 
 /** Where a test has this host kill itself mid-start; unset for every other host. */
 const crashPoint = Config.option(Config.String("COLLIE_HOST_CRASH_AT")).pipe(
@@ -1972,6 +2332,12 @@ const own = (dir: string) =>
             handlers(dir, installation, development, declared, peers),
             frontDoorHandlers(dir, installation, development, panels, declared, stamp),
             sideJobsLayer(dir, panels),
+            Layer.effectDiscard(
+              Effect.gen(function* () {
+                const { reportsLayer } = yield* Effect.promise(() => import("./reports"));
+                yield* Layer.build(reportsLayer({ env, installation, stamp, crashAt }));
+              }),
+            ),
           ).pipe(
             Layer.provide(
               Layer.mergeAll(

@@ -270,6 +270,28 @@ Delivery. An implementer asks its live planner this way, using the address in it
 lists local and live peers' Runs, and says which peers were away. Native chat can read
 another Machine's Run the same way, and `collie_herd` can name a `machine`.
 
+### Asking another Machine to investigate
+
+An agent working on the VM can start `investigate` on the laptop through `collie_do`,
+with `machine: "mk-laptop"`, `workspace: "cego/collie"` and
+`inputs: { goal: "Why does the Machines page show vm-mk behind?", branch: "mk/desktop-fix" }`.
+Push the branch first. From its shell the same start is:
+
+```sh
+collie --machine mk-laptop run start investigate --input workspace=cego/collie --input branch=mk/desktop-fix --input 'goal=Why does the Machines page show vm-mk behind?'
+```
+
+The laptop finds its own repository under its Projects root and fetches the branch.
+One investigator runs there. The host sends the result to the requesting agent without
+polling, records whether it arrived, then closes the investigator. It also closes the
+Task workspace when no other Run or human pane needs it. A stale local branch or local
+changes are refused, preserving that work. `run show` and the drawer say who started it
+and whether its report was delivered. Start another investigation to ask again.
+
+Once Schedules (ADR-0052) are implemented,
+`--machine` will also add, pause and remove a peer's Schedule. Its own host fires it;
+this change adds no scheduler.
+
 ### Tasks: one workspace per piece of work
 
 Starting a workflow starts a **task**, and a task gets a herdr workspace of its own. It is
@@ -2160,7 +2182,7 @@ started in auto mode instead, and the run's `agents.log` says so.
 Know what `auto` buys: the agents run commands, edit files and install things with nobody
 asking you, inside the checkout the Run is working in, and the harness's review is the
 only check on them. `bypass` takes that check away too. `implement` and
-`renovate` are the workflows Collie gives a checkout of their own, so their agents work in
+`renovate` and `investigate` are the workflows Collie gives a checkout of their own, so their agents work in
 a worktree rather than in yours, and what `implement` does is reviewed before it becomes a
 merge request. Every other workflow — `plan`, `review`, a standalone `architecture` — runs its agents **in the
 checkout you started them from**, with your uncommitted work in it and neither of those

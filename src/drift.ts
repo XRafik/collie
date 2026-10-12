@@ -46,9 +46,9 @@ const SkippedSchema = Schema.Struct({
   reason: Schema.String,
 });
 
-const LineSchema = Schema.Union([SkippedSchema, DriftReportSchema]);
-export type DriftLine = Schema.Schema.Type<typeof LineSchema>;
-const LineJson = Schema.fromJsonString(LineSchema);
+export const DriftLineSchema = Schema.Union([SkippedSchema, DriftReportSchema]);
+export type DriftLine = Schema.Schema.Type<typeof DriftLineSchema>;
+const LineJson = Schema.fromJsonString(DriftLineSchema);
 
 export const driftPath = Effect.fn("Drift.path")(function* (runDir: string) {
   const path = yield* Path.Path;

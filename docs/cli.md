@@ -34,12 +34,17 @@ A start on another Machine opens its own Task there, so `--task`, `--continue-ta
 ## Another Machine's Runs
 
 A Run id names one Run, so a command about one goes to the Machine that has it: `run show`,
-`run wait`, `run steer`, `run answer`, `run hold`, `run stop`, `run resume`, `run action`
-and `run follow-up` ask this Machine's host first, then each paired Machine, then each
+`run wait`, `run steer`, `run answer`, `run hold`, `run stop`, `run resume`, `run action`,
+`run follow-up`, the Run's records (`output`, `metrics`, `cards`, `drift`, `disposition`,
+`deliveries` and `checks`), Intent edits and `verify` ask this Machine's host first, then each paired Machine, then each
 machine herdr lists that is not paired yet, pairing it on the way. The envelope is the one
 the command gives at home; `run show` adds `machine`, the Machine the Run is on. A Run no
 Machine has is `run_not_found`, and its `details` name every Machine asked (`machines`) and
 any that did not answer (`away`).
+
+Intent edits, override clearing and remembered checks execute on the owning host, with
+the caller recorded. `verify` runs inside its checkout and streams output back.
+`run checks --follow` streams that host's live log; paths it returns belong to that Machine.
 
 Adding a Machine to herdr (`herdr machine add`) is all it takes. The first command that
 reaches it pairs the two over its SSH login, which asks for that login's approval once,
@@ -1930,3 +1935,6 @@ agent name and Machine. A pane herdr cannot name stays `cli`. MCP uses the same 
 from the environment Collie writes at launch. A tool argument cannot name a sender.
 `run show` lists the agent names that `--operation` and `collie_do deliver` take.
 See [agents talking to each other](using.md#agents-talking-to-each-other).
+
+`run deliveries <id>` finds the Machine that holds the Run, as other Run reads do.
+Its `--reconcile` write is carried out there through the same host, under its request id.

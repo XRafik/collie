@@ -4,6 +4,7 @@ import { machineName } from "../src/peers";
 import { connect } from "../src/host";
 import { readAudit } from "../src/audit";
 import { runDir } from "../src/engine";
+import { deliveriesOf, appendLine } from "../src/steering";
 import { everyRegistered } from "../src/registry";
 import { runEffect } from "./support/effect";
 import { stopHost, until } from "./support/host";
@@ -162,6 +163,47 @@ test(
                 Schema.decodeUnknownSync(Schema.Struct({ text: Schema.String }))(read.envelope.data)
                   .text,
               ).toContain(there.runId);
+            }
+            const delivered = Schema.Struct({
+              deliveries: Schema.Array(
+                Schema.Struct({ id: Schema.String, note: Schema.optionalKey(Schema.String) }),
+              ),
+            });
+            for (const prefix of [[], ["--machine", "second"]]) {
+              const listedReceipts = yield* first.cli([
+                ...prefix,
+                "run",
+                "deliveries",
+                there.runId,
+              ]);
+              expect(listedReceipts.envelope.ok).toBe(true);
+              const rows = Schema.decodeUnknownSync(delivered)(
+                listedReceipts.envelope.data,
+              ).deliveries;
+              expect(rows.map((one) => one.id)).toEqual(
+                (yield* deliveriesOf(second.world.state, there.runId)).map(
+                  (one) => one.delivery.id,
+                ),
+              );
+              const source = (yield* deliveriesOf(second.world.state, there.runId)).at(-1)!;
+              const id = `unknown-${prefix.length}`;
+              yield* appendLine(source.file, { ...source.delivery, id, state: "unknown" });
+              const settled = yield* first.cli([
+                ...prefix,
+                "run",
+                "deliveries",
+                there.runId,
+                "--reconcile",
+                id,
+                "--as",
+                "sent",
+              ]);
+              expect(settled.envelope.ok).toBe(true);
+              expect(
+                (yield* deliveriesOf(second.world.state, there.runId)).find(
+                  (one) => one.delivery.id === id,
+                )?.delivery.note,
+              ).toContain("reconciled as sent");
             }
             const listed = yield* first.cli(["run", "list"]);
             expect(listed.envelope.data).toMatchObject({

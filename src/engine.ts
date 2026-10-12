@@ -135,6 +135,8 @@ import {
   HostRefused,
   OfferView,
   RequestConflict,
+  RequestedBy,
+  RunReport,
   type Disposition,
 } from "./board-model";
 import { TASK_INPUT, checkoutFor, repositoryName, workOf } from "./worktree";
@@ -503,6 +505,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly checkout?: "branch" | "roaming";
     /** Its gate runs the approved set, so a start with nothing approved is refused. */
     readonly verifies?: boolean;
+    readonly closes?: "reported";
     readonly followUps?: ReadonlyArray<FollowUp>;
     readonly actions?: ReadonlyArray<ActionProvider>;
   }
@@ -1370,9 +1373,9 @@ const isWritten = (exported: unknown): exported is WrittenDefinition =>
 
 /** A definition as the entry the rest of the host reads. */
 const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
-  const { hints, outcome, checkout, verifies, followUps, actions } = definition;
+  const { hints, outcome, checkout, verifies, closes, followUps, actions } = definition;
   const declared = Object.fromEntries(
-    Object.entries({ hints, outcome, checkout, verifies, followUps, actions }).filter(
+    Object.entries({ hints, outcome, checkout, verifies, closes, followUps, actions }).filter(
       ([, value]) => value !== undefined,
     ),
   );
@@ -2915,6 +2918,9 @@ type Cut = typeof Cut.Type;
  * `checkout` and `workspace` are null once asked for, and what was made once it answered.
  */
 const Placing = Schema.Struct({
+  requestedBy: Schema.optional(RequestedBy),
+  branchBase: Schema.optional(Schema.String),
+  closes: Schema.optional(Schema.Literal("reported")),
   from: Schema.String,
   taskLabel: Schema.NullOr(Schema.String),
   /** The Projects root the start was given, kept so a re-placement and a child name the same. */
@@ -3128,6 +3134,9 @@ export const Steered = Schema.Struct({
 });
 
 export const RunView = Schema.Struct({
+  requestedBy: Schema.optional(RequestedBy),
+  report: Schema.optional(RunReport),
+  closes: Schema.optional(Schema.Literal("reported")),
   runId: Schema.String,
   workflow: Schema.String,
   project: Schema.String,
@@ -3208,6 +3217,7 @@ export interface Generation {
   /** What it needs of the repository, which is what the host places a Run of it on. */
   readonly checkout: CheckoutKind;
   readonly verifies: boolean;
+  readonly closes?: "reported";
   /** The file and the revision this was built from: what makes a later start the same code. */
   readonly source: string;
   readonly metadata: Schema.Json;
@@ -3264,6 +3274,8 @@ export interface RegistryApi {
    * brings it; otherwise the host mints one.
    */
   readonly start: (options: {
+    readonly requestedBy?: RequestedBy;
+    readonly branchBase?: string | undefined;
     readonly generation: Generation;
     readonly request: string;
     readonly project: string;
@@ -3391,7 +3403,7 @@ export interface Admitted {
  * run recorded and the engine not yet told, and with the engine told and the receipt not
  * yet written. Only a test sets one, through the host's `COLLIE_HOST_CRASH_AT`.
  */
-export type CrashPoint = "admitted" | "executed" | "answered";
+export type CrashPoint = "admitted" | "executed" | "answered" | "reported";
 
 /**
  * How a host turns a public workflow id into the module this project should run. It is
@@ -3551,6 +3563,7 @@ const makeRegistry: (
       hints: entry.metadata?.hints ?? {},
       fixedOutcome: entry.metadata?.outcome?.fixed ?? null,
       verifies: entry.metadata?.verifies === true,
+      closes: entry.metadata?.closes,
       checkout: entry.metadata?.checkout ?? "none",
       source: yield* sourceOf(route.entry),
       metadata: describeMetadata(entry.metadata),
@@ -3624,6 +3637,7 @@ const makeRegistry: (
     readonly generation: Generation;
     readonly runId: string;
     readonly from: string;
+    readonly branchBase?: string | undefined;
     readonly request: CheckoutRequest;
     readonly input: Readonly<Record<string, Schema.Json>>;
     readonly provenance: Readonly<Record<string, string>>;
@@ -3690,6 +3704,7 @@ const makeRegistry: (
         sources: ask.provenance,
         openLabel: ask.taskLabel ?? null,
         explicit: ask.options.branch ?? null,
+        branchBase: ask.branchBase,
         login: placing.env.gitlabLogin,
         recordedBy: (at) =>
           store.runs.pipe(
@@ -3833,6 +3848,7 @@ const makeRegistry: (
         generation,
         runId: row.run,
         from: placing.value.from,
+        branchBase: placing.value.branchBase,
         request: yield* checkoutRequest(generation, options, placing.value.root ?? null),
         input: yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({}))),
         provenance: yield* strings(row.provenance),
@@ -3948,7 +3964,7 @@ const makeRegistry: (
       input: settled.input,
       provenance: settled.provenance,
       options: launchOptions(generation, asked),
-      placing: encodePlacing({ from, taskLabel: null, root }),
+      placing: encodePlacing({ from, taskLabel: null, root, closes: generation.closes }),
       generation: generation.name,
       execution: yield* generation.registration.workflow.executionId(payload),
       task: parent.task,
@@ -4164,7 +4180,18 @@ const makeRegistry: (
 
   const viewOf = Effect.fn("Engine.viewOf")(function* (row: RunRow) {
     const input = yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({})));
+    const placing = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
+    const report = Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.fromJsonString(RunReport))(
+        yield* fs
+          .readFileString(`${runDir(dir, row.run)}/report.json`)
+          .pipe(Effect.orElseSucceed(() => "")),
+      ),
+    );
     const admitted = {
+      requestedBy: placing?.requestedBy,
+      closes: placing?.closes,
+      report,
       runId: row.run,
       workflow: row.workflow,
       project: row.project,
@@ -4563,6 +4590,8 @@ const makeRegistry: (
     readonly task?: string | null;
     readonly taskLabel?: string | undefined;
     readonly parent?: string | null;
+    readonly requestedBy?: RequestedBy;
+    readonly branchBase?: string | undefined;
     readonly intent?: IntentSeed;
     readonly verify?: ReadonlyArray<VerifySpec> | undefined;
     readonly attachments?: ReadonlyArray<string> | undefined;
@@ -4631,6 +4660,9 @@ const makeRegistry: (
       },
       options: launch,
       placing: encodePlacing({
+        requestedBy: options.requestedBy,
+        branchBase: options.branchBase,
+        closes: generation.closes,
         from: request.kind === "existing" ? request.path : options.project,
         taskLabel: options.taskLabel ?? null,
         root: options.root ?? null,

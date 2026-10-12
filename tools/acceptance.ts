@@ -741,6 +741,32 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/remote-run-records-and-intent-use-the-owning-host",
+    statement:
+      "Run records, Intent changes, remembered checks, override clearing and verification reach the owning Machine from a caller with no Runs.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/remote-cli.test.ts",
+      name: "every Run record and Intent mutation reaches its owning Machine from an empty caller",
+    },
+  },
+  {
+    id: "backend/a-remote-check-log-streams-live",
+    statement:
+      "A remote check's CLI follow prints its output while the owning host's check is still running.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/remote-cli.test.ts",
+      name: "a remote check's CLI follow prints output while the owning host's marker is still present",
+    },
+  },
+  {
     id: "backend/an-undialable-machine-is-reached-by-dial-back",
     statement:
       "A Machine that cannot be dialled is reached by dial-back, and one that is away is refused within five seconds.",
@@ -788,6 +814,30 @@ const BACKEND: readonly Check[] = [
       layer: "backend",
       file: "test/agent-origin.test.ts",
       name: "two paired hosts carry an agent conversation and resolve Native chat reads by Run",
+    },
+  },
+  {
+    id: "backend/a-remote-run-reports-and-closes",
+    statement:
+      "A Run an agent starts on another Machine reports back to it and closes once it has.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/reports.test.ts",
+      name: "a Run started by an agent on another Machine reports back and closes",
+    },
+  },
+  {
+    id: "machines/a-vm-investigation-reports-from-the-laptop",
+    statement:
+      "A VM implementer asks the laptop to investigate Desktop on its branch, receives the findings and sees the laptop workspace close.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Start investigate on mk-laptop from the VM's live implement agent, reproduce a Machines page state, and record the findings Delivery, automatic workspace close and revision.",
     },
   },
   {

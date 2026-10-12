@@ -216,7 +216,10 @@ export const transaction = Effect.fn("Dispatcher.transaction")(function* <A, E, 
         agent: entry.agent,
         submit: (words, draft) =>
           Effect.gen(function* () {
-            const sender = draft.actor?.origin === "agent" ? draft.actor.from : undefined;
+            const sender =
+              draft.actor?.origin === "agent" || draft.actor?.origin === "host"
+                ? draft.actor.from
+                : undefined;
             const text =
               sender?.run !== undefined && sender.agent !== undefined
                 ? `From ${sender.agent} of ${sender.run} on ${sender.machine?.name ?? sender.client ?? "this Machine"}. Answer with collie_do deliver to ${sender.run} (or collie run steer ${sender.run} --operation ${sender.agent} "…").\n${words}`

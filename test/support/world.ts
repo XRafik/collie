@@ -81,7 +81,19 @@ export const collie = Effect.fn("World.collie")(function* (
       child.exited,
     ]),
   );
-  return { exit, stderr, envelope: yield* asEnvelope(stdout).pipe(Effect.orDie) };
+  return {
+    exit,
+    stderr,
+    envelope: yield* asEnvelope(stdout).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Error(
+            `collie ${args.join(" ")} exited ${exit}: ${String(cause)}; stdout=${stdout}; stderr=${stderr}`,
+          ),
+      ),
+      Effect.orDie,
+    ),
+  };
 });
 
 /** Fixture files, saved where an author saves them. */

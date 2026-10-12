@@ -895,7 +895,7 @@ test("a key an action does not take is refused by name, never dropped", () =>
       });
       expect(said).toContain("collie_do refused the request (InvalidInput)");
       expect(said).toContain('actions[0] (kind "start") does not take goal, constraints');
-      expect(said).toContain("a start takes kind, workflow, inputs, decisions, workspace");
+      expect(said).toContain("a start takes kind, machine, workflow, inputs, decisions, workspace");
       expect(said).toContain('put it in "inputs"');
       expect(said).toContain("update_intent");
       expect(said).toContain("Nothing was done");
@@ -1485,7 +1485,7 @@ test("a start naming a path this Machine does not have is refused as no director
   inWorld(
     Effect.gen(function* () {
       rootAtWorldHome();
-      for (const named of ["/nowhere/monorepo", "~/nowhere", "src/nowhere"]) {
+      for (const named of ["/nowhere/monorepo", "~/nowhere", "./src/nowhere"]) {
         const refused = yield* workspaceNamed(env, named);
         const error = refused !== null && "error" in refused ? refused.error : "";
         expect(error).toContain(`no directory "${named}" on this Machine`);

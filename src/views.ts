@@ -328,6 +328,8 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
   const attention = yield* attentionFor(run);
   return {
     id: run.id,
+    requestedBy: run.requestedBy,
+    report: run.report,
     dir: run.dir,
     title: runTitle(run),
     status: run.state,
