@@ -76,9 +76,12 @@ export const landedOn = (target: Target): Landed => {
       };
 };
 
+export const inField = (target: Target): boolean =>
+  target !== null && (target.isContentEditable === true || target.closest(FIELD) !== null);
+
 /** Escape as the board reads it: whether an overlay is open, and whether focus is in a field. */
 export const escapeOn = (target: Target, page: Page): Gesture => ({
   kind: "escape",
   overlay: page.querySelector(OVERLAY) !== null,
-  typing: target !== null && (target.isContentEditable === true || target.closest(FIELD) !== null),
+  typing: inField(target),
 });
