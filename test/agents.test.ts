@@ -2655,6 +2655,32 @@ test(
   120_000,
 );
 
+test(
+  "a harness whose readiness check fails parks the step saying why",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ verdict: "clean", note: "never" }]);
+        yield* interrupted("r1", suspended("r1"), {
+          compactAtTokens: 1000,
+          ports: {
+            claude: {
+              ...claudeControls().claude!,
+              ready: () => Effect.fail(new Error("its endpoint has 3 threads on it")),
+            },
+          },
+          herdr: new FakeHerdr(rig.pluginEnv({ FAKE_HERDR_HARNESS_SILENT: "1" })),
+          readyMs: 300,
+        });
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
+          "its endpoint has 3 threads on it",
+        );
+        expect(sent(yield* rig.calls(), "Your task for this step")).toBe(0);
+      }),
+    ),
+  120_000,
+);
+
 test("a step pointer the harness took is recorded as Collie's, with its delivery id", () =>
   runEffect(
     Effect.gen(function* () {
