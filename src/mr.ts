@@ -104,6 +104,11 @@ export function postNote<R>(
         ? yield* forgeHere(options.cwd, run, options.gitlabHost)
         : { ok: true as const, forge: forgeOf(mr) };
     if (!here.ok) return { ok: false, message: here.reason };
+    if (here.forge.name !== forgeOf(mr).name)
+      return {
+        ok: false,
+        message: `${options.target} is a GitLab target, but this checkout is on GitHub`,
+      };
     const forge = here.forge;
     const ready = yield* forge.ready(mr.project, options.cwd, run);
     if (!ready.ok) return { ok: false, message: ready.reason };
@@ -295,6 +300,8 @@ export function prepareMergeRequest<R>(
         ? { ok: true as const, forge: forgeOf(ref), project: ref.project }
         : yield* forgeHere(opts.cwd, run, opts.gitlabHost);
     if (!here.ok) return unavailable(here.reason);
+    if (ref !== null && here.forge.name !== forgeOf(ref).name)
+      return unavailable(`${opts.target} is a GitLab target, but this checkout is on GitHub`);
     const { forge, project } = here;
     const ready = yield* forge.ready(project, opts.cwd, run);
     if (!ready.ok) return unavailable(ready.reason);

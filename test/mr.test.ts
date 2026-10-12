@@ -628,6 +628,28 @@ for (const name of ["gitlab", "github"] as const) {
     ));
 }
 
+test("a legacy bare merge request never becomes a GitHub pull request", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge("github", {
+        installed: true,
+        loggedIn: ["github.com"],
+        login: "me",
+        origin: "git@github.com:owner/repo.git",
+        mrs: [{ project: "github.com/owner/repo", iid: "42", state: "open" }],
+      });
+      const reason = "mr:42 is a GitLab target, but this checkout is on GitHub";
+      expect(yield* postNote({ target: "mr:42", cwd: "/w", body: "LGTM" }, fake.run)).toEqual({
+        ok: false,
+        message: reason,
+      });
+      expect(
+        yield* prepareMergeRequest({ target: "mr:42", cwd: rig.projectDir }, fake.run),
+      ).toMatchObject({ ok: false, reason });
+      expect(fake.model().notes ?? {}).toEqual({});
+    }),
+  ));
+
 test("a bare !42 is posted on the Flock's GitLab even where its name does not say gitlab", () =>
   runEffect(
     Effect.gen(function* () {
