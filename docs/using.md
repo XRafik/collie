@@ -559,7 +559,7 @@ can mean superseded as easily as abandoned, and only you know which. The same an
 carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup — and the
 revision they ran at, which is the one Collie's own checks are counted at too: a failing
 one names itself (`cego/collie#30 is open, but lint failed at 1a2b3c4.`), a pending one
-reads `cego/collie#30 is open; its pipeline is still running.`, and Ready to release needs
+reads `cego/collie#30 is open; its checks are still running.`, and Ready to release needs
 every check the card knows of to have passed. No `gh`, or one nobody logged in to, leaves
 the card `nothing has checked it` and says nothing about why. A pull request's details —
 title, state, author and assignees, branches, checks, approval, comments, head and
@@ -1813,7 +1813,7 @@ from a GitHub checkout refuses that target. Use `#42` or the pull request URL th
 **Post to merge request** (**Post to pull request** on GitHub) puts the review on it as one
 note. Where nothing in the review is still live, it also approves it — on GitHub as one
 review that both comments and approves — and the message says whether the approval landed.
-With findings left, it notes and approves nothing. It refuses a merge request assigned to
+With findings left, it posts the note without approving. It refuses a merge request assigned to
 you, on either forge: those findings are yours to fix. On GitLab, that comparison uses
 your login on the target's own host.
 
