@@ -216,8 +216,8 @@ or an execution exists — so a value one of them refuses costs nothing to refus
 `collie verify --run <run-id> -- <command>` records against a module's Run as it does
 against any other: the same collector, the same binding to the tree the command ran on, and
 the same refusal for a directory that is not that Run's. A module can ask for one itself,
-but only for a command its approved set named when the Run started, or one granted it since
-with `run intent verification` or chat's `set_verification`.
+but only for one of the Run's checks: those it started with, or one named since with
+`run intent verification` or chat's `set_verification`.
 
 A module may be made of other modules. A child is a Run of its own — `run list` has it,
 `run show` says whose it is, and the Task it belongs to is its parent's — and it is started
@@ -270,9 +270,11 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
   `agent_blocked` for ten minutes leaves the Run `suspended`, with `parked` in its view —
   and in `run show` — saying what held, for how long, and where the prompt is. `run resume`
   hands that prompt to the same agent rather than starting another.
-- **A Run with nothing approved to prove it parks before its first agent**, where its
-  outcome needs the approved set. `parked` names the repair: `run intent verification`
-  grants this Run a command through the host, and `run resume` carries it on.
+- **A Run never waits for its checks.** Where nothing written down names any, its agent
+  names them before it builds with `run intent verification`, through the host, and Collie
+  runs them at the gate without asking anyone
+  ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). A Run parked at the old
+  evidence gate by an earlier build goes on with `run resume`.
 - **A Run's agents live in its Task's workspace**, opened by the start that made the Task.
   A stop closes only its agents' panes there. If herdr has closed that workspace by the next launch, it
   is reopened on the Run's checkout and the Task records the new id; with the checkout gone
@@ -634,7 +636,7 @@ about it without asking; everything Collie says about drift is a comparison agai
 Every Run has one from the moment the host admits it, written before any of its work
 runs, and a Run started from another — a child, or a follow-up offered on a card —
 inherits that one's as it stands. `run intent` reads and amends it; `run intent
-verification` grants the run a command through the host (below).
+verification` names one of the run's checks through the host (below).
 
 ```sh
 collie --json run start implement --input plan=./plans/steering \
@@ -688,7 +690,7 @@ or the Herd makes, and what they cost, is recorded under `herd/<herdKey>/budget.
 usage, and never used to refuse the next one. An Intent written by an earlier build with
 `model_calls_per_run` still reads; the number decides nothing.
 
-The one grant that is not a `k=v` word is a command Collie may run itself:
+The one amendment that is not a `k=v` word is a check, a command Collie runs itself:
 
 ```sh
 collie run intent verification <run-id> --name unit -- bun test
@@ -696,16 +698,16 @@ collie run intent verification <run-id> --name unit --remove
 ```
 
 It is bound argument for argument — `bun test` and `bun test --bail` are two different
-permissions — and `--cwd` is `worktree` or a path relative to the run's cwd. A granted
-verification whose name a `rule:command_exit` constraint refers to is run once, at the
-run's finish, so that rule is checked against a result rather than against nobody having
+checks — and `--cwd` is `worktree` or a path relative to the run's cwd. Anyone may name or
+withdraw one, the run's own agent included, and nobody approves it. A check whose name a
+`rule:command_exit` constraint refers to is run once, at the run's finish, so that rule is checked against a result rather than against nobody having
 looked. Everything else on `steering/verifications.jsonl` is written by an agent calling
 `collie verify`, and is recorded `by: agent`.
 
 `--propagate` applies the amended Intent to every child run that is still going: the
 child's own constraints are kept, the parent's are replaced, and anything the two disagree
 about is reported rather than resolved. A child inherits its parent's constraints and goal
-at birth, never its authority — a grant is per run.
+at birth, never its authority, which is per run.
 
 ```sh
 collie --json run intent defaults show
@@ -998,7 +1000,7 @@ collie run start implement --input plan=<source> --input outcome=bug
 
 What kind of result a run has to prove, and so what evidence closes it:
 
-| `outcome`       | What closes it, beyond the approved verifications passing on the final tree                                                                                 |
+| `outcome`       | What closes it, beyond the run's checks passing on the final tree                                                                                           |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | _(empty)_       | nothing more. Unclassified work is not a feature by default.                                                                                                |
 | `feature`       | the tickets it built are named, every check a ticket's `**Checks:**` line promised has a passing verification, and the review says the agreed scope was met |
@@ -1009,11 +1011,12 @@ What kind of result a run has to prove, and so what evidence closes it:
 | `migration`     | `migrate-up` and `migrate-down` (or `rollback`) both passing                                                                                                |
 
 The gate runs before the merge request, which is where the claim is made. Collie runs the
-run's own approved set itself at the tree as it stands, then says what is missing. A check
+run's own checks itself at the tree as it stands, reading them again at every pass, then
+says what is missing. A check
 that failed runs once more; gaps a check could still close go to the implementer for up to
 four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
 Repair the checks and resume the Run: the pending proof reruns them even when the repair
-only changes the environment. A changed tree or approved set also gets fresh proof while
+only changes the environment. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
@@ -1023,13 +1026,13 @@ pass a later fail contradicts is not one. In `implement`, a check that fails at 
 before any fix, where the branch leaves the default branch, in the run's own checkout. One that
 fails there too remains required on the Run's tree: the base's exit code cannot show
 whether the branch added different failures. If merge request handling is unavailable,
-the Run suspends with the reason instead of completing without delivery. A run with
-nothing approved is told so rather than passed —
-an empty set would make the gate say yes to anything — and a run whose outcome needs the
-approved set is refused at `run start` when it has none (see [What Collie may run
-itself](#what-collie-may-run-itself)). A grant withdrawn while the run works parks it at its
-gate; `collie run intent verification <run-id> --name … -- <command>` and then `collie run
-resume <run-id>` carry it on.
+the Run suspends with the reason instead of completing without delivery. A run with no
+check named is not passed — an empty set would make the gate say yes to anything — and
+that is a gap the implementer closes: each gate fix is told to name the repository's checks
+with `collie run intent verification`. Still none after the fixes, or every one withdrawn,
+and the Run is held like a check that still fails; naming one with `collie run intent
+verification <run-id> --name … -- <command>` and then `collie run resume <run-id>` proves
+it again.
 
 An investigation that concludes there is nothing to change skips the merge request with a
 note and finishes. That is a real outcome, and nothing is invented to have something to
@@ -1162,13 +1165,15 @@ collie verify --run <run-id> --name regression --expect fail -- bun test test/bu
 ### What Collie may run itself
 
 An agent may `collie verify` anything; Collie runs only this run's
-[approved set](../CONTEXT.md), matched argument for argument. The set is settled when the run starts — the `--verify`
+[checks](../CONTEXT.md), matched argument for argument, and nobody approves them
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). They are settled when the run starts — the `--verify`
 entries given with it, else `.collie/verify.json` in the project, else the checks remembered
 for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, by `origin`, then
 `upstream`), else `~/.collie/user/verify.json`, whichever is found first and taken whole — and copied into the run's Intent as its `run_verification` grant. Editing the file afterwards changes the next run and never a
-running one. From then on the Intent is the set: `run intent verification` adds to it or
-removes from it, and an Intent whose list has been emptied is a run Collie may run nothing
-for — the seed is not put back behind the human who removed it. A Run of a workflow module
+running one. Where none of those has any, the run starts anyway and its agent names them
+before it builds. From then on the Intent is the set: `run intent verification` adds to it
+or removes from it, whoever calls it, and an Intent whose list has been emptied is a run
+with no checks — the seed is not put back behind whoever removed them. A Run of a workflow module
 keeps its set with the host rather than in an Intent, and the same command amends it there.
 
 ```json
@@ -1176,9 +1181,10 @@ keeps its set with the host rather than in an Intent, and the same command amend
 ```
 
 A file that is there and does not decode is an error naming it, never an empty set, and
-the start is refused. So is a start of a workflow that [declares](sdk.md#what-a-definition-declares)
-`verifies` when its outcome needs the set and nothing is approved: nothing could prove it,
-so it is `invalid_input` with the repair, and no Run, worktree or Task is made.
+the start is refused as `invalid_input`, so a typo is never quietly replaced by an agent's
+choice. So is `--verify` given to a plan that spans repositories: each repository is held to
+its own `.collie/verify.json` or remembered checks. No start is refused for having no
+checks.
 
 ```sh
 collie run start implement --input plan=… \

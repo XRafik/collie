@@ -224,7 +224,7 @@ test("Collie runs only the command the human approved, argument for argument", (
         ...approved,
         executable: "false",
       }).pipe(Effect.flip);
-      expect(renamed.why).toContain("approved verifications");
+      expect(renamed.why).toContain("not among this Run's checks");
     }),
   ));
 

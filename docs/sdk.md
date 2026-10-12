@@ -50,7 +50,7 @@ human, start a child or branch again: there is no step graph to keep in step wit
 
 The host executes `run` as a Run, and the Run is supplied rather than passed:
 `yield* Run` is its `id` and the public id of the workflow it is a Run of, and `agentWork`,
-`ask`, `child` and `requireApproved` read it themselves. Each Run is one execution keyed on
+`ask` and `child` read it themselves. Each Run is one execution keyed on
 its id, so a retried request is the same execution and a new start is a new one.
 
 A failure is a `WorkflowError`, which carries a `reason`. A workflow with failures of its
@@ -929,13 +929,16 @@ passing record of it, collected on this exact revision. A commit or an edit sinc
 earlier pass history — it is not that the result went off, it is that it is about another
 tree.
 
-`host.verify({ runId, name, cwd })` runs one of the commands your Run was started under the
-authority of, in the directory the grant names, resolved from `cwd` — which has to be the
-Run's own checkout — and records what it did. The list is `.collie/verify.json`, read when the Run
-started, plus whatever has been granted it since: by a human with `collie run intent
-verification`, or by chat with `set_verification`, which `collie_propose` carries out with no
-yes. A name not on it is refused, and a workflow cannot add to it. Anyone else
-collects the same way from outside: `collie verify --run <your run id> -- <command>`.
+`host.verify({ runId, name, cwd })` runs one of your Run's checks, in the directory the
+check names, resolved from `cwd` — which has to be the Run's own checkout — and records
+what it did. The checks are what the Run started with (`--verify`, else
+`.collie/verify.json`, else the checks remembered for its remote, else the user's
+`verify.json`; a follow-up started from a card starts with its parent's), plus whatever
+anyone has named since with `collie run intent verification`
+or chat's `set_verification`, the Run's own agent included. Nobody approves them
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). A name not among them is
+refused. Anyone else collects the same way from outside:
+`collie verify --run <your run id> -- <command>`.
 With `at: "default-base"` it runs at the merge-base of the checkout and its default branch,
 in that same checkout so what the build installed is there, and then puts the checkout back;
 a checkout with changes of its own, or no default branch to compare with, is refused.
@@ -953,31 +956,29 @@ Collie never works a pass out from your workflow's id.
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 ```
 
-`host.approved(runId)` is that list, for a prompt to name what the work will be held to
-before it starts — `renderApproved` writes it out — and `renderEvidence(host.evidence(...))`
-is what was actually collected and by whom, for a merge request to say what it proved.
-
-`requireApproved(kind)` is the same list where your Run's kind of result needs it.
-A workflow that [declares](#what-a-definition-declares) `verifies` is never started with
-nothing approved, so this is the backstop: with nothing approved it parks the Run with the repair — a grant through `collie run intent
-verification`, then `collie run resume` — instead of paying agents for work no gate could
-accept, and a resume asks again. Call it before your first agent and again at your gate, so
-a grant withdrawn meanwhile parks the Run there rather than failing it.
+`host.approved(runId)` is the Run's checks as they stand now, for a prompt to name what the
+work will be held to — `renderApproved` writes it out — and
+`renderEvidence(host.evidence(...))` is what was actually collected and by whom, for a
+merge request to say what it proved. The list can grow while the Run works, since an
+agent may name a check, so read it again where you need it — at each gate pass, inside the
+Activity that runs it, so a replay sees what that pass saw — rather than once at the start.
+An empty list stops nothing: where your Run's kind of result needs checks,
+`evidenceGapsOf` reports a gap that tells the implementer how to name them.
 
 `evidenceGapsOf` is the gate itself: what a Run of this kind still has no evidence for, one
-sentence each, and empty where the evidence is there. It reads the journal, the approved
-list, the Outputs you hold and the tickets you built — and it will not take a reviewer's
+sentence each, and empty where the evidence is there. It reads the journal, the Run's
+checks, the Outputs you hold and the tickets you built — and it will not take a reviewer's
 judgement from an implementer's Output, because the agent that wrote the change cannot
 vouch for its own scope. Only the latest result for a check on the tree in front of it
 counts, so a pass a later fail on the same tree contradicts is not one. Baseline failures
-are diagnostic context: `preexisting` does not remove gaps. Each approved check and each
+are diagnostic context: `preexisting` does not remove gaps. Each of the Run's checks and each
 ticket's promised check still needs a passing verification on the current tree.
 
 ```ts
 const gaps = evidenceGapsOf({
   kind: isOutcome(place.options.outcome ?? "") ? place.options.outcome : "unspecified",
   evidence: yield * host.evidence(runId, cwd),
-  approved: yield * requireApproved(place.options.outcome ?? ""),
+  approved: yield * host.approved(runId),
   outputs: { build, synthesize },
   reviewed: ["synthesize"],
   roots: [place.dir, cwd],
@@ -1062,14 +1063,6 @@ export default defineWorkflow({
   from a directory that is not a git checkout is refused naming that directory, and no
   Run, worktree, workspace or agent is left behind. Absent, the Run works where it was
   started.
-- **`verifies: true`** says the workflow's gate runs the approved set. A start of it whose
-  outcome needs that set (anything but `investigation`, `plan` and `review`) and has nothing
-  approved is refused as `invalid_input`, with the repair, before any Run, worktree or Task
-  exists. The set comes from `--verify`, else the project's `.collie/verify.json`, else the
-  checks remembered for its repository's remote, else the user's `verify.json`. A follow-up
-  started from a card is held to its parent's set. A plan spanning repositories is checked
-  in each repository it names, against that one's own `.collie/verify.json` or remembered
-  checks, and `--verify` is refused for it.
 - **`followUps` and `actions`** carry an `id` that is stable and a `title` a human reads.
   Two fields, because a retitled action is the same action and a card matching on the
   title would start a different one. `workflow` is a public id or `"self"` for the one

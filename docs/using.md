@@ -1571,9 +1571,10 @@ repository's name: "monorepo" is the one checkout of that name under the
 the Flock chat alike. Two checkouts of one name are refused with both paths. What proves a
 Run is chat's to choose too: a start you ask chat for
 carries the checks chat chose (`start` with `verify`), and chat adds or withdraws a running
-Run's (`set_verification`) at once. Collie runs those commands itself, outside any agent's
-permission rules; the merge request lists each one with its command, and you verify the
-work there before it lands.
+Run's (`set_verification`) at once. Where nobody chose any, the Run's own agent names them
+before it builds. Nobody approves a check: Collie runs them itself, outside any agent's
+permission rules, the merge request lists each one with its command, and you verify the
+work there before it lands ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 That the rest is really there is a gate: `test/chat-parity.test.ts` walks the CLI's own
 command tree and fails on a command with no conversational route, so the list cannot
 quietly fall behind the CLI.
@@ -1691,7 +1692,7 @@ survives the picker closing, the Control Plane closing, and the terminal being d
 The detail panel of a run that stopped opens with **Stopped**: one line saying why — the
 review loop out of iterations or making no progress, a blocking finding the implementer
 disputed, a last fix whose own account did not hold up, a stop someone asked for, or work
-the run parked itself — a pane that would not take a prompt, nothing approved to prove it,
+the run parked itself — a pane that would not take a prompt, a check that still fails after its gate fixes,
 a workspace that closed with its checkout gone — then which actions are safe right now. Where nothing recorded says why, it says that rather than guessing.
 
 It is the same classification `collie run show` and `collie run wait --until attention`

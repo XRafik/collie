@@ -444,19 +444,20 @@ test(
 );
 
 test(
-  "a start nothing is approved to prove is refused with the repair, and nothing is admitted",
+  "a start with no checks written down is admitted, for its agent to name them",
   () =>
     provesWith(
-      "collie-lifecycle-unprovable-",
+      "collie-lifecycle-unnamed-",
       (world) =>
         Effect.gen(function* () {
           const started = yield* collie(world, ["run", "start", "proved", "--input", "note=x"]);
-          expect(started.exit).toBe(2);
-          expect(started.envelope.error?.code).toBe("invalid_input");
-          expect(started.envelope.error?.message).toContain("--verify");
-          expect(started.envelope.error?.message).toContain(".collie/verify.json");
-          const listed = yield* collie(world, ["run", "list"]);
-          expect(listed.envelope.data).toMatchObject({ runs: [] });
+          expect(started.envelope.ok).toBe(true);
+          const runId = (yield* payloadOf(started.envelope)).runId ?? "";
+          const finished = yield* collie(world, ["run", "wait", runId]);
+          expect((yield* payloadOf(finished.envelope)).run?.status).toEqual({
+            status: "complete",
+            value: "",
+          });
           yield* stopHost(world.state);
         }),
       ["proved.workflow.ts"],
@@ -524,7 +525,7 @@ test(
 );
 
 test(
-  "a verify.json that does not read is refused by name, never taken as nothing approved",
+  "a verify.json that does not read is refused by name, never taken as no checks",
   () =>
     provesWith(
       "collie-lifecycle-bad-verify-",

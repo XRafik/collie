@@ -1,5 +1,10 @@
 # A repository's checks are remembered by its remote
 
+_Amended by [ADR-0055](0055-a-run-never-asks-to-run-its-checks.md): nothing parks for
+want of a check, because a Run with none written down has its own agent name them.
+Remembered checks are still read second, and they are what spares a repository's Runs
+that naming. They are no longer a standing permission._
+
 A Run's [approved set](../../CONTEXT.md) came from `.collie/verify.json` in the project, else
 the user's one global `~/.collie/user/verify.json`. Few repositories carry a `.collie/` file,
 and one global list cannot fit a monorepo and a small package at once, so most Runs parked at

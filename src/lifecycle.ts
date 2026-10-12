@@ -216,7 +216,7 @@ export const startRun = Effect.fn("Lifecycle.startRun")(function* (
     readonly parent?: string | null;
     /** The goal and constraints named at launch, beside the workspace's own defaults. */
     readonly intent?: Pick<IntentSeed, "goal" | "constraints">;
-    /** The approved set given with the start, over the project's and the user's files. */
+    /** The checks given with the start, over the project's and the user's files. */
     readonly verify?: ReadonlyArray<VerifySpec> | undefined;
     /** Paths on this Machine, which the host copies into the Run. */
     readonly attachments?: ReadonlyArray<string> | undefined;
@@ -668,7 +668,7 @@ export const resumeRun = (
     options.door,
   ).pipe(Effect.map(shown(options.runId)));
 
-/** Grants a Run one command Collie may run itself, or withdraws it, through the host. */
+/** Names one of a Run's checks, or withdraws it, through the host. */
 export const grantRun = (
   env: PluginEnv,
   options: {
@@ -695,16 +695,14 @@ export const grantRun = (
         ? {
             ok: true as const,
             data: { run: options.runId, approved: answered.value },
-            human: [`${options.runId} may have Collie run:`, renderApproved(answered.value)].join(
-              "\n",
-            ),
+            human: [`${options.runId}'s checks:`, renderApproved(answered.value)].join("\n"),
           }
         : answered,
     ),
   );
 
 /**
- * Saves a Run's approved checks as its repository's own, by its checkout's remote, so
+ * Saves a Run's checks as its repository's own, by its checkout's remote, so
  * every Run started there later begins with them. The CLI and chat both come here.
  */
 export const rememberChecks = Effect.fn("lifecycle.rememberChecks")(function* (
@@ -729,8 +727,7 @@ export const rememberChecks = Effect.fn("lifecycle.rememberChecks")(function* (
   if (project === null)
     return err("invalid_state", `Run ${runId}'s checkout has no remote to remember its checks by`);
   const specs = intent.authority.run_verification;
-  if (specs.length === 0)
-    return err("invalid_state", `Run ${runId} has no approved checks to remember`);
+  if (specs.length === 0) return err("invalid_state", `Run ${runId} has no checks to remember`);
   const file = rememberedFile(env.userDir, project);
   if (file === null)
     return err("invalid_state", `${project} is not a remote a file can be named by`);

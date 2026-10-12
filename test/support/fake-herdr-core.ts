@@ -169,6 +169,11 @@ const SessionsJson = Schema.fromJsonString(
 const FailuresJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 const QueuedOutputJson = Schema.Union([Schema.String, Schema.Null, Schema.JsonObject]);
 const QueueJson = Schema.fromJsonString(Schema.Array(QueuedOutputJson));
+/** A queued entry for an agent that writes files before its Output, as a grant would. */
+const Scripted = Schema.Struct({
+  writes: Schema.Array(Schema.Struct({ path: Schema.String, text: Schema.String })),
+  output: QueuedOutputJson,
+});
 const JsonRecord = Schema.fromJsonString(Schema.Any);
 const encodeJson = Schema.encodeSync(JsonRecord);
 const emptyFailures: Record<string, string> = {};
@@ -389,13 +394,20 @@ function handle(
         const queue = yield* readQueue(queuePath);
         const next = queue[state.outputs];
         state.outputs += 1;
-        if (next !== undefined && next !== null) {
+        // An agent that acts before it answers: what it writes, then its Output.
+        const scripted = Option.getOrNull(Schema.decodeUnknownOption(Scripted)(next));
+        for (const one of scripted?.writes ?? []) {
+          yield* fs.makeDirectory(path.dirname(one.path), { recursive: true });
+          yield* fs.writeFileString(one.path, one.text);
+        }
+        const output = scripted === null ? next : scripted.output;
+        if (output !== undefined && output !== null) {
           const outputPath = match[1]!.trim();
           yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
-          const plain = Schema.decodeUnknownOption(Schema.String)(next);
+          const plain = Schema.decodeUnknownOption(Schema.String)(output);
           yield* fs.writeFileString(
             outputPath,
-            Option.isSome(plain) ? plain.value : encodeJson(next),
+            Option.isSome(plain) ? plain.value : encodeJson(output),
           );
         }
       }

@@ -2745,36 +2745,68 @@ const parkedWhy = (runId: string) =>
     Effect.orElseSucceed(() => ""),
   );
 
+/** What `collie run intent verification` leaves for a Run: its checks, as the host keeps them. */
+const naming = (runId: string, names: ReadonlyArray<string>) => ({
+  path: `${evidenceDir(dir, runId)}/approved.json`,
+  text: asApproved(
+    names.map((name) => ({ name, executable: "true", argv: [], cwd: rig.projectDir })),
+  ),
+});
+
+const GATE_FIX = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
+
 scenario(
-  "a Run with nothing approved to prove it stops before any agent, and says how to approve something",
+  "a Run with no checks builds without waiting, is asked to name them, and is held until one is",
   () =>
     runEffect(
       Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
         yield* repository();
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
         yield* approve("r-impl-none", []);
-
-        const status = yield* stalled({
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, GATE_FIX, GATE_FIX, GATE_FIX]);
+        const options = {
           entry: shipped("implement"),
           runId: "r-impl-none",
           input: { plan },
-        });
+          options: { outcome: "feature" },
+        };
 
-        expect(status).toBe("suspended");
-        expect(yield* rig.cmds()).not.toContain("agent start");
-        const why = yield* parkedWhy("r-impl-none");
-        // This Run can still be proved; the file only helps the Runs started after it.
-        expect(why).toContain("collie run intent verification r-impl-none --name");
-        expect(why).toContain("collie run resume r-impl-none");
-        expect(why).toContain(".collie/verify.json");
-        expect(why).toContain("only when it starts");
+        expect(yield* stalled(options)).toBe("suspended");
+        const building = yield* asked("r-impl-none", "build");
+        expect(building).toContain("(no check is named for this Run yet)");
+        expect(building).toContain("collie run intent verification r-impl-none --name <name>");
+        for (const at of [1, 2, 3, 4])
+          expect(yield* asked("r-impl-none", `gate-fix-${at}`)).toContain("no check is named");
+        expect(yield* parkedWhy("r-impl-none")).toContain("no check is named");
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/r-impl-none/mr.prompt.md`)).toBe(false);
+        expect(
+          yield* session(Store.pipe(Effect.flatMap((store) => store.asked("r-impl-none")))),
+        ).toEqual([]);
+
+        yield* approve("r-impl-none", ["unit"]);
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          OPENED,
+        ]);
+        expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
+        yield* bin.restore();
+        expect(yield* parkedWhy("r-impl-none")).toBe("");
+        expect(yield* asked("r-impl-none", "mr")).toMatch(/- unit: \S*true \(in /);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "the same Run, granted a verification and resumed, builds and is held to it at its gate",
+  "a check the builder names is run by Collie at the gate and listed in the merge request, with nothing asked",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -2782,69 +2814,68 @@ scenario(
         yield* bin.add("glab", `exit 0`);
         yield* repository();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        yield* approve("r-impl-grant", []);
-        yield* stalled({ entry: shipped("implement"), runId: "r-impl-grant", input: { plan } });
-
-        yield* approve("r-impl-grant", ["unit"]);
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-        const result = yield* resumed({
+        yield* approve("r-impl-named", []);
+        yield* rig.queueOutputs([
+          { writes: [naming("r-impl-named", ["unit"])], output: BUILT },
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const result = yield* ran({
           entry: shipped("implement"),
-          runId: "r-impl-grant",
+          runId: "r-impl-named",
           input: { plan },
+          options: { outcome: "feature" },
         });
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
-        expect(yield* parkedWhy("r-impl-grant")).toBe("");
-        expect(yield* asked("r-impl-grant", "build")).toContain(
-          `- unit: true (in ${rig.projectDir})`,
-        );
-        const opening = yield* asked("r-impl-grant", "mr");
-        expect(opening).toContain("unit");
-        expect(opening).toContain("by collie");
+        expect(yield* parkedWhy("r-impl-named")).toBe("");
+        const opening = yield* asked("r-impl-named", "mr");
+        // Listed with the command Collie spawned for it, and its run by Collie.
+        expect(opening).toMatch(/- unit: \S*true \(in /);
+        expect(opening).toContain("- unit: pass (by collie)");
+        expect(
+          yield* session(Store.pipe(Effect.flatMap((store) => store.asked("r-impl-named")))),
+        ).toEqual([]);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "a grant emptied while the Run works stops it at its gate with the same repair, not an empty approval",
+  "checks withdrawn to none while the Run works are held exactly as checks never named",
   () =>
     runEffect(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
         yield* repository();
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
         yield* approve("r-impl-emptied", ["unit"]);
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-        // A human withdraws the last grant once the build has been handed out.
-        let asks = 0;
-        const withdrawn: HostOverride = Layer.effect(Host)(
-          Effect.gen(function* () {
-            const host = yield* Host;
-            return Host.of({
-              ...host,
-              approved: (runId) => ((asks += 1) === 1 ? host.approved(runId) : Effect.succeed([])),
-            });
-          }),
-        );
+        yield* rig.queueOutputs([
+          { writes: [naming("r-impl-emptied", [])], output: BUILT },
+          CLEAN_SYNTHESIS,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+        ]);
 
         const status = yield* stalled({
           entry: shipped("implement"),
           runId: "r-impl-emptied",
           input: { plan },
-          host: withdrawn,
         });
         yield* bin.restore();
 
         expect(status).toBe("suspended");
-        expect(yield* parkedWhy("r-impl-emptied")).toContain(
-          "collie run intent verification r-impl-emptied --name",
+        expect(yield* asked("r-impl-emptied", "build")).toContain(
+          `- unit: true (in ${rig.projectDir})`,
         );
-        // Stopped at the gate: built and reviewed, and nobody asked to open anything.
-        expect(yield* prompts()).toHaveLength(2);
-        // Nor asked to approve a list with nothing in it.
+        expect(yield* asked("r-impl-emptied", "gate-fix-1")).toContain("no check is named");
+        expect(yield* parkedWhy("r-impl-emptied")).toContain("no check is named");
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/r-impl-emptied/mr.prompt.md`)).toBe(false);
         expect(
           yield* session(Store.pipe(Effect.flatMap((store) => store.asked("r-impl-emptied")))),
         ).toEqual([]);
@@ -2854,7 +2885,7 @@ scenario(
 );
 
 scenario(
-  "a Run whose outcome needs no evidence is not stopped for having nothing approved",
+  "a Run whose outcome needs no evidence is not stopped for having no checks",
   () =>
     runEffect(
       // Its agent never answers, so what it waits on is the clock.
@@ -2864,7 +2895,7 @@ scenario(
           yield* approve("r-impl-inv", []);
           yield* rig.queueOutputs([null]);
 
-          // Its agent writes nothing, which parks it for that; never for what was approved.
+          // Its agent writes nothing, which parks it for that; never for having no checks.
           const why = yield* parkedOn({
             entry: shipped("implement"),
             runId: "r-impl-inv",
