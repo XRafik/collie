@@ -230,6 +230,8 @@ export const PlanTicket = Schema.Struct({
   title: Schema.String,
   /** Whether every checkbox in it is checked. No boxes at all is not done. */
   done: Schema.Boolean,
+  /** Changes whenever its file does; an older host sends none. */
+  stamp: Schema.optional(Schema.String),
 });
 export type PlanTicket = typeof PlanTicket.Type;
 

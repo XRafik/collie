@@ -95,7 +95,7 @@ import { buildBoard, mrOf } from "./board";
 import { watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
-import { buildRunDetail } from "./views";
+import { buildRunDetail, type PlanCache } from "./views";
 import {
   Answered,
   ASKED_KINDS,
@@ -116,7 +116,6 @@ import {
   SteerOutcome,
   Attachments,
   type FrontDoor,
-  type PlanPanel,
   type Where,
 } from "./board-model";
 import {
@@ -677,9 +676,9 @@ const frontDoorHandlers = (
       const usage = yield* Usage;
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
       const recordingUsage = yield* Semaphore.make(1);
-      // A finished Run's plan cannot change, so every drawer on it shares one read.
+      // Every drawer on a finished Run shares one read of its plan until a file of it changes.
       // ponytail: kept for the host's life; evict by age if a host lives for months.
-      const plans = new Map<string, PlanPanel | null>();
+      const plans: PlanCache = new Map();
       const stampOf = (client: { readonly id: number }) => stampIn(declared, client);
       const doorOf = (client: { readonly id: number }) => stampOf(client).origin;
       /** Who asks on a channel: its front door, and a chat's voice. */

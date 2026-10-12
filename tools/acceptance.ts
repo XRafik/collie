@@ -714,6 +714,19 @@ const BACKEND: readonly Check[] = [
       name: "a message over the delivery cap is kept whole in the Run, and the agent is told where",
     },
   },
+  {
+    id: "backend/a-rewritten-plan-reaches-the-records-details",
+    statement:
+      "A rewritten ticket, and a finished Run's rewritten plan, reach the record's details.",
+    owner: REVIEW_COMMENTS,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/run-detail.test.ts",
+      name: "a rewritten ticket, and a finished Run's rewritten plan, reach the record's details",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */

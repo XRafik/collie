@@ -8,21 +8,30 @@ const { textOf } = useActions();
 const SPEC = "SPEC.md";
 const ticketFile = (file: string) => `issues/${file}`;
 
-/** Each plan file asked for, by its path in the plan; null while it is being read. */
+/** Each ticket's stamp by its path in the plan; none for a plan file that is not a ticket. */
+const stamps = computed(
+  () => new Map(props.plan.tickets.map((ticket) => [ticketFile(ticket.file), ticket.stamp])),
+);
+
+/** Each plan file asked for, by its path in the plan; null while it is first read. */
 const read = ref(new Map<string, PlanText | null>());
+/** The stamp each file was last asked for at, so a changed one is read again. */
+const asked = new Map<string, string | undefined>();
 const load = (file: string) => {
-  if (read.value.has(file)) return;
-  read.value.set(file, null);
-  void textOf(props.installation, props.runId, `plan:${file}`).then((text) =>
-    read.value.set(file, text === null ? { failed: `${file} could not be read.` } : { text }),
-  );
+  const stamp = stamps.value.get(file);
+  if (asked.has(file) && asked.get(file) === stamp) return;
+  asked.set(file, stamp);
+  if (!read.value.has(file)) read.value.set(file, null);
+  void textOf(props.installation, props.runId, `plan:${file}`).then((text) => {
+    if (asked.get(file) !== stamp) return;
+    read.value.set(file, text === null ? { failed: `${file} could not be read.` } : { text });
+  });
 };
 
 /** The plan file a link opened, shown above the plan until it is closed. */
 const opened = ref<string | null>(null);
 provide("openPlanFile", (file: string) => {
   opened.value = file;
-  if (file !== SPEC) load(file);
 });
 const wholeSpec = useWhole(
   () => props,
@@ -43,7 +52,10 @@ const tickets = computed(() =>
   })),
 );
 const expanded = ref<string[]>([]);
-watch(expanded, (files) => files.forEach((file) => load(ticketFile(file))));
+watch([expanded, opened, stamps], () => {
+  expanded.value.forEach((file) => load(ticketFile(file)));
+  if (opened.value !== null && opened.value !== SPEC) load(opened.value);
+});
 </script>
 
 <template>
