@@ -24,15 +24,15 @@ const withPi = <A, E>(
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "flock-pi-" });
       const env = Bun.env;
       const previous = env.PI_CODING_AGENT_DIR;
-      env.PI_CODING_AGENT_DIR = `${dir}/agent`;
-      yield* fs.makeDirectory(env.PI_CODING_AGENT_DIR);
-      expect(childEnv().PI_CODING_AGENT_DIR).toBe(`${dir}/agent`);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           if (previous === undefined) delete env.PI_CODING_AGENT_DIR;
           else env.PI_CODING_AGENT_DIR = previous;
         }),
       );
+      env.PI_CODING_AGENT_DIR = `${dir}/agent`;
+      yield* fs.makeDirectory(env.PI_CODING_AGENT_DIR);
+      expect(childEnv().PI_CODING_AGENT_DIR).toBe(`${dir}/agent`);
       const services = yield* Effect.context<Crypto.Crypto | FileSystem.FileSystem>();
       const context: DriverContext = {
         dir,
