@@ -312,10 +312,11 @@ and lands in Finished by itself
 changes the result, and it does not push, open a merge request, merge, deploy to production
 or do anything irreversible unless the task or your own message in its session says so.
 Where it changed code and nothing names the run's checks, it names them with
-`collie run intent verification`, and Collie runs the granted checks when the run ends.
+`collie run intent verification` — with `--cwd` naming the repository, at the Projects
+root — and Collie runs the granted checks there when the run ends.
 
 **Ends:** when the agent writes its Output. Its `summary` is the run's result and what the
-card says — a claim, shown as one. A `blocked` reason fails the run with that reason. There
+card says, as `Finished; it says: “…”` — a claim, shown as one. A `blocked` reason fails the run with that reason. There
 is no menu, and the agent takes steering after the run has ended.
 
 Module: [`workflows/general.workflow.ts`](../workflows/general.workflow.ts), with its
