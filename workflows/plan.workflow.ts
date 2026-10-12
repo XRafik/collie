@@ -5,7 +5,8 @@
 // interview it held is still in the agent that writes the spec. Then a question, and another after
 // whatever the answer started — a plan is refined, second-guessed and offloaded as often
 // as the human wants, and only "Implement now", "Architecture first" and "Finish
-// planning" end it.
+// planning" end it. Started with `then=implement`, nobody is asked anything: the plan is
+// built as soon as it is written.
 //
 // The Markdown beside this file is the content: the interview, the two skills the spec
 // and the tickets are written with, and what each of the menu's rounds asks for.
@@ -37,6 +38,7 @@ const planning = {
   inputs: Schema.Struct({ goal: text }),
   run: Schema.Struct({ dir: text, id: text }),
   rooting: text,
+  attendance: text,
 };
 
 const prompts = {
@@ -53,6 +55,10 @@ const prompts = {
   refine: content.template("refine", planning),
 };
 
+const Decided = Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+  description: "what we settled, one line each",
+});
+
 /** What the interview settles: the name of the work, and what kind of result it is. */
 const Grilled = Schema.Struct({
   verdict: Schema.Literals(["clean", "findings"]),
@@ -62,9 +68,7 @@ const Grilled = Schema.Struct({
     description:
       "one of feature, bug, refactor, investigation, docs or migration — empty where none fits",
   }),
-  decided: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
-    description: "what we settled, one line each",
-  }),
+  decided: Decided,
 });
 
 /** What the spec step leaves behind. The tickets step writes the plan's own Output. */
@@ -72,6 +76,7 @@ const Spec = Schema.Struct({
   verdict: Schema.Literals(["clean", "findings"]),
   findings: Schema.optionalKey(Schema.Array(FindingSchema)),
   spec: Schema.String.annotate({ description: "the spec you wrote, as a path" }),
+  decided: Decided,
 });
 
 /** What a round that rewrote the plan says to whoever is already building from it. */
@@ -128,7 +133,15 @@ export default defineWorkflow({
   title: "plan — turn a goal into a spec and tickets",
   description:
     "Uses the goal and repository context to write a spec and tickets, asking only for missing decisions.",
-  input: Schema.Struct({ goal: Schema.String }),
+  input: Schema.Struct({
+    goal: Schema.String,
+    then: Schema.optionalKey(
+      Schema.Literals(["", "implement"]).annotate({
+        description:
+          "implement to build the plan as soon as it is written, with nobody asked anything; empty to be asked what next",
+      }),
+    ),
+  }),
   output: Schema.String,
   // The planner's own, which a Run's --model or a scope around it can still change, and a
   // second opinion's: a fresh agent with its own context.
@@ -157,10 +170,15 @@ export default defineWorkflow({
       const children = yield* Children;
       const run = yield* Run;
       const place = yield* host.place(run.id);
+      const nobodyAsked = asked.then === "implement";
       const input = {
         inputs: { goal: asked.goal },
         run: { dir: place.dir, id: run.id },
         rooting: rootingOf(place.options),
+        // A section's text is sent as it is, so the one name it carries is filled here.
+        attendance: (
+          content.sections.get(nobodyAsked ? "unattended" : "attended") ?? ""
+        ).replaceAll("{{run.id}}", run.id),
       };
       const planDir = `${place.dir}/plan`;
       // Why the plan's tickets cannot be built, recorded so a replay is handed the same answer.
@@ -217,17 +235,20 @@ export default defineWorkflow({
       let opinions = 0;
       for (let round = 1; round <= ROUNDS; round++) {
         // What is left to offer: an opinion already had twice is not offered a third time.
-        const chosen = yield* ask({
-          name: `next-${round}`,
-          prompt: "What next?",
-          options: opinions < OPINIONS ? CHOICES : CHOICES.filter((one) => one !== OPINION),
-        });
+        const chosen = nobodyAsked
+          ? IMPLEMENT
+          : yield* ask({
+              name: `next-${round}`,
+              prompt: "What next?",
+              options: opinions < OPINIONS ? CHOICES : CHOICES.filter((one) => one !== OPINION),
+            });
         if (chosen === FINISH) return `${written.issues_dir}: finished planning`;
 
         if (chosen === IMPLEMENT) {
-          // A plan the fan-out cannot run starts nothing, and the menu comes back.
+          // A plan the fan-out cannot run starts nothing, and the menu comes back if anyone is there.
           const unrunnable = yield* refusalOf(`implement-${round}`);
           if (unrunnable !== null) {
+            if (nobodyAsked) return yield* new WorkflowError({ reason: unrunnable });
             yield* host.record(run.id, `${IMPLEMENT} cannot run here: ${unrunnable}`);
             yield* host.parked(run.id, `${IMPLEMENT} cannot run here: ${unrunnable}`);
             continue;

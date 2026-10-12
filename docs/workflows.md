@@ -26,6 +26,12 @@ issue id or URL goes in the goal, alone or with your words around it: the planne
 it first. The goal is the only launch question, and the end menu is asked when the plan is
 written rather than before it exists.
 
+`then` is `implement` or empty. The Launch flow leaves it empty; an agent's start gives it,
+`--input then=` where unused. With `then=implement` nobody is asked anything: each prompt
+tells the planner that nobody is watching, so it decides what is open and records it under
+`decided`, and the end menu is skipped for **Implement now** at once. A plan whose tickets
+cannot be built then fails with why, rather than asking again.
+
 **What happens:** a planner reads the goal and repository, asks only when a missing
 decision changes the work, then writes `SPEC.md` and one ticket per slice into the run's
 `plan/` directory. There is no mandatory interview, summary approval, or manual skill

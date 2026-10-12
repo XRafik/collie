@@ -379,6 +379,10 @@ const runStart = Command.make(
       command: "collie run start implement --input plan=ENG-123",
       description: "Build from a Linear issue, a plan directory, or a description",
     },
+    {
+      command: 'collie run start plan --input goal="one registry" --input then=implement',
+      description: "Plan and build it with nobody asked anything; then= to be asked what next",
+    },
   ]),
 );
 

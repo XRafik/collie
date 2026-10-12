@@ -499,6 +499,8 @@ scenario(
         expect(yield* asked("r-plan", "spec")).toContain(
           `Write the spec to \`${runDir(dir, "r-plan")}/plan/SPEC.md\``,
         );
+        for (const operation of ["grill", "spec", "tickets"])
+          expect(yield* asked("r-plan", operation)).not.toContain(UNATTENDED);
         expect(yield* persona("r-plan", "grill")).toContain("You are a planner");
         expect((yield* launched())[0]?.args).toContain("--model opus --effort xhigh");
       }),
@@ -801,6 +803,69 @@ scenario(
 
         expect(yield* asked("r-plan-bad", "unbuildable")).toContain("04-loose.md");
         expect(result._tag).toBe("Failure");
+        expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
+);
+
+const UNATTENDED = "Nobody is watching this Run";
+
+const questions = (runId: string) =>
+  session(Store.pipe(Effect.flatMap((store) => store.asked(runId))));
+
+scenario(
+  "a plan started to build interviews, specs and tickets unattended, then implements without asking",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([GRILLED, SPEC, TICKETS]);
+
+        const result = yield* ran({
+          entry: shipped("plan"),
+          runId: "r-plan-alone",
+          input: { ...GOAL, then: "implement" },
+        });
+
+        expect(said(result)).toContain("Implement now");
+        expect(yield* questions("r-plan-alone")).toEqual([]);
+        for (const operation of ["grill", "spec", "tickets"]) {
+          const prompt = yield* asked("r-plan-alone", operation);
+          expect(prompt).toContain(UNATTENDED);
+          expect(prompt).not.toContain("collie run answer");
+        }
+        expect(started.map((one) => [one.workflow, one.input, one.options])).toEqual([
+          [
+            "implement",
+            { plan: `${runDir(dir, "r-plan-alone")}/plan` },
+            { task: "one-registry", outcome: "feature" },
+          ],
+        ]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a plan started to build whose tickets cannot be built fails with why, and asks nothing",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([GRILLED, SPEC, TICKETS, TICKETS]);
+        yield* repositories("r-plan-alone-bad", THREE_REPOS);
+        yield* fs.remove(`${rig.projectDir}/web/.git`, { recursive: true });
+
+        const result = yield* ran({
+          entry: shipped("plan"),
+          runId: "r-plan-alone-bad",
+          input: { ...GOAL, then: "implement" },
+        });
+
+        expect(reasonOf(result)).toContain(
+          "These repositories are named by a ticket but not checked out",
+        );
+        expect(yield* questions("r-plan-alone-bad")).toEqual([]);
         expect(started).toEqual([]);
       }),
     ),

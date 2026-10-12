@@ -22,7 +22,7 @@ Put these before the subcommand:
 | `--log-level <lvl>` | `all`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `none`. |
 
 ```sh
-collie --json --workspace wT run start plan --input goal="ship it"
+collie --json --workspace wT run start plan --input goal="ship it" --input then=
 ```
 
 ## Where a run roots
@@ -155,7 +155,7 @@ work](sdk.md#which-agent-does-the-work) is the whole order.
 ### Attachments
 
 ```sh
-collie --json run start plan --input goal="the picker is cut off" --attach shot.png
+collie --json run start plan --input goal="the picker is cut off" --input then= --attach shot.png
 collie --json run steer <run-id> "this is what it does now" --attach after.png
 collie --json run action <run-id> carry-on --input work="still cut off" --attach log.txt
 ```
@@ -408,8 +408,12 @@ Examples:
 collie run start review --input target=https://gitlab.example.com/acme/app/-/merge_requests/2 --input plan= --input proves=
 collie run start review --input target=worktree --input plan= --input proves=
 collie run start implement --input plan=ENG-123
-collie run start plan --input goal="one registry" --input workspace=projects-root
+collie run start plan --input goal="one registry" --input then= --input workspace=projects-root
 ```
+
+`plan` takes `goal` and `then`. `then=implement` builds the plan as soon as its tickets are
+written, with nothing asked of anyone; empty, its end menu is asked
+([`plan`](workflows.md#plan)).
 
 A start that leaves anything out comes back as `needs_input`, one entry per missing field:
 what it means (the field's own description, else what its strategy is) and the facts that
