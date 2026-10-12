@@ -585,12 +585,16 @@ where this installation keeps its logs — is asked for here rather than written
 prose, so the same workflow is usable by somebody else.
 
 `host.mr({ cwd, target?, source? })` is whether a merge request can be opened from here and
-what it would carry: the configured assignee, the repository's own template, the issues the
-branch answers. Its optional `provider` is `github` or `gitlab` (absent on a GitLab-only
-host), and `repository` names GitHub's owner/repository for explicit `gh --repo` commands.
-A GitHub origin uses `gh`, checks its github.com login and repository access, and reads
-the authenticated assignee and the checkout's pull request template. GitLab retains
-the configured assignee and merge request template. One question rather than two,
+what it would carry, on the checkout's own forge (or the target's, where it names one):
+the assignee — `<forge>.assignee` from the user's config, else that forge's login — the
+repository's own template, the issues the branch answers. `forge` is `GitLab` or `GitHub`
+and `noun` is `merge request` or `pull request`; `provider` is `gitlab` or `github`, and
+`repository` the repository's path for `--repo`. `existing` is the URL of this branch's
+open one, or empty, and `autoMerge` whether it merges itself once green — a step that
+pushes to it should not run. `commands.create` and `commands.comment` are the command
+lines an agent runs to open one (with `<title>` and `<file>` left to fill in) or to note on
+`existing`, written by the forge's adapter so a prompt names no CLI of its own.
+One question rather than two,
 because a step that cannot reach its forge has
 nothing to fill in — check it before you start an agent, and say the reason where it is no.
 Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Run: its card

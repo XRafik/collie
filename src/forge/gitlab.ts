@@ -1,10 +1,12 @@
 // The GitLab adapter: everything Collie asks GitLab, through `glab`.
 
-import { Effect, Option, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { ForgeChecks, MrDetails, MrPanel, MrRef, MrUnavailable } from "../board-model";
 import { epochMs } from "../time";
 import type { Runner } from "../mr";
-import type { DeployTier, Forge, Readiness } from "./forge";
+import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
+
+export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
 
 const UserJson = Schema.fromJsonString(Schema.Struct({ username: Schema.String }));
 
@@ -268,8 +270,72 @@ export function liveTier<R>(
   });
 }
 
+const OpenMrsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      iid: Schema.Union([Schema.String, Schema.Number]),
+      web_url: optionalText,
+      merge_when_pipeline_succeeds: optionalFlag,
+    }),
+  ),
+);
+
+/** The open merge request from `branch`, read with `glab mr list`; a failed read is not "none". */
+function forBranch<R>(
+  project: string,
+  branch: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<ForBranch, never, R> {
+  return Effect.gen(function* () {
+    const listed = yield* run(
+      "glab",
+      ["mr", "list", "--source-branch", branch, ...repoArgs(project), "--output", "json"],
+      cwd,
+    );
+    // An empty answer from a CLI that succeeded is an empty list.
+    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, open: null };
+    const decoded = Schema.decodeUnknownOption(OpenMrsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(decoded))
+      return {
+        ok: false,
+        reason: `glab could not list ${project}'s merge requests from ${branch}`,
+      };
+    const [mr] = decoded.value;
+    if (mr === undefined) return { ok: true, open: null };
+    const iid = String(mr.iid);
+    return {
+      ok: true,
+      open: {
+        iid,
+        url: mr.web_url ?? `https://${project}/-/merge_requests/${iid}`,
+        autoMerge: mr.merge_when_pipeline_succeeds === true,
+      },
+    };
+  });
+}
+
+function template(cwd: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    return (yield* fs.exists(path.join(cwd, MR_TEMPLATE))) ? MR_TEMPLATE : null;
+  });
+}
+
 export const gitlab: Forge = {
   name: "gitlab",
+  display: "GitLab",
+  noun: "merge request",
+  forBranch,
+  template,
+  commands: ({ project, assignee, existing }) => ({
+    create: `glab mr create --assignee ${assignee} --title "<title>" --description "$(cat <file>)"`,
+    comment:
+      existing === null
+        ? ""
+        : `glab mr note ${existing} --repo ${project} --message "$(cat <file>)"`,
+  }),
   ready: gitlabForProject,
   login: glabLogin,
   details: mrDetails,

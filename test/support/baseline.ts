@@ -17,6 +17,8 @@ import { Rig, FakeHerdr } from "./recorder";
 import { exec } from "./command";
 import { fastForward, runEffect } from "./effect";
 import { FakeBin } from "./bin";
+import { CLI, FORGE_HOST, PROJECT, forgeOnPath, type ForgeModel } from "./forge";
+import type { MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
 import { Children, Host, Run, WorkflowError, type ActionFacts, type ChildAsk } from "../../src/sdk";
@@ -2524,52 +2526,141 @@ scenario(
   120_000,
 );
 
-scenario(
-  "implement prepares GitHub delivery for the existing branch's pull request",
-  () =>
-    runEffect(
-      Effect.gen(function* () {
-        const bin = yield* FakeBin.make(`${rig.root}/bin`);
-        yield* bin.add(
-          "gh",
-          `case "$1" in api) echo '{"login":"tester"}';; repo) echo '{"nameWithOwner":"team/project"}';; esac; exit 0`,
-        );
-        yield* repository();
-        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:team/project.git"], {
-          cwd: rig.projectDir,
-        });
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        const runId = "r-impl-github";
-        const url = "https://github.com/team/project/pull/89";
-        yield* approve(runId, ["unit"]);
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, { ...OPENED, mr_url: url }]);
-        const status = yield* running(
-          { entry: shipped("implement"), runId, input: { plan } },
-          (reading) =>
-            until(
-              () => reading,
-              (got) => got !== "pending",
-            ),
-        );
-        expect(status).toBe("complete");
-        const builder = yield* persona(runId, "build");
-        expect(builder).toContain("Before every GitHub push");
-        expect(builder).toContain("git remote get-url origin");
-        expect(builder).toContain("gh pr list --repo <origin-owner/repository> --head");
-        expect(builder).toContain("--json number,autoMergeRequest");
-        expect(builder).toContain("the read fails or any result has auto-merge enabled");
-        const prompt = yield* asked(runId, "mr");
-        expect(prompt).toContain("Forge: `github`");
-        expect(prompt).toContain("gh pr view");
-        expect(prompt).toContain("gh pr edit");
-        expect(prompt).toContain("--repo team/project");
-        expect(prompt).toContain("Do **not** open a second");
-        expect(yield* prompts()).toHaveLength(3);
-        yield* bin.restore();
-      }),
-    ),
-  120_000,
-);
+const DELIVERY = {
+  gitlab: { origin: "git@gitlab.example.com:group/app.git", other: "gh" },
+  github: { origin: "git@github.com:owner/repo.git", other: "glab" },
+} as const;
+
+/** A checkout on `name`'s forge, its fake on PATH, and the other forge's CLI there to be unasked. */
+const deliveringOn = (name: MrForge, mrs: ForgeModel["mrs"] = []) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    const forge = yield* forgeOnPath(bin, name, {
+      installed: true,
+      loggedIn: [FORGE_HOST[name]],
+      login: "tester",
+      mrs,
+    });
+    const other = yield* forgeOnPath(bin, name === "gitlab" ? "github" : "gitlab", {
+      installed: true,
+      loggedIn: [],
+      login: null,
+      mrs: [],
+    });
+    yield* repository();
+    yield* exec(["git", "remote", "set-url", "origin", DELIVERY[name].origin], {
+      cwd: rig.projectDir,
+    });
+    // An old GitLab remote beside origin does not make the checkout GitLab's.
+    yield* exec(["git", "remote", "add", "gitlab", "git@gitlab.example.com:old/app.git"], {
+      cwd: rig.projectDir,
+    });
+    return { bin, forge, other };
+  });
+
+for (const name of ["gitlab", "github"] as const) {
+  const noun = name === "gitlab" ? "merge request" : "pull request";
+
+  scenario(
+    `implement opens a ${noun} on a ${name} checkout with that forge's own command`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, other } = yield* deliveringOn(name);
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-open`;
+          yield* approve(runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+          const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+          yield* bin.restore();
+          expect(said(result)).toBe(OPENED.mr_url);
+          const prompt = yield* asked(runId, "mr");
+          expect(prompt).toContain(`${CLI[name]} ${name === "gitlab" ? "mr" : "pr"} create`);
+          expect(prompt).toContain("--assignee tester");
+          expect(prompt).not.toMatch(new RegExp(`\\b${DELIVERY[name].other}\\b`));
+          // Branch naming and readiness asked this forge alone.
+          expect(yield* other.calls()).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement updates a ${name} branch's open ${noun} rather than opening a second`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          // The fake checkout stands on master, which is the branch the step reads.
+          const { bin } = yield* deliveringOn(name, [
+            { project: PROJECT[name], iid: "31", state: "open", sourceBranch: "master" },
+          ]);
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-existing`;
+          yield* approve(runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+          yield* ran({
+            entry: shipped("implement"),
+            runId,
+            input: { plan },
+          });
+          yield* bin.restore();
+          const prompt = yield* asked(runId, "mr");
+          expect(prompt).toContain(name === "gitlab" ? "glab mr note 31" : "gh pr comment 31");
+          expect(prompt).toContain(
+            name === "gitlab"
+              ? "https://gitlab.example.com/group/app/-/merge_requests/31"
+              : "https://github.com/owner/repo/pull/31",
+          );
+          expect(prompt).toContain(`Do **not** open a second ${noun}`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement does not push to a ${name} ${noun} that merges itself once green`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* deliveringOn(name, [
+            {
+              project: PROJECT[name],
+              iid: "31",
+              state: "open",
+              sourceBranch: "master",
+              autoMerge: true,
+            },
+          ]);
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-auto-merge`;
+          yield* approve(runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS]);
+          const result = yield* ran({
+            entry: shipped("implement"),
+            runId,
+            input: { plan },
+          });
+          yield* bin.restore();
+          const why = `not pushed: auto-merge is on for ${
+            name === "gitlab"
+              ? "https://gitlab.example.com/group/app/-/merge_requests/31"
+              : "https://github.com/owner/repo/pull/31"
+          }`;
+          expect(said(result)).toBe(why);
+          expect(yield* prompts()).toHaveLength(2);
+          const fs = yield* FileSystem.FileSystem;
+          expect(yield* fs.readFileString(`${runDir(dir, runId)}/log.txt`)).toContain(why);
+        }),
+      ),
+    120_000,
+  );
+}
 
 scenario(
   "implement fails when the delivery agent has not pushed and supplied a merge request",

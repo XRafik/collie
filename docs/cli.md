@@ -357,8 +357,10 @@ they came. Everything else is new work, and gets a new branch called
 6. A slug of the work itself — the description, or the issue id.
 7. Otherwise a slug of the run's own name.
 
-The login is `GITLAB_USER_LOGIN` where the environment sets it, and otherwise whoever
-`glab` is logged in as for this checkout's host. Neither is the merge request's assignee
+The login is the checkout's forge's (ADR-0050 D5). On GitLab it is `GITLAB_USER_LOGIN`
+where the environment sets it, and otherwise whoever `glab` is logged in as for this
+checkout's host; on GitHub it is `GITHUB_ACTOR`, and otherwise whoever `gh` is logged in
+as. Neither is the merge request's assignee
 and neither is your OS username. Where there is no login to be had the run does not start
 and says to log in — it is an authentication failure, not a question about branches.
 
@@ -1046,13 +1048,16 @@ read — and neither opens a merge request, so there is no gate to stop them. Th
 read once when the run finishes, and what is missing is recorded on the run and shown on
 the board and in `run show`.
 
-For an `implement` Run's final delivery, a GitHub origin uses `gh`; a GitLab checkout
-uses `glab`. Both front doors ask the same host service for readiness, assignee,
-repository template and Linear tickets. GitHub readiness requires `gh` installed,
-logged in to github.com and able to read the origin repository. An existing pull
-request on the branch is updated. Before every GitHub push, including build and fix
-steps, the implementer reads the origin repository's open pull requests for the branch
-and refuses a push if auto-merge is enabled or that reading fails.
+For an `implement` Run's final delivery, the checkout's forge — its `origin`'s host, else
+`upstream`'s — decides: GitHub's adapter writes `gh` commands and GitLab's `glab` ones,
+and the prompt names no other CLI. Both front doors ask the same host service for
+readiness, assignee, template, Linear tickets and this branch's open merge request.
+Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
+to read the repository. An existing merge request on the branch is updated rather than
+given a second one, and one that merges itself once green is not pushed to at all: the
+step records `not pushed: auto-merge is on for <url>` and starts no agent. Before every
+GitHub push in the build and fix steps, the implementer still reads the branch's open pull
+requests and refuses a push if auto-merge is enabled or that reading fails.
 An unavailable forge parks the Run with the repair it needs.
 A delivery agent that did not push, supplied no merge request URL or reported findings
 fails the Run with the reason and a follow-up repair; it cannot report successful delivery.

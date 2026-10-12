@@ -189,7 +189,8 @@ stopped part-way leaves the instance up, for `bodil remote down <name>`.
 | `COLLIE_MODE`         | Internal picker mode passed from a herdr action to its picker pane.                                                                          |
 | `COLLIE_CWD`          | Working directory passed to picker and agent processes; also re-roots a CLI run.                                                             |
 | `COLLIE_HOST`         | Host executable for development and tests: one executable path, or a JSON array containing the executable and arguments.                     |
-| `GITLAB_USER_LOGIN`   | Who a generated branch is namespaced under. Unset, Collie asks `glab` who you are for this checkout's host.                                  |
+| `GITLAB_USER_LOGIN`   | Who a generated branch is namespaced under on GitLab. Unset, Collie asks `glab` who you are for this checkout's host.                        |
+| `GITHUB_ACTOR`        | Who a generated branch is namespaced under on GitHub. Unset, Collie asks `gh` who you are on github.com.                                     |
 | `HELLE_ENV_FILE`      | Where Helle credentials are read from; defaults to `~/.config/helle/env`. See [Optional integrations](#optional-integrations).               |
 
 `COLLIE_MODE` is a process-to-process contract set by Collie; you do not set it yourself.
@@ -331,9 +332,10 @@ or, for a fresh task, the task's (ADR-0006).
 Which branch it is:
 
 - work described in words, a plan directory or a Linear issue → a new branch
-  `<your GitLab login>/<the task>`, cut from `origin/HEAD`. The login is
-  `GITLAB_USER_LOGIN`, or whoever `glab` is logged in as; a run with neither does not
-  start and says to log in;
+  `<your login>/<the task>`, cut from `origin/HEAD`. The login is the checkout's forge's:
+  on GitLab `GITLAB_USER_LOGIN`, or whoever `glab` is logged in as; on GitHub
+  `GITHUB_ACTOR`, or whoever `gh` is logged in as. A run with neither does not start, and
+  says which CLI to log in with and which variable to set;
 - a fix round on a review → the branch that was reviewed (a merge request's source branch,
   the head of a `branch:a...b` diff, or the branch the reviewed tree was on), so a merge
   request is updated rather than replaced;
@@ -1812,8 +1814,10 @@ checkout there is no branch and no working tree to review, so the target menu is
 ```
 
 Three more keys are what a shipped workflow asks this installation rather than assuming:
-`"gitlab": {"assignee": "<user>"}` is who a merge request is assigned to — whoever `glab`
-is logged in as when it is unset — `"linear": {"team": "<team>"}` is the team `renovate`
+`"gitlab": {"assignee": "<user>"}` is who a GitLab merge request is assigned to — whoever
+`glab` is logged in as when it is unset — and `"github": {"assignee": "<login>"}` is the
+same on GitHub, defaulting to whoever `gh` is logged in as; one forge's is never used on
+the other, so `mk` on GitLab is never assigned as `mk` on github.com. `"linear": {"team": "<team>"}` is the team `renovate`
 files its checklist with, and `"renovate": {"logs": "<where and how>"}` is a sentence
 naming where this installation keeps its application logs, for a stage deploy that has to
 be debugged. Leave any of them out and the workflow asks, or works from what the pipeline

@@ -250,6 +250,40 @@ test("a login nobody can establish is an authentication error, not a branch ques
     }),
   ));
 
+const onGithub = () =>
+  fakeGitAnswering({ ...gitAnswers(), "remote get-url origin": "git@github.com:acme/app.git" });
+
+test("on a GitHub checkout the branch is named under GITHUB_ACTOR, else gh's login, never glab's", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* onGithub();
+      const glabAsked = `${rig.root}/glab-asked`;
+      yield* bin.add("glab", `touch "${glabAsked}"; echo '{"username": "gitlab-me"}'`);
+      yield* bin.add("gh", `echo '{"login": "madskronborg"}'`);
+
+      expect(
+        yield* plan({ plan_kind: "text" }, undefined, { login: "mk", githubLogin: "actor" }),
+      ).toMatchObject({ branch: "actor/add-a-picker" });
+      // GITLAB_USER_LOGIN names nothing on GitHub.
+      expect(yield* plan({ plan_kind: "text" }, undefined, { login: "mk" })).toMatchObject({
+        branch: "madskronborg/add-a-picker",
+      });
+      const fs = yield* FileSystem.FileSystem;
+      expect(yield* fs.exists(glabAsked)).toBe(false);
+    }),
+  ));
+
+test("a GitHub checkout with no login says to log in to gh or set GITHUB_ACTOR", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* onGithub();
+      yield* bin.add("gh", "exit 1");
+      expect((yield* plan({ plan_kind: "text" }, undefined, { login: null })).refused).toBe(
+        "no GitHub login to name a branch under: GITHUB_ACTOR is unset and gh could not say who you are. Log in with `gh auth login`, or set GITHUB_ACTOR.",
+      );
+    }),
+  ));
+
 test("a generated name git will not have is refused rather than used", () =>
   runEffect(
     Effect.gen(function* () {

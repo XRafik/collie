@@ -296,11 +296,21 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly repository?: string;
     /** Why it cannot be done here. Empty where it can. */
     readonly reason: string;
-    /** The configured assignee, else whoever glab is logged in as; empty for neither. */
+    /** The configured assignee, else whoever the forge's CLI is logged in as; empty for neither. */
     readonly assignee: string;
     /** The repository's merge request template, relative to the checkout; empty for none. */
     readonly template: string;
     readonly issues: ReadonlyArray<string>;
+    /** "GitLab" or "GitHub". */
+    readonly forge?: string;
+    /** "merge request" or "pull request". */
+    readonly noun?: string;
+    /** The URL of this branch's open merge request, or empty for none. */
+    readonly existing?: string;
+    /** Whether \`existing\` merges itself once green, so a push to it is a merge. */
+    readonly autoMerge?: boolean;
+    /** The command lines an agent runs, written by the forge's adapter. */
+    readonly commands?: { readonly create: string; readonly comment: string };
   }
 
   /** What the host lends a workflow. Hold and stop are read fresh on every replay. */
@@ -2266,10 +2276,16 @@ export const hostLayer = (options: {
               return yield* prepareMergeRequest(
                 {
                   ...asked,
-                  configuredAssignee: configValue(
-                    yield* readConfig(options.userDir ?? dir),
-                    "gitlab.assignee",
-                  ),
+                  assignees: {
+                    gitlab: configValue(
+                      yield* readConfig(options.userDir ?? dir),
+                      "gitlab.assignee",
+                    ),
+                    github: configValue(
+                      yield* readConfig(options.userDir ?? dir),
+                      "github.assignee",
+                    ),
+                  },
                   gitlabHost: (yield* loadDefaults(options.userDir ?? dir)).gitlabHost,
                 },
                 runShell,
@@ -3690,6 +3706,7 @@ const makeRegistry: (
         openLabel: ask.taskLabel ?? null,
         explicit: ask.options.branch ?? null,
         login: placing.env.gitlabLogin,
+        githubLogin: placing.env.githubLogin,
         recordedBy: (at) =>
           store.runs.pipe(
             Effect.map(

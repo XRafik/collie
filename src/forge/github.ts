@@ -1,6 +1,6 @@
 // The GitHub adapter: everything Collie asks GitHub, through `gh`. Only github.com.
 
-import { Effect, Option, Schema } from "effect";
+import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import {
   mrPath,
   mrWords,
@@ -11,7 +11,7 @@ import {
 } from "../board-model";
 import type { Runner } from "../mr";
 import { epochMs } from "../time";
-import type { Forge, Readiness } from "./forge";
+import type { Forge, ForBranch, Readiness } from "./forge";
 
 const HOST = "github.com";
 
@@ -184,8 +184,94 @@ function login<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, nev
   });
 }
 
+const OpenPullsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      number: Schema.Number,
+      url: optionalText,
+      autoMergeRequest: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+    }),
+  ),
+);
+
+/** The open pull request from `branch`, read with `gh pr list`; a failed read is not "none". */
+function forBranch<R>(
+  project: string,
+  branch: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<ForBranch, never, R> {
+  return Effect.gen(function* () {
+    const repo = mrPath({ project, iid: "" });
+    const listed = yield* run(
+      "gh",
+      [
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number,url,autoMergeRequest",
+      ],
+      cwd,
+    );
+    // An empty answer from a CLI that succeeded is an empty list.
+    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, open: null };
+    const decoded = Schema.decodeUnknownOption(OpenPullsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(decoded))
+      return { ok: false, reason: `gh could not list ${repo}'s pull requests from ${branch}` };
+    const [pull] = decoded.value;
+    if (pull === undefined) return { ok: true, open: null };
+    const iid = String(pull.number);
+    return {
+      ok: true,
+      open: {
+        iid,
+        url: pull.url ?? `https://${project}/pull/${iid}`,
+        autoMerge: pull.autoMergeRequest != null,
+      },
+    };
+  });
+}
+
+/** Where GitHub looks for a pull request template, in the order it looks. */
+const TEMPLATES = [
+  ".github/pull_request_template.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  "pull_request_template.md",
+  "PULL_REQUEST_TEMPLATE.md",
+  "docs/pull_request_template.md",
+  "docs/PULL_REQUEST_TEMPLATE.md",
+];
+
+function template(cwd: string) {
+  return Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    for (const candidate of TEMPLATES)
+      if (yield* fs.exists(path.join(cwd, candidate))) return candidate;
+    return null;
+  });
+}
+
 export const github: Forge = {
   name: "github",
+  display: "GitHub",
+  noun: "pull request",
+  forBranch,
+  template,
+  commands: ({ project, branch, assignee, existing }) => {
+    const repo = mrPath({ project, iid: "" });
+    return {
+      create: `gh pr create --repo ${repo} --head ${branch} --assignee ${assignee} --title "<title>" --body-file <file>`,
+      comment:
+        existing === null ? "" : `gh pr comment ${existing} --repo ${repo} --body-file <file>`,
+    };
+  },
   ready,
   login,
   details,

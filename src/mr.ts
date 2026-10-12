@@ -8,10 +8,15 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { YamlValue } from "./yaml";
 import { isString } from "./schema";
 import { targetKind, workSourceOf, type Settled } from "./strategies";
-import { type MrDetails, type MrRef, mrPath, mrTarget, parseMrTarget } from "./board-model";
+import {
+  type MrDetails,
+  type MrForge,
+  type MrRef,
+  mrPath,
+  mrTarget,
+  parseMrTarget,
+} from "./board-model";
 import { FORGES, forgeOf, forgeOfHost, type Forge } from "./forge/forge";
-import { github } from "./forge/github";
-import { gitlab } from "./forge/gitlab";
 import type { MrReady, Posted } from "./sdk";
 
 export type Runner<R = never> = (
@@ -31,8 +36,6 @@ export interface Ran {
 export function whatItSaid(result: Ran): string {
   return [result.stdout.trim(), result.stderr?.trim() ?? ""].filter(Boolean).join("\n");
 }
-
-export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
 
 /** A Linear id, the shape it takes in a branch name, a URL, or an Output. */
 const LINEAR_ID = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
@@ -215,35 +218,17 @@ export function sinceReview(details: MrDetails, reviewedAt: number): string {
   return `changed ${when} this review — head ${details.headSha}`;
 }
 
-export interface MrFacts {
-  /** The GitLab username the MR is assigned to, or null when it could not be resolved. */
-  assignee: string | null;
-  /** Path of the repo's MR template, relative to the repo, or null when it has none. */
-  template: string | null;
-  /** Linear ids this branch answers, deduplicated, in the order they were found. */
-  issues: string[];
-}
-
-/** The configured assignee wins; otherwise whoever glab is logged in as. */
+/** The configured assignee wins; otherwise whoever the forge's CLI is logged in as. */
 export function resolveAssignee<R>(
   cwd: string,
   configured: YamlValue | undefined,
+  forge: Forge,
   run: Runner<R>,
 ): Effect.Effect<string | null, never, R> {
   return Effect.gen(function* () {
     if (configured !== undefined && isString(configured) && configured.trim() !== "")
       return configured.trim();
-    return yield* gitlab.login(cwd, run);
-  });
-}
-
-export function templateFile(
-  cwd: string,
-): Effect.Effect<string | null, PlatformError, FileSystem.FileSystem | Path.Path> {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const pathService = yield* Path.Path;
-    return (yield* fs.exists(pathService.join(cwd, MR_TEMPLATE))) ? MR_TEMPLATE : null;
+    return yield* forge.login(cwd, run);
   });
 }
 
@@ -275,29 +260,14 @@ function matchAll(text: string): string[] {
   return [...text.matchAll(LINEAR_ID)].map((m) => m[1]!);
 }
 
-export function mrFacts<R>(
-  opts: {
-    cwd: string;
-    configuredAssignee?: YamlValue;
-  } & Settled,
-  run: Runner<R>,
-): Effect.Effect<MrFacts, PlatformError, FileSystem.FileSystem | Path.Path | R> {
-  return Effect.gen(function* () {
-    return {
-      assignee: yield* resolveAssignee(opts.cwd, opts.configuredAssignee, run),
-      template: yield* templateFile(opts.cwd),
-      issues: yield* linearIssues(opts, run),
-    };
-  });
-}
-
 /** The forge this branch pushes to, and the facts its delivery prompt needs. */
 export function prepareMergeRequest<R>(
   opts: {
     readonly cwd: string;
     readonly target?: string;
     readonly source?: { readonly value: string; readonly kind: string };
-    readonly configuredAssignee?: YamlValue;
+    /** `<forge>.assignee` from the user's config, by forge: one forge's never answers for another. */
+    readonly assignees?: Partial<Record<MrForge, YamlValue>>;
     /** The Flock's GitLab, which is GitLab whatever its name. */
     readonly gitlabHost?: string;
   },
@@ -311,54 +281,48 @@ export function prepareMergeRequest<R>(
       template: "",
       issues: [],
     });
-    const work = {
-      cwd: opts.cwd,
-      inputs: { source: opts.source?.value ?? "", source_kind: opts.source?.kind ?? "" },
-      strategies: { source: "work-source" },
-    };
     const ref = opts.target === undefined ? null : parseMrTarget(opts.target);
     const here =
       ref?.project != null
         ? { ok: true as const, forge: forgeOf(ref), project: ref.project }
         : yield* forgeHere(opts.cwd, run, opts.gitlabHost);
     if (!here.ok) return unavailable(here.reason);
-    const ready = yield* here.forge.ready(here.project, opts.cwd, run);
+    const { forge, project } = here;
+    const ready = yield* forge.ready(project, opts.cwd, run);
     if (!ready.ok) return unavailable(ready.reason);
-    if (here.forge.name === "github") {
-      const repository = mrPath({ project: here.project, iid: "" });
-      const login = yield* github.login(opts.cwd, run);
-      if (login === null) return unavailable("gh did not report a GitHub login");
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      let template = "";
-      for (const candidate of [
-        ".github/pull_request_template.md",
-        ".github/PULL_REQUEST_TEMPLATE.md",
-        "pull_request_template.md",
-        "docs/pull_request_template.md",
-      ])
-        if (yield* fs.exists(path.join(opts.cwd, candidate))) {
-          template = candidate;
-          break;
-        }
-      return {
-        ok: true,
-        reason: "",
-        provider: "github",
-        repository,
-        assignee: login,
-        template,
-        issues: yield* linearIssues(work, run),
-      };
-    }
-    const facts = yield* mrFacts({ ...work, configuredAssignee: opts.configuredAssignee }, run);
+    const assignee = yield* resolveAssignee(opts.cwd, opts.assignees?.[forge.name], forge, run);
+    if (assignee === null && forge.name === "github")
+      return unavailable("gh did not report a GitHub login");
+    const branch = (yield* run(
+      "git",
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      opts.cwd,
+    )).stdout.trim();
+    const found = yield* forge.forBranch(project, branch, opts.cwd, run);
+    if (!found.ok) return unavailable(found.reason);
+    const work = {
+      cwd: opts.cwd,
+      inputs: { source: opts.source?.value ?? "", source_kind: opts.source?.kind ?? "" },
+      strategies: { source: "work-source" },
+    };
     return {
       ok: true,
       reason: "",
-      provider: "gitlab",
-      assignee: facts.assignee ?? "",
-      template: facts.template ?? "",
-      issues: facts.issues,
+      provider: forge.name,
+      repository: mrPath({ project, iid: "" }),
+      assignee: assignee ?? "",
+      template: (yield* forge.template(opts.cwd)) ?? "",
+      issues: yield* linearIssues(work, run),
+      forge: forge.display,
+      noun: forge.noun,
+      existing: found.open?.url ?? "",
+      autoMerge: found.open?.autoMerge ?? false,
+      commands: forge.commands({
+        project,
+        branch,
+        assignee: assignee ?? "",
+        existing: found.open?.iid ?? null,
+      }),
     };
   });
 }

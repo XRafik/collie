@@ -766,6 +766,19 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/implement-delivers-on-the-checkouts-own-forge",
+    statement:
+      "implement opens or updates the merge request on the checkout's own forge, assigned to that forge's login, and does not push to one that merges itself once green.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "implement (opens a|updates a|does not push to a) .*(gitlab|github)",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
@@ -1170,6 +1183,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On a Mac with bodil installed and BODIL_REMOTE_VM set, save the module from docs/sdk.md as `~/.collie/user/workflows/bodil.workflow.ts` and record that `collie workflow show bodil` lists plan, brands and name. Run `collie run start bodil --input plan=<a small plan> --input brands=happytiger --input name=collie-try`; record that `bodil ls` shows collie-try, that the implementer's pane works in `~/work/gitte/worktrees/collie-try/monorepo` on `dabo/collie-try`, and the merge request's source branch. When the Run finishes, record that `bodil ls` no longer lists collie-try and the worktree is still there. Record the revision.",
+    },
+  },
+  {
+    id: "operator/implement-on-cego-collie-opens-a-pull-request",
+    statement:
+      "implement on cego/collie opens a pull request assigned to madskronborg, on a branch named madskronborg/<task>.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk, start implement on a small change in a cego/collie checkout with no GITHUB_ACTOR set. Record the branch it names, the pull request it opens on GitHub and its assignee, and that the card says pull request. Repeat the start on mk-laptop with no GITLAB_USER_LOGIN and record that it names its branch. Record the revision.",
     },
   },
   {

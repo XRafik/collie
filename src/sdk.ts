@@ -640,7 +640,7 @@ export interface MrReady {
   readonly ok: boolean;
   /** The checkout's forge; absent on a host that only supports GitLab. */
   readonly provider?: "gitlab" | "github";
-  /** The GitHub owner/repository, so gh addresses the checkout's origin explicitly. */
+  /** The repository's path on its forge — `owner/repo` or `group/project` — for `--repo`. */
   readonly repository?: string;
   /** Why it cannot be done here. Empty where it can. */
   readonly reason: string;
@@ -650,6 +650,21 @@ export interface MrReady {
   readonly template: string;
   /** The Linear issues this branch answers. */
   readonly issues: ReadonlyArray<string>;
+  /** "GitLab" or "GitHub"; absent where the checkout's forge could not be read. */
+  readonly forge?: string;
+  /** "merge request" or "pull request", as the forge says it. */
+  readonly noun?: string;
+  /** The URL of this branch's open merge request, or empty for none. */
+  readonly existing?: string;
+  /** Whether `existing` merges itself once green, so a push to it is a merge. */
+  readonly autoMerge?: boolean;
+  /** The command lines an agent runs, written by the forge's adapter. */
+  readonly commands?: {
+    /** Opens one, with `<title>` and `<file>` (the description file) left to fill in. */
+    readonly create: string;
+    /** Posts `<file>` as a note on `existing`; empty where there is none. */
+    readonly comment: string;
+  };
 }
 
 /** What became of a note: whether it landed, and the sentence a human reads either way. */

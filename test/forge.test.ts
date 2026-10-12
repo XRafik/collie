@@ -264,3 +264,59 @@ test("each fake answers the same on PATH, logs what it got, and keeps what was p
       }
     }),
   ));
+
+const TEMPLATES = {
+  gitlab: [".gitlab/merge_request_templates/default.md"],
+  github: [
+    ".github/pull_request_template.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "pull_request_template.md",
+    "PULL_REQUEST_TEMPLATE.md",
+    "docs/pull_request_template.md",
+    "docs/PULL_REQUEST_TEMPLATE.md",
+  ],
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  const forge = FORGES[name];
+
+  test(`the ${name} forge finds a branch's open merge request, none, and auto-merge`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const open = mr(name, { iid: "31", sourceBranch: "me/x" });
+        const ask = (mrs: ReadonlyArray<FakeMr>) =>
+          forge.forBranch(PROJECT[name], "me/x", "/w", fakeForge(name, model(name, { mrs })).run);
+        expect(yield* ask([mr(name, { sourceBranch: "other" })])).toEqual({ ok: true, open: null });
+        expect(yield* ask([open])).toMatchObject({
+          ok: true,
+          open: { iid: "31", autoMerge: false },
+        });
+        expect(yield* ask([{ ...open, autoMerge: true }])).toMatchObject({
+          open: { autoMerge: true },
+        });
+        expect(
+          (yield* forge.forBranch(
+            PROJECT[name],
+            "me/x",
+            "/w",
+            fakeForge(name, model(name, { installed: false })).run,
+          )).ok,
+        ).toBe(false);
+      }),
+    ));
+
+  test(`the ${name} forge finds the repository's template wherever it keeps one, and none`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        for (const where of TEMPLATES[name]) {
+          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "forge-template-" });
+          expect(yield* forge.template(dir)).toBe(null);
+          const parent = where.split("/").slice(0, -1).join("/");
+          if (parent !== "") yield* fs.makeDirectory(`${dir}/${parent}`, { recursive: true });
+          yield* fs.writeFileString(`${dir}/${where}`, "## Description\n");
+          expect(yield* forge.template(dir)).toBe(where);
+        }
+      }),
+    ));
+}

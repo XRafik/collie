@@ -39,8 +39,10 @@ export const ForgeModel = Schema.Struct({
   loggedIn: Schema.Array(Schema.String),
   login: Schema.NullOr(Schema.String),
   mrs: Schema.Array(FakeMr),
-  /** `git remote -v` of the checkout, for GitLab's readiness of a checkout. */
-  remotes: Schema.optionalKey(Schema.String),
+  /** The checkout's `origin` and `upstream` remote URLs, and the branch it is on. */
+  origin: Schema.optionalKey(Schema.String),
+  upstream: Schema.optionalKey(Schema.String),
+  branch: Schema.optionalKey(Schema.String),
   /** Each environment, and the sha its newest successful deployment has. */
   environments: Schema.optionalKey(
     Schema.Array(
@@ -53,6 +55,8 @@ export const ForgeModel = Schema.Struct({
   ),
   /** The shas each sha descends from. */
   ancestry: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+  /** Repositories gh cannot read, by `owner/repo`. */
+  unreadable: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The deploy API does not answer. */
   deploysDown: Schema.optionalKey(Schema.Boolean),
   /** Notes posted, by `project!iid` or `project#iid`. */
@@ -131,6 +135,23 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       web_url: `https://${mr.project}/-/merge_requests/${mr.iid}`,
     });
   }
+  if (verb === "mr" && sub === "list" && flag(args, "--source-branch") !== undefined) {
+    const repo = flag(args, "--repo");
+    return json(
+      model.mrs
+        .filter(
+          (one) =>
+            one.state === "open" &&
+            one.sourceBranch === flag(args, "--source-branch") &&
+            (repo === undefined || one.project === repo),
+        )
+        .map((one) => ({
+          iid: Number(one.iid),
+          web_url: `https://${one.project}/-/merge_requests/${one.iid}`,
+          merge_when_pipeline_succeeds: one.autoMerge ?? false,
+        })),
+    );
+  }
   if (verb === "mr" && sub === "note") {
     const mr = mrAt(args[2]);
     if (mr === undefined) return no();
@@ -171,9 +192,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     return model.login === null ? no() : json({ login: model.login });
   if (verb === "repo" && sub === "view") {
     const repo = args[2] ?? "";
-    return model.mrs.some((one) => one.project === `github.com/${repo}`)
-      ? json({ nameWithOwner: repo })
-      : no();
+    return (model.unreadable ?? []).includes(repo) ? no() : json({ nameWithOwner: repo });
   }
   const pullAt = (number: string | undefined) =>
     model.mrs.find(
@@ -206,6 +225,23 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       })),
     });
   }
+  if (verb === "pr" && sub === "list") {
+    const repo = `github.com/${flag(args, "--repo")}`;
+    return json(
+      model.mrs
+        .filter(
+          (one) =>
+            one.project === repo &&
+            one.state === "open" &&
+            one.sourceBranch === flag(args, "--head"),
+        )
+        .map((one) => ({
+          number: Number(one.iid),
+          url: `https://${one.project}/pull/${one.iid}`,
+          autoMergeRequest: one.autoMerge === true ? { enabledAt: "2026-10-01T00:00:00Z" } : null,
+        })),
+    );
+  }
   if (verb === "pr" && sub === "comment") {
     const pull = pullAt(args[2]);
     if (pull === undefined) return no();
@@ -229,8 +265,19 @@ export function answer(
   cmd: string,
   args: ReadonlyArray<string>,
 ): Answered {
-  if (cmd === "git" && args[0] === "remote" && args[1] === "-v")
-    return { ran: model.remotes === undefined ? no().ran : ok(model.remotes).ran, model };
+  if (cmd === "git") {
+    const said =
+      args[0] === "remote" && args[1] === "get-url"
+        ? args[2] === "origin"
+          ? model.origin
+          : args[2] === "upstream"
+            ? model.upstream
+            : undefined
+        : args.join(" ") === "rev-parse --abbrev-ref HEAD"
+          ? model.branch
+          : undefined;
+    return { ran: said === undefined ? no().ran : ok(`${said}\n`).ran, model };
+  }
   if (cmd !== CLI[forge]) return { ran: no(127).ran, model };
   const said = forge === "gitlab" ? glab(model, args) : gh(model, args);
   if (said.noted === undefined) return { ran: said.ran, model };

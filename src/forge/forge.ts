@@ -2,7 +2,8 @@
 // the choice between them. `glab` is run only in `gitlab.ts` and `gh` only in `github.ts`
 // (ADR-0050 D1); a caller asks the forge of the reference or checkout in front of it.
 
-import type { Effect } from "effect";
+import type { Effect, FileSystem, Path } from "effect";
+import type { PlatformError } from "effect/PlatformError";
 import { forgeOfRef, type MrForge, type MrPanel, type MrRef } from "../board-model";
 import type { Runner } from "../mr";
 import type { Posted } from "../sdk";
@@ -16,6 +17,26 @@ export interface Readiness {
 }
 
 export type DeployTier = "production" | "staging";
+
+/** A branch's open merge request, none, or why the forge could not say. */
+export type ForBranch =
+  | {
+      readonly ok: true;
+      readonly open: {
+        readonly iid: string;
+        readonly url: string;
+        readonly autoMerge: boolean;
+      } | null;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/** The command lines an agent is told to run, written for the forge they run on. */
+export interface Commands {
+  /** Opens one, with `<title>` and `<file>` (the description) left for the agent. */
+  readonly create: string;
+  /** Posts `<file>` as a note on the existing one; empty where there is none. */
+  readonly comment: string;
+}
 
 /** What Collie asks a forge. Every answer is a value: a forge that cannot be asked says why. */
 export interface Forge {
@@ -41,6 +62,28 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<DeployTier | null, never, R>;
+  /** The open merge request whose source branch is `branch`, if any. */
+  readonly forBranch: <R>(
+    project: string,
+    branch: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<ForBranch, never, R>;
+  /** The repository's merge request template, relative to the checkout, or null. */
+  readonly template: (
+    cwd: string,
+  ) => Effect.Effect<string | null, PlatformError, FileSystem.FileSystem | Path.Path>;
+  /** What an agent runs to open one, or to note on `existing`. */
+  readonly commands: (options: {
+    readonly project: string;
+    readonly branch: string;
+    readonly assignee: string;
+    readonly existing: string | null;
+  }) => Commands;
+  /** "GitLab" or "GitHub". */
+  readonly display: string;
+  /** "merge request" or "pull request". */
+  readonly noun: string;
   /** One note on the merge request. */
   readonly note: <R>(
     ref: MrRef,

@@ -25,6 +25,7 @@ import { disambiguate, GLYPH, tabLabel } from "./naming";
 import {
   branchTargetHead,
   projectFromRemote,
+  forgeHere,
   projectHere,
   shell,
   whatItSaid,
@@ -112,6 +113,8 @@ export interface BranchAsk {
    * (`PluginEnv.gitlabLogin`). Null or absent leaves it to glab.
    */
   login?: string | null | undefined;
+  /** The same on GitHub (`PluginEnv.githubLogin`); null or absent leaves it to gh. */
+  githubLogin?: string | null | undefined;
   run?: Runner<ChildProcessSpawner.ChildProcessSpawner>;
 }
 
@@ -197,9 +200,6 @@ export function branchListed(
  */
 export const TASK_INPUT = "task";
 
-/** Named in the refusal, so an operator with no login is told what to set. */
-const LOGIN_ENV = "GITLAB_USER_LOGIN";
-
 /** How long the task half of a generated branch may be. */
 const SLUG_MAX = 40;
 
@@ -231,10 +231,12 @@ export const branchFor = Effect.fn("worktree.branchFor")(function* (opts: Branch
   if (asked.refused !== null) return refuse(asked.refused);
   let branch = asked.branch;
   if (asked.generated) {
-    const who = yield* whoami(opts, run);
+    const { forge, who } = yield* whoami(opts, run);
     if (who === null) {
+      const cli = forge.name === "github" ? "gh" : "glab";
+      const variable = LOGIN_ENV[forge.name];
       return refuse(
-        `no GitLab login to name a branch under: ${LOGIN_ENV} is unset and glab could not say who you are. Log in with \`glab auth login\`, or set ${LOGIN_ENV}.`,
+        `no ${forge.display} login to name a branch under: ${variable} is unset and ${cli} could not say who you are. Log in with \`${cli} auth login\`, or set ${variable}.`,
       );
     }
     branch = `${who}/${asked.branch}`;
@@ -255,8 +257,8 @@ export const branchFor = Effect.fn("worktree.branchFor")(function* (opts: Branch
 });
 
 /**
- * The GitLab login a generated branch is namespaced under: the environment's, else the
- * authenticated user of whatever host this checkout pushes to. Never the local OS user
+ * The login a generated branch is namespaced under, on the checkout's forge: the
+ * environment's, else the authenticated user of whatever host this checkout pushes to. Never the local OS user
  * and never the merge request's assignee — a branch namespace says who is pushing, and
  * a wrong answer here is a branch under someone else's name.
  */
@@ -264,10 +266,15 @@ const whoami = Effect.fn("worktree.whoami")(function* (
   opts: BranchAsk,
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
 ) {
-  const named = opts.login?.trim();
-  if (named) return named;
-  return yield* gitlab.login(opts.cwd, run);
+  const here = yield* forgeHere(opts.cwd, run);
+  // A checkout on neither forge is named as GitLab names it, as before there were two.
+  const forge = here.ok ? here.forge : gitlab;
+  const named = (forge.name === "github" ? opts.githubLogin : opts.login)?.trim();
+  return { forge, who: named ? named : yield* forge.login(opts.cwd, run) };
 });
+
+/** Named in the refusal, so an operator with no login is told what to set (ADR-0050 D5). */
+const LOGIN_ENV = { gitlab: "GITLAB_USER_LOGIN", github: "GITHUB_ACTOR" } as const;
 
 /** What `branchName` answers with: a name and how to treat it, or why there is none. */
 interface Named {

@@ -20,7 +20,6 @@ const ALLOWED = new Map([
   ["src/flows.ts", "05: OpenMr"],
   ["src/cards.ts", "06: the inspect text"],
   ["src/doctor.ts", "07: the doctor"],
-  ["workflows/implement.md", "04: the merge request step"],
   ["workflows/review.md", "05: the review prompts"],
   ["workflows/renovate.md", "10: renovate's content per forge"],
   ["prompts/collie-chat.md", "06: native chat names both forges"],

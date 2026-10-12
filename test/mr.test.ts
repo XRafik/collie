@@ -2,22 +2,21 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { runEffect } from "./support/effect";
 import { forgeOfHost } from "../src/forge/forge";
+import { fakeForge, CLI, FORGE_HOST, PROJECT, type ForgeModel } from "./support/forge";
 import {
-  MR_TEMPLATE,
   forgeHere,
+  prepareMergeRequest,
   linearIssues,
-  mrFacts,
   mrTarget,
   pipelineStatus,
   projectFromRemote,
   resolveAssignee,
   shell,
   sinceReview,
-  templateFile,
   whatItSaid,
 } from "../src/mr";
 import { parseMrUrl, parseMrTarget } from "../src/board-model";
-import { gitlabForProject, hostOf, mrDetails, repoArgs } from "../src/forge/gitlab";
+import { gitlab, gitlabForProject, hostOf, mrDetails, repoArgs } from "../src/forge/gitlab";
 import { Rig } from "./support/recorder";
 import { epochMs } from "../src/time";
 
@@ -92,26 +91,17 @@ test("a checkout's forge is its origin's, else its upstream's, whatever else it 
     }),
   ));
 
-test("the assignee is the configured one, else whoever glab is logged in as", () =>
+test("the assignee is the configured one, else whoever the forge's CLI is logged in as", () =>
   runEffect(
     Effect.gen(function* () {
       const glab = runner({ "glab api user": { stdout: '{"username": "mk", "name": "Mads"}' } });
-
-      expect(yield* resolveAssignee(rig.projectDir, "someone-else", glab)).toBe("someone-else");
-      expect(yield* resolveAssignee(rig.projectDir, "  ", glab)).toBe("mk");
-      expect(yield* resolveAssignee(rig.projectDir, undefined, glab)).toBe("mk");
+      const ask = (configured: string | undefined, run: typeof glab) =>
+        resolveAssignee(rig.projectDir, configured, gitlab, run);
+      expect(yield* ask("someone-else", glab)).toBe("someone-else");
+      expect(yield* ask("  ", glab)).toBe("mk");
+      expect(yield* ask(undefined, glab)).toBe("mk");
       // Not logged in, and nothing configured: say so rather than guess a username.
-      expect(yield* resolveAssignee(rig.projectDir, undefined, runner({}))).toBeNull();
-    }),
-  ));
-
-test("the repo's own MR template is found when it has one", () =>
-  runEffect(
-    Effect.gen(function* () {
-      expect(yield* templateFile(rig.projectDir)).toBeNull();
-      yield* mkdir(join(rig.projectDir, ".gitlab", "merge_request_templates"));
-      yield* writeFile(join(rig.projectDir, MR_TEMPLATE.replace(/\//g, "/")), "## Description\n");
-      expect(yield* templateFile(rig.projectDir)).toBe(MR_TEMPLATE);
+      expect(yield* ask(undefined, runner({}))).toBeNull();
     }),
   ));
 
@@ -152,21 +142,81 @@ test("a branch with no ticket and a work source with none yields no ids", () =>
     }),
   ));
 
-test("mrFacts gathers the three things the prompt needs in one go", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const run = runner({
-        "glab api user": { stdout: '{"username": "mk"}' },
-        "git rev-parse --abbrev-ref HEAD": { stdout: "FRO-149-modal\n" },
-      });
+const ORIGIN = {
+  gitlab: "git@gitlab.example.com:group/app.git",
+  github: "git@github.com:owner/repo.git",
+};
 
-      expect(yield* mrFacts({ cwd: rig.projectDir, inputs: {} }, run)).toEqual({
-        assignee: "mk",
-        template: null,
-        issues: ["FRO-149"],
-      });
-    }),
-  ));
+for (const name of ["gitlab", "github"] as const) {
+  const checkout = (over: Partial<ForgeModel> = {}): ForgeModel => ({
+    installed: true,
+    loggedIn: [FORGE_HOST[name]],
+    login: "me",
+    origin: ORIGIN[name],
+    branch: "me/FRO-149-modal",
+    mrs: [{ project: PROJECT[name], iid: "30", state: "closed" }],
+    ...over,
+  });
+  const prepare = (model: ForgeModel, assignees = {}) =>
+    prepareMergeRequest({ cwd: rig.projectDir, assignees }, fakeForge(name, model).run);
+
+  test(`a merge request from a ${name} checkout is that forge's, with its login, template and commands`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        // The other forge's configured assignee never answers for this one.
+        const other = name === "gitlab" ? "github" : "gitlab";
+        const ready = yield* prepare(checkout(), { [other]: "someone-else" });
+        expect(ready).toMatchObject({
+          ok: true,
+          provider: name,
+          forge: name === "gitlab" ? "GitLab" : "GitHub",
+          noun: name === "gitlab" ? "merge request" : "pull request",
+          assignee: "me",
+          template: "",
+          issues: ["FRO-149"],
+          existing: "",
+          autoMerge: false,
+        });
+        expect(ready.commands?.create).toContain(`${CLI[name]} `);
+        expect(ready.commands?.create).toContain("--assignee me");
+        expect(ready.commands?.comment).toBe("");
+        expect((yield* prepare(checkout(), { [name]: "lander" })).assignee).toBe("lander");
+      }),
+    ));
+
+  test(`a ${name} branch's open merge request is the one to update, auto-merge and all`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const open = {
+          project: PROJECT[name],
+          iid: "31",
+          state: "open",
+          sourceBranch: "me/FRO-149-modal",
+        } as const;
+        const ready = yield* prepare(checkout({ mrs: [{ ...open, autoMerge: true }] }));
+        expect(ready.existing).toContain("31");
+        expect(ready.autoMerge).toBe(true);
+        expect(ready.commands?.comment).toContain(`${CLI[name]} `);
+        expect(ready.commands?.comment).toContain("31");
+      }),
+    ));
+
+  test(`a ${name} checkout with no CLI, no login, or no forge cannot open one, and says why`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        expect((yield* prepare(checkout({ installed: false }))).reason).toBe(
+          `${CLI[name]} is not installed`,
+        );
+        expect((yield* prepare(checkout({ loggedIn: [] }))).reason).toBe(
+          `${CLI[name]} is not logged in to ${FORGE_HOST[name]}`,
+        );
+        expect(yield* prepare(checkout({ origin: "git@bitbucket.org:a/b.git" }))).toMatchObject({
+          ok: false,
+          reason: "bitbucket.org is neither GitHub nor GitLab",
+        });
+      }),
+    ));
+}
 
 test("an MR url names its project and iid", () => {
   expect(parseMrUrl("https://gitlab.cego.dk/cego/sub/deep/-/merge_requests/7\n")).toEqual({
