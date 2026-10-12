@@ -5,13 +5,13 @@
 
 import { expect, test } from "bun:test";
 import { createConnection } from "node:net";
-import { Effect, FileSystem, Schema } from "effect";
+import { Clock, Deferred, Effect, Exit, Fiber, FileSystem, Schema } from "effect";
 import { readAudit } from "../src/audit";
 import { runDir } from "../src/engine";
 import { connect, connectPeer, ownerOf } from "../src/host";
 import { certOf, certificateFor, keyOf, peersOf, relayOf } from "../src/peers";
 import { runEffect } from "./support/effect";
-import { until } from "./support/host";
+import { stopHost, until } from "./support/host";
 import { twoMachines, type Side } from "./support/peers";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -176,9 +176,14 @@ const listening = (port: string) =>
   });
 
 /** A WebSocket to a listener: open, or refused. */
-const dialListener = (port: string, ca: string, headers: Readonly<Record<string, string>>) =>
+const dialListener = (
+  port: string,
+  ca: string,
+  headers: Readonly<Record<string, string>>,
+  path = "/channel?as=cli&client=probe",
+) =>
   Effect.callback<string>((resume) => {
-    const ws = new WebSocket(`wss://127.0.0.1:${port}/channel?as=cli&client=probe`, {
+    const ws = new WebSocket(`wss://127.0.0.1:${port}${path}`, {
       headers: { ...headers },
       tls: { ca },
     });
@@ -188,6 +193,91 @@ const dialListener = (port: string, ca: string, headers: Readonly<Record<string,
     };
     ws.onerror = () => resume(Effect.succeed("refused"));
   });
+
+test(
+  "dial-back tickets are single-use, expire, belong to one installation, and a control link requires its secret",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-tickets-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const [peer] = yield* peersOf(first.world.state);
+            const [laptop] = yield* peersOf(second.world.state);
+            yield* stopHost(first.world.state);
+            const port = second.env.COLLIE_PEER_PORT!;
+            const ca = peer!.certificate!;
+            const headers = { Authorization: `Bearer ${peer!.secret}` };
+            expect(
+              yield* dialListener(port, ca, { Authorization: "Bearer wrong" }, "/control"),
+            ).toBe("refused");
+            const other = yield* second.cli([
+              "machine",
+              "invite",
+              "--for",
+              "another-installation",
+              "--name",
+              "another",
+            ]);
+            const Other = Schema.Struct({ secret: Schema.String });
+            const otherHeaders = {
+              Authorization: `Bearer ${Schema.decodeUnknownSync(Other)(other.envelope.data).secret}`,
+            };
+            const minted = yield* Deferred.make<string>();
+            const control = yield* Effect.acquireRelease(
+              Effect.callback<WebSocket>((resume) => {
+                const ws = new WebSocket(`wss://127.0.0.1:${port}/control`, {
+                  headers,
+                  tls: { ca },
+                });
+                ws.onopen = () => resume(Effect.succeed(ws));
+                ws.onmessage = (event) => {
+                  const Dial = Schema.fromJsonString(Schema.Struct({ dial: Schema.String }));
+                  const dial = Schema.decodeUnknownOption(Dial)(event.data);
+                  if (dial._tag === "Some")
+                    Deferred.doneUnsafe(minted, Exit.succeed(dial.value.dial));
+                };
+              }),
+              (ws) => Effect.sync(() => ws.close()),
+            );
+            const waiting = yield* Effect.forkScoped(
+              relayAnswer(
+                relayOf(second.world.state, laptop!.name),
+                '{"as":"cli","client":"probe"}',
+              ),
+            );
+            const ticket = yield* Deferred.await(minted);
+            const path = `/reverse?ticket=${ticket}`;
+            expect(yield* dialListener(port, ca, otherHeaders, path)).toBe("refused");
+            expect(yield* dialListener(port, ca, headers, path)).toBe("open");
+            expect(yield* dialListener(port, ca, headers, path)).toBe("refused");
+            yield* Fiber.await(waiting);
+            const expired = yield* Deferred.make<string>();
+            control.onmessage = (event) => {
+              const dial = Schema.decodeUnknownOption(
+                Schema.fromJsonString(Schema.Struct({ dial: Schema.String })),
+              )(event.data);
+              if (dial._tag === "Some") Deferred.doneUnsafe(expired, Exit.succeed(dial.value.dial));
+            };
+            yield* Effect.forkScoped(
+              relayAnswer(
+                relayOf(second.world.state, laptop!.name),
+                '{"as":"cli","client":"expiry"}',
+              ),
+            );
+            const expires = yield* Deferred.await(expired);
+            yield* Effect.sleep("10 seconds");
+            expect(yield* dialListener(port, ca, headers, `/reverse?ticket=${expires}`)).toBe(
+              "refused",
+            );
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
 
 /** One line written to a relay socket, and the line it answered with. */
 const relayAnswer = (path: string, header: string) =>
@@ -204,6 +294,145 @@ const relayAnswer = (path: string, header: string) =>
 
 const Board = Schema.Struct({ tasks: Schema.Array(Schema.Struct({ id: Schema.String })) });
 const NotFound = Schema.Struct({ machines: Schema.Array(Schema.String) });
+test(
+  "an invitation refuses a relay name that escapes its directory or exceeds a unix socket path",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-name-",
+        (_, second) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const kept = `${second.world.state}/outside.sock`;
+            yield* fs.writeFileString(kept, "kept");
+            for (const name of ["../outside", "x".repeat(105)]) {
+              const refused = yield* second.cli([
+                "machine",
+                "invite",
+                "--for",
+                "invalid",
+                "--name",
+                name,
+              ]);
+              expect(refused.envelope.ok).toBe(false);
+              expect(yield* fs.readFileString(kept)).toBe("kept");
+              expect(yield* peersOf(second.world.state)).toHaveLength(0);
+            }
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
+
+const Machines = Schema.Struct({
+  machines: Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String })),
+});
+
+test(
+  "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-reverse-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId, extra } = yield* waitingRun(first);
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const [laptop] = yield* peersOf(second.world.state);
+            const state = (side: Side, name: string) =>
+              side
+                .cli(["machine", "list"])
+                .pipe(
+                  Effect.map(
+                    (read) =>
+                      Schema.decodeUnknownSync(Machines)(read.envelope.data).machines.find(
+                        (one) => one.name === name,
+                      )?.state,
+                  ),
+                );
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+            expect(
+              (yield* second.cli(["run", "steer", runId, "hello by dial-back"])).envelope.ok,
+            ).toBe(true);
+            expect(
+              (yield* prompts(first)).some((text) => text.includes("hello by dial-back")),
+            ).toBe(true);
+            const audit = yield* readAudit(runDir(first.world.state, runId)).pipe(Effect.orDie);
+            expect(
+              audit.find((line) => line.operation === "deliver")?.actor.from?.machine?.name,
+            ).toBe("second");
+            const started = yield* second.cli(
+              ["--machine", laptop!.name, "run", "start", "attended", "--input", "work=reverse"],
+              extra,
+            );
+            expect(started.envelope.error).toBeUndefined();
+
+            const [dialled] = yield* peersOf(first.world.state);
+            yield* Effect.callback<void>((resume) => {
+              const ws = new WebSocket(`${dialled!.url}/control`, {
+                headers: { Authorization: `Bearer ${dialled!.secret}` },
+                tls: { ca: dialled!.certificate },
+              });
+              ws.onclose = () => resume(Effect.void);
+              ws.onerror = () => resume(Effect.die("the replacement control link was refused"));
+              return Effect.sync(() => ws.close());
+            }).pipe(Effect.timeout("5 seconds"));
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+
+            yield* stopHost(first.world.state);
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "away",
+            );
+            const at = yield* Clock.currentTimeMillis;
+            const away = yield* second.cli(["--machine", laptop!.name, "board"]);
+            expect(away.envelope.error?.code).toBe("machine_unreachable");
+            expect((yield* Clock.currentTimeMillis) - at).toBeLessThan(5000);
+            yield* first.cli(["machine", "list"]);
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+
+            yield* stopHost(second.world.state);
+            yield* until(
+              () => state(first, "second"),
+              (state) => state === "connecting",
+            );
+            yield* second.cli(["machine", "list"]);
+            yield* until(
+              () => state(first, "second"),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+            expect(
+              (yield* read(first.sshLog)).split("\n").filter((line) => line.startsWith("login")),
+            ).toHaveLength(1);
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
 
 test(
   "across Machines a Run is answered and stopped, and --machine reaches the board and a start, with the envelopes they give at home",

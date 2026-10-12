@@ -65,6 +65,11 @@ collie machine invite --for <installation> --name <name> [--address <host>]
 and `failure`, never the secret. A listener that could not take its port says why in
 `failure`.
 
+`live` means the control link is up. `connecting` names the dialler's last failure while
+it retries. `away` says when the listener lost its peer's control link and why. A call
+to an away Machine is `machine_unreachable`, with its name and what was seen, within
+five seconds. After sleep, the dialling host reconnects without an SSH login.
+
 `invite` is plumbing: it is what pairing runs on the other Machine over SSH, and nobody
 types it. It makes this Machine's certificate the first time (with `openssl`, an EC P-256
 key, its names and addresses and `--address` on it), mints a secret for the installation

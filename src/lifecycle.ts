@@ -38,7 +38,7 @@ import {
 } from "./host";
 import { Herdr } from "./herdr";
 import { machineName, pairWith, peersOf } from "./peers";
-import type { HerdrMachine, MachineUnreachable, PeerView } from "./peers-model";
+import type { HerdrMachine, MachineUnreachable } from "./peers-model";
 import {
   sortBoard,
   type BoardMessage,
@@ -1437,35 +1437,8 @@ export const followUpRun = (
     ),
   );
 
-/** This Machine's peers, each said live where its relay reaches it now. */
-export const machineList = (
-  env: PluginEnv,
-): Effect.Effect<
-  { readonly ok: true; readonly value: ReadonlyArray<PeerView> } | Failure,
-  never,
-  Client
-> =>
-  Effect.gen(function* () {
-    const answered = yield* asks(env, (client) => client.peers());
-    if (!answered.ok) return answered;
-    const probe = (peer: PeerView) =>
-      peer.dials === "in"
-        ? Effect.succeed(peer)
-        : Effect.scoped(
-            connectPeer(env.stateDir, peer.name, { as: "cli", client: machineName() }),
-          ).pipe(
-            Effect.as<PeerView>({ ...peer, state: "live", failure: null }),
-            Effect.catch((cause: HostFailure) =>
-              Effect.succeed<PeerView>({
-                ...peer,
-                state: "away",
-                failure: refusal(cause).error.message,
-              }),
-            ),
-          );
-    const value = yield* Effect.forEach(answered.value, probe, { concurrency: "unbounded" });
-    return { ok: true as const, value };
-  });
+/** This Machine's peers, with the standings its host keeps. */
+export const machineList = (env: PluginEnv) => asks(env, (client) => client.peers());
 
 /** Pairs this Machine with the installation asking, which `pairWith` runs over SSH. */
 export const inviteFrom = (

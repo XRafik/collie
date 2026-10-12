@@ -2048,6 +2048,7 @@ const relayed = (stateDir: string, name: string, header: RelayHeader) =>
       conn.once("close", () =>
         resume(Effect.fail(unavailable(path, `the relay to ${name} hung up`))),
       );
+      return Effect.sync(() => conn.destroy());
     }),
     (conn) => Effect.sync(() => conn.destroy()),
   );
@@ -2101,7 +2102,15 @@ export const connectPeer = (
             : `${name} runs collie ${who.build} and this is ${build}`,
       });
     return client;
-  });
+  }).pipe(
+    Effect.timeoutOrElse({
+      duration: ASK_TIMEOUT,
+      orElse: () =>
+        Effect.fail(
+          new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+        ),
+    }),
+  );
 
 const unavailable = (dir: string, reason: string) => new HostUnavailable({ dir, reason });
 

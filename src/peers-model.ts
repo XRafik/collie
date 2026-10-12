@@ -19,6 +19,9 @@ export const HerdrMachines = Schema.fromJsonString(Schema.Array(HerdrMachine));
 /** The port a Machine a peer dials listens on. */
 export const PEER_PORT = 47217;
 
+/** How long to wait after `failures` failures in a row: 1 s, doubling, at most a minute. */
+export const backoff = (failures: number) => Math.min(1000 * 2 ** failures, 60_000);
+
 /** Which side opens the connection: this Machine dials `out` to a peer that listens. */
 export const Dials = Schema.Literals(["out", "in"]);
 export type Dials = typeof Dials.Type;

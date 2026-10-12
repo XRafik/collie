@@ -24,7 +24,9 @@ const list = Command.make("list", {}, () =>
                     [
                       peer.name,
                       peer.dials === "out" ? "dialled from here" : "dials in",
-                      peer.state,
+                      peer.state === "away" && peer.since !== null
+                        ? `away since ${peer.since}`
+                        : peer.state,
                       ...(peer.failure === null ? [] : [peer.failure]),
                     ].join("\t"),
                   )

@@ -229,7 +229,7 @@ Each host keeps its peers in `src/peers.ts`, started in the host's scope
 - **The pairings,** in `peers.json` in the state directory (0600): each peer's
   installation, name (herdr's label), which side dials, and for a peer this one dials its
   `url`, its `certificate` and the `secret`.
-- **A relay socket per peer this Machine dials,** `peers/<name>.sock`. A client writes one
+- **A relay socket per peer,** `peers/<name>.sock`. A client writes one
   header line, `{"as": <front door>, "client": <name>}`, and is answered with one line —
   `{"ok":true}`, or why not (`refused`, or `unreachable` with what was seen) — then speaks
   the host protocol. Behind it the relay opens a fresh WebSocket to the peer's `/channel`,
@@ -241,8 +241,21 @@ Each host keeps its peers in `src/peers.ts`, started in the host's scope
   client}}` with the host's per-process stamp, which is what lets `from.machine` through
   `declare`: a channel that sets it without the stamp is refused.
 
+**Dial-back.** The dialling host keeps `/control` open, with the pinned certificate and
+bearer. The listener keeps one control link per installation; a newer one replaces it.
+When a client opens a relay toward an undialable peer, the listener sends `{dial, as,
+client}` over its control link. The peer opens `/reverse?ticket=<dial>`, then declares
+the channel into its own host with the listener's authenticated Machine identity.
+Tickets belong to one installation, expire after ten seconds and can be used only once.
+Both relay directions refuse with `MachineUnreachable` within five seconds.
+
+The listener sends a heartbeat every fifteen seconds. Silence past that interval ends a
+control link. Reconnection backs off from one second to one minute, resetting after a
+live link. `machine list` reports `live`, `connecting` with the last failure, or `away`
+with its time and reason. Each host keeps running its local Runs while its peer is away.
+
 `src/channel.ts` is the one declare-then-pipe: `collie bridge` hands it stdio, the listener
-a WebSocket. The client side is `connectPeer` in `src/host.ts`, which opens the relay, asks
+a WebSocket, as does the dial-back. The client side is `connectPeer` in `src/host.ts`, which opens the relay, asks
 `identity` and refuses a far host of another build, naming both, without ever starting or
 stopping it; and `asksRun` in `src/lifecycle.ts`, which asks this host, then each peer, then
 each herdr machine not paired yet, for the Run a command names.

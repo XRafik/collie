@@ -5,12 +5,27 @@
 
 import { createServer, type Server, type Socket } from "node:net";
 import { hostname, networkInterfaces } from "node:os";
-import { Config, Effect, FileSystem, Option, Schema, Stream } from "effect";
+import type { ServerWebSocket } from "bun";
+import {
+  Clock,
+  Config,
+  DateTime,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { FrontDoor, HostRefused, type Declaration } from "./board-model";
 import { channelInto } from "./channel";
 import { shell } from "./mr";
 import {
+  backoff,
   Invited,
   MachineUnreachable,
   PEER_PORT,
@@ -56,6 +71,10 @@ const writePeers = Effect.fn("Peers.write")(function* (
 });
 
 const port = Config.Int("COLLIE_PEER_PORT").pipe(Config.withDefault(PEER_PORT), Effect.orDie);
+const bindHost = Config.String("COLLIE_PEER_HOST").pipe(
+  Config.withDefault("0.0.0.0"),
+  Effect.orDie,
+);
 
 /** Whether a secret is this one, without saying how much of it matched. */
 const sameSecret = (given: string, kept: string) => {
@@ -193,6 +212,12 @@ const firstLine = (conn: Socket, then: (line: string, rest: Buffer) => void) => 
 
 /** How long a relay waits for its peer to answer before it says the Machine is away. */
 const REACH_BOUND = "5 seconds";
+/** How long a dial-back ticket can be used for. */
+const TICKET_LIFE_MS = 10_000;
+/** How often a listener says it is still there over each control link. */
+const BEAT = "15 seconds";
+/** A control link heard nothing from for this long is down. */
+const SILENCE_MS = 15_000;
 
 // SAFETY: Bun's WebSocket takes these options; where DOM's declaration of the global wins, its type does not say so.
 const BunWebSocket = WebSocket as new (
@@ -210,6 +235,16 @@ const pinnedSocket = (peer: Peer, url: string) =>
     tls: { ca: peer.certificate },
   });
 
+/** What a listener sends over a control link: a dial-back asked for, or that it is there. */
+const ControlMessage = Schema.Union([
+  Schema.Struct({ dial: Schema.String, as: FrontDoor, client: Schema.String }),
+  Schema.Struct({ beat: Schema.Literal(true) }),
+]);
+const ControlJson = Schema.fromJsonString(ControlMessage);
+const encodeControl = Schema.encodeSync(ControlJson);
+const decodeControl = Schema.decodeUnknownOption(ControlJson);
+const BEAT_MESSAGE = encodeControl({ beat: true });
+
 /** The far end of a channel to a peer, however it was opened. */
 interface Far {
   readonly send: (chunk: Uint8Array) => void;
@@ -217,22 +252,75 @@ interface Far {
   readonly listen: (deliver: (chunk: Uint8Array) => void, done: () => void) => void;
 }
 
+/** What arrives on a WebSocket, held until someone listens. */
+const held = () => {
+  const queued: Array<Uint8Array> = [];
+  let deliver: (chunk: Uint8Array) => void = (chunk) => void queued.push(chunk);
+  let done = () => {};
+  let gone = false;
+  return {
+    arrived: (chunk: Uint8Array) => deliver(chunk),
+    hungUp: () => {
+      gone = true;
+      done();
+    },
+    listen: (to: (chunk: Uint8Array) => void, then: () => void) => {
+      for (const chunk of queued.splice(0)) to(chunk);
+      deliver = to;
+      done = then;
+      if (gone) then();
+    },
+  };
+};
+
+/** A peer's WebSocket on this Machine's listener; what it is for decides what each event does. */
+interface Accepted {
+  readonly peer: Peer;
+  readonly opened: (ws: ServerWebSocket<Accepted>) => void;
+  readonly arrived: (chunk: Uint8Array) => void;
+  readonly hungUp: (ws: ServerWebSocket<Accepted>) => void;
+}
+
+interface Ticket {
+  readonly installation: string;
+  readonly at: number;
+  readonly arrive: (far: Far) => void;
+}
+
+/** Where a peer stands now, as `collie machine list` says it. */
+type Standing = Pick<PeerView, "state" | "since" | "failure">;
+
 /**
  * The peers module, for as long as the host's scope: the records, a relay socket for each
- * peer this Machine dials, and the listener while any peer dials in.
+ * peer, the control link to each peer this Machine dials, and the listener while any peer
+ * dials in.
  */
 export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const fs = yield* FileSystem.FileSystem;
+  const scope = yield* Effect.scope;
+  const clock = yield* Clock.Clock;
   const services = yield* Effect.context<
     FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
   >();
   const listenPort = yield* port;
+  const listenHost = yield* bindHost;
+  const startedAt = DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe()));
   let peers = [...(yield* peersOf(link.dir))];
   const relays = new Map<string, Server>();
+  /** The dialler of each peer this Machine keeps a control link to. */
+  const diallers = new Map<string, Fiber.Fiber<never>>();
+  /** The control link each peer that dials in holds open. */
+  const controls = new Map<string, ServerWebSocket<Accepted>>();
+  const tickets = new Map<string, Ticket>();
+  const standings = new Map<string, Standing>();
+  const connections = new Set<Socket>();
   let listener: ReturnType<typeof Bun.serve> | null = null;
   let listening: string | null = null;
   /** The certificate the listener was started with. */
   let served: string | null = null;
+
+  const stand = (installation: string, standing: Standing) =>
+    void standings.set(installation, standing);
 
   const keep = (next: ReadonlyArray<Peer>) =>
     Effect.gen(function* () {
@@ -244,33 +332,85 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       Effect.provideContext(services),
     );
 
-  /** A fresh `/channel` WebSocket to a peer this Machine dials, once it is open. */
-  const dialOut = (peer: Peer, as: FrontDoor, client: string) =>
+  const validateName = (name: string) =>
     Effect.gen(function* () {
-      const url = `${peer.url}/channel?as=${encodeURIComponent(as)}&client=${encodeURIComponent(client)}`;
-      const ws = pinnedSocket(peer, url);
+      const path = relayOf(link.dir, name);
+      if (Buffer.byteLength(path) > SOCKET_PATH_MAX)
+        return yield* new HostRefused({
+          reason: `${path} is longer than the ${SOCKET_PATH_MAX} bytes a unix socket path may be`,
+        });
+      if (/[/\\]/.test(name) || name === "" || name.startsWith("."))
+        return yield* new HostRefused({ reason: `"${name}" cannot name a relay socket` });
+    });
+
+  /** A WebSocket to a peer this Machine dials, as the far end of a channel once it is open. */
+  const opened = (peer: Peer, url: string) =>
+    Effect.gen(function* () {
+      const ws = yield* Effect.acquireRelease(
+        Effect.sync(() => pinnedSocket(peer, url)),
+        (ws) => Effect.sync(() => ws.close()),
+      );
       ws.binaryType = "arraybuffer";
-      const opened = yield* Effect.callback<boolean>((resume) => {
-        ws.onopen = () => resume(Effect.succeed(true));
-        ws.onerror = () => resume(Effect.succeed(false));
-      }).pipe(Effect.timeoutOption(REACH_BOUND));
-      if (Option.isSome(opened) && opened.value) {
+      const inbox = held();
+      const answer = yield* Deferred.make<boolean>();
+      ws.onopen = () => Deferred.doneUnsafe(answer, Exit.succeed(true));
+      ws.onerror = () => Deferred.doneUnsafe(answer, Exit.succeed(false));
+      ws.onmessage = (event) => inbox.arrived(new Uint8Array(event.data));
+      ws.onclose = () => {
+        Deferred.doneUnsafe(answer, Exit.succeed(false));
+        inbox.hungUp();
+      };
+      const open = yield* Deferred.await(answer).pipe(Effect.timeoutOption(REACH_BOUND));
+      if (Option.isSome(open) && open.value) {
         const far: Far = {
           send: (chunk) => ws.send(new Uint8Array(chunk)),
           close: () => ws.close(),
-          listen: (deliver, done) => {
-            ws.onmessage = (event) => deliver(new Uint8Array(event.data));
-            ws.onclose = done;
-          },
+          listen: inbox.listen,
         };
         return far;
       }
       ws.close();
       return yield* new MachineUnreachable({
         machine: peer.name,
-        seen: Option.isNone(opened)
+        seen: Option.isNone(open)
           ? `no answer from ${peer.url} within ${REACH_BOUND}`
           : `${peer.url} refused the connection`,
+      });
+    });
+
+  /** A fresh `/channel` to a peer this Machine dials. */
+  const dialOut = (peer: Peer, as: FrontDoor, client: string) =>
+    opened(
+      peer,
+      `${peer.url}/channel?as=${encodeURIComponent(as)}&client=${encodeURIComponent(client)}`,
+    );
+
+  /** A peer that dials in, asked over its control link to dial back for this channel. */
+  const dialBack = (peer: Peer, as: FrontDoor, client: string) =>
+    Effect.gen(function* () {
+      const control = controls.get(peer.installation);
+      if (control === undefined)
+        return yield* new MachineUnreachable({
+          machine: peer.name,
+          seen: "no control link from it",
+        });
+      const now = clock.currentTimeMillisUnsafe();
+      for (const [id, ticket] of tickets) if (now - ticket.at > TICKET_LIFE_MS) tickets.delete(id);
+      const id = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url");
+      let waiting = true;
+      const far = yield* Effect.callback<Far>((resume) => {
+        tickets.set(id, {
+          installation: peer.installation,
+          at: now,
+          arrive: (far) => (waiting ? resume(Effect.succeed(far)) : far.close()),
+        });
+        control.send(encodeControl({ dial: id, as, client }));
+      }).pipe(Effect.timeoutOption(REACH_BOUND));
+      waiting = false;
+      if (Option.isSome(far)) return far.value;
+      return yield* new MachineUnreachable({
+        machine: peer.name,
+        seen: `no dial-back within ${REACH_BOUND}`,
       });
     });
 
@@ -284,7 +424,8 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       const { as, client } = header.value;
       if (as === "host" && header.value.stamp !== link.stamp)
         return conn.end(answer({ ok: false, refused: "only this Machine's host speaks as host" }));
-      const far = yield* dialOut(peer, as, client).pipe(Effect.result);
+      const reach = peer.dials === "out" ? dialOut : dialBack;
+      const far = yield* reach(peer, as, client).pipe(Effect.result);
       if (far._tag === "Failure")
         return conn.end(answer({ ok: false, unreachable: far.failure.seen }));
       const ws = far.success;
@@ -298,10 +439,108 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       conn.on("close", () => ws.close());
       conn.on("error", () => ws.close());
       conn.resume();
+      yield* Effect.callback<void>((resume) => {
+        if (conn.destroyed) resume(Effect.void);
+        else conn.once("close", () => resume(Effect.void));
+      });
+    }).pipe(Effect.scoped);
+
+  /** A channel from `peer` into this host, declared as coming from that Machine. */
+  const intoHost = (peer: Peer, as: FrontDoor, client: string, far: Far) =>
+    channelInto(
+      link.socket,
+      {
+        frontDoor: as,
+        from: { machine: { installation: peer.installation, name: peer.name }, client },
+        stamp: link.stamp,
+      },
+      {
+        write: far.send,
+        end: (done) => {
+          far.close();
+          done();
+        },
+        read: far.listen,
+      },
+    );
+
+  /** The dial-back a listener asked for: `/reverse` with its ticket, piped into this host. */
+  const dialledBack = (peer: Peer, dial: string, as: FrontDoor, client: string) =>
+    opened(peer, `${peer.url}/reverse?ticket=${encodeURIComponent(dial)}`).pipe(
+      Effect.flatMap((far) =>
+        intoHost(peer, as, client, far).pipe(Effect.catch(() => Effect.sync(far.close))),
+      ),
+      Effect.ignore,
+      Effect.scoped,
+    );
+
+  /** One control link to a peer this Machine dials, until it ends: whether it was up, and why it ended. */
+  const controlLink = (peer: Peer) =>
+    Effect.gen(function* () {
+      const ended = yield* Deferred.make<string>();
+      let up = false;
+      let heard = clock.currentTimeMillisUnsafe();
+      const ws = yield* Effect.acquireRelease(
+        Effect.sync(() => pinnedSocket(peer, `${peer.url}/control`)),
+        (ws) => Effect.sync(() => ws.close()),
+      );
+      ws.onopen = () => {
+        up = true;
+        heard = clock.currentTimeMillisUnsafe();
+        stand(peer.installation, { state: "live", since: null, failure: null });
+      };
+      ws.onmessage = (event) => {
+        heard = clock.currentTimeMillisUnsafe();
+        const said = decodeControl(event.data);
+        if (Option.isSome(said) && "dial" in said.value)
+          void Effect.runFork(
+            Effect.forkIn(
+              dialledBack(peer, said.value.dial, said.value.as, said.value.client),
+              scope,
+            ),
+          );
+      };
+      ws.onclose = (event) =>
+        Deferred.doneUnsafe(
+          ended,
+          Exit.succeed(
+            event.reason
+              ? event.reason
+              : up
+                ? "the control link closed"
+                : `${peer.url} did not take the control link`,
+          ),
+        );
+      ws.onerror = () =>
+        Deferred.doneUnsafe(ended, Exit.succeed(`${peer.url} refused the control link`));
+      const silent = Effect.sleep("5 seconds").pipe(
+        Effect.andThen(Effect.sync(() => clock.currentTimeMillisUnsafe() - heard > SILENCE_MS)),
+        Effect.repeat({ until: (quiet) => quiet }),
+        Effect.as(`heard nothing for ${SILENCE_MS / 1000} seconds`),
+      );
+      const said = yield* Effect.raceFirst(Deferred.await(ended), silent);
+      return { up, said };
+    }).pipe(Effect.scoped);
+
+  /** The control link to `peer`, kept open for as long as this host runs. */
+  const dialling = (peer: Peer) =>
+    Effect.gen(function* () {
+      let failures = 0;
+      stand(peer.installation, { state: "connecting", since: null, failure: null });
+      while (true) {
+        const { up, said } = yield* controlLink(peer);
+        if (up) failures = 0;
+        stand(peer.installation, { state: "connecting", since: null, failure: said });
+        yield* Effect.sleep(backoff(failures));
+        failures++;
+      }
     });
 
   const relayTo = (peer: Peer) => (conn: Socket) =>
-    firstLine(conn, (line, rest) => void Effect.runFork(relayed(peer, conn, line, rest)));
+    firstLine(
+      conn,
+      (line, rest) => void Effect.runFork(Effect.forkIn(relayed(peer, conn, line, rest), scope)),
+    );
 
   const openRelay = (peer: Peer) =>
     Effect.gen(function* () {
@@ -309,6 +548,10 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       yield* fs.makeDirectory(`${link.dir}/peers`, { recursive: true });
       yield* fs.remove(path, { force: true });
       const server = createServer(relayTo(peer));
+      server.on("connection", (conn) => {
+        connections.add(conn);
+        conn.once("close", () => connections.delete(conn));
+      });
       yield* Effect.callback<void>((resume) => {
         server.once("error", () => resume(Effect.void));
         server.listen(path, () => resume(Effect.void));
@@ -316,10 +559,17 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       relays.set(peer.installation, server);
     }).pipe(Effect.orDie);
 
-  const closeRelay = (installation: string) =>
-    Effect.sync(() => {
+  /** Everything kept for a peer this Machine no longer has. */
+  const drop = (installation: string) =>
+    Effect.gen(function* () {
       relays.get(installation)?.close();
       relays.delete(installation);
+      const dialler = diallers.get(installation);
+      diallers.delete(installation);
+      if (dialler !== undefined) yield* Fiber.interrupt(dialler);
+      controls.get(installation)?.close();
+      controls.delete(installation);
+      standings.delete(installation);
     });
 
   /** Whom the listener lets in: the installation a bearer secret was minted for. */
@@ -329,83 +579,135 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     return peers.find((peer) => peer.dials === "in" && sameSecret(given, peer.secret));
   };
 
-  interface Channel {
-    readonly peer: Peer;
-    readonly as: FrontDoor;
-    readonly client: string;
-    /** What the peer sent before the host took the declaration. */
-    readonly queued: Array<Uint8Array>;
-    toHost: (chunk: Uint8Array) => void;
-    hungUp: () => void;
-  }
+  /** A `/channel` a peer opened, declared into this host. */
+  const channelFrom = (peer: Peer, as: FrontDoor, client: string): Accepted => {
+    const inbox = held();
+    return {
+      peer,
+      opened: (ws) =>
+        void Effect.runFork(
+          Effect.forkIn(
+            intoHost(peer, as, client, {
+              send: (chunk) => void ws.sendBinary(chunk),
+              close: () => ws.close(),
+              listen: inbox.listen,
+            }).pipe(Effect.catch((refused) => Effect.sync(() => ws.close(1011, refused.reason)))),
+            scope,
+          ),
+        ),
+      arrived: inbox.arrived,
+      hungUp: inbox.hungUp,
+    };
+  };
+
+  /** A peer's control link: the newest one an installation opens is the one kept. */
+  const controlFrom = (peer: Peer): Accepted => ({
+    peer,
+    opened: (ws) => {
+      const older = controls.get(peer.installation);
+      controls.set(peer.installation, ws);
+      older?.close();
+      stand(peer.installation, { state: "live", since: null, failure: null });
+    },
+    arrived: () => {},
+    hungUp: (ws) => {
+      if (controls.get(peer.installation) !== ws) return;
+      controls.delete(peer.installation);
+      stand(peer.installation, {
+        state: "away",
+        since: DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe())),
+        failure: "its control link closed",
+      });
+    },
+  });
+
+  /** The dial-back a ticket was minted for, handed to the relay connection waiting on it. */
+  const reverseFrom = (peer: Peer, ticket: Ticket): Accepted => {
+    const inbox = held();
+    return {
+      peer,
+      opened: (ws) =>
+        ticket.arrive({
+          send: (chunk) => void ws.sendBinary(chunk),
+          close: () => ws.close(),
+          listen: inbox.listen,
+        }),
+      arrived: inbox.arrived,
+      hungUp: inbox.hungUp,
+    };
+  };
+
+  /** What a request to the listener is let in as, or the response refusing it. */
+  const accept = (request: Request): Accepted | Response => {
+    const url = new URL(request.url);
+    const peer = bearerOf(request);
+    if (peer === undefined) return new Response("not paired", { status: 401 });
+    switch (url.pathname) {
+      case "/channel": {
+        const as = url.searchParams.get("as") ?? "";
+        if (!Schema.is(FrontDoor)(as))
+          return new Response(`"${as}" is not a front door`, { status: 400 });
+        return channelFrom(peer, as, url.searchParams.get("client") ?? peer.name);
+      }
+      case "/control":
+        return controlFrom(peer);
+      case "/reverse": {
+        const id = url.searchParams.get("ticket") ?? "";
+        const ticket = tickets.get(id);
+        if (ticket === undefined) return new Response("no such ticket", { status: 403 });
+        if (clock.currentTimeMillisUnsafe() - ticket.at > TICKET_LIFE_MS) {
+          tickets.delete(id);
+          return new Response("the ticket has expired", { status: 403 });
+        }
+        if (ticket.installation !== peer.installation)
+          return new Response("the ticket was minted for another Machine", { status: 403 });
+        tickets.delete(id);
+        return reverseFrom(peer, ticket);
+      }
+      default:
+        return new Response("not found", { status: 404 });
+    }
+  };
 
   const startListener = Effect.gen(function* () {
     const cert = yield* fs.readFileString(certOf(link.dir));
     const key = yield* fs.readFileString(keyOf(link.dir));
     served = cert;
-    return Bun.serve<Channel>({
-      hostname: "0.0.0.0",
+    return Bun.serve<Accepted>({
+      hostname: listenHost,
       port: listenPort,
       tls: { cert, key },
       fetch: (request, server) => {
-        const url = new URL(request.url);
-        if (url.pathname !== "/channel") return new Response("not found", { status: 404 });
-        const peer = bearerOf(request);
-        if (peer === undefined) return new Response("not paired", { status: 401 });
-        const as = url.searchParams.get("as") ?? "";
-        if (!Schema.is(FrontDoor)(as))
-          return new Response(`"${as}" is not a front door`, { status: 400 });
-        const queued: Array<Uint8Array> = [];
-        const data: Channel = {
-          peer,
-          as,
-          client: url.searchParams.get("client") ?? peer.name,
-          queued,
-          toHost: (chunk) => void queued.push(chunk),
-          hungUp: () => {},
-        };
-        return server.upgrade(request, { data }) ? undefined : new Response("", { status: 400 });
+        const accepted = accept(request);
+        if (accepted instanceof Response) return accepted;
+        return server.upgrade(request, { data: accepted })
+          ? undefined
+          : new Response("", { status: 400 });
       },
       websocket: {
-        open: (ws) => {
-          const channel = ws.data;
-          const declaration: Declaration = {
-            frontDoor: channel.as,
-            from: {
-              machine: { installation: channel.peer.installation, name: channel.peer.name },
-              client: channel.client,
-            },
-            stamp: link.stamp,
-          };
-          Effect.runFork(
-            channelInto(link.socket, declaration, {
-              write: (chunk) => void ws.sendBinary(chunk),
-              end: (done) => {
-                ws.close();
-                done();
-              },
-              read: (deliver, done) => {
-                for (const chunk of channel.queued.splice(0)) deliver(chunk);
-                channel.toHost = deliver;
-                channel.hungUp = done;
-              },
-            }).pipe(Effect.catch((refused) => Effect.sync(() => ws.close(1011, refused.reason)))),
-          );
-        },
+        open: (ws) => ws.data.opened(ws),
         message: (ws, message) =>
-          ws.data.toHost(Buffer.isBuffer(message) ? message : Buffer.from(message)),
-        close: (ws) => ws.data.hungUp(),
+          ws.data.arrived(Buffer.isBuffer(message) ? message : Buffer.from(message)),
+        close: (ws) => ws.data.hungUp(ws),
       },
     });
   });
 
-  /** Relays for every peer this Machine dials, and the listener while one dials in. */
+  /** A relay and its link for every peer, and the listener while one dials in. */
   const settle: Effect.Effect<void> = Effect.gen(function* () {
-    for (const [installation] of relays)
-      if (!peers.some((peer) => peer.installation === installation && peer.dials === "out"))
-        yield* closeRelay(installation);
-    for (const peer of peers)
-      if (peer.dials === "out" && !relays.has(peer.installation)) yield* openRelay(peer);
+    for (const installation of new Set([...relays.keys(), ...diallers.keys()]))
+      if (!peers.some((peer) => peer.installation === installation)) yield* drop(installation);
+    for (const peer of peers) {
+      if (!relays.has(peer.installation)) yield* openRelay(peer);
+      if (peer.dials === "out" && !diallers.has(peer.installation))
+        diallers.set(peer.installation, yield* Effect.forkIn(dialling(peer), scope));
+      if (peer.dials === "in" && !standings.has(peer.installation))
+        stand(peer.installation, {
+          state: "away",
+          since: startedAt,
+          failure: "no control link from it yet",
+        });
+    }
     const wanted = peers.some((peer) => peer.dials === "in");
     if (wanted && listener === null) {
       const started = yield* startListener.pipe(Effect.result);
@@ -426,8 +728,15 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       void listener?.stop(true);
+      for (const conn of connections) conn.destroy();
       for (const server of relays.values()) server.close();
     }),
+  );
+  yield* Effect.forkIn(
+    Effect.sync(() => {
+      for (const control of controls.values()) control.send(BEAT_MESSAGE);
+    }).pipe(Effect.repeat(Schedule.spaced(BEAT))),
+    scope,
   );
   yield* settle;
 
@@ -448,6 +757,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const peersModule: Peers = {
     invite: (asker) =>
       Effect.gen(function* () {
+        yield* validateName(asker.name);
         const certificate = yield* certificateFor(link.dir, asker.address).pipe(
           Effect.mapError((cause) =>
             Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
@@ -471,13 +781,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       }).pipe(Effect.provideContext(services)),
     add: (peer) =>
       Effect.gen(function* () {
-        const path = relayOf(link.dir, peer.name);
-        if (Buffer.byteLength(path) > SOCKET_PATH_MAX)
-          return yield* new HostRefused({
-            reason: `${path} is longer than the ${SOCKET_PATH_MAX} bytes a unix socket path may be`,
-          });
-        if (/[/\\]/.test(peer.name) || peer.name === "" || peer.name.startsWith("."))
-          return yield* new HostRefused({ reason: `"${peer.name}" cannot name a relay socket` });
+        yield* validateName(peer.name);
         yield* keep([
           ...peers.filter(
             (one) => one.installation !== peer.installation && one.name !== peer.name,
@@ -487,15 +791,21 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       }),
     forget,
     list: Effect.sync(() =>
-      peers.map((peer): PeerView => ({
-        installation: peer.installation,
-        name: peer.name,
-        dials: peer.dials,
-        url: peer.url ?? null,
-        state: "live",
-        since: null,
-        failure: peer.dials === "in" ? listening : null,
-      })),
+      peers.map((peer): PeerView => {
+        const standing = standings.get(peer.installation) ?? {
+          state: "connecting",
+          since: null,
+          failure: null,
+        };
+        return {
+          installation: peer.installation,
+          name: peer.name,
+          dials: peer.dials,
+          url: peer.url ?? null,
+          ...standing,
+          failure: peer.dials === "in" && listening !== null ? listening : standing.failure,
+        };
+      }),
     ),
   };
   return peersModule;

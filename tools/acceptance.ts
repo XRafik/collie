@@ -714,6 +714,19 @@ const BACKEND: readonly Check[] = [
       name: "a command about a Run on a Machine herdr lists pairs the two by itself and reaches the Run, recorded as its front door from this Machine",
     },
   },
+  {
+    id: "backend/an-undialable-machine-is-reached-by-dial-back",
+    statement:
+      "A Machine that cannot be dialled is reached by dial-back, and one that is away is refused within five seconds.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peers.test.ts",
+      name: "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */
@@ -1117,6 +1130,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On mk's laptop, with Desktop closed, run `collie run steer <a vm-mk Run's id> \"hello\"` twice. Record the one SSO approval, that the VM agent's pane shows hello, the Run's `operations.jsonl` line with `from.machine`, and `collie machine list` on both Machines. Record the revision.",
+    },
+  },
+  {
+    id: "machines/dial-back-recovers-after-sleep",
+    statement:
+      "With Desktop closed, the VM reaches the laptop's board and Runs; after five minutes asleep, the laptop reconnects within a minute without SSO.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk run `collie --machine mk-laptop --json board`, start and steer a laptop Run. Close the laptop's lid for five minutes and reopen it. Record the board returning within a minute, no SSO prompt, and the revision.",
     },
   },
 ];
