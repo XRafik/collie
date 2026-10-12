@@ -342,16 +342,7 @@ test("a rule check git cannot answer leaves the Run unverified, never aligned", 
   runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const rule: Constraint = {
-        id: "src-only",
-        kind: "rule",
-        text: "only src changes",
-        severity: "block",
-        source: "human",
-        since: 1,
-        rule: { kind: "protected_paths", globs: ["src/**"] },
-      };
-      yield* intended("r1", [rule]);
+      yield* intended("r1", [SRC_ONLY]);
       yield* session(
         Oversight.pipe(Effect.flatMap((one) => one.drift("r1", "build collected", "none"))),
       );
