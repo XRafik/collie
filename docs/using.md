@@ -1521,6 +1521,9 @@ its process gone — starts a new conversation rather than resuming the last one
 would carry that whole history into every turn. Claude's runs on the latest Opus at
 medium effort.
 
+**Chat chooses a workflow by its description**, which `collie_workspaces` lists beside each
+one; an ad-hoc request that is none of the others is `general`, in either chat.
+
 **Chat knows which card you have open.** Every message you send carries one line naming
 the open card, attached as you send it and never when you click — so opening ten cards and
 asking about none costs the conversation nothing, and closing the record ends it. "How is

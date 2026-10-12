@@ -65,7 +65,7 @@ export default defineWorkflow({
   id: "architecture",
   title: "architecture — look at what is there, then improve it",
   description:
-    "Runs the architecture skill over this project, writes a report into the run dir, then asks what next.",
+    "Surveys a project's architecture with the architecture skill, writes a report into the run dir, then asks what next.",
   input: Schema.Struct({ goal: Schema.String }),
   hints: { goal: "goal" },
   output: Schema.String,

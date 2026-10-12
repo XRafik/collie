@@ -246,7 +246,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
     id: "renovate",
     title: "renovate — merge the month's dependency updates, tag, release and record it",
     description:
-      "Assesses every Renovate Bot merge request, gathers an application's into one batch branch proven on stage under the shared claim and approved by a teammate, merges, tags and watches the release, then checks the repository off the team's shared Renovate issue in Linear.",
+      "Lands a repository's Renovate updates: it assesses every Renovate Bot merge request, gathers an application's into one batch branch proven on stage under the shared claim and approved by a teammate, merges, tags and watches the release, then checks the repository off the team's shared Renovate issue in Linear.",
     input: Schema.Struct({
       repository: Schema.optionalKey(
         Schema.String.annotate({

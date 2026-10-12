@@ -880,6 +880,16 @@ const WORKFLOWS: readonly Check[] = [
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
   {
+    id: "chat/an-ad-hoc-request-starts-general",
+    statement: "An ad-hoc request in chat starts `general`, not `implement` or `plan`.",
+    owner: GENERAL,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In Desktop, ask the Flock chat for a chore like upgrading a Machine's install to the latest release; record which workflow it started, with the Run's id and the revision.",
+    },
+  },
+  {
     id: "flock-chat/a-machine-on-an-older-collie-is-told-to-upgrade",
     statement:
       "A Machine whose Collie predates files is told to upgrade when the Flock chat reads a file there or starts work carrying one, and nothing starts there.",

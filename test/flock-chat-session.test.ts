@@ -177,3 +177,12 @@ test("the system prompt tells the chat to start where the rule says, and how to 
   expect(prompt).toContain("not among those reachable, say so and start nothing elsewhere");
   expect(prompt).toContain("When the rule does not cover the work, ask");
 });
+
+test("the system prompt has the chat choose by description, with ad-hoc work as general", () => {
+  const prompt = options.systemPrompt.replace(/\s+/g, " ");
+  expect(prompt).toContain("Choose the workflow whose description in collie_workspaces fits");
+  expect(prompt).toContain(
+    "renovating or an architecture survey is general, never implement or plan",
+  );
+  expect(prompt).toContain("or at projects-root where it is about none");
+});

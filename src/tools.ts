@@ -455,12 +455,12 @@ const workspaceFacts = Effect.fn("Tools.workspaces")(function* (env: PluginEnv) 
       ? "Projects root: none"
       : `Projects root: ${root.path} — a checkout under it is named by its directory name`,
     "",
-    "workflows, with the Inputs each takes (? is optional):",
+    "workflows, with the Inputs each takes (? is optional) and what it is for:",
     ...[...saved]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map(
         (one) =>
-          `- ${one.id} (${one.inputs.map((input) => `${input.name}${input.required ? "" : "?"}`).join(", ")})`,
+          `- ${one.id} (${one.inputs.map((input) => `${input.name}${input.required ? "" : "?"}`).join(", ")})${one.description === "" ? "" : ` — ${one.description}`}`,
       ),
     ...(saved.length === 0 ? ["- none"] : []),
     "",
