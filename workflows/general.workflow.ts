@@ -1,8 +1,3 @@
-// One agent, one ad-hoc task, done where the Run was started.
-//
-// No checkout of its own, no menu, no review and no gate: the Run ends when the agent
-// writes its Output. The Markdown beside this file is the content.
-
 import { Host, Run, WorkflowError, agentWork, contentOf, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 import markdown from "./general.md" with { type: "text" };
