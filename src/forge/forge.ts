@@ -19,7 +19,7 @@ export interface Readiness {
 
 export type DeployTier = "production" | "staging";
 
-/** A branch's open merge request, none, or why the forge could not say. */
+/** A branch's open merge request, preferring auto-merge, none, or why the forge could not say. */
 export type ForBranch =
   | {
       readonly ok: true;

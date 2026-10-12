@@ -306,7 +306,8 @@ function forBranch<R>(
         ok: false,
         reason: `glab could not list ${project}'s merge requests from ${branch}`,
       };
-    const [mr] = decoded.value;
+    const mr =
+      decoded.value.find((one) => one.merge_when_pipeline_succeeds === true) ?? decoded.value[0];
     if (mr === undefined) return { ok: true, open: null };
     const iid = String(mr.iid);
     return {

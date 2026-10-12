@@ -1054,8 +1054,9 @@ and the prompt names no other CLI. Both front doors ask the same host service fo
 readiness, assignee, template, Linear tickets and this branch's open merge request.
 Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
 to read the repository. An existing merge request on the branch is updated rather than
-given a second one, and one that merges itself once green is not pushed to at all: the
-step records `not pushed: auto-merge is on for <url>` and starts no agent. Before every
+given a second one. If any request returned for the branch merges itself once green,
+delivery does not push: the step records `not pushed: auto-merge is on for <url>` and
+starts no agent. Before every
 GitHub push in the build and fix steps, the implementer still reads the branch's open pull
 requests and refuses a push if auto-merge is enabled or that reading fails.
 An unavailable forge parks the Run with the repair it needs.

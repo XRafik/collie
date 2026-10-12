@@ -393,6 +393,21 @@ for (const name of ["gitlab", "github"] as const) {
           open: { autoMerge: true },
         });
         expect(
+          yield* ask([
+            { ...open, targetBranch: "main" },
+            { ...open, iid: "32", targetBranch: "release", autoMerge: true },
+          ]),
+        ).toMatchObject({
+          open: {
+            iid: "32",
+            autoMerge: true,
+            url:
+              name === "github"
+                ? "https://github.com/owner/repo/pull/32"
+                : "https://gitlab.example.com/group/app/-/merge_requests/32",
+          },
+        });
+        expect(
           (yield* forge.forBranch(
             PROJECT[name],
             "me/x",

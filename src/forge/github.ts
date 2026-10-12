@@ -224,7 +224,7 @@ function forBranch<R>(
     const decoded = Schema.decodeUnknownOption(OpenPullsJson)(listed.stdout);
     if (listed.code !== 0 || Option.isNone(decoded))
       return { ok: false, reason: `gh could not list ${repo}'s pull requests from ${branch}` };
-    const [pull] = decoded.value;
+    const pull = decoded.value.find((one) => one.autoMergeRequest != null) ?? decoded.value[0];
     if (pull === undefined) return { ok: true, open: null };
     const iid = String(pull.number);
     return {
