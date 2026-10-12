@@ -23,3 +23,5 @@ something stopped you from finishing.
 The project root above is the Projects root, and it is not a repository: find the
 repository under it that the task is about, and work there. Where the task is about no
 repository, do it from here.
+A check you name for that repository takes
+`--cwd <its directory, relative to the project root>`, so Collie runs it there.

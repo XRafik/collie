@@ -3274,6 +3274,9 @@ scenario(
         expect(yield* asked("r-general-root", "task")).toContain(
           "it is not a repository: find the\nrepository",
         );
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "--cwd <its directory, relative to the project root>",
+        );
         expect(yield* asked("r-general-here", "task")).not.toContain("it is not a repository");
       }),
     ),
