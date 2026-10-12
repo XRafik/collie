@@ -31,7 +31,6 @@ import {
   whatItSaid,
   type Runner,
 } from "./mr";
-import { gitlab } from "./forge/gitlab";
 import { mrWords, parseMrTarget } from "./board-model";
 import { FORGES, forgeOf, forgeOfHost } from "./forge/forge";
 import { withLock } from "./lock";
@@ -230,7 +229,9 @@ export const branchFor = Effect.fn("worktree.branchFor")(function* (opts: Branch
   if (asked.refused !== null) return refuse(asked.refused);
   let branch = asked.branch;
   if (asked.generated) {
-    const { forge, who } = yield* whoami(opts, run);
+    const identity = yield* whoami(opts, run);
+    if (!identity.ok) return refuse(identity.reason);
+    const { forge, who } = identity;
     if (who === null) {
       const variable = LOGIN_ENV[forge.name];
       return refuse(
@@ -265,10 +266,10 @@ const whoami = Effect.fn("worktree.whoami")(function* (
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
 ) {
   const here = yield* forgeHere(opts.cwd, run, opts.gitlabHost);
-  // A checkout on neither forge is named as GitLab names it, as before there were two.
-  const forge = here.ok ? here.forge : gitlab;
+  if (!here.ok) return here;
+  const { forge } = here;
   const named = (forge.name === "github" ? opts.githubLogin : opts.login)?.trim();
-  return { forge, who: named ? named : yield* forge.login(opts.cwd, run) };
+  return { ...here, who: named ? named : yield* forge.login(opts.cwd, run) };
 });
 
 /** Named in the refusal, so an operator with no login is told what to set (ADR-0050 D5). */

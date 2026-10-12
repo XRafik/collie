@@ -226,6 +226,19 @@ test("a run described in words branches off the default branch, under the operat
     }),
   ));
 
+test("a generated branch refuses a checkout on neither forge", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering({
+        ...gitAnswers(),
+        "remote get-url origin": "git@bitbucket.org:acme/app.git",
+      });
+      expect((yield* plan({ plan_kind: "text" })).refused).toBe(
+        "bitbucket.org is neither GitHub nor GitLab",
+      );
+    }),
+  ));
+
 test("the login comes from glab where the environment does not name one", () =>
   runEffect(
     Effect.gen(function* () {
