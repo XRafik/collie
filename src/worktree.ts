@@ -391,8 +391,8 @@ function letters(text: string): string {
  * it has one: a fix round continues the work that was reviewed, and cutting it from the
  * default branch instead would build something unrelated and then be unable to push it.
  * A reviewed branch this checkout has never fetched is fetched once for that reason —
- * and if it still is not there, the Run is refused rather than started on the wrong
- * history.
+ * and if it is neither there nor a local branch, the Run is refused rather than started
+ * on the wrong history.
  *
  * Otherwise the repository's default branch, which is where new work starts — as
  * `origin/master` rather than `master`, because a fresh worktree takes what the remote
@@ -408,7 +408,9 @@ const baseFor = Effect.fn("worktree.baseFor")(function* (
   const exists = (ref: string) => run("git", ["rev-parse", "--verify", ref], cwd);
   if ((yield* exists(`origin/${branch}`)).code === 0) return { base: `origin/${branch}` };
   if (opts.reviewed) {
-    // The branch holds the work that was reviewed, so it is on the remote whether or
+    // A local branch is checked out as it is, so the base goes unused.
+    if ((yield* exists(`refs/heads/${branch}`)).code === 0) return { base: branch };
+    // Otherwise it holds the work that was reviewed, so it is on the remote whether or
     // not this checkout has heard of it yet.
     yield* run("git", ["fetch", "origin", branch], cwd);
     if ((yield* exists(`origin/${branch}`)).code === 0) return { base: `origin/${branch}` };

@@ -1143,12 +1143,12 @@ What the command prints is shown as it runs — its stdout on stdout and its std
 stderr, or both on stderr under `--json`, where stdout is the one envelope — and the exit
 status is the command's own, so a failure says why the first time.
 
-| Flag       | What it does                                                                |
-| ---------- | --------------------------------------------------------------------------- |
-| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted. |
-| `--cwd`    | Where to run it. Must be inside that run's own checkout; defaults to it.    |
-| `--name`   | What to call it on a card. The executable by default.                       |
-| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.     |
+| Flag       | What it does                                                                                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                              |
+| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it. |
+| `--name`   | What to call it on a card. The executable by default.                                                                                                    |
+| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                  |
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command

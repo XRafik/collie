@@ -2228,6 +2228,43 @@ test("a reviewed branch that is not on the remote at all is refused", () =>
     }),
   ));
 
+test("a reviewed branch that exists only here is checked out as it is", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering(
+        {
+          ...gitAnswers(),
+          "worktree list --porcelain": porcelain([{ path: rig.projectDir, branch: "master" }]),
+          "rev-parse --verify refs/heads/unpushed": "deadbeef",
+          "rev-parse --verify --quiet refs/heads/unpushed": "deadbeef",
+        },
+        { "fetch origin": "fatal: unable to access 'https://gitlab.example.com/'" },
+        {
+          "worktree add":
+            'for a in "$@"; do case "$a" in /*) mkdir -p "$a" && printf "gitdir: $a/.gitdir\\n" > "$a/.git"; break ;; esac; done',
+        },
+      );
+
+      const checkout = yield* checkoutFor(new Herdr(rig.pluginEnv()), {
+        stateDir: rig.stateDir,
+        cwd: rig.projectDir,
+        workflow: "review",
+        checkout: "branch",
+        name: "r-review",
+        inputs: { plan: "/runs/review-1", plan_kind: "review", target: "branch:master...unpushed" },
+        strategies: SHIPPED_STRATEGIES,
+      });
+
+      const at = join(rig.root, ".herdr", "worktrees", "project", "unpushed");
+      expect(checkout).toMatchObject({ cwd: at, branch: "unpushed", refused: null });
+      expect(checkout.worktree).toMatchObject({ path: at, created_by_collie: true });
+      expect(yield* askedIn()).toContainEqual({
+        cwd: rig.projectDir,
+        command: `worktree add ${at} unpushed`,
+      });
+    }),
+  ));
+
 test("a checkout with no GitLab remote cannot be shown to be the reviewed project", () =>
   runEffect(
     Effect.gen(function* () {

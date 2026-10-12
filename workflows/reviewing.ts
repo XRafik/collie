@@ -61,7 +61,8 @@ const SYNTHESIZE = content.template("synthesize", {
 /** An implementer fixing what a review found. */
 export const FIX_PROMPT = content.template("fix", {
   ...change,
-  run: Schema.Struct({ dir: text }),
+  run: Schema.Struct({ dir: text, id: text }),
+  branch: text,
   iteration: text,
   max_iterations: text,
   findings: text,

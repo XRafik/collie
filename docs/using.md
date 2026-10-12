@@ -1726,7 +1726,11 @@ is never the one asked or handed work.
 
 - **Fix findings** — the live implementer of a Run this review was started from is handed
   them, where there is one; otherwise an implementer on this review's own run applies them
-  as a fix round, `disputed` and all, and the fix is reviewed again at once. The rally goes on by
+  as a fix round, `disputed` and all, and the fix is reviewed again at once. It works in the
+  reviewed branch's checkout — the one that branch already has, or a new one cut from it —
+  which becomes the review Run's own: your checkout is never switched under you, and
+  `collie verify --run <id> --cwd <that checkout>` is recorded rather than refused. A target
+  with no branch to fix starts no fixer, and the Run's log says why. The rally goes on by
   itself until nothing blocking is left, it stops making progress, or four rounds have run,
   and then asks again. A hand-off offers **Review again** for when the implementer is done.
 - **Fix findings in a full implement run** — starts `implement` with the review itself as
@@ -1764,8 +1768,9 @@ Fixing one is a different matter. A fix round is an `implement` run, and a mutat
 works in a checkout of its own branch — which `herdr worktree` can only cut from the
 repository it is asked in. So a review of a merge request in another project, or from a
 directory that is not a checkout of it, will review and comment fine, but chaining into
-`implement` from there stops and says so instead of building in the wrong repository.
-Clone that project and start the fix round from there.
+`implement` from there stops and says so instead of building in the wrong repository, and
+**Fix findings** is refused the same way, with the menu back. Clone that project and start
+the fix round from there.
 
 A step pointed at a merge request needs `glab` and `glab auth status --hostname <host>` for
 that host. The "does this directory have a GitLab remote" check stays where it belongs, on

@@ -146,12 +146,9 @@ The review is written and you are fixing it, in this run, on this target. The fi
 are `{{run.dir}}/review.md`, and the same findings as JSON are
 `{{run.dir}}/findings.json`. Worst severity first.
 
-Work where the review was pointed — `target_kind` is `{{inputs.target_kind}}`:
-
-- `branch` — check out its head.
-- `mr` — `glab mr checkout <iid> {{target_repo}}`, so the fixes land on that merge
-  request's own branch.
-- `worktree` — stay on the branch you are on.
+You are in `{{cwd}}`, the checkout of `{{branch}}` the review was pointed at. Commit
+there, and check out nothing else: this checkout is this Run's own, and what its checks
+are bound to.
 
 This is fix round {{iteration}} of at most {{max_iterations}}. The findings to act on:
 
@@ -163,7 +160,8 @@ Already disputed, and the human's to settle rather than yours to redo:
 
 Apply the findings you agree with and commit them. A finding you believe is wrong is not
 silently skipped: record it under `disputed` with your reason, and the human sees it. Run
-the project's tests and say what you ran.
+the project's checks through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`
+and say what you ran: what Collie watched is a verification, and anything else is a claim.
 
 **Do not push, do not open or update a merge request, and do not comment anywhere.**
 Someone asked for the findings fixed, not for the change shipped — and this is usually

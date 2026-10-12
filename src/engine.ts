@@ -289,6 +289,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly cwd: string;
   }
 
+  /** The reviewed branch's checkout, or why there is none. */
+  export type ReviewedCheckout =
+    | { readonly cwd: string; readonly branch: string }
+    | { readonly refused: string };
+
   /** What opening a merge request from here needs, and what it would be filled in with. */
   export interface MrReady {
     readonly ok: boolean;
@@ -313,6 +318,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly usage: () => Effect.Effect<ReadonlyArray<UsageReading>>;
     /** This Run as the host admitted it; its directory is made as this is answered. */
     readonly place: (runId: string) => Effect.Effect<Place>;
+    /** The checkout of the branch this Run's diff target names, recorded as the Run's own. */
+    readonly checkoutReviewed: (runId: string) => Effect.Effect<ReviewedCheckout>;
     readonly held: (runId: string) => Effect.Effect<boolean>;
     readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
     readonly record: (runId: string, event: string) => Effect.Effect<void>;
@@ -1387,6 +1394,12 @@ const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
   };
 };
 
+/** The strategies the executing definition declares, so its host can read a Run's diff target. */
+const WorkflowHints = Context.Reference<Readonly<Record<string, InputStrategy>>>(
+  "collie/WorkflowHints",
+  { defaultValue: () => ({}) },
+);
+
 /** The envelope a definition is executed with, read where the host hands it over. */
 const readEnvelope = Schema.decodeUnknownSync(Schema.Struct({ runId: Schema.String }));
 
@@ -1415,6 +1428,7 @@ const registrationOf = (definition: WorkflowDefinition, name: string): Registrat
     return definition.run({ input }).pipe(
       Effect.provideService(Run, run),
       Effect.provideService(WorkflowAgents, definition.agents),
+      Effect.provideService(WorkflowHints, definition.hints ?? {}),
       Effect.onExit((exit) =>
         Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
           ? Effect.void
@@ -2031,6 +2045,8 @@ export const hostLayer = (options: {
   readonly herd?: Herd;
   /** This Machine's Usage readings; none where left out. */
   readonly readings?: Effect.Effect<ReadonlyArray<UsageReading>>;
+  /** The herdr a reviewed checkout is made through; the host's own by default. */
+  readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
 }): Layer.Layer<Host | Notifier | Oversight, never, Store | BunServices> =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -2040,6 +2056,7 @@ export const hostLayer = (options: {
       // Captured, so a workflow asks for a verification without asking for a filesystem.
       type Collecting = FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner;
       const services = yield* Effect.context<Collecting>();
+      const bun = yield* Effect.context<BunServices>();
       const under = <A, E>(effect: Effect.Effect<A, E, Collecting>) =>
         Effect.provideContext(effect, services);
       const set = (control: string, runId: string) =>
@@ -2156,6 +2173,70 @@ export const hostLayer = (options: {
             ).pipe(Effect.ensuring(fs.remove(marker).pipe(Effect.ignore)));
           }),
         );
+      const placing = options.placing
+        ? Effect.succeed(options.placing)
+        : currentEnv.pipe(
+            Effect.map((env) => ({ herdr: new Herdr(env), env })),
+            Effect.orDie,
+          );
+      /** The reviewed branch's checkout, found or cut as a build of the review's findings is (ADR-0054). */
+      const checkoutReviewed = (runId: string) =>
+        Effect.gen(function* () {
+          const row = yield* store.run(runId);
+          if (row === null) return { refused: `there is no Run ${runId}` };
+          const launch = yield* decodeStrings(row.options ?? "{}").pipe(
+            Effect.orElseSucceed((): Record<string, string> => ({})),
+          );
+          const placed = placedOf(row, launch);
+          if (placed.worktree !== null) {
+            return { cwd: placed.cwd, branch: placed.branch ?? placed.worktree.branch };
+          }
+          const input = yield* decodeInput(row.input).pipe(
+            Effect.orElseSucceed((): Readonly<Record<string, Schema.Json>> => ({})),
+          );
+          const field = fieldWith(yield* WorkflowHints, "diff-target");
+          const target = field === undefined ? undefined : input[field];
+          const { herdr, env } = yield* placing;
+          const made = yield* Effect.result(
+            checkoutFor(herdr, {
+              cwd: placed.cwd,
+              stateDir: env.stateDir,
+              workflow: row.workflow,
+              checkout: "branch",
+              name: runId,
+              // As placement feeds a build of a review's findings: this Run is the review.
+              inputs: {
+                [REVIEWED]: isText(target) ? target : "",
+                work: runDir(dir, runId),
+                work_kind: "review",
+              },
+              strategies: { [REVIEWED]: "diff-target", work: "work-source" },
+              login: env.gitlabLogin,
+              recordedBy: (at) =>
+                store.runs.pipe(
+                  Effect.map(
+                    (rows) =>
+                      rows.find((one) => placedOf(one, {}).worktree?.path === at)?.run ?? null,
+                  ),
+                ),
+            }),
+          );
+          if (made._tag === "Failure") {
+            return { refused: `no checkout could be made: ${String(made.failure)}` };
+          }
+          const checkout = made.success;
+          if (checkout.refused !== null) return { refused: checkout.refused };
+          yield* store.place(runId, {
+            checkout: encodePlaced({
+              ...placed,
+              cwd: checkout.cwd,
+              branch: checkout.branch,
+              worktree: checkout.worktree,
+            }),
+            task: null,
+          });
+          return { cwd: checkout.cwd, branch: checkout.branch ?? "" };
+        }).pipe(Effect.provideContext(bun));
       const host = Host.of({
         dir,
         usage: () => options.readings ?? Effect.succeed([]),
@@ -2204,6 +2285,7 @@ export const hostLayer = (options: {
               (at, lineage) => ({ ...at, lineage }),
             ),
           ),
+        checkoutReviewed,
         held: (runId) => set(HOLD, runId),
         stopRequested: (runId) => set(STOP, runId),
         record: (runId, event) =>
@@ -2433,7 +2515,6 @@ export const hostLayer = (options: {
             ? notify(runId, "slice-ready", card.readiness, { key: card.id })
             : Effect.void,
         );
-      const bun = yield* Effect.context<BunServices>();
       /** What judging a Run's drift takes, or null where there is no Herd to charge it to. */
       const judging = (at: Watched) =>
         Effect.gen(function* () {
@@ -3444,6 +3525,8 @@ export const foundationLayer = (options: {
   readonly herd?: Herd;
   /** This Machine's Usage readings; none where left out. */
   readonly readings?: Effect.Effect<ReadonlyArray<UsageReading>>;
+  /** The herdr a reviewed checkout is made through; the host's own by default. */
+  readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
 }): Layer.Layer<
   | Host
   | Notifier

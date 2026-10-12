@@ -196,8 +196,13 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
 
 - **Fix findings** — handed, through the one sender, to the implementer already live in
   this workspace where there is one, so no second agent works the same checkout; otherwise
-  an implementer of this run's own, given the findings and the target, which fixes them
-  where the review was pointed. A fix Collie ran is reviewed again at once, and the rally
+  an implementer of this run's own, given the findings, which fixes them in the reviewed
+  branch's checkout — the one git already has for it, or one cut from the branch. That
+  checkout is recorded as this Run's own, so the fixer, every later reviewer and every
+  verification of the Run work there
+  ([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A target
+  with no branch to fix — another project's merge request, `HEAD`, a sha range — starts no
+  fixer: the Run's log says why and the menu comes back. A fix Collie ran is reviewed again at once, and the rally
   goes on by itself, through the same `settleRound` as implement's, until nothing blocking
   is left, a round raises the same blockers, a dispute stands unanswered, or four rounds
   have run. Then the menu comes back. A hand-off to a live implementer offers **Review
