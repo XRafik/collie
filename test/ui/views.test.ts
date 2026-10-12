@@ -14,8 +14,8 @@ import {
   buildSettings,
   buildWorkflows,
   planTicket,
+  type PlanCache,
 } from "../../src/views";
-import type { PlanPanel } from "../../src/board-model";
 import { FINDINGS_FILE, FindingSchema, REVIEW_FILE } from "../../src/output";
 import type { RunFacts } from "../../src/runs";
 import { madeRun } from "../support/records";
@@ -367,7 +367,7 @@ effectTest(
       truncated: false,
     });
     // Ordered by file, which is what the numbering is for, and only the markdown.
-    expect(own!.plan!.tickets).toEqual([
+    expect(own!.plan!.tickets).toMatchObject([
       { file: "01-first.md", title: "First", done: true },
       { file: "02-second.md", title: "Second", done: false },
     ]);
@@ -394,33 +394,38 @@ effectTest(
   },
 );
 
-effectTest("a finished run's plan is read once; a running one's is read again", function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const plans = new Map<string, PlanPanel | null>();
+effectTest(
+  "a finished run's plan is read again once rewritten; a running one's every time",
+  function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const plans: PlanCache = new Map();
 
-  const write = (run: { dir: string }, spec: string) =>
-    Effect.gen(function* () {
-      yield* fs.makeDirectory(path.join(run.dir, "plan"), { recursive: true });
-      yield* fs.writeFileString(path.join(run.dir, "plan", "SPEC.md"), spec);
+    const write = (run: { dir: string }, spec: string) =>
+      Effect.gen(function* () {
+        yield* fs.makeDirectory(path.join(run.dir, "plan"), { recursive: true });
+        yield* fs.writeFileString(path.join(run.dir, "plan", "SPEC.md"), spec);
+      });
+
+    // Stopped: its agent can still rewrite the plan, so a write is read again.
+    const done = yield* seed({ workflow: "implement" });
+    yield* write(done, "# first\n");
+    expect((yield* detailOf(done, { plans }))!.plan!.spec).toMatchObject({ text: "# first\n" });
+    yield* write(done, "# rewritten\n");
+    expect((yield* detailOf(done, { plans }))!.plan!.spec).toMatchObject({
+      text: "# rewritten\n",
     });
 
-  // Stopped: the plan it was built from cannot change, so the second read is the cache.
-  const done = yield* seed({ workflow: "implement" });
-  yield* write(done, "# first\n");
-  expect((yield* detailOf(done, { plans }))!.plan!.spec).toMatchObject({ text: "# first\n" });
-  yield* write(done, "# rewritten\n");
-  expect((yield* detailOf(done, { plans }))!.plan!.spec).toMatchObject({ text: "# first\n" });
-
-  // Still running: it may be writing that plan as we read it, so it is never cached.
-  const going = yield* seed({ workflow: "implement", state: "running" });
-  yield* write(going, "# first\n");
-  expect((yield* detailOf(going, { plans }))!.plan!.spec).toMatchObject({ text: "# first\n" });
-  yield* write(going, "# rewritten\n");
-  expect((yield* detailOf(going, { plans }))!.plan!.spec).toMatchObject({
-    text: "# rewritten\n",
-  });
-});
+    // Still running: it may be writing that plan as we read it, so it is never cached.
+    const going = yield* seed({ workflow: "implement", state: "running" });
+    yield* write(going, "# first\n");
+    expect((yield* detailOf(going, { plans }))!.plan!.spec).toMatchObject({ text: "# first\n" });
+    yield* write(going, "# rewritten\n");
+    expect((yield* detailOf(going, { plans }))!.plan!.spec).toMatchObject({
+      text: "# rewritten\n",
+    });
+  },
+);
 
 effectTest(
   "Settings offers how a question is presented, defaulting to automatic focus",

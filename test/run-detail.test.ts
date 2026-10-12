@@ -12,6 +12,7 @@ import { frontDoor } from "../src/host";
 import { followRunDetail } from "../src/lifecycle";
 import { scopeFor } from "../src/registry";
 import { diffOf, fetchRef, keepDiffs, runDiff } from "../src/run-detail";
+import { buildRunDetail, type PlanCache } from "../src/views";
 import { madeRun } from "./support/records";
 import { runRowId } from "../src/ui/state";
 import { exec } from "./support/command";
@@ -390,6 +391,43 @@ test("an attachment is fetched by name, and never from outside the Run's attachm
         });
         for (const ref of ["attachment:linked.png", "attachment:../log.txt"])
           expect((yield* fetchRef(run, ref).pipe(Effect.flip))._tag).toBe("HostRefused");
+      }),
+    ),
+  ));
+
+test("a rewritten ticket, and a finished Run's rewritten plan, reach the record's details", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const state = yield* fs.makeTempDirectoryScoped({ prefix: "collie-plan-" });
+        const run = yield* madeRun(state, { state: "succeeded" });
+        const env = { ...(yield* currentEnv.pipe(Effect.orDie)), stateDir: state };
+        const plans: PlanCache = new Map();
+        const planOf = () =>
+          buildRunDetail({ env, runId: run.id, runs: [run], mr: null, plans }).pipe(
+            Effect.map((detail) => detail?.plan),
+          );
+        yield* fs.makeDirectory(`${run.dir}/plan/issues`, { recursive: true });
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, "# Spec\n");
+        yield* fs.writeFileString(`${run.dir}/plan/issues/01-a.md`, "# A\n- [ ] one\n");
+
+        const first = yield* planOf();
+        expect(first?.tickets[0]?.stamp).toBeString();
+        expect(yield* planOf()).toBe(first);
+
+        yield* fs.writeFileString(
+          `${run.dir}/plan/issues/01-a.md`,
+          "# A\n- [ ] one, said better\n",
+        );
+        const rewritten = yield* planOf();
+        expect(rewritten?.tickets[0]).toMatchObject({ file: "01-a.md", title: "A", done: false });
+        expect(rewritten?.tickets[0]?.stamp).not.toBe(first?.tickets[0]?.stamp);
+
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, "# Spec, rewritten\n");
+        const respecced = yield* planOf();
+        expect(respecced?.spec).toMatchObject({ _tag: "Text", text: "# Spec, rewritten\n" });
+        expect(yield* planOf()).toBe(respecced);
       }),
     ),
   ));
