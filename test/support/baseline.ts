@@ -1145,7 +1145,6 @@ scenario(
         // The fix is reviewed again at once: a round of the rally, not a fix taken on its word.
         expect(yield* prompts()).toHaveLength(3);
         expect(yield* asked("r-review-mr", "review-2-1")).toContain("Iteration 2");
-        // The merge request's own branch, in a checkout of its own: nothing is checked out.
         const fix = yield* asked("r-review-mr", "fix");
         expect(fix).toContain(`Project root: ${rig.root}/.herdr/worktrees/project/fix-the-guard`);
         expect(fix).toContain("the checkout of `fix-the-guard`");
@@ -1198,7 +1197,6 @@ scenario(
         expect(yield* prompts()).toHaveLength(5);
         // Pointed at the review it follows, which is where the second round's finding is.
         expect(yield* asked("r-rally", "fix-2")).toContain(`${runDir(dir, "r-rally")}/review.md`);
-        // The second round asks again and is answered from the record: one checkout, the same.
         expect(yield* asked("r-rally", "fix")).toContain(`Project root: ${reviewed}`);
         expect(yield* asked("r-rally", "fix-2")).toContain(`Project root: ${reviewed}`);
         const listed = yield* exec(["git", "worktree", "list", "--porcelain"], {
@@ -1266,7 +1264,6 @@ scenario(
         const fix = yield* asked("r-fix-tree", "fix");
         expect(fix).toContain(`Project root: ${reviewed}`);
         expect(fix).toContain(`collie verify --run r-fix-tree --cwd ${reviewed} -- <command>`);
-        // Pushed to an open merge request, never forced, and never as a merge.
         expect(fix).not.toContain("Do not push");
         expect(fix).toContain("has an open merge request");
         expect(fix).toContain("never force");

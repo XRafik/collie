@@ -2265,6 +2265,30 @@ test("a reviewed branch that exists only here is checked out as it is", () =>
     }),
   ));
 
+test("a merge request from a fork is refused even where its branch name is local here", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering({
+        ...gitAnswers(),
+        "rev-parse --verify refs/heads/fix-the-parser": "deadbeef",
+        "rev-parse --verify --quiet refs/heads/fix-the-parser": "deadbeef",
+      });
+      yield* bin.add(
+        "glab",
+        `echo '{"source_branch": "fix-the-parser", "source_project_id": 7, "target_project_id": 3}'`,
+      );
+
+      expect(
+        yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:gitlab.example.com/acme/app!42",
+          target_kind: "mr",
+        }),
+      ).toMatchObject({ refused: "!42 comes from a fork, so its branch is not in this checkout" });
+    }),
+  ));
+
 test("a checkout with no GitLab remote cannot be shown to be the reviewed project", () =>
   runEffect(
     Effect.gen(function* () {

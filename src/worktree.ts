@@ -89,7 +89,11 @@ export const destinationLock = (stateDir: string, at: string) =>
 export const isDestinationLock = (name: string) => /^worktree-[0-9a-f]+\.lock$/.test(name);
 
 const MrViewJson = Schema.fromJsonString(
-  Schema.Struct({ source_branch: Schema.optionalKey(Schema.String) }),
+  Schema.Struct({
+    source_branch: Schema.optionalKey(Schema.String),
+    source_project_id: Schema.optionalKey(Schema.Number),
+    target_project_id: Schema.optionalKey(Schema.Number),
+  }),
 );
 
 /** What deciding a Run's branch needs to know. */
@@ -480,6 +484,10 @@ const reviewedBranch = Effect.fn("worktree.reviewedBranch")(function* (
     );
     if (view.code !== 0) return { refused: `glab could not read !${mr.iid}` };
     const seen = Schema.decodeUnknownOption(MrViewJson)(view.stdout).pipe(Option.getOrUndefined);
+    // A fork's branch is not on this checkout's remote, and a local one of the same name is other work.
+    if (seen?.source_project_id !== seen?.target_project_id) {
+      return { refused: `!${mr.iid} comes from a fork, so its branch is not in this checkout` };
+    }
     const source = seen?.source_branch?.trim();
     return source
       ? { branch: source, reviewed: true }
