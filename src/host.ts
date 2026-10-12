@@ -65,6 +65,7 @@ import { hostLogger } from "./host-log";
 import { Catalogue, discover, searchPath } from "./discovery";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
+import { Schedules, schedulesLayer } from "./schedules";
 import { dataHomeOf, desktopRootOf } from "./desktop";
 import type * as MessageStorage from "effect/cluster/MessageStorage";
 import {
@@ -665,6 +666,7 @@ const frontDoorHandlers = (
       const hosted = yield* Effect.context<HostServices>();
       const { env, herdr, bun, build, sweepers } = yield* hostBoard(dir);
       const usage = yield* Usage;
+      const schedules = yield* Schedules;
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
       const recordingUsage = yield* Semaphore.make(1);
       // A finished Run's plan cannot change, so every drawer on it shares one read.
@@ -922,6 +924,10 @@ const frontDoorHandlers = (
       return FrontDoorRpcs.of({
         declare: ({ frontDoor, session, from, ...voice }, { client }) => {
           const already = declared.get(client.id);
+          if (frontDoor === "schedule")
+            return Effect.fail(
+              new HostRefused({ reason: "only the host starts a Run as a Schedule" }),
+            );
           if (already !== undefined && already.frontDoor !== frontDoor) {
             return Effect.fail(
               new HostRefused({ reason: `this channel is already ${already.frontDoor}` }),
@@ -1082,6 +1088,9 @@ const frontDoorHandlers = (
             }),
           ),
         cleanup: () => plainly(Effect.flatMap(sweepers, judge)),
+        schedules: () => schedules.list,
+        changeSchedule: ({ change, request }, { client }) =>
+          schedules.change(change, request, whoOf(client)),
         sweep: ({ request }, { client }) =>
           plainly(
             Effect.gen(function* () {
@@ -1758,11 +1767,21 @@ const crashPoint = Config.option(Config.String("COLLIE_HOST_CRASH_AT")).pipe(
   Effect.orDie,
 );
 
+/**
+ * Whether a test has this host take a seconds field in a Schedule's cron, and read the
+ * engine's storage each second so such an occurrence is not late; unset everywhere else.
+ */
+const scheduleSeconds = Config.option(Config.String("COLLIE_HOST_SCHEDULE_SECONDS")).pipe(
+  Effect.map((set) => Option.getOrUndefined(set) === "1"),
+  Effect.orDie,
+);
+
 const own = (dir: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const env = yield* currentEnv.pipe(Effect.orDie);
     const crashAt = yield* crashPoint;
+    const seconds = yield* scheduleSeconds;
     const bun = yield* Effect.context<BunServices>();
     const herdr = new Herdr(env);
     // Under the lock, so anything at this path belongs to a host that is gone: a unix
@@ -1791,11 +1810,15 @@ const own = (dir: string) =>
           ).pipe(
             Layer.provide(
               Layer.mergeAll(
-                registryLayer(dir, {
-                  locate: locateIn(env),
-                  userDir: env.userDir,
-                  crashAt,
-                }),
+                schedulesLayer({ dir, env: { ...env, stateDir: dir }, installation, seconds }).pipe(
+                  Layer.provideMerge(
+                    registryLayer(dir, {
+                      locate: locateIn(env),
+                      userDir: env.userDir,
+                      crashAt,
+                    }),
+                  ),
+                ),
                 Layer.succeed(Usage, usage),
               ),
             ),
@@ -1812,6 +1835,7 @@ const own = (dir: string) =>
               herdr.notify(title, body, sound).pipe(Effect.provideContext(bun), Effect.ignore),
             herd: { socketPath: env.socketPath, pluginRoot: env.pluginRoot },
             readings: usage.readings,
+            messagePoll: seconds ? "1 second" : undefined,
           }),
         ),
         Layer.provide(yield* configuredAgents(dir, usage.readings)),

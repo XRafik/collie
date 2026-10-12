@@ -170,7 +170,8 @@ reached through `collie bridge` is the front door it was started as, and `deskto
 where it came from: the computer it named and the SSH client the bridge saw. A chat's
 `collie_do` also names its conversation and carries the human's message from that turn,
 with the names of the **Attachments** it carried, attached by the tool host and never by
-the model.
+the model. A Run a **Schedule** starts is the host's own doing, recorded as `schedule` with
+the Schedule's name and the occurrence it was for; it is not a human.
 
 **Confirmation** — A command naming a Proposal's id **and** its content hash. A yes to a
 summary is not consent to a payload nobody read. Anyone may give one — a human at a
@@ -548,6 +549,19 @@ does with each outcome, and what a five-minute unresolved attempt stops:
 **Notification** — The only channel from an unattended Run to the person who started it, so what is not worth interrupting for is not sent at all. One title shape — `<repo> · <slug> <what happened>` — one taxonomy in `src/notify.ts`, once per `(run, kind, step)`, and never a reason for a Run to fail.
 
 **Host** — The one background process that runs work for a state directory. CLI, board and chat all reach it over the same local RPC, and closing any of them leaves its work running. It owns the directory under `host.lock`, keeps its Runs in SQLite until **Cleanup** forgets them, and on restart hands every accepted Run back to the engine, so completed work is reused rather than repeated. A client of another build is told to restart it before `HostRpcs` (ADR-0015); `FrontDoorRpcs` serves any build (ADR-0038).
+
+**Schedule** — A start saved with when to make it: a name, a cron expression read in a
+time zone, and the start as an agent's start gives one — the Workflow, every Input, the
+checkout. A Machine's, kept by its **Host** and fired by no other: that host's engine
+sleeps a durable workflow execution until each occurrence, one after another. Whoever adds it
+chooses that Machine, every listing names it, and moving it to another Machine adds it
+there paused, removes it here and resumes it there, with both Machines reachable. No other
+Machine fires it in its place. Checked when it is added as such a start is. Missed occurrences — the Machine off, or its host not started — collapse into
+one, started late. An occurrence that falls due while the Run the Schedule last started has
+not settled waits for it, so a Schedule has one Run going at a time. Pausing stops it
+without catching up. A Run it starts is any Run, placed as a fresh start, and its record
+says which Schedule started it ([ADR-0052](docs/adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)).
+Not a shared setting: its checkout is a path on one Machine.
 
 **Ownership** — Who holds something that must have one owner. A claim stands while its process answers and is still the one that wrote it, and one whose process answers but whose identity cannot be read stands too: "I could not tell" is not permission to take over. It decides which process may be the host for a state directory; canonical in `src/lock.ts`.
 

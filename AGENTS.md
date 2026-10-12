@@ -112,6 +112,14 @@ herdr actions, and the `collie` CLI.
   "Drawn at" line) and `desktop/src/bun/scale.ts` (reading the scales and setting each
   window's page zoom as it moves), with `test/desktop-scale.test.ts`. Page zoom, never CSS
   `zoom`.
+- **Changing what a Schedule is, when it fires, or how its host keeps it** →
+  [ADR-0052](docs/adr/0052-a-schedule-is-a-saved-start-its-host-fires.md) and
+  [`docs/using.md`](docs/using.md#schedules), alongside `src/schedule-model.ts` (the list's
+  Schemas, and when an occurrence starts and which comes next, pure), `src/schedules.ts`
+  (the records under `schedules/`, the one write, and the `Schedule` workflow on the host's
+  engine) and `collie schedule` in `src/commands/schedule.ts`, with
+  `test/schedule-model.test.ts`, `test/schedules.test.ts` (a real host, its own clock) and
+  `test/schedule-command.test.ts`.
 - **Adding a setting, or changing how settings are shared across a Flock** →
   [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), alongside
   `src/settings.ts` (the one list the TUI, Desktop and the host read), `setSetting` and

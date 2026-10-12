@@ -7,6 +7,9 @@ import { voiceOf, type Voice } from "./proposals";
 import { appendJournal, readJournal } from "./journal";
 import { nowIso } from "./time";
 
+export const ScheduledBy = Schema.Struct({ name: Schema.String, occurrence: Schema.String });
+export type ScheduledBy = typeof ScheduledBy.Type;
+
 export const AuditLine = Schema.Struct({
   at: Schema.String,
   operation: Schema.String,
@@ -18,6 +21,8 @@ export const AuditLine = Schema.Struct({
     conversation: Schema.optionalKey(Schema.String),
     said: Schema.optionalKey(Schema.String),
     attachments: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** The Schedule, and the occurrence it was for, where the host started a Run for one. */
+    schedule: Schema.optionalKey(ScheduledBy),
   }),
   /** Why, in the asker's own words, where they gave one. */
   reason: Schema.optionalKey(Schema.String),
@@ -59,13 +64,15 @@ export const recordAudit = Effect.fn("Audit.record")(function* <A, I extends Sch
     readonly request: string;
     readonly origin: FrontDoor;
     readonly from?: Where | undefined;
+    readonly schedule?: ScheduledBy | undefined;
     readonly reason?: string | undefined;
     readonly asked?: Schema.Json | undefined;
     readonly result: Schema.Codec<A, I>;
     readonly value: A;
   },
 ) {
-  const spoken = { origin: line.origin, requestId: line.request, ...voiceOf(line) };
+  const voiced = { origin: line.origin, requestId: line.request, ...voiceOf(line) };
+  const spoken = line.schedule === undefined ? voiced : { ...voiced, schedule: line.schedule };
   const written: AuditLine = {
     at: yield* nowIso(),
     operation: line.operation,

@@ -6,6 +6,7 @@ import { Effect, Option, Schema, SchemaGetter } from "effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import { IntentSeedSchema } from "./intent-model";
+import { ScheduleChange, ScheduleChanged, ScheduleListing } from "./schedule-model";
 import { UsageReading } from "./usage-model";
 import { VerifySpecSchema } from "./verify-spec";
 
@@ -785,7 +786,10 @@ export const CleanupReport = Schema.Struct({
 });
 export type CleanupReport = typeof CleanupReport.Type;
 
-/** Which front door is acting: what a channel declares, and what its operations are stamped with. */
+/**
+ * Which front door is acting: what a channel declares, and what its operations are stamped
+ * with. `schedule` is the host itself starting a Schedule's Run, which no channel declares.
+ */
 export const FrontDoor = Schema.Literals([
   "cli",
   "cli-tty",
@@ -794,6 +798,7 @@ export const FrontDoor = Schema.Literals([
   "driver",
   "evaluator",
   "chat",
+  "schedule",
 ]);
 export type FrontDoor = typeof FrontDoor.Type;
 
@@ -1132,6 +1137,14 @@ export const FrontDoorRpcs = RpcGroup.make(
   Rpc.make("usage", { success: Schema.Array(UsageReading), error: HostRefused }),
   /** What a sweep would remove now, and what Collie keeps and why (ADR-0045). */
   Rpc.make("cleanup", { success: CleanupReport, error: HostRefused }),
+  /** This Machine's Schedules (ADR-0052). */
+  Rpc.make("schedules", { success: ScheduleListing, error: HostRefused }),
+  /** Adds a Schedule, paused or not, or pauses, resumes or removes one. */
+  Rpc.make("changeSchedule", {
+    payload: { change: ScheduleChange, request: Schema.String },
+    success: ScheduleChanged,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
   /** Sweeps now: what was removed, and what was kept and why. */
   Rpc.make("sweep", {
     payload: { request: Schema.String },

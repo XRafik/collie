@@ -121,6 +121,47 @@ the root or has no checkout there, two tickets sharing one number, or a `Blocked
 naming no ticket of the plan. It is a pure function in `src/plan.ts` for that reason — the
 refusals are decidable before a single Run exists.
 
+## Schedules on the host's engine
+
+A [Schedule](using.md#schedules) is fired by the engine every Run runs on, with no polling
+of Collie's own ([ADR-0052](adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)).
+`src/schedules.ts` registers one workflow of the host's own, `Schedule`, beside the
+modules' generations. It is not a module and not a Run, and the board never shows it. One
+execution is one occurrence, keyed by the Schedule's name, its epoch — the request id of the
+add or resume that began the chain — and the occurrence:
+
+1. `DurableClock.sleep` until the occurrence, with `inMemoryThreshold` zero, so every
+   wake-up is the persisted clock message and outlives the host.
+2. An Activity reads the Schedule and decides, through `onWake` in `src/schedule-model.ts`:
+   paused, removed or under another epoch ends the execution; otherwise it starts the latest
+   occurrence due, so a clock delivered late starts one Run for all it missed.
+3. An Activity waits for herdr to answer, each minute, then starts the Run through the
+   registry's own start, as a fresh start is placed, under `schedule:<name>:<occurrence>`
+   and the Actor `schedule`. It is admitted with `handsOver`: the receipt is written, and
+   the engine is not handed the Run.
+4. The execution runs that Run on its own fiber with `result`, as `children.result` runs a
+   child, so the Run's end is what wakes it. The Run has its own Task and no parent row.
+5. An Activity records the occurrence and what became of it, works out the next one with
+   `nextOccurrence` — one that fell meanwhile at once, else the next cron time — starts that
+   execution with `discard`, and forgets what the engine kept of the execution before this
+   one, as forgetting a Run does.
+
+Nothing interrupts a Schedule's execution, because the interrupt would reach its Run.
+Pausing and removing only write the Schedule, and a waiting execution ends itself when it
+wakes. A resume begins a new epoch; where the old chain is still waiting for its Run, the
+resume leaves it the record's `running`, and that chain starts the new epoch's first
+occurrence when its Run ends, with no catch-up. A host that starts asks the engine for each
+active Schedule's pending execution again, with `discard`; its key makes that a no-op
+unless the engine lost it.
+
+Each Schedule is `schedules/<name>/schedule.json` in the state directory — its start, cron
+expression and time zone, paused, epoch, pending occurrence, last occurrence and the Run it
+last started — beside `operations.jsonl`, the trail of each change and each occurrence with
+its Actor. Only the host writes either, and cleanup keeps `schedules/`. A test host given
+`COLLIE_HOST_SCHEDULE_SECONDS=1` takes a sixth, seconds field in a cron expression and reads
+the engine's storage each second (`entityMessagePollInterval`), so its tests wait seconds,
+not minutes; every other host refuses six fields.
+
 ## Worktrees and the settled rule
 
 `worktree.ts` owns the checkout a mutating run works in. The unit is the **branch**: git

@@ -51,7 +51,7 @@ import {
   type NewsReceipt,
 } from "./board-model";
 import type { Action } from "./actions";
-import { REFUSED_INPUT, runDir, type Given, type RunView } from "./engine";
+import { NEEDS_INPUT, REFUSED_INPUT, runDir, type Given, type RunView } from "./engine";
 import type { OfferView } from "./board-model";
 import { err, ExpectedError, taskFor, type Failure, type OpResult } from "./operations";
 import { voiceOf, type Asker } from "./proposals";
@@ -63,6 +63,7 @@ import { scopeFor, scopeKey } from "./registry";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
 import { reason } from "./naming";
 import { attachmentRefusal } from "./attachments";
+import type { ScheduleChange } from "./schedule-model";
 
 export { savedModules } from "./discovery";
 
@@ -147,6 +148,8 @@ const refusal = (cause: HostFailure): Failure => {
       // The host says so first where the input is why, and that is exit 2, not exit 1.
       if (cause.reason.startsWith(`${REFUSED_INPUT}:`))
         return err("invalid_input", cause.reason.slice(REFUSED_INPUT.length + 1).trim());
+      if (cause.reason.startsWith(`${NEEDS_INPUT}:`))
+        return err("needs_input", cause.reason.slice(NEEDS_INPUT.length + 1).trim());
       return cause.reason.startsWith("invalid_state:")
         ? err("invalid_state", cause.reason.slice("invalid_state:".length).trim())
         : err("operation_failed", cause.reason);
@@ -1052,6 +1055,21 @@ export const usageReadings = (env: PluginEnv, door: Door) =>
 /** What a cleanup sweep would remove now, and what is kept and why. */
 export const cleanupListing = (env: PluginEnv, door: Door) =>
   asks(env, (client) => client.cleanup(), door);
+
+/** This Machine's Schedules, as its host keeps them. */
+export const scheduleListing = (env: PluginEnv, door: Door) =>
+  asks(env, (client) => client.schedules(), door);
+
+/** Adds, pauses, resumes or removes one of this Machine's Schedules, under the caller's request. */
+export const changeSchedule = (
+  env: PluginEnv,
+  options: { readonly door: Door; readonly change: ScheduleChange; readonly request: string },
+) =>
+  asks(
+    env,
+    (client) => client.changeSchedule({ change: options.change, request: options.request }),
+    options.door,
+  );
 
 /** Sweeps now, through the host, under the caller's request. */
 export const sweepNow = (

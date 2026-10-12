@@ -507,18 +507,24 @@ export const taskFor = Effect.fn("operations.taskFor")(function* (
   if (choice.mode === "here") return yield* taskHere(env, about);
   if (env.workspaceId === null && env.socketPath === null)
     return kept(choice.mode === "continue" ? choice.task : null);
-  const herdr = new Herdr(env);
   // A workspace cleanup closed is reopened on the Run's checkout when its first agent starts.
   if (choice.mode === "continue") return kept(choice.task);
+  return kept(null, yield* freshTaskLabel(env, about));
+});
+
+/** What a fresh Task's workspace is called, inferred from the work rooted at `env.cwd`. */
+export const freshTaskLabel = Effect.fn("operations.freshTaskLabel")(function* (
+  env: PluginEnv,
+  about: { readonly workflow: string; readonly named: string },
+) {
   const naming = yield* namingDeps(env);
-  const label = taskWorkspaceLabel(
+  return taskWorkspaceLabel(
     yield* nameTask(
       naming,
       { workflow: about.workflow, named: about.named, short: "", goal: null, cwd: env.cwd },
-      yield* liveNames(herdr, naming !== null),
+      yield* liveNames(new Herdr(env), naming !== null),
     ),
   );
-  return kept(null, label);
 });
 
 /**

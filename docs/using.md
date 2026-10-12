@@ -2053,6 +2053,48 @@ Settings, where you would put it right, and starts agents in `auto` until you do
 Trust is unaffected and still answered first: it decides whether the harness will work in
 the directory at all, and permissions only decide what it asks about once it does.
 
+## Schedules
+
+A **Schedule** is a start your Machine's host makes by itself, whenever a cron expression
+falls due ([ADR-0052](adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)). It is saved
+with what an agent's start names — the Workflow, every Input, the checkout — and checked
+when it is added, so one that could never start is refused then rather than at seven the
+next morning:
+
+```sh
+collie schedule add nightly-review --cron "0 7 * * *" review \
+  --input target=branch:main --input plan= --input proves= --workspace ~/src/app
+collie schedule list
+collie schedule pause nightly-review
+collie schedule resume nightly-review
+collie schedule remove nightly-review
+```
+
+The cron expression is read in your Machine's time zone unless `--tz` names another, so
+`0 7 * * *` is your seven o'clock across a change of daylight saving time. A workspace named
+by its id or label is saved as its checkout's path, because the workspace may be gone by
+the time the Schedule fires.
+
+Each occurrence starts an ordinary Run, placed as a fresh start is — its own Task and
+workspace, unless an open Task already works its branch — and recorded as started by the
+Schedule. A Schedule fires only on the Machine it was added on, and only while that
+Machine's host runs: the host is a process a client starts, not a service, so a Machine
+that is off or whose host nothing has started fires nothing. When the host is next up, the
+occurrences it missed start once, late, for the latest of them. A Schedule runs one Run at a
+time: an occurrence that falls while its last Run is still going, asking, parked or stalled
+waits, and starts as soon as that Run ends, so a stuck Run becomes one card to look at
+rather than a pile of them. While herdr does not answer, the start waits and tries again
+each minute; any other refusal is recorded against that occurrence, and the next one is
+tried as usual.
+
+Pausing stops it firing and leaves any Run it started going. Resuming fires it from its
+next occurrence, with no catch-up. Removing it keeps every Run it started. `collie schedule
+list` shows each Schedule's Workflow, checkout, cron expression and time zone, its next
+occurrence, whether it is paused, and what became of its last occurrence: its Run and that
+Run's status, that it is waiting for herdr, or why it was refused. Every change and every
+occurrence is recorded with who asked in `schedules/<name>/operations.jsonl` under the state
+directory.
+
 ## Cleanup
 
 Collie removes what it made once nothing needs it, and only what it can show it made
@@ -2093,7 +2135,7 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   — a workspace, an agent, a checkout, another Run — needs them.
 
 An entry of the state directory that is no kind Collie knows is listed as kept and never
-removed.
+removed. [Schedules](#schedules) under `schedules/` are the host's own and never swept.
 
 `collie cleanup` lists what a sweep would remove now, with each item's size and the total,
 and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.

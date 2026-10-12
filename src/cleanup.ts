@@ -385,6 +385,7 @@ const KEPT_KINDS = new Set([
   "renovate-repositories",
   "uploads",
   "files",
+  "schedules",
   "claude.json.bak",
 ]);
 const MARKER_KINDS = ["stop", "hold", "parked", "notified"];

@@ -169,6 +169,8 @@ export class EntryError extends Schema.TaggedError<EntryError>()("EntryError", {
 
 /** What a refusal says first where the input is why, which a front door reads back. */
 export const REFUSED_INPUT = "invalid_input";
+/** The prefix of a refusal that names what a start left unsaid. */
+export const NEEDS_INPUT = "needs_input";
 
 /** A placement that may have changed something outside, which nothing here can prove either way. */
 class PlacementUncertain extends Schema.TaggedError<PlacementUncertain>()("PlacementUncertain", {
@@ -1716,6 +1718,8 @@ export const clearGenerations = (dir: string): Effect.Effect<void, never, FileSy
  */
 export function engineLayer(options: {
   readonly dir: string;
+  /** How often the engine reads its storage for messages now due; upstream's default if unset. */
+  readonly messagePoll?: Duration.Input | undefined;
 }): Layer.Layer<
   | WorkflowEngine.WorkflowEngine
   | MessageStorage.MessageStorage
@@ -1730,6 +1734,19 @@ export function engineLayer(options: {
     Layer.orDie,
     Layer.provideMerge(Reactivity.layer),
   );
+  const shardingConfig = {
+    // A host told to stop must not take a running workflow down with it: the work
+    // finishes its step, and what is left is picked up by the next host.
+    preemptiveShutdown: false,
+    // A workflow whose module is missing has no entity to receive its messages. The
+    // default marks them failed after a minute, which turns "the file is not there
+    // yet" into a terminal result; waiting is what lets a repair recover the work.
+    entityRegistrationTimeout: Duration.infinity,
+  };
+  const polled =
+    options.messagePoll === undefined
+      ? shardingConfig
+      : { ...shardingConfig, entityMessagePollInterval: options.messagePoll };
   // Loaded when a host builds it, not when anything imports this file: the cluster is
   // the heaviest thing here, and every other command the binary runs is a client.
   const engine = Layer.unwrap(
@@ -1740,17 +1757,9 @@ export function engineLayer(options: {
       ]),
     ).pipe(
       Effect.map(([SingleRunner, ClusterWorkflowEngine]) => {
-        const cluster = SingleRunner.layer({
-          shardingConfig: {
-            // A host told to stop must not take a running workflow down with it: the work
-            // finishes its step, and what is left is picked up by the next host.
-            preemptiveShutdown: false,
-            // A workflow whose module is missing has no entity to receive its messages. The
-            // default marks them failed after a minute, which turns "the file is not there
-            // yet" into a terminal result; waiting is what lets a repair recover the work.
-            entityRegistrationTimeout: Duration.infinity,
-          },
-        }).pipe(Layer.provide([sql, BunCrypto.layer]));
+        const cluster = SingleRunner.layer({ shardingConfig: polled }).pipe(
+          Layer.provide([sql, BunCrypto.layer]),
+        );
         // The message storage too: forgetting a Run clears what the engine kept of it.
         return ClusterWorkflowEngine.layer.pipe(Layer.provideMerge(cluster));
       }),
@@ -1758,6 +1767,32 @@ export function engineLayer(options: {
   );
   return engine.pipe(Layer.provideMerge(sql));
 }
+
+/** What the engine kept of one execution of a workflow registered under `name`, gone. */
+export const forgetExecution = (name: string, execution: string) =>
+  Effect.gen(function* () {
+    const [cluster, entity, ids, types, shard] = yield* Effect.promise(() =>
+      Promise.all([
+        import("effect/cluster/MessageStorage"),
+        import("effect/cluster/EntityAddress"),
+        import("effect/cluster/EntityId"),
+        import("effect/cluster/EntityType"),
+        import("effect/cluster/ShardId"),
+      ]),
+    );
+    const storage = yield* cluster.MessageStorage;
+    // Messages are found by entity type and id; the shard is part of the address only.
+    const address = (entityType: string) =>
+      entity.EntityAddress.make({
+        entityType: types.make(entityType),
+        entityId: ids.make(execution),
+        shardId: shard.make("default", 0),
+      });
+    yield* Effect.all([
+      storage.clearAddress(address(`Workflow/${name}`)),
+      storage.clearAddress(address("Workflow/-/DurableClock")),
+    ]).pipe(Effect.orDie);
+  });
 
 /** How long a start waits for the engine to take its Run before it is refused. */
 const HAND_OVER_TIMEOUT = "30 seconds";
@@ -3262,31 +3297,16 @@ export interface RegistryApi {
    * quietly becoming something else. A caller that already has an identity for the work
    * brings it; otherwise the host mints one.
    */
-  readonly start: (options: {
-    readonly generation: Generation;
-    readonly request: string;
-    readonly project: string;
-    readonly runId?: string;
-    /** What the caller said, in the two halves a front door keeps apart. */
-    readonly input: Readonly<Record<string, Schema.Json>>;
-    readonly text?: Readonly<Record<string, string>>;
-    readonly inferred?: ReadonlyArray<string>;
-    /** The Projects root the front door resolved, which `workspace=projects-root` names. */
-    readonly root?: string | undefined;
-    /** The host's own launch options, which never reach the author's payload. */
-    readonly options?: Readonly<Record<string, string>>;
-    /** What this work belongs to: a Task, and the run it came out of. */
-    readonly task?: string | null;
-    /** A new Task to open for it, under this label, on the checkout it is given. */
-    readonly taskLabel?: string | undefined;
-    readonly parent?: string | null;
-    /** What the front door knows of the Run's Intent. */
-    readonly intent?: IntentSeed;
-    /** The approved set given with the start, over the project's and the user's files. */
-    readonly verify?: ReadonlyArray<VerifySpec> | undefined;
-    /** Paths on this Machine, copied into the Run before its first step. */
-    readonly attachments?: ReadonlyArray<string> | undefined;
-  }) => Effect.Effect<Admitted, HostRefused | RequestConflict, HostServices>;
+  readonly start: (
+    options: StartOptions,
+  ) => Effect.Effect<Admitted, HostRefused | RequestConflict, HostServices>;
+  /** Refuses a start as `start` would, before anything is claimed, and starts nothing. */
+  readonly check: (options: StartOptions) => Effect.Effect<void, HostRefused, HostServices>;
+  /**
+   * Executes a Run admitted with `handsOver` on the caller's own fiber, as a parent
+   * executes its child: the Run's end wakes the caller's workflow.
+   */
+  readonly result: (runId: string) => Effect.Effect<unknown, WorkflowError>;
   readonly status: (
     runId: string,
   ) => Effect.Effect<typeof RunStatus.Type, HostRefused, HostServices>;
@@ -3375,6 +3395,35 @@ export interface RegistryApi {
   ) => Effect.Effect<{ readonly generation: Generation; readonly execution: string }, HostRefused>;
 }
 
+/** What a start is given. */
+export interface StartOptions {
+  readonly generation: Generation;
+  readonly request: string;
+  readonly project: string;
+  readonly runId?: string;
+  /** What the caller said, in the two halves a front door keeps apart. */
+  readonly input: Readonly<Record<string, Schema.Json>>;
+  readonly text?: Readonly<Record<string, string>>;
+  readonly inferred?: ReadonlyArray<string>;
+  /** The Projects root the front door resolved, which `workspace=projects-root` names. */
+  readonly root?: string | undefined;
+  /** The host's own launch options, which never reach the author's payload. */
+  readonly options?: Readonly<Record<string, string>>;
+  /** What this work belongs to: a Task, and the run it came out of. */
+  readonly task?: string | null;
+  /** A new Task to open for it, under this label, on the checkout it is given. */
+  readonly taskLabel?: string | undefined;
+  readonly parent?: string | null;
+  /** What the front door knows of the Run's Intent. */
+  readonly intent?: IntentSeed;
+  /** The approved set given with the start, over the project's and the user's files. */
+  readonly verify?: ReadonlyArray<VerifySpec> | undefined;
+  /** Paths on this Machine, copied into the Run before its first step. */
+  readonly attachments?: ReadonlyArray<string> | undefined;
+  /** The caller executes the Run itself with `result`, so the engine is not handed it. */
+  readonly handsOver?: boolean;
+}
+
 /** What a start records and returns: the run it is, and whether this call is what made it. */
 export interface Admitted {
   readonly runId: string;
@@ -3444,6 +3493,7 @@ export const foundationLayer = (options: {
   readonly herd?: Herd;
   /** This Machine's Usage readings; none where left out. */
   readonly readings?: Effect.Effect<ReadonlyArray<UsageReading>>;
+  readonly messagePoll?: Duration.Input | undefined;
 }): Layer.Layer<
   | Host
   | Notifier
@@ -4548,26 +4598,12 @@ const makeRegistry: (
     return { row, generation, facts, where, refused, input };
   });
 
-  const startWork = Effect.fn("Engine.Registry.start")(function* (options: {
-    readonly generation: Generation;
-    readonly request: string;
-    readonly project: string;
-    readonly runId?: string;
-    readonly input: Readonly<Record<string, Schema.Json>>;
-    readonly text?: Readonly<Record<string, string>>;
-    readonly inferred?: ReadonlyArray<string>;
-    readonly root?: string | undefined;
-    readonly options?: Readonly<Record<string, string>>;
-    readonly task?: string | null;
-    readonly taskLabel?: string | undefined;
-    readonly parent?: string | null;
-    readonly intent?: IntentSeed;
-    readonly verify?: ReadonlyArray<VerifySpec> | undefined;
-    readonly attachments?: ReadonlyArray<string> | undefined;
-  }) {
+  /** What a start is checked against before anything exists to clean up. */
+  const settleStart = Effect.fn("Engine.Registry.settleStart")(function* (
+    options: StartOptions,
+    runId: string,
+  ) {
     const generation = options.generation;
-    const runId =
-      options.runId ?? `run-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`;
     const asked = options.options ?? {};
     yield* refuseOptions(generation, asked);
     yield* refuseAgent(generation, asked);
@@ -4614,6 +4650,15 @@ const makeRegistry: (
             userDir,
           }).pipe(Effect.provideContext(bun))
         : verify;
+    return { request, launch, settled, payload, approved };
+  });
+
+  const startWork = Effect.fn("Engine.Registry.start")(function* (options: StartOptions) {
+    const generation = options.generation;
+    const runId =
+      options.runId ?? `run-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`;
+    const asked = options.options ?? {};
+    const { request, launch, settled, payload, approved } = yield* settleStart(options, runId);
     const claimed = yield* claimAndPlace({
       request: options.request,
       run: runId,
@@ -4656,7 +4701,9 @@ const makeRegistry: (
     }).pipe(Effect.provideContext(bun), Effect.ignore);
     // A retry of work the engine already has is nothing more to do; one that crashed
     // before it heard is handed over now, under the identity it was admitted with.
-    if (claimed.row.accepted === null) yield* handOver(claimed.row);
+    // A caller that executes the Run itself has the receipt first, as a parent does.
+    if (claimed.row.accepted === null)
+      yield* options.handsOver === true ? store.accepted(claimed.row.run) : handOver(claimed.row);
     return {
       runId: claimed.row.run,
       registration: claimed.row.generation,
@@ -4676,31 +4723,11 @@ const makeRegistry: (
     waiting: asked,
     view,
     retire: (runs) =>
-      Effect.gen(function* () {
-        const [cluster, entity, ids, types, shard] = yield* Effect.promise(() =>
-          Promise.all([
-            import("effect/cluster/MessageStorage"),
-            import("effect/cluster/EntityAddress"),
-            import("effect/cluster/EntityId"),
-            import("effect/cluster/EntityType"),
-            import("effect/cluster/ShardId"),
-          ]),
-        );
-        const storage = yield* cluster.MessageStorage;
-        // Messages are found by entity type and id; the shard is part of the address only.
-        const address = (entityType: string, execution: string) =>
-          entity.EntityAddress.make({
-            entityType: types.make(entityType),
-            entityId: ids.make(execution),
-            shardId: shard.make("default", 0),
-          });
-        return yield* store.retire(runs, (row) =>
-          Effect.all([
-            storage.clearAddress(address(`Workflow/${row.generation}`, row.execution)),
-            storage.clearAddress(address("Workflow/-/DurableClock", row.execution)),
-          ]).pipe(Effect.orDie, Effect.asVoid),
-        );
-      }),
+      Effect.flatMap(Effect.context<MessageStorage.MessageStorage>(), (storage) =>
+        store.retire(runs, (row) =>
+          forgetExecution(row.generation, row.execution).pipe(Effect.provideContext(storage)),
+        ),
+      ),
     views: (task: string | null) =>
       store.runs.pipe(
         Effect.flatMap((rows) =>
@@ -4800,6 +4827,13 @@ const makeRegistry: (
     }),
 
     start: startWork,
+    check: (options) => settleStart(options, "run-check").pipe(Effect.asVoid),
+    result: (runId) =>
+      lending(
+        Effect.flatMap(store.run(runId), (row) =>
+          runChild({ runId, workflow: row?.workflow ?? "", invocation: runId, fresh: false }),
+        ),
+      ),
 
     status: Effect.fn("Engine.Registry.status")(function* (runId: string) {
       const found = yield* routed(runId);

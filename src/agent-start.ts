@@ -10,8 +10,36 @@ import { inferInput, shell } from "./inputs";
 import { err, type Failure } from "./operations";
 import { checkoutsUnder, PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
 import { listRuns } from "./runs";
+import { RESERVED_INPUTS } from "./sdk";
 import { strategyMeaning } from "./strategies";
 import { repositoryName } from "./worktree";
+
+/**
+ * What the host supplies at launch, split from what the author declared. A module may not
+ * declare one of these names — `checkEntry` refuses that at load — so a value under one is
+ * the host's option and never an input, and nothing of the host's reaches the payload.
+ */
+export function hostOptions(given: Given) {
+  return {
+    input: {
+      json: Object.fromEntries(Object.entries(given.json).filter(([name]) => !isOption(name))),
+      text: Object.fromEntries(Object.entries(given.text).filter(([name]) => !isOption(name))),
+    },
+    options: Object.fromEntries([
+      ...Object.entries(given.text).filter(([name]) => isOption(name)),
+      ...Object.entries(given.json)
+        .filter(([name]) => isOption(name))
+        .map(([name, value]) => [name, asOptionText(value)]),
+    ]),
+  };
+}
+
+const isOption = (name: string) => name in RESERVED_INPUTS;
+
+/** A host option is text; one that arrived as typed JSON is written back down as it came. */
+export const asOptionText = (value: Schema.Json) => (isText(value) ? value : asJsonText(value));
+const isText = Schema.is(Schema.String);
+const asJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 
 /** How many plan directories a refusal offers for a work source. */
 const PLANS_OFFERED = 5;
