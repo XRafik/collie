@@ -1640,6 +1640,8 @@ export const serve = (dir: string): Effect.Effect<void, never, BunServices | Sco
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.makeDirectory(dir, { recursive: true });
+    // Whatever it was started in may be deleted under it, as a Desktop update does its app folder.
+    yield* Effect.sync(() => process.chdir(dir));
     const lock = lockOf(dir);
     yield* ensureLockDir(lock);
     // `withLock` breaks a claim whose holder is gone before its last attempt, so a host
@@ -2021,13 +2023,16 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
   hostEnv: Readonly<Record<string, string>>,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
   const command = yield* hostCommand;
   // Which installation's workflows this host serves, decided by the client that needed
   // it rather than guessed from wherever the host process happens to start.
   const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
   return yield* Effect.gen(function* () {
+    yield* fs.makeDirectory(dir, { recursive: true });
     const handle = yield* spawner.spawn(
       ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
+        cwd: dir,
         env: { ...hostEnv, HERDR_PLUGIN_ROOT: install },
         extendEnv: true,
         detached: true,

@@ -2,6 +2,7 @@
 // launchd gives it a minimal PATH and none of `~/.zshrc`, so every local tool Desktop
 // starts would look uninstalled. Desktop reads what the login shell has once, as it starts.
 
+import { homedir } from "node:os";
 import { Config, Effect, Option, Path } from "effect";
 
 const BIN = Effect.runSync(
@@ -55,6 +56,9 @@ export const withoutLauncher = (env: Readonly<Record<string, string | undefined>
   if (ICU_DATA !== undefined && ICU_DATA !== "" && ICU_DATA !== bin) kept.ICU_DATA = ICU_DATA;
   return kept;
 };
+
+/** Where children start: Desktop's own folder goes when an update replaces it. */
+export const CHILD_CWD = homedir();
 
 /** Gives children the cleaned environment; Bun otherwise ignores changes made since it started. */
 export const childEnv = () => withoutLauncher(desktopEnv(), BIN);

@@ -2,6 +2,7 @@
 // as `desktop`, never through Collie's own host client.
 
 import { expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { Config, Deferred, Effect, Option, Queue, Schedule, Schema, Stream } from "effect";
 import { type BoardMessage, type BoardSnapshot, PROTOCOL } from "../src/board-model";
 import { readAudit } from "../src/audit";
@@ -278,6 +279,14 @@ test("a bridge whose shell finds no collie is a Machine without Collie, in the s
         "echo 'Permission denied' >&2; exit 1",
       ]).pipe(Effect.flip);
       expect(other).toEqual({ state: "unreachable", reason: "Permission denied" });
+    }).pipe(Effect.scoped),
+  ));
+
+test("a bridge starts in the home directory, never Desktop's app folder an update deletes", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const failed = yield* openBridge(["/bin/sh", "-c", "pwd >&2; exit 1"]).pipe(Effect.flip);
+      expect(failed).toEqual({ state: "unreachable", reason: homedir() });
     }).pipe(Effect.scoped),
   ));
 

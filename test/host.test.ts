@@ -90,6 +90,40 @@ test(
 );
 
 test(
+  "a host started in a directory that is then deleted moves to its state directory",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { state } = yield* workspace("collie-host-cwd-");
+        const gone = `${state}/../bin`;
+        const binary = yield* Config.option(Config.String("COLLIE_TEST_BINARY"));
+        const host = Option.isSome(binary)
+          ? [binary.value]
+          : [process.execPath, `${root}src/main.ts`];
+        // Started where Desktop's app folder was, which an update then deletes.
+        const launcher = [
+          "/bin/sh",
+          "-c",
+          'mkdir -p "$GONE" && cd "$GONE" && rmdir "$GONE" && exec "$@"',
+          "sh",
+          ...host,
+        ];
+        const who = yield* Effect.scoped(
+          connect(state, { hostEnv: { GONE: gone } }).pipe(
+            Effect.flatMap((client) => client.identity()),
+          ),
+        ).pipe(Effect.provide(starts(launcher)), Effect.orDie);
+        if (process.platform === "linux") {
+          expect(yield* fs.readLink(`/proc/${who.pid}/cwd`)).toBe(yield* fs.realPath(state));
+        }
+        yield* stopHost(state);
+      }).pipe(Effect.scoped),
+    ),
+  120_000,
+);
+
+test(
   "a client that hangs up leaves its work, its registrations and the client watching it",
   () =>
     proves(

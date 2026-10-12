@@ -48,7 +48,7 @@ import {
 } from "../shared/flock";
 import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
-import { childEnv } from "./login-env";
+import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 
 const children = new Set<Bun.Subprocess>();
@@ -150,7 +150,7 @@ export const openBridge = Effect.fn("Desktop.openBridge")(function* (
   env: Readonly<Record<string, string | undefined>> = childEnv(),
 ) {
   const child = yield* spawned(() =>
-    Bun.spawn([...command], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
+    Bun.spawn([...command], { env, cwd: CHILD_CWD, stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
   );
   const said = yield* stderrTail(child.stderr, (chunk) => process.stderr.write(chunk));
   const ready = Promise.withResolvers<void>();
@@ -245,6 +245,7 @@ const ran = (command: ReadonlyArray<string>) =>
       try: () =>
         Bun.spawn([...command], {
           env: childEnv(),
+          cwd: CHILD_CWD,
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
@@ -358,6 +359,7 @@ const openMaster = Effect.fn("Desktop.openMaster")(function* (
   const master = yield* spawned(() =>
     Bun.spawn([ssh, "-M", "-N", "-S", control, "-o", "ControlPersist=no", target], {
       env: childEnv(),
+      cwd: CHILD_CWD,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
