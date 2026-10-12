@@ -10,6 +10,7 @@ import { Cause, Effect, Fiber, Result, Stream } from "effect";
 import * as Base64 from "effect/encoding/Base64";
 import type { BoardAgent } from "../../../../src/board-model";
 import type { PlacedTask, TerminalCommand, TerminalEvent } from "../../../src/shared/flock";
+import { inField } from "../../../src/shared/board-clicks";
 import { saidOf } from "../../../src/shared/said";
 import {
   type AgentTab,
@@ -111,11 +112,7 @@ const shown = (event: TerminalEvent) => {
 
 const typingElsewhere = () => {
   const active = document.activeElement;
-  return (
-    active instanceof HTMLElement &&
-    (active.isContentEditable || active.matches("input, textarea, select")) &&
-    !host.value?.contains(active)
-  );
+  return active instanceof HTMLElement && inField(active) && !host.value?.contains(active);
 };
 
 /** After the gesture, whose own mousedown would otherwise take focus back. */

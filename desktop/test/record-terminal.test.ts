@@ -90,6 +90,14 @@ test.each([
     chosen: "plan-1",
   },
   {
+    case: "another Run's blocked agent is chosen over the card's Run's working one",
+    agents: [
+      live("impl-1", "implementer", "blocked", "run-2.implement"),
+      live("review-1", "reviewer", "working"),
+    ],
+    chosen: "impl-1",
+  },
+  {
     case: "a working agent is chosen over idle, done and unknown ones",
     agents: [
       live("plan-1", "planner", "idle"),
