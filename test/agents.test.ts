@@ -361,6 +361,37 @@ class ClosesOnceReused extends FakeHerdr {
   }
 }
 
+/** herdr failing one listing as Collie hands a reused agent, which it still has, its work. */
+class FailsOnceReused extends FakeHerdr {
+  failed = false;
+  constructor(
+    env: ConstructorParameters<typeof FakeHerdr>[0],
+    readonly pointer: string,
+  ) {
+    super(env);
+  }
+  override agentList() {
+    if (this.failed || Bun.file(this.pointer).size === 0) return super.agentList();
+    this.failed = true;
+    return Effect.fail(
+      new HerdrError({ message: "herdr agent list failed", detail: "socket closed" }),
+    );
+  }
+}
+
+test("a listing that failed is not taken as a reused agent gone, and starts no second one", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addAgent(agentFor("r1"), "1-9");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "still the same agent" }]);
+      const herdr = new FailsOnceReused(rig.pluginEnv(), `${dir}/agents/r1/review.step.md`);
+      const result = yield* session(started("r1"), { herdr });
+      expect(result._tag === "Success" && result.success.note).toBe("still the same agent");
+      expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(0);
+      expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
+    }),
+  ));
+
 test("a reused agent that is gone before it was given its work is started again", () =>
   runEffect(
     Effect.gen(function* () {

@@ -1505,14 +1505,20 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const started = ask.skill === null ? "" : `${adapter.skillCommand(ask.skill)} `;
         const pointer = `${started}${stepPointer(file)}`;
         yield* write(sentPath(launched, "step"), pointer);
-        const asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
-        // Nothing reached it, so a new one is this work's agent rather than a second.
+        let asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
+        // The sender reads a failed listing as no agent, so only one that answers settles it.
         if (alive && asked.gone === true) {
-          yield* log(
-            ask.runId,
-            `${agent}: ${asked.why} before it was given ${ask.operation}; starting it again`,
-          );
-          return yield* launch(ask, true);
+          const again = yield* host.herdr.agentList().pipe(Effect.result);
+          if (again._tag === "Success" && !again.success.some((one) => one.name === agent)) {
+            // Nothing reached it, so a new one is this work's agent rather than a second.
+            yield* log(
+              ask.runId,
+              `${agent}: ${asked.why} before it was given ${ask.operation}; starting it again`,
+            );
+            return yield* launch(ask, true);
+          }
+          if (again._tag === "Success")
+            asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
         }
         if (asked.refused) {
           return yield* refusedWith(ask, `${agent} was not given its work (${asked.why})`, file);
