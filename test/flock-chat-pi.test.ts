@@ -22,10 +22,11 @@ const withPi = <A, E>(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "flock-pi-" });
-      const env = childEnv();
+      const env = Bun.env;
       const previous = env.PI_CODING_AGENT_DIR;
       env.PI_CODING_AGENT_DIR = `${dir}/agent`;
       yield* fs.makeDirectory(env.PI_CODING_AGENT_DIR);
+      expect(childEnv().PI_CODING_AGENT_DIR).toBe(`${dir}/agent`);
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           if (previous === undefined) delete env.PI_CODING_AGENT_DIR;
