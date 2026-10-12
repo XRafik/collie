@@ -637,6 +637,28 @@ test(
 );
 
 test(
+  "a refusal an Activity died of keeps its reason in the Run's failure",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { wf, state } = yield* workspace("collie-engine-refuses-");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.copyFile(`${fixtures}/refuses.workflow.ts`, `${wf}/refuses.workflow.ts`);
+        const host = yield* openHost(state);
+        yield* host.ask({ op: "load", entry: `${wf}/refuses.workflow.ts` });
+        yield* host.ask({ op: "start", id: "refuses", runId: "r1", input: {} });
+        const failed = yield* host.until(
+          { op: "poll", id: "refuses", runId: "r1" },
+          (reply) => reply.status === "failed",
+        );
+        expect(failed.value).toContain('WorkflowError: nothing on PATH called "bun"');
+        yield* host.stop;
+      }).pipe(Effect.scoped),
+    ),
+  120_000,
+);
+
+test(
   "a service a module never provided is reported against the file that asks for it",
   () =>
     runEffect(

@@ -154,18 +154,23 @@ const windowOn = (url: string, title: string, frame: BrowserWindow["frame"]) => 
 
 const VIEW = "views://mainview/index.html";
 
-/** How `collie` is run here: in a login shell, as SSH would on another Machine. */
-const Collie = Config.schema(
-  Schema.fromJsonString(Schema.Array(Schema.String)),
-  "COLLIE_DESKTOP_COLLIE",
-).pipe(
-  Config.orElse(() =>
-    Config.String("SHELL").pipe(
-      Config.withDefault("/bin/sh"),
-      Config.map((shell) => [shell, "-lc", 'exec collie "$@"', "collie"]),
-    ),
-  ),
-);
+/**
+ * How a script is run here. A login shell's profile may reset PATH, so once Desktop holds the
+ * interactive login environment a plain shell keeps it; otherwise a login shell, as SSH would.
+ */
+const LocalShell = (tookLoginEnv: boolean) =>
+  tookLoginEnv
+    ? Config.succeed(["/bin/sh", "-c"])
+    : Config.String("SHELL").pipe(
+        Config.withDefault("/bin/sh"),
+        Config.map((shell) => [shell, "-lc"]),
+      );
+
+/** How `collie` is run here. */
+const Collie = (shell: ReadonlyArray<string>) =>
+  Config.schema(Schema.fromJsonString(Schema.Array(Schema.String)), "COLLIE_DESKTOP_COLLIE").pipe(
+    Config.orElse(() => Config.succeed([...shell, 'exec collie "$@"', "collie"])),
+  );
 
 const OPENER = process.platform === "darwin" ? "open" : "xdg-open";
 
@@ -203,7 +208,7 @@ const StateDir = Config.String("XDG_STATE_HOME").pipe(
 
 const main = Effect.gen(function* () {
   // Before anything is spawned, so every child starts with the shell's PATH and variables.
-  yield* takeLoginEnv;
+  const tookLoginEnv = yield* takeLoginEnv;
   const updater = yield* electrobunUpdater;
   yield* applyAtLaunch(updater).pipe(
     Effect.catch((reason) => Effect.logWarning(`Desktop update not installed: ${reason}`)),
@@ -213,7 +218,8 @@ const main = Effect.gen(function* () {
   const board = windowOn(VIEW, "Collie", { width: 1200, height: 800, x: 120, y: 80 });
   const updates = yield* updatesOf(updater, manifest.version);
   const local = hostname();
-  const collie = yield* Collie;
+  const shell = yield* LocalShell(tookLoginEnv);
+  const collie = yield* Collie(shell);
   const releases = yield* Config.String("COLLIE_DESKTOP_RELEASES").pipe(
     Config.withDefault(RELEASES),
   );
@@ -307,7 +313,7 @@ const main = Effect.gen(function* () {
   });
   // Every route by herdr profile, each herdr machine's with the scope its master lives in.
   const routes = new Map<string, { route: ShellRoute; scope?: Scope.Closeable }>();
-  routes.set("local", { route: localRoute(collie, local) });
+  routes.set("local", { route: localRoute(collie, local, shell) });
   let opened = 0;
   const open = (machine: HerdrMachine) =>
     Effect.gen(function* () {

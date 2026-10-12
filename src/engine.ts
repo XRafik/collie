@@ -377,7 +377,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export class WorkflowError extends Schema.TaggedError<WorkflowError>()(
     "WorkflowError",
     { reason: Schema.String },
-  ) {}
+  ) {
+    /** The reason, so a died refusal still names it. */
+    override get message(): string;
+  }
 
   /** The Run a workflow is executing as: supplied by the host, never passed by hand. */
   export interface RunApi {

@@ -1,8 +1,8 @@
-// What a Mac app launched from Finder or the Dock is missing: the shell's environment.
-// launchd gives it a minimal PATH and none of `~/.zshrc`, so every local tool Desktop
-// starts would look uninstalled. Desktop reads what the login shell has once, as it starts.
+// What an app launched from a desktop is missing: the interactive shell's environment.
+// launchd, or a session's launcher, gives it none of the rc files, so a tool a version
+// manager puts on PATH would look uninstalled. Desktop reads it once, as it starts.
 
-import { Config, Effect, Option, Path } from "effect";
+import { Config, type Duration, Effect, Option, Path } from "effect";
 
 const BIN = Effect.runSync(
   Path.Path.pipe(
@@ -66,25 +66,44 @@ const desktopEnv = () => process.env;
 /** Where a bare command is found on `childEnv`'s PATH; Bun's own lookup uses the PATH it started with. */
 export const which = (command: string) => Bun.which(command, { PATH: childEnv().PATH });
 
-/** On macOS, merges the login shell's environment into Desktop's own; any failure keeps the one it has. */
-export const takeLoginEnv = Effect.gen(function* () {
-  if (process.platform !== "darwin") return;
-  const shell = yield* Config.String("SHELL").pipe(Config.withDefault("/bin/zsh"));
-  const child = Bun.spawn([shell, "-ilc", `printf '%s' '${BEGIN}'; env -0; printf '%s' '${END}'`], {
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "ignore",
-  });
-  const output = yield* Effect.promise(() => new Response(child.stdout).text()).pipe(
-    Effect.timeoutOption(LIMIT),
-    Effect.ensuring(Effect.sync(() => child.kill())),
+/** The variables `shell -ilc` exports; empty where it fails, prints none, or outlasts `limit`. */
+export const readLoginEnv = (shell: string, limit: Duration.Input = LIMIT) =>
+  Effect.gen(function* () {
+    const child = Bun.spawn(
+      [shell, "-ilc", `printf '%s' '${BEGIN}'; env -0; printf '%s' '${END}'`],
+      {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "ignore",
+      },
+    );
+    const output = yield* Effect.promise(() => new Response(child.stdout).text()).pipe(
+      Effect.timeoutOption(limit),
+      Effect.ensuring(Effect.sync(() => child.kill())),
+    );
+    return Option.isSome(output) ? parseLoginEnv(output.value) : new Map<string, string>();
+  }).pipe(
+    Effect.catchCause((cause) =>
+      Effect.logWarning(`Login shell environment not read from ${shell}`, cause).pipe(
+        Effect.as(new Map<string, string>()),
+      ),
+    ),
   );
-  const taken = Option.isSome(output) ? parseLoginEnv(output.value) : new Map<string, string>();
+
+/**
+ * Merges the interactive login shell's environment into Desktop's own, so children get the
+ * PATH a terminal has, version managers included; true where it was taken.
+ */
+export const takeLoginEnv = Effect.gen(function* () {
+  const shell = yield* Config.String("SHELL").pipe(
+    Config.withDefault(process.platform === "darwin" ? "/bin/zsh" : "/bin/sh"),
+  );
+  const taken = yield* readLoginEnv(shell);
   if (taken.size === 0) {
-    return yield* Effect.logWarning(`Login shell environment not taken from ${shell}`);
+    yield* Effect.logWarning(`Login shell environment not taken from ${shell}`);
+    return false;
   }
   const env = desktopEnv();
   for (const [name, value] of taken) env[name] = value;
-}).pipe(
-  Effect.catchCause((cause) => Effect.logWarning("Login shell environment not taken", cause)),
-);
+  return true;
+}).pipe(Effect.orElseSucceed(() => false));

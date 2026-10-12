@@ -457,13 +457,17 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
 });
 
 /** Local, reached through a bridge it starts without SSH. */
-export const localRoute = (collie: ReadonlyArray<string>, name: string): ShellRoute => {
+export const localRoute = (
+  collie: ReadonlyArray<string>,
+  name: string,
+  shell: ReadonlyArray<string> = [Bun.env.SHELL ?? "/bin/sh", "-lc"],
+): ShellRoute => {
   const machine = { profile: "local", name };
   return {
     machine,
     open: () => openDoors(machine, (as) => bridgeCommand(collie, name, as)),
     collie: (args) => ran([...collie, ...args]),
-    sh: (script) => Effect.succeed([Bun.env.SHELL ?? "/bin/sh", "-lc", script]),
+    sh: (script) => Effect.succeed([...shell, script]),
     // Its localhost is this computer's already.
     forward: () => Effect.void,
   };

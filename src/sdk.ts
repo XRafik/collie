@@ -305,7 +305,12 @@ const collectedOf = (options: EvidenceAsk) => ({
  */
 export class WorkflowError extends Schema.TaggedError<WorkflowError>()("WorkflowError", {
   reason: Schema.String,
-}) {}
+}) {
+  /** A defect keeps only its message, so a died refusal still names its reason. */
+  override get message() {
+    return this.reason;
+  }
+}
 
 /** The Run a workflow is executing as: supplied by the host, never passed by hand. */
 export interface RunApi {

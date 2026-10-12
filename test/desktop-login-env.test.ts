@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
-import { childEnv, parseLoginEnv, which } from "../desktop/src/bun/login-env";
+import { childEnv, parseLoginEnv, readLoginEnv, which } from "../desktop/src/bun/login-env";
 import { runEffect } from "./support/effect";
 
 const BEGIN = "<<collie-env-begin-7f3a9c>>";
@@ -94,5 +94,34 @@ test("a bare command is found on the PATH the environment has now", () =>
       yield* setFor("PATH", `${dir}:${childEnv().PATH}`);
       expect(Bun.which("collie-which-probe")).toBeNull();
       expect(which("collie-which-probe")).toBe(tool);
+    }),
+  ));
+
+/** A shell that runs `body` instead of its `-ilc` command. */
+const fakeShell = (body: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-login-env-" });
+    yield* fs.writeFileString(`${dir}/sh`, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return `${dir}/sh`;
+  });
+
+test("the interactive login shell's variables are read past what its rc files print", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const shell = yield* fakeShell(
+        `echo 'mise: activated'; [ "$1" = -ilc ] && sh -c "$2"; echo bye`,
+      );
+      const read = yield* readLoginEnv(shell);
+      expect(read.get("PATH")).toBe(Bun.env.PATH);
+    }),
+  ));
+
+test("a shell that fails, or does not answer in time, gives nothing to take", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect((yield* readLoginEnv(yield* fakeShell("exit 1"))).size).toBe(0);
+      expect((yield* readLoginEnv(yield* fakeShell("exec sleep 5"), "200 millis")).size).toBe(0);
+      expect((yield* readLoginEnv("/nonexistent/shell")).size).toBe(0);
     }),
   ));
