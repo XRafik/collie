@@ -112,7 +112,7 @@ export function postNote<R>(
     const forge = here.forge;
     const ready = yield* forge.ready(mr.project, options.cwd, run);
     if (!ready.ok) return { ok: false, message: ready.reason };
-    const me = yield* forge.login(options.cwd, run);
+    const me = yield* forge.login(options.cwd, run, mr.project);
     if (me !== null && (yield* assignedTo(mr, me, options.cwd, run))) {
       return {
         ok: false,
@@ -237,11 +237,12 @@ export function resolveAssignee<R>(
   configured: YamlValue | undefined,
   forge: Forge,
   run: Runner<R>,
+  project: string | null = null,
 ): Effect.Effect<string | null, never, R> {
   return Effect.gen(function* () {
     if (configured !== undefined && isString(configured) && configured.trim() !== "")
       return configured.trim();
-    return yield* forge.login(cwd, run);
+    return yield* forge.login(cwd, run, project);
   });
 }
 
@@ -305,7 +306,7 @@ export function prepareMergeRequest<R>(
     const { forge, project } = here;
     const ready = yield* forge.ready(project, opts.cwd, run);
     if (!ready.ok) return unavailable(ready.reason);
-    const assignee = yield* resolveAssignee(opts.cwd, opts.assignees?.[forge.name], forge, run);
+    const assignee = yield* resolveAssignee(opts.cwd, opts.assignees?.[forge.name], forge, run, project);
     if (assignee === null && forge.name === "github")
       return unavailable("gh did not report a GitHub login");
     const branch = (yield* run(

@@ -55,7 +55,11 @@ export interface Forge {
     run: Runner<R>,
   ) => Effect.Effect<Readiness, never, R>;
   /** Who the CLI is logged in as, or null where it will not say. */
-  readonly login: <R>(cwd: string, run: Runner<R>) => Effect.Effect<string | null, never, R>;
+  readonly login: <R>(
+    cwd: string,
+    run: Runner<R>,
+    project?: string | null,
+  ) => Effect.Effect<string | null, never, R>;
   /** One merge request as the panel shows it. */
   readonly details: <R>(
     ref: MrRef,

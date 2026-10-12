@@ -193,9 +193,14 @@ export function gitlabForProject<R>(
  * say. The authenticated user, not a configured assignee: a branch belongs to whoever
  * is pushing it, and the two are different people whenever an assignee is set at all.
  */
-export function glabLogin<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, never, R> {
+export function glabLogin<R>(
+  cwd: string,
+  run: Runner<R>,
+  project: string | null = null,
+): Effect.Effect<string | null, never, R> {
   return Effect.gen(function* () {
-    const me = yield* run("glab", ["api", "user"], cwd);
+    const host = hostOf(project);
+    const me = yield* run("glab", ["api", "user", ...(host ? ["--hostname", host] : [])], cwd);
     if (me.code !== 0) return null;
     return Option.match(Schema.decodeUnknownOption(UserJson)(me.stdout), {
       onNone: () => null,

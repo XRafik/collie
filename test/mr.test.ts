@@ -628,6 +628,28 @@ for (const name of ["gitlab", "github"] as const) {
     ));
 }
 
+test("posting checks the login on the target's GitLab host", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const target = "mr:gitlab.other.com/g/p!42";
+      const glab = recorder({
+        "glab --version": { stdout: "glab" },
+        "glab auth status --hostname gitlab.other.com": { stdout: "logged in" },
+        "glab api user": { stdout: '{"username":"local-me"}' },
+        "glab api user --hostname gitlab.other.com": { stdout: '{"username":"other-me"}' },
+        "glab mr view 42 --repo gitlab.other.com/g/p -F json": {
+          stdout: '{"state":"opened","assignees":[{"username":"other-me"}]}',
+        },
+        "glab mr": { stdout: "" },
+      });
+      expect(yield* postNote({ target, cwd: "/w", body: "LGTM", approve: true }, glab.run)).toEqual({
+        ok: false,
+        message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
+      });
+      expect(glab.calls.some((call) => call[2] === "note" || call[2] === "approve")).toBe(false);
+    }),
+  ));
+
 test("a legacy bare merge request never becomes a GitHub pull request", () =>
   runEffect(
     Effect.gen(function* () {

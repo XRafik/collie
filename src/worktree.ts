@@ -269,7 +269,7 @@ const whoami = Effect.fn("worktree.whoami")(function* (
   if (!here.ok) return here;
   const { forge } = here;
   const named = (forge.name === "github" ? opts.githubLogin : opts.login)?.trim();
-  return { ...here, who: named ? named : yield* forge.login(opts.cwd, run) };
+  return { ...here, who: named ? named : yield* forge.login(opts.cwd, run, here.project) };
 });
 
 /** Named in the refusal, so an operator with no login is told what to set (ADR-0050 D5). */
