@@ -52,7 +52,6 @@ import {
   readConfig,
   type Defaults,
 } from "./config";
-import { autoCompactWindowOf } from "./settings";
 import type { YamlMap } from "./yaml";
 import { RanOn } from "./board-model";
 import * as dispatch from "./dispatcher";
@@ -62,6 +61,8 @@ import { currentEnv, type PluginEnv } from "./env";
 import {
   HARNESSES,
   foldPreferences,
+  autoCompactWindowFor,
+  installedHelp,
   isPermissionMode,
   permissionsAsWritten,
   personaPrefix,
@@ -1323,29 +1324,6 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     if (message !== null) yield* log(runId, `trust ${adapter.id}: ${message}`);
   });
 
-  /**
-   * The auto-compact window this harness is started with, or why none. Parked on a window
-   * it would not take: replaced by the default, a window meant earlier would come later.
-   */
-  const autoCompactWindowFor = Effect.fn("Agents.autoCompactWindowFor")(function* (
-    adapter: HarnessAdapter,
-    written: number | string,
-    operation: string,
-  ) {
-    const flag = adapter.autoCompactFlag;
-    if (flag === undefined) return { passed: null, leftOff: null };
-    const window = autoCompactWindowOf(String(written));
-    if ("refused" in window)
-      return yield* new AgentParked({
-        operation,
-        reason: `${window.refused} in ${host.env.userDir}/config.json: fix it, then resume this Run`,
-      });
-    const help = yield* (host.help ?? installedHelp)(adapter.kind);
-    return help.includes(flag)
-      ? { passed: window.window, leftOff: null }
-      : { passed: null, leftOff: `${adapter.kind} --help does not list ${flag}` };
-  });
-
   /** A pane, an agent in it, and the registry entry that makes it addressable. */
   const start = Effect.fn("Agents.start")(function* (
     ask: AgentAsk,
@@ -1373,8 +1351,14 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     const window = yield* autoCompactWindowFor(
       adapter,
       autoCompactWindowAsWritten(config.claude_auto_compact_window),
-      ask.operation,
+      host.help ?? installedHelp,
     );
+    // Parked rather than started on the default: a window meant earlier would come later.
+    if ("refused" in window)
+      return yield* new AgentParked({
+        operation: ask.operation,
+        reason: `${window.refused} in ${host.env.userDir}/config.json: fix it, then resume this Run`,
+      });
     if (window.leftOff !== null)
       yield* log(ask.runId, `${agent}: started without an auto-compact window: ${window.leftOff}`);
     yield* ensureTrusted(ask.runId, adapter, ask.cwd);
@@ -2110,15 +2094,6 @@ const compactionDeps = (host: AgentHost, runId: string): CompactionDeps => ({
   waitMs: COMPACTION_WAIT_MS,
   pollMs: host.pollMs ?? DEFAULT_POLL_MS,
 });
-
-const installedHelp = (kind: string) =>
-  Effect.promise(() =>
-    Bun.$`${kind} --help`
-      .quiet()
-      .nothrow()
-      .text()
-      .catch(() => ""),
-  );
 
 const undeliverable = (cause: unknown) => ({
   ok: false as const,

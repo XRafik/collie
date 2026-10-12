@@ -1519,7 +1519,8 @@ though that was all of them. A follow-up is understood — the conversation is t
 own session, running for as long as its pane does. A chat that has to be started again —
 its process gone — starts a new conversation rather than resuming the last one, which
 would carry that whole history into every turn. Claude's runs on the latest Opus at
-medium effort.
+medium effort, with the auto-compact window a Run's agents get (see
+[Compaction between pieces of work](#compaction-between-pieces-of-work)).
 
 **Chat knows which card you have open.** Every message you send carries one line naming
 the open card, attached as you send it and never when you click — so opening ten cards and
@@ -1918,8 +1919,8 @@ So two compactions are at work, and they are set apart:
   agent is given its next piece of work.
 - Claude Code's own compaction happens whenever a conversation fills its auto-compact
   window, which is `claude_auto_compact_window` ("Claude Code's auto-compact window" under
-  Settings). Collie starts every Claude Code agent of a Run with it as `--autocompact
-  <value>`: 400000 until set, or `auto` for the model's own tuned window, which on a 1M
+  Settings). Collie starts every Claude Code agent of a Run, and the Home's native chat
+  on Claude Code, with it as `--autocompact <value>`: 400000 until set, or `auto` for the model's own tuned window, which on a 1M
   model is about 967K. The flag is for that launch alone, outranks your
   `~/.claude/settings.json` and managed settings, and writes nothing to `~/.claude`. It is
   read at each start, so an edit reaches the next agent without restarting the host; an
@@ -1928,8 +1929,9 @@ So two compactions are at work, and they are set apart:
 A `CLAUDE_CODE_AUTO_COMPACT_WINDOW` exported on a Machine still overrides the setting, so
 look there first if an agent ignores it. Whether the installed `claude` takes
 `--autocompact` is read from its `--help`; one that does not is started without it and the
-Run's log says so. A value in `config.json` Claude Code would not take — hand-edited to
-`50000`, say — stops that launch, naming the setting and the value, rather than being
+Run's log, or the chat's, says so. A value in `config.json` Claude Code would not take —
+hand-edited to `50000`, say — stops that launch, naming the setting and the value (the
+native chat is then unavailable, the board unaffected), rather than being
 replaced by 400000. A window below `compact_at_tokens` only means Claude compacts first,
 which is fine.
 

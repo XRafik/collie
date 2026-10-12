@@ -4,7 +4,7 @@
 import { Effect, FileSystem, Option, Schema } from "effect";
 import type { PluginEnv } from "./env";
 import { isString } from "./schema";
-import { type AutoCompactWindow, PERMISSION_MODES } from "./settings";
+import { type AutoCompactWindow, autoCompactWindowOf, PERMISSION_MODES } from "./settings";
 import { claudeTrust, type Trust } from "./trust";
 import type { YamlValue } from "./yaml";
 
@@ -227,6 +227,34 @@ export function startArgs(
       : []),
   ];
 }
+
+/** A harness's `--help` as installed; empty where it cannot be run. */
+export const installedHelp = (kind: string) =>
+  Effect.promise(() =>
+    Bun.$`${kind} --help`
+      .quiet()
+      .nothrow()
+      .text()
+      .catch(() => ""),
+  );
+
+/**
+ * The auto-compact window a harness is started with: the configured one as written, left
+ * off where its `--help` does not list the flag, and refused where it would not take it.
+ */
+export const autoCompactWindowFor = Effect.fn("Harness.autoCompactWindowFor")(function* (
+  harness: HarnessAdapter,
+  written: number | string,
+  help: (kind: string) => Effect.Effect<string>,
+) {
+  const flag = harness.autoCompactFlag;
+  if (flag === undefined) return { passed: null, leftOff: null };
+  const window = autoCompactWindowOf(String(written));
+  if ("refused" in window) return window;
+  return (yield* help(harness.kind)).includes(flag)
+    ? { passed: window.window, leftOff: null }
+    : { passed: null, leftOff: `${harness.kind} --help does not list ${flag}` };
+});
 
 /** Persona text to prepend to the first prompt when the harness has no flag for it. */
 export function personaPrefix(harness: HarnessAdapter, persona: string): string {

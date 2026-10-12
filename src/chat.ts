@@ -15,15 +15,16 @@
 // else's conversation.
 
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
-import { readConfig } from "./config";
+import { loadDefaults, readConfig } from "./config";
 import { redact } from "./conversation";
 import { NATIVE, newsPath } from "./news";
 import { selfCommand, type PluginEnv } from "./env";
-import { HARNESSES } from "./harness";
+import { autoCompactWindowFor, HARNESSES, installedHelp } from "./harness";
 import type { AgentInfo, Herdr, PaneInfo } from "./herdr";
 import { ensureLockDir, withLock } from "./lock";
 import { reason, shellQuote } from "./naming";
 import { isString, type JsonObject } from "./schema";
+import type { AutoCompactWindow } from "./settings";
 import { herdDir, herdOf } from "./steering";
 import { nowIso } from "./time";
 import { TOOLS } from "./tools";
@@ -172,7 +173,12 @@ export function chatArgs(
   harness: ChatHarness,
   sessionId: string,
   files: LaunchFiles,
+  /** Null where the harness is started without one. */
+  autoCompactWindow: AutoCompactWindow | null,
 ): ReadonlyArray<string> {
+  const flag = HARNESSES[harness]?.autoCompactFlag;
+  const window =
+    flag === undefined || autoCompactWindow === null ? [] : [flag, String(autoCompactWindow)];
   return harness === "claude"
     ? [
         // Never `--continue`: "the most recent conversation in this directory" is how a
@@ -190,6 +196,7 @@ export function chatArgs(
         "opus",
         "--effort",
         "medium",
+        ...window,
       ]
     : [
         "--session-id",
@@ -598,6 +605,8 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
    * would otherwise name the probe rather than Collie.
    */
   self: ReadonlyArray<string> = selfCommand(),
+  /** A harness's `--help`, by its kind; the installed one's where left out. */
+  help: (kind: string) => Effect.Effect<string> = installedHelp,
 ) {
   const file = yield* chatPath(env.stateDir, key);
   yield* ensureLockDir(file);
@@ -636,6 +645,23 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
         } satisfies Ensured;
       }
 
+      const adapter = HARNESSES[decision.harness];
+      const window =
+        adapter === undefined
+          ? { passed: null, leftOff: null }
+          : yield* autoCompactWindowFor(
+              adapter,
+              (yield* loadDefaults(env.userDir)).claudeAutoCompactWindow,
+              help,
+            );
+      if ("refused" in window) {
+        const why = `${window.refused} in ${env.userDir}/config.json`;
+        yield* log(`chat: ${why}`);
+        return { kind: "unavailable", harness: decision.harness, why } satisfies Ensured;
+      }
+      if (window.leftOff !== null)
+        yield* log(`chat: started without an auto-compact window: ${window.leftOff}`);
+
       // Which Collie both adapters read. One object, given to both: Claude's server and
       // Pi's extension are fresh processes with none of herdr's environment, and giving
       // them different answers here is two conversations about two different Herds — Pi
@@ -665,7 +691,7 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
 
       const crypto = yield* Crypto.Crypto;
       const paneId = home.chatPaneId ?? "";
-      const kind = HARNESSES[decision.harness]?.kind ?? decision.harness;
+      const kind = adapter?.kind ?? decision.harness;
       const start = Effect.fn("Chat.start")(function* (sessionId: string) {
         // A fresh name every attempt, never derived from the session: herdr keeps a name
         // until the process holding it has gone, so a relaunch under the same name was
@@ -676,7 +702,7 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
             name: agent,
             kind,
             paneId,
-            args: [...chatArgs(decision.harness, sessionId, files)],
+            args: [...chatArgs(decision.harness, sessionId, files, window.passed)],
           })
           .pipe(
             Effect.as(null),
