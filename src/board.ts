@@ -72,9 +72,7 @@ export const STEP_GLYPH_FOR: Readonly<Record<StepState, string>> = {
 };
 
 /**
- * A question put to the human, as every board renders one: the menu of a Choice, the
- * free text of an ask, or the list a gate holds work against. The shape the rows and the
- * drawer both draw, wherever the question came from.
+ * A question put to the human: the menu of a Choice or the free text of an ask.
  */
 export interface PendingChoice {
   id: string;
@@ -84,8 +82,6 @@ export interface PendingChoice {
   header: string;
   footer: string;
   items: readonly PickItem[];
-  /** A gate's list: the verifications this Run would be held to. */
-  verifications?: readonly string[];
 }
 
 const LANDED_STATES: ReadonlySet<MrState> = new Set(["merged", "on-stage", "in-prod"]);

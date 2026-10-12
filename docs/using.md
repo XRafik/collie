@@ -989,8 +989,9 @@ dimmed, marked "as of", until each Machine's connection is live; a board saved t
 machine herdr no longer lists is not shown.
 
 Every Decision and action the TUI board has is on Desktop's cards, and goes to the Machine
-the card is on. A question is answered with its options, or typed into where it has none; and a proposal is read in a
-drawer whose Confirm stays off until all of it has been on screen, then sent with its id
+the card is on. A question is answered with its options, or typed into where it has none;
+and a proposal is read in a drawer whose Confirm stays off until all of it has been on
+screen, then sent with its id
 and content hash. Each card's `⋯` menu offers what the TUI menu does, by the same rules —
 Steer…, the Run's offers (asked of its host when opened, with a field for each argument),
 Resume, Follow-up, Hold or Release, Stop, and Mark merged, abandoned or superseded — and

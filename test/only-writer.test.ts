@@ -395,10 +395,23 @@ test(
             () => client.run({ runId }),
             (view) => (view?.parked ?? "") !== "" && view?.status.status === "suspended",
           );
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(`${world.project}/.collie`, { recursive: true });
+          yield* fs.writeFileString(
+            `${world.project}/.collie/verify.json`,
+            '[{"name":"true","executable":"true","argv":[],"cwd":"worktree"}]',
+          );
           const answered = yield* client
             .answer({ runId, decision: "evidence-gate", value: "approve", request: "g-1" })
             .pipe(Effect.flip);
-          expect(answered._tag).toBe("HostRefused");
+          expect(answered).toMatchObject({
+            _tag: "HostRefused",
+            reason: `run "${runId}" is not waiting on a decision called "evidence-gate"`,
+          });
+          expect((yield* client.run({ runId }))?.status.status).toBe("suspended");
+          expect(
+            (yield* readAudit(runDir(world.state, runId))).map((one) => one.operation),
+          ).not.toContain("grant");
 
           yield* client.grant({
             runId,
@@ -416,6 +429,44 @@ test(
           yield* stopHost(world.state);
         }).pipe(Effect.orDie),
       ["gated.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a conversation can take every pending item and settle only the ones it delivered",
+  () =>
+    proves(
+      "collie-writer-news-keys-",
+      (world) =>
+        Effect.gen(function* () {
+          const file = yield* newsPath(world.state, "some-herd");
+          yield* appendNews(file, {
+            key: "r1:ended:failed",
+            run: "r1",
+            text: "r1 failed.",
+            significance: "consequential",
+          });
+          yield* appendNews(file, {
+            key: "r2:asking:x",
+            run: "r2",
+            text: "r2 asks.",
+            significance: "decision",
+          });
+          const client = yield* connect(world.state);
+          yield* client.declare({ frontDoor: "chat" });
+          const asked = { herd: "some-herd", conversation: "flock@pc", as: "read" as const };
+          const peeked = yield* client.news({ ...asked, request: "k-1", keys: [] });
+          expect(peeked.items.map(({ key, significance }) => [key, significance])).toEqual([
+            ["r1:ended:failed", "consequential"],
+            ["r2:asking:x", "decision"],
+          ]);
+          yield* client.news({ ...asked, request: "k-2", keys: ["r2:asking:x"] });
+          const left = yield* client.news({ ...asked, request: "k-3", keys: [] });
+          yield* stopHost(world.state);
+          expect(left.items.map(({ key }) => key)).toEqual(["r1:ended:failed"]);
+        }),
+      [],
     ),
   120_000,
 );

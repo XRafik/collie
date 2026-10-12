@@ -1782,6 +1782,8 @@ Version 2 changed two meanings: a `chat` channel's repeated `declare` replaces t
 speaks with rather than being ignored, and `news` with `keys` settles only those. A version
 1 client repeats no declaration and sends no `keys`, so it is still served as before.
 Desktop's Flock chat writes through no host older than version 2, and says so.
+Version 3 removes the `gate` Decision. A version 2 client is still served because it never
+receives one.
 
 `discover` and `start` name the project asking, because one host serves the machine and a
 project's own `.collie/workflows` is its own: two projects can run different implementations

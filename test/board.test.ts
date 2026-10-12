@@ -1202,8 +1202,12 @@ test("a fan-out started from a plan's end menu lists every repository its plan n
   ));
 
 /** The note a Run parked at the evidence gate before ADR-0055 still carries. */
-const OLD_GATE =
-  "nothing is approved for Collie to run, so no command can prove this Run. Grant it one with `collie run intent verification r-api --name <name> -- <command>` and `collie run resume r-api`";
+const oldGate = (run: string) =>
+  "nothing is approved for Collie to run, so no command can prove this Run. " +
+  `Grant it one with \`collie run intent verification ${run} --name <name> -- <command>\` ` +
+  `and \`collie run resume ${run}\`; for Runs started later, add .collie/verify.json, ` +
+  "or `collie run intent remember <run>` once a Run has them, for that repository's later Runs, " +
+  "or verify.json in your Collie config — a Run reads that file only when it starts";
 
 test("a Repo run parked by the old evidence gate puts no Decision on its fan-out's card", () =>
   runEffect(
@@ -1223,7 +1227,7 @@ test("a Repo run parked by the old evidence gate puts no Decision on its fan-out
         repo: "api",
         state: "waiting",
         cwd: `${root}/api`,
-        parked: OLD_GATE,
+        parked: oldGate("r-api"),
       });
 
       const [view] = yield* board(env, [api, parent]);
@@ -1318,7 +1322,13 @@ test("a Run parked by the old evidence gate is no Decision, whatever its checkou
         `${cwd}/.collie/verify.json`,
         '[{"name":"test","executable":"bun","argv":["test"],"cwd":"worktree"}]',
       );
-      const run = yield* madeRun(dir, { task: "task-1", state: "waiting", cwd, parked: OLD_GATE });
+      const run = yield* madeRun(dir, {
+        task: "task-1",
+        state: "waiting",
+        id: "r-single",
+        cwd,
+        parked: oldGate("r-single"),
+      });
 
       const [view] = yield* board(env, [run]);
 
