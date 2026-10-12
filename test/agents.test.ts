@@ -45,6 +45,7 @@ import { agentName, shellQuote } from "../src/naming";
 import { controlDir, type CompactionPorts } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
+import { HARNESSES } from "../src/harness";
 
 let rig: Rig;
 let dir: string;
@@ -95,6 +96,8 @@ const body = work.toLayer((payload) =>
   }).pipe(asRun(payload)),
 );
 
+const CLAUDE_HELP = "  --autocompact <auto|tokens>           Auto-compact window size";
+
 const hostOf = (): AgentHost => ({
   dir,
   env: rig.pluginEnv(),
@@ -105,6 +108,7 @@ const hostOf = (): AgentHost => ({
   compactAtTokens: 0,
   pollMs: 20,
   collectMs: 400,
+  help: () => Effect.succeed(CLAUDE_HELP),
 });
 
 /** Every wait in here is on a clock that moves many times faster than the wall's. */
@@ -1414,6 +1418,130 @@ onMachineWith("claude")(
     ),
   60_000,
 );
+
+/** The auto-compact window the agent was started with, as the launch passed it. */
+const windowOf = (args: ReadonlyArray<string>) =>
+  args.includes("--autocompact") ? args[args.indexOf("--autocompact") + 1] : undefined;
+
+const configured = (json: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const userDir = rig.pluginEnv().userDir;
+    yield* fs.makeDirectory(userDir, { recursive: true });
+    yield* fs.writeFileString(`${userDir}/config.json`, json);
+  });
+
+test("a Claude Code agent is started with a 400000 auto-compact window when none is set, and the log says so", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      const args = launchArgs(yield* rig.calls());
+      expect(args.slice(-2)).toEqual(["--autocompact", "400000"]);
+      expect(yield* read(`${dir}/agents/r1/agents.log`)).toContain(
+        "permissions auto, auto-compact window 400000",
+      );
+    }),
+  ));
+
+onMachineWith("claude")(
+  "the compaction controls' arguments come after the auto-compact window",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+        yield* session(started("r1"), { compactAtTokens: 300_000 });
+        const args = launchArgs(yield* rig.calls());
+        expect(args.indexOf("--autocompact")).toBeLessThan(args.indexOf("--settings"));
+      }),
+    ),
+  60_000,
+);
+
+test("a window written to the config between two launches reaches the second, on the same host", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      yield* session(
+        Effect.gen(function* () {
+          yield* started("r1");
+          yield* configured(`{ "claude_auto_compact_window": 500000 }`);
+          yield* started("r2");
+        }),
+      );
+
+      const windows = (yield* rig.calls())
+        .filter((call) => (call.argv ?? [])[1] === "start")
+        .map((call) => windowOf(call.argv ?? []));
+      expect(windows).toEqual(["400000", "500000"]);
+    }),
+  ));
+
+test("auto in the config is passed as auto", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* configured(`{ "claude_auto_compact_window": "auto" }`);
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      expect(windowOf(launchArgs(yield* rig.calls()))).toBe("auto");
+    }),
+  ));
+
+test("Codex, OpenCode and Pi are given no auto-compact window", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const asked: string[] = [];
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"), {
+        harness: "codex",
+        model: "default",
+        help: (kind) => Effect.sync(() => asked.push(kind)).pipe(Effect.as(CLAUDE_HELP)),
+      });
+
+      expect(launchArgs(yield* rig.calls())).not.toContain("--autocompact");
+      expect(asked).toEqual([]);
+      for (const harness of ["codex", "opencode", "pi"])
+        expect(HARNESSES[harness]!.autoCompactFlag).toBeUndefined();
+    }),
+  ));
+
+test("a claude whose help does not list --autocompact is started without it, and the log says why", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      const result = yield* session(started("r1"), {
+        help: () => Effect.succeed("  --model <model>"),
+      });
+
+      expect(result._tag).toBe("Success");
+      expect(launchArgs(yield* rig.calls())).not.toContain("--autocompact");
+      expect(yield* read(`${dir}/agents/r1/agents.log`)).toContain(
+        "started without an auto-compact window: claude --help does not list --autocompact",
+      );
+    }),
+  ));
+
+test("a window Claude Code would not take, hand-written into the config, stops the launch and opens no tab", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* configured(`{ "claude_auto_compact_window": 50000 }`);
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* interrupted("r1", suspended("r1"));
+
+      expect(yield* statusNow("r1")).toBe("suspended");
+      const why = yield* read(controlPath(dir, PARKED, "r1"));
+      expect(why).toContain("claude_auto_compact_window");
+      expect(why).toContain("50000");
+      const cmds = yield* rig.cmds();
+      expect(cmds).not.toContain("tab create");
+      expect(cmds).not.toContain("agent start");
+    }),
+  ));
 
 test("an agent is given longer than herdr's default to be ready in a checkout it has never opened", () =>
   runEffect(

@@ -45,7 +45,15 @@ import {
 import { COMPACTION_PORTS, ranOutSince, submittedDelivery } from "./compactors";
 import { kindForRole } from "./cards";
 import { Oversight } from "./oversight";
-import { FALLBACK_DEFAULTS, loadDefaults, readConfig, type Defaults } from "./config";
+import {
+  autoCompactWindowAsWritten,
+  FALLBACK_DEFAULTS,
+  loadDefaults,
+  readConfig,
+  type Defaults,
+} from "./config";
+import { autoCompactWindowOf } from "./settings";
+import type { YamlMap } from "./yaml";
 import { RanOn } from "./board-model";
 import * as dispatch from "./dispatcher";
 import type * as Types from "effect/Types";
@@ -995,6 +1003,8 @@ export interface AgentHost {
   readonly patience?: dispatch.Patience;
   /** Each harness's compaction controls; the shipped ones where none are given. */
   readonly ports?: CompactionPorts;
+  /** A harness's `--help`, by its kind; the installed one's where left out. */
+  readonly help?: (kind: string) => Effect.Effect<string>;
 }
 
 type AgentServices = FileSystem.FileSystem | Path.Path | BunServices;
@@ -1313,6 +1323,29 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     if (message !== null) yield* log(runId, `trust ${adapter.id}: ${message}`);
   });
 
+  /**
+   * The auto-compact window this harness is started with, or why none. Parked on a window
+   * it would not take: replaced by the default, a window meant earlier would come later.
+   */
+  const autoCompactWindowFor = Effect.fn("Agents.autoCompactWindowFor")(function* (
+    adapter: HarnessAdapter,
+    written: number | string,
+    operation: string,
+  ) {
+    const flag = adapter.autoCompactFlag;
+    if (flag === undefined) return { passed: null, leftOff: null };
+    const window = autoCompactWindowOf(String(written));
+    if ("refused" in window)
+      return yield* new AgentParked({
+        operation,
+        reason: `${window.refused} in ${host.env.userDir}/config.json: fix it, then resume this Run`,
+      });
+    const help = yield* (host.help ?? installedHelp)(adapter.kind);
+    return help.includes(flag)
+      ? { passed: window.window, leftOff: null }
+      : { passed: null, leftOff: `${adapter.kind} --help does not list ${flag}` };
+  });
+
   /** A pane, an agent in it, and the registry entry that makes it addressable. */
   const start = Effect.fn("Agents.start")(function* (
     ask: AgentAsk,
@@ -1323,10 +1356,10 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     const wanted = ask.permissions ?? undefined;
     // Read at each start rather than kept from the host's: a host outlives the
     // Settings change that flips this, and every agent after it has to see the change.
-    const written = yield* readConfig(host.env.userDir).pipe(
-      Effect.map((config) => permissionsAsWritten(config.permissions)),
-      Effect.orElseSucceed(() => undefined),
+    const config = yield* readConfig(host.env.userDir).pipe(
+      Effect.orElseSucceed((): YamlMap => ({})),
     );
+    const written = permissionsAsWritten(config.permissions);
     const asked = isPermissionMode(wanted)
       ? wanted
       : isPermissionMode(written)
@@ -1337,6 +1370,13 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         ? yield* adapter.bypassForbidden(host.env)
         : false;
     const permissions = forbidden ? "auto" : asked;
+    const window = yield* autoCompactWindowFor(
+      adapter,
+      autoCompactWindowAsWritten(config.claude_auto_compact_window),
+      ask.operation,
+    );
+    if (window.leftOff !== null)
+      yield* log(ask.runId, `${agent}: started without an auto-compact window: ${window.leftOff}`);
     yield* ensureTrusted(ask.runId, adapter, ask.cwd);
     const persona = `${dirFor(ask.runId)}/${stemOf(ask)}.persona.md`;
     yield* write(persona, `${yield* personaOf(ask.persona ?? ask.role)}\n`);
@@ -1370,6 +1410,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
                 persona,
                 ask.effort ?? undefined,
                 permissions,
+                window.passed ?? undefined,
               ),
               ...controls,
             ],
@@ -1382,7 +1423,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           );
         yield* log(
           ask.runId,
-          `${agent}: ${adapter.id} in ${tab.paneId}, permissions ${permissions}${forbidden ? `: ${adapter.id}'s managed settings forbid bypass` : ""}`,
+          `${agent}: ${adapter.id} in ${tab.paneId}, permissions ${permissions}${forbidden ? `: ${adapter.id}'s managed settings forbid bypass` : ""}${window.passed === null ? "" : `, auto-compact window ${window.passed}`}`,
         );
         const found = yield* entryFor(ask, agent, { paneId: tab.paneId, workspaceId: workspace });
         if (found.entry === null) return undefined;
@@ -2069,6 +2110,15 @@ const compactionDeps = (host: AgentHost, runId: string): CompactionDeps => ({
   waitMs: COMPACTION_WAIT_MS,
   pollMs: host.pollMs ?? DEFAULT_POLL_MS,
 });
+
+const installedHelp = (kind: string) =>
+  Effect.promise(() =>
+    Bun.$`${kind} --help`
+      .quiet()
+      .nothrow()
+      .text()
+      .catch(() => ""),
+  );
 
 const undeliverable = (cause: unknown) => ({
   ok: false as const,

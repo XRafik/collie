@@ -224,6 +224,12 @@ export const gitlabHostOf = Effect.fn("Config.gitlabHostOf")(function* (env: {
     : (yield* loadDefaults(env.userDir)).gitlabHost;
 });
 
+/** The configured window as written, kept as text where it is neither a number nor text. */
+export function autoCompactWindowAsWritten(value: YamlValue | undefined): number | string {
+  if (value === undefined) return FALLBACK_DEFAULTS.claudeAutoCompactWindow;
+  return isNumber(value) || isString(value) ? value : JSON.stringify(value);
+}
+
 export const loadDefaults = Effect.fn("Config.loadDefaults")(function* (userDir: string) {
   const raw = yield* readConfig(userDir);
   const defaults: Defaults = {
@@ -242,6 +248,7 @@ export const loadDefaults = Effect.fn("Config.loadDefaults")(function* (userDir:
     compactAtTokens: isNumber(raw.compact_at_tokens)
       ? raw.compact_at_tokens
       : FALLBACK_DEFAULTS.compactAtTokens,
+    claudeAutoCompactWindow: autoCompactWindowAsWritten(raw.claude_auto_compact_window),
     models: Option.getOrElse(Schema.decodeUnknownOption(Models)(raw.models), () => ({})),
     fallbacks: Option.getOrElse(
       Schema.decodeUnknownOption(Schema.Array(Schema.String))(raw.fallbacks),

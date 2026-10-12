@@ -4,7 +4,7 @@
 import { Effect, FileSystem, Option, Schema } from "effect";
 import type { PluginEnv } from "./env";
 import { isString } from "./schema";
-import { PERMISSION_MODES } from "./settings";
+import { type AutoCompactWindow, PERMISSION_MODES } from "./settings";
 import { claudeTrust, type Trust } from "./trust";
 import type { YamlValue } from "./yaml";
 
@@ -97,6 +97,8 @@ export interface HarnessAdapter {
    * no flag overrides. A bypass they forbid is started in auto mode instead.
    */
   bypassForbidden?(env: PluginEnv): Effect.Effect<boolean, never, FileSystem.FileSystem>;
+  /** Present when the harness takes an auto-compact window: this flag, then the window. */
+  autoCompactFlag?: string;
   /** Present when the harness asks before it will work in a directory. */
   trust?(home: string, backupDir: string): Trust;
   /**
@@ -137,6 +139,7 @@ export const HARNESSES: Harnesses = {
       bypass: ["--permission-mode", "bypassPermissions"],
     },
     bypassForbidden: (env) => claudeForbidsBypass(env.claudeManagedDir),
+    autoCompactFlag: "--autocompact",
     trust: claudeTrust,
     models: ["fable", "opus", "sonnet", "haiku", "opusplan"],
     modelPattern: /^claude-[a-z0-9.-]+$/,
@@ -211,6 +214,7 @@ export function startArgs(
   personaFile: string,
   effort?: string,
   permissions: PermissionMode = "auto",
+  autoCompactWindow?: AutoCompactWindow,
 ): string[] {
   const selectedModel = model === DEFAULT_MODEL ? harness.defaultModel : model;
   return [
@@ -218,6 +222,9 @@ export function startArgs(
     ...(effort ? (harness.effortArgs?.(effort) ?? []) : []),
     ...(harness.personaArgs?.(personaFile) ?? []),
     ...(permissions === "harness" ? [] : (harness.permissionArgs?.[permissions] ?? [])),
+    ...(harness.autoCompactFlag && autoCompactWindow !== undefined
+      ? [harness.autoCompactFlag, String(autoCompactWindow)]
+      : []),
   ];
 }
 
