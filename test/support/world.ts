@@ -10,6 +10,7 @@ import { exec } from "./command";
 import { runEffect, suiteEnv } from "./effect";
 import { fakeHerdrCommand } from "./fake-herdr-core";
 import { fixtures, root, stopHost } from "./host";
+import { testBunfig } from "./packages";
 
 export interface World {
   /** The installation whose user directory an author saves into. */
@@ -171,6 +172,7 @@ export const proves = <A, E>(
         yield* fs.makeDirectory(made, { recursive: true }).pipe(Effect.orDie);
       }
       // A project is a checkout, which is what an agent's start from inside it names.
+      yield* fs.writeFileString(`${world.home}/.bunfig.toml`, testBunfig).pipe(Effect.orDie);
       yield* exec(["git", "init", "-q"], { cwd: world.project });
       yield* save(world.user, modules);
       const command = yield* collieCommand;

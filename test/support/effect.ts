@@ -22,6 +22,7 @@ export const suiteEnv = Config.all({
   COLLIE_HOST_STOP_GRACE: Config.String("COLLIE_HOST_STOP_GRACE").pipe(
     Config.withDefault("500 millis"),
   ),
+  BUN_INSTALL_CACHE_DIR: Config.String("BUN_INSTALL_CACHE_DIR").pipe(Config.withDefault("")),
 });
 
 /**

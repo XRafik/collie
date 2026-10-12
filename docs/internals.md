@@ -842,6 +842,14 @@ whose work waits out timers runs under `fastForward` (`test/support/effect.ts`):
 clock a fiber of its own keeps moving many times faster than the wall's, from the wall's
 now.
 
+Workflow-authoring tests still install real packages and run the real compiler. Their
+isolated homes use [Bun's cache preference](https://bun.com/docs/runtime/bunfig#installprefer)
+against `.scratch/test-packages/`, so each fixture does not refresh registry metadata.
+An uncached package is fetched normally. Installs use `copyfile`: editing an installed
+package cannot edit the cache another fixture uses. `XDG_CONFIG_HOME` is removed before
+tests load so the operator's Bun configuration cannot replace these settings. Neither
+package caching nor scheduling data caches test results.
+
 Documentation changes in the same merge request as the behavior it describes. There is no
 docs lint to catch a page that fell behind — a stale page is a defect like any other.
 

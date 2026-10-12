@@ -12,6 +12,7 @@ import type { CrashPoint } from "../../src/engine";
 import { connect, ownerOf, type HostClient } from "../../src/host";
 import { collie, type World } from "./world";
 import { suiteEnv } from "./effect";
+import { testBunfig } from "./packages";
 
 export const root = new URL("../../", import.meta.url).pathname;
 export const fixtures = `${root}test/fixtures/workflows`;
@@ -497,6 +498,7 @@ export const workspace = Effect.fn("HostTest.workspace")(function* (prefix: stri
   ]) {
     yield* fs.makeDirectory(made, { recursive: true });
   }
+  yield* fs.writeFileString(`${world.home}/.bunfig.toml`, testBunfig);
   for (const name of [
     "proof.workflow.ts",
     "plain.workflow.ts",

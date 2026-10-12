@@ -5088,6 +5088,18 @@ export const provisionToolchain: (
       `${unmerged.join(" and ")} in ${dir} is not plain JSON, so nothing was merged into it: add "effect" and "typescript" to package.json and map "collie" to ./collie.d.ts under compilerOptions.paths`,
     );
   }
+  // A successful dry run or an install omitting dev dependencies is not a toolchain.
+  const compiler = yield* fs
+    .exists(`${dir}/node_modules/typescript/lib/tsc.js`)
+    .pipe(Effect.mapError((cause) => unavailable(String(cause))));
+  const effect = yield* fs
+    .readFileString(`${dir}/node_modules/effect/package.json`)
+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(InstalledPackage)), Effect.option);
+  if (!compiler || Option.isNone(effect) || effect.value.version !== TOOLCHAIN.effect) {
+    return yield* unavailable(
+      `cannot provision the workflow toolchain in ${dir}: Bun's install settings did not install TypeScript and Effect ${TOOLCHAIN.effect}`,
+    );
+  }
 });
 
 const InstalledPackage = Schema.fromJsonString(Schema.Struct({ version: Schema.String }));
@@ -5175,14 +5187,18 @@ const runBun = (
 ): Effect.Effect<
   { readonly code: number; readonly output: string },
   string,
-  ChildProcessSpawner.ChildProcessSpawner
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "collie-bun-" });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make(process.execPath, args, {
         cwd,
-        env: { BUN_BE_BUN: "1", PATH: "/usr/bin:/bin" },
+        env: { BUN_BE_BUN: "1", PATH: "/usr/bin:/bin", TMPDIR: tmp },
+        // Registry credentials, proxy settings and package caches belong to the caller.
+        extendEnv: true,
         stdout: "pipe",
         stderr: "pipe",
       }),

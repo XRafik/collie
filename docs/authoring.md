@@ -23,6 +23,10 @@ collie run start tally --input note=hi
 `.collie/workflows/` instead — and provisions the setup to typecheck it beside the file:
 `package.json`, `tsconfig.json` and `collie.d.ts`, installed with the executable's
 own embedded Bun, so a machine with neither Bun nor Node can still compile a module. What
+it installs follows your registry, proxy, cache and Bun settings. An install that leaves
+the compiler absent or Effect on another version reports `toolchain_unavailable`, even
+if Bun itself exits successfully. The installer's temporary files are removed when it ends.
+What
 the setup needs is merged into a `package.json` or `tsconfig.json` you already have — the
 `typescript` it lacks, `collie` mapped to `collie.d.ts`, and the `effect` the host runs,
 which replaces any other version of it — and nothing else of yours is replaced. With no network on a first use the answer is
