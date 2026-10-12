@@ -299,6 +299,96 @@ test(
 );
 
 test(
+  "a child that is work of its own is a Task of its own, in a workspace opened on its checkout",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const task = yield* aTask;
+        yield* rig.queueOutputs([{ verdict: "clean" }, { verdict: "clean" }]);
+        const views = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [spins] = yield* loaded(registry, [
+              `${fixtures}/spins-off.workflow.ts`,
+              `${fixtures}/builds.workflow.ts`,
+            ]);
+            const started = yield* start(spins!, { request: "r1", task: task.id });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            const parent = yield* finished(started.success.runId);
+            const child = yield* registry.view(`${started.success.runId}.build`);
+            return { parent, child };
+          }),
+        );
+
+        const worktree = worktreeOf("add-a-picker");
+        expect(views.parent).toMatchObject({ task: "task-1", status: { status: "complete" } });
+        expect(views.child).toMatchObject({ cwd: worktree, parent: views.parent?.runId });
+        expect(views.child?.task).not.toBe("task-1");
+        const own = yield* readTask(env().stateDir, views.child?.task ?? "");
+        expect(own?.cwd).toBe(worktree);
+        expect(own?.label).toBe("Project | Add a picker");
+        expect(own?.workspace).not.toBe("wT");
+        const created = (yield* rig.calls()).filter((call) => call.cmd === "workspace create");
+        expect(created.map((call) => call.argv)).toEqual([
+          expect.arrayContaining(["--cwd", worktree, "--no-focus"]),
+        ]);
+        expect(tabs(yield* rig.calls())).toEqual([{ workspace: "wT", cwd: rig.projectDir }]);
+        const agents = (yield* rig.calls()).filter((call) => call.cmd === "agent start");
+        expect(agents.at(-1)?.argv).toEqual(
+          expect.arrayContaining(["--pane", `${own?.workspace}-p1`]),
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a child that is work of its own joins the open Task working its target branch",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.startSocket();
+        const parentTask = yield* aTask;
+        yield* rig.queueOutputs([{ verdict: "clean" }, { verdict: "clean" }]);
+        const views = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [builds, spins] = yield* loaded(registry, [
+              `${fixtures}/builds.workflow.ts`,
+              `${fixtures}/spins-off.workflow.ts`,
+              `${fixtures}/targeted.workflow.ts`,
+            ]);
+            const built = yield* start(builds!, {
+              request: "build",
+              text: { work: "Add a picker" },
+              taskLabel: "Project | Picker",
+            });
+            if (built._tag === "Failure") return yield* Effect.die(built.failure);
+            const build = yield* finished(built.success.runId);
+            const spun = yield* start(spins!, {
+              request: "parent",
+              task: parentTask.id,
+              text: { target: `branch:master...${LOGIN}/add-a-picker` },
+            });
+            if (spun._tag === "Failure") return yield* Effect.die(spun.failure);
+            const parent = yield* finished(spun.success.runId);
+            return { build, parent, child: yield* registry.view(`${spun.success.runId}.build`) };
+          }),
+        );
+        expect(views.parent?.status.status).toBe("complete");
+        expect(views.child).toMatchObject({
+          task: views.build?.task,
+          parent: views.parent?.runId,
+          status: { status: "complete" },
+        });
+        expect(views.child?.task).not.toBe(parentTask.id);
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "workspace create")).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a workflow that changes the repository, started from a directory that is not one, is refused naming it",
   () =>
     runEffect(

@@ -245,7 +245,9 @@ of a label — two Tasks may share a project prefix, and a workspace renamed by 
 still its Task's. A Run started fresh is a new Task, unless it is about a branch an open
 Task's checkout has out — the branch it is placed on, or the one its diff target names —
 and then it is that Task's: one workspace per Task. Anything else joins a Task only by an
-explicit **Continue task**.
+explicit **Continue task**. A child Run is its parent's Task's, unless it was started as work of
+its own (`ownTask`): then it is placed as a fresh start is, and is still its parent's
+child.
 
 **Task workspace** — The herdr workspace a Task's Runs, tabs and agents live in. One per
 Task, made when its first Run is admitted, on the checkout that Run is given. It is never
@@ -460,7 +462,7 @@ takes, and where its output is being written (ADR-0042).
 
 **Choice** — A question a Run asks the human with `ask`, from a closed set of options: what the answer does next — start another Workflow, prompt an agent, post a review, stop — is the Workflow's own code. An answer outside the options, or a second answer to one already answered, is refused and starts nothing.
 
-**Chain** — Starting another Workflow from a Run, with `child`: typed input decoded against the child's schema before it is admitted, a stable invocation name, and the child recorded as this Run's. Replaying the parent reuses the child it already has. A fan-out chains several at once, one per repository a plan touches; see Repo run.
+**Chain** — Starting another Workflow from a Run, with `child`: typed input decoded against the child's schema before it is admitted, a stable invocation name, and the child recorded as this Run's. Replaying the parent reuses the child it already has. A child started as work of its own is a Task of its own, and still this Run's. A fan-out chains several at once, one per repository a plan touches; see Repo run.
 
 **Plan directory** — The `plan/` folder inside a Run: SPEC.md and the ticket files. It is the hand-off from `plan` to `implement` and never lives in the repository. Every ticket names the repository it changes with a `Repo:` line: a path under the Run's root, `.` for the root itself, never absolute and never containing `..`.
 

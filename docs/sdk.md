@@ -671,6 +671,12 @@ purpose: the file decides, and no lookup happens at all.
   it shows up in `run list` beside you, and interrupting you reaches it. It does not belong
   to whatever client asked for your Run — that can go, and neither of you notices.
 - **It prefers the agents you do** where you start it, unless its options say otherwise.
+- **`ownTask: true` makes it work of its own.** It is admitted as a fresh start is: its
+  Task's name is inferred from its work, it joins the open Task already working its
+  branch, or a Task workspace is opened on its checkout. So it has its own card and is
+  released on its own merge request. It is still yours: its parent is your Run, you wait
+  on it, a stop of yours reaches it, a replay reuses it, and it is in your Lineage. Your
+  card does not list it.
 
 How many children there are, and in what order, is TypeScript:
 

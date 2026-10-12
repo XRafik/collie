@@ -1816,6 +1816,8 @@ const own = (dir: string) =>
                       locate: locateIn(env),
                       userDir: env.userDir,
                       crashAt,
+                      namesTasks: true,
+                      placing: { herdr, env: { ...env, stateDir: dir } },
                     }),
                   ),
                 ),

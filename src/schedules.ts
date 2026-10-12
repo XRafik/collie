@@ -38,7 +38,7 @@ import {
 import type { PluginEnv } from "./env";
 import { Herdr } from "./herdr";
 import { reason } from "./naming";
-import { freshTaskLabel } from "./operations";
+import { freshTaskLabel } from "./tasknames";
 import { projectsRoot } from "./projects";
 import { epochMs } from "./time";
 import type { Voice } from "./proposals";

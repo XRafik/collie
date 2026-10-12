@@ -91,6 +91,7 @@ import {
 import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
 import type { CheckoutKind, InputStrategy } from "./definitions";
+import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { noteVerification } from "./metrics";
 import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
@@ -113,6 +114,7 @@ import { budgetPath, herdOf } from "./steering";
 import type { JudgementDeps } from "./drift";
 import { finishedOnRecord, type Card } from "./cards";
 import { reason } from "./naming";
+import { freshTaskLabel } from "./tasknames";
 import { attachmentRefusal, attachmentsDir, copyInto, listAttachments } from "./attachments";
 import {
   fromWorkSource,
@@ -576,6 +578,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly input: Readonly<Record<string, unknown>>;
     /** The host's own options for the child; only the host's own names are taken. */
     readonly options?: Readonly<Record<string, string>>;
+    /** A Task of its own, with its own workspace and card, rather than the parent's. */
+    readonly ownTask?: boolean;
   }
 
   /** A child as the host admitted it; fresh is false for one already admitted. */
@@ -3467,6 +3471,8 @@ export interface RegistryOptions {
   readonly userDir?: string;
   /** The herdr checkouts and Task workspaces are made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
+  /** Whether a child's own Task is named by the namer's model, or by the stand-in. */
+  readonly namesTasks?: boolean;
 }
 
 export const registryLayer = (
@@ -3986,6 +3992,25 @@ const makeRegistry: (
     )({ runId, input: settled.input }).pipe(
       Effect.mapError((cause) => refused(`${REFUSED_INPUT}: ${cause.message}`)),
     );
+    const launch = Object.entries(generation.hints).find(([, strategy]) =>
+      EXCLUSIVE_STRATEGIES.includes(strategy),
+    )?.[0];
+    const named = launch === undefined ? "" : settled.input[launch];
+    // An admitted child's saved placement also covers replay and crash recovery.
+    const taskLabel =
+      ask.ownTask === true && (yield* store.run(runId)) === null
+        ? yield* freshTaskLabel(
+            { ...placing.env, cwd: from },
+            {
+              workflow: generation.id,
+              named: isText(named) ? named : "",
+            },
+            options?.namesTasks === true,
+          ).pipe(
+            Effect.provideContext(bun),
+            Effect.mapError((cause) => refused(`no Task could be named: ${cause.message}`)),
+          )
+        : null;
     const claimed = yield* claimAndPlace({
       // The invocation is the claim, so replaying the parent admits nothing new and
       // changing what an invocation is given is refused rather than run twice.
@@ -3996,10 +4021,10 @@ const makeRegistry: (
       input: settled.input,
       provenance: settled.provenance,
       options: launchOptions(generation, asked),
-      placing: encodePlacing({ from, taskLabel: null, root }),
+      placing: encodePlacing({ from, taskLabel, root }),
       generation: generation.name,
       execution: yield* generation.registration.workflow.executionId(payload),
-      task: parent.task,
+      task: ask.ownTask === true ? null : parent.task,
       parent: ask.runId,
     }).pipe(Effect.mapError((failure) => refused(failure.reason)));
     // A child is a Run, so what it may verify is frozen with it rather than read when

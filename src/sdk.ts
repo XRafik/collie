@@ -736,6 +736,8 @@ export interface ChildAsk {
    * a parent cannot put a field into a child's payload that its author never declared.
    */
   readonly options?: Readonly<Record<string, string>>;
+  /** A Task of its own, with its own workspace and card, rather than the parent's. */
+  readonly ownTask?: boolean;
 }
 
 /** A child as the host admitted it. `fresh` is false for an invocation already admitted. */
