@@ -110,7 +110,7 @@ export function mrDetails<R>(
       iid: mr.iid === undefined || mr.iid === null ? ref.iid : String(mr.iid),
       project: ref.project,
       title: mr.title ?? "",
-      state: draft ? "draft" : (mr.state ?? ""),
+      state: draft && mr.state === "opened" ? "draft" : (mr.state ?? ""),
       author: mr.author?.username ?? "",
       assignees: (mr.assignees ?? [])
         .map((one) => one.username ?? "")

@@ -94,6 +94,11 @@ for (const name of ["gitlab", "github"] as const) {
             mergedSha: MERGED,
           });
           expect(yield* read({ state: "closed" })).toMatchObject({ state: "closed" });
+          expect(yield* read({ state: "closed", draft: true })).toMatchObject({ state: "closed" });
+          expect(yield* read({ state: "merged", draft: true, mergedSha: MERGED })).toMatchObject({
+            state: "merged",
+            mergedSha: MERGED,
+          });
         }),
       ));
 

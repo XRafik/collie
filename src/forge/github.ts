@@ -125,7 +125,7 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       iid: ref.iid,
       project: ref.project,
       title: pull.title ?? "",
-      state: pull.isDraft === true ? "draft" : pull.state.toLowerCase(),
+      state: pull.isDraft === true && pull.state === "OPEN" ? "draft" : pull.state.toLowerCase(),
       author: pull.author?.login ?? "",
       assignees: (pull.assignees ?? []).map((one) => one.login ?? "").filter((name) => name !== ""),
       sourceBranch: pull.headRefName ?? "",
