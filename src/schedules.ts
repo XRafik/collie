@@ -365,33 +365,30 @@ export const schedulesLayer = (options: {
       });
 
       /**
-       * What became of an occurrence, written down, and the chain's next execution started.
-       * A chain a resume left waiting for its Run hands the Schedule's new epoch its first
-       * occurrence, with no catch-up.
+       * What became of an occurrence, written down, and which execution the chain goes on
+       * with. A chain a resume left waiting for its Run hands the Schedule's new epoch its
+       * first occurrence, with no catch-up.
        */
       const recordOccurrence = Effect.fn("Schedules.recordOccurrence")(function* (
         payload: typeof ScheduleWorkflow.payloadSchema.Type,
         occurrence: string,
         outcome: OccurrenceOutcome,
       ) {
-        const request = `schedule:${payload.name}:${occurrence}`;
-        const trail = trailOf(dir, payload.name);
-        const recorded = (yield* readAudit(trail).pipe(Effect.orElseSucceed(() => []))).some(
-          (line) => line.operation === "occurrence" && line.request === request,
-        );
-        if (!recorded)
-          yield* recordAudit(trail, {
+        yield* once(
+          trailOf(dir, payload.name),
+          {
             operation: "occurrence",
-            request,
+            request: `schedule:${payload.name}:${occurrence}`,
             origin: "schedule",
             schedule: { name: payload.name, occurrence },
             asked: { epoch: payload.epoch, due: payload.occurrence },
             result: OccurrenceOutcome,
-            value: outcome,
-          }).pipe(Effect.orDie);
+          },
+          Effect.succeed(outcome),
+        ).pipe(Effect.orDie);
         const at = yield* now;
         const run = outcome.kind === "started" ? outcome.run : null;
-        const next = yield* writing.withPermits(1)(
+        return yield* writing.withPermits(1)(
           Effect.gen(function* () {
             const record = yield* read(payload.name);
             if (record === null) return null;
@@ -410,14 +407,6 @@ export const schedulesLayer = (options: {
             return chosen === null ? null : { epoch: record.epoch, occurrence: chosen };
           }),
         );
-        if (next !== null)
-          yield* startExecution({
-            name: payload.name,
-            ...next,
-            after: next.epoch === payload.epoch ? payload.occurrence : null,
-          });
-        if (payload.after !== null)
-          yield* forgetFinished({ ...payload, occurrence: payload.after });
       });
 
       /** What the engine kept of an execution that has finished, gone. */
@@ -472,10 +461,23 @@ export const schedulesLayer = (options: {
                 Effect.catch(() => Effect.void),
                 Effect.catchDefect(() => Effect.void),
               );
-            yield* Activity.make({
+            // Decided once, so a replay starts the same execution rather than a later one.
+            const next = yield* Activity.make({
               name: "record",
+              success: Schema.NullOr(
+                Schema.Struct({ epoch: Schema.String, occurrence: Schema.String }),
+              ),
               execute: recordOccurrence(payload, woke.occurrence, outcome),
             });
+            if (next !== null)
+              yield* startExecution({
+                name: payload.name,
+                ...next,
+                after: next.epoch === payload.epoch ? payload.occurrence : null,
+              });
+            // ponytail: an execution that ends unstarted (paused, removed, superseded) has no follower to forget it; one row each.
+            if (payload.after !== null)
+              yield* forgetFinished({ ...payload, occurrence: payload.after });
           }),
         ),
         scope,
@@ -515,6 +517,9 @@ export const schedulesLayer = (options: {
               schedule: entry,
             }),
           );
+        // This request's own write, from an attempt that stopped before its receipt.
+        if (record !== null && record.epoch === request && change.change !== "pause")
+          return yield* done(record);
         if (change.change === "add") {
           if (record !== null)
             return yield* refusedInput(
@@ -581,6 +586,22 @@ export const schedulesLayer = (options: {
         return yield* done(resumed);
       });
 
+      /**
+       * The first occurrence of a Schedule resumed while its Run went, where that Run has
+       * ended and no chain was left to hand it over; null while one still may.
+       */
+      const handedOverAndLost = (record: ScheduleRecord) =>
+        Effect.gen(function* () {
+          const cron = cronOf(record);
+          if (record.running === null || cron === undefined) return null;
+          const status = yield* statusOf(record.running);
+          if (status !== "complete" && status !== "failed") return null;
+          const at = yield* now;
+          const pending = isoOf(nextOccurrence(cron, at, at));
+          yield* update(record.name, (now) => ({ ...now, pending, running: null }));
+          return pending;
+        });
+
       // Each active Schedule's waiting execution, again: its key makes this a no-op unless
       // the engine lost it.
       yield* Effect.forkScoped(
@@ -590,11 +611,13 @@ export const schedulesLayer = (options: {
             .pipe(Effect.orElseSucceed((): Array<string> => []));
           for (const name of names) {
             const record = yield* read(name);
-            if (record === null || record.paused || record.pending === null) continue;
+            if (record === null || record.paused) continue;
+            const pending = record.pending ?? (yield* handedOverAndLost(record));
+            if (pending === null) continue;
             yield* startExecution({
               name,
               epoch: record.epoch,
-              occurrence: record.pending,
+              occurrence: pending,
               after: null,
             }).pipe(
               Effect.catchCause((cause) =>

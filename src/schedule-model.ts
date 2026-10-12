@@ -111,7 +111,7 @@ export type ScheduleChange = typeof ScheduleChange.Type;
 /** What a write did, on which Machine; `schedule` is null once it is removed. */
 export const ScheduleChanged = Schema.Struct({
   machine: ScheduleMachine,
-  change: Schema.String,
+  change: Schema.Literals(["add", "pause", "resume", "remove"]),
   name: Schema.String,
   schedule: Schema.NullOr(ScheduleEntry),
 });

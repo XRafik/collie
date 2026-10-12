@@ -59,7 +59,7 @@ export const changedLine = (changed: ScheduleChanged) => {
       return `Paused schedule ${changed.name} on ${on}.`;
     case "resume":
       return `Resumed schedule ${changed.name} on ${on}; next ${entry?.next ?? "when its last Run ends"}.`;
-    default:
+    case "remove":
       return `Removed schedule ${changed.name} from ${on}; the Runs it started stay.`;
   }
 };
@@ -182,13 +182,13 @@ const scheduleAdd = Command.make(
             ]),
           ]);
           // The shared `--workspace` names the checkout: a path, a workspace, or the Projects root.
-          const named = Option.getOrUndefined(global.workspace) ?? given.workspace ?? "";
+          const where = Option.getOrUndefined(global.workspace) ?? given.workspace ?? "";
           const inputs = Object.fromEntries(
             Object.entries(given).filter(([key]) => key !== "workspace"),
           );
           const checks = givenVerifications(verify);
           if (!checks.ok) return refused(err("invalid_input", checks.error));
-          const checkout = yield* checkoutOf(env, named);
+          const checkout = yield* checkoutOf(env, where);
           if ("error" in checkout) return refused(checkout.error);
           const at = checkout.path === SCHEDULE_PROJECTS_ROOT ? null : checkout.path;
           const saved = yield* moduleFor({ ...env, cwd: at ?? env.cwd }, workflow);

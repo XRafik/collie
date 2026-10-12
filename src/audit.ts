@@ -98,6 +98,7 @@ export const once = Effect.fn("Audit.once")(function* <A, I extends Schema.Json,
     readonly request: string;
     readonly origin: FrontDoor;
     readonly from?: Where | undefined;
+    readonly schedule?: ScheduledBy | undefined;
     readonly reason?: string | undefined;
     readonly asked?: Schema.Json | undefined;
     readonly result: Schema.Codec<A, I>;

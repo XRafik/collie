@@ -187,7 +187,7 @@ test(
 
 test("a command's text names the Machine it acted on", () => {
   const machine = { installation: "inst-1", hostname: "vm" };
-  for (const change of ["add", "pause", "resume", "remove"])
+  for (const change of ["add", "pause", "resume", "remove"] as const)
     expect(changedLine({ machine, change, name: "daily", schedule: null })).toContain(
       "vm (inst-1)",
     );
