@@ -9,7 +9,8 @@ import type { BunServices } from "@effect/platform-bun/BunServices";
 import { exec } from "./command";
 import { runEffect, suiteEnv } from "./effect";
 import { fakeHerdrCommand } from "./fake-herdr-core";
-import { fixtures, root, stopHost } from "./host";
+import { fixtures, root, stopHost, until } from "./host";
+import { marked } from "./sweep";
 import { testBunfig } from "./packages";
 
 export interface World {
@@ -150,6 +151,7 @@ export const proves = <A, E>(
   runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const marker = yield* Config.String("COLLIE_TEST_ROOT").pipe(Config.withDefault(""));
       const dir = yield* fs.makeTempDirectoryScoped({ prefix });
       const world: World = {
         install: `${dir}/install`,
@@ -160,7 +162,24 @@ export const proves = <A, E>(
         project: `${dir}/project`,
       };
       // Before the directory goes, or a host left running can write it back.
-      yield* Effect.addFinalizer(() => Effect.ignore(stopHost(world.state)));
+      yield* Effect.addFinalizer(() =>
+        stopHost(world.state).pipe(
+          // A notification can outlive the host that started it. Let this world's commands
+          // finish before removing their log directory; another world's processes are left alone.
+          Effect.andThen(
+            marker === ""
+              ? Effect.void
+              : until(
+                  () =>
+                    Effect.sync(() =>
+                      marked(marker, { FAKE_HERDR_LOG: `${dir}/herdr-calls.jsonl` }),
+                    ),
+                  (children) => children.length === 0,
+                ),
+          ),
+          Effect.ignore,
+        ),
+      );
       for (const made of [
         world.user,
         `${world.install}/workflows`,

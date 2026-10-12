@@ -10,6 +10,7 @@ import { Config, Effect, FileSystem, Option, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { CrashPoint } from "../../src/engine";
 import { connect, ownerOf, type HostClient } from "../../src/host";
+import { holderLives, type LockHolder } from "../../src/lock";
 import { collie, type World } from "./world";
 import { suiteEnv } from "./effect";
 import { testBunfig } from "./packages";
@@ -440,6 +441,8 @@ export const openHost = Effect.fn("HostTest.open")(function* (
       ),
     stop: child.kill({ killSignal: "SIGTERM" }).pipe(
       Effect.ignore,
+      Effect.andThen(child.exitCode),
+      Effect.orDie,
       Effect.andThen(
         until(
           () => ownerOf(state),
@@ -460,23 +463,25 @@ export const openHost = Effect.fn("HostTest.open")(function* (
 export const stopHost = Effect.fn("HostTest.stopHost")(function* (dir: string) {
   // A host that lost the race to start may still be booting, and takes the lock once its
   // owner has gone: whoever holds it is stopped, once each, until nobody does.
-  const stopped = new Set<number>();
+  const stopped = new Map<number, LockHolder>();
   yield* until(
     () =>
-      ownerOf(dir).pipe(
-        Effect.tap((owner) =>
-          Effect.sync(() => {
-            if (owner === null || stopped.has(owner.pid)) return;
-            stopped.add(owner.pid);
-            try {
-              process.kill(owner.pid, "SIGTERM");
-            } catch {
-              // Already gone, which is the state this is trying to reach.
-            }
-          }),
-        ),
-      ),
-    (holder) => holder === null,
+      Effect.gen(function* () {
+        const owner = yield* ownerOf(dir);
+        if (owner !== null && !stopped.has(owner.pid)) {
+          stopped.set(owner.pid, owner);
+          try {
+            process.kill(owner.pid, "SIGTERM");
+          } catch {
+            // Already gone, which is the state this is trying to reach.
+          }
+        }
+        // Giving back the lock can precede the last write. The directory cannot go until
+        // every process we stopped has exited, or that write can recreate the fixture.
+        const live = yield* Effect.forEach(stopped.values(), holderLives);
+        return owner === null && live.every((alive) => !alive);
+      }),
+    Boolean,
   );
 });
 

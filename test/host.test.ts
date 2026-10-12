@@ -20,7 +20,12 @@ const fixtures = `${root}test/fixtures/workflows`;
 
 /** The command a client starts a host with, as `connect` reads it. */
 const starts = (command: ReadonlyArray<string>) =>
-  ConfigProvider.layer(ConfigProvider.fromUnknown({ COLLIE_HOST: JSON.stringify(command) }));
+  ConfigProvider.layer(
+    ConfigProvider.fromUnknown({
+      COLLIE_HOST: JSON.stringify(command),
+      COLLIE_HOST_STOP_GRACE: Bun.env.COLLIE_HOST_STOP_GRACE,
+    }),
+  );
 
 /**
  * The compiled binary when one is named, and the sources otherwise, so the host under

@@ -820,23 +820,29 @@ resolves the default state directory under the real home. A host a test starts i
 that environment. A test that needs herdr sets up the fake under `test/support/`;
 `test/isolation.test.ts` fails if the live socket or home gets through.
 
-`bun run test` (`tools/test.ts`) first compiles `collie` the way a release does, and the
-fake herdr the same way, into `.scratch/test-bin/`, and runs the suite with
+`bun run test` (`tools/test.ts`) takes the per-user suite lock, then compiles `collie` the
+way a release does, and the fake herdr the same way, into `.scratch/test-bin/`, and runs the suite with
 `COLLIE_TEST_BINARY` and `COLLIE_TEST_FAKE_HERDR` naming them: the suite starts well over a
 thousand hosts, commands and herdr calls, and a bytecode build starts in a fraction of the
 time the sources take to load. A fixture's own Config provider carries that binary choice,
 the process marker, the watched pid and the test's stop grace into its commands too;
 isolating its installation must not lose the suite's process settings. It uses [Bun's process-parallel
-runner](https://bun.com/docs/test/parallel) with a worker for each idle core, never fewer
-than four, and a fresh global per file. Tests within each file stay sequential: fixtures
+runner](https://bun.com/docs/test/parallel) with a worker for each available logical CPU
+and a fresh global per file. It does not subtract the load average: the preceding suite's
+work and IO waits remain in that average after the CPU is free. The lock also covers
+builds so a queued suite cannot replace the executables an active suite runs. Tests within
+each file stay sequential: fixtures
 change environment variables and prototypes, so `--concurrent` is not safe here. A test's
 default timeout is 30 seconds rather than Bun's five: a test that starts processes is
 slower on a busy machine, and that is not a hang. For debugging, `bun test
 ./test/engine.test.ts` runs one file against the sources, without workers.
 
 Bun records file durations in `.scratch/test-timings.json` and uses them to schedule slow
-files first next time. CI caches only that scheduling data, never test results. Missing or
-stale timings cannot skip a test; delete the file to reset the schedule. Quiet-agent tests
+files first next time. When that file is absent, the runner seeds it from the measured
+durations in `tools/test-timings.json`, so a fresh checkout starts its longest files first
+too. Refresh that seed from a successful complete run when the suite changes substantially.
+CI caches only scheduling data, never test results. Missing or stale entries cannot skip
+a test; deleting the scratch file restores the seed. Quiet-agent tests
 use a controlled Effect clock so machine load cannot consume their nudge windows. A test
 whose work waits out timers runs under `fastForward` (`test/support/effect.ts`): a test
 clock a fiber of its own keeps moving many times faster than the wall's, from the wall's
@@ -867,8 +873,18 @@ its time.
   `COLLIE_TEST_BINARY` when it is set, as `test/support/host.ts` does, and the sources only
   without it. A start from source is most of a second of CPU, and the suite makes over a
   thousand.
-- **A host is stopped while its run waits.** Stopped mid-step, it waits out its five-second
-  stop grace before it exits.
+- **A host is stopped while its run waits.** Production has a five-second stop grace;
+  fixture hosts use 500 ms. Cleanup waits for process exit as well as lock release: a
+  host can give back its lock before its final write finishes.
+  On Linux, a world's cleanup also waits for processes carrying its exact fake-herdr log
+  binding: a notification can outlive its host and recreate a removed log directory. This
+  uses the preload's existing `/proc` process markers; its marker-specific regression runs
+  on Linux.
+- **A fixture runs a command.** `test/support/command.ts` uses asynchronous `Bun.spawn`,
+  drains stdout and stderr together, and closes the process group when its scope ends.
+  A nonzero exit remains visible; an interrupted fixture cannot leave its child running.
+  The fake herdr CLI provides only its filesystem and path services, while using the
+  same core as the in-process fake.
 - **A test can go red.** Break `src/` the way its name says and watch it fail before relying
   on it. A test that cannot fail, or whose every failure another test already has, is
   deleted.
@@ -880,3 +896,42 @@ its time.
   `effect/http` by module rather than through their index. `test/startup.test.ts`
   holds the first and keeps the engine and the board out of the compaction helper; lint
   holds the second.
+
+### Test-suite measurements, 12 October 2026
+
+Measured with `/usr/bin/time bun run test`, Bun 1.4.3, Linux and 20 available logical CPUs.
+Wall time includes both executable builds. The package cache is warm unless stated; no
+suite results are reused. Queuing behind another suite adds waiting time.
+
+| Change                                                                   | Wall time | Result                                        |
+| ------------------------------------------------------------------------ | --------: | --------------------------------------------- |
+| Initial tree                                                             |  110.65 s | 2,369 passed; four fixture-isolation failures |
+| Compiled binary retained by isolated worlds; harness cleanup fixed       |  100.43 s | 2,374 passed                                  |
+| Controlled client timeout clocks and package metadata reuse              |   65.35 s | 2,375 passed                                  |
+| All available CPUs, smaller fake CLI runtime and native fixture commands |   56.17 s | 2,379 passed                                  |
+| Command lifecycle regressions and complete group cleanup                 |   56.63 s | 2,381 passed                                  |
+| Same suite with no scheduling estimates                                  |   70.85 s | 2,381 passed; slow files started later        |
+| Seeded scheduling estimates, no saved timings                            |   54.15 s | 2,381 passed                                  |
+| Seeded estimates, empty fixture package cache and no saved timings       |   56.08 s | 2,381 passed                                  |
+| World command cleanup, empty fixture package cache and no saved timings  |   58.10 s | 2,382 passed                                  |
+| Final world cleanup and exact binding matching, warm cache               |   55.53 s | 2,382 passed                                  |
+
+Every original test title is still present. Nine regressions were added for binary and
+lifetime settings, toolchain validity, installer environment and temporary files, host
+exit and surviving commands before fixture removal, command output and environment, and process-group cleanup.
+The workflows still use the real engine and SQLite; host proofs still drive the shipped
+executable. Installed harness checks and real compiler checks still run.
+
+Experiments discarded after measurement:
+
+| Experiment                                      | Measurement                                     | Decision                                                                            |
+| ----------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Shared package cache without offline preference | 7.51 s fresh versus 7.45 s shared for authoring | Metadata refresh still dominated; use offline preference with normal fetch fallback |
+| Split the four longest files into eight         | 67.26 s and 73.55 s                             | More simultaneous engine work increased CPU cost                                    |
+| CPU affinity for long files                     | 59.26 s best, excluding builds                  | Little margin and machine-specific allocation                                       |
+| Lower priority for the other files              | 56.86 s, excluding builds                       | No useful gain over the simpler final runner                                        |
+| Fixture stop grace reduced from 500 ms to 1 ms  | 70.33 s after fixing an exposed exit race       | No overall speed gain; keep 500 ms and wait for process exit                        |
+
+The fake CLI's minimal runtime reduced 50 isolated starts from 1.724 s to 1.318 s. Native
+fixture command execution reduced 100 `/bin/true` calls from 131 ms to 110 ms; full-suite
+measurements, rather than those microbenchmarks, decide whether the changes stay.
