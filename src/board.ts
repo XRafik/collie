@@ -871,9 +871,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
     const fanned = runs.find((run) => repoRunsOf.has(run.id));
     const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
     const proposed = pending[0];
-    const decision: Decision | null = proposed
-      ? asProposal(proposed)
-      : questionOf(everyRun);
+    const decision: Decision | null = proposed ? asProposal(proposed) : questionOf(everyRun);
 
     const status = leader.state;
     // A fan-out waiting on its Repo runs writes nothing itself: their work is its work.
