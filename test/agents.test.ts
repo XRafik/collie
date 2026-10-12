@@ -10,7 +10,6 @@
 // second engine on the same file rather than a second map.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
 import type { BunServices } from "@effect/platform-bun";
 import { Duration, Effect, FileSystem, Layer, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -356,7 +355,7 @@ class ClosesOnceReused extends FakeHerdr {
     super(env);
   }
   override agentList() {
-    if (this.closed || !existsSync(this.prompt)) return super.agentList();
+    if (this.closed || Bun.file(this.prompt).size === 0) return super.agentList();
     this.closed = true;
     return this.paneClose(this.pane).pipe(Effect.andThen(super.agentList()));
   }
