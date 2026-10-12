@@ -174,6 +174,7 @@ export const proves = <A, E>(
       yield* exec(["git", "init", "-q"], { cwd: world.project });
       yield* save(world.user, modules);
       const command = yield* collieCommand;
+      const suite = yield* suiteEnv;
       // A herdr of the world's own, for this process and the host it starts: the real one
       // is not on a CI runner, and on a desk it is the operator's live session.
       const herdr = yield* fakeHerdrIn(dir);
@@ -183,6 +184,8 @@ export const proves = <A, E>(
           ConfigProvider.layer(
             ConfigProvider.fromUnknown({
               COLLIE_HOST: asCommand(command),
+              COLLIE_TEST_BINARY: command.length === 1 ? command[0] : undefined,
+              ...suite,
               HERDR_PLUGIN_ROOT: world.install,
               HERDR_PLUGIN_STATE_DIR: world.state,
               COLLIE_USER_DIR: world.config,

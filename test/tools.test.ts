@@ -977,6 +977,7 @@ test("the definitions tool answers with the module an id runs, not the file belo
         ...process.env,
         HERDR_PLUGIN_ROOT: new URL("../", import.meta.url).pathname,
         HERDR_PLUGIN_STATE_DIR: stateDir,
+        COLLIE_USER_DIR: `${stateDir}/user`,
         COLLIE_CWD: stateDir,
       });
       const ask = (input: JsonObject) =>

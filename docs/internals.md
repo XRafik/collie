@@ -824,7 +824,9 @@ that environment. A test that needs herdr sets up the fake under `test/support/`
 fake herdr the same way, into `.scratch/test-bin/`, and runs the suite with
 `COLLIE_TEST_BINARY` and `COLLIE_TEST_FAKE_HERDR` naming them: the suite starts well over a
 thousand hosts, commands and herdr calls, and a bytecode build starts in a fraction of the
-time the sources take to load. It uses [Bun's process-parallel
+time the sources take to load. A fixture's own Config provider carries that binary choice,
+the process marker, the watched pid and the test's stop grace into its commands too;
+isolating its installation must not lose the suite's process settings. It uses [Bun's process-parallel
 runner](https://bun.com/docs/test/parallel) with a worker for each idle core, never fewer
 than four, and a fresh global per file. Tests within each file stay sequential: fixtures
 change environment variables and prototypes, so `--concurrent` is not safe here. A test's
