@@ -88,12 +88,7 @@ const FRONT_DOOR: readonly Check[] = [
     statement: "The Diff tab takes a comment on a line range on either side.",
     owner: REVIEW_COMMENTS,
     needs: "ui",
-    proof: {
-      kind: "test",
-      layer: "ui",
-      file: "desktop/test/review-comments.test.ts",
-      name: "the Diff tab takes a comment on a line range on either side",
-    },
+    proof: { kind: "none" },
   },
   {
     id: "front-door/review-comments-reach-the-chosen-agent-word-for-word",

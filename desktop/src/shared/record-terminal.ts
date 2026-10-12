@@ -51,11 +51,7 @@ export const agentTabs = (
   });
 };
 
-/**
- * Who a Run's review comments can go to: its own launched agents the board lists live
- * under any of the Task's Runs, labelled as `agentTabs` labels them, by newest launch last.
- * The last is the default, as the host's `focus` picks it; any other agent the host refuses.
- */
+/** Only the Run's own live launches, newest last even when reused under another Run. */
 export const recipients = (
   launches: ReadonlyArray<{ readonly agent: string }> | undefined,
   live: ReadonlyArray<BoardAgent>,

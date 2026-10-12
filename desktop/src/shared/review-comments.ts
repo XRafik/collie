@@ -108,7 +108,6 @@ export const locationOf = (anchor: Anchor) => {
   return `\`${anchor.path}:${lines}\`${anchor.side === "deletions" ? " (as it was)" : ""}`;
 };
 
-/** Every draft, in the order written, as one message whose comments are as the human wrote them. */
 export const counted = (drafts: ReadonlyArray<Draft>) =>
   `${drafts.length} review comment${drafts.length === 1 ? "" : "s"}`;
 

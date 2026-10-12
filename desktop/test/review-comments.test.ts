@@ -120,7 +120,7 @@ index 1111111..0000000
   { isGitDiff: true },
 )!;
 
-test("the Diff tab takes a comment on a line range on either side", () => {
+test("a diff anchor quotes a line range on either side", () => {
   const ranges: ReadonlyArray<{
     range: Parameters<typeof diffAnchor>[1];
     anchor: Omit<DiffAnchor, "_tag" | "path">;

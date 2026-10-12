@@ -24,10 +24,7 @@ export const actionRunner = (
   }) => Promise<Exit.Exit<string, Failed>>,
   tell: (notice: ActionNotice) => void,
 ) => {
-  /**
-   * A failure offers to try again under the same request id, so a request the host did
-   * take before the reply was lost is not done twice.
-   */
+  /** Retries keep the request id to avoid repeating a write after a lost reply. */
   const run = (
     installation: string,
     action: DesktopAction,
