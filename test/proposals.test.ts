@@ -598,7 +598,7 @@ test(
           command: { executable: "true", argv: [], cwd: "/" },
         });
         expect(away.ok).toBe(false);
-        expect(JSON.stringify(away)).toContain(`is not inside run ${run.id}`);
+        if (!away.ok) expect(away.error.message).toContain(`is not inside run ${run.id}`);
         expect((yield* readIntent(run.dir))?.authority.run_verification).toEqual([
           { name: "unit", executable: "true", argv: [], cwd: "worktree" },
         ]);
