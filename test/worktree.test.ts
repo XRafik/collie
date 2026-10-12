@@ -1539,6 +1539,46 @@ const renovateCheckout = (inputs: Record<string, string> = {}, cwd = rig.project
       Effect.succeed(recorded.find((run) => run.worktree?.path === at)?.id ?? null),
   });
 
+test("a roaming Run's repository is cloned through its URL's forge, and one on neither is refused", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering(
+        { ...gitAnswers(), "worktree list --porcelain": porcelain([]) },
+        {},
+        { clone: 'mkdir -p "$4/.git"' },
+      );
+      const forge = (name: "gitlab" | "github") =>
+        forgeOnPath(bin, name, {
+          installed: true,
+          loggedIn: [name === "gitlab" ? "gitlab.example.com" : "github.com"],
+          login: "tester",
+          mrs: [],
+        });
+      const github = yield* forge("github");
+      yield* forge("gitlab");
+
+      const fromGithub = yield* renovateCheckout({ repository: "https://github.com/acme/app" });
+      expect(fromGithub.refused ?? "").not.toContain("could not clone");
+      expect((yield* github.model()).cloned).toEqual([
+        expect.stringMatching(/^github\.com\/acme\/app \/.*renovate-repositories\//),
+      ]);
+
+      const fromGitlab = yield* renovateCheckout({
+        repository: "https://gitlab.example.com/acme/app",
+      });
+      expect(fromGitlab.refused ?? "").not.toContain("could not clone");
+      expect(
+        (yield* asked()).some((c) =>
+          c.startsWith("clone --quiet https://gitlab.example.com/acme/app.git"),
+        ),
+      ).toBe(true);
+
+      expect(
+        (yield* renovateCheckout({ repository: "https://bitbucket.org/acme/app" })).refused,
+      ).toBe("bitbucket.org is neither GitHub nor GitLab");
+    }),
+  ));
+
 test("a Renovate Run gets a detached checkout at the default branch, bound to no branch", () =>
   runEffect(
     Effect.gen(function* () {

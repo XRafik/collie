@@ -92,8 +92,17 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<string | null, never, R>;
+  /** Clones `project` (`host/path`) into `into`, or says why it could not. */
+  readonly clone: <R>(
+    project: string,
+    into: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
   /** "GitLab" or "GitHub". */
   readonly display: string;
+  /** The CLI it is reached through, as a human is told to log in with it. */
+  readonly cli: string;
   /** "merge request" or "pull request". */
   readonly noun: string;
   /** One note on the merge request, and its approval where `approve` asks for it. */

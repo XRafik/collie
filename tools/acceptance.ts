@@ -831,6 +831,19 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
+    id: "backend/a-roaming-run-starts-from-a-github-repository-url",
+    statement:
+      "A roaming Run starts from a GitHub repository URL, cloned with gh, as from a GitLab one cloned with glab's token; a URL on neither forge is refused.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/worktree.test.ts",
+      name: "a roaming Run's repository is cloned through its URL's forge",
+    },
+  },
+  {
     id: "backend/glab-and-gh-are-run-only-by-their-adapters",
     statement:
       "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",

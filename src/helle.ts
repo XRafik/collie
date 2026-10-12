@@ -135,18 +135,19 @@ export type Resolution =
   | { _tag: "Ambiguous"; slugs: string[] };
 
 /**
- * Which Helle project a repository is. `group` is the GitLab group path and `slug` is
- * normally the repository name, so `<group>/<slug>` is the tail of the project's own
- * GitLab path; a project Helle lists without a group can only be matched by name.
+ * Which Helle project a repository is. `group` is the repository's group or owner path and
+ * `slug` is normally the repository name, so `<group>/<slug>` is the tail of the
+ * repository's own path on its forge; a project Helle lists without a group can only be
+ * matched by name.
  * Group case is Helle's own typing (`Players` and `players` are both in there) and
  * never decides a match.
  */
 export function resolveProject(
   projects: readonly HelleProject[],
-  gitlabPath: string | null,
+  repositoryPath: string | null,
   repoName: string,
 ): Resolution {
-  const path = gitlabPath?.toLowerCase() ?? "";
+  const path = repositoryPath?.toLowerCase() ?? "";
   const byGroup = projects.filter(
     (p) => p.group && path.endsWith(`/${p.group.toLowerCase()}/${p.slug.toLowerCase()}`),
   );
@@ -167,8 +168,8 @@ export interface HelleGate<E, R> {
   home: string;
   envFile?: string | null;
   url?: string | null;
-  /** `host/group/…/name` for the repository, or null where it has no GitLab remote. */
-  gitlabPath: string | null;
+  /** `host/group/…/name` for the repository, or null where it has no remote on a forge. */
+  repositoryPath: string | null;
   repoName: string;
   /** What this Run already recorded, which is what makes it a resume rather than a start. */
   claimed: HelleClaim | null;
@@ -191,7 +192,7 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
   gate: HelleGate<E, R>,
 ) {
   const creds = yield* credentials(gate);
-  const resolved = resolveProject(yield* helleProjects(creds), gate.gitlabPath, gate.repoName);
+  const resolved = resolveProject(yield* helleProjects(creds), gate.repositoryPath, gate.repoName);
   if (resolved._tag === "Ambiguous") {
     return yield* Effect.fail(
       failed(

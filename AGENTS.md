@@ -196,7 +196,7 @@ herdr actions, and the `collie` CLI.
   [`docs/cli.md`](docs/cli.md#a-workflow-saved-as-a-module), alongside `src/strategies.ts`,
   `src/inputs.ts`, `src/engine.ts` and `test/strategies.test.ts`. What Collie does with an
   Input is the strategy's, never the field's name: read one with `workSourceOf`,
-  `diffTargetOf` or `gitlabRepositoryOf` rather than by looking a name up.
+  `diffTargetOf` or `repositoryOf` rather than by looking a name up.
 - **Changing how Collie reaches a forge — GitLab or GitHub, `glab` or `gh`** →
   [ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md) and
   [`docs/internals.md`](docs/internals.md#the-forge-boundary), alongside the interface in

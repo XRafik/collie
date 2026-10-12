@@ -427,10 +427,7 @@ const startModule = Effect.fn("Flows.startModule")(function* (
     const candidates = strategy === "goal" ? [] : yield* placeableUnder(root);
     const byUrl = placedByUrl(words, candidates);
     // A repository URL no checkout here has is cloned by the Run, as it always was.
-    if (
-      strategy === "goal" ||
-      (byUrl === null && strategy === "gitlab-repository" && isUrl(words))
-    ) {
+    if (strategy === "goal" || (byUrl === null && strategy === "repository" && isUrl(words))) {
       rooted = true;
       at = { ...env, cwd: root, workspaceId: null };
     } else {
@@ -447,7 +444,7 @@ const startModule = Effect.fn("Flows.startModule")(function* (
       }
       at = { ...env, cwd: placed.path, workspaceId: null };
       inferred.set(WORKSPACE, byUrl === null ? "your words" : `its remote, ${placed.project}`);
-      if (strategy === "gitlab-repository" && byUrl !== null) {
+      if (strategy === "repository" && byUrl !== null) {
         text[launchInput.name] = placed.path;
         inferred.set(launchInput.name, "the checkout its URL names");
       }
@@ -455,7 +452,7 @@ const startModule = Effect.fn("Flows.startModule")(function* (
   }
   if (launchInput !== undefined && text[launchInput.name] === undefined) {
     if (words !== "" && (yield* wordsAre(strategy, words, at.cwd))) text[launchInput.name] = words;
-    else if (strategy === "gitlab-repository" && (yield* insideCheckout(at.cwd))) {
+    else if (strategy === "repository" && (yield* insideCheckout(at.cwd))) {
       text[launchInput.name] = at.cwd;
       inferred.set(
         launchInput.name,
@@ -540,7 +537,7 @@ const wordsAre = Effect.fn("Flows.wordsAre")(function* (
   cwd: string,
 ) {
   if (strategy === "goal" || strategy === "work-source") return true;
-  if (strategy === "gitlab-repository") return /^(https?:\/\/|git@|\/)/.test(words);
+  if (strategy === "repository") return /^(https?:\/\/|git@|\/)/.test(words);
   if (strategy !== "diff-target") return false;
   if (readMrRef(words, { project: null }) !== null) return true;
   if (/\s/.test(words)) return false;

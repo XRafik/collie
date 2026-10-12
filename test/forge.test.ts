@@ -391,3 +391,21 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 }
+
+for (const name of ["gitlab", "github"] as const) {
+  test(`the ${name} forge clones a repository into a directory, and refuses where it is not logged in`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fake = fakeForge(name, model(name));
+        expect(yield* FORGES[name].clone(PROJECT[name], "/into", "/w", fake.run)).toEqual({
+          ok: true,
+          reason: "",
+        });
+        expect(fake.model().cloned).toEqual([`${PROJECT[name]} /into`]);
+        const out = fakeForge(name, model(name, { loggedIn: [] }));
+        const refused = yield* FORGES[name].clone(PROJECT[name], "/into", "/w", out.run);
+        expect(refused.ok).toBe(false);
+        expect(out.model().cloned ?? []).toEqual([]);
+      }),
+    ));
+}

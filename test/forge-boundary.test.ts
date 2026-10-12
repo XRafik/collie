@@ -16,7 +16,6 @@ const ADAPTER = new Map([
 const ALLOWED = new Map([
   // Permanent (ADR-0050 D1): onboarding's GitLab login and SSH key.
   ["src/onboard.ts", "permanent"],
-  ["src/worktree.ts", "09: the roaming clone"],
   ["workflows/renovate.md", "10: renovate's content per forge"],
 ]);
 

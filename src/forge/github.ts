@@ -9,7 +9,7 @@ import {
   type MrPanel,
   type MrRef,
 } from "../board-model";
-import type { Runner } from "../mr";
+import { whatItSaid, type Runner } from "../mr";
 import { epochMs } from "../time";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 
@@ -354,9 +354,32 @@ function runStatus<R>(
   });
 }
 
+/** `gh repo clone`, with gh's own login; one nobody logged in to says how to log in. */
+function clone<R>(
+  project: string,
+  into: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<Readiness, never, R> {
+  return Effect.gen(function* () {
+    if ((yield* run("gh", ["auth", "status", "--hostname", HOST], cwd)).code !== 0)
+      return {
+        ok: false,
+        reason: `gh is not logged in to ${HOST}: log in with \`gh auth login --hostname ${HOST}\``,
+      };
+    const repo = mrPath({ project, iid: "" });
+    const cloned = yield* run("gh", ["repo", "clone", repo, into, "--", "--quiet"], cwd);
+    return cloned.code === 0
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: whatItSaid(cloned) || "gh repo clone failed" };
+  });
+}
+
 export const github: Forge = {
   name: "github",
+  clone,
   display: "GitHub",
+  cli: "gh",
   noun: "pull request",
   forBranch,
   template,

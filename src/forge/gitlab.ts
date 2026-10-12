@@ -3,7 +3,7 @@
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { ForgeChecks, MrDetails, MrPanel, MrRef, MrUnavailable } from "../board-model";
 import { epochMs } from "../time";
-import type { Runner } from "../mr";
+import { whatItSaid, type Runner } from "../mr";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 
 export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
@@ -355,9 +355,47 @@ function pipelineStatus<R>(
   });
 }
 
+/** A clone with glab's token for the host as git's auth header, so no credential is stored. */
+function clone<R>(
+  project: string,
+  into: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<Readiness, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(project) ?? project.split("/")[0]!;
+    const token = (yield* run(
+      "glab",
+      ["config", "get", "token", "--host", host],
+      cwd,
+    )).stdout.trim();
+    if (token === "") return { ok: false, reason: `could not authenticate to ${host}` };
+    const credentials = Buffer.from(`oauth2:${token}`).toString("base64");
+    const cloned = yield* run(
+      "env",
+      [
+        "GIT_CONFIG_COUNT=1",
+        "GIT_CONFIG_KEY_0=http.extraHeader",
+        `GIT_CONFIG_VALUE_0=Authorization: Basic ${credentials}`,
+        "git",
+        "clone",
+        "--quiet",
+        `https://${project}.git`,
+        into,
+      ],
+      cwd,
+    );
+    return cloned.code === 0
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: whatItSaid(cloned) || "git clone failed" };
+  });
+}
+
 export const gitlab: Forge = {
   name: "gitlab",
+  clone,
   display: "GitLab",
+  cli: "glab",
   runStatus: pipelineStatus,
   noun: "merge request",
   forBranch,

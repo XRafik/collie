@@ -70,6 +70,8 @@ export const ForgeModel = Schema.Struct({
   deploysDown: Schema.optionalKey(Schema.Boolean),
   /** Notes posted, by `project!iid` or `project#iid`. */
   notes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+  /** What was cloned, as `<host/path> <directory>`. */
+  cloned: Schema.optionalKey(Schema.Array(Schema.String)),
   /** Merge requests approved, by the same key. */
   approved: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The forge refuses an approval, as it does one by the author. */
@@ -89,6 +91,7 @@ export const CLI = { gitlab: "glab", github: "gh" } as const;
 /** One answer, and the note it posted where it posted one. */
 interface Answer {
   readonly ran: Ran;
+  readonly cloned?: string;
   readonly noted?: { readonly key: string; readonly body: string };
   readonly approved?: string;
 }
@@ -176,6 +179,10 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
           merge_when_pipeline_succeeds: one.autoMerge ?? false,
         })),
     );
+  }
+  if (verb === "config" && sub === "get" && args[2] === "token") {
+    const host = flag(args, "--host") ?? "";
+    return model.loggedIn.includes(host) ? ok("glpat-fake\n") : ok("");
   }
   if (verb === "mr" && sub === "list" && args[3] === "@me")
     return json(
@@ -280,6 +287,8 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (!model.loggedIn.includes(FORGE_HOST.github)) return no(4);
   if (verb === "api" && sub === "user")
     return model.login === null ? no() : json({ login: model.login });
+  if (verb === "repo" && sub === "clone")
+    return { ...ok(), cloned: `github.com/${args[2] ?? ""} ${args[3] ?? ""}` };
   if (verb === "api") return ghApi(model, sub ?? "");
   if (verb === "repo" && sub === "view") {
     const repo = args[2] ?? "";
@@ -388,6 +397,16 @@ export function answer(
           : undefined;
     return { ran: said === undefined ? no().ran : ok(`${said}\n`).ran, model };
   }
+  // GitLab's clone is git's own, with glab's token as its header.
+  const cloning =
+    cmd === "env" && args.includes("clone")
+      ? /^https:\/\/(.+)\.git$/.exec(args.at(-2) ?? "")
+      : null;
+  if (cloning)
+    return {
+      ran: ok().ran,
+      model: { ...model, cloned: [...(model.cloned ?? []), `${cloning[1]} ${args.at(-1)}`] },
+    };
   if (cmd !== CLI[forge]) return { ran: no(127).ran, model };
   const said = forge === "gitlab" ? glab(model, args) : gh(model, args);
   let after = model;
@@ -396,6 +415,8 @@ export function answer(
     const notes = after.notes ?? {};
     after = { ...after, notes: { ...notes, [key]: [...(notes[key] ?? []), body] } };
   }
+  if (said.cloned !== undefined)
+    after = { ...after, cloned: [...(after.cloned ?? []), said.cloned] };
   if (said.approved !== undefined)
     after = { ...after, approved: [...(after.approved ?? []), said.approved] };
   return { ran: said.ran, model: after };

@@ -75,7 +75,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEntry,
 } from "./sdk";
-import { FALLBACK_DEFAULTS, configValue, loadDefaults, readConfig } from "./config";
+import { FALLBACK_DEFAULTS, configValue, gitlabHostOf, loadDefaults, readConfig } from "./config";
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
@@ -94,6 +94,7 @@ import type { CheckoutKind, InputStrategy } from "./definitions";
 import { noteVerification } from "./metrics";
 import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
+import { strategyNamed } from "./strategies";
 import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
 import {
   Oversight,
@@ -1393,7 +1394,13 @@ const isWritten = (exported: unknown): exported is WrittenDefinition =>
 
 /** A definition as the entry the rest of the host reads. */
 const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
-  const { hints, outcome, checkout, verifies, followUps, actions } = definition;
+  const { outcome, checkout, verifies, followUps, actions } = definition;
+  const hints =
+    definition.hints === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(definition.hints).map(([name, hint]) => [name, strategyNamed(hint)]),
+        );
   const declared = Object.fromEntries(
     Object.entries({ hints, outcome, checkout, verifies, followUps, actions }).filter(
       ([, value]) => value !== undefined,
@@ -2327,7 +2334,7 @@ export const hostLayer = (options: {
               home: env.home,
               envFile: env.raw.HELLE_ENV_FILE ?? null,
               url: helleUrlOf(env.raw),
-              gitlabPath: yield* projectHere(asked.cwd, runShell),
+              repositoryPath: yield* projectHere(asked.cwd, runShell),
               // git's repository, never the checkout's basename: a roaming Run's directory
               // is named after the workflow, and a Helle project under that name is a
               // project that does not exist for a repository that has one.
@@ -3721,6 +3728,7 @@ const makeRegistry: (
         explicit: ask.options.branch ?? null,
         login: placing.env.gitlabLogin,
         githubLogin: placing.env.githubLogin,
+        gitlabHost: yield* gitlabHostOf(placing.env).pipe(Effect.orElseSucceed(() => undefined)),
         recordedBy: (at) =>
           store.runs.pipe(
             Effect.map(

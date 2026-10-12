@@ -367,8 +367,10 @@ explicit refspec, so a Renovate branch that already has a checkout of yours is l
 it is and reported, never taken over.
 
 `--input repository=<path>` says which local checkout to cut that worktree from; without it, the
-one the run was started in. The repository has to be checked out locally already — cloning
-from a URL is not something a run does. Two renovate runs on two repositories get two
+one the run was started in. A GitLab or GitHub repository URL instead is cloned through its
+forge once, into Collie's state directory — with `glab`'s token for a GitLab one, and `gh
+repo clone` for a GitHub one — and the worktree is cut from that clone. A URL on neither
+forge is refused, naming its host. Two renovate runs on two repositories get two
 checkouts, one per repository. A second one on the _same_ repository is refused rather
 than handed the first's working tree. So are two repositories that share a name — the
 path is `<repo>` as the directory is called, so two `api`s want the same one — and so is

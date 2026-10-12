@@ -19,7 +19,7 @@ import {
   type WorktreeListing,
 } from "./herdr";
 import type { CheckoutKind } from "./definitions";
-import { diffTargetOf, gitlabRepositoryOf, workSourceOf } from "./strategies";
+import { diffTargetOf, repositoryOf, workSourceOf } from "./strategies";
 import { defaultBase, linearIssueOf } from "./inputs";
 import { disambiguate, GLYPH, tabLabel } from "./naming";
 import {
@@ -31,9 +31,9 @@ import {
   whatItSaid,
   type Runner,
 } from "./mr";
-import { gitlab, hostOf } from "./forge/gitlab";
+import { gitlab } from "./forge/gitlab";
 import { mrWords, parseMrTarget } from "./board-model";
-import { forgeOf } from "./forge/forge";
+import { FORGES, forgeOf, forgeOfHost } from "./forge/forge";
 import { withLock } from "./lock";
 import type { AgentEntry } from "./registry";
 import type { WorktreeRecord } from "./run";
@@ -129,6 +129,8 @@ export interface CheckoutAsk extends BranchAsk {
   separate?: boolean;
   /** The workspace the Run lives in, which is its Task's. */
   workspaceId?: string | null;
+  /** The Flock's GitLab, which a roaming Run's repository is on whatever its name. */
+  gitlabHost?: string | undefined;
   workspaceLabel?: string | null;
   /** What to call a workspace herdr opens for this checkout, where it opens one. */
   openLabel?: string | null;
@@ -230,10 +232,9 @@ export const branchFor = Effect.fn("worktree.branchFor")(function* (opts: Branch
   if (asked.generated) {
     const { forge, who } = yield* whoami(opts, run);
     if (who === null) {
-      const cli = forge.name === "github" ? "gh" : "glab";
       const variable = LOGIN_ENV[forge.name];
       return refuse(
-        `no ${forge.display} login to name a branch under: ${variable} is unset and ${cli} could not say who you are. Log in with \`${cli} auth login\`, or set ${variable}.`,
+        `no ${forge.display} login to name a branch under: ${variable} is unset and ${forge.cli} could not say who you are. Log in with \`${forge.cli} auth login\`, or set ${variable}.`,
       );
     }
     branch = `${who}/${asked.branch}`;
@@ -849,7 +850,7 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
   if (!mutates(opts.checkout)) return here;
 
   if (roams(opts.checkout)) {
-    const repository = gitlabRepositoryOf(opts)?.value ?? "";
+    const repository = repositoryOf(opts)?.value ?? "";
     let from = repository || opts.cwd;
     const project = remoteRepository(repository)
       ? (projectFromRemote(repository)?.split("/-/")[0] ?? null)
@@ -860,35 +861,12 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
       from = path.join(opts.stateDir, "renovate-repositories", Bun.hash(repository).toString(16));
       if (!(yield* fs.exists(path.join(from, ".git")))) {
         yield* fs.makeDirectory(path.dirname(from), { recursive: true });
-        const host = hostOf(project)!;
-        const token = (yield* shell(
-          "glab",
-          ["config", "get", "token", "--host", host],
-          opts.stateDir,
-        )).stdout.trim();
-        if (token === "") {
-          return { ...here, refused: `could not authenticate to ${host}` };
-        }
-        const credentials = Buffer.from(`oauth2:${token}`).toString("base64");
-        const cloned = yield* shell(
-          "env",
-          [
-            "GIT_CONFIG_COUNT=1",
-            "GIT_CONFIG_KEY_0=http.extraHeader",
-            `GIT_CONFIG_VALUE_0=Authorization: Basic ${credentials}`,
-            "git",
-            "clone",
-            "--quiet",
-            `https://${project}.git`,
-            from,
-          ],
-          opts.stateDir,
-        );
-        if (cloned.code !== 0) {
-          return {
-            ...here,
-            refused: `could not clone ${repository}: ${whatItSaid(cloned) || "git clone failed"}`,
-          };
+        const host = project.split("/")[0]!;
+        const forge = forgeOfHost(host, opts.gitlabHost);
+        if (forge === null) return { ...here, refused: `${host} is neither GitHub nor GitLab` };
+        const cloned = yield* FORGES[forge].clone(project, from, opts.stateDir, shell);
+        if (!cloned.ok) {
+          return { ...here, refused: `could not clone ${repository}: ${cloned.reason}` };
         }
       }
     }

@@ -5,7 +5,7 @@ import { Clock, Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import type { ChildProcessSpawner } from "effect/process";
 import type { InputStrategy } from "./definitions";
-import { diffTargetOf, targetKind, type TargetKind } from "./strategies";
+import { diffTargetOf, strategyNamed, targetKind, type TargetKind } from "./strategies";
 import type { RunFacts } from "./runs";
 import { openFindingsIn } from "./output";
 import { targetLabel } from "./naming";
@@ -115,7 +115,7 @@ export function inferInput(
     const run = ctx.run ?? shell;
     const base = { name, strategy, needsAsking: false, question: `${name}?` };
 
-    switch (strategy) {
+    switch (strategyNamed(strategy)) {
       case "goal":
         return {
           ...base,
@@ -183,13 +183,13 @@ export function inferInput(
       // one passes a value of its own. Never asked for.
       case "optional":
         return { ...base, value: "", source: "default" };
-      case "gitlab-repository":
+      case "repository":
         return {
           ...base,
           value: "",
           source: "ask",
           needsAsking: true,
-          question: "GitLab repository URL or local checkout",
+          question: "GitLab or GitHub repository URL, or a local checkout",
         };
       default:
         return { ...base, value: "", source: "ask", needsAsking: true };

@@ -251,7 +251,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
       repository: Schema.optionalKey(
         Schema.String.annotate({
           description:
-            "A GitLab URL or an existing local checkout; empty is the checkout it started from",
+            "A GitLab or GitHub URL, or an existing local checkout; empty is the checkout it started from",
         }),
       ),
       team: Schema.optionalKey(
@@ -270,7 +270,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
     output: Schema.String,
     // The one agent every step continues, on Claude Code, whose auto mode it is started in.
     agents: { harness: "claude", model: "default", effort: "medium" },
-    hints: { repository: "gitlab-repository" },
+    hints: { repository: "repository" },
     // Detached at the default branch, so no branch of the repository is bound to this Run.
     checkout: "roaming",
     // A failed Run keeps the claim over shared work it may have left half-done. Recovering

@@ -38,7 +38,7 @@ means no compiler is installed in that directory.
 
 **One launch Input.** A module that takes any input names exactly one of them as its launch
 Input: the field it hints with `goal`, `work-source`, `diff-target` or
-`gitlab-repository`, which is what a human's words fill when they start it. `check` refuses a
+`repository` (which a module may still spell by its old name, `gitlab-repository`), which is what a human's words fill when they start it. `check` refuses a
 module that hints none of its fields that way, or two, and names the fields. A module with no
 input at all has nothing for the words to fill and declares none. `create` writes
 `hints: { note: "goal" }` for you.

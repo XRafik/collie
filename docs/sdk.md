@@ -1072,7 +1072,9 @@ export default defineWorkflow({
   prefers: [which agent does the work](#which-agent-does-the-work).
 
 - **`hints`** attach inference to a field. `goal`, `work-source`, `diff-target` and
-  `gitlab-repository` are the launch strategies, and a module with inputs hints exactly one
+  `repository` — a GitLab or GitHub repository URL, or a local checkout — are the launch
+  strategies (`gitlab-repository`, its old name, is still read as `repository`, in a hint
+  and in a recorded Run), and a module with inputs hints exactly one
   field with one of them ([one launch Input](authoring.md#writing-one)). They are exclusive: one field each, so renaming `plan` to `spec` changes
   nothing about how it is inferred, what it names a branch after, which label its Run is
   listed under, or which previous review it is given.
