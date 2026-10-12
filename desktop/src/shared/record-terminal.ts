@@ -63,6 +63,18 @@ export const shownAgent = (
   agents.find((one) => one.name === focused) ?? (before?.name === focused ? before : null);
 
 /**
+ * The agent the tab opens on: one `blocked`, else one `working`, of the card's own Run first
+ * and then the last listed; null where none is either.
+ */
+export const atWork = (agents: ReadonlyArray<BoardAgent>, run: string): BoardAgent | null => {
+  const blocked = agents.filter((one) => one.status === "blocked");
+  const candidates =
+    blocked.length > 0 ? blocked : agents.filter((one) => one.status === "working");
+  const own = candidates.filter((one) => one.run === run);
+  return (own.length > 0 ? own : candidates).at(-1) ?? null;
+};
+
+/**
  * The Terminal tab's switches between panes, each started once `release` has let the pane
  * before it go. Only the newest switch still waiting opens; a stop cancels any that wait.
  */

@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
   agentTabs,
+  atWork,
   offersTerminal,
   shownAgent,
   opensHerdrWithoutPane,
@@ -75,6 +76,60 @@ test.each([
   expect(
     agentTabs(agents, shown).map((one) => [one.name, one.run, one.label, one.state, one.shown]),
   ).toEqual(entries.map((entry) => [...entry]));
+});
+
+test.each([
+  {
+    case: "a blocked agent is chosen over a working one listed after it",
+    agents: [live("plan-1", "planner", "blocked"), live("impl-1", "implementer", "working")],
+    chosen: "plan-1",
+  },
+  {
+    case: "a blocked agent is chosen over a working one listed before it",
+    agents: [live("impl-1", "implementer", "working"), live("plan-1", "planner", "blocked")],
+    chosen: "plan-1",
+  },
+  {
+    case: "a working agent is chosen over idle, done and unknown ones",
+    agents: [
+      live("plan-1", "planner", "idle"),
+      live("impl-1", "implementer", "working", "run-1.implement"),
+      live("review-1", "reviewer", "done"),
+      live("review-2", "reviewer", "unknown"),
+    ],
+    chosen: "impl-1",
+  },
+  {
+    case: "among several working, the card's Run's last-listed agent is chosen over another Run's",
+    agents: [
+      live("review-1", "reviewer", "working"),
+      live("review-2", "reviewer", "working"),
+      live("impl-1", "implementer", "working", "run-1.implement"),
+    ],
+    chosen: "review-2",
+  },
+  {
+    case: "with no candidate of the card's Run, the last-listed candidate is chosen",
+    agents: [
+      live("plan-1", "planner", "idle"),
+      live("impl-1", "implementer", "working", "run-1.implement"),
+      live("review-1", "reviewer", "working", "run-1.implement"),
+    ],
+    chosen: "review-1",
+  },
+  {
+    case: "all idle names no agent",
+    agents: [live("plan-1", "planner"), live("impl-1", "implementer", "idle", "run-1.implement")],
+    chosen: null,
+  },
+  { case: "no agents names no agent", agents: [], chosen: null },
+  {
+    case: "an agent from an older host, with no role, is still chosen by its status",
+    agents: [live("impl-1", undefined, "idle"), live("impl-2", undefined, "working")],
+    chosen: "impl-2",
+  },
+])("the tab opens on the agent at work: $case", ({ agents, chosen }) => {
+  expect(atWork(agents, "run-1")?.name ?? null).toBe(chosen);
 });
 
 test("the agent shown is the board's entry for it, kept once it leaves, and none before it arrives", () => {

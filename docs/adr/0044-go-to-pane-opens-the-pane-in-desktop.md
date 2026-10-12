@@ -111,3 +111,32 @@ pane to show. Picking one releases the pane shown and takes the chosen one, as R
   ignores the agent asked for and names none, so the tab marks none as shown.
 - Go to pane and Reattach without a choice still find the Run's newest live agent. Reattach
   after a choice finds the chosen one again.
+
+## Amended 2026-10-09: the tab opens on the agent at work, fills the record and takes the keys
+
+The tab opened on the newest registered agent of the card's Run, which is often idle while
+another of the Task's agents works or waits for the human. It sat in a box 70% of the
+window high, beside a scrollbar gutter that nothing used. It drew in whatever the PC calls
+`monospace`. On Omarchy that is DejaVu Sans Mono, not the CaskaydiaMono that every other
+terminal there uses. In the screenshot that prompted this, the view drew at two device pixels per CSS
+pixel and the glyphs were drawn at that density. The blur came from the font, not
+from a backing store: xterm.js 6 draws with its DOM renderer, which has no canvas to size.
+
+- **Which agent.** Opening the tab, Go to pane, and Reattach before a pick all show the Task's
+  agent that is `blocked`, else one that is `working`. Among several, the card's own Run
+  comes first, then the agent registered last. Where none is either, the tab asks for the
+  card's Run's newest live agent as before, so a Run with no live agent still opens herdr's
+  own client. This replaces the last bullet of the amendment above. The choice is read
+  from the statuses the board already carries, never from what a pane shows, so D3 holds.
+  A pick lasts until the tab is left. The tab never switches by itself while it is shown.
+- **Size.** The tab fills the record below its tab bar, with the same margin on both sides
+  and no scrolling. herdr's pane is resized to the cells drawn, and again after every change
+  to the window, the Flock chat beside it, or Desktop's zoom.
+- **Keys.** The terminal takes the keyboard when the tab opens, after a pick or Reattach,
+  and on any click inside its box.
+- **Type.** The terminal draws in CaskaydiaMono Nerd Font where it is installed, then in
+  common terminal fonts, then in the platform's monospace. It draws at 16 CSS pixels:
+  Ghostty's default 12pt on a 96-dpi Linux desktop. xterm.js keeps its DOM renderer. That
+  renderer rasterises text with the browser's own renderer at the device pixel ratio
+  Desktop's page zoom sets ([ADR-0047](0047-desktop-draws-at-its-monitors-own-scale.md)).
+  The WebGL addon would add a GL context that can be lost, and its glyphs would be no sharper.

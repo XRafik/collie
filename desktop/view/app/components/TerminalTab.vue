@@ -14,6 +14,7 @@ import { saidOf } from "../../../src/shared/said";
 import {
   type AgentTab,
   agentTabs,
+  atWork,
   shownAgent,
   switches,
 } from "../../../src/shared/record-terminal";
@@ -37,8 +38,10 @@ const host = ref<HTMLElement>();
 const ended = ref<string | null>(null);
 /** Go to pane found no live agent's pane, so herdr's own client was opened instead. */
 const noPane = ref(false);
-/** The agent the human picked, which Reattach opens again; none means the Run's newest. */
+/** The agent the human picked, which Reattach opens again; none means the agent at work. */
 const chosen = ref<AgentTab | null>(null);
+/** The agent last asked for; none means the Run's newest. */
+const asked = ref<AgentTab | null>(null);
 /** The herdr name of the agent whose pane the host says it focused. */
 const focused = ref<string>();
 let lastShown: BoardAgent | null = null;
@@ -95,9 +98,7 @@ const shown = (event: TerminalEvent) => {
       return;
     case "NoPane":
       noPane.value = true;
-      return props.wentToPane && chosen.value === null
-        ? panes.openInHerdr(props.placed)
-        : undefined;
+      return props.wentToPane && asked.value === null ? panes.openInHerdr(props.placed) : undefined;
   }
 };
 
@@ -106,7 +107,11 @@ const attach = () => {
   ended.value = null;
   noPane.value = false;
   term.reset();
-  const agent = chosen.value;
+  const agents = props.placed.task.agents;
+  const working = atWork(agents, props.placed.task.run);
+  const agent =
+    chosen.value ?? agentTabs(agents, null).find((one) => one.name === working?.name) ?? null;
+  asked.value = agent;
   fiber = Effect.runFork(
     terminal(
       props.placed.installation,
@@ -258,9 +263,9 @@ onBeforeUnmount(() => {
     </div>
     <p v-if="noPane" class="text-muted text-sm" data-testid="terminal-no-pane">
       {{
-        chosen === null
+        asked === null
           ? "This Run has no live agent's pane to show here; Open in herdr shows its workspace."
-          : `herdr no longer has ${chosen.label}'s pane; pick another agent.`
+          : `herdr no longer has ${asked.label}'s pane; pick another agent.`
       }}
     </p>
     <!-- Esc and Ctrl+C are the pane's while it has focus, not the record's. -->
