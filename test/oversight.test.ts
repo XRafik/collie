@@ -20,7 +20,7 @@ import {
   type Watched,
 } from "../src/oversight";
 import { readCards } from "../src/cards";
-import { currentReports, electionsPath, readDrift, readElections } from "../src/drift";
+import { alignment, currentReports, electionsPath, readDrift, readElections } from "../src/drift";
 import { proposalsPath, read as readProposals } from "../src/proposals";
 import { herdOf } from "../src/steering";
 import { readVerifications } from "../src/verify";
@@ -335,6 +335,35 @@ test("a rule check git cannot answer is skipped in git's words, and clears nothi
       const log = yield* fs.readFileString(`${runDir(dir, "r1")}/log.txt`);
       expect(log).toContain("rule check skipped at build collected: git diff");
       expect(log).toContain("Not a git repository");
+    }),
+  ));
+
+test("a rule check git cannot answer leaves the Run unverified, never aligned", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const rule: Constraint = {
+        id: "src-only",
+        kind: "rule",
+        text: "only src changes",
+        severity: "block",
+        source: "human",
+        since: 1,
+        rule: { kind: "protected_paths", globs: ["src/**"] },
+      };
+      yield* intended("r1", [rule]);
+      yield* session(
+        Oversight.pipe(Effect.flatMap((one) => one.drift("r1", "build collected", "none"))),
+      );
+      const lines = yield* readDrift(runDir(dir, "r1"));
+      expect(lines.map((line) => (line.kind === "skipped" ? line.reason : ""))).toEqual([
+        expect.stringContaining("rule check skipped at build collected: git diff"),
+      ]);
+      const intent = yield* readIntent(runDir(dir, "r1"));
+      expect(
+        alignment(intent, lines, { semantic: false, truncated: false, goal: false }).aligned,
+      ).toBe("unverified");
+      expect(yield* fs.exists(`${dir}/.git`)).toBe(false);
     }),
   ));
 

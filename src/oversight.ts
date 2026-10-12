@@ -288,7 +288,9 @@ const checkRuleDrift = Effect.fn("Oversight.checkRuleDrift")(function* (
 ) {
   const facts = yield* ruleFacts(at).pipe(Effect.result);
   if (facts._tag === "Failure") {
-    return yield* said(at, `rule check skipped at ${where}: ${facts.failure.reason}`);
+    const skipped = `rule check skipped at ${where}: ${facts.failure.reason}`;
+    yield* recordSkipped(at.runDir, at.runId, skipped).pipe(Effect.ignore);
+    return yield* said(at, skipped);
   }
   const found = checkRules(intent, facts.success, yield* nowIso());
   const before = yield* readDrift(at.runDir).pipe(Effect.orElseSucceed(() => []));

@@ -229,8 +229,8 @@ timed out or answered outside its schema — is recorded as `skipped` with the r
 card can say why it says nothing rather than reading as clean. A `claude --help` that
 fails or prints nothing is such a reason, said with its exit code and stderr, never read as
 a CLI missing every flag, and a `git diff` that fails is a reason too, never an empty
-change: a judgement is skipped in git's words, and a rule check is skipped and clears no
-open report: a tree git could not read is not one the work came back from. What
+change: a judgement is skipped in git's words, and a rule check is recorded as skipped and
+clears no open report: a tree git could not read is not one the work came back from. What
 every call cost is written to the Herd's `budget.jsonl` as usage; no count of them is ever
 a reason to skip the next.
 
