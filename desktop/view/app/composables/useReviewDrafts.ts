@@ -1,6 +1,7 @@
 // A Run's Review comment drafts, held by Desktop for as long as it runs and sent to no host
 // until they are delivered (ADR-0051 D1).
 
+import { computed, reactive } from "vue";
 import {
   type Anchor,
   addDraft,

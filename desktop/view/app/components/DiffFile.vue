@@ -1,23 +1,16 @@
 <script setup lang="ts">
 import {
-  type DiffLineAnnotation,
   FileDiff,
   type FileDiffMetadata,
   type FileDiffOptions,
   processFile,
-  type SelectedLineRange,
   type SelectionSide,
 } from "@pierre/diffs";
 import type { Semaphore } from "effect";
 import type { DiffFile } from "../../../../src/board-model";
-import {
-  type DiffAnchor,
-  diffAnchor,
-  type Draft,
-  inHunks,
-  locationOf,
-} from "../../../src/shared/review-comments";
+import { type Draft, inHunks, locationOf } from "../../../src/shared/review-comments";
 import type { DiffTarget } from "./DiffTab.vue";
+import { useDiffComments, WRITING } from "../composables/useDiffComments";
 
 const props = defineProps<{
   file: DiffFile;
@@ -74,32 +67,14 @@ watch(
   { immediate: true },
 );
 
-/** The lines being commented on, until the comment is added or let go. */
-const pending = ref<DiffAnchor | null>(null);
-const start = (range: SelectedLineRange | null) => {
-  if (range !== null && parsed.value !== null)
-    pending.value = diffAnchor(props.file.path, range, parsed.value);
-};
-
-/** The annotation of the comment being written; a draft's id is a number. */
-const WRITING = "writing";
-const onThisFile = computed(() =>
-  drafts.value.flatMap((draft) =>
-    draft.anchor._tag === "Diff" && draft.anchor.path === props.file.path
-      ? [{ draft, anchor: draft.anchor }]
-      : [],
-  ),
+const comments = useDiffComments(
+  () => props.file.path,
+  () => parsed.value,
+  () => drafts.value,
+  add,
+  () => view?.setSelectedLines(null),
 );
-const annotations = computed<DiffLineAnnotation<string>[]>(() => [
-  ...onThisFile.value.map(({ draft, anchor }) => ({
-    side: anchor.side,
-    lineNumber: anchor.last,
-    metadata: draft.id,
-  })),
-  ...(pending.value === null
-    ? []
-    : [{ side: pending.value.side, lineNumber: pending.value.last, metadata: WRITING }]),
-]);
+const { pending, annotations, settle } = comments;
 
 /** Each annotation's element, by draft id, which the template teleports its comment into. */
 const slots = shallowReactive(new Map<string, HTMLElement>());
@@ -134,8 +109,7 @@ const options = (): FileDiffOptions<string, undefined> => ({
   disableFileHeader: true,
   enableLineSelection: true,
   enableGutterUtility: true,
-  onGutterUtilityClick: start,
-  onLineSelectionEnd: start,
+  ...comments.handlers,
   renderAnnotation: (annotation) => slotFor(annotation.metadata),
   onPostRender: showWanted,
 });
@@ -165,12 +139,6 @@ watch(annotations, (now) => {
   const kept = new Set(now.map((annotation) => annotation.metadata));
   for (const id of slots.keys()) if (!kept.has(id)) slots.delete(id);
 });
-
-const settle = (text: string | null) => {
-  if (pending.value !== null && text !== null) add(pending.value, text);
-  pending.value = null;
-  view?.setSelectedLines(null);
-};
 
 /** A finding's line as the file is now, or as it was for a deleted file. */
 const targetSide = computed(() => (props.file.status === "deleted" ? "deletions" : "additions"));
