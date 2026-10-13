@@ -69,6 +69,10 @@ test(
               () => ownerOf(second.world.state),
               (owner) => owner !== null && owner.pid !== before?.pid,
             );
+            yield* until(
+              () => first.cli(["--machine", "second", "board"]),
+              (answer) => answer.envelope.ok,
+            );
             const after = yield* route.open(() => Effect.void);
             expect((yield* after.board().pipe(Stream.take(1), Stream.runCollect))[0]).toMatchObject(
               { build: BUILD },
