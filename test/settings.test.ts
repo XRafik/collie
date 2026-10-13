@@ -30,6 +30,7 @@ describe("Collie's settings", () => {
         "quiet_ms",
         "board_quiet_ms",
         "compact_at_tokens",
+        "claude_auto_compact_window",
         "proactive",
         ...harnessNames().map((harness) => `models.${harness}`),
         ...NOTIFICATION_KINDS.map((kind) => `notifications.${kind}`),
@@ -75,6 +76,36 @@ describe("Collie's settings", () => {
   });
 });
 
+describe("Claude Code's auto-compact window", () => {
+  const RANGE =
+    "claude_auto_compact_window has to be a whole number of tokens from 100000 to 1000000, or auto";
+
+  test("is 400000 tokens until set, and says it is Claude Code's alone", () => {
+    const window = settingOf("claude_auto_compact_window")!;
+    expect(window).toMatchObject({ kind: "text", fallback: "400000", unit: "tokens" });
+    expect(window.label).toContain("Claude Code");
+    expect(window.description).toContain("Claude Code");
+    expect(window.description).toContain("auto");
+    expect(window.description).toContain("100000");
+    expect(window.description).toContain("1000000");
+  });
+
+  test("takes a whole number in the range as a number, and auto as itself", () => {
+    expect(parseSetting("claude_auto_compact_window", "100000")).toEqual({ value: 100000 });
+    expect(parseSetting("claude_auto_compact_window", "1000000")).toEqual({ value: 1000000 });
+    expect(parseSetting("claude_auto_compact_window", " 400000 ")).toEqual({ value: 400000 });
+    expect(parseSetting("claude_auto_compact_window", "auto")).toEqual({ value: "auto" });
+    expect(parseSetting("claude_auto_compact_window", "")).toEqual({ value: null });
+  });
+
+  test("refuses anything else, Claude Code's shorthands included, naming the range", () => {
+    for (const typed of ["99999", "1000001", "500k", "1M", "-5", "400000.5", "big"])
+      expect(parseSetting("claude_auto_compact_window", typed)).toEqual({
+        refused: `${RANGE}, not "${typed}"`,
+      });
+  });
+});
+
 describe("Each setting explains itself", () => {
   const PLACED = {
     Agents: [
@@ -86,6 +117,7 @@ describe("Each setting explains itself", () => {
       "permissions",
       "trust",
       "compact_at_tokens",
+      "claude_auto_compact_window",
       "quiet_ms",
     ],
     Runs: ["max_iterations", "handoff_timeout_ms"],

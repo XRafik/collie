@@ -1,7 +1,7 @@
 // Where a board click landed and what an Escape found, read over fake elements.
 
 import { expect, test } from "bun:test";
-import { escapeOn, landedOn } from "../src/shared/board-clicks";
+import { escapeOn, inField, landedOn } from "../src/shared/board-clicks";
 
 /** An element, by the selectors it or one of its ancestors matches; a card has key `pc:a`. */
 const element = (matches: ReadonlyArray<string>, isContentEditable = false) => ({
@@ -66,4 +66,11 @@ test("Escape typed in a field, such as the Log search, is typing", () => {
   for (const field of ["input", "textarea", "select"])
     expect(escapeOn(element([field]), page(null))).toMatchObject({ typing: true });
   expect(escapeOn(element([], true), page(null))).toMatchObject({ typing: true });
+});
+
+test("focus in a field, or in what is editable, is in a field; anywhere else is not", () => {
+  for (const field of ["input", "textarea", "select"]) expect(inField(element([field]))).toBe(true);
+  expect(inField(element([], true))).toBe(true);
+  expect(inField(element(["button"]))).toBe(false);
+  expect(inField(null)).toBe(false);
 });
