@@ -693,7 +693,7 @@ test("the sweep keeps an unlisted agent's record while its server is not Quiet, 
       const first = yield* sweep([sweeper], `${rig.root}/state`, "host");
       expect(first.remove).toEqual([]);
       expect(first.keep.map((one) => one.reason).join("\n")).toContain(
-        "its Codex turn has not stopped: acknowledged",
+        `its Codex turn has not stopped: ${agent} is not stopped: acknowledged`,
       );
       expect(yield* recorded()).not.toBeNull();
 

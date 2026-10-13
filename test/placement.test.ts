@@ -1311,9 +1311,9 @@ test(
                 cwd: roaming,
                 dir: control,
                 endpoint: "ws://127.0.0.1:1",
-                pid: 1,
+                pid: process.pid,
                 command: "codex app-server",
-                started: "0",
+                started: null,
                 attempt: null,
               }),
             );

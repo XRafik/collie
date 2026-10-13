@@ -17,7 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** Brief contention gets one second to clear before the operation fails. */
 const LOCK_CLAIM_RETRIES = 40;
-const LOCK_CLAIM_RETRY_INTERVAL = "25 millis";
+export const LOCK_CLAIM_SPACING_MS = 25;
 const LOCK_WRITE_GRACE_MS = 10_000;
 const PROC_STAT_START_TIME_INDEX = 19;
 
@@ -77,7 +77,7 @@ const acquireLock = Effect.fn("acquireLock")((lock: string, claims: number) =>
     ),
     Effect.retry({
       times: claims,
-      schedule: Schedule.spaced(LOCK_CLAIM_RETRY_INTERVAL),
+      schedule: Schedule.spaced(LOCK_CLAIM_SPACING_MS),
       while: (error) => error instanceof LockContended,
     }),
     Effect.catchTag("LockContended", () => Effect.succeed(false)),

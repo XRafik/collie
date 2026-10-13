@@ -332,9 +332,10 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
   gone to a new one — once the agent it replaces is Quiet. A restart beside a Codex turn
   that has not stopped parks instead, with `parked` naming the agent's thread, turn and
   server, and starts nothing; resume again once that server has stopped. A stop that lands
-  while an agent is being started stops that agent too, so the stop leaves none running. On a Run that has already finished, a stop only stops its live
-  agents: no control is set, the status stays what it finished with, and with nothing
-  alive it says nothing was running.
+  while an agent is being started stops that agent too, so the stop leaves none running.
+  On a Run that has already finished, a stop only stops its live agents: no control is
+  set, the status stays what it finished with, and with nothing alive it says nothing was
+  running.
 - **A Run parks itself when its agent's pane will not take a prompt.** herdr answering
   `agent_blocked` for ten minutes leaves the Run `suspended`, with `parked` in its view —
   and in `run show` — saying what held, for how long, and where the prompt is. `run resume`
@@ -677,9 +678,9 @@ asks the host to pick a suspended run up again. It re-enters the workflow's curr
 and reuses every Activity already done, so completed work and its Outputs are kept and
 never redone, and an agent still live is reattached to rather than started a second
 time; one a stop closed is started again with the prompt it had, once its predecessor is
-Quiet — otherwise the run parks again, saying which server may still be writing. The host registers the
-modules as they are now, then clears the stop before waking work. A restored module is
-picked up without restarting the host.
+Quiet — otherwise the run parks again, saying which server may still be writing. The host
+registers the modules as they are now, then clears the stop before waking work. A
+restored module is picked up without restarting the host.
 
 Resume succeeds only when the host wakes suspended work or recovers this Run's unfinished
 admission or unavailable module into the engine. It clears the old park note before work

@@ -4701,13 +4701,9 @@ const makeRegistry: (
         }
       }
     }
-    const names = new Set<string>();
-    for (const herdr of sessions) {
-      const agents = yield* Effect.result(herdr.agentList());
-      if (agents._tag === "Failure") return "herdr would not say which agents it has";
-      for (const agent of agents.success) names.add(agent.name);
-    }
-    for (const record of yield* unlistedServers(placing.env.stateDir, names)) {
+    const servers = yield* unlistedServers(placing.env.stateDir, sessions);
+    if (servers === null) return "herdr would not say which agents it has";
+    for (const record of servers) {
       const there = yield* real(record.cwd);
       if (there === dir || there.startsWith(`${dir}/`))
         return `${record.agent}'s server may still be writing in it`;

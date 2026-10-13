@@ -455,10 +455,11 @@ claims a new one.
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
 no commit that is not on the remote already, nothing is working in it or could be resumed
-in it while its work has not landed — a Codex agent's server herdr no longer lists, whose
-control record is still kept, counts as working in it — its merge request is merged or closed on GitHub or
-GitLab (or a Disposition says what became of it, or its remote branch is gone), and its
-Task's workspace has closed. A squash merge counts: the head that merged is on the remote. A
+in it while its work has not landed — a Codex agent's server still running after herdr
+stopped listing the agent counts as working in it — its merge request is merged or
+closed on GitHub or GitLab (or a Disposition says what became of it, or its remote
+branch is gone), and its Task's workspace has closed. A squash merge counts: the head that
+merged is on the remote. A
 `renovate` checkout has no branch to ask either question about, so a clean one nothing is
 working in is settled, and there is no branch to delete with it. Pruning is part of the
 host's [cleanup](#cleanup) sweep, every ten minutes, whether or not a pane is open. The board says both what went and what is being held on to, with

@@ -22,6 +22,7 @@ import {
   Layer,
   Option,
   Path,
+  Predicate,
   Schedule,
   Schema,
 } from "effect";
@@ -236,7 +237,7 @@ export interface AgentsApi {
   readonly launch: (ask: AgentAsk) => Effect.Effect<Launched, AgentUncertain | AgentParked>;
   /**
    * Starts this work's agent again with its prompt where it is gone and its Output never
-   * came; `unless` is an unusable Output that counts as none.
+   * came, true where it did; `unless` is an unusable Output that counts as none.
    */
   readonly revive: (
     ask: AgentAsk,
@@ -2218,7 +2219,7 @@ const isParked = Schema.is(AgentParked);
 
 /** Anything a launch failed on, said as what it means: nobody can be sure what happened. */
 const isUncertain = Schema.is(AgentUncertain);
-const isNotQuiet = (cause: unknown): cause is NotQuiet => cause instanceof NotQuiet;
+const isNotQuiet = (cause: unknown): cause is NotQuiet => Predicate.isTagged(cause, "NotQuiet");
 const asUncertain = (operation: string, cause: unknown): AgentUncertain =>
   isUncertain(cause) ? cause : new AgentUncertain({ operation, reason: herdrFailureReason(cause) });
 

@@ -20,7 +20,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import type { Channel } from "./dispatcher";
 import type { Herdr, Submission } from "./herdr";
-import { ensureLockDir, withLock } from "./lock";
+import { LOCK_CLAIM_SPACING_MS, ensureLockDir, withLock } from "./lock";
 import { reason } from "./naming";
 import { COMPACTION_OFF } from "./settings";
 import { processOf } from "./processes";
@@ -37,8 +37,6 @@ export const COMPACTION_WAIT_MS = 5 * 60 * 1000;
  * Fixed, so a stop never hangs a door.
  */
 export const STOP_WAIT_MS = 30_000;
-/** The lock module's spacing between claims. */
-const LOCK_CLAIM_SPACING_MS = 25;
 
 /** Where an agent's controls live, for as long as the agent does. */
 export const CONTROL_DIR = "compaction";
@@ -527,21 +525,31 @@ export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
 });
 
 /**
- * The directories of agents herdr does not list whose record still names a server: an
- * agent is working in each until its server is Quiet, whatever its pane did.
+ * The records of agents no session lists whose server still runs: an agent is working in
+ * each one's directory until its server is Quiet, whatever its pane did. Null where a
+ * session would not list its agents.
  */
 export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function* (
   stateDir: string,
-  listed: ReadonlySet<string>,
+  sessions: ReadonlyArray<Pick<Herdr, "agentList">>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = path.join(stateDir, CONTROL_DIR);
+  const listed = new Set<string>();
+  for (const session of sessions) {
+    const agents = yield* Effect.result(session.agentList());
+    if (agents._tag === "Failure") return null;
+    for (const agent of agents.success) listed.add(agent.name);
+  }
   const found: ControlRecord[] = [];
+  const root = path.join(stateDir, CONTROL_DIR);
   for (const name of yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []))) {
     if (listed.has(name)) continue;
     const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
-    if (record !== null && record.pid !== null) found.push(record);
+    if (record === null || record.pid === null) continue;
+    const now = yield* processOf(record.pid);
+    if (now !== null && (record.started === null || now.started === record.started))
+      found.push(record);
   }
   return found;
 });
@@ -630,7 +638,7 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
       const reached =
         record === null ? null : yield* stopRecord(deps, record, deps.stopMs ?? STOP_WAIT_MS);
       if (reached !== null && reached.state !== "quiet")
-        return `its Codex turn has not stopped: ${reached.state}, ${reached.reason ?? "no reason given"}`;
+        return `its Codex turn has not stopped: ${notStopped(name, reached, reached.target)}`;
       if (reached === null) yield* putDownServer(deps, record);
       yield* fs.remove(path.join(deps.stateDir, CONTROL_DIR, name), {
         recursive: true,

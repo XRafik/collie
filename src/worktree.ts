@@ -1188,13 +1188,9 @@ const inUse = Effect.fn("worktree.inUse")(function* (
     // and a worktree's workspace is its own.
     if (pane.workspaceId) workspaces.set(pane.workspaceId, "an agent is working in it");
   }
-  const listed = new Set<string>();
-  for (const session of [herdr, ...sessions]) {
-    const agents = yield* Effect.result(session.agentList());
-    if (agents._tag === "Failure") return null;
-    for (const agent of agents.success) listed.add(agent.name);
-  }
-  for (const record of yield* unlistedServers(opts.stateDir, listed))
+  const servers = yield* unlistedServers(opts.stateDir, [herdr, ...sessions]);
+  if (servers === null) return null;
+  for (const record of servers)
     paths.set(record.cwd, `${record.agent}'s server may still be writing in it`);
   if (opts.keep && !paths.has(opts.keep)) paths.set(opts.keep, "a run is starting in it");
   return { paths, workspaces, panes: panes.success } satisfies InUse;
