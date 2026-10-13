@@ -2,7 +2,9 @@
 // launchd gives it a minimal PATH and none of `~/.zshrc`, so every local tool Desktop
 // starts would look uninstalled. Desktop reads what the login shell has once, as it starts.
 
+import { homedir } from "node:os";
 import { Config, Effect, Option, Path } from "effect";
+import { withoutLauncher } from "../../../src/env";
 
 const BIN = Effect.runSync(
   Path.Path.pipe(
@@ -30,31 +32,8 @@ export const parseLoginEnv = (output: string) => {
   return found;
 };
 
-const LAUNCHER_PRELOADS = new Set(["./libcef.so", "./libvk_swiftshader.so"]);
-
-/** Removes Electrobun's launcher variables, preserving the user's surviving entries. */
-export const withoutLauncher = (env: Readonly<Record<string, string | undefined>>, bin: string) => {
-  const {
-    ELECTROBUN_LAUNCHER_PID: _pid,
-    ELECTROBUN_INSTALL_ROOT_NAME: _root,
-    LD_PRELOAD,
-    LD_LIBRARY_PATH,
-    ICU_DATA,
-    ...inherited
-  } = env;
-  const kept = { ...inherited };
-  const without = (list: string | undefined, launcher: (entry: string) => boolean) =>
-    (list ?? "")
-      .split(":")
-      .filter((entry) => !launcher(entry))
-      .join(":");
-  const preload = without(LD_PRELOAD, (entry) => LAUNCHER_PRELOADS.has(entry));
-  const libraries = without(LD_LIBRARY_PATH, (entry) => entry === bin);
-  if (preload !== "") kept.LD_PRELOAD = preload;
-  if (libraries !== "") kept.LD_LIBRARY_PATH = libraries;
-  if (ICU_DATA !== undefined && ICU_DATA !== "" && ICU_DATA !== bin) kept.ICU_DATA = ICU_DATA;
-  return kept;
-};
+/** Where children start: Desktop's own folder goes when an update replaces it. */
+export const CHILD_CWD = homedir();
 
 /** Gives children the cleaned environment; Bun otherwise ignores changes made since it started. */
 export const childEnv = () => withoutLauncher(desktopEnv(), BIN);
@@ -71,6 +50,7 @@ export const takeLoginEnv = Effect.gen(function* () {
   if (process.platform !== "darwin") return;
   const shell = yield* Config.String("SHELL").pipe(Config.withDefault("/bin/zsh"));
   const child = Bun.spawn([shell, "-ilc", `printf '%s' '${BEGIN}'; env -0; printf '%s' '${END}'`], {
+    cwd: CHILD_CWD,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "ignore",

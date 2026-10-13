@@ -31,6 +31,7 @@ import {
   type Finding,
 } from "collie";
 import { Effect, FileSystem, Schema } from "effect";
+import * as Activity from "effect/workflow/Activity";
 import { FIX_PROMPT, IMPLEMENTER, REVIEWER, reviewPass } from "./reviewing.ts";
 
 const FIX = "Fix findings";
@@ -42,11 +43,16 @@ const AGAIN = "Review again";
 /** How many fix rounds one "Fix findings" may run before the human is asked again. */
 const ROUNDS = 4;
 
+const ReviewedCheckout = Schema.Union([
+  Schema.Struct({ cwd: Schema.String, branch: Schema.String }),
+  Schema.Struct({ refused: Schema.String }),
+]);
+
 export default defineWorkflow({
   id: "review",
   title: "review — an MR, a branch diff, or the working tree",
   description:
-    "You pick the target — an MR, a branch diff or the working tree — one complete review comes out, and what happens next is your call: fix the findings here, hand them to a live implementer, run a full implement, or post the review to somebody else's merge request.",
+    "Reviews a change — an MR, a branch diff or the working tree — in one complete review, and what happens next is your call: fix the findings here, hand them to a live implementer, run a full implement, or post the review to somebody else's merge request.",
   input: Schema.Struct({
     target: Schema.String,
     plan: Schema.optionalKey(
@@ -261,6 +267,18 @@ export default defineWorkflow({
           fixing = false;
           continue;
         }
+        // The fixer works in the reviewed branch's checkout, which is the Run's from now on.
+        const reviewed = yield* Activity.make({
+          name: `${operation}-checkout`,
+          success: ReviewedCheckout,
+          execute: host.checkoutReviewed(run.id),
+        });
+        if ("refused" in reviewed) {
+          yield* host.record(run.id, `${operation}: nothing fixed, ${reviewed.refused}`);
+          fixing = false;
+          settled = reviewed.refused;
+          continue;
+        }
         const fixed = yield* agentWork({
           operation,
           role: "implementer",
@@ -268,6 +286,7 @@ export default defineWorkflow({
           input: {
             inputs,
             ...input,
+            branch: reviewed.branch,
             iteration: String(rallied),
             max_iterations: String(ROUNDS),
             // What the rally is fixing: a dispute raised again with no rebuttal is not work.

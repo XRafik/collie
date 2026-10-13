@@ -50,7 +50,7 @@ human, start a child or branch again: there is no step graph to keep in step wit
 
 The host executes `run` as a Run, and the Run is supplied rather than passed:
 `yield* Run` is its `id` and the public id of the workflow it is a Run of, and `agentWork`,
-`ask`, `child` and `requireApproved` read it themselves. Each Run is one execution keyed on
+`ask` and `child` read it themselves. Each Run is one execution keyed on
 its id, so a retried request is the same execution and a new start is a new one.
 
 A failure is a `WorkflowError`, which carries a `reason`. A workflow with failures of its
@@ -561,9 +561,16 @@ const place = yield * host.place((yield * Run).id);
 //                   so on: whose agents `askRoute` and `handOffWork` may reach
 ```
 
-`place.cwd` is decided before your body runs, and your body never makes a checkout. A
-workflow that [declares](#what-a-definition-declares) `checkout` is given a worktree of its
-own there; every other one works where it was started, and a child where its parent works.
+`place.cwd` is decided before your body runs. A workflow that
+[declares](#what-a-definition-declares) `checkout` is given a worktree of its own there;
+every other one works where it was started, and a child where its parent works. One call
+moves it: `host.checkoutReviewed(runId)` asks for the checkout of the branch the Run's
+diff target names — the one git already has, or one cut from that branch — and records it
+as the Run's own, so read `place` again after it rather than keeping `place.cwd`
+([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). It answers
+`{ cwd, branch }`, or `{ refused }` in the resolver's own words where the target has no
+branch to work on; asking again answers from the record. Take it inside an `Activity`, so a
+replay does not cut a second checkout. Shipped `review` takes it before its own fixer starts.
 
 `place.dir` is where what a Run produces belongs, and where the things that read a Run look:
 a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its findings in
@@ -741,9 +748,10 @@ is, and why nothing here is a dependency resolver.
 A tool that makes a development environment often cuts the checkout too. bodil's
 `bodil remote up <brands> <name>` cuts `worktrees/<name>/monorepo` on a branch of its own,
 and `bodil remote down <name>` stops the instance. A workflow wraps such a tool around a
-child: its "up" in an Activity, the child given the tool's worktree as its `workspace` and
-the tool's branch as its `branch`, and its "down" in an Activity once the child has settled,
-however the child ended.
+child: its "up" in an Activity, and the child given the tool's worktree as its `workspace`
+and the tool's branch as its `branch`. Where the tool's instance should not outlive the work,
+its "down" goes in an Activity once the child has settled, however the child ended. bodil's
+is left up, because it is what the human checks the change in.
 
 The child's `checkout` resolves to the worktree the branch already has, as it does for any
 checkout already on the branch. Collie records it as not made by Collie
@@ -755,8 +763,8 @@ belongs with bodil's own install script and, until then, in
 
 ```ts
 // implement, in a bodil instance. `bodil remote up` cuts the worktree and its branch,
-// implement works there, and `bodil remote down` stops the instance once implement has
-// settled, however it ended. bodil reads the VM from BODIL_REMOTE_VM itself.
+// implement works there, and the instance is left up to check the change in.
+// bodil reads the VM from BODIL_REMOTE_VM itself.
 
 import { Host, Run, WorkflowError, child, defineWorkflow } from "collie";
 import { Effect, Schema, Stream } from "effect";
@@ -790,8 +798,7 @@ const sh = (command: string, args: ReadonlyArray<string>, cwd?: string) =>
 export default defineWorkflow({
   id: "bodil",
   title: "Implement a plan in a bodil instance",
-  description:
-    "Brings a bodil instance up, implements the plan in its worktree, and takes it down.",
+  description: "Brings a bodil instance up, implements the plan in its worktree, and leaves it up.",
   input: Schema.Struct({
     plan: Schema.String,
     /** What `bodil remote up` brings up, such as `happytiger`. */
@@ -812,48 +819,37 @@ export default defineWorkflow({
         name: "up",
         success: Schema.String,
         error: WorkflowError,
-        execute: sh("bodil", ["remote", "up", input.brands, name]),
+        execute: sh("bodil", ["remote", "up", input.brands, name, "--detach"]),
       });
-      // Everything after "up" is followed by "down", so a failure here leaves no instance up.
-      const built = yield* Effect.exit(
-        Effect.gen(function* () {
-          const checkout = yield* Activity.make({
-            name: "checkout",
-            success: Schema.Struct({ worktree: Schema.String, branch: Schema.String }),
-            error: WorkflowError,
-            execute: Effect.gen(function* () {
-              const worktree = `${yield* sh("bodil", ["root"])}/worktrees/${name}/monorepo`;
-              // Read, never derived, so bodil's rule for naming its branch stays bodil's.
-              const branch = yield* sh("git", ["branch", "--show-current"], worktree);
-              return { worktree, branch };
-            }),
-          });
-          return yield* child({
-            invocation: "implement",
-            workflow: "implement",
-            input: { plan: input.plan },
-            options: { workspace: checkout.worktree, branch: checkout.branch },
-          });
+      const checkout = yield* Activity.make({
+        name: "checkout",
+        success: Schema.Struct({ worktree: Schema.String, branch: Schema.String }),
+        error: WorkflowError,
+        execute: Effect.gen(function* () {
+          const worktree = `${yield* sh("bodil", ["root"])}/worktrees/${name}/monorepo`;
+          // Read, never derived, so bodil's rule for naming its branch stays bodil's.
+          const branch = yield* sh("git", ["branch", "--show-current"], worktree);
+          return { worktree, branch };
+        }),
+      });
+      return String(
+        yield* child({
+          invocation: "implement",
+          workflow: "implement",
+          input: { plan: input.plan },
+          options: { workspace: checkout.worktree, branch: checkout.branch },
         }),
       );
-      // Never `--purge`: the worktree outlives the instance until bodil removes it.
-      yield* Activity.make({
-        name: "down",
-        success: Schema.String,
-        error: WorkflowError,
-        execute: sh("bodil", ["remote", "down", name]),
-      });
-      return String(yield* built);
     }),
 });
 ```
 
 `name` is optional: without one the instance is named after the Run's task. The VM is
 bodil's own `BODIL_REMOTE_VM`, which bodil reads itself. The branch is read from the
-checkout rather than worked out again, so bodil's rule for naming it stays bodil's. `down`
-never passes `--purge`, so the worktree outlives the instance until bodil removes it. A
-`down` that fails fails the Run, even after implement succeeded, so a leftover instance is
-never quiet; a Run stopped part-way leaves the instance up, for `bodil remote down <name>`.
+checkout rather than worked out again, so bodil's rule for naming it stays bodil's. `up`
+passes `--detach` because bodil's foreground mode holds until it is stopped, so the Activity
+would never finish. The instance outlives the Run, however it ended, so the human can check
+the change in it; `bodil remote down <name>` takes it down once they are done.
 
 ## A list of work, one item at a time
 
@@ -946,13 +942,16 @@ passing record of it, collected on this exact revision. A commit or an edit sinc
 earlier pass history — it is not that the result went off, it is that it is about another
 tree.
 
-`host.verify({ runId, name, cwd })` runs one of the commands your Run was started under the
-authority of, in the directory the grant names, resolved from `cwd` — which has to be the
-Run's own checkout — and records what it did. The list is `.collie/verify.json`, read when the Run
-started, plus whatever has been granted it since: by a human with `collie run intent
-verification`, or by chat with `set_verification`, which `collie_propose` carries out with no
-yes. A name not on it is refused, and a workflow cannot add to it. Anyone else
-collects the same way from outside: `collie verify --run <your run id> -- <command>`.
+`host.verify({ runId, name, cwd })` runs one of your Run's checks, in the directory the
+check names, resolved from `cwd` — which has to be the Run's own checkout — and records
+what it did. The checks are what the Run started with (`--verify`, else
+`.collie/verify.json`, else the checks remembered for its remote, else the user's
+`verify.json`; a follow-up started from a card starts with its parent's), plus whatever
+anyone has named since with `collie run intent verification`
+or chat's `set_verification`, the Run's own agent included. Nobody approves them
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). A name not among them is
+refused. Anyone else collects the same way from outside:
+`collie verify --run <your run id> -- <command>`.
 With `at: "default-base"` it runs at the merge-base of the checkout and its default branch,
 in that same checkout so what the build installed is there, and then puts the checkout back;
 a checkout with changes of its own, or no default branch to compare with, is refused.
@@ -970,31 +969,29 @@ Collie never works a pass out from your workflow's id.
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 ```
 
-`host.approved(runId)` is that list, for a prompt to name what the work will be held to
-before it starts — `renderApproved` writes it out — and `renderEvidence(host.evidence(...))`
-is what was actually collected and by whom, for a merge request to say what it proved.
-
-`requireApproved(kind)` is the same list where your Run's kind of result needs it.
-A workflow that [declares](#what-a-definition-declares) `verifies` is never started with
-nothing approved, so this is the backstop: with nothing approved it parks the Run with the repair — a grant through `collie run intent
-verification`, then `collie run resume` — instead of paying agents for work no gate could
-accept, and a resume asks again. Call it before your first agent and again at your gate, so
-a grant withdrawn meanwhile parks the Run there rather than failing it.
+`host.approved(runId)` is the Run's checks as they stand now, for a prompt to name what the
+work will be held to — `renderApproved` writes it out — and
+`renderEvidence(host.evidence(...))` is what was actually collected and by whom, for a
+merge request to say what it proved. The list can grow while the Run works, since an
+agent may name a check, so read it again where you need it — at each gate pass, inside the
+Activity that runs it, so a replay sees what that pass saw — rather than once at the start.
+An empty list stops nothing: where your Run's kind of result needs checks,
+`evidenceGapsOf` reports a gap that tells the implementer how to name them.
 
 `evidenceGapsOf` is the gate itself: what a Run of this kind still has no evidence for, one
-sentence each, and empty where the evidence is there. It reads the journal, the approved
-list, the Outputs you hold and the tickets you built — and it will not take a reviewer's
+sentence each, and empty where the evidence is there. It reads the journal, the Run's
+checks, the Outputs you hold and the tickets you built — and it will not take a reviewer's
 judgement from an implementer's Output, because the agent that wrote the change cannot
 vouch for its own scope. Only the latest result for a check on the tree in front of it
 counts, so a pass a later fail on the same tree contradicts is not one. Baseline failures
-are diagnostic context: `preexisting` does not remove gaps. Each approved check and each
+are diagnostic context: `preexisting` does not remove gaps. Each of the Run's checks and each
 ticket's promised check still needs a passing verification on the current tree.
 
 ```ts
 const gaps = evidenceGapsOf({
   kind: isOutcome(place.options.outcome ?? "") ? place.options.outcome : "unspecified",
   evidence: yield * host.evidence(runId, cwd),
-  approved: yield * requireApproved(place.options.outcome ?? ""),
+  approved: yield * host.approved(runId),
   outputs: { build, synthesize },
   reviewed: ["synthesize"],
   roots: [place.dir, cwd],
@@ -1022,7 +1019,9 @@ None of it is yours to implement, but it decides where your workflow can be inte
   and suspend _that_ Activity's own instance, never the workflow's — suspending the run from
   inside an Activity abandons the wait rather than parking it. `agentWork` does this while it
   is collecting, so a stop lands even mid-collection and what resumes reattaches to the
-  launch already recorded.
+  launch already recorded. Suspension interrupts the current fiber. A race waiting for
+  success can swallow that interruption while its other side keeps waiting. Use
+  `Effect.raceFirst` at such a boundary so suspension reaches the enclosing Run.
 - **Halting the agent is the host's half of a stop.** `run stop` also closes the panes of
   the Run's agents, and of the Runs it started, which is what stops them; the workspace
   keeps its own tab. When the Run resumes, work whose agent has gone and whose Output never
@@ -1079,14 +1078,6 @@ export default defineWorkflow({
   from a directory that is not a git checkout is refused naming that directory, and no
   Run, worktree, workspace or agent is left behind. Absent, the Run works where it was
   started.
-- **`verifies: true`** says the workflow's gate runs the approved set. A start of it whose
-  outcome needs that set (anything but `investigation`, `plan` and `review`) and has nothing
-  approved is refused as `invalid_input`, with the repair, before any Run, worktree or Task
-  exists. The set comes from `--verify`, else the project's `.collie/verify.json`, else the
-  checks remembered for its repository's remote, else the user's `verify.json`. A follow-up
-  started from a card is held to its parent's set. A plan spanning repositories is checked
-  in each repository it names, against that one's own `.collie/verify.json` or remembered
-  checks, and `--verify` is refused for it.
 - **`followUps` and `actions`** carry an `id` that is stable and a `title` a human reads.
   Two fields, because a retitled action is the same action and a card matching on the
   title would start a different one. `workflow` is a public id or `"self"` for the one

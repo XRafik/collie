@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { ownRoot, readEnv } from "../src/env";
+import { Effect } from "effect";
+import { runEffect } from "./support/effect";
+import { leaveLauncher, ownRoot, readEnv } from "../src/env";
 
 test("plugin env is read from the herdr-provided variables", () => {
   const env = readEnv({
@@ -74,3 +76,31 @@ test("COLLIE_CWD is remembered as explicit; an inferred cwd is not", () => {
   expect(inferred.cwd).toBe("/workspace");
   expect(inferred.cwdExplicit).toBe(false);
 });
+
+test("a process that leaves the launcher starts children without its preload, keeping the rest", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const [name, value] of [
+        ["LD_PRELOAD", "./libcef.so:/opt/mine.so"],
+        ["ELECTROBUN_LAUNCHER_PID", "4242"],
+      ] as const) {
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const was = Bun.env[name];
+            Bun.env[name] = value;
+            return was;
+          }),
+          (was) =>
+            Effect.sync(() => {
+              if (was === undefined) delete Bun.env[name];
+              else Bun.env[name] = was;
+            }),
+        );
+      }
+      leaveLauncher();
+      const said = yield* Effect.promise(() => Bun.$`env`.text());
+      expect(said).toContain("LD_PRELOAD=/opt/mine.so\n");
+      expect(said).not.toContain("ELECTROBUN_LAUNCHER_PID");
+      expect(said).toContain(`HOME=${Bun.env.HOME}\n`);
+    }).pipe(Effect.scoped),
+  ));

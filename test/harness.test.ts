@@ -177,6 +177,36 @@ test("every harness starts in its auto mode, and past its prompts only when bypa
   }
 });
 
+test("Claude Code alone is given its auto-compact window, after everything else it is started with", () => {
+  expect(startArgs(HARNESSES.claude!, "opus", "/p/i.md", "high", "auto", 400000)).toEqual([
+    "--model",
+    "opus",
+    "--effort",
+    "high",
+    "--append-system-prompt-file",
+    "/p/i.md",
+    "--permission-mode",
+    "auto",
+    "--autocompact",
+    "400000",
+  ]);
+  expect(startArgs(HARNESSES.claude!, "opus", "/p/i.md", undefined, "harness", "auto")).toEqual([
+    "--model",
+    "opus",
+    "--append-system-prompt-file",
+    "/p/i.md",
+    "--autocompact",
+    "auto",
+  ]);
+  expect(startArgs(HARNESSES.codex!, "gpt-5", "/p/i.md", undefined, "auto", 400000)).toEqual([
+    "-m",
+    "gpt-5",
+    "--approve-for-me",
+  ]);
+  for (const adapter of ["codex", "opencode", "pi"])
+    expect(HARNESSES[adapter]!.autoCompactFlag).toBeUndefined();
+});
+
 test("Claude Code's managed settings forbid bypass where the file or a drop-in disables it", () =>
   runEffect(
     Effect.gen(function* () {

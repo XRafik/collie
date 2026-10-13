@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `general` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -88,6 +88,18 @@ herdr actions, and the `collie` CLI.
   `desktop/src/shared/chat-view.ts` what the window says of a tool call and the card a
   message is about, and `src/toolkit.ts` the Toolkit both chats share
   ([ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-05-a-herds-chat-per-home-and-one-flock-chat-per-desktop)).
+- **Changing the Flock chat's harness or model** →
+  [ADR-0011's harness amendment](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-09-the-flock-chat-runs-on-the-harness-settings-names),
+  alongside `desktop/src/bun/driver.ts` (the session's driver interface),
+  `claude-driver.ts` (Claude through the Agent SDK), `pi-driver.ts` (Pi over RPC),
+  `pi-agui.ts` and `pi-transcript.ts` (Pi events and session files),
+  `chat-endpoint.ts` (authenticated loopback MCP) and `tool-server.ts` (both servers' tools),
+  `chat.ts` (turns and conversation),
+  `settings.ts` and `src/harness-choice.ts` (the same model checks as a Run), and `desktop/src/shared/flock-settings.ts`
+  (the rows), with `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`,
+  `test/flock-chat-turns.test.ts`, `test/desktop-settings.test.ts` and
+  `test/flock-tools.test.ts`. A model change waits for the current turn and keeps the
+  conversation.
 - **Changing what files a Run, or the Flock chat, is given** →
   [ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md), alongside
   `src/attachments.ts` (a Run's copies and its prompts' list), `src/uploads.ts` and
@@ -153,7 +165,7 @@ herdr actions, and the `collie` CLI.
   assume about suspension and recovery** →
   [ADR-0014](docs/adr/0014-native-workflows-run-on-effects-own-engine.md), alongside
   `src/engine.ts` and `test/engine.test.ts`. The two non-default cluster settings
-  and the five upstream behaviours the proof measured are recorded there; an Effect
+  and the six upstream behaviours the proof measured are recorded there; an Effect
   upgrade rechecks them rather than assuming them.
 - **Naming something, or writing a test that needs a real host** →
   [ADR-0028](docs/adr/0028-names-are-the-domains-and-the-proof-drives-the-shipped-host.md),
@@ -228,9 +240,9 @@ herdr actions, and the `collie` CLI.
   [`docs/sdk.md`](docs/sdk.md#reviewing-and-fixing-until-it-converges), alongside
   `src/output.ts`, `src/outcome.ts`, `src/verify.ts` and `test/rally.test.ts`. The engine
   and a module make the same decision through `settleRound`; a check is a claim until the
-  verification journal has it on this revision. The approved set is the human's or chat's:
-  chat's `set_verification` is carried out with no yes, and Collie spawns what it names
-  ([ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-09-29-chat-may-choose-what-proves-a-run)).
+  verification journal has it on this revision. Nobody approves a Run's checks: a human,
+  chat or the Run's own agent names them, and Collie spawns what they name
+  ([ADR-0055](docs/adr/0055-a-run-never-asks-to-run-its-checks.md)).
 - **Changing how a list of work, a ticket slice or a repository fan-out recovers** →
   [ADR-0024](docs/adr/0024-a-list-of-work-is-known-by-its-names.md) and
   [`docs/sdk.md`](docs/sdk.md#a-list-of-work-one-item-at-a-time), alongside `src/slices.ts`,
@@ -247,7 +259,7 @@ herdr actions, and the `collie` CLI.
 - **Changing what a shipped workflow does** →
   [ADR-0026](docs/adr/0026-a-shipped-workflow-is-a-module-like-any-other.md) and
   [`docs/sdk.md`](docs/sdk.md), alongside `workflows/*.workflow.ts`, their Markdown beside
-  them and the scenarios in `test/support/baseline.ts`. All five are modules loaded through the public
+  them and the scenarios in `test/support/baseline.ts`. All six are modules loaded through the public
   contract: the Markdown is content, what happens is TypeScript, and what each one proves
   and offers is its own declaration rather than its name. One that expects to be varied —
   `renovate` — takes the varying steps as ordinary functions, so a fork supplies three and
