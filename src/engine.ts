@@ -1105,6 +1105,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     outstanding: ReadonlyArray<Finding>,
   ): Effect.Effect<void, never, FileSystem.FileSystem>;
 
+  /** The findings of the review the Run that owns this directory left, or none. */
+  export function findingsIn(
+    dir: string,
+  ): Effect.Effect<ReadonlyArray<Finding>, never, FileSystem.FileSystem>;
+
   /** How many findings the Run that owns this directory left for somebody to fix. */
   export function openFindingsIn(
     dir: string,

@@ -3735,6 +3735,10 @@ scenario(
           "- disputed blocking finding: [blocker] the guard is on the wrong side (src/a.ts): the list is never empty here",
         );
         expect(opening).toContain("- assumed in build: callers never pass an empty list");
+        // Still the human's, so the card counts it whatever the last review wrote.
+        expect(
+          (yield* findingsIn(runDir(dir, "r-impl-dispute"))).map((one) => one.title),
+        ).toContain("the guard is on the wrong side");
       }),
     ),
   120_000,
@@ -3807,6 +3811,9 @@ scenario(
           "- disputed blocking finding: [blocker] B (src/a.ts): B is by design",
         );
         expect(opening).not.toContain("a reason the reviewer answers");
+        expect(
+          (yield* findingsIn(runDir(dir, "r-final-dispute"))).map((one) => one.title),
+        ).toContain("B");
       }),
     ),
   120_000,

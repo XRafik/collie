@@ -591,8 +591,10 @@ replay does not cut a second checkout. Shipped `review` takes it before its own 
 `place.dir` is where what a Run produces belongs, and where the things that read a Run look:
 a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its findings in
 `findings.json` — `leaveReview` writes both. A card counts those; nothing counts a Run's
-prose. After a last fix `settleFinalFix` accepted, `leaveOutstanding(dir, outstanding)`
-leaves the findings it says still stand, and the review's prose as it was.
+prose. `findingsIn(dir)` reads the findings back. After a last fix `settleFinalFix`
+accepted, `leaveOutstanding(dir, outstanding)` leaves the findings it says still stand, and
+the review's prose as it was. Shipped `implement` also leaves every blocking dispute still
+the human's among them, whichever review wrote last, so the card counts it.
 
 `place.options` is the other half of the launch. The names in `RESERVED_INPUTS` are the
 host's, so they are never in your payload — a caller asking for extra review axes or naming

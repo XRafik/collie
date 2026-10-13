@@ -45,6 +45,7 @@ import {
   renderProgress,
   settleFinalFix,
   leaveOutstanding,
+  findingsIn,
   settleRound,
   splitDisputed,
   unmetCriteria,
@@ -734,6 +735,11 @@ export default defineWorkflow({
           yield* host.parked(runId, null);
         }),
       });
+      // A dispute the human settles stays counted, whichever review last wrote the findings.
+      const onFile = yield* findingsIn(place.dir);
+      const counted = new Set(onFile.map(findingKey));
+      const carried = rallied.disputes.filter((one) => !counted.has(findingKey(one)));
+      if (carried.length > 0) yield* leaveOutstanding(place.dir, [...onFile, ...carried]);
       const checks = yield* host.approved(runId);
       // Failed before this Run changed anything, and still fails: reported, never passed.
       const failing = failingNow(
@@ -1009,6 +1015,8 @@ interface Rallied {
   readonly unreviewed: string;
   /** Blocking disputes nobody answered, for the human to settle in the merge request. */
   readonly unsettled: ReadonlyArray<string>;
+  /** Those disputes as findings, which stay counted until the human settles them. */
+  readonly disputes: ReadonlyArray<Finding>;
   /** The review that decided it, which is the one judgement the gate may read. */
   readonly reviewed: SynthesisReport;
 }
@@ -1078,6 +1086,7 @@ const rally = (ask: {
           halted: null,
           unreviewed: "",
           unsettled: disputesOf(round.outstanding),
+          disputes: round.outstanding.filter(isBlocking),
           reviewed: synthesis,
         };
       }
@@ -1086,6 +1095,7 @@ const rally = (ask: {
           halted: `${round.halt}: ${round.reason}`,
           unreviewed: "",
           unsettled: [],
+          disputes: [],
           reviewed: synthesis,
         };
       }
@@ -1098,7 +1108,7 @@ const rally = (ask: {
             `carried ${synthesis.findings.length} non-blocking finding(s) unfixed: ${synthesis.findings.map((one) => one.title).join("; ")}`,
           );
         }
-        return { halted: null, unreviewed: "", unsettled: [], reviewed: synthesis };
+        return { halted: null, unreviewed: "", unsettled: [], disputes: [], reviewed: synthesis };
       }
       seen = { at, keys: round.keys };
 
@@ -1128,15 +1138,12 @@ const rally = (ask: {
         // Every round's disputes, not only this fix's: earlier ones were split out of what
         // this fix was shown, and are still the human's to settle.
         if (settled.ok || settled.halt === "dispute_unresolved") {
-          const left = new Set(settled.outstanding.map(findingKey));
-          yield* leaveOutstanding((yield* host.place(runId)).dir, [
-            ...settled.outstanding,
-            ...disputed.filter((one) => isBlocking(one) && !left.has(findingKey(one))),
-          ]);
+          yield* leaveOutstanding((yield* host.place(runId)).dir, settled.outstanding);
           return {
             halted: null,
             unreviewed: settled.attestation,
             unsettled: disputesOf(disputed),
+            disputes: disputed.filter(isBlocking),
             reviewed: synthesis,
           };
         }
@@ -1144,6 +1151,7 @@ const rally = (ask: {
           halted: `${settled.halt}: ${settled.reasons.join("; ")}`,
           unreviewed: "",
           unsettled: [],
+          disputes: [],
           reviewed: synthesis,
         };
       }

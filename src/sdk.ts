@@ -105,13 +105,15 @@ export {
 
 /**
  * What a Run leaves behind about a review, and where. `leaveReview` writes both halves —
- * the prose a human reads and the findings whatever comes next counts — `leaveOutstanding`
+ * the prose a human reads and the findings whatever comes next counts, read back by
+ * `findingsIn` — `leaveOutstanding`
  * the findings still standing after a last fix `settleFinalFix` accepted, and `riskLine`
  * the paragraph an extra axis adds to what a reviewer is asked.
  */
 export {
   FINDINGS_FILE,
   REVIEW_FILE,
+  findingsIn,
   leaveOutstanding,
   leaveReview,
   openFindingsIn,
