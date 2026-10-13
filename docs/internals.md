@@ -25,7 +25,9 @@ Work runs in one background **host** per state directory
 <state>`, started by the first client that needs it and owned under `host.lock`. The CLI,
 the board and chat reach it over Effect RPC on `host.sock`, so a Run survives the picker
 closing, the board closing and the terminal being detached, and a client of another build
-is told to restart the host rather than served. A host stops by itself once its lock is
+is told to run `collie host restart` rather than served. That command, and the herdr action
+beside it, is the same stop a newer client uses followed by an ordinary start, so what the
+old host was running is the new one's startup recovery and nothing else. A host stops by itself once its lock is
 gone with the state directory it was in — there is nothing left for it to serve, even if its
 socket makes the directory again — or once the process named in `COLLIE_HOST_WATCH_PID`,
 where one is, has exited.
@@ -54,11 +56,14 @@ nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host ke
 `LD_LIBRARY_PATH` and `ICU_DATA`.
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
-whether the grace ran out, every warning the engine and the registry log — since its own
-stdout and stderr go nowhere. Lines are flushed every 100 ms, so a host killed outright can
-lose its last few. Past 1 MiB the file starts again and the previous one is kept as
-`host.log.1`. Look there first when a host
-stops answering.
+whether the grace ran out, every warning the engine and the registry log. Lines are flushed
+every 100 ms, so a host killed outright can lose its last few. Past 1 MiB the file starts
+again and the previous one is kept as `host.log.1`. Look there first when a host stops
+answering. What a host started by a client writes to its stdout and stderr, a stack trace
+the log never saw among it, is in `host.out`: the client starts it through `/bin/sh`, which
+opens that file for appending and `exec`s the host with its pid. The host keeps it to 1 MiB
+by copying it to `host.out.1` and emptying it in place, checked each minute and at each
+start, since renaming a file the process still writes to would not move its writes.
 
 A workflow is a TypeScript module, and the host runs it on Effect's own engine
 ([ADR-0014](adr/0014-native-workflows-run-on-effects-own-engine.md)): a
@@ -87,7 +92,10 @@ checkout gone — parks with the reason and the repair, and `run resume` picks i
 
 Beside the database, a Run's files are its audit trail: `agents/<run>/<operation>.prompt.md`
 with the Output it came back with, `evidence/<run>/` with its checks
-and the ones collected, and `runs/<run>/` with its cards, its `plan/` and the review it left.
+and the ones collected, and `runs/<run>/` with its cards, its `plan/`, the review it left and the notes its agents
+handed on in `handoffs/`, which the shipped workflows tell them to write there rather than in
+`/tmp` and which `run show` and the Run's record list. They are the Run's, so they go only
+when it does.
 Nothing an older Collie recorded is read ([ADR-0027](adr/0027-one-engine-and-a-hard-cutover.md)),
 and the host's cleanup sweep removes it once it has not changed for a day.
 

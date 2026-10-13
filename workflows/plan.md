@@ -6,6 +6,10 @@ Project root: {{cwd}}
 This run's plan directory: {{run.dir}}/plan
 This run's id: {{run.id}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 {{rooting}}
 
 When I say proceed, implement, build or go, I am answering this run's end menu: run

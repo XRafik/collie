@@ -258,6 +258,7 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["tools call", { route: "shell" }],
   ["mcp", { route: "shell" }],
   ["host", { route: "shell" }],
+  ["host restart", { route: "shell" }],
   ["bridge", { route: "shell" }],
   ["machine list", { route: "shell" }],
   ["machine invite", { route: "shell" }],

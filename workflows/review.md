@@ -3,6 +3,10 @@ Project root: {{cwd}}
 Spec: {{inputs.plan}}
 Outcome the change has to prove (not given means unclassified): {{inputs.outcome}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 Read the target first:
 
 - `mr:<project>!<iid>` or `mr:github.com/<owner>/<repo>#<n>` — a {{mr.forge}} {{mr.noun}}.

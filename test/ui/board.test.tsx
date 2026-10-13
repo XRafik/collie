@@ -1212,6 +1212,20 @@ test("Summary lists what the Run was given with its path, and nothing for a Run 
     }),
   ));
 
+test("Summary lists the notes the Run's agents handed on, and nothing for a Run with none", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const handed = record({ handoffFiles: [{ name: "review/notes.md", bytes: 17 }] });
+      const app = yield* opened(appState({ tasks: [task()], detail: handed }));
+      expect(app.said()).toContain("HANDOFFS");
+      expect(app.said()).toContain("/state/runs/r1/handoffs/review/notes.md");
+      expect(app.said()).toContain("17 bytes");
+
+      const none = yield* opened(appState({ tasks: [task()], detail: record() }));
+      expect(none.said()).not.toContain("HANDOFFS");
+    }),
+  ));
+
 test("Summary says what each of the Run's agents ran on", () =>
   runEffect(
     Effect.gen(function* () {

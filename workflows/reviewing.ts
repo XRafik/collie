@@ -61,6 +61,7 @@ const REVIEW = content.template("review", {
 /** The reviews to reconcile, and the one before them. */
 const SYNTHESIZE = content.template("synthesize", {
   ...change,
+  run: Schema.Struct({ dir: text, id: text }),
   previous: Schema.Struct({ review: text }),
   fan_in: text,
   obstacle: text,

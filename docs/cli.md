@@ -545,7 +545,8 @@ one interrupted before it has an answer still prints an envelope: `operation_fai
 A Run is watched from the host's own stream: every update
 is the whole current state rather than a change to apply, so a `wait` started long after
 the work — or resumed after the last one was interrupted — reads where the Run is instead
-of waiting for a notification that has already been and gone. `run show` names the module file the Run is on, and a
+of waiting for a notification that has already been and gone. `run show` lists the handoff notes the Run's agents left under its `handoffs/` directory,
+by path (`data.handoffs`). It names the module file the Run is on, and a
 Run whose module has been deleted still reads, pending, with that file named: its history
 is Collie's rows, and none of them went anywhere. `run list` shows those Runs beside the
 rest; where the host will not start it says so and still lists the others.
@@ -1752,12 +1753,27 @@ everything is ready, or what is missing and how to fix each one.
 
 ```sh
 collie host --dir <state-dir>
+collie host restart [--dir <state-dir>]
 ```
 
-The process durable work runs in. Nobody is expected to type this: a client that needs a
-host and finds none starts one, detached, and leaves it running — so the work outlives the
+The process durable work runs in. Nobody is expected to type the first: a client that needs
+a host and finds none starts one, detached, and leaves it running — so the work outlives the
 command, the board or the chat turn that asked for it. Typing it is how you watch one in a
 terminal.
+
+`host restart` replaces the host that owns the state directory (this installation's by
+default) with this install's: it asks the owner to stop, kills it if it is still there five
+seconds past its stop grace, starts a host, and waits until that one answers. It prints the
+old and new pid and build, `data.before` and `data.after` under `--json`; with no host
+running, `before` is null and it says it started one. A stopped host never answered is named
+with its pid and `build unknown`. Nothing about a Run is touched: the new host recovers
+what the old one was doing, exactly as on any start, so a parked Run is still parked and a
+step that was cut short runs again. The herdr action "Restart the Collie host" does the
+same and says what it did as a notification.
+
+A host a client started has no terminal, so its own stdout and stderr — a crash's stack
+trace among them — are appended to `host.out` in the state directory, beside `host.log`.
+Like the log it is kept to about 1 MiB, with what came before it kept once as `host.out.1`.
 
 One host owns one state directory, and the pid lock beside its SQLite decides which. Start
 four clients at once and they converge on one owner; the three hosts that lost the lock
@@ -1957,8 +1973,8 @@ It says which build it is, and which installation it serves. A client newer than
 from the same installation (after `collie upgrade`), stops it and starts itself in its
 place; a host still there five seconds past its stop grace is killed, and its work is
 recovered by the one that replaces it. A host that does not answer is replaced the same way
-when the build it recorded in `host.build` is older. Any other client of another build is told which build is running and which pid to
-stop, and sends nothing else. That includes a checkout under development, which is pointed
+when the build it recorded in `host.build` is older. Any other client of another build is told which build is running and to run
+`collie host restart`, and sends nothing else. That includes a checkout under development, which is pointed
 at a state directory of its own rather than replacing the installed host. Such a
 checkout's host also says `development: "<version>+<sha>"`; a release's does not.
 A host that cannot be started at all, or that takes a connection and does not answer within

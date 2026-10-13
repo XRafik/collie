@@ -470,7 +470,7 @@ const runShow = Command.make(
             return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
           const shown = yield* runShown(resolved.env, runId);
           if (!shown.ok) return shown;
-          const { view, agents, disposition, children, machine } = shown;
+          const { view, agents, disposition, children, machine, handoffs = [] } = shown;
           // A Task is this Machine's, so a Run on another is never outside it.
           const task = yield* selectedTask(global);
           if (machine === null && task !== null && view.task !== task)
@@ -487,6 +487,7 @@ const runShow = Command.make(
               waiting: view.waiting,
               next_action: view.waiting[0]?.name ?? null,
               machine,
+              handoffs,
             },
             human: [
               `${view.runId}\t${statusLine(statusOf(view), disposition)}\t${view.workflow}`,
@@ -506,6 +507,7 @@ const runShow = Command.make(
               ...agentLines(agents),
               ...describeWaiting(view),
               ...children.map((child) => `  ${child.runId}\t${child.workflow}\t${statusOf(child)}`),
+              ...handoffs.map((file) => `  handoff ${file.path} (${file.bytes} bytes)`),
             ].join("\n"),
           };
         }),

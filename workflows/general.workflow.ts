@@ -6,7 +6,7 @@ const content = contentOf(markdown);
 
 const task = content.template("task", {
   inputs: Schema.Struct({ goal: Schema.String }),
-  run: Schema.Struct({ id: Schema.String }),
+  run: Schema.Struct({ dir: Schema.String, id: Schema.String }),
   rooting: Schema.String,
 });
 
@@ -40,7 +40,7 @@ export default defineWorkflow({
         instructions: task,
         input: {
           inputs: { goal: asked.goal },
-          run: { id: run.id },
+          run: { dir: place.dir, id: run.id },
           rooting:
             place.options.workspace === "projects-root"
               ? (content.sections.get("projects-root") ?? "")

@@ -92,7 +92,8 @@ import { ChangedIntent } from "./intent-model";
 import { donePasses, markersOf, runningCheck, followLog } from "./checks";
 import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
-import { hostLogger } from "./host-log";
+import { hostLogger, rotateInPlace } from "./host-log";
+import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
@@ -238,6 +239,8 @@ export const BUILD: string = manifest.version;
 export const socketOf = (dir: string) => `${dir}/host.sock`;
 const lockOf = (dir: string) => `${dir}/host.lock`;
 const logOf = (dir: string) => `${dir}/host.log`;
+/** What a spawned host writes to its stdout and stderr. */
+export const outputOf = (dir: string) => `${dir}/host.out`;
 /** Which build owns the directory, written down for a client the host does not answer. */
 const recordOf = (dir: string) => `${dir}/host.build`;
 const HostRecord = Schema.fromJsonString(
@@ -288,6 +291,10 @@ const RunShown = Schema.Struct({
   agents: Schema.Array(RunAgent),
   disposition: Schema.NullOr(Disposition),
   children: Schema.Array(RunView),
+  /** The handoff notes its agents left, where they are on the host's Machine. Absent from an older host. */
+  handoffs: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ path: Schema.String, bytes: Schema.Int })),
+  ),
 });
 
 const Loaded = Schema.Struct({
@@ -602,6 +609,10 @@ const handlers = (
                 yield* readDispositions(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
               ),
               children: all.filter((one) => one.parent === runId),
+              handoffs: (yield* handoffsIn(runDir(dir, runId))).map((file) => ({
+                path: `${handoffsDir(runDir(dir, runId))}/${file.name}`,
+                bytes: file.bytes,
+              })),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>
@@ -2181,6 +2192,11 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
       Effect.void,
       boundedStop(lock).pipe(
         Effect.andThen(Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`)),
+        Effect.andThen(
+          Effect.forkScoped(
+            rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
+          ),
+        ),
         Effect.andThen(Effect.race(own(dir), orphaned(dir))),
         Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true })),
       ),
@@ -2424,13 +2440,53 @@ export const connect = (
         client: build,
         pid: who.pid,
         restart: ours
-          ? `the host for ${dir} is collie ${who.build} and this is ${build}: stop it (pid ${who.pid}) and run this again`
-          : `the host for ${dir} serves ${who.root} and this is collie ${build} from ${install}: point HERDR_PLUGIN_STATE_DIR at a directory of its own, or stop that host (pid ${who.pid}) and run this again`,
+          ? `the host for ${dir} is collie ${who.build} and this is ${build}: run \`collie host restart\` and run this again`
+          : `the host for ${dir} serves ${who.root} and this is collie ${build} from ${install}: point HERDR_PLUGIN_STATE_DIR at a directory of its own, or run \`collie host restart\` and run this again`,
       });
     }
     // What the old host was doing is the new one's startup recovery, not this client's wait.
     return yield* open(dir);
   });
+
+/** A host as a restart names it; `build` is null for one that owned the directory but did not answer. */
+export interface HostSeen {
+  readonly pid: number;
+  readonly build: string | null;
+}
+
+/**
+ * Replaces whatever host owns `dir` with this install's, by the same stop and start a newer
+ * client uses: the new host recovers what the old one left, as on any start (ADR-0015).
+ */
+export const restartHost = Effect.fn("Host.restart")(function* (
+  dir: string,
+  options?: { readonly build?: string; readonly hostEnv?: Readonly<Record<string, string>> },
+) {
+  const owner = yield* liveOwner(dir);
+  let before: HostSeen | null = null;
+  if (owner !== null) {
+    const answered = yield* ask(dir).pipe(Effect.option);
+    before = {
+      pid: owner.pid,
+      build: Option.match(answered, { onNone: () => null, onSome: (who) => who.build }),
+    };
+    yield* stopOwner(dir, owner.pid);
+  }
+  const who = yield* ensureRunning(dir, options?.hostEnv ?? {}, options?.build ?? BUILD);
+  return { before, after: { pid: who.pid, build: who.build } };
+});
+
+/** What a restart did, in the sentence every door says it with. */
+export const restartSaid = (
+  dir: string,
+  restarted: { readonly before: HostSeen | null; readonly after: HostSeen },
+) => {
+  const named = (host: HostSeen) =>
+    `pid ${host.pid} (${host.build === null ? "build unknown" : `collie ${host.build}`})`;
+  return restarted.before === null
+    ? `No host was running for ${dir}; started ${named(restarted.after)}.`
+    : `Restarted the host for ${dir}: ${named(restarted.before)} → ${named(restarted.after)}.`;
+};
 
 /** What a stopping host is given beyond its grace, and a killed one to be gone. */
 const STOP_SLACK = Duration.seconds(5);
@@ -2454,7 +2510,7 @@ const stopOwner = Effect.fn("Host.stopOwner")(function* (dir: string, pid: numbe
   if (yield* goneWithin(Duration.sum(yield* stopGrace, STOP_SLACK))) return;
   yield* signalProcess(pid, "SIGKILL");
   if (yield* goneWithin(STOP_SLACK)) return;
-  return yield* unavailable(dir, `pid ${pid} is an older host and did not stop`);
+  return yield* unavailable(dir, `pid ${pid} owns the directory and did not stop`);
 });
 
 /** One connection, in the caller's scope: theirs to keep, and theirs to close. */
@@ -2706,8 +2762,8 @@ const diagnose = Effect.fn("Host.diagnose")(function* (dir: string) {
 /**
  * Starts a host and leaves. Detached and unreferenced, because the point of the host is
  * that it outlives whoever needed it: a CLI command that exits, a board that is closed,
- * a chat turn that ends. Its stdio is closed for the same reason — there is no terminal
- * it belongs to.
+ * a chat turn that ends. There is no terminal it belongs to, so its stdout and stderr are
+ * appended to `host.out` by a shell that then becomes the host, keeping its pid.
  */
 const spawnHost = Effect.fn("Host.spawn")(function* (
   named: string,
@@ -2723,18 +2779,32 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
     yield* fs.makeDirectory(named, { recursive: true });
     // The host starts in it, so a relative one would name somewhere else from there.
     const dir = yield* fs.realPath(named);
+    yield* rotateInPlace(outputOf(dir));
     const handle = yield* spawner.spawn(
-      ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
-        cwd: dir,
-        // A client started by Desktop may carry its launcher's LD_PRELOAD.
-        // oxlint-disable-next-line effecttsgo/process-env
-        env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
-        extendEnv: false,
-        detached: true,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      }),
+      ChildProcess.make(
+        "/bin/sh",
+        [
+          "-c",
+          'out=$1; shift; exec "$@" >>"$out" 2>&1',
+          "sh",
+          outputOf(dir),
+          ...command,
+          "host",
+          "--dir",
+          dir,
+        ],
+        {
+          cwd: dir,
+          // A client started by Desktop may carry its launcher's LD_PRELOAD.
+          // oxlint-disable-next-line effecttsgo/process-env
+          env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+          extendEnv: false,
+          detached: true,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
     );
     // Unreferenced before the caller's scope closes, or the spawner's finalizer kills the
     // host it has just started: it leaves a child alone only once it is unreferenced.

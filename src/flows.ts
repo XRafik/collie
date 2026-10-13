@@ -57,6 +57,7 @@ import {
   invokeOffer,
   type BoardRead,
   offersOf,
+  restartHostAt,
   resumeRun,
   savedModules,
   startRun,
@@ -161,6 +162,19 @@ export const openPicker = Effect.fn("Flows.openPicker")(function* (
     focus: true,
   });
   return 0;
+});
+
+/** The herdr action for `collie host restart`, said as a notification since it has no pane. */
+export const restartHostFlow = Effect.fn("Flows.restartHostFlow")(function* (
+  herdr: Herdr,
+  env: PluginEnv,
+) {
+  const result = yield* restartHostAt(env.stateDir);
+  const [title, body] = result.ok
+    ? ["Collie host restarted", result.human]
+    : ["Collie host did not restart", result.error.message];
+  yield* herdr.notify(title, body, result.ok ? "done" : "request").pipe(Effect.ignore);
+  return result.ok ? 0 : 1;
 });
 
 /**

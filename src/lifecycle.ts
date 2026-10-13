@@ -32,6 +32,8 @@ import {
   connect,
   connectPeer,
   frontDoor,
+  restartHost,
+  restartSaid,
   socketOf,
   type HostClient,
   type HostUnavailable,
@@ -1525,6 +1527,17 @@ export const followUpRun = (
           }
         : answered,
     ),
+  );
+
+/** Replaces the host that owns `dir` with this install's, as `collie host restart` and the herdr action do. */
+export const restartHostAt = (dir: string): Effect.Effect<OpResult, never, Client> =>
+  restartHost(dir).pipe(
+    Effect.map((restarted): OpResult => ({
+      ok: true,
+      data: { dir, ...restarted },
+      human: restartSaid(dir, restarted),
+    })),
+    Effect.catch((cause) => Effect.succeed(refusal(cause))),
   );
 
 /** This Machine's peers, with the standings its host keeps. */

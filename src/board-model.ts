@@ -394,7 +394,7 @@ export const SteeringCard = Schema.Struct({
 
 export type SteeringCard = typeof SteeringCard.Type;
 
-/** A file the Run kept as evidence, fetched as `evidence:<name>`. */
+/** A file the Run kept, fetched as `evidence:<name>`, or `handoff:<name>` for a handoff note. */
 export const EvidenceFile = Schema.Struct({ name: Schema.String, bytes: Schema.Int });
 export type EvidenceFile = typeof EvidenceFile.Type;
 
@@ -557,6 +557,8 @@ export const RunDetail = Schema.Struct({
   verifications: Schema.Array(VerificationView),
   steering: Schema.Array(SteeringCard),
   evidence: Schema.Array(EvidenceFile),
+  /** What its agents left in its `handoffs/` directory. Absent from an older host. */
+  handoffFiles: Schema.optional(Schema.Array(EvidenceFile)),
   /** Absent from a host older than attachments. */
   attachments: Schema.optional(Schema.Array(AttachmentFile)),
   /** Null for a Run with no branch or no checkout left to compare. */

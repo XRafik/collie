@@ -3,6 +3,10 @@ Repository: {{inputs.repo}}
 Project root: {{cwd}}
 This run's directory: {{run.dir}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 Outcome to prove (not given means unclassified): {{inputs.outcome}}
 
 The verifications this run is held to — Collie runs exactly these itself, and nothing
