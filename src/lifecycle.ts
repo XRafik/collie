@@ -309,7 +309,10 @@ export const asksRun = <A>(
           const client = yield* reach(env, machine, door);
           asked.push(machine ?? machineName());
           if ((yield* client.run({ runId })) === null) return null;
-          return { ok: true as const, value: yield* question(client), machine };
+          return yield* question(client).pipe(
+            Effect.map((value) => ({ ok: true as const, value, machine })),
+            Effect.catch((cause: HostFailure) => Effect.succeed(refusal(cause))),
+          );
         }),
       ).pipe(
         Effect.catch((cause: HostFailure) => {

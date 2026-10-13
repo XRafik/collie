@@ -261,7 +261,12 @@ test(
             expect(encode((yield* first.cli(["run", "disposition", runId])).envelope)).toContain(
               "remote record",
             );
-            expect((yield* first.cli(["run", "resume", runId])).envelope.ok).toBe(true);
+            const ownerResume = (yield* second.cli(["run", "resume", runId])).envelope;
+            expect(ownerResume.ok).toBe(false);
+            expect((yield* first.cli(["run", "resume", runId])).envelope).toMatchObject({
+              ok: false,
+              error: { code: ownerResume.error?.code, message: ownerResume.error?.message },
+            });
             const built = started(
               (yield* second.cli(["run", "start", "completed-agent", "--input", "goal=override"], {
                 FAKE_HERDR_OUTPUTS: outputs,

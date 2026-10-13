@@ -242,6 +242,8 @@ Run records are served by their owning host through `run-record.ts`. Intent chan
 remembered checks and override clearing take the caller's Actor and request id there;
 verification runs in that host's checkout and streams its output. `verify-model.ts`
 keeps the shared Schemas separate from the collector.
+Once the owning host is found, its operation refusal is returned to the caller; it
+does not become a search for the Run on another Machine.
 
 Each host keeps its peers in `src/peers.ts`, started in the host's scope
 ([ADR-0057](adr/0057-a-machine-reaches-another-over-a-paired-link.md)):
