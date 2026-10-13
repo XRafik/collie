@@ -321,6 +321,74 @@ test(
 );
 
 test(
+  "an opposite invitation preserves an established lower-id dialler",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-keep-direction-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            yield* second.lists([first]);
+            expect((yield* first.cli(["machine", "list"])).envelope.ok).toBe(true);
+            expect((yield* second.cli(["machine", "list"])).envelope.ok).toBe(true);
+            const a = yield* connect(first.world.state);
+            const b = yield* connect(second.world.state);
+            const ai = (yield* a.identity()).installation!;
+            const bi = (yield* b.identity()).installation!;
+            const low = ai < bi ? a : b;
+            const high = ai < bi ? b : a;
+            const lowSide = ai < bi ? first : second;
+            const highSide = ai < bi ? second : first;
+            const invited = yield* high.invite({
+              for: ai < bi ? ai : bi,
+              name: lowSide.name,
+              address: "127.0.0.1",
+            });
+            yield* low.pair({
+              peer: {
+                installation: invited.installation,
+                name: highSide.name,
+                dials: "out",
+                url: `wss://127.0.0.1:${invited.port}`,
+                certificate: invited.certificate,
+                secret: invited.secret,
+              },
+            });
+            yield* until(
+              () => high.peers(),
+              (peers) => peers.some((peer) => peer.state === "live"),
+            );
+            const opposite = yield* low.invite({
+              for: ai < bi ? bi : ai,
+              name: highSide.name,
+              address: "127.0.0.1",
+            });
+            expect(opposite.dials).toBe("in");
+            yield* high.pair({
+              peer: {
+                installation: opposite.installation,
+                name: lowSide.name,
+                dials: opposite.dials!,
+                secret: opposite.secret,
+              },
+            });
+            expect((yield* low.peers())[0]?.dials).toBe("out");
+            expect((yield* high.peers())[0]?.dials).toBe("in");
+            expect((yield* lowSide.cli(["--machine", highSide.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+            expect((yield* highSide.cli(["--machine", lowSide.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
   "concurrent invitations and additions keep every pairing and one serving listener",
   () =>
     runEffect(

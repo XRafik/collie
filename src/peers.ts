@@ -4,6 +4,8 @@
 // above that path knows there is a WebSocket behind it.
 
 import { createServer, isIP, type Server, type Socket } from "node:net";
+// Effect Crypto has no X.509 certificate inspection.
+// @effect-diagnostics-next-line nodeBuiltinImport:off
 import { X509Certificate } from "node:crypto";
 import { hostname, networkInterfaces } from "node:os";
 import type { ServerWebSocket } from "bun";
@@ -1100,11 +1102,20 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     invite: (asker) =>
       Effect.gen(function* () {
         yield* validateName(asker.name);
+        const previous = peers.find((peer) => peer.installation === asker.installation);
         const certificate = yield* certificateFor(link.dir, asker.address).pipe(
           Effect.mapError((cause) =>
             Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
           ),
         );
+        if (previous?.dials === "out")
+          return {
+            installation: link.installation,
+            port: listenPort,
+            certificate,
+            secret: previous.secret,
+            dials: "in",
+          } satisfies Invited;
         const serving = yield* listenerCertificateFor(link.dir, asker.address).pipe(
           Effect.mapError((cause) =>
             Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
@@ -1114,14 +1125,15 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
           void listener.stop(true);
           listener = null;
         }
-        const previous = peers.find((peer) => peer.installation === asker.installation);
         const secret =
           (previous?.dials === "in" ? previous.secret : undefined) ??
           Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
-        const incoming: Peer =
-          previous?.dials === "out" && link.installation > asker.installation
-            ? previous
-            : { installation: asker.installation, name: asker.name, dials: "in", secret };
+        const incoming: Peer = {
+          installation: asker.installation,
+          name: asker.name,
+          dials: "in",
+          secret,
+        };
         yield* keep([
           ...peers.filter((peer) => peer.installation !== asker.installation),
           incoming,
@@ -1136,7 +1148,11 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         const previous = peers.find((one) => one.installation === peer.installation);
         // Simultaneous opposite invitations agree that the higher installation dials.
         const paired =
-          peer.dials === "out" && previous?.dials === "in" && link.installation < peer.installation
+          peer.dials === "out" &&
+          previous?.dials === "in" &&
+          (link.installation < peer.installation ||
+            controls.has(peer.installation) ||
+            standings.get(peer.installation)?.state === "live")
             ? { ...previous, name: peer.name }
             : peer;
         yield* keep([
@@ -1254,12 +1270,12 @@ export const pairWith = Effect.fn("Peers.pairWith")(
           onSome: (refused) => refused.error.message,
         })}`,
       });
-    const { installation, port: at, certificate, secret } = invited.value.data;
+    const { installation, port: at, certificate, secret, dials } = invited.value.data;
     const host = address.includes(":") ? `[${address}]` : address;
     const peer: Peer = {
       installation,
       name: machine.label,
-      dials: "out",
+      dials: dials ?? "out",
       url: `wss://${host}:${at}`,
       certificate,
       secret,

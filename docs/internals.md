@@ -239,7 +239,8 @@ Each host keeps its peers in `src/peers.ts`, started in the host's scope
   its original certificate across address aliases as the dialler's only CA. An alias
   missing from the original certificate gets a listener certificate signed by that
   original pin, retaining earlier aliases and normal TLS hostname verification.
-  When both Machines first pair at once, the higher installation id keeps the outgoing
+  A repeated opposite invitation preserves an established outgoing link and tells the
+  asker to keep the incoming direction. When both Machines first pair at once, the higher installation id keeps the outgoing
   record and the lower one the incoming record, so one listener and matching credentials remain.
 - **A relay socket per peer,** `peers/<name>.sock`. A client writes one
   header line, `{"as": <front door>, "client": <name>}`, and is answered with one line —

@@ -46,6 +46,8 @@ export const Invited = Schema.Struct({
   port: Schema.Int,
   certificate: Schema.String,
   secret: Schema.String,
+  /** The asker's direction when the listener already has a pairing to it. */
+  dials: Schema.optionalKey(Dials),
 });
 export type Invited = typeof Invited.Type;
 
