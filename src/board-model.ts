@@ -7,6 +7,9 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import { IntentSeedSchema } from "./intent-model";
 import { ScheduleChange, ScheduleChanged, ScheduleListing } from "./schedule-model";
+import { VerifyEvent, Pass } from "./verify-model";
+export { PASSES, Pass } from "./verify-model";
+import { IntentChangeSchema, ChangedIntent } from "./intent-model";
 import { UsageReading } from "./usage-model";
 import { VerifySpecSchema } from "./verify-spec";
 
@@ -105,15 +108,6 @@ export const Checks = Schema.Union([
   Schema.Struct({ state: Schema.Literal("unchecked") }),
 ]);
 export type Checks = typeof Checks.Type;
-
-/**
- * Why a check was run (ADR-0042): the gate on the branch, a recheck of the same tree for a
- * flake, a fix after gate fix N, the default branch's base, the finish's own, or a plain
- * check where nobody said.
- */
-export const PASSES = ["gate", "recheck", "fix", "baseline", "finish", "check"] as const;
-export const Pass = Schema.Literals(PASSES);
-export type Pass = typeof Pass.Type;
 
 /** A check running now, and what it is measured against. */
 export const RunningCheck = Schema.Struct({
@@ -443,6 +437,28 @@ export const RanOn = Schema.Struct({
   effort: Schema.NullOr(Schema.String),
 });
 
+/** A paired Machine, by its installation and the name herdr gives it. */
+export const MachineRef = Schema.Struct({ installation: Schema.String, name: Schema.String });
+export type MachineRef = typeof MachineRef.Type;
+
+export const RequestedBy = Schema.Struct({
+  run: Schema.String,
+  agent: Schema.String,
+  machine: MachineRef,
+});
+export type RequestedBy = typeof RequestedBy.Type;
+export const requestedByLine = (who: RequestedBy) =>
+  `Started by ${who.agent} of ${who.run} on ${who.machine.name}`;
+
+export const RunReport = Schema.Struct({
+  state: Schema.Literals(["delivered", "undelivered"]),
+  at: Schema.String,
+  note: Schema.String,
+  closed: Schema.Boolean,
+  closure: Schema.optionalKey(Schema.String),
+});
+export type RunReport = typeof RunReport.Type;
+
 export const RunAgent = Schema.Struct({
   operation: Schema.String,
   agent: Schema.String,
@@ -478,6 +494,8 @@ export const ranOn = (agent: RunAgent) => {
 /** Everything the detail panel shows for the selected Run. */
 export const RunDetail = Schema.Struct({
   id: Schema.String,
+  requestedBy: Schema.optional(RequestedBy),
+  report: Schema.optional(RunReport),
   dir: Schema.String,
   title: Schema.String,
   status: Schema.String,
@@ -803,13 +821,22 @@ export const FrontDoor = Schema.Literals([
   "evaluator",
   "chat",
   "schedule",
+  "agent",
+  /** A host's own call to a peer, such as a settings sync: never a human. */
+  "host",
 ]);
 export type FrontDoor = typeof FrontDoor.Type;
 
-/** Where a bridged channel came from: the computer its front door named, and the SSH client the bridge saw. */
+/**
+ * Where a channel came from: the computer its front door named, the SSH client a bridge
+ * saw, and the paired Machine a link authenticated, which only this host's own link sets.
+ */
 export const Where = Schema.Struct({
   client: Schema.optionalKey(Schema.String),
   ssh: Schema.optionalKey(Schema.String),
+  machine: Schema.optionalKey(MachineRef),
+  run: Schema.optionalKey(Schema.String),
+  agent: Schema.optionalKey(Schema.String),
 });
 export type Where = typeof Where.Type;
 
@@ -827,6 +854,8 @@ export const Declaration = Schema.Struct({
   said: Schema.optionalKey(Schema.String),
   /** The names of the files the human's message carried. */
   attachments: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** The host's own, which only its link knows: what lets `from` name a Machine. */
+  stamp: Schema.optionalKey(Schema.String),
 });
 export type Declaration = typeof Declaration.Type;
 
@@ -890,11 +919,35 @@ export const Attachments = Schema.Array(Schema.String);
 /** The Collie tools a Flock chat has a Machine's host answer, all of them reads. */
 export const FLOCK_READS = ["collie_run", "collie_receipts", "collie_workspaces"] as const;
 
+export const ShellResult = Schema.Struct({
+  code: Schema.Int,
+  stdout: Schema.String,
+  stderr: Schema.String,
+});
+export type ShellResult = typeof ShellResult.Type;
+export const ShellRequest = Schema.Struct({
+  script: Schema.String,
+  stdin: Schema.optionalKey(Schema.String),
+  request: Schema.String,
+});
+export type ShellRequest = typeof ShellRequest.Type;
+
 /**
  * What any front door, on this computer or another, may ask a host. Every operation takes
  * a request id: the same one twice is one operation, and with other arguments is refused.
  */
 export const FrontDoorRpcs = RpcGroup.make(
+  Rpc.make("refresh", {
+    payload: { request: Schema.String },
+    success: Schema.Boolean,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
+
+  Rpc.make("shell", {
+    payload: ShellRequest,
+    success: ShellResult,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
   Rpc.make("board", { success: BoardMessage, stream: true }),
   /**
    * Once per channel, for good; a channel that never declares is stamped `cli`, never a
@@ -1032,6 +1085,39 @@ export const FrontDoorRpcs = RpcGroup.make(
     error: Schema.Union([HostRefused, ProposalRefused, RequestConflict]),
   }),
   /** A message nobody knows reached its agent, settled by the person who knows. */
+  Rpc.make("verify", {
+    payload: {
+      runId: Schema.String,
+      name: Schema.String,
+      executable: Schema.String,
+      argv: Schema.Array(Schema.String),
+      cwd: Schema.optionalKey(Schema.String),
+      expect: Schema.Literals(["pass", "fail"]),
+    },
+    success: VerifyEvent,
+    error: HostRefused,
+    stream: true,
+  }),
+  Rpc.make("changeIntent", {
+    payload: {
+      runId: Schema.String,
+      change: IntentChangeSchema,
+      propagate: Schema.Boolean,
+      request: Schema.String,
+    },
+    success: ChangedIntent,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
+  Rpc.make("rememberVerification", {
+    payload: { runId: Schema.String, replace: Schema.Boolean, request: Schema.String },
+    success: Schema.Json,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
+  Rpc.make("clearOverride", {
+    payload: { runId: Schema.String, agent: Schema.String, request: Schema.String },
+    success: Schema.Json,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
   Rpc.make("settleDelivery", {
     payload: {
       runId: Schema.String,

@@ -74,3 +74,46 @@ export const IntentSeedSchema = Schema.Struct({
     ),
   ),
 });
+
+export const IntentChangeSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("set-goal"), goal: Schema.NullOr(Schema.String) }),
+  Schema.Struct({
+    kind: Schema.Literal("add-constraint"),
+    constraint: Schema.Struct({
+      ...ConstraintSchema.fields,
+      since: Schema.optionalKey(Schema.Int),
+    }),
+  }),
+  Schema.Struct({ kind: Schema.Literal("remove-constraint"), id: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("authority"),
+    patch: Schema.Struct({
+      auto_correct: Schema.optionalKey(Schema.Boolean),
+      max_corrections_per_constraint: Schema.optionalKey(
+        Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+      ),
+      now_allowed: Schema.optionalKey(Schema.Boolean),
+      interrupt_allowed: Schema.optionalKey(Schema.Boolean),
+      stop_allowed: Schema.optionalKey(Schema.Boolean),
+      exclusive_steering: Schema.optionalKey(Schema.Boolean),
+      run_verification: Schema.optionalKey(Schema.Array(VerifySpecSchema)),
+    }),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("verification"),
+    name: Schema.String,
+    command: Schema.NullOr(
+      Schema.Struct({
+        executable: Schema.String,
+        argv: Schema.Array(Schema.String),
+        cwd: Schema.String,
+      }),
+    ),
+  }),
+]);
+export const ChangedIntent = Schema.Struct({
+  version: Schema.NullOr(Schema.Int),
+  propagated: Schema.Array(Schema.String),
+  approved: Schema.optionalKey(Schema.Array(VerifySpecSchema)),
+  warning: Schema.optionalKey(Schema.String),
+});

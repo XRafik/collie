@@ -33,6 +33,7 @@ export const Machine = Schema.Struct({
   profile: Schema.String,
   name: Schema.String,
   target: Schema.optionalKey(Schema.String),
+  route: Schema.optionalKey(Schema.Literals(["link", "ssh"])),
 });
 export type Machine = typeof Machine.Type;
 
@@ -947,6 +948,7 @@ export interface MachineRow {
   readonly profile: string;
   readonly name: string;
   readonly target: string | null;
+  readonly route: "link" | "ssh" | null;
   readonly state: "live" | "connecting" | NotLive;
   readonly onboarded: OnboardRun | null;
   /** The Collie it runs, as it was last seen; null where it never was. */
@@ -1008,6 +1010,7 @@ export const machineRows = (flock: Flock): ReadonlyArray<MachineRow> =>
       profile,
       name,
       target: target ?? null,
+      route: live ? (shown?.machine.route ?? null) : null,
       state: live ? "live" : (lost?.state ?? "connecting"),
       onboarded: standing(flock.onboarded.get(profile), flock.doctored.get(profile)),
       build: shown?.build ?? null,

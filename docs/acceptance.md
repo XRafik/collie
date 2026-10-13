@@ -186,3 +186,17 @@ proactive turn neither becomes blanket confirmation-only nor grants anything new
 started the turn is not an input to what is permitted. Testing this means testing the
 existing authority path, not asserting that nothing Collie says unprompted can have
 happened already — which would quietly revoke a grant the user chose to make.
+
+Agents on different Machines have a backend row proved by the real two-host conversation
+in `test/agent-origin.test.ts`. Its separate operator row needs a live laptop Claude
+implementer asking a VM planner and receiving the answer. That row stays pending until
+someone records the result at a revision.
+
+A remotely started investigation reporting back and closing is a backend row proved by
+`test/reports.test.ts`. The operator row needs mk's VM implementer to ask the live laptop
+to investigate a Desktop Machines page state on its branch, receive its findings and
+observe the laptop workspace close. It remains pending until recorded at a revision.
+
+Remote Run records, Intent mutations, remembered checks, override clearing, verification
+and live check output have backend rows proved by `test/remote-cli.test.ts`. The caller
+has no local Runs; both inferred and explicit Machine selection read the owner's record.

@@ -102,6 +102,20 @@ alone. Login commands keep your session's environment so Claude Code can read it
 Keychain login. It adds no keybindings; the steps and their `--json` stream are in
 [the CLI reference](cli.md#onboarding-a-machine).
 
+### Your other Machine
+
+Adding a Machine to herdr (`herdr machine add`) is all it takes for Collie on this computer
+to reach Collie on that one. The first `collie` command about one of its Runs — `collie run
+steer <its Run> "…"`, say — or the first `collie --machine <name> …` pairs the two over that
+machine's SSH login, which asks for its approval once, and then goes on to do what it was
+asked. From then on the Machines talk over a TLS WebSocket the one you can dial (the VM)
+listens for, with no SSH and no approval. A command that names a Run finds the Machine
+that has it, so `--machine` is only for `board`, `run start` and `run list`. `collie machine
+list` says which Machines are paired and whether each answers. Removing the Machine from
+herdr forgets the pairing on both sides. Each Machine records who asked for what in the
+Run's audit, with the Machine it came from
+([the CLI reference](cli.md#another-machines-runs)).
+
 ### The skills
 
 The baseline workflows hard-require ten skills they do not ship, and a missing skill stops
@@ -243,6 +257,41 @@ runs from a shell inside herdr: `herdr plugin action invoke cego.collie.pick`.
 
 The same operations are available without opening UI, which is how an agent drives Collie:
 see [CLI](cli.md).
+
+### Agents talking to each other
+
+Every Run's agent has Collie's tools and knows its own Run, agent name and Machine.
+To ask another agent, use `collie_do` with a `deliver` action naming its Run, agent and
+words. From a shell, use `collie run steer <run> --operation <agent> "<words>"`.
+The Run id finds the Machine that has it; no Machine prefix is needed.
+
+The message names its sender and gives the reply address. The answer is another recorded
+Delivery. An implementer asks its live planner this way, using the address in its prompt.
+`collie run show <run>` lists the agent names that both routes take. `collie run list`
+lists local and live peers' Runs, and says which peers were away. Native chat can read
+another Machine's Run the same way, and `collie_herd` can name a `machine`.
+
+### Asking another Machine to investigate
+
+An agent working on the VM can start `investigate` on the laptop through `collie_do`,
+with `machine: "mk-laptop"`, `workspace: "cego/collie"` and
+`inputs: { goal: "Why does the Machines page show vm-mk behind?", branch: "mk/desktop-fix" }`.
+Push the branch first. From its shell the same start is:
+
+```sh
+collie --machine mk-laptop run start investigate --input workspace=cego/collie --input branch=mk/desktop-fix --input 'goal=Why does the Machines page show vm-mk behind?'
+```
+
+The laptop finds its own repository under its Projects root and fetches the branch.
+One investigator runs there. The host sends the result to the requesting agent without
+polling, records whether it arrived, then closes the investigator. It also closes the
+Task workspace when no other Run or human pane needs it. A stale local branch or local
+changes are refused, preserving that work. `run show` and the drawer say who started it
+and whether its report was delivered. Start another investigation to ask again.
+
+Once Schedules (ADR-0052) are implemented,
+`--machine` will also add, pause and remove a peer's Schedule. Its own host fires it;
+this change adds no scheduler.
 
 ### Tasks: one workspace per piece of work
 
@@ -953,12 +1002,15 @@ Machine only if you want agents to run there too: add it with `herdr machine add
 Desktop shows it beside Local. bodil's `--vm` backend is bodil's own business and not a
 Collie Machine, so a VM bodil uses needs no `herdr machine add` for that.
 
-On macOS, Desktop opened from Finder or the Dock starts with launchd's short PATH. So at
-start it takes your login shell's environment (`$SHELL -ilc`), including its PATH, finding
-`herdr`, `collie`, `claude`, `git` and `ssh` as your terminal does. If the shell does not
-answer within five seconds, Desktop keeps the environment it was given and logs why. On Linux it
-gives its children the environment its session gave it, leaving out what Electrobun's
-launcher sets for Desktop itself.
+Desktop opened from Finder, the Dock or an app launcher starts without what your shell's rc
+files set: launchd's short PATH on macOS, and on Linux none of what `~/.bashrc` adds once it
+is interactive, such as `mise activate`. So at start it takes your interactive login shell's
+environment (`$SHELL -ilc`), including its PATH, finding `herdr`, `collie`, `claude`, `git`,
+`ssh` and the tools your checks run, `bun` among them, as your terminal does. Having it,
+Desktop runs local scripts and `collie` in a plain `/bin/sh -c`, since a login shell's
+profile may reset PATH. If the shell fails or does not answer within five seconds, Desktop
+keeps the environment it was given, runs them in a login shell as before, and logs why.
+Children never get what Electrobun's launcher sets for Desktop itself.
 
 It shows up as **Collie**, with the Collie mark — the dog on the white tile the TUI board
 shows, which reads on a dark taskbar too — in your app launcher, on its window, in the
@@ -991,11 +1043,18 @@ the kind `desktop`, on a computer that has Desktop
 ([ADR-0045](adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md)).
 
 The Machines are this computer and every machine enabled in `herdr machine list`; Collie
-keeps no list of its own. At launch Desktop opens one SSH master per herdr machine, from
-its target and your own SSH config, so an SSO check is made once per machine, and keeps it
-open until Desktop quits. A Machine reached two ways — two herdr machines on one computer,
-or one pointing at this computer — is shown once, through the first in herdr's list (this
-computer before any). It is named by that herdr machine's label, or the hostname here, and
+keeps no list of its own. A paired Machine is reached through Local's host and its paired
+link, without an SSH login. Commands, upgrades, doctor and credentials use that host's
+shell operation. Desktop opens SSH for Go to pane, a login's port forward, and onboarding
+an unpaired Machine. Its master opens on first use, with your SSH config, and is kept
+until Desktop quits. When a link is away, Desktop falls back to SSH, which can start the
+far host. The Machines page says Paired link or SSH for the live route.
+
+Desktop pairs an unpaired Machine on the SSH master it already holds. An older Collie
+without `machine invite` is paired after upgrading; a failure is a notice and is retried
+on the next connection. A successful pairing uses the link on the next connection.
+A Machine reached two ways is shown once, preferring a paired
+link, then the first in herdr's list (this computer before SSH). It is named by that herdr machine's label, or the hostname here, and
 two Machines with one name show as `name (ssh target)`.
 
 A Machine Desktop cannot show live says why above the board, by name:
@@ -1236,14 +1295,19 @@ descriptions or minutes yet. The ones every Machine shares are the Flock's: Desk
 Machine's host, never by editing a file over SSH. A Machine is synced each time it
 connects and after every edit in Settings, so one out of reach gets an edit when it is
 back, the way upgrades reach it. An edit on one Machine's own TUI Settings counts the
-same: Desktop takes it the next time it sees that Machine, or when Settings is opened, and
-spreads it. Each key is decided by whichever edit was made last, wherever it was made
+same. Paired hosts share edits when their link comes up and after a local edit, even
+with Desktop closed. Desktop also takes edits when it sees a Machine or Settings opens.
+Each key is decided by whichever edit was made last, wherever it was made
 ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)); on the first sync a key set
 on one Machine only is taken from it, and a key set differently on several takes the latest,
 with Settings saying beside it which Machine that came from. A value a Machine holds that
 its setting refuses, written into its file by hand, is not taken. What stays each Machine's own
 is everything else in its `config.json`: remembered answers such as `linear.team` and
 `gitlab.assignee`, `chat_harness`, and `projects.root`, which is a path on that Machine.
+
+Paired hosts also bring an older release to the newer one's version when their link
+comes up, without Desktop. A development checkout neither upgrades nor is upgraded.
+`collie machine list` names an upgrade failure; the next link-up tries it again.
 
 **Zoom**, under **Board** and for **This computer only**, is how large Desktop draws: 80%,
 90%, 100%, 110%, 125% or 150%, where 100% is the size of the other apps on the same monitor.
@@ -1267,8 +1331,9 @@ setting shows up in both. These are the Flock's: Desktop keeps them in
 Machine's host, never by editing a file over SSH. A Machine is synced each time it
 connects and after every edit in Settings, so one out of reach gets an edit when it is
 back, the way upgrades reach it. An edit on one Machine's own TUI Settings counts the
-same: Desktop takes it the next time it sees that Machine, or when Settings is opened, and
-spreads it. Each key is decided by whichever edit was made last, wherever it was made
+same. Paired hosts share edits when their link comes up and after a local edit, even
+with Desktop closed. Desktop also takes edits when it sees a Machine or Settings opens.
+Each key is decided by whichever edit was made last, wherever it was made
 ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)); on the first sync a key set
 on one Machine only is taken from it, and a key set differently on several takes the latest,
 with Settings saying beside it which Machine that came from. What stays each Machine's own
@@ -1407,9 +1472,9 @@ Edge and Vivaldi are started with `--app=<url>`, so the page gets a window of it
 any other browser, Firefox included, opens it as an ordinary tab.
 
 Every Machine's host is reached the same way: by running
-`collie bridge --as desktop --client <this computer>` in a login shell, here directly and
-elsewhere as a channel on that machine's master, so the host is started with the
-environment `collie` itself would use, and every operation Desktop makes is recorded as
+`collie bridge --as desktop --client <this computer>` in your shell's environment, here
+with the one Desktop took at start and elsewhere in a login shell, as a channel on that
+machine's master, so the host is started with the environment `collie` itself would use, and every operation Desktop makes is recorded as
 `desktop`. A second bridge on the same master, started `--as chat`, is the Flock chat's,
 so nothing its model does is ever recorded as yours. For a herdr machine on a session other than `default`, the host is handed that
 session's socket. Desktop never starts, signals or connects to a host by any other route.
@@ -2219,7 +2284,7 @@ started in auto mode instead, and the run's `agents.log` says so.
 Know what `auto` buys: the agents run commands, edit files and install things with nobody
 asking you, inside the checkout the Run is working in, and the harness's review is the
 only check on them. `bypass` takes that check away too. `implement` and
-`renovate` are the workflows Collie gives a checkout of their own, so their agents work in
+`renovate` and `investigate` are the workflows Collie gives a checkout of their own, so their agents work in
 a worktree rather than in yours, and what `implement` does is reviewed before it becomes a
 merge request. Every other workflow — `plan`, `review`, a standalone `architecture` — runs its agents **in the
 checkout you started them from**, with your uncommitted work in it and neither of those

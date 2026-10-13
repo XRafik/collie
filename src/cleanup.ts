@@ -14,7 +14,7 @@ import {
   type CleanupKept,
   type CleanupReport,
 } from "./board-model";
-import { herdrFailureReason, type Herdr } from "./herdr";
+import { herdrFailureReason, type Herdr, type PaneInfo } from "./herdr";
 import { removeTask, withTaskLock, type TaskRecord } from "./task";
 import { appendJournal, readJournal } from "./journal";
 import { shell } from "./mr";
@@ -647,7 +647,7 @@ const LaunchedTerminal = Schema.fromJsonString(
 );
 
 /** The terminals of every agent `runs` launched, from their launch records. */
-const launchedTerminals = (stateDir: string, runs: ReadonlyArray<string>) =>
+export const launchedTerminals = (stateDir: string, runs: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const terminals = new Set<string>();
@@ -665,6 +665,18 @@ const launchedTerminals = (stateDir: string, runs: ReadonlyArray<string>) =>
     }
     return terminals;
   });
+
+export const paneNotOwned = (
+  task: Pick<TaskRecord, "workspace" | "root_pane">,
+  panes: ReadonlyArray<PaneInfo>,
+  terminals: ReadonlySet<string>,
+) =>
+  panes.find(
+    (pane) =>
+      pane.workspaceId === task.workspace &&
+      pane.paneId !== task.root_pane &&
+      (pane.terminalId === null || !terminals.has(pane.terminalId)),
+  );
 
 /**
  * Task workspaces, each closed an hour after its Task became Finished, unless herdr has it in
@@ -725,12 +737,7 @@ export const taskWorkspacesSweeper = (opts: {
         opts.stateDir,
         opts.runs.filter((run) => run.task === task.id).map((run) => run.id),
       );
-      const foreign = panes.value.find(
-        (pane) =>
-          pane.workspaceId === task.workspace &&
-          pane.paneId !== task.root_pane &&
-          (pane.terminalId === null || !terminals.has(pane.terminalId)),
-      );
+      const foreign = paneNotOwned(task, panes.value, terminals);
       if (foreign !== undefined)
         return { keep: `holds a pane Collie did not open (${foreign.paneId})` };
       return { remove: `Finished ${minutes} min ago`, terminals };

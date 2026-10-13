@@ -1,11 +1,5 @@
-// What one Run tells another, and how an agent is told where to take a question.
-//
-// A plan and the work that builds it are two Runs with two agents. When the second needs a
-// decision the plan does not cover, the answer is worth more from the agent that wrote the
-// plan and is still live than from a human reading it cold — so a prompt says which it is.
-
 export function askRouteTo(
-  planner: { readonly agent: string; readonly paneId: string } | null,
+  planner: { readonly agent: string; readonly runId: string } | null,
 ): string {
   if (!planner) {
     return [
@@ -14,10 +8,9 @@ export function askRouteTo(
     ].join(" ");
   }
   return [
-    `The planner that wrote this plan is still live as agent \`${planner.agent}\` in pane`,
-    `\`${planner.paneId}\`. If you need a decision the plan does not cover, ask it rather than`,
-    `stopping: \`herdr agent prompt ${planner.agent} "<your question>"\`, then read the answer`,
-    `with \`herdr agent read ${planner.agent} --lines 40\`. If it cannot answer, decide, and`,
+    `The planner that wrote this plan is still live as agent \`${planner.agent}\` of Run \`${planner.runId}\`.`,
+    `If you need a decision the plan does not cover, ask with collie_do deliver to ${planner.runId}, agent ${planner.agent},`,
+    `or \`collie run steer ${planner.runId} --operation ${planner.agent} "<your question>"\`. Its answer comes back as a Delivery. If it cannot answer, decide, and`,
     "record it under `assumptions` in your Output. Ask it for one authority: an answer in the pane with the tickets left alone, or",
     "the answer written into the ticket and the pane saying only that it amended it. Its",
     "pane answer may be narrower than what it wrote, so where it says it changed a ticket,",

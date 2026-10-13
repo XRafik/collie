@@ -277,6 +277,96 @@ in a directory that had just been deleted was worse than a late clean-up. Nothin
 protected: a Control Plane showing a settled worktree removes it and herdr closes that
 workspace, which is what a merged branch is supposed to do.
 
+## Reaching another Machine
+
+Run records are served by their owning host through `run-record.ts`. Intent changes,
+remembered checks and override clearing take the caller's Actor and request id there;
+verification runs in that host's checkout and streams its output. `verify-model.ts`
+keeps the shared Schemas separate from the collector.
+Once the owning host is found, its operation refusal is returned to the caller; it
+does not become a search for the Run on another Machine.
+Message file fallback and Dispatcher use the same rendered sender line when measuring
+the delivery cap, so a full agent message is kept whole rather than refused after attribution.
+
+Each host keeps its peers in `src/peers.ts`, started in the host's scope
+([ADR-0057](adr/0057-a-machine-reaches-another-over-a-paired-link.md)):
+
+- **The pairings,** in `peers.json` in the state directory (0600): each peer's
+  installation, name (herdr's label), which side dials, and for a peer this one dials its
+  `url`, its `certificate` and the `secret`.
+  Repeated invitations for the same installation reuse its inbound secret, so concurrent
+  first reaches agree even when their replies arrive out of order. The listener keeps
+  its original certificate across address aliases as the dialler's only CA. An alias
+  missing from the original certificate gets a listener certificate signed by that
+  original pin, retaining earlier aliases and normal TLS hostname verification.
+  A repeated opposite invitation preserves an established outgoing link and tells the
+  asker to keep the incoming direction. When both Machines first pair at once, the higher installation id keeps the outgoing
+  record and the lower one the incoming record, so one listener and matching credentials remain.
+- **A relay socket per peer,** `peers/<name>.sock`. A client writes one
+  header line, `{"as": <front door>, "client": <name>}`, and is answered with one line —
+  `{"ok":true}`, or why not (`refused`, or `unreachable` with what was seen) — then speaks
+  the host protocol. Behind it the relay opens a fresh WebSocket to the peer's `/channel`,
+  pinning the peer's certificate as the only CA and sending the secret as a bearer, and
+  pipes bytes. `as: "host"` is taken only with the relay's own host's stamp.
+- **The listener,** on `0.0.0.0:47217` (`COLLIE_PEER_PORT` for a test), only while a peer
+  that dials in is paired. It finds the installation a bearer was minted for, and declares
+  the channel on a fresh `host.sock` connection as `{frontDoor: as, from: {machine,
+  client}}` with the host's per-process stamp, which is what lets `from.machine` through
+  `declare`: a channel that sets it without the stamp is refused.
+
+**Dial-back.** The dialling host keeps `/control` open, with the pinned certificate and
+bearer. The listener keeps one control link per installation; a newer one replaces it.
+When a client opens a relay toward an undialable peer, the listener sends `{dial, as,
+client}` over its control link. The peer opens `/reverse?ticket=<dial>`, then declares
+the channel into its own host with the listener's authenticated Machine identity.
+Tickets belong to one installation, expire after ten seconds and can be used only once.
+Both relay directions refuse with `MachineUnreachable` within five seconds.
+
+The listener sends a heartbeat every fifteen seconds. Silence past that interval ends a
+control link. Reconnection backs off from one second to one minute, resetting after a
+live link. `doctor` reports a listener whose port is occupied, as does `machine list`.
+`machine list` reports `live`, `connecting` with the last failure, or `away`
+with its time and reason. Each host keeps running its local Runs while its peer is away.
+
+`src/channel.ts` is the one declare-then-pipe: `collie bridge` hands it stdio, the listener
+a WebSocket, as does the dial-back. The client side is `connectPeer` in `src/host.ts`, which opens the relay, asks
+`identity` and refuses a far host of another build, naming both, without ever starting or
+stopping it; and `asksRun` in `src/lifecycle.ts`, which asks this host, then each peer, then
+each herdr machine not paired yet, for the Run a command names.
+
+**Pairing.** `pairWith` resolves the herdr machine's `HostName` with `ssh -G` and runs
+`collie --json machine invite --for <installation> --name <this Machine> --address <HostName>`
+there over `ssh` — through a caller's SSH master where one is given, and as a plain login
+otherwise, whose output goes to the command's stderr so the human sees the approval it
+asks for. The first login, including SSO approval, is bounded to two minutes; a timeout
+closes the SSH process and says which Machine did not pair. The invited host makes its certificate with `openssl` the first time,
+mints or reuses the installation's secret, keeps the pairing
+and starts listening; the asker's host keeps its side and opens the relay. A relay path
+longer than a unix socket takes (104 bytes on macOS) is refused rather than truncated.
+Only a front door that can show the login pairs (`pairs` on its env): a host's own jobs
+are refused with "not paired yet".
+
+Pairing updates are serialized, including the certificate and listener. Changing a
+Machine's saved name or connection details replaces its relay and control link.
+After freeing an occupied listening port, `collie machine list` retries the listener.
+
+**Forgetting.** When the host that dials a peer starts and herdr no longer lists it, it
+tells the peer over the relay as `host` (`forget`, which the peer applies to the
+installation the link authenticated) and drops the pairing; a peer with nobody left
+dialling in closes its listener.
+
+**Keeping peers level.** `src/flock-settings.ts` holds the latest-edit merge shared with
+Desktop. On link-up, and when the host sees `config.json` or `settings-set.json` change,
+it takes later peer edits and gives the peer its later edits over a `host` channel.
+Each edit keeps its timestamp. `gitlab_host` is excluded in both directions.
+The receiving host's `flock.by` names the peer that shared the edits.
+
+On link-up between releases, the newer host runs an upgrade through `shell`, then asks
+`refresh` to start the older Machine's own new CLI detached. Awaiting that CLI inside a
+shell would let the old host kill it during shutdown. The newer host checks identity
+until the new host answers, within thirty seconds. Failures appear in `machine list`
+and are retried on the next link-up. Development checkouts never take part.
+
 ## The herdr boundary
 
 `herdr.ts` is the only channel to the herdr Collie is running inside: the `herdr` CLI at
@@ -291,6 +381,11 @@ state, and a binary in a temp directory rather than the one the user is running.
 nothing above it to fake, and routing it through `herdr.ts` would mean asking the running
 herdr what some other version's schema says.
 
+The host and the CLI read herdr's list of saved machines through `herdr.ts` too
+(`machineList`, `herdr machine list --json`): it is the list of Machines a pairing may be
+made with, and a peer it no longer names is forgotten
+([Reaching another Machine](#reaching-another-machine)).
+
 Desktop's main process runs three more, all on herdr's list of saved machines:
 `herdr machine list --json`, which machines to reach, and `herdr machine remove`
 (`desktop/src/bun/machine.ts`), and `herdr machine add` (`desktop/src/bun/onboarding.ts`),
@@ -300,7 +395,12 @@ util-linux or BSD `script` on that Machine, by `uname`. Where the list fails, it
 also asks `herdr --version`, so a herdr too old to have `herdr machine` is named as one. Desktop is another
 program, usually on another computer, and it is not talking to a session either: it keeps
 herdr's list and nothing else. Routing them through `herdr.ts` would bring Collie's locks
-into Desktop, which reaches a Machine only through `collie bridge`.
+into Desktop, which reaches a Machine only through `collie bridge`. For a paired Machine,
+that command runs locally with `--machine <name>` and pipes the Local host's relay; for
+SSH it runs on the far Machine. Bounded shell calls carry commands and credentials over
+the door. After an upgrade, `refresh` asks the far Machine to run its new CLI and replace
+its host. Interactive terminal commands and login forwarding retain SSH. Pairing
+uses `COLLIE_SSH_CONTROL` to reuse Desktop's existing master.
 
 Each Machine's `desktop` channel is its _door_, and Desktop holds one per shown Machine, by
 installation (`DoorMap` in `desktop/src/bun/machine.ts`), for as long as its board stream
@@ -407,6 +507,10 @@ the `prompt_box_body` rule's `evidence.region_preview`; the pinned 0.9.3 answers
 (`herdr agent explain --file <screen> --agent claude --json` checks a binary without a
 server), and a reply without it reads as a box nobody can see, which asks a
 human rather than pressing Enter.
+
+`machine list --json` is the third: a bare array of saved machines. Its struct,
+`HerdrMachine` in `src/peers-model.ts`, is what Desktop decodes too, and
+`test/herdr-contract.test.ts` holds it to what the pinned 0.9.3 prints.
 
 `session list --json` is the second: it answers with a bare `{ sessions }` rather than an
 envelope, so it is not in the socket schema either. The host reads it to find every running

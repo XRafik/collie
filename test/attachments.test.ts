@@ -247,7 +247,7 @@ test(
         });
 
         const astray = yield* cli(["run", "steer", "no-such-run", "this", "--attach", "late.png"]);
-        expect(astray.envelope.error?.message).toContain("There is no Run no-such-run here.");
+        expect(astray.envelope.error?.message).toContain(`Run "no-such-run" was not found`);
         expect(
           yield* Effect.promise(() => Bun.file(runDir(world.state, "no-such-run")).exists()),
         ).toBe(false);

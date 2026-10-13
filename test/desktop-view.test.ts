@@ -477,6 +477,7 @@ const row = (over: Partial<MachineRow> = {}): MachineRow => ({
   profile: "p-vm",
   name: "vm-mk",
   target: "mk@vm-mk",
+  route: null,
   state: "live",
   onboarded: null,
   build: "0.35.0",

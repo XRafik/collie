@@ -305,7 +305,10 @@ test(
             `${dir}/control`,
             { id: "vm", label: "vm-mk", target: "mk@vm-mk", session: "default", enabled: true },
             "mk-pc",
+            true,
           );
+          expect(yield* log("ssh.log")).toEqual([]);
+          yield* route.forward(9876);
           let focused = 0;
           const focus = Effect.sync(() => (focused++, AT));
           for (const typed of ["y", "n"]) {

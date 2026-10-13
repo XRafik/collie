@@ -32,7 +32,8 @@ import {
 } from "./lifecycle";
 import { humanBytes } from "./cleanup";
 import { agentStartRefusal, CHAT_CHECKOUT_FIX } from "./agent-start";
-import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
+import { RESERVED_INPUTS } from "./sdk";
+import { PROJECTS_ROOT_OPTION, projectsRoot, repositoryCheckout } from "./projects";
 import { listTasks, removeTask } from "./task";
 import {
   clearOverride,
@@ -323,8 +324,17 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
   // every Input, and a gap is refused with what would fill it (ADR-0033).
   registerExecutor("start", (action, by, env) =>
     Effect.gen(function* () {
-      const atRoot = action.workspace?.trim() === PROJECTS_ROOT_OPTION;
-      const where = atRoot ? null : yield* workspaceNamed(env, action.workspace);
+      const named = action.workspace ?? action.inputs.workspace;
+      const atRoot = named?.trim() === PROJECTS_ROOT_OPTION;
+      const repository =
+        named === undefined || atRoot ? null : yield* repositoryCheckout(env, named);
+      const where = atRoot
+        ? null
+        : repository !== null
+          ? "error" in repository
+            ? repository
+            : { found: { cwd: repository.path, workspaceId: null, label: named ?? "" } }
+          : yield* workspaceNamed(env, named);
       if (where !== null && "error" in where) return failed(where.error);
       const own =
         where === null ? null : yield* collieOwnRefusal(env, where.found.label, where.found.cwd);
@@ -333,7 +343,14 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         where === null
           ? env
           : { ...env, cwd: where.found.cwd, workspaceId: where.found.workspaceId };
-      const input = { text: { ...action.inputs }, json: {} };
+      const fields = Object.entries(action.inputs);
+      const input = {
+        text: Object.fromEntries(fields.filter(([name]) => !(name in RESERVED_INPUTS))),
+        json: {},
+      };
+      const launch = Object.fromEntries(fields.filter(([name]) => name in RESERVED_INPUTS));
+      if (atRoot) launch.workspace = PROJECTS_ROOT_OPTION;
+      else if (repository !== null && named !== undefined) launch.workspace = named;
       const saved = yield* moduleFor(rooted, action.workflow);
       if (saved !== null && "inputs" in saved) {
         const refused = yield* agentStartRefusal(rooted, saved, input, {
@@ -349,7 +366,7 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         // Text, as the action carries it: the module's own schema is what turns it into
         // the value it takes, exactly as a typed `run start` does.
         input,
-        options: atRoot ? { workspace: PROJECTS_ROOT_OPTION } : {},
+        options: launch,
         task: action.here === true ? { mode: "here" } : { mode: "new" },
         verify: action.verify,
         attachments: action.attachments,

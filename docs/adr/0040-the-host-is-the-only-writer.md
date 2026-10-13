@@ -40,8 +40,8 @@ own. A front door names no Herd.
   not the Machine's state. So is the prompt `collie chat heard` keeps for Native chat's
   tool host: a hand-off between two of one chat's processes, which the host records only
   once an operation carries it.
-- Two CLI commands still write a Run's state themselves, so only a Collie on the same
-  computer can make them: `collie run intent …` amends `intent.json` (and, with
-  `--propagate`, its children's), and `collie run clear-override` appends to an agent's
-  ledger. Confirmed or asked through the host as `update_intent`, `set_verification` and
-  `clear_override`, the same changes are the host's.
+- `collie run intent …`, including `--propagate` and remembered checks, and
+  `collie run clear-override` also execute on the Run's host, under the caller's Actor
+  and request id. `collie verify` runs its command there and streams its output; each
+  invocation collects fresh evidence and records who asked. Run records and live check
+  logs are read from that same host ([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)).

@@ -10,6 +10,16 @@ One message to one live agent is a **delivery**. Every one of them goes through 
 Dispatcher ([internals](internals.md#the-dispatcher)) — nothing else sends text to an
 agent — and every one is journalled before it is sent.
 
+A Delivery whose [Actor](../CONTEXT.md) is `agent` starts with:
+
+```text
+From <agent> of <run> on <machine>. Answer with collie_do deliver to <run> (or collie run steer <run> --operation <agent> "…").
+```
+
+The Dispatcher writes it from the stamped Actor in every mode. The text follows word
+for word. The receiving Run's operations record the sender's Run, agent and authenticated
+Machine. The answer follows the same route, found by Run id.
+
 Three modes:
 
 | Mode        | What it does                                        | Needs                                  |

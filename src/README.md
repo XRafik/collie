@@ -88,7 +88,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `lines.ts`          | A card, a report, a delivery, a row's marks and an action, as the same words everywhere               |
 | `plan.ts`           | A plan directory as repositories and waves, and the refusals that stop a fan-out                      |
 | `lock.ts`           | The pid-lock discipline every single-owner file takes, the host's own lock among them                 |
-| `script.ts`         | A login under `script`'s pseudo-terminal, in the form Linux or macOS takes                            |
+| `script.ts`         | Literal shell arguments and a login under `script`'s pseudo-terminal on Linux or macOS                |
 | `task.ts`           | A Task: the work, its herdr workspace, and which Runs belong to it                                    |
 | `tasknames.ts`      | What a task workspace is called, from the work and the session's own live labels                      |
 | `naming.ts`         | herdr-legal agent names vs readable tab and pane labels                                               |
@@ -115,3 +115,15 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `usage.ts`          | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                    |
 | `schedule-model.ts` | A Schedule as every door reads it, and when an occurrence starts and which comes next (pure)          |
 | `schedules.ts`      | This Machine's Schedules: their records, the one write, and the `Schedule` workflow that fires them   |
+| `run-record.ts`     | Run records served by their owning host, including Outputs confined to the Run directory              |
+| `verify-model.ts`   | Verification and stream Schemas shared with front doors without loading the collector                 |
+
+The Machine link is `peers.ts`: pairing, TLS channels, relay sockets, dial-back and
+keeping paired Machines level. `peers-model.ts` holds the peer records and states
+Desktop shares. `flock-settings.ts` holds the latest-edit merge both hosts and Desktop
+use. `channel.ts` declares and pipes the channel the bridge and peer link share.
+
+`reports.ts` sends a settled Run's result to its recorded requester once, through the
+Dispatcher, and closes a `closes: "reported"` Run's own agents and eligible Task workspace.
+Repository placement is resolved by `projects.ts` and fetched by `agent-start.ts`; the
+engine carries the fetched revision through admission and placement.

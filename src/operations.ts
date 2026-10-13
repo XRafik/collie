@@ -4,6 +4,7 @@
 // prompting, rendering, and turning a result into text or JSON.
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
+import { repositoryCheckout } from "./projects";
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import { nowIso } from "./time";
@@ -83,6 +84,8 @@ const ErrorCode = Schema.Literals([
   "target_exists",
   "needs_input",
   "timeout",
+  /** A paired Machine did not answer within its bound. */
+  "machine_unreachable",
   "invalid_state",
   /** The workflow a Run recorded is not the workflow its layers resolve to now. */
   "definition_changed",
@@ -167,6 +170,13 @@ export const workspaceNamed = Effect.fn("operations.workspaceNamed")(function* (
   if (matched.length === 0) {
     const opened = yield* workspaceForDirectory(env, wanted, all, panes);
     if (opened !== null) return opened;
+    const repository = yield* repositoryCheckout(env, wanted).pipe(
+      Effect.orElseSucceed(() => null),
+    );
+    if (repository !== null) {
+      if ("error" in repository) return refused(repository.error);
+      return yield* workspaceForDirectory(env, repository.path, all, panes);
+    }
     if (wanted.includes("/"))
       return refused(`no directory "${named}" on this Machine; ${yield* howToName(env)}`);
     const checkouts = yield* checkoutsNamed(env, wanted);
@@ -351,15 +361,12 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     if (!RELEASE_TAG.test(to)) {
       return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
     }
-    if (!checkout) {
-      return err("invalid_state", `${root} is not a checkout, so it cannot be moved to ${to}.`, {
-        root,
-      });
+    if (checkout) {
+      before = yield* head();
+      const refused = yield* moveToRelease(root, to, run);
+      if (refused) return refused;
+      after = yield* head();
     }
-    before = yield* head();
-    const refused = yield* moveToRelease(root, to, run);
-    if (refused) return refused;
-    after = yield* head();
   } else if (checkout) {
     before = yield* head();
     // `--ff-only`: an upgrade that quietly merged or rebased someone's local work
@@ -374,7 +381,9 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     after = yield* head();
   }
 
-  const installed = yield* run("sh", ["prepare.sh"], root);
+  const installed = yield* to !== undefined && !checkout
+    ? run("env", [`COLLIE_VERSION=${to}`, "sh", "prepare.sh"], root)
+    : run("sh", ["prepare.sh"], root);
   if (installed.code !== 0) {
     return err("operation_failed", `Could not prepare ${root}.`, {
       root,
@@ -470,7 +479,12 @@ export const taskFor = Effect.fn("operations.taskFor")(function* (
     result: err("operation_failed", message, { cause }),
   });
   if (choice.mode === "here") return yield* taskHere(env, about);
-  if (env.workspaceId === null && env.socketPath === null)
+  if (
+    env.workspaceId === null &&
+    env.socketPath === null &&
+    env.machine === undefined &&
+    env.asker?.from?.machine === undefined
+  )
     return kept(choice.mode === "continue" ? choice.task : null);
   // A workspace cleanup closed is reopened on the Run's checkout when its first agent starts.
   if (choice.mode === "continue") return kept(choice.task);
@@ -933,17 +947,21 @@ export const choiceLines = (run: string, asked: Asked): string[] => [
 const decodeAnswered = Schema.decodeUnknownOption(Answered);
 
 /** Who an answer came from, in the words a human uses for the place they answered. */
-const answererOf = ({ origin, from, conversation }: AuditLine["actor"]): string => {
-  switch (origin) {
-    case "desktop":
-      return from?.client === undefined ? "desktop" : `desktop on ${from.client}`;
-    case "chat":
-      return conversation === undefined ? "chat" : `chat ${conversation}`;
-    case "cli-tty":
-      return "cli";
-    default:
-      return origin;
-  }
+const answererOf = (actor: AuditLine["actor"]): string => {
+  const { origin, from, conversation } = actor;
+  const door = (() => {
+    switch (origin) {
+      case "desktop":
+        return from?.client === undefined ? "desktop" : `desktop on ${from.client}`;
+      case "chat":
+        return conversation === undefined ? "chat" : `chat ${conversation}`;
+      case "cli-tty":
+        return "cli";
+      default:
+        return origin;
+    }
+  })();
+  return from?.machine === undefined ? door : `${door} from ${from.machine.name}`;
 };
 
 /** Each answered Choice, newest first, with who answered it and when as the audit trail has it. */

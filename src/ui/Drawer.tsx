@@ -19,6 +19,7 @@ import {
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import {
   ranOn,
+  requestedByLine,
   type MrDetails,
   type MrPanel,
   type Panel,
@@ -112,6 +113,17 @@ export function Drawer(props: DrawerProps) {
       right: took().get(step.name) ?? "",
       fg: step.state === "todo" ? C.dim : C.text,
     }));
+
+  const requester = (): Line[] => {
+    const who = props.detail?.requestedBy;
+    return who === undefined ? [] : [{ text: requestedByLine(who) }];
+  };
+  const report = (): Line[] => {
+    const report = props.detail?.report;
+    return report === undefined
+      ? []
+      : [{ text: `${report.state}: ${report.note}` }, { text: report.closure ?? "" }];
+  };
 
   const agents = (): Line[] =>
     props.view.agents.length === 0
@@ -298,6 +310,12 @@ export function Drawer(props: DrawerProps) {
           </Show>
           <Show when={proposed().length > 0}>
             <Section title="proposal" lines={proposed()} />
+          </Show>
+          <Show when={requester().length > 0}>
+            <Section title="requester" lines={requester()} />
+          </Show>
+          <Show when={report().length > 0}>
+            <Section title="report" lines={report()} />
           </Show>
           <Section title="intent" lines={intent()} />
           <Show when={attached().length > 0}>

@@ -38,7 +38,7 @@ export const DEFAULT_AUTHORITY: Authority = {
   run_verification: [],
 };
 
-const IntentSchema = Schema.Struct({
+export const IntentSchema = Schema.Struct({
   version: Schema.Int,
   run: Schema.String,
   goal: Schema.NullOr(Schema.String),

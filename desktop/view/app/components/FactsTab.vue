@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { requestedByLine } from "../../../../src/board-model";
 import type { RunDetail, TaskView } from "../../../../src/board-model";
 import { attachmentsShown } from "../../../src/shared/attachments";
 import { agentRows } from "../../../src/shared/run-agents";
@@ -10,6 +11,10 @@ const agents = computed(() => agentRows(props.detail?.agents ?? []));
 
 <template>
   <div data-testid="facts" class="flex flex-col gap-4 text-sm">
+    <p v-if="detail?.requestedBy">{{ requestedByLine(detail.requestedBy) }}</p>
+    <p v-if="detail?.report">
+      Report {{ detail.report.state }}: {{ detail.report.note }} {{ detail.report.closure }}
+    </p>
     <section
       v-if="detail && attached.thumbnails.length + attached.named.length > 0"
       class="flex flex-col gap-2"

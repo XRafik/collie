@@ -180,3 +180,17 @@ test("upgrade of a plain install fetches the release without asking git anything
       expect(fetched.ok && fetched.human).toContain("not a checkout");
     }),
   ));
+
+test("a plain install upgrades to the exact release through the signed installer", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const env = { ...rig.pluginEnv(), pluginRoot: rig.projectDir };
+      yield* bin.add("git", `exit 1`);
+      yield* bin.add("sh", `echo "prepare: runner: done"; echo "$COLLIE_VERSION" > version`);
+      const fetched = yield* upgrade(env, { to: "0.2.0" });
+      expect(fetched).toMatchObject({ ok: true, data: { checkout: false, version: "0.2.0" } });
+      expect(
+        yield* (yield* FileSystem.FileSystem).readFileString(`${rig.projectDir}/version`),
+      ).toBe("0.2.0\n");
+    }),
+  ));

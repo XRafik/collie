@@ -2,9 +2,16 @@
 // rooted, and the one listing the router and an agent's refusal choose from.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 import { runEffect } from "./support/effect";
-import { Rig } from "./support/recorder";
+import { workspaceNamed } from "../src/operations";
+import { exec } from "./support/command";
+import { collie, proves } from "./support/world";
+import { stopHost } from "./support/host";
+import { FakeBin } from "./support/bin";
+import { startCheckout } from "../src/agent-start";
+import { checkoutFor } from "../src/worktree";
+import { Rig, FakeHerdr } from "./support/recorder";
 import { writeConfigValue } from "../src/config";
 import { checkoutsUnder, projectsRoot } from "../src/projects";
 
@@ -69,3 +76,165 @@ test("the checkouts are the real ones, never a worktree, a hidden one or a depen
       expect(yield* checkoutsUnder(root)).toEqual([`${root}/a/b/c/deep`, `${root}/shallow`]);
     }),
   ));
+
+test(
+  "a repository URL or owner/name finds this Machine's origin or upstream checkout",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* exec(["git", "init", "-q"], { cwd: rig.projectDir });
+        yield* exec(["git", "remote", "add", "origin", "git@github.com:cego/collie.git"], {
+          cwd: rig.projectDir,
+        });
+        yield* writeConfigValue(rig.userDir, "projects.root", rig.root);
+        for (const named of [
+          "cego/collie",
+          "https://github.com/cego/collie",
+          "git@github.com:cego/collie.git",
+        ])
+          expect(yield* workspaceNamed(rig.pluginEnv(), named)).toMatchObject({
+            found: { cwd: rig.projectDir },
+          });
+        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:mk/fork.git"], {
+          cwd: rig.projectDir,
+        });
+        yield* exec(["git", "remote", "add", "upstream", "https://github.com/cego/collie.git"], {
+          cwd: rig.projectDir,
+        });
+        expect(yield* workspaceNamed(rig.pluginEnv(), "cego/collie")).toMatchObject({
+          found: { cwd: rig.projectDir },
+        });
+        expect(yield* workspaceNamed(rig.pluginEnv(), "cego/missing")).toMatchObject({
+          error: expect.stringContaining(rig.root),
+        });
+        expect(yield* workspaceNamed(rig.pluginEnv(), "cego/missing")).toMatchObject({
+          error: expect.stringContaining("cego/missing"),
+        });
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "relative and home directory starts keep their existing path meaning",
+  () =>
+    proves(
+      "collie-path-start-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.symlink(world.project, `${world.home}/repo`);
+          for (const workspace of ["../project", "./", "~/repo"]) {
+            const reply = yield* collie(world, [
+              "tools",
+              "call",
+              "collie_do",
+              "--input",
+              Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+                actions: [
+                  { kind: "start", workflow: "plain", workspace, inputs: { note: "hello" } },
+                ],
+              }),
+            ]);
+            expect(reply.envelope.ok).toBe(true);
+            expect(reply.envelope.data).toMatchObject({
+              text: expect.stringContaining("start: applied"),
+            });
+          }
+          yield* stopHost(world.state);
+        }),
+      ["plain.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "interleaved remote branch fetches place each checkout on its own fetched commit",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const remote = `${rig.root}/remote.git`;
+        yield* exec(["git", "init", "--bare", "-q", remote]);
+        yield* exec(["git", "init", "-q", "-b", "master"], { cwd: rig.projectDir });
+        yield* exec(
+          [
+            "git",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.test",
+            "commit",
+            "-qm",
+            "base",
+            "--allow-empty",
+          ],
+          { cwd: rig.projectDir },
+        );
+        yield* exec(["git", "remote", "add", "origin", remote], { cwd: rig.projectDir });
+        const heads: string[] = [];
+        for (const branch of ["first-topic", "second-topic"]) {
+          yield* exec(["git", "switch", "-qc", branch], { cwd: rig.projectDir });
+          yield* exec(
+            [
+              "git",
+              "-c",
+              "user.name=Test",
+              "-c",
+              "user.email=test@example.test",
+              "commit",
+              "-qm",
+              branch,
+              "--allow-empty",
+            ],
+            { cwd: rig.projectDir },
+          );
+          heads.push(
+            (yield* exec(["git", "rev-parse", "HEAD"], { cwd: rig.projectDir })).stdout.trim(),
+          );
+          yield* exec(["git", "push", "-q", "origin", branch], { cwd: rig.projectDir });
+          yield* exec(["git", "switch", "-q", "master"], { cwd: rig.projectDir });
+          yield* exec(["git", "branch", "-D", branch], { cwd: rig.projectDir });
+        }
+        const ready = `${rig.root}/ready`;
+        const done = `${rig.root}/done`;
+        yield* exec(["mkfifo", ready, done]);
+        const bin = yield* FakeBin.make(`${rig.root}/fetch-bin`);
+        yield* Effect.addFinalizer(() => bin.restore());
+        yield* bin.add(
+          "git",
+          `case "$*" in
+    'fetch origin '*first-topic*) /usr/bin/git "$@" || exit; printf 'ready\\n' > '${ready}'; read -r reply < '${done}' ;;
+    'fetch origin '*second-topic*) read -r reply < '${ready}'; /usr/bin/git "$@" || exit; printf 'done\\n' > '${done}' ;;
+    *) exec /usr/bin/git "$@" ;;
+  esac`,
+        );
+        const placed = yield* Effect.all(
+          ["first-topic", "second-topic"].map((branch) =>
+            startCheckout(rig.pluginEnv(), rig.projectDir, { branch }, true),
+          ),
+          { concurrency: 2 },
+        );
+        yield* bin.restore();
+        for (const [index, one] of placed.entries()) {
+          expect(one).not.toHaveProperty("error");
+          if ("error" in one) continue;
+          expect(one.branchBase).toBe(heads[index]!);
+          const checkout = yield* checkoutFor(new FakeHerdr(rig.pluginEnv()), {
+            cwd: one.project,
+            stateDir: rig.stateDir,
+            name: `r-${index}`,
+            workflow: "find-the-cause",
+            checkout: "branch",
+            inputs: {},
+            explicit: one.options.branch,
+            branchBase: one.branchBase,
+          });
+          expect(checkout.refused).toBeNull();
+          expect(
+            (yield* exec(["git", "rev-parse", "HEAD"], { cwd: checkout.cwd })).stdout.trim(),
+          ).toBe(heads[index]!);
+        }
+      }),
+    ),
+  120_000,
+);

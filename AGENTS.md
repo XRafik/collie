@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate`, `general` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `general`, `investigate` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -67,6 +67,25 @@ herdr actions, and the `collie` CLI.
   rather than a table of Runs
   ([ADR-0013](docs/adr/0013-the-board-is-cards-of-tasks.md), which supersedes what
   [ADR-0005](docs/adr/0005-collie-tab-is-an-application.md) says the tab draws).
+- **Changing how an agent reaches another** →
+  [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md), alongside
+  `src/harness.ts` (tool wiring), `src/tools.ts` and `asksRun` in `src/lifecycle.ts`
+  (lookup), `src/dispatcher.ts` (sender line) and `src/handoff.ts` (planner address),
+  with `test/agent-origin.test.ts` and `test/mcp.test.ts`.
+- **Changing how a Machine reaches another** →
+  [ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md) and
+  [`docs/internals.md`](docs/internals.md#reaching-another-machine), alongside `src/peers.ts`
+  (the pairing, the listener and the relay sockets), `src/peers-model.ts` (what Desktop
+  shares of it), `src/channel.ts` (the one declare-then-pipe the bridge and the link use),
+  `connectPeer` in `src/host.ts` and `asksRun` in `src/lifecycle.ts` (a Run found on the
+  Machine that has it), with `test/peers.test.ts` and `test/support/peers.ts` (two real
+  hosts, a fake herdr each and a fake `ssh`). Adding a Machine to herdr pairs it; there is
+  no command to.
+- **Changing how work an agent starts reports back or closes** →
+  [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md), alongside
+  `src/reports.ts` (report delivery and closure), `requestedBy` in `src/engine.ts`,
+  `src/agent-start.ts` (repository and branch fetch) and `workflows/investigate.workflow.ts`,
+  with `test/reports.test.ts`. Another Run's live agent or a human pane keeps the workspace.
 - **Changing Desktop** → [`docs/using.md`](docs/using.md#collie-desktop), alongside
   `desktop/src/bun/machine.ts` (a Machine reached through `collie bridge`, never the host
   client) and `desktop/src/shared/` (the view's RPC and the Flock it folds), with the main
@@ -206,7 +225,7 @@ herdr actions, and the `collie` CLI.
   `src/board-model.ts`, `src/board-stream.ts` and `test/board-stream.test.ts`. An additive
   change keeps `PROTOCOL`; a removal or a change of meaning bumps it. Who an operation
   is recorded as is [ADR-0039](docs/adr/0039-every-operation-records-who-asked.md), with
-  `src/audit.ts` and `test/actor.test.ts`. Which writes a front door leaves to the host, and the two it
+  `src/audit.ts` and `test/actor.test.ts`. Which writes a front door leaves to the host, and the receipts it
   still makes itself, are [ADR-0040](docs/adr/0040-the-host-is-the-only-writer.md), with
   `test/only-writer.test.ts`.
   A drawer's details are `src/run-detail.ts` and `test/run-detail.test.ts`.

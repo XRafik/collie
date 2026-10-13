@@ -4,7 +4,7 @@ import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { ForgeChecks, MrDetails, MrPanel, MrRef, MrUnavailable } from "../board-model";
 import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
-import { shellQuote } from "../naming";
+import { shellQuote } from "../script";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
 
