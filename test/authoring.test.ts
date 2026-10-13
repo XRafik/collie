@@ -81,10 +81,16 @@ test(
         yield* provisionToolchain(dir);
         const installed = `${dir}/node_modules/effect/package.json`;
         const pkg = yield* fs.readFileString(installed);
+        const shared = `${dir}/shared-package.json`;
+        yield* fs.link(installed, shared);
+        // Bun can hardlink this file to its package cache. Replace the directory entry
+        // before changing its bytes, so this fixture cannot corrupt another install.
+        yield* fs.remove(installed);
         yield* fs.writeFileString(
           installed,
           pkg.replace(/"version"\s*:\s*"[^"]+"/, '"version": "0.0.0"'),
         );
+        expect(yield* fs.readFileString(shared)).toBe(pkg);
         yield* Effect.acquireRelease(
           Effect.sync(() => {
             const before = Bun.env.BUN_CONFIG_SKIP_INSTALL_PACKAGES;

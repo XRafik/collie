@@ -991,8 +991,9 @@ now.
 Workflow-authoring tests still install real packages and run the real compiler. Their
 isolated homes use [Bun's cache preference](https://bun.com/docs/runtime/bunfig#installprefer)
 against `.scratch/test-packages/`, so each fixture does not refresh registry metadata.
-An uncached package is fetched normally. Installs use `copyfile`: editing an installed
-package cannot edit the cache another fixture uses. `XDG_CONFIG_HOME` is removed before
+An uncached package is fetched normally. Bun may hardlink an installed package to the
+cache, so a fixture removes the file's directory entry before writing altered bytes. A
+regression keeps a hardlinked copy and checks that it stays unchanged. `XDG_CONFIG_HOME` is removed before
 tests load so the operator's Bun configuration cannot replace these settings. Neither
 package caching nor scheduling data caches test results.
 
@@ -1162,3 +1163,12 @@ tests in 100.11 s including builds (97.41 s in Bun), with every original test ti
 present. Formatting, lint, type checking and the compiled CLI smoke check passed.
 Desktop's separate suite passed all 122 tests in 0.723 s after its frozen dependencies
 were installed; its initial errors were missing local packages.
+
+Release CI exposed a cache-isolation bug masked locally by `/tmp` being on a different
+filesystem from `.scratch/test-packages`. The `backend = "copyfile"` Bun configuration
+did not prevent hardlinks on CI. Changing the stale-Effect fixture's installed manifest
+therefore changed the cached manifest too, breaking the later real authoring proofs.
+Running that file with `TMPDIR` under `.scratch/` reproduced both failures. The fixture
+now detaches the manifest before editing it and asserts a hardlinked copy stays unchanged;
+the unsupported backend configuration was removed. All 15 authoring tests passed with a
+fresh cache and the fixture directories on the cache's filesystem after that correction.
