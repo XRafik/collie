@@ -40,7 +40,7 @@ import {
   type RunDetail,
   type Controlled,
   FrontDoor,
-  type HostRefused,
+  HostRefused,
   type Disposition,
   type ProposalCarried,
   type ProposalRefused,
@@ -662,9 +662,11 @@ export const resumeRun = (
   asks(
     env,
     (client) =>
-      client
-        .resume({ runId: options.runId, request: options.request })
-        .pipe(Effect.andThen(client.run({ runId: options.runId }))),
+      Effect.gen(function* () {
+        const done = yield* client.resume({ runId: options.runId, request: options.request });
+        if (!done.applied) return yield* new HostRefused({ reason: done.detail });
+        return yield* client.run({ runId: options.runId });
+      }),
     options.door,
   ).pipe(Effect.map(shown(options.runId)));
 

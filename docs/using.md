@@ -682,6 +682,12 @@ already finished" is not offered at all. Nothing is offered on one board and wit
 another — there is one board and one set of actions on a card — and no herdr id is on
 screen anywhere: a Task is its name, a workspace is its project, an agent is its role.
 
+**Resume** succeeds when the host takes up suspended work or recovers the Run into the
+engine. The old park note clears before Output arrives; a new park shows its current
+reason. If the Run is already running, finished, failed, or still missing its module,
+Collie shows the refusal. Desktop does not announce “Resumed” for that refusal.
+See [Stop and resume](cli.md#stop-and-resume) for recovery and delivery reconciliation.
+
 The drawer's header carries the same as buttons, without the one that opens what is already
 open, and adds **Mark merged** and **Mark abandoned** once the work is over — recorded
 [beside the run's status, never over it](cli.md#what-became-of-the-work), with its merge request
@@ -1799,7 +1805,14 @@ is never the one asked or handed work.
 
 - **Fix findings** — the live implementer of a Run this review was started from is handed
   them, where there is one; otherwise an implementer on this review's own run applies them
-  as a fix round, `disputed` and all, and the fix is reviewed again at once. The rally goes on by
+  as a fix round, `disputed` and all, and the fix is reviewed again at once. It works in the
+  reviewed branch's checkout — the one that branch already has, or a new one cut from it —
+  which becomes the review Run's own: your checkout is never switched under you, and
+  `collie verify --run <id> --cwd <that checkout>` is recorded rather than refused. Where
+  that branch has an open merge request, each round's commits are pushed to it, never
+  forced, so its pipeline and the next review see them; not where it merges itself once
+  green, and nothing is pushed where there is no merge request. A target with no branch to
+  fix starts no fixer, and the Run's log says why. The rally goes on by
   itself until nothing blocking is left, it stops making progress, or four rounds have run,
   and then asks again. A hand-off offers **Review again** for when the implementer is done.
 - **Fix findings in a full implement run** — starts `implement` with the review itself as
@@ -1837,8 +1850,9 @@ Fixing one is a different matter. A fix round is an `implement` run, and a mutat
 works in a checkout of its own branch — which `herdr worktree` can only cut from the
 repository it is asked in. So a review of a merge request in another project, or from a
 directory that is not a checkout of it, will review and comment fine, but chaining into
-`implement` from there stops and says so instead of building in the wrong repository.
-Clone that project and start the fix round from there.
+`implement` from there stops and says so instead of building in the wrong repository, and
+**Fix findings** is refused the same way, with the menu back. Clone that project and start
+the fix round from there.
 
 A step pointed at a merge request needs `glab` and `glab auth status --hostname <host>` for
 that host. The "does this directory have a GitLab remote" check stays where it belongs, on
