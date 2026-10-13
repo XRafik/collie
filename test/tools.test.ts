@@ -1445,7 +1445,7 @@ const rootAtWorldHome = () => {
   env = { ...env, raw: { ...env.raw, GITTE_CWD: world.home } };
 };
 
-test("where work can start lists the workspaces, the Home as no checkout, open Tasks, the Projects root and each workflow's Inputs", () =>
+test("where work can start lists the workspaces, the Home as no checkout, open Tasks, the Projects root and each workflow's Inputs and description", () =>
   inWorld(
     Effect.gen(function* () {
       yield* save(world.user, ["branches.workflow.ts"]);
@@ -1475,9 +1475,9 @@ test("where work can start lists the workspaces, the Home as no checkout, open T
       expect(said).not.toContain(gone.id);
       expect(said).toContain(`Projects root: ${world.home}`);
       expect(said).toContain("a checkout under it is named by its directory name");
-      expect(said).toContain("- proof (note)");
-      expect(said).toContain("- hello (name)");
-      expect(said).toContain("- branches (goal?, size)");
+      expect(said).toContain("- proof (note) — Records one launch, then waits to be answered.");
+      expect(said.split("\n")).toContain("- hello (name)");
+      expect(said.split("\n")).toContain("- branches (goal?, size)");
     }),
   ));
 

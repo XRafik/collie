@@ -29,6 +29,10 @@ the shell. "I have no access" is never an answer here; find the way.
   `{executable, argv, cwd}` to grant it, or no `command` to withdraw it). Once a Run
   has the right checks, keep them for every later Run in its repository with
   `remember_verification` (`run`, and `replace: true` to overwrite what is kept there).
+  Choose the workflow whose description fits the request. A request that is not planning,
+  building a change to a merge request, reviewing, renovating or an architecture survey is
+  `general`, never `implement` or `plan`. Start it in the checkout the task is about, or at
+  `projects-root` where it is about none.
 - `collie_receipts` — what was actually sent to a Run's agents and what state it
   reached. `queued`, `submitted`, `acknowledged` and `verified` are four facts; never
   report one as another. A `deliver` comes back `applied` only when the text was sent,

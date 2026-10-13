@@ -46,6 +46,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  general: "odd-job",
 } as const;
 type Shipped = keyof typeof UNRELATED;
 
@@ -3514,6 +3515,93 @@ scenario(
 
 /** A prompt with the Run it is about taken out, so two Runs' prompts can be compared. */
 const byRun = (prompt: string) => prompt.replaceAll(/r-(fork|shipped)/g, "<run>");
+
+const CHORE = "upgrade the VM's install to 0.45.1";
+const DONE = { summary: "Upgraded the VM's install to 0.45.1 and restarted the host." };
+
+scenario(
+  "a general Run launches one generalist on the goal and ends with its summary",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([DONE]);
+        const result = yield* ran({
+          entry: shipped("general"),
+          runId: "r-general",
+          input: { goal: CHORE },
+        });
+
+        expect(said(result)).toBe(DONE.summary);
+        const agents = yield* launched();
+        expect(agents).toHaveLength(1);
+        expect(agents[0]?.args).toContain("--model opus --effort medium");
+        const work = yield* asked("r-general", "task");
+        expect(work).toContain(CHORE);
+        expect(work).toContain(`Project root: ${rig.projectDir}`);
+        expect(work).toContain("collie run intent verification r-general --name");
+        expect(yield* persona("r-general", "task")).toContain("You are a generalist");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a general Run whose agent was blocked fails with the agent's reason",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ summary: "Nothing upgraded.", blocked: "the VM is down" }]);
+        const result = yield* ran({
+          entry: shipped("general"),
+          runId: "r-general-blocked",
+          input: { goal: CHORE },
+        });
+
+        expect(result._tag === "Failure" && result.failure).toBeInstanceOf(WorkflowError);
+        expect(reasonOf(result)).toBe("the VM is down");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a general Run at the Projects root is told the root is not a repository, and elsewhere is not",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([DONE, DONE]);
+        yield* ran({
+          entry: shipped("general"),
+          runId: "r-general-root",
+          input: { goal: CHORE },
+          options: { workspace: "projects-root" },
+        });
+        yield* ran({ entry: shipped("general"), runId: "r-general-here", input: { goal: CHORE } });
+
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "it is not a repository: find the\nrepository",
+        );
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "--cwd <its directory, relative to the project root>",
+        );
+        expect(yield* asked("r-general-here", "task")).not.toContain("it is not a repository");
+      }),
+    ),
+  120_000,
+);
+
+scenario("a general Run declares no checkout, no gate, no outcome and offers nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const described = yield* loadEntry(shipped("general")).pipe(Effect.orDie);
+      expect(described.metadata?.checkout).toBeUndefined();
+      expect(described.metadata?.verifies).toBeUndefined();
+      expect(described.metadata?.outcome).toBeUndefined();
+      expect(described.metadata?.hints).toEqual({ goal: "goal" });
+      expect(declaredByModule(described.metadata)).toEqual([]);
+    }),
+  ),
+);
 
 /**
  * Registers one pass in the test file that calls it: every scenario as shipped, with the

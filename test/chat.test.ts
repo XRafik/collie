@@ -316,6 +316,21 @@ test("both adapters are told about the same Collie, in one place", () =>
     }),
   ));
 
+test("the shipped prompt has chat choose by description, with ad-hoc work as general", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const prompt = (yield* fs.readFileString(
+        `${import.meta.dir}/../prompts/collie-chat.md`,
+      )).replace(/\s+/g, " ");
+      expect(prompt).toContain("Choose the workflow whose description fits the request");
+      expect(prompt).toContain(
+        "renovating or an architecture survey is `general`, never `implement` or `plan`",
+      );
+      expect(prompt).toContain("or at `projects-root` where it is about none");
+    }),
+  ));
+
 /** A Home's chat launched on Claude Code, against a fake herdr and a stand-in `claude`. */
 const launchedChat = (opts: { readonly config?: string; readonly help?: string }) =>
   Effect.gen(function* () {

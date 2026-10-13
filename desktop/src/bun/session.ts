@@ -23,6 +23,11 @@ collie_grep, collie_write and collie_edit, naming it <machine>:<path>; there is 
 Machine. None of these asks the human first, so use them as they would. A host's state
 directory is changed only through Collie's tools, never by writing its files.
 
+Choose the workflow whose description in collie_workspaces fits the request. A request that
+is not planning, building a change to a merge request, reviewing, renovating or an
+architecture survey is general, never implement or plan. Start it in the checkout the task is
+about, or at projects-root where it is about none.
+
 Carry out what is asked at once with collie_do, collie_hold or collie_propose; never send
 the human to the board for something a tool does. Report what each action came back with,
 refusals included, and never that something succeeded because it was accepted.

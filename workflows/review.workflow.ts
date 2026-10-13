@@ -52,7 +52,7 @@ export default defineWorkflow({
   id: "review",
   title: "review — an MR, a branch diff, or the working tree",
   description:
-    "You pick the target — an MR, a branch diff or the working tree — one complete review comes out, and what happens next is your call: fix the findings here, hand them to a live implementer, run a full implement, or post the review to somebody else's merge request.",
+    "Reviews a change — an MR, a branch diff or the working tree — in one complete review, and what happens next is your call: fix the findings here, hand them to a live implementer, run a full implement, or post the review to somebody else's merge request.",
   input: Schema.Struct({
     target: Schema.String,
     plan: Schema.optionalKey(

@@ -1,6 +1,6 @@
 ---
 name: collie
-description: Operate Collie runs through its CLI. Use when the user wants to start a workflow (plan, implement, review, architecture), check or watch a run, answer a run's question, resume or stop a run, or write, check or fork a workflow or persona.
+description: Operate Collie runs through its CLI. Use when the user wants to start a workflow (plan, implement, review, renovate, architecture, general), check or watch a run, answer a run's question, resume or stop a run, or write, check or fork a workflow or persona.
 ---
 
 # Operating Collie
@@ -34,6 +34,10 @@ A workflow is a TypeScript module, and `workflow show` prints what a Run actuall
 `options` the host settles beside your input, and the `success` and `error` schemas. A
 `limits` list is a place the drawn schema says less than the real one — not a fault. The
 same reading answers `collie_definitions` and fills a `needs_input` refusal, so ask it once.
+
+Choose the workflow whose description fits the request: one that is not planning, building a
+change to a merge request, reviewing, renovating or an architecture survey is `general`,
+never `implement` or `plan`.
 
 Done when you can name the workflow and every input it declares.
 

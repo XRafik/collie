@@ -168,7 +168,7 @@ export default defineWorkflow({
   id: "implement",
   title: "implement — build the plan, review it, fix until nothing blocks",
   description:
-    "Builds from a plan dir, a Linear issue or a description, gets one complete review, fixes what blocks until a review finds nothing blocking, then opens the merge request.",
+    "Builds a change on a branch of its own and ends in a merge request: from a plan dir, a Linear issue or a description, it gets one complete review and fixes what blocks until a review finds nothing blocking.",
   input: Schema.Struct({
     plan: Schema.String.annotate({
       description:
