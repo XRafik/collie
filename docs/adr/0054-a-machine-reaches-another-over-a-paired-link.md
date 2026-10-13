@@ -74,6 +74,9 @@ keeps for it.
 
 - **The certificate.** The listener's certificate is the only one the dialler trusts, and
   the secret goes only over that TLS.
+  The original self-signed certificate remains the sole CA when a new address needs
+  another listener certificate. That certificate is signed by the original pin and
+  retains earlier address names, so existing pairings keep working with hostname verification.
 - **The listener.** A Machine with no peer that dials it does not listen at all.
 - **Why TLS.** The listener is reachable from the office network. In clear text, the
   secret would let anyone on that path run agents as the user. That is the concrete harm

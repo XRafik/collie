@@ -3,7 +3,8 @@
 // Every client reaches another Machine by opening `relayOf(stateDir, name)`, and nothing
 // above that path knows there is a WebSocket behind it.
 
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, isIP, type Server, type Socket } from "node:net";
+import { X509Certificate } from "node:crypto";
 import { hostname, networkInterfaces } from "node:os";
 import type { ServerWebSocket } from "bun";
 import {
@@ -61,6 +62,7 @@ export const relayOf = (stateDir: string, name: string) => `${stateDir}/peers/${
 const fileOf = (stateDir: string) => `${stateDir}/peers.json`;
 export const certOf = (stateDir: string) => `${stateDir}/peer-cert.pem`;
 export const keyOf = (stateDir: string) => `${stateDir}/peer-key.pem`;
+const listenerCertOf = (stateDir: string) => `${stateDir}/peer-listener-cert.pem`;
 
 /** The longest unix socket path macOS binds. */
 const SOCKET_PATH_MAX = 104;
@@ -165,18 +167,14 @@ const namesFor = (address: string | null) => {
   );
 };
 
-/**
- * This Machine's certificate, made with `openssl` the first time it is invited, and made
- * again only where the address an asker dials is not on it.
- */
+/** This Machine's certificate, made once with `openssl`. */
 export const certificateFor = Effect.fn("Peers.certificateFor")(function* (
   stateDir: string,
   address: string | null,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const kept = yield* fs.readFileString(certOf(stateDir)).pipe(Effect.option);
-  if (Option.isSome(kept) && (address === null || (yield* sanOf(stateDir)).includes(address)))
-    return kept.value;
+  if (Option.isSome(kept)) return kept.value;
   const made = yield* shell(
     "openssl",
     [
@@ -197,6 +195,8 @@ export const certificateFor = Effect.fn("Peers.certificateFor")(function* (
       "/CN=collie",
       "-addext",
       `subjectAltName=${namesFor(address).join(",")}`,
+      "-addext",
+      "basicConstraints=critical,CA:TRUE",
     ],
     stateDir,
   );
@@ -209,20 +209,67 @@ export const certificateFor = Effect.fn("Peers.certificateFor")(function* (
   return yield* fs.readFileString(certOf(stateDir));
 });
 
-/** The names on this Machine's certificate. */
-const sanOf = (stateDir: string) =>
-  shell(
-    "openssl",
-    ["x509", "-in", certOf(stateDir), "-noout", "-ext", "subjectAltName"],
-    stateDir,
-  ).pipe(
-    Effect.map(({ stdout }) =>
-      stdout
-        .split(/[\s,]+/)
-        .map((one) => one.replace(/^(DNS|IP Address):/, ""))
-        .filter((one) => one !== ""),
-    ),
+/** An address certificate signed by the original pin, keeping every previously invited alias. */
+const listenerCertificateFor = Effect.fn("Peers.listenerCertificateFor")(function* (
+  stateDir: string,
+  address: string | null,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const current = yield* fs
+    .readFileString(listenerCertOf(stateDir))
+    .pipe(Effect.catch(() => fs.readFileString(certOf(stateDir))));
+  const issued = new X509Certificate(current);
+  if (
+    address === null ||
+    (isIP(address) ? issued.checkIP(address) : issued.checkHost(address)) !== undefined
+  )
+    return current;
+  const present = (issued.subjectAltName ?? "")
+    .split(", ")
+    .map((name) => name.replace("IP Address:", "IP:"));
+  const needed = namesFor(address);
+  const csr = `${stateDir}/peer-listener.csr`;
+  const extensions = `${stateDir}/peer-listener.ext`;
+  const next = `${listenerCertOf(stateDir)}.next`;
+  yield* fs.writeFileString(
+    extensions,
+    `subjectAltName=${[...new Set([...present, ...needed])].join(",")}\nbasicConstraints=critical,CA:FALSE\n`,
+    { mode: 0o600 },
   );
+  const commands = [
+    ["req", "-new", "-key", keyOf(stateDir), "-out", csr, "-subj", "/CN=collie-listener"],
+    [
+      "x509",
+      "-req",
+      "-in",
+      csr,
+      "-CA",
+      certOf(stateDir),
+      "-CAkey",
+      keyOf(stateDir),
+      "-set_serial",
+      `0x${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`,
+      "-out",
+      next,
+      "-days",
+      "3650",
+      "-extfile",
+      extensions,
+    ],
+  ];
+  for (const args of commands) {
+    const made = yield* shell("openssl", args, stateDir);
+    if (made.code !== 0)
+      return yield* new HostRefused({
+        reason: `openssl could not sign this Machine's listener certificate: ${(made.stderr ?? "").trim() || `exit ${made.code}`}`,
+      });
+  }
+  yield* fs.chmod(next, 0o600);
+  yield* fs.rename(next, listenerCertOf(stateDir));
+  yield* fs.remove(csr);
+  yield* fs.remove(extensions);
+  return yield* fs.readFileString(listenerCertOf(stateDir));
+});
 
 type PeerCallFailure = HostRefused | RequestConflict | RpcClientError.RpcClientError;
 export interface PeerClient {
@@ -365,7 +412,10 @@ const BunWebSocket = WebSocket as new (
   options?:
     | string
     | Array<string>
-    | { readonly headers: Record<string, string>; readonly tls: { readonly ca?: string } },
+    | {
+        readonly headers: Record<string, string>;
+        readonly tls: { readonly ca?: string };
+      },
 ) => WebSocket;
 
 /** A WebSocket to a peer this Machine dials, trusting only its certificate. */
@@ -464,7 +514,6 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const connections = new Map<Socket, string>();
   let listener: ReturnType<typeof Bun.serve> | null = null;
   let listening: string | null = null;
-  /** The certificate the listener was started with. */
   let served: string | null = null;
 
   const stand = (installation: string, standing: Standing) =>
@@ -950,7 +999,9 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   };
 
   const startListener = Effect.gen(function* () {
-    const cert = yield* fs.readFileString(certOf(link.dir));
+    const cert = yield* fs
+      .readFileString(listenerCertOf(link.dir))
+      .pipe(Effect.catch(() => fs.readFileString(certOf(link.dir))));
     const key = yield* fs.readFileString(keyOf(link.dir));
     served = cert;
     return yield* Effect.try({
@@ -1054,30 +1105,45 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
             Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
           ),
         );
-        // A certificate made again for a new address is one the listener has to serve.
-        if (listener !== null && served !== certificate) {
+        const serving = yield* listenerCertificateFor(link.dir, asker.address).pipe(
+          Effect.mapError((cause) =>
+            Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
+          ),
+        );
+        if (listener !== null && served !== serving) {
           void listener.stop(true);
           listener = null;
         }
-        const secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString(
-          "base64url",
-        );
+        const previous = peers.find((peer) => peer.installation === asker.installation);
+        const secret =
+          (previous?.dials === "in" ? previous.secret : undefined) ??
+          Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+        const incoming: Peer =
+          previous?.dials === "out" && link.installation > asker.installation
+            ? previous
+            : { installation: asker.installation, name: asker.name, dials: "in", secret };
         yield* keep([
           ...peers.filter((peer) => peer.installation !== asker.installation),
-          { installation: asker.installation, name: asker.name, dials: "in", secret },
+          incoming,
         ]);
-        if (listener === null)
+        if (listener === null && incoming.dials === "in")
           return yield* new HostRefused({ reason: listening ?? "the listener did not start" });
         return { installation: link.installation, port: listenPort, certificate, secret };
       }).pipe(pairing.withPermits(1), Effect.provideContext(services)),
     add: (peer) =>
       Effect.gen(function* () {
         yield* validateName(peer.name);
+        const previous = peers.find((one) => one.installation === peer.installation);
+        // Simultaneous opposite invitations agree that the higher installation dials.
+        const paired =
+          peer.dials === "out" && previous?.dials === "in" && link.installation < peer.installation
+            ? { ...previous, name: peer.name }
+            : peer;
         yield* keep([
           ...peers.filter(
             (one) => one.installation !== peer.installation && one.name !== peer.name,
           ),
-          peer,
+          paired,
         ]);
       }).pipe(pairing.withPermits(1)),
     forget,

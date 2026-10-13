@@ -234,6 +234,13 @@ Each host keeps its peers in `src/peers.ts`, started in the host's scope
 - **The pairings,** in `peers.json` in the state directory (0600): each peer's
   installation, name (herdr's label), which side dials, and for a peer this one dials its
   `url`, its `certificate` and the `secret`.
+  Repeated invitations for the same installation reuse its inbound secret, so concurrent
+  first reaches agree even when their replies arrive out of order. The listener keeps
+  its original certificate across address aliases as the dialler's only CA. An alias
+  missing from the original certificate gets a listener certificate signed by that
+  original pin, retaining earlier aliases and normal TLS hostname verification.
+  When both Machines first pair at once, the higher installation id keeps the outgoing
+  record and the lower one the incoming record, so one listener and matching credentials remain.
 - **A relay socket per peer,** `peers/<name>.sock`. A client writes one
   header line, `{"as": <front door>, "client": <name>}`, and is answered with one line —
   `{"ok":true}`, or why not (`refused`, or `unreachable` with what was seen) — then speaks
@@ -271,8 +278,8 @@ each herdr machine not paired yet, for the Run a command names.
 there over `ssh` — through a caller's SSH master where one is given, and as a plain login
 otherwise, whose output goes to the command's stderr so the human sees the approval it
 asks for. The first login, including SSO approval, is bounded to two minutes; a timeout
-closes the SSH process and says which Machine did not pair. The invited host makes its certificate with `openssl` the first time (and again
-only when the address the asker dials is not on it), mints the secret, keeps the pairing
+closes the SSH process and says which Machine did not pair. The invited host makes its certificate with `openssl` the first time,
+mints or reuses the installation's secret, keeps the pairing
 and starts listening; the asker's host keeps its side and opens the relay. A relay path
 longer than a unix socket takes (104 bytes on macOS) is refused rather than truncated.
 Only a front door that can show the login pairs (`pairs` on its env): a host's own jobs

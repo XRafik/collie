@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { Clock, Effect, Fiber, FileSystem, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { pairWith, peersOf, relayOf } from "../src/peers";
+import { certificateFor, pairWith, peersOf, relayOf } from "../src/peers";
 import { connect, ownerOf } from "../src/host";
 import { runEffect } from "./support/effect";
 import { FakeBin } from "./support/bin";
@@ -142,14 +142,10 @@ test(
               (exists) => !exists,
             );
             const inward = (yield* peersOf(second.world.state))[0]!;
-            const invited = yield* remote.invite({
-              for: inward.installation,
-              name: inward.name,
-              address: "127.0.0.1",
-            });
-            expect(invited.secret).not.toBe(changed.secret);
+            const secret = "replacement-credential";
+            yield* remote.pair({ peer: { ...inward, secret } });
             yield* local.pair({
-              peer: { ...changed, secret: invited.secret, certificate: invited.certificate },
+              peer: { ...changed, secret },
             });
             expect((yield* first.cli(["--machine", renamed.name, "board"])).envelope.ok).toBe(true);
             yield* until(
@@ -159,6 +155,164 @@ test(
             expect((yield* second.cli(["--machine", inward.name, "board"])).envelope.ok).toBe(true);
             expect((yield* ownerOf(first.world.state))?.pid).toBe(owner?.pid);
             expect((yield* ownerOf(second.world.state))?.pid).toBe(farOwner?.pid);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "repeated invitations keep one credential despite reversed replies",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-repeat-invite-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const caller = yield* connect(first.world.state);
+            const receiver = yield* connect(second.world.state);
+            const original = (yield* peersOf(first.world.state))[0]!;
+            const inward = (yield* peersOf(second.world.state))[0]!;
+            const invitations = yield* Effect.forEach(
+              [0, 1],
+              () =>
+                receiver.invite({
+                  for: inward.installation,
+                  name: inward.name,
+                  address: "127.0.0.1",
+                }),
+              { concurrency: "unbounded" },
+            );
+            expect(invitations.map((one) => one.secret)).toEqual([
+              original.secret,
+              original.secret,
+            ]);
+            for (const invitation of invitations.toReversed())
+              yield* caller.pair({ peer: { ...original, secret: invitation.secret } });
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "address aliases keep the established certificate and reach both addresses",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-address-alias-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            const initial = yield* first.cli(["--machine", "second", "board"]);
+            expect(initial.envelope.error).toBeUndefined();
+            expect(initial.envelope.ok).toBe(true);
+            const caller = yield* connect(first.world.state);
+            const receiver = yield* connect(second.world.state);
+            const original = (yield* peersOf(first.world.state))[0]!;
+            const aliased = yield* receiver.invite({
+              for: "third",
+              name: "third",
+              address: "127.0.0.2",
+            });
+            expect(aliased.certificate).toBe(original.certificate!);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            yield* caller.pair({
+              peer: { ...original, url: original.url!.replace("127.0.0.1", "127.0.0.2") },
+            });
+            const reached = yield* first.cli(["--machine", "second", "board"]);
+            expect(reached.envelope.error).toBeUndefined();
+            expect(reached.envelope.ok).toBe(true);
+            const fs = yield* FileSystem.FileSystem;
+            const elsewhere = yield* certificateFor(
+              yield* fs.makeTempDirectoryScoped({ prefix: "collie-wrong-pin-" }),
+              "127.0.0.2",
+            );
+            yield* caller.pair({ peer: { ...original, certificate: elsewhere } });
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(false);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "simultaneous first pairing in both directions keeps a listener and matching credentials",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-cross-pair-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            yield* second.lists([first]);
+            expect((yield* first.cli(["machine", "list"])).envelope.ok).toBe(true);
+            expect((yield* second.cli(["machine", "list"])).envelope.ok).toBe(true);
+            const a = yield* connect(first.world.state);
+            const b = yield* connect(second.world.state);
+            const ai = (yield* a.identity()).installation!;
+            const bi = (yield* b.identity()).installation!;
+            const [toA, toB] = yield* Effect.all(
+              [
+                a.invite({ for: bi, name: second.name, address: "127.0.0.1" }),
+                b.invite({ for: ai, name: first.name, address: "127.0.0.1" }),
+              ],
+              { concurrency: "unbounded" },
+            );
+            yield* Effect.all(
+              [
+                a.pair({
+                  peer: {
+                    installation: bi,
+                    name: second.name,
+                    dials: "out",
+                    url: `wss://127.0.0.1:${toB.port}`,
+                    certificate: toB.certificate,
+                    secret: toB.secret,
+                  },
+                }),
+                b.pair({
+                  peer: {
+                    installation: ai,
+                    name: first.name,
+                    dials: "out",
+                    url: `wss://127.0.0.1:${toA.port}`,
+                    certificate: toA.certificate,
+                    secret: toA.secret,
+                  },
+                }),
+              ],
+              { concurrency: "unbounded" },
+            );
+            expect((yield* first.cli(["--machine", second.name, "board"])).envelope.ok).toBe(true);
+            expect((yield* second.cli(["--machine", first.name, "board"])).envelope.ok).toBe(true);
+            const higher = ai > bi ? a : b;
+            const lower = ai > bi ? b : a;
+            const lowSide = ai > bi ? second : first;
+            const highSide = ai > bi ? first : second;
+            const delayed = yield* higher.invite({
+              for: ai > bi ? bi : ai,
+              name: lowSide.name,
+              address: "127.0.0.1",
+            });
+            yield* lower.pair({
+              peer: {
+                installation: delayed.installation,
+                name: highSide.name,
+                dials: "out",
+                url: `wss://127.0.0.1:${delayed.port}`,
+                certificate: delayed.certificate,
+                secret: delayed.secret,
+              },
+            });
+            expect((yield* first.cli(["--machine", second.name, "board"])).envelope.ok).toBe(true);
+            expect((yield* second.cli(["--machine", first.name, "board"])).envelope.ok).toBe(true);
           }),
         [],
       ),
