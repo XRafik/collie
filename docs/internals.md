@@ -1154,3 +1154,11 @@ including builds (140.82 s in Bun). Refreshing the seed from measured durations 
 196 current files, again with no saved timings, passed in 97.79 s including builds
 (95.32 s in Bun). This improves a fresh checkout by 32%; durations only are saved, and
 every test still runs. Later runs continue replacing those estimates with local timings.
+
+The remaining executor fixture now uses `fakeHerdrCommand` too. Its ten unchanged tests
+passed in 0.680 s versus 2.04 s with the source-only shim (3.23 s versus 4.49 s including
+builds). Final verification from the committed scheduling seed passed all 2,644 root
+tests in 100.11 s including builds (97.41 s in Bun), with every original test title still
+present. Formatting, lint, type checking and the compiled CLI smoke check passed.
+Desktop's separate suite passed all 122 tests in 0.723 s after its frozen dependencies
+were installed; its initial errors were missing local packages.
