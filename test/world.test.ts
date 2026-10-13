@@ -130,7 +130,8 @@ test.skipIf(process.platform !== "linux")(
             [],
           ),
         );
-        expect(child?.exitCode).toBe(0);
+        const finished = child;
+        expect(yield* Effect.promise(() => finished?.exited ?? Promise.resolve(null))).toBe(0);
         expect(other?.exitCode).toBeNull();
         expect(yield* fs.exists(state.slice(0, state.lastIndexOf("/")))).toBe(false);
       }).pipe(
