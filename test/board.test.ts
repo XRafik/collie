@@ -2030,12 +2030,23 @@ test(
             }),
           );
 
+          let seen = "";
           const following = yield* Effect.forkChild(
-            collie(world, ["run", "checks", runId, "--follow"]),
+            collie(world, ["run", "checks", runId, "--follow"], {}, (chunk) =>
+              Effect.sync(() => {
+                seen += chunk;
+              }),
+            ),
           );
-          yield* Effect.sleep("1 second");
+          yield* until(
+            () => Effect.succeed(seen),
+            (out) => out.includes("compiling\n"),
+          );
           yield* fs.writeFileString(log, "1 pass\n", { flag: "a" });
-          yield* Effect.sleep("1 second");
+          yield* until(
+            () => Effect.succeed(seen),
+            (out) => out.includes("1 pass\n"),
+          );
           yield* appendVerification(run.evidence, {
             ...checked("unit", "abc"),
             run: runId,
