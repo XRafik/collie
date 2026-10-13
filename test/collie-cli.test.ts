@@ -521,6 +521,7 @@ test(
         );
         for (const args of [
           ["init", "-q", "-b", "main"],
+          ["remote", "add", "origin", "git@gitlab.example.com:team/project.git"],
           [
             "-c",
             "user.email=t@example.com",

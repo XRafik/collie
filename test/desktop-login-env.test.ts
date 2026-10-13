@@ -1,8 +1,16 @@
 // What Desktop takes of the login shell's environment, and that every child it starts is given it.
 
 import { expect, test } from "bun:test";
-import { Effect, FileSystem } from "effect";
-import { childEnv, parseLoginEnv, which } from "../desktop/src/bun/login-env";
+import { ConfigProvider, Effect, FileSystem } from "effect";
+import {
+  childEnv,
+  localShell,
+  parseLoginEnv,
+  readLoginEnv,
+  takeLoginEnv,
+  which,
+} from "../desktop/src/bun/login-env";
+import { localRoute } from "../desktop/src/bun/machine";
 import { runEffect } from "./support/effect";
 
 const BEGIN = "<<collie-env-begin-7f3a9c>>";
@@ -94,5 +102,91 @@ test("a bare command is found on the PATH the environment has now", () =>
       yield* setFor("PATH", `${dir}:${childEnv().PATH}`);
       expect(Bun.which("collie-which-probe")).toBeNull();
       expect(which("collie-which-probe")).toBe(tool);
+    }),
+  ));
+
+const fakeShell = (body: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-login-env-" });
+    yield* fs.writeFileString(`${dir}/sh`, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return `${dir}/sh`;
+  });
+
+test("the interactive login shell's variables are read past what its rc files print", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const shell = yield* fakeShell(
+        `echo 'mise: activated'; [ "$1" = -ilc ] && sh -c "$2"; echo bye`,
+      );
+      const read = yield* readLoginEnv(shell);
+      expect(read.get("PATH")).toBe(Bun.env.PATH);
+    }),
+  ));
+
+test("a shell that fails, or does not answer in time, gives nothing to take", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect((yield* readLoginEnv(yield* fakeShell("exit 1"))).size).toBe(0);
+      expect((yield* readLoginEnv(yield* fakeShell("exec sleep 5"), "200 millis")).size).toBe(0);
+      expect((yield* readLoginEnv("/nonexistent/shell")).size).toBe(0);
+    }),
+  ));
+
+test("a shell that prints its environment but exits unsuccessfully gives nothing to take", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const shell = yield* fakeShell('sh -c "$2"; exit 1');
+      expect((yield* readLoginEnv(shell)).size).toBe(0);
+    }),
+  ));
+
+test("a shell that closes stdout but keeps running gives nothing to take", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const shell = yield* fakeShell('sh -c "$2"; exec 1>&-; exec sleep 5');
+      expect((yield* readLoginEnv(shell, "200 millis")).size).toBe(0);
+    }),
+  ));
+
+test("the login shell gets no launcher variables", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* setFor("ELECTROBUN_LAUNCHER_PID", "4242");
+      const shell = yield* fakeShell('exec sh -c "$2"');
+      expect((yield* readLoginEnv(shell)).has("ELECTROBUN_LAUNCHER_PID")).toBe(false);
+    }),
+  ));
+
+test("Desktop adopts the interactive PATH and preserves it in local scripts", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* setFor("PATH", Bun.env.PATH ?? "");
+      const shell = yield* fakeShell(`printf '${BEGIN}PATH=/interactive/bin\\0${END}'`);
+      const taken = yield* takeLoginEnv.pipe(
+        Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ SHELL: shell }))),
+      );
+      expect(taken).toBe(true);
+      const route = localRoute([], "pc", yield* localShell(taken));
+      const command = yield* route.sh('printf %s "$PATH"');
+      expect(command).toEqual(["/bin/sh", "-c", 'printf %s "$PATH"']);
+      const child = Bun.spawn([...command], { env: childEnv(), stdout: "pipe" });
+      expect(yield* Effect.promise(() => new Response(child.stdout).text())).toBe(
+        "/interactive/bin",
+      );
+    }),
+  ));
+
+test("a failed environment read leaves Desktop's PATH and login shell unchanged", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const before = childEnv().PATH;
+      const shell = yield* fakeShell("exit 1");
+      const config = ConfigProvider.layer(ConfigProvider.fromUnknown({ SHELL: shell }));
+      const taken = yield* takeLoginEnv.pipe(Effect.provide(config));
+      expect(taken).toBe(false);
+      expect(childEnv().PATH).toBe(before);
+      const route = localRoute([], "pc", yield* localShell(taken).pipe(Effect.provide(config)));
+      expect(yield* route.sh("echo fallback")).toEqual([shell, "-lc", "echo fallback"]);
     }),
   ));
