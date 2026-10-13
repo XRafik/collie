@@ -1011,7 +1011,7 @@ const OPERATOR_CHECKS: readonly Check[] = [
   {
     id: "checks/a-run-names-its-own-checks-and-collie-runs-them-unasked",
     statement:
-      "A Run in a repository with no checks file names its own checks, and Collie runs them at the gate with no approval asked and no Decision on the board.",
+      "A Run in a repository with no checks file names its own checks, and Collie runs them at the gate with no approval asked.",
     owner: CHECKS_UNASKED,
     needs: "backend",
     proof: {
