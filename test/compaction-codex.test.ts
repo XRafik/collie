@@ -30,6 +30,8 @@ interface Fake {
   threads: string[];
   /** Threads the TUI keeps for itself, as `thread/read` reports them. */
   ephemeral: string[];
+  /** Sub-agent threads the agent spawned, by the thread that spawned them. */
+  parents: Record<string, string>;
   cwd: string;
   /** Token usage replayed on a rejoin; null sends none, as a fresh thread does. */
   usage: number | null;
@@ -91,6 +93,7 @@ function serve(): FakeServer {
                 id: threadId,
                 cwd: fake.cwd,
                 ephemeral: fake.ephemeral.includes(threadId),
+                parentThreadId: fake.parents[threadId] ?? null,
               },
             });
           case "thread/resume": {
@@ -185,6 +188,7 @@ beforeEach(() =>
       fake = {
         threads: ["thread-1"],
         ephemeral: [],
+        parents: {},
         cwd: rig.projectDir,
         usage: 400_000,
         compactions: [],
@@ -226,6 +230,18 @@ test("the TUI's own ephemeral thread is not a second agent to choose between", (
       const bound = yield* withCodex(ctx().endpoint!, (client) => boundThread(client, fake.cwd));
       expect(bound).toBe("thread-1");
       expect(yield* codex.usage(ctx())).toBe(400_000);
+    }),
+  ));
+
+test("the sub-agents an agent spawned are its own, not rival threads", () =>
+  runEffect(
+    Effect.gen(function* () {
+      fake.threads = ["thread-1", "thread-review", "thread-spec"];
+      fake.parents = { "thread-review": "thread-1", "thread-spec": "thread-1" };
+
+      const bound = yield* withCodex(ctx().endpoint!, (client) => boundThread(client, fake.cwd));
+      expect(bound).toBe("thread-1");
+      expect(yield* codex.ready!(ctx())).toBe(true);
     }),
   ));
 
@@ -408,6 +424,8 @@ onMachineWith("codex")(
         // The accounting: `last` beside `total`, and the total that is used as it stands.
         expect(notifications).toContain(`"last"`);
         expect(notifications).toContain(`"totalTokens"`);
+        // What tells a sub-agent's thread from the agent's own.
+        expect(yield* read("v2/ThreadReadResponse.json")).toContain(`"parentThreadId"`);
         // The item type the compaction lifecycle is read from.
         expect(notifications).toContain(`"contextCompaction"`);
         // The terminal turn statuses the failure mapping relies on.

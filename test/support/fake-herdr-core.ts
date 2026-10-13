@@ -38,6 +38,8 @@ interface FakePane {
   /** What a plugin attached, which is what the Home's ownership proof reads back. */
   tokens?: Record<string, string>;
   terminal_id?: string | null;
+  /** The socket of the one session that lists it; unset, every session does. */
+  session?: string;
 }
 
 interface FakeAgent {
@@ -113,6 +115,8 @@ const FakePaneSchema = Schema.Struct({
   agent_status: Schema.optionalKey(Schema.NullOr(Schema.String)),
   workspace_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
   foreground_cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** The socket of the one session that lists it; unset, every session does. */
+  session: Schema.optionalKey(Schema.String),
 });
 const FakeAgentSchema = Schema.Struct({
   name: Schema.String,
@@ -554,7 +558,11 @@ function handle(
       if (code !== "" && code !== "timeout") return answered;
       // The text reached the pane and the harness never took it: `enter` leaves it in the
       // prompt box for an Enter to send, `text` loses it outright.
-      const lost = yield* envString("FAKE_HERDR_PROMPT_LOST");
+      const lostTimes = Number.parseInt(yield* envString("FAKE_HERDR_PROMPT_LOST_TIMES", "0"), 10);
+      const lost =
+        lostTimes > 0 && state.prompts > lostTimes
+          ? ""
+          : yield* envString("FAKE_HERDR_PROMPT_LOST");
       if (lost !== "") {
         if (lost === "enter") state.typed = argv[3] ?? "";
         yield* writeJson(statePath, state);
@@ -679,18 +687,21 @@ function handle(
       }
       case "pane list": {
         const held = yield* tokensFor("panes");
+        const socket = yield* envString("HERDR_SOCKET_PATH");
         result = {
           type: "pane_list",
           // A pane herdr made carries the workspace it was made in; one a test placed
           // may name its own.
-          panes: state.paneList.map((p) => ({
-            ...p,
-            workspace_id: p.workspace_id ?? "1",
-            tokens: { ...p.tokens, ...held[p.pane_id] },
-            // A pane herdr made has a terminal behind it; its id is the other half of
-            // the Home's ownership proof, so it is as stable as the pane's own id.
-            terminal_id: p.terminal_id ?? `t-${p.pane_id}`,
-          })),
+          panes: state.paneList
+            .filter((p) => p.session === undefined || p.session === socket)
+            .map((p) => ({
+              ...p,
+              workspace_id: p.workspace_id ?? "1",
+              tokens: { ...p.tokens, ...held[p.pane_id] },
+              // A pane herdr made has a terminal behind it; its id is the other half of
+              // the Home's ownership proof, so it is as stable as the pane's own id.
+              terminal_id: p.terminal_id ?? `t-${p.pane_id}`,
+            })),
         };
         break;
       }

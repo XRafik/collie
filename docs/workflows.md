@@ -201,8 +201,16 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
 
 - **Fix findings** — handed, through the one sender, to the implementer already live in
   this workspace where there is one, so no second agent works the same checkout; otherwise
-  an implementer of this run's own, given the findings and the target, which fixes them
-  where the review was pointed. A fix Collie ran is reviewed again at once, and the rally
+  an implementer of this run's own, given the findings, which fixes them in the reviewed
+  branch's checkout — the one git already has for it, or one cut from the branch. That
+  checkout is recorded as this Run's own, so the fixer, every later reviewer and every
+  verification of the Run work there
+  ([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A target
+  with no branch to fix — another project's merge request, `HEAD`, a sha range — starts no
+  fixer: the Run's log says why and the menu comes back. Where the branch has an open merge
+  request, the fixer pushes each round's commits to it — plainly, never forced, and not where
+  the merge request merges itself once green; it never opens or edits one, or comments. A
+  fix Collie ran is reviewed again at once, and the rally
   goes on by itself, through the same `settleRound` as implement's, until nothing blocking
   is left, a round raises the same blockers, a dispute stands unanswered, or four rounds
   have run. Then the menu comes back. A hand-off to a live implementer offers **Review
@@ -260,6 +268,9 @@ stable release. The run says `claim retained; recovery required` beside where it
 claim over, first stopping the failed run and every child it started as `run stop` does,
 waiting for them to stop, and closing their agents again. An agent that will not close, or
 a run still in the middle of a step, stops the takeover rather than being left to work on.
+A run that fails holding no claim offers **Renovate again** instead: the same repository,
+team and issue, in the checkout the failed run left, which the new run takes over while it
+holds nothing to lose ([A run that roams across branches](using.md#a-run-that-roams-across-branches)).
 
 **It asks you** at the points where asking is the work: a breaking or substantial
 migration, an update that cannot be merged safely, a bounded retry that made no progress,

@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { Duration, Effect, FileSystem, Layer, Schema } from "effect";
+import { Duration, Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
@@ -116,7 +116,11 @@ const runEffect = <A, E>(effect: Effect.Effect<A, E, BunServices.BunServices>) =
 
 /** One host's lifetime: a fresh engine on the same directory is what a restart is. */
 const session = <A, E>(
-  run: Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem>,
+  run: Effect.Effect<
+    A,
+    E,
+    WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem | Path.Path
+  >,
   over?: Partial<AgentHost>,
 ) =>
   run.pipe(
@@ -344,6 +348,67 @@ test("an agent that is already there is reattached to rather than started a seco
     }),
   ));
 
+/** herdr closing an agent's pane once Collie has decided to reuse it, as a stop does. */
+class ClosesOnceReused extends FakeHerdr {
+  closed = false;
+  constructor(
+    env: ConstructorParameters<typeof FakeHerdr>[0],
+    readonly pane: string,
+    readonly prompt: string,
+  ) {
+    super(env);
+  }
+  override agentList() {
+    if (this.closed || Bun.file(this.prompt).size === 0) return super.agentList();
+    this.closed = true;
+    return this.paneClose(this.pane).pipe(Effect.andThen(super.agentList()));
+  }
+}
+
+/** herdr failing one listing as Collie hands a reused agent, which it still has, its work. */
+class FailsOnceReused extends FakeHerdr {
+  failed = false;
+  constructor(
+    env: ConstructorParameters<typeof FakeHerdr>[0],
+    readonly pointer: string,
+  ) {
+    super(env);
+  }
+  override agentList() {
+    if (this.failed || Bun.file(this.pointer).size === 0) return super.agentList();
+    this.failed = true;
+    return Effect.fail(
+      new HerdrError({ message: "herdr agent list failed", detail: "socket closed" }),
+    );
+  }
+}
+
+test("a listing that failed is not taken as a reused agent gone, and starts no second one", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addAgent(agentFor("r1"), "1-9");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "still the same agent" }]);
+      const herdr = new FailsOnceReused(rig.pluginEnv(), `${dir}/agents/r1/review.step.md`);
+      const result = yield* session(started("r1"), { herdr });
+      expect(result._tag === "Success" && result.success.note).toBe("still the same agent");
+      expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(0);
+      expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
+    }),
+  ));
+
+test("a reused agent that is gone before it was given its work is started again", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addAgent(agentFor("r1"), "1-9");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "started again" }]);
+      const herdr = new ClosesOnceReused(rig.pluginEnv(), "1-9", promptPath("r1"));
+      const result = yield* session(started("r1"), { herdr });
+      expect(result._tag === "Success" && result.success.note).toBe("started again");
+      expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
+    }),
+  ));
+
 const cardsOf = (runId: string) =>
   readCards(runDir(dir, runId)).pipe(
     Effect.orDie,
@@ -504,7 +569,7 @@ test(
         const fs = yield* FileSystem.FileSystem;
         // Nothing within the budget: a long build still working, not one that did nothing.
         yield* rig.queueOutputs([null]);
-        yield* interrupted("r1", parked("r1"), { collectMs: 400 });
+        yield* interrupted("r1", suspended("r1"), { collectMs: 400 });
 
         yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"late"}`);
         const result = yield* releasedInto("r1");
@@ -2655,6 +2720,32 @@ test(
   120_000,
 );
 
+test(
+  "a harness whose readiness check fails parks the step saying why",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ verdict: "clean", note: "never" }]);
+        yield* interrupted("r1", suspended("r1"), {
+          compactAtTokens: 1000,
+          ports: {
+            claude: {
+              ...claudeControls().claude!,
+              ready: () => Effect.fail(new Error("its endpoint has 3 threads on it")),
+            },
+          },
+          herdr: new FakeHerdr(rig.pluginEnv({ FAKE_HERDR_HARNESS_SILENT: "1" })),
+          readyMs: 300,
+        });
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
+          "its endpoint has 3 threads on it",
+        );
+        expect(sent(yield* rig.calls(), "Your task for this step")).toBe(0);
+      }),
+    ),
+  120_000,
+);
+
 test("a step pointer the harness took is recorded as Collie's, with its delivery id", () =>
   runEffect(
     Effect.gen(function* () {
@@ -2759,6 +2850,51 @@ test(
         expect(result._tag === "Success" && result.success.note).toBe("sent again");
         expect(sent(yield* rig.calls(), "Your task for this step")).toBe(2);
         expect(new Set((yield* steps("r1")).map((one) => one.delivery.id)).size).toBe(2);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a parked collection resumes on the same host and resends only the reconciled delivery",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const env = rig.pluginEnv({
+          FAKE_HERDR_PROMPT_LOST: "text",
+          FAKE_HERDR_AGENT_STATUS: "working,idle",
+        });
+        yield* session(
+          Effect.gen(function* () {
+            const engine = yield* WorkflowEngine.WorkflowEngine;
+            const payload = { runId: "r1", input: { skip: false } };
+            yield* rig.queueOutputs([{ verdict: "clean", note: "never" }]);
+            yield* work.execute(payload, { discard: true });
+            for (let tries = 0; !(yield* parked("r1")); tries++) {
+              if (tries === 500) throw new Error("collection never parked");
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            }
+            const [first] = yield* steps("r1");
+            expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(first!.delivery.id);
+            for (let tries = 0; !(yield* suspended("r1")); tries++) {
+              if (tries === 100) throw new Error("parked collection never suspended");
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            }
+            yield* reconciled("r1", "not-sent");
+            delete env.raw.FAKE_HERDR_PROMPT_LOST;
+            yield* rig.queueOutputs([{ verdict: "clean", note: "same host" }]);
+            yield* engine.resume(work, yield* work.executionId(payload));
+            const result = yield* work.execute(payload).pipe(Effect.result);
+            expect(result._tag === "Success" && result.success.note).toBe("same host");
+            const calls = yield* rig.calls();
+            expect(sent(calls, "Your task for this step")).toBe(2);
+            expect(calls.filter((call) => call.cmd === "agent start")).toHaveLength(1);
+            const delivered = yield* steps("r1");
+            expect(delivered.map((one) => one.delivery.attempt)).toEqual([1, 2]);
+            expect(new Set(delivered.map((one) => one.delivery.id)).size).toBe(2);
+          }),
+          { herdr: new FakeHerdr(env), confirmGraceMs: 300, collectMs: 300_000 },
+        );
       }),
     ),
   120_000,

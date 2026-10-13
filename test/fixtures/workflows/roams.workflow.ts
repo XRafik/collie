@@ -1,4 +1,4 @@
-import { Host, Run, defineWorkflow } from "collie";
+import { Host, Run, WorkflowError, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 
 export default defineWorkflow({
@@ -9,8 +9,10 @@ export default defineWorkflow({
   hints: { work: "goal" },
   output: Schema.String,
   checkout: "roaming",
-  run: () =>
+  run: ({ input }) =>
     Effect.gen(function* () {
-      return (yield* (yield* Host).place((yield* Run).id)).cwd;
+      const cwd = (yield* (yield* Host).place((yield* Run).id)).cwd;
+      if (input.work === "fail") return yield* new WorkflowError({ reason: `failed in ${cwd}` });
+      return cwd;
     }),
 });
