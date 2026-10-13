@@ -118,7 +118,7 @@ Run's audit, with the Machine it came from
 
 ### The skills
 
-The baseline workflows hard-require ten skills they do not ship, and a missing skill stops
+The baseline workflows hard-require the skills they name and do not ship, and a missing skill stops
 a run before its first tab opens. `prepare.sh` installs them for you with the
 [skills.sh](https://skills.sh/) CLI (`npx skills`), from three sources:
 

@@ -218,6 +218,25 @@ export function forgeHere<R>(
 }
 
 /**
+ * The URL of the checkout's branch's open merge request where it merges itself once green,
+ * else null. A checkout its forge cannot answer for has none to merge.
+ */
+export function autoMergingHere<R>(
+  cwd: string,
+  run: Runner<R>,
+  gitlabHost?: string,
+): Effect.Effect<string | null, never, R> {
+  return Effect.gen(function* () {
+    const here = yield* forgeHere(cwd, run, gitlabHost);
+    if (!here.ok) return null;
+    const branch = (yield* run("git", ["rev-parse", "--abbrev-ref", "HEAD"], cwd)).stdout.trim();
+    if (branch === "HEAD" || branch === "") return null;
+    const found = yield* here.forge.forBranch(here.project, branch, cwd, run);
+    return found.ok && found.open?.autoMerge === true ? found.open.url : null;
+  });
+}
+
+/**
  * The line that decides whether to look again: has this merge request moved since the
  * review finished. GitLab's `updated_at` is what answers it in the one call the panel
  * makes — a commit count would need a second, and "has anything moved" is the question

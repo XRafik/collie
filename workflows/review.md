@@ -167,9 +167,9 @@ and say what you ran: what Collie watched is a verification, and anything else i
 
 At the end of the round, where `{{branch}}` has an open merge request (a pull request on
 GitHub), push this round's commits to it: a plain push, never forced. A rejected push is
-reported, never retried with force — someone else's commits may be on that branch. Where
-that merge request merges itself once green (auto-merge), do not push, and say that is
-why: that push would be a merge. Where `{{branch}}` has no open merge request, do not push.
+reported, never retried with force — someone else's commits may be on that branch. Collie
+checked before this round started that it does not merge itself once green. Where
+`{{branch}}` has no open merge request, do not push.
 Never open or edit a merge request, and never comment anywhere. Report `"pushed"` and the
 `branch` your commits are on, so a local-only result is never mistaken for a landed one.
 

@@ -369,6 +369,11 @@ interface Doing<Output extends OutputContract> {
   readonly workflow?: string;
   /** The skill this work is started with, where the work is one a skill describes. */
   readonly skill?: string;
+  /**
+   * The agent pushes the branch. While its merge request merges itself once green, the
+   * work does not start: the Run records why and parks as Needs you (ADR-0050 D4).
+   */
+  readonly pushes?: boolean;
   readonly harness?: string;
   readonly model?: string;
   readonly effort?: string;
@@ -380,6 +385,26 @@ interface Doing<Output extends OutputContract> {
    */
   readonly seat?: Seat;
 }
+
+/**
+ * Parks the Run while the checkout's merge request merges itself once green, since a push
+ * to it is a merge. Suspending inside the Activity leaves it unrecorded, so a resume asks
+ * the forge again; once it has said no, a replay does not.
+ */
+const untilPushable = (operation: string, cwd: string) =>
+  Activity.make({
+    name: `${operation}.pushable`,
+    execute: Effect.gen(function* () {
+      const host = yield* Host;
+      const runId = (yield* Run).id;
+      const url = yield* host.autoMerging(cwd);
+      if (url === null) return yield* host.parked(runId, null);
+      const why = `not pushed: auto-merge is on for ${url}`;
+      yield* host.record(runId, why);
+      yield* host.parked(runId, `${why}. Turn auto-merge off, then resume ${runId}.`);
+      return yield* Workflow.suspend(yield* WorkflowEngine.WorkflowInstance);
+    }),
+  });
 
 /**
  * One agent, once, and its Output as a value of the author's own type.
@@ -425,6 +450,7 @@ export const agentWork = <
     if (yield* host.held(work.runId)) {
       return yield* Workflow.suspend(yield* WorkflowEngine.WorkflowInstance);
     }
+    if (given.pushes === true) yield* untilPushable(work.operation, work.cwd);
     // The operation is a name of its own before it is anything else: the Output, the
     // prompt and the recorded launch are all kept under it.
     const unsafe = unsafePathComponent(work.operation);

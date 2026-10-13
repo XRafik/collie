@@ -324,6 +324,12 @@ const verdict =
   with the first message — which is the only way to reach a skill that refuses to be called
   by a model. A skill _mentioned_ in your Markdown as `{{skill:name}}` renders as the path
   to read instead, so a prompt never spells one harness's syntax.
+- **`pushes: true` is read before the agent starts.** The host reads the branch's merge
+  request through its forge, and while it merges itself once green the work does not start:
+  the Run records `not pushed: auto-merge is on for <url>` and parks as Needs you until
+  auto-merge is off and it is resumed
+  ([ADR-0050 D4](adr/0050-a-merge-request-is-its-forges.md)). Give it to any work whose
+  agent pushes.
 - **`input` is what the instructions name.** With a template it is exactly what the
   template declares, so the compiler checks it; with text, `{{run.dir}}` reads `input.run.dir`.
   An expression nothing fills fails the work before any agent starts, never renders empty.

@@ -477,6 +477,9 @@ export const forgeOnPath = Effect.fn("forge.onPath")(function* (
   const command = binary === "" ? [process.execPath, script] : [binary];
   yield* bin.add(CLI[forge], `exec ${[...command, forge, file].map(shellQuote).join(" ")} "$@"`);
   return {
+    /** The model file holding `next`, as an agent's scripted write would leave it. */
+    holding: (next: ForgeModel) => ({ path: file, text: Schema.encodeSync(ModelJson)(next) }),
+    set: (next: ForgeModel) => fs.writeFileString(file, Schema.encodeSync(ModelJson)(next)),
     model: () => Effect.map(fs.readFileString(file), Schema.decodeSync(ModelJson)),
     calls: () =>
       Effect.map(

@@ -1,7 +1,14 @@
 // The GitLab adapter: everything Collie asks GitLab, through `glab`.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
-import type { ForgeChecks, MrDetails, MrPanel, MrRef, MrUnavailable } from "../board-model";
+import {
+  mrPath,
+  type ForgeChecks,
+  type MrDetails,
+  type MrPanel,
+  type MrRef,
+  type MrUnavailable,
+} from "../board-model";
 import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
@@ -410,13 +417,22 @@ export const gitlab: Forge = {
   noun: "merge request",
   forBranch,
   template,
-  commands: ({ project, assignee, existing }) => ({
-    create: `glab mr create --assignee ${shellQuote(assignee)} --title "<title>" --description "$(cat <file>)"`,
-    comment:
-      existing === null
-        ? ""
-        : `glab mr note ${shellQuote(existing)} --repo ${shellQuote(project)} --message "$(cat <file>)"`,
-  }),
+  // `glab mr create` and `glab mr note` take text only, so a file goes through the API,
+  // which reads `@<file>` itself: no command substitution (CrowdStrike flags it).
+  commands: ({ project, assignee, existing }) => {
+    const api = `glab api --hostname ${shellQuote(hostOf(project) ?? "")}`;
+    const route = `projects/${encodeURIComponent(mrPath({ project, iid: "" }))}/merge_requests`;
+    return {
+      create: [
+        `glab mr create --assignee ${shellQuote(assignee)} --title "<title>" --description "<title>" --yes`,
+        `${api} --method PUT ${shellQuote(`${route}/<iid>`)} -F description=@<file>`,
+      ].join("\n"),
+      comment:
+        existing === null
+          ? ""
+          : `${api} --method POST ${shellQuote(`${route}/${existing}/notes`)} -F body=@<file>`,
+    };
+  },
   ready: gitlabForProject,
   login: glabLogin,
   details: mrDetails,

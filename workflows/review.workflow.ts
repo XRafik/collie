@@ -287,6 +287,7 @@ export default defineWorkflow({
         const fixed = yield* agentWork({
           operation,
           role: "implementer",
+          pushes: true,
           instructions: FIX_PROMPT,
           input: {
             inputs,

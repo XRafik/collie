@@ -94,7 +94,13 @@ import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
 import type { CheckoutKind, InputStrategy } from "./definitions";
 import { appendMetric, noteVerification } from "./metrics";
-import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
+import {
+  autoMergingHere,
+  prepareMergeRequest,
+  postNote,
+  projectHere,
+  shell as runShell,
+} from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
 import { strategyNamed } from "./strategies";
 import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
@@ -378,6 +384,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly target?: string;
       readonly source?: { readonly value: string; readonly kind: string };
     }) => Effect.Effect<MrReady>;
+    /** The checkout's branch's open merge request where it merges itself once green, else null. */
+    readonly autoMerging: (cwd: string) => Effect.Effect<string | null>;
     /**
      * Blocks until this Run holds the shared claim on the repository it works in, and
      * answers null where that repository has none. Waiting here costs wall clock and no
@@ -756,6 +764,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly workflow?: string;
     /** The skill this work is started with, where the work is one a skill describes. */
     readonly skill?: string;
+    /** The agent pushes the branch: while its merge request auto-merges, the Run parks instead. */
+    readonly pushes?: boolean;
     readonly harness?: string;
     readonly model?: string;
     readonly effort?: string;
@@ -2423,6 +2433,13 @@ export const hostLayer = (options: {
                 issues: [],
               })),
             ),
+          ),
+        autoMerging: (cwd) =>
+          under(
+            Effect.gen(function* () {
+              const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir);
+              return yield* autoMergingHere(cwd, runShell, gitlabHost);
+            }).pipe(Effect.orElseSucceed(() => null)),
           ),
         claim: <E, R>(asked: {
           readonly runId: string;

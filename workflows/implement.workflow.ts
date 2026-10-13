@@ -312,7 +312,7 @@ export default defineWorkflow({
           operation: ticket?.file ?? "build",
           agent: BUILDER,
           role: "implementer",
-          skill: "implement",
+          pushes: true,
           instructions: prompts.build,
           input: {
             ...input,
@@ -468,6 +468,7 @@ export default defineWorkflow({
           operation: `gate-fix-${at}`,
           agent: BUILDER,
           role: "implementer",
+          pushes: true,
           instructions: prompts.fix,
           input: {
             ...input,
@@ -558,18 +559,13 @@ export default defineWorkflow({
         yield* host.parked(runId, reason);
         return yield* Workflow.suspend(yield* WorkflowInstance);
       }
-      // A push that turns someone's auto-merging merge request green merges it (ADR-0050 D4).
-      if (ready.existing && ready.autoMerge) {
-        const why = `not pushed: auto-merge is on for ${ready.existing}`;
-        yield* host.record(runId, why);
-        return why;
-      }
 
       const settledEvidence = yield* host.evidence(runId, cwd);
       const opened = yield* agentWork({
         operation: "mr",
         agent: BUILDER,
         role: "implementer",
+        pushes: true,
         instructions: prompts.mr,
         input: {
           ...input,
@@ -836,6 +832,7 @@ const rally = (ask: {
         operation: `${prefix}fix-${at}`,
         agent: BUILDER,
         role: "implementer",
+        pushes: true,
         instructions: prompts.fix,
         input: {
           ...ask.input,

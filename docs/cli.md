@@ -1138,11 +1138,12 @@ readiness, assignee, template, Linear tickets and this branch's open merge reque
 The commands quote repository, branch and assignee values so the shell passes them literally.
 Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
 to read the repository. An existing merge request on the branch is updated rather than
-given a second one. If any request returned for the branch merges itself once green,
-delivery does not push: the step records `not pushed: auto-merge is on for <url>` and
-starts no agent. Before every
-GitHub push in the build and fix steps, the implementer still reads the branch's open pull
-requests and refuses a push if auto-merge is enabled or that reading fails.
+given a second one. Before every step that pushes — each build, fix round and gate fix,
+and delivery — the host reads the branch's open merge request. Where it merges itself once
+green, the step starts no agent: the Run records `not pushed: auto-merge is on for <url>`
+and parks as Needs you until auto-merge is off and the Run is resumed. `review`'s fix
+round is held to the same rule. The commands contain no command substitution: GitLab's
+description and note are read from the file by `glab api` (`-F description=@<file>`).
 An unavailable forge parks the Run with the repair it needs.
 A delivery agent that did not push, supplied no merge request URL or reported findings
 fails the Run with the reason and a follow-up repair; it cannot report successful delivery.

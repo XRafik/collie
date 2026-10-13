@@ -589,6 +589,11 @@ export interface HostApi {
     readonly source?: { readonly value: string; readonly kind: string };
   }) => Effect.Effect<MrReady>;
   /**
+   * The URL of the checkout's branch's open merge request where it merges itself once
+   * green, else null: a push to it would be a merge (ADR-0050 D4). Read fresh each time.
+   */
+  readonly autoMerging: (cwd: string) => Effect.Effect<string | null>;
+  /**
    * Blocks until this Run holds the shared claim on the repository it works in, and
    * answers null where that repository has none. Waiting here costs wall clock and no
    * model tokens, which is the point of claiming before an agent starts rather than
@@ -677,7 +682,7 @@ export interface MrReady {
   readonly autoMerge?: boolean;
   /** The command lines an agent runs, written by the forge's adapter. */
   readonly commands?: {
-    /** Opens one, with `<title>` and `<file>` (the description file) left to fill in. */
+    /** Opens one, with `<title>`, `<file>` (the description file) and any `<iid>` left to fill in. */
     readonly create: string;
     /** Posts `<file>` as a note on `existing`; empty where there is none. */
     readonly comment: string;

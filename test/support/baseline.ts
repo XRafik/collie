@@ -18,6 +18,7 @@ import { exec } from "./command";
 import { fastForward, runEffect } from "./effect";
 import { FakeBin } from "./bin";
 import { CLI, FORGE_HOST, PROJECT, forgeOnPath, type ForgeModel } from "./forge";
+import { readCheckpoints } from "../../src/cards";
 import { mrTarget, type MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
@@ -1423,7 +1424,9 @@ scenario(
         expect(fix).not.toContain("Do not push");
         expect(fix).toContain("has an open merge request");
         expect(fix).toContain("never force");
-        expect(fix).toContain("merges itself once green");
+        expect(fix.replace(/\s+/g, " ")).toContain(
+          "Collie checked before this round started that it does not merge itself once green",
+        );
         expect(fix).toContain("has no open merge request, do not push");
         expect(fix).toContain("Never open or edit a merge request, and never comment");
         const section = fix.slice(fix.indexOf("The review is written"), fix.indexOf("OUTPUT_PATH"));
@@ -1943,6 +1946,15 @@ scenario(
         expect(
           yield* fs.readFileString(`${runDir(dir, "r-impl")}/steering/progress/01-first.json`),
         ).toContain(`"status":"done"`);
+        // Collie keeps progress, so the card has one entry per ticket and no second slug.
+        expect(
+          (yield* readCheckpoints(runDir(dir, "r-impl")))
+            .map(({ checkpoint }) => [checkpoint.ticket, checkpoint.status])
+            .toSorted(),
+        ).toEqual([
+          ["01-first.md", "done"],
+          ["02-second.md", "done"],
+        ]);
       }),
     ),
   120_000,
@@ -2262,7 +2274,32 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         // The fix is told what was found and where the round stands, and the second review
         // is a fresh reviewer rather than the one that wrote the first.
-        expect(yield* persona("r-impl-fix", "build")).toContain("Before every GitHub push");
+        // How to build is the step's to say, the review is Collie's, and so is progress.
+        const builder = yield* persona("r-impl-fix", "build");
+        for (const prompt of [
+          yield* asked("r-impl-fix", "build"),
+          yield* asked("r-impl-fix", "fix-1"),
+        ]) {
+          const text = prompt.replace(/\s+/g, " ");
+          expect(text).toContain("the `tdd` skill");
+          expect(text).toMatch(
+            /run the typecheck and the test files you touched, each through `collie verify`/i,
+          );
+          expect(text).toContain("do not run the whole suite yourself");
+          expect(text).toMatch(/Commit (to this branch|each fix to this branch)/);
+          expect(text).toMatch(/Collie reviews this (work|fix) in its own rally/);
+          expect(text).toContain(
+            "Do not run a review skill, and do not start review sub-agents or threads",
+          );
+          for (const said of [text, builder]) {
+            expect(said).not.toContain("code-review");
+            expect(said).not.toContain("steering/progress");
+            expect(said).not.toContain("`implement` skill");
+            expect(said).not.toContain("gh pr list");
+          }
+        }
+        for (const message of yield* prompts())
+          expect(message).not.toMatch(/^\/(implement|code-review)\b/);
         expect(
           yield* rig.cmds().pipe(Effect.map((cmds) => cmds.filter((cmd) => cmd === "agent start"))),
         ).toHaveLength(3);
@@ -2346,7 +2383,7 @@ scenario(
               executable: "sh",
               argv: [
                 "-c",
-                `n=$(($(cat ${count} 2>/dev/null || echo 0) + 1)); echo $n > ${count}; [ $n -eq 2 ] || [ -f ${rig.root}/repaired ]`,
+                `echo >> ${count}; wc -l < ${count} | { read n; [ $n -eq 2 ] || [ -f ${rig.root}/repaired ]; }`,
               ],
               cwd: rig.projectDir,
             },
@@ -2488,7 +2525,7 @@ scenario(
               executable: "sh",
               argv: [
                 "-c",
-                `n=$(($(cat ${count} 2>/dev/null || echo 0) + 1)); echo $n > ${count}; [ $n -eq 2 ] || [ $n -ge 4 ]`,
+                `echo >> ${count}; wc -l < ${count} | { read n; [ $n -eq 2 ] || [ $n -ge 4 ]; }`,
               ],
               cwd: rig.projectDir,
             },
@@ -2543,7 +2580,7 @@ scenario(
               // base, red again on the recheck, green after the fix.
               argv: [
                 "-c",
-                `cat ${marker} >> ${seen}; echo >> ${seen}; n=$(($(cat ${count} 2>/dev/null || echo 0) + 1)); echo $n > ${count}; [ $n -eq 2 ] || [ $n -ge 4 ]`,
+                `cat ${marker} >> ${seen}; echo >> ${seen}; echo >> ${count}; wc -l < ${count} | { read n; [ $n -eq 2 ] || [ $n -ge 4 ]; }`,
               ],
               cwd: rig.projectDir,
             },
@@ -2607,10 +2644,7 @@ scenario(
             {
               name: "unit",
               executable: "sh",
-              argv: [
-                "-c",
-                `n=$(($(cat ${count} 2>/dev/null || echo 0) + 1)); echo $n > ${count}; [ $n -ge 4 ]`,
-              ],
+              argv: ["-c", `echo >> ${count}; wc -l < ${count} | { read n; [ $n -ge 4 ]; }`],
               cwd: rig.projectDir,
             },
           ]),
@@ -3087,7 +3121,11 @@ for (const name of ["gitlab", "github"] as const) {
           });
           yield* bin.restore();
           const prompt = yield* asked(runId, "mr");
-          expect(prompt).toContain(name === "gitlab" ? "glab mr note '31'" : "gh pr comment '31'");
+          expect(prompt).toContain(
+            name === "gitlab"
+              ? "glab api --hostname 'gitlab.example.com' --method POST 'projects/group%2Fapp/merge_requests/31/notes' -F body=@<file>"
+              : "gh pr comment '31'",
+          );
           expect(prompt).toContain(
             name === "gitlab"
               ? "https://gitlab.example.com/group/app/-/merge_requests/31"
@@ -3099,8 +3137,119 @@ for (const name of ["gitlab", "github"] as const) {
     120_000,
   );
 
+  const autoMerging = (autoMerge: boolean): ForgeModel["mrs"] => [
+    { project: PROJECT[name], iid: "31", state: "open", sourceBranch: "master", autoMerge },
+  ];
+  const notPushed = `not pushed: auto-merge is on for ${
+    name === "gitlab"
+      ? "https://gitlab.example.com/group/app/-/merge_requests/31"
+      : "https://github.com/owner/repo/pull/31"
+  }`;
+
   scenario(
-    `implement does not push to a ${name} ${noun} that merges itself once green`,
+    `implement starts no build while its ${name} ${noun} merges itself once green`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* deliveringOn(name, autoMerging(true));
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const options = {
+            entry: shipped("implement"),
+            runId: `r-impl-${name}-auto-merge`,
+            input: { plan },
+          };
+          yield* approve(options.runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+          expect(yield* stalled(options)).toBe("suspended");
+          expect(yield* prompts()).toHaveLength(0);
+          expect(yield* parkedWhy(options.runId)).toStartWith(notPushed);
+          const fs = yield* FileSystem.FileSystem;
+          expect(yield* fs.readFileString(`${runDir(dir, options.runId)}/log.txt`)).toContain(
+            notPushed,
+          );
+
+          // The human turns auto-merge off and resumes: the build starts, and the Run delivers.
+          yield* forge.set({
+            ...(yield* forge.model()),
+            mrs: autoMerging(false),
+          });
+          expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
+          expect(yield* prompts()).toHaveLength(3);
+          expect(yield* parkedWhy(options.runId)).toBe("");
+          yield* bin.restore();
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement starts no fix round once its ${name} ${noun} merges itself once green`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* deliveringOn(name, autoMerging(false));
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-fix-auto-merge`;
+          yield* approve(runId, ["unit"]);
+          const finding = {
+            severity: "blocker",
+            title: "the guard is on the wrong side",
+            file: "src/a.ts",
+          };
+          // Somebody turns auto-merge on while the build is under way.
+          const on = forge.holding({ ...(yield* forge.model()), mrs: autoMerging(true) });
+          yield* rig.queueOutputs([
+            { writes: [on], output: BUILT },
+            { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [finding] },
+          ]);
+          expect(yield* stalled({ entry: shipped("implement"), runId, input: { plan } })).toBe(
+            "suspended",
+          );
+          yield* bin.restore();
+          // The build and the review, and no fix.
+          expect(yield* prompts()).toHaveLength(2);
+          expect(yield* parkedWhy(runId)).toStartWith(notPushed);
+        }),
+      ),
+    120_000,
+  );
+}
+
+/** The human answers, and the Run goes on until it parks itself. */
+const answeredUntilParked = (options: {
+  readonly entry: string;
+  readonly runId: string;
+  readonly input: Readonly<Record<string, Schema.Json>>;
+  readonly decision: string;
+  readonly value: string;
+}) =>
+  session(
+    Effect.gen(function* () {
+      const made = yield* loaded(options.entry, options.runId);
+      const payload = { runId: options.runId, input: options.input };
+      return yield* Effect.gen(function* () {
+        yield* answerDecision(made, {
+          name: options.decision,
+          executionId: yield* made.workflow.executionId(payload),
+          value: options.value,
+        }).pipe(Effect.orDie);
+        yield* made.workflow.execute(payload, { discard: true });
+        return yield* parkedWhy(options.runId).pipe(
+          Effect.filterOrFail((why) => why !== ""),
+          Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+        );
+      }).pipe(Effect.provide(made.layer));
+    }),
+  );
+
+for (const name of ["gitlab", "github"] as const) {
+  const noun = name === "gitlab" ? "merge request" : "pull request";
+  scenario(
+    `review's fix starts no round while the reviewed ${name} ${noun} merges itself once green`,
     () =>
       runEffect(
         Effect.gen(function* () {
@@ -3109,31 +3258,36 @@ for (const name of ["gitlab", "github"] as const) {
               project: PROJECT[name],
               iid: "31",
               state: "open",
-              sourceBranch: "master",
+              sourceBranch: "feature",
               autoMerge: true,
             },
           ]);
-          const plan = yield* planOf([
-            { file: "01-only.md", title: "the only one", checks: "unit" },
-          ]);
-          const runId = `r-impl-${name}-auto-merge`;
-          yield* approve(runId, ["unit"]);
-          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS]);
-          const result = yield* ran({
-            entry: shipped("implement"),
-            runId,
-            input: { plan },
+          yield* exec(["git", "worktree", "add", "-q", "-b", "feature", `${rig.root}/reviewed`], {
+            cwd: rig.projectDir,
+          });
+          const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
+          yield* rig.queueOutputs([SYNTHESIS, fixed]);
+          const run = {
+            entry: shipped("review"),
+            runId: `r-review-${name}-auto-merge`,
+            input: { target: "branch:main...feature" },
+          };
+          yield* parked({ ...run, decision: "post-1" });
+          const why = yield* answeredUntilParked({
+            ...run,
+            decision: "post-1",
+            value: "Fix findings",
           });
           yield* bin.restore();
-          const why = `not pushed: auto-merge is on for ${
-            name === "gitlab"
-              ? "https://gitlab.example.com/group/app/-/merge_requests/31"
-              : "https://github.com/owner/repo/pull/31"
-          }`;
-          expect(said(result)).toBe(why);
-          expect(yield* prompts()).toHaveLength(2);
-          const fs = yield* FileSystem.FileSystem;
-          expect(yield* fs.readFileString(`${runDir(dir, runId)}/log.txt`)).toContain(why);
+          expect(why).toStartWith(
+            `not pushed: auto-merge is on for ${
+              name === "gitlab"
+                ? "https://gitlab.example.com/group/app/-/merge_requests/31"
+                : "https://github.com/owner/repo/pull/31"
+            }`,
+          );
+          // The review, and no fix.
+          expect(yield* prompts()).toHaveLength(1);
         }),
       ),
     120_000,
@@ -3992,6 +4146,30 @@ scenario("a general Run declares no checkout, no gate, no outcome and offers not
  * tests about the shipped modules themselves, or every scenario under ids that share
  * nothing with them. Two files, so the two passes run on two workers at once.
  */
+/**
+ * Every prompt and persona a scenario sent substitutes no command: no `$(`, and no backtick
+ * inside a fenced block, where a backtick is shell rather than Markdown.
+ */
+const noCommandSubstitution = () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const runs = yield* fs.readDirectory(`${dir}/agents`).pipe(Effect.orElseSucceed(() => []));
+    for (const run of runs) {
+      const names = yield* fs
+        .readDirectory(`${dir}/agents/${run}`)
+        .pipe(Effect.orElseSucceed(() => []));
+      for (const name of names.filter((one) => /\.(prompt|persona)\.md$/.test(one))) {
+        const text = yield* fs.readFileString(`${dir}/agents/${run}/${name}`);
+        const fenced = text.split("```").filter((_, at) => at % 2 === 1);
+        expect([name, text.includes("$("), fenced.some((block) => block.includes("`"))]).toEqual([
+          name,
+          false,
+          false,
+        ]);
+      }
+    }
+  }).pipe(Effect.orDie);
+
 export const register = (pass: "shipped" | "unrelated") => {
   beforeEach(() =>
     runEffect(
@@ -4033,7 +4211,7 @@ export const register = (pass: "shipped" | "unrelated") => {
       pass === "unrelated" ? `${one.name} (under an unrelated id)` : one.name,
       () => {
         renamed = pass === "unrelated";
-        return one.body();
+        return one.body().then(() => runEffect(noCommandSubstitution()));
       },
       one.timeout,
     );

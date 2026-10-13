@@ -74,9 +74,14 @@ not redo their work. What they left:
 Where no ticket is named, the work source is not a plan of several tickets and the whole
 of it is yours.
 
-You were started with {{skill:implement}}, so build what this step is for, with
-{{skill:tdd}} at the seams the spec names and the project's tests green. Commit as you
-go — one commit per ticket. There is no separate commit step.
+Build it test first, with {{skill:tdd}} at the seams the spec names: the failing test,
+then the code that makes it pass. As you go, run the typecheck and the test files you
+touched, each through `collie verify` as below. The whole suite is the gate's: Collie runs
+this run's checks itself once the review is done, so do not run the whole suite yourself.
+Commit to this branch as you go — one commit per ticket. There is no separate commit step.
+
+Collie reviews this work in its own rally once you are done. Do not run a review skill,
+and do not start review sub-agents or threads.
 
 Apply your persona's **Code comment hygiene** rules to comments this branch added or
 changed: make the code self-explanatory, delete unnecessary comments, and reduce each
@@ -103,12 +108,6 @@ Run every test, lint and typecheck command through
 `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`; Collie records the result
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
-
-When you finish a ticket, write `{{run.dir}}/steering/progress/<ticket file without
-.md>.json` as `{"ticket":"<file>","status":"done","claims":["<what you believe is
-done>"],"at":"<iso>"}`. Collie writes the same file when it hands you the ticket and when
-the slice ends; yours is what puts your own words on the card before that. These are your
-claims, and Collie labels them as such.
 
 {{obstacle}}
 
@@ -160,7 +159,14 @@ finding arrives once and already reconciled. Apply the ones you agree with, as f
 commits on this branch. For any finding you believe is wrong, do not apply it — record it
 under `disputed` with your reason, and the human sees it at the end. A reason you give
 once settles that finding: the reviewers are told about it and the loop stops raising it.
-Re-run the tests.
+
+Fix test first, with {{skill:tdd}} where a finding is a behaviour: the failing test, then
+the fix. Run the typecheck and the test files you touched, each through `collie verify` as
+below. The whole suite is the gate's: Collie runs this run's checks itself, so do not run
+the whole suite yourself. Commit each fix to this branch.
+
+Collie reviews this fix in its own rally. Do not run a review skill, and do not start
+review sub-agents or threads.
 
 Apply your persona's **Code comment hygiene** rules to comments this fix added or changed,
 the same way `build` does.
@@ -174,10 +180,6 @@ Run every test, lint and typecheck command through
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
 
-When you start each ticket and when you finish it, write
-`{{run.dir}}/steering/progress/<ticket-slug>.json` as `{"ticket":"<file>","status":
-"started"|"done","claims":["<what you believe is done>"],"at":"<iso>"}`. These are your
-claims, and Collie labels them as such.
 Never defer a blocking finding to a follow-up or leave it out of your Output: every
 `blocker` and `major` above is either under `fixed` or under `disputed`, never both and
 never neither. A blocking finding you dispute goes to the next review, and one still
@@ -261,7 +263,8 @@ Do **not** open a second {{mr.noun}} for the same branch. Report its URL as `mr_
 exactly as if you had opened it.
 
 **Otherwise**, write the description to a file in `{{run.dir}}` and open the {{mr.noun}}
-with this command, filling in a title and that file:
+with this command, filling in a title and that file, and where a second line asks for
+`<iid>`, the number at the end of the URL the first one printed:
 
 ```
 {{mr.create}}
