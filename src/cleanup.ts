@@ -34,7 +34,16 @@ import { latest, readDispositions } from "./disposition";
 import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
-import { CONTROL_DIR, putDownControl, type CompactionPorts } from "./compaction";
+import {
+  CONTROL_DIR,
+  keptFor,
+  notStopped,
+  putDownControl,
+  readControl,
+  stopAgent,
+  type CompactionPorts,
+} from "./compaction";
+import { readLaunches } from "./launches";
 import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
@@ -566,8 +575,12 @@ export const compactionSweeper = (
       for (const name of names) {
         const target = `${root}/${name}`;
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
-        else if (!live.has(name))
-          remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+        else if (!live.has(name)) {
+          const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+          const kept = record === null ? null : yield* keptFor(record);
+          if (kept !== null) keep.push({ kind, target, reason: kept });
+          else remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+        }
       }
       const sizes = yield* sizesOf(remove.map((item) => item.target));
       return { remove: remove.map((item, at) => ({ ...item, bytes: sizes[at] ?? 0 })), keep };
@@ -696,8 +709,33 @@ export const taskWorkspacesSweeper = (opts: {
   views: ReadonlyArray<TaskView>;
   runs: ReadonlyArray<RunFacts>;
   seen: Map<string, number>;
+  ports?: CompactionPorts;
+  stopMs?: number;
 }): Sweeper => {
   const kind = "workspace";
+  const stopping = {
+    ports: opts.ports ?? COMPACTION_PORTS,
+    stateDir: opts.stateDir,
+    log: () => Effect.void,
+  };
+  /** The agents a Task's Runs launched. */
+  const agentsOf = (task: TaskRecord) =>
+    Effect.forEach(
+      opts.runs.filter((run) => run.task === task.id),
+      (run) => readLaunches(opts.stateDir, run.id),
+    ).pipe(Effect.map((all) => [...new Set(all.flat().map((one) => one.agent))]));
+  /** Why one of them may still be writing after an earlier stop, or null. */
+  const stillWriting = (task: TaskRecord) =>
+    Effect.gen(function* () {
+      for (const agent of yield* agentsOf(task)) {
+        const record = yield* readControl(opts.stateDir, agent).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        const kept = record === null ? null : yield* keptFor(record);
+        if (kept !== null) return kept;
+      }
+      return null;
+    });
   const named = new Map<string, number>();
   for (const task of opts.tasks) named.set(task.workspace, (named.get(task.workspace) ?? 0) + 1);
 
@@ -746,6 +784,8 @@ export const taskWorkspacesSweeper = (opts: {
       const foreign = paneNotOwned(task, panes.value, terminals);
       if (foreign !== undefined)
         return { keep: `holds a pane Collie did not open (${foreign.paneId})` };
+      const writing = yield* stillWriting(task);
+      if (writing !== null) return { keep: writing };
       return { remove: `Finished ${minutes} min ago`, terminals };
     });
 
@@ -772,6 +812,15 @@ export const taskWorkspacesSweeper = (opts: {
         const judged = yield* verdict(task);
         if (judged === null) return { kept: "already closed" };
         if ("keep" in judged) return { kept: judged.keep };
+        // Its agents are stopped where their work runs before any pane of theirs closes.
+        for (const agent of yield* agentsOf(task)) {
+          const reached = yield* stopAgent(stopping, agent, opts.stopMs).pipe(Effect.result);
+          if (reached._tag === "Failure") return { kept: "its agents' controls are in use" };
+          if (reached.success !== null && reached.success.state !== "quiet")
+            return {
+              kept: `its Codex turn has not stopped: ${notStopped(agent, reached.success, reached.success.target)}`,
+            };
+        }
         const closed = yield* session.herdr.workspaceClose(task.workspace).pipe(Effect.result);
         if (closed._tag === "Failure") return { kept: herdrFailureReason(closed.failure) };
         // Its agents left in another workspace go with it, matched by terminal as a stop does.

@@ -1,8 +1,9 @@
 // The Codex App Server, as a client. Collie owns one server per agent and connects to
 // it as a second client; the ordinary interactive TUI in the agent's pane is the first.
 //
-// Everything here was checked against the installed 0.153.4 rather than taken from
-// upstream source, and two of the checks changed the design:
+// Everything here was checked against an installed release rather than taken from
+// upstream source — 0.153.4, and 0.162.0 for the turn calls a stop makes — and two of the
+// checks changed the design:
 //
 //   - `--listen unix://PATH` binds, but nothing Collie sends over that socket is ever
 //     answered. `ws://127.0.0.1:PORT` is answered, and is a documented `--remote` form,

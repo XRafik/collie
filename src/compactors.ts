@@ -47,6 +47,7 @@ import {
   type LaunchContext,
   type ReadyContext,
   type StopTarget,
+  type SeenProcess,
   type Stopped,
 } from "./compaction";
 import {
@@ -1018,34 +1019,65 @@ const stopCodex = (
 ) =>
   Effect.gen(function* () {
     const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
-    const failed = (why: string): Stopped => ({ state: "failed", turns: [], reason: why });
+    const signalled = [...target.signalled];
+    const before = (one: SeenProcess) =>
+      signalled.some((seen) => seen.pid === one.pid && seen.started === one.started);
+    /** One SIGTERM, never a second, even across stops. */
+    const once = (one: ProcessInfo) =>
+      before(one)
+        ? Effect.void
+        : terminate(one.pid).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => signalled.push({ pid: one.pid, started: one.started })),
+            ),
+          );
     const server = yield* processOf(target.pid);
-    if (server === null) return yield* survivors(target.pid, [], [], deadline, "failed");
+    const refused = (why: string): Stopped => ({
+      state: "failed",
+      turns: null,
+      reason: why,
+      signalled,
+      left: [],
+    });
+    if (server === null)
+      return yield* survivors(target.pid, [], null, deadline, "failed", signalled, once);
     if (!server.command.includes(target.command))
-      return failed(`pid ${target.pid} is \`${server.command}\`, not \`${target.command}\``);
+      return refused(`pid ${target.pid} is \`${server.command}\`, not \`${target.command}\``);
     if (target.started !== null && server.started !== target.started)
-      return failed(`pid ${target.pid} started at ${server.started}, not ${target.started}`);
+      return refused(`pid ${target.pid} started at ${server.started}, not ${target.started}`);
 
-    let turns: Stopped["turns"] = [];
+    let turns: Stopped["turns"] = null;
+    let session: ProcessInfo[] = [];
+    let submitted = 0;
     let acknowledged = 0;
     const short = (): Stopped["state"] =>
-      acknowledged > 0 ? "acknowledged" : turns.length > 0 ? "submitted" : "failed";
+      acknowledged > 0 ? "acknowledged" : submitted > 0 ? "submitted" : "failed";
+    const seen = (one: ProcessInfo): SeenProcess => ({ pid: one.pid, started: one.started });
+    const notQuiet = (reason: string): Stopped => ({
+      state: short(),
+      turns,
+      reason,
+      signalled,
+      left: [server, ...session].map(seen),
+    });
     return yield* withCodex(target.endpoint, (client) =>
       Effect.gen(function* () {
         const threads = yield* agentThreads(client, target.cwd);
-        turns = threads.flatMap((thread) =>
+        const running = threads.flatMap((thread) =>
           thread.running.map((turn) => ({
             thread: thread.id,
             turn,
             transcript: thread.transcript,
           })),
         );
-        const session = yield* sessionOf(target.pid);
-        yield* terminate(target.pid);
-        for (const one of turns) {
+        turns = running;
+        session = yield* sessionOf(target.pid);
+        yield* once(server);
+        for (const one of running) {
           // Its turns have all ended and it has gone: nothing is left to answer.
           if (!(yield* stillRunning(server))) break;
           const about = `thread ${one.thread} turn ${one.turn}, server ${target.endpoint} pid ${target.pid}${one.transcript === null ? "" : `, transcript ${one.transcript}`}`;
+          submitted++;
           yield* note(`${target.agent}: interrupt submitted — ${about}`);
           // A refusal is read back below rather than believed: the turn may have ended.
           const answered = yield* interruptTurn(client, one.thread, one.turn).pipe(Effect.result);
@@ -1060,32 +1092,39 @@ const stopCodex = (
         }
         for (;;) {
           if (!(yield* stillRunning(server)))
-            return yield* survivors(target.pid, session, turns, deadline, short());
-          const unended = yield* Effect.forEach(turns, (one) =>
+            return yield* survivors(
+              target.pid,
+              session,
+              running,
+              deadline,
+              short(),
+              signalled,
+              once,
+            );
+          // Read back rather than assumed: a lost connection is not a turn that ended.
+          let unread: string | null = null;
+          const unended = yield* Effect.forEach(running, (one) =>
             runningTurns(client, one.thread).pipe(
-              Effect.map((running) => (running.includes(one.turn) ? [one] : [])),
-              Effect.orElseSucceed(() => []),
+              Effect.map((now) => (now.includes(one.turn) ? [one] : [])),
+              Effect.catch((cause) => Effect.sync(() => ((unread = reason(cause)), [one]))),
             ),
           ).pipe(Effect.map((all) => all.flat()));
           if ((yield* Clock.currentTimeMillis) >= deadline) {
             const seconds = Math.round(budgetMs / 1000);
-            return {
-              state: short(),
-              turns,
-              reason:
-                unended.length > 0
+            return notQuiet(
+              unread !== null
+                ? `its turns could not be read back (${unread}), and its server is still up after ${seconds}s`
+                : unended.length > 0
                   ? `${unended.map((one) => `turn ${one.turn}`).join(", ")} still running after ${seconds}s`
                   : `its server is still up after ${seconds}s`,
-            } satisfies Stopped;
+            );
           }
           yield* Effect.sleep(50);
         }
       }),
     ).pipe(
       // Anything here is the connection: unanswered, refused or lost before the stop was done.
-      Effect.catch((cause) =>
-        Effect.succeed<Stopped>({ state: short(), turns, reason: reason(cause) }),
-      ),
+      Effect.catch((cause) => Effect.succeed(notQuiet(reason(cause)))),
     );
   });
 
@@ -1104,25 +1143,31 @@ const survivors = (
   turns: Stopped["turns"],
   deadline: number,
   short: Stopped["state"],
+  signalled: ReadonlyArray<SeenProcess>,
+  once: (one: ProcessInfo) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
     const proven = (one: ProcessInfo) =>
       noted.some((seen) => seen.pid === one.pid && seen.started === one.started);
     const sessions = yield* readsSessions;
     const remaining = sessions ? sessionOf(root) : Effect.filter(noted, (one) => stillRunning(one));
-    for (const one of yield* remaining) if (proven(one)) yield* terminate(one.pid);
+    for (const one of yield* remaining) if (proven(one)) yield* once(one);
     const until = Math.max(deadline, (yield* Clock.currentTimeMillis) + SURVIVOR_GRACE_MS);
     for (;;) {
       const left = yield* remaining;
-      if (left.length === 0) return { state: "quiet", turns, reason: null } satisfies Stopped;
+      if (left.length === 0)
+        return { state: "quiet", turns, reason: null, signalled, left: [] } satisfies Stopped;
       if ((yield* Clock.currentTimeMillis) >= until) {
         const named = left.map(
-          (one) => `pid ${one.pid}${proven(one) ? "" : " (not signalled: not proven its)"}`,
+          (one) =>
+            `pid ${one.pid}${proven(one) || signalled.some((seen) => seen.pid === one.pid && seen.started === one.started) ? "" : " (not signalled: not proven its)"}`,
         );
         return {
           state: short,
           turns,
           reason: `its server exited, but ${named.join(", ")} of its session is still running`,
+          signalled,
+          left: left.map((one) => ({ pid: one.pid, started: one.started })),
         } satisfies Stopped;
       }
       yield* Effect.sleep(50);

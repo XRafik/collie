@@ -390,12 +390,24 @@ for (const [what, over, edit, why] of [
         expect(halt.stopped).toEqual([]);
         expect(halt.left.join("\n")).toMatch(/is not stopped: failed/);
         expect(halt.left.join("\n")).toMatch(why);
+        // Refused before it looked, so it says nothing of the turns it never read.
+        expect(halt.left.join("\n")).toContain("its turns were never read");
         expect(yield* signals()).toEqual([]);
         expect(yield* panesClosed()).toBe(0);
         expect(alive(yield* serverPid())).toBe(true);
       }),
     ));
 }
+
+test("a stop repeated while the server is not Quiet looks again and sends no second signal", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working({ ignoreInterrupt: true });
+      expect((yield* halted({ stopMs: 300 })).left).toHaveLength(1);
+      expect((yield* halted({ stopMs: 300 })).left).toHaveLength(1);
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+    }),
+  ));
 
 test("a stop repeated once the agent is Quiet sends nothing and changes nothing", () =>
   runEffect(
@@ -696,13 +708,25 @@ test("the sweep keeps an unlisted agent's record while its server is not Quiet, 
         `its Codex turn has not stopped: ${agent} is not stopped: acknowledged`,
       );
       expect(yield* recorded()).not.toBeNull();
+      // What `collie cleanup` lists says the same, and a second sweep sends no second signal.
+      const listed = yield* sweeper.judge;
+      expect(listed.remove).toEqual([]);
+      expect(listed.keep.map((one) => one.reason).join("\n")).toContain(
+        `its Codex turn has not stopped: ${agent} is not stopped: acknowledged`,
+      );
+      yield* sweep([sweeper], `${rig.root}/state`, "host");
+      expect((yield* events()).filter((one) => one.signal === "SIGTERM")).toHaveLength(1);
 
       yield* release();
+      const pid = yield* serverPid();
+      while (alive(pid)) yield* TestClock.withLive(Effect.sleep("20 millis"));
       const second = yield* sweep([sweeper], `${rig.root}/state`, "host");
       expect(second.remove.map((one) => one.target)).toEqual([
         `${rig.root}/state/compaction/${agent}`,
       ]);
       expect(yield* recorded()).toBeNull();
+      // Told to the Run that launched it, with the turn it stopped.
+      expect(yield* agentsLog()).toContain(`${agent}: quiet — thread ${THREAD} turn ${TURN}`);
     }),
   ));
 
@@ -721,7 +745,12 @@ test("a launch beside an unlisted agent whose server is not Quiet keeps that rec
           herdr: host.herdr,
           stopMs: 2_000,
         },
-        { agent: "r2-other", harness: "claude", cwd: rig.projectDir },
+        {
+          agent: "r2-other",
+          harness: "claude",
+          cwd: rig.projectDir,
+          runLog: `${dir}/agents/r2/agents.log`,
+        },
       );
       expect(installed.length).toBeGreaterThan(0);
       expect(yield* recorded()).toMatchObject({ stop: { state: "acknowledged" } });

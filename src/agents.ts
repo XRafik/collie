@@ -558,13 +558,21 @@ export const agentWork = <
                   `${on.agent} has written nothing to ${output} yet. If it is still working, resume once it has written it; if it has stopped, ask it to write it and resume.`,
               }),
             );
+    /** Stops an agent started as a stop landed; one that is not Quiet is what the Run says. */
+    const haltLate = agents
+      .halt(runId)
+      .pipe(
+        Effect.flatMap(({ left }) =>
+          left.length === 0 ? Effect.void : host.parked(runId, left.join("; ")),
+        ),
+      );
     // Uninterruptible, so a stop racing a restart waits for it and finds its agent to stop.
     const reviving = (from: AgentAsk, unless?: string | null) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
           if (yield* host.stopRequested(runId)) return;
           if ((yield* agents.revive(from, unless)) && (yield* host.stopRequested(runId)))
-            yield* agents.halt(runId);
+            yield* haltLate;
         }),
       );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
@@ -592,7 +600,7 @@ export const agentWork = <
         const launched = yield* parkedWhenStuck(agents.launch(next), host, work.runId);
         // A stop that landed while it started: that agent is stopped too, and the work waits.
         if (yield* host.stopRequested(runId)) {
-          yield* agents.halt(runId);
+          yield* haltLate;
           return yield* Workflow.suspend(instance);
         }
         return launched;
@@ -1446,6 +1454,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           agent,
           harness: adapter.id,
           cwd: ask.cwd,
+          runLog: `${host.dir}/agents/${ask.runId}/agents.log`,
         }).pipe(
           Effect.catchIf(isNotQuiet, (refused) =>
             Effect.fail(

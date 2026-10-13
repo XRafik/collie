@@ -2,10 +2,11 @@
 // Collie did not open; nothing else of a Task's is closed (ADR-0045 D3).
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Clock, Effect, FileSystem } from "effect";
+import { Clock, Effect, FileSystem, Schema } from "effect";
 import type { TaskView } from "../src/board-model";
 import { sweep, taskWorkspacesSweeper } from "../src/cleanup";
 import { Herdr } from "../src/herdr";
+import type { CompactionPorts, Stopped } from "../src/compaction";
 import type { TaskRecord } from "../src/task";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
@@ -160,5 +161,113 @@ test("a herdr that will not list workspaces keeps every Task's", () =>
       expect(judged.keep).toEqual([
         { kind: "workspace", target: "wT", reason: "could not ask herdr what is open" },
       ]);
+    }),
+  ));
+
+const asJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/** The agent's server, as its control record names it, stopped by a port that says `state`. */
+const servedBy = (state: Stopped["state"]) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      `${rig.stateDir}/agents/r1/build.launch.json`,
+      asJson({
+        agent: "impl",
+        output: "out.json",
+        reused: false,
+        runId: "r1",
+        operation: "build",
+        role: "implementer",
+        workflow: "implement",
+        harness: "served",
+        terminalId: "t-wT-p2",
+      }),
+    );
+    const dir = `${rig.stateDir}/compaction/impl`;
+    yield* fs.makeDirectory(dir, { recursive: true });
+    yield* fs.writeFileString(
+      `${dir}/control.json`,
+      asJson({
+        agent: "impl",
+        harness: "served",
+        cwd: "/project",
+        dir,
+        endpoint: "ws://127.0.0.1:1",
+        pid: process.pid,
+        command: "bun",
+        started: null,
+        attempt: null,
+      }),
+    );
+    const stops: string[] = [];
+    const ports: CompactionPorts = {
+      served: {
+        gate: () => Effect.void,
+        install: () => Effect.succeed({ args: [] }),
+        request: () => Effect.die("unused"),
+        poll: () => Effect.die("unused"),
+        usage: () => Effect.die("unused"),
+        stop: (target) =>
+          Effect.sync(() => {
+            stops.push(target.agent);
+            return {
+              state,
+              turns: [{ thread: "th-1", turn: "tu-1", transcript: null }],
+              reason: state === "quiet" ? null : "turn tu-1 still running after 30s",
+              signalled: [],
+              left: [],
+            } satisfies Stopped;
+          }),
+      },
+    };
+    return { stops, ports };
+  });
+
+test("a Finished Task's workspace closes only once its agents are stopped where their work runs", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      const { stops, ports } = yield* servedBy("quiet");
+      const swept = taskWorkspacesSweeper({
+        stateDir: rig.stateDir,
+        sessions: [{ herd: null, herdr: new Herdr(rig.pluginEnv()) }],
+        tasks: [record],
+        views: [finished],
+        runs: [runFacts({ id: "r1", task: "task-1", state: "succeeded" })],
+        seen: yield* seenAgo(2 * HOUR_MS),
+        ports,
+      });
+      const judged = yield* sweep([swept], rig.stateDir, "host");
+      expect(stops).toEqual(["impl"]);
+      expect(judged.remove.map((item) => item.target)).toEqual(["wT"]);
+      expect(yield* closes).toBe(1);
+    }),
+  ));
+
+test("a Finished Task's workspace whose agent's turn has not stopped is kept, with the reason", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      const { ports } = yield* servedBy("acknowledged");
+      const swept = taskWorkspacesSweeper({
+        stateDir: rig.stateDir,
+        sessions: [{ herd: null, herdr: new Herdr(rig.pluginEnv()) }],
+        tasks: [record],
+        views: [finished],
+        runs: [runFacts({ id: "r1", task: "task-1", state: "succeeded" })],
+        seen: yield* seenAgo(2 * HOUR_MS),
+        ports,
+      });
+      const judged = yield* sweep([swept], rig.stateDir, "host");
+      expect(judged.remove).toEqual([]);
+      expect(judged.keep.map((one) => one.reason).join("\n")).toContain(
+        "its Codex turn has not stopped: impl is not stopped: acknowledged",
+      );
+      expect(yield* closes).toBe(0);
+      // The listing says the same, now that the stop is on its record.
+      expect((yield* swept.judge).keep.map((one) => one.reason).join("\n")).toContain(
+        "thread th-1 turn tu-1",
+      );
     }),
   ));

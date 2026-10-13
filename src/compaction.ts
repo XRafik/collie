@@ -23,7 +23,7 @@ import type { Herdr, Submission } from "./herdr";
 import { LOCK_CLAIM_SPACING_MS, ensureLockDir, withLock } from "./lock";
 import { reason } from "./naming";
 import { COMPACTION_OFF } from "./settings";
-import { processOf } from "./processes";
+import { processOf, stillRunning } from "./processes";
 
 /**
  * How long Collie waits for a compaction request to resolve before it pauses the Run.
@@ -150,11 +150,20 @@ const StoppedTurn = Schema.Struct({
   transcript: Schema.NullOr(Schema.String),
 });
 
+/** A process as a stop saw it: a pid is not an identity without its start. */
+const SeenProcess = Schema.Struct({ pid: Schema.Number, started: Schema.String });
+export type SeenProcess = typeof SeenProcess.Type;
+
 /** What a stop reached, and why it got no further where it is not `quiet`. */
 export interface Stopped {
   readonly state: StopStateName;
-  readonly turns: ReadonlyArray<typeof StoppedTurn.Type>;
+  /** Null where the stop never read them. */
+  readonly turns: ReadonlyArray<typeof StoppedTurn.Type> | null;
   readonly reason: string | null;
+  /** Every process sent its one SIGTERM, by this stop or an earlier one. */
+  readonly signalled: ReadonlyArray<SeenProcess>;
+  /** What was still running when it gave up: whatever may still write in the checkout. */
+  readonly left: ReadonlyArray<SeenProcess>;
 }
 
 /** The server a stop acts on, as its control record names it. */
@@ -166,6 +175,8 @@ export interface StopTarget {
   readonly command: string;
   /** Null on a record from a build that did not keep it. */
   readonly started: string | null;
+  /** What an earlier stop already signalled, which never gets a second. */
+  readonly signalled: ReadonlyArray<SeenProcess>;
 }
 
 export interface CompactionPort {
@@ -265,13 +276,17 @@ const ControlSchema = Schema.Struct({
   /** When `pid` started, so a number that came round again is not taken for it. */
   started: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   attempt: Schema.NullOr(AttemptSchema),
+  /** The agents log of the Run that launched it, where any later stop of it is told. */
+  runLog: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** The furthest a stop that did not reach Quiet got. */
   stop: Schema.NullOr(
     Schema.Struct({
       state: Schema.Literals(StopStates),
       at: Schema.Number,
-      turns: Schema.Array(StoppedTurn),
+      turns: Schema.NullOr(Schema.Array(StoppedTurn)),
       reason: Schema.NullOr(Schema.String),
+      signalled: Schema.Array(SeenProcess).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+      left: Schema.Array(SeenProcess).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
@@ -395,7 +410,7 @@ const enabled = Effect.fn("Compaction.enabled")(function* (configured: number) {
  */
 export const installControls = Effect.fn("Compaction.installControls")(function* (
   deps: Pick<CompactionDeps, "ports" | "stateDir" | "configured" | "log" | "herdr" | "stopMs">,
-  agent: { agent: string; harness: string; cwd: string },
+  agent: { agent: string; harness: string; cwd: string; runLog: string },
 ) {
   const limit = yield* enabled(deps.configured);
   const fs = yield* FileSystem.FileSystem;
@@ -429,7 +444,12 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
   // launch must not prune these controls before herdr can list their agent.
   yield* Effect.ignore(putDownStaleControls(deps, agent.agent));
   yield* fs.makeDirectory(dir, { recursive: true });
-  const installed = yield* port.install({ ...agent, dir });
+  const installed = yield* port.install({
+    agent: agent.agent,
+    harness: agent.harness,
+    cwd: agent.cwd,
+    dir,
+  });
   const started =
     installed.pid === undefined ? null : ((yield* processOf(installed.pid))?.started ?? null);
   yield* writeControl(deps.stateDir, {
@@ -448,11 +468,17 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
 
 /** Each turn a stop covered, by its full ids, with the server and where the transcript is. */
 const stopFacts = (target: StopTarget, turns: Stopped["turns"]) => {
-  const covered = turns.map(
+  const covered = (turns ?? []).map(
     (one) =>
       `thread ${one.thread} turn ${one.turn}${one.transcript === null ? "" : ` (transcript ${one.transcript})`}`,
   );
-  return `${covered.length === 0 ? "no turn running" : covered.join(", ")}; server ${target.endpoint} pid ${target.pid}`;
+  const said =
+    turns === null
+      ? "its turns were never read"
+      : covered.length === 0
+        ? "no turn running"
+        : covered.join(", ");
+  return `${said}; server ${target.endpoint} pid ${target.pid}`;
 };
 
 /** What a stop that did not reach Quiet says, in the agents log and in what the stop reports. */
@@ -481,22 +507,63 @@ const stopRecord = Effect.fn("Compaction.stopRecord")(function* (
   budgetMs: number,
 ) {
   const stop = deps.ports[record.harness]?.stop;
-  const { endpoint, pid, command } = record;
-  if (stop === undefined || endpoint === null || pid === null || command === null) return null;
-  const target: StopTarget = { ...record, endpoint, pid, command };
+  const target = targetOf(record);
+  if (stop === undefined || target === null) return null;
   const services = yield* Effect.context<PortServices>();
-  const note = (line: string) => Effect.ignore(Effect.provideContext(deps.log(line), services));
-  const reached = yield* stop(target, note, budgetMs);
+  // Told to the Run that launched it, whichever path stops it.
+  const told = record.runLog === null ? deps.log : appendTo(record.runLog);
+  const note = (line: string) => Effect.ignore(Effect.provideContext(told(line), services));
+  const now = yield* stop(target, note, budgetMs);
+  // A server gone before this stop read anything ran the turns an earlier one covered.
+  const reached = now.turns === null ? { ...now, turns: record.stop?.turns ?? null } : now;
   if (reached.state === "quiet") {
-    yield* deps.log(`${record.agent}: quiet — ${stopFacts(target, reached.turns)}`);
+    yield* note(`${record.agent}: quiet — ${stopFacts(target, reached.turns)}`);
     const fs = yield* FileSystem.FileSystem;
     yield* fs.remove(record.dir, { recursive: true, force: true });
   } else {
-    yield* deps.log(notStopped(record.agent, reached, target));
+    yield* note(notStopped(record.agent, reached, target));
     const at = yield* Clock.currentTimeMillis;
     yield* writeControl(deps.stateDir, { ...record, stop: { ...reached, at } });
   }
   return { ...reached, target } satisfies StopReached;
+});
+
+const targetOf = (record: ControlRecord): StopTarget | null => {
+  const { endpoint, pid, command } = record;
+  if (endpoint === null || pid === null || command === null) return null;
+  return { ...record, endpoint, pid, command, signalled: record.stop?.signalled ?? [] };
+};
+
+const appendTo = (file: string) => (line: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+    yield* fs.writeFileString(file, `${line}\n`, { flag: "a" });
+  });
+
+/**
+ * Whether anything this record names may still write in its directory: its server, or
+ * what an earlier stop left running.
+ */
+export const mayWrite = Effect.fn("Compaction.mayWrite")(function* (record: ControlRecord) {
+  if (record.pid === null) return false;
+  const server = yield* processOf(record.pid);
+  if (
+    server !== null &&
+    (record.started === null || server.started === record.started) &&
+    (record.command === null || server.command.includes(record.command))
+  )
+    return true;
+  for (const one of record.stop?.left ?? []) if (yield* stillRunning(one)) return true;
+  return false;
+});
+
+/** Why a record that did not reach Quiet is kept, where it may still write; null otherwise. */
+export const keptFor = Effect.fn("Compaction.keptFor")(function* (record: ControlRecord) {
+  const target = targetOf(record);
+  if (record.stop === null || target === null || !(yield* mayWrite(record))) return null;
+  return `its Codex turn has not stopped: ${notStopped(record.agent, record.stop, target)}`;
 });
 
 /**
@@ -546,10 +613,7 @@ export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function*
   for (const name of yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []))) {
     if (listed.has(name)) continue;
     const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
-    if (record === null || record.pid === null) continue;
-    const now = yield* processOf(record.pid);
-    if (now !== null && (record.started === null || now.started === record.started))
-      found.push(record);
+    if (record !== null && (yield* mayWrite(record))) found.push(record);
   }
   return found;
 });
@@ -635,8 +699,9 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
       // cannot prove this agent is still absent.
       if (yield* listed) return "herdr lists its agent again";
       const record = yield* readControl(deps.stateDir, name);
-      const reached =
-        record === null ? null : yield* stopRecord(deps, record, deps.stopMs ?? STOP_WAIT_MS);
+      // One an earlier stop left is only looked at again, so no launch waits out its budget.
+      const budget = record?.stop ? 0 : (deps.stopMs ?? STOP_WAIT_MS);
+      const reached = record === null ? null : yield* stopRecord(deps, record, budget);
       if (reached !== null && reached.state !== "quiet")
         return `its Codex turn has not stopped: ${notStopped(name, reached, reached.target)}`;
       if (reached === null) yield* putDownServer(deps, record);

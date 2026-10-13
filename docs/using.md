@@ -2321,7 +2321,9 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   are never closed. The Task's agents close with it, including any of its panes left in
   another workspace. A Task that stops being Finished, because a new Run joined it or a
   steer reopened it, starts its hour again. Continue task, or a Follow-up Run, reopens a
-  closed workspace on the Task's checkout.
+  closed workspace on the Task's checkout. A Codex agent of the Task is stopped where its
+  work runs first, and a workspace whose agent does not reach **Quiet** is kept, with the
+  reason.
 - **Worktrees** Collie made, once they are **Settled** (see
   [What a run does to your repository](#what-a-run-does-to-your-repository)).
 - **Staged module generations** under `~/.cache/collie/entries`, once unused for 7 days.

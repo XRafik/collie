@@ -257,7 +257,11 @@ herdr actions, and the `collie` CLI.
   [`docs/cli.md`](docs/cli.md#answering-holding-and-steering-one), alongside `src/engine.ts`,
   `src/lifecycle.ts` and `test/control.test.ts`. The host settles it whichever door it came
   in; a question is asked with `ask` so the host knows it is open, and a control says
-  whether it reached the run rather than confirming what it could not.
+  whether it reached the run rather than confirming what it could not. Where a stop ends an
+  agent's work — its App Server, not its pane, for Codex — and what may replace it after:
+  [ADR-0059](docs/adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md), with
+  `stopAgent` in `src/compaction.ts`, the port's stop in `src/compactors.ts`,
+  `src/processes.ts` and `test/codex-stop.test.ts`.
 - **Changing how a workflow module reaches a service or another workflow** →
   [ADR-0022](docs/adr/0022-a-workflow-is-made-of-workflows.md) and
   [`docs/sdk.md`](docs/sdk.md#a-workflow-made-of-other-workflows), alongside `src/sdk.ts`,

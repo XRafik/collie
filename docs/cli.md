@@ -320,8 +320,10 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
   rather than reporting a success nothing can stand behind.
 - **`run stop` parks the Run and stops its agents where their work runs.** A Codex
   agent's turns run in the App Server Collie started for it, so its stop drains that
-  server, interrupts every running turn on it, a sub-agent's included, and waits — at most
-  thirty seconds — for the server and what it started to be gone. Only an agent that is
+  server, interrupts every running turn on it, a sub-agent's included, and waits thirty
+  seconds for the server to be gone, then two more for what it started. Agents are
+  stopped one after another, and a stop already under way for the same agent is waited
+  for first. Nothing is signalled twice, however often it is stopped. Only an agent that is
   then **Quiet** has its pane closed and is reported as stopped; Claude, Pi and OpenCode
   run in their panes, and closing the pane is their stop. An agent that is not Quiet makes
   the stop fail, naming the agent, its thread and turn ids, its server's endpoint and pid,

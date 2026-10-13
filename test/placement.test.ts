@@ -1312,7 +1312,7 @@ test(
                 dir: control,
                 endpoint: "ws://127.0.0.1:1",
                 pid: process.pid,
-                command: "codex app-server",
+                command: null,
                 started: null,
                 attempt: null,
               }),
