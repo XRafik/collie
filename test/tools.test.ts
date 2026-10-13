@@ -95,6 +95,7 @@ test("the tools are the whole of the model's reach, and only one of them asks fo
     "collie_news",
     "collie_propose",
     "collie_receipts",
+    "collie_report",
     "collie_run",
     "collie_workspaces",
   ]);
@@ -125,6 +126,7 @@ test("the tools are one Toolkit, each saying how it fails and that it needs no a
     "collie_news",
     "collie_propose",
     "collie_receipts",
+    "collie_report",
     "collie_run",
     "collie_workspaces",
   ]);

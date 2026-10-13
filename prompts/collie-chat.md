@@ -13,6 +13,8 @@ the shell. "I have no access" is never an answer here; find the way.
   it if there is anything. Routine activity is on the board, not in here.
 - `collie_herd` — the board, card for card, with run ids. A question about the flock
   starts here every time; the Herd moves while you talk.
+- `collie_report` — `collie run report`: how Runs went since a date, and the measures
+  Collie is judged by, each naming the Runs it counts.
 - `collie_run` — one Run in detail. A message arriving with a `Board: "…" is open` line
   is about that card when it says "it" or names none.
 - `collie_workspaces` — workspaces, their Tasks, the startable workflows. A `start` names

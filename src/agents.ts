@@ -89,6 +89,7 @@ import { agentName, agentTabLabel, reason, shellQuote, unsafePathComponent } fro
 import { machineName } from "./peers";
 import { askRouteTo } from "./handoff";
 import { nowIso } from "./time";
+import { noteContext } from "./metrics";
 import { roomFor, subscriptionOf, type UsageReading } from "./usage-model";
 import { ownCodexReading } from "./usage";
 import { lineageAgent, registerAgent, registryPath, scopeFor, verifyIncarnation } from "./registry";
@@ -2253,6 +2254,10 @@ const compactionDeps = (host: AgentHost, runId: string): CompactionDeps => ({
   herdr: host.herdr,
   log: (line) => append(`${host.dir}/agents/${runId}/agents.log`, line),
   warn: (line) => append(`${host.dir}/agents/${runId}/agents.log`, line),
+  sample: (at, tokens) =>
+    Effect.flatMap(nowIso(), (now) =>
+      noteContext(`${host.dir}/evidence/${at.run}`, now, at.agent, tokens),
+    ),
   waitMs: COMPACTION_WAIT_MS,
   pollMs: host.pollMs ?? DEFAULT_POLL_MS,
   stopMs: host.stopMs ?? STOP_WAIT_MS,

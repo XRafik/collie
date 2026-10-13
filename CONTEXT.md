@@ -153,7 +153,7 @@ not read it; it drops out of batches, an `uncertain` send of it included, and st
 journal. A cause that holds again later is news again.
 
 **Collie tools** — What a chat may reach, over Collie's own shared operations. Most read — `collie_herd`, `collie_run`, `collie_workspaces`,
-`collie_receipts`, `collie_definitions`, `collie_installation`, `collie_news` — Herd-wide,
+`collie_receipts`, `collie_definitions`, `collie_installation`, `collie_report`, `collie_news` — Herd-wide,
 and never narrowed by the board's Filter or its Selection, which are what a human is
 looking at rather than what supervision may see; the Selection is told to chat with each
 prompt and stands in only where a tool was given no Run.

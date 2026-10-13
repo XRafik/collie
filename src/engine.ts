@@ -93,7 +93,7 @@ import {
 import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
 import type { CheckoutKind, InputStrategy } from "./definitions";
-import { noteVerification } from "./metrics";
+import { appendMetric, noteVerification } from "./metrics";
 import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
 import { strategyNamed } from "./strategies";
@@ -2339,12 +2339,23 @@ export const hostLayer = (options: {
           return (
             why === null
               ? fs.remove(path, { force: true }).pipe(Effect.orDie)
-              : fs
-                  .writeFileString(path, why)
-                  .pipe(
-                    Effect.orDie,
-                    Effect.andThen(notify(runId, "needs-you", why, { key: `parked:${why}` })),
-                  )
+              : Effect.gen(function* () {
+                  const before = yield* fs.readFileString(path).pipe(Effect.option);
+                  yield* fs.writeFileString(path, why).pipe(Effect.orDie);
+                  if (Option.getOrNull(before) === why) return;
+                  yield* under(
+                    Effect.gen(function* () {
+                      yield* appendMetric(evidenceDir(dir, runId), {
+                        at: yield* nowIso(),
+                        kind: "halt",
+                        subject: "",
+                        value: 0,
+                        note: why,
+                      });
+                    }),
+                  );
+                  yield* notify(runId, "needs-you", why, { key: `parked:${why}` });
+                })
           ).pipe(Effect.andThen(store.announce));
         },
         asking: (runId, question) =>

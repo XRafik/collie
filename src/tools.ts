@@ -57,6 +57,8 @@ import { statusLine } from "./disposition";
 import { Herdr } from "./herdr";
 import { ASKED_KINDS, type FLOCK_READS } from "./board-model";
 import { asText as newsText, NATIVE } from "./news";
+import { reportFor, reportLines } from "./report";
+import { epochMs } from "./time";
 import { findRun, listRuns, type RunFacts } from "./runs";
 import { donePasses, markersOf, runningCheck } from "./checks";
 import { deliveriesOf, herdOf } from "./steering";
@@ -135,6 +137,7 @@ const handlersFor = Effect.fn("Tools.handlers")(function* (
           said(receiptFacts(env, run.id)),
         ),
       ),
+    collie_report: (input) => answer(reportFacts(env, input.since ?? null)),
     collie_news: () => answer(newsFacts(env)),
     collie_definitions: (input) => answer(definitionFacts(env, input)),
     collie_installation: () => answer(installationFacts(env)),
@@ -510,6 +513,16 @@ const workspaceFacts = Effect.fn("Tools.workspaces")(function* (env: PluginEnv) 
     "one), or projects-root — and every Input, an optional",
     'one left empty as "". Nothing is inferred; a start missing any is refused with each listed.',
   ].join("\n");
+});
+
+/** What `collie_report` answers with: `run report`'s own words. */
+const reportFacts = Effect.fn("Tools.reportFacts")(function* (
+  env: PluginEnv,
+  since: string | null,
+) {
+  if (since !== null && Number.isNaN(epochMs(since))) return `"since" is not a date: ${since}`;
+  const done = yield* reportFor(env, since);
+  return done.ok ? reportLines(done.report, done.unreadable) : done.error.message;
 });
 
 /**

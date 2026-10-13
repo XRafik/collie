@@ -27,7 +27,16 @@ import {
 } from "../src/agents";
 import { Children, Host, Run, jsonSchemaFor, withAgents } from "../src/sdk";
 import { asRun, enveloped } from "./support/enveloped";
-import { PARKED, controlPath, foundationLayer, loadEntry, pollStatus, runDir } from "../src/engine";
+import {
+  PARKED,
+  controlPath,
+  evidenceDir,
+  foundationLayer,
+  loadEntry,
+  pollStatus,
+  runDir,
+} from "../src/engine";
+import { readMetrics } from "../src/metrics";
 import { Launched, runAgents } from "../src/launches";
 import { Collected } from "../src/agents";
 import type { UsageReading } from "../src/usage-model";
@@ -2377,11 +2386,11 @@ test("a steer that names an agent reaches that agent, not the one launched last"
   ));
 
 /** A harness whose context is always over the limit, and which compacts when asked. */
-const fullContext = (asked: string[]): CompactionPorts => ({
+const fullContext = (asked: string[], tokens: number | null = 1_000_000): CompactionPorts => ({
   claude: {
     gate: () => Effect.void,
     install: () => Effect.succeed({ args: [] }),
-    usage: () => Effect.succeed(1_000_000),
+    usage: () => Effect.succeed(tokens),
     request: (_ctx, id) => Effect.sync(() => void asked.push(id)).pipe(Effect.as(null)),
     poll: () => Effect.succeed({ kind: "success" as const }),
   },
@@ -2410,6 +2419,33 @@ test("a reused agent is compacted before its next piece of work, and a new one i
       expect(result._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
       // Once, at the boundary between the two: the agent had just started for the first.
       expect(asked).toHaveLength(1);
+      const context = (yield* readMetrics(evidenceDir(dir, "r1"))).filter(
+        (line) => line.kind === "context",
+      );
+      expect(context.map((line) => [line.subject, line.value])).toEqual([[sweeper, 1_000_000]]);
+    }),
+  ));
+
+test("a boundary whose context cannot be sampled records no context line, never a zero", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      yield* listing
+        .execute({ runId: "r1", input: ITEMS })
+        .pipe(
+          Effect.provide(listingBody),
+          Effect.provide(
+            agentsLayer({ ...hostOf(), compactAtTokens: 1000, ports: fullContext([], null) }),
+          ),
+          Effect.provide(foundationLayer({ dir })),
+          Effect.scoped,
+          Effect.orDie,
+        );
+      const lines = yield* readMetrics(evidenceDir(dir, "r1"));
+      expect(lines.filter((line) => line.kind === "context")).toEqual([]);
     }),
   ));
 

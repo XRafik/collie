@@ -246,6 +246,24 @@ export const CollieTools = Toolkit.make(
       run: fields.run.annotate({ description: "The Run id; omit for the board's selection" }),
     })),
   }),
+  collieTool("collie_report", {
+    readOnly: true,
+    title: "How Runs went",
+    description:
+      "`collie run report`: every Run since a date tallied by how it ended, then the " +
+      "measures Collie is judged by — review rounds and how many hit the cap, merged " +
+      "against superseded against abandoned, steers, follow-ups, deliveries and " +
+      "corrections by who sent them, verifications with the repeated ones and the ones " +
+      "named only by their executable, parks by reason, and peak context tokens. Each " +
+      "measure names the Run ids it counts, so an answer can cite them.",
+    parameters: Schema.Struct({
+      since: Schema.optionalKey(
+        Schema.String.annotate({
+          description: "Only Runs admitted at or after this ISO date; omit for every Run",
+        }),
+      ),
+    }),
+  }),
   collieTool("collie_news", {
     readOnly: false,
     title: "What has happened since you last looked",
@@ -335,6 +353,7 @@ export const TAKES: Record<ToolName, string> = {
   collie_run: `It takes {"run": "<run id>"}, or nothing at all for the board's selection.`,
   collie_workspaces: "It takes nothing.",
   collie_receipts: `It takes {"run": "<run id>"}, or nothing at all for the board's selection.`,
+  collie_report: 'It takes nothing, or {"since": "<ISO date>"}.',
   collie_news: "It takes nothing.",
   collie_definitions: 'It takes {"workflow": "<name>"} or {"persona": "<name>"}.',
   collie_installation: "It takes nothing.",

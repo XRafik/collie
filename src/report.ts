@@ -1,10 +1,14 @@
 // Where Runs end, across all of them: the numbers a change to Collie is judged by.
 // Data only: nothing here is a threshold, and nothing refuses anything.
 
+import { Effect } from "effect";
 import { STOP, type RunView } from "./engine";
-import { resultText } from "./lifecycle";
+import { asksRun, resultText, runViews } from "./lifecycle";
+import type { PluginEnv } from "./env";
 import type { Metrics } from "./board-model";
 import { epochMs } from "./time";
+import { measuresOf, type Measures, type OutcomeRecords } from "./outcomes";
+import { metricsOf, type Metric } from "./metrics";
 
 export interface WorkflowTally {
   readonly workflow: string;
@@ -39,6 +43,13 @@ export interface Report {
     mr: string | null;
   }>;
   readonly stopped: ReadonlyArray<{ runId: string; workflow: string }>;
+  readonly measures: Measures;
+}
+
+/** What one Run recorded, for the measures; null records where its host could not read them. */
+export interface Recorded {
+  readonly records: OutcomeRecords | null;
+  readonly metrics: ReadonlyArray<Metric>;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: Mutable<T[K]> };
@@ -47,6 +58,7 @@ export function reportOf(
   views: ReadonlyArray<RunView>,
   metrics: ReadonlyMap<string, Metrics>,
   since: string | null,
+  recorded: ReadonlyMap<string, Recorded> = new Map(),
 ): Report {
   const from = since === null ? -Infinity : epochMs(since);
   const kept = views
@@ -105,5 +117,105 @@ export function reportOf(
   const workflows = [...tallies.values()].toSorted(
     (a, b) => b.total - a.total || a.workflow.localeCompare(b.workflow),
   );
-  return { since, total: kept.length, workflows, failed, completed, stopped };
+  const measures = measuresOf(
+    kept.map(({ runId }) => ({
+      runId,
+      records: recorded.get(runId)?.records ?? null,
+      metrics: recorded.get(runId)?.metrics ?? [],
+    })),
+  );
+  return { since, total: kept.length, workflows, failed, completed, stopped, measures };
 }
+
+/**
+ * The report over every Run this Machine's host has, for whichever door asks: a Run
+ * whose metrics cannot be read fails it, and one whose records cannot be read is
+ * measured without them.
+ */
+export const reportFor = Effect.fn("Report.for")(function* (env: PluginEnv, since: string | null) {
+  const hosted = yield* runViews(env, null);
+  const metrics = new Map<string, Metrics>();
+  const recorded = new Map<string, Recorded>();
+  for (const view of hosted.runs) {
+    const asked = yield* asksRun(env, view.runId, (client) =>
+      Effect.all({
+        metrics: client.runMetrics({ runId: view.runId }),
+        records: client
+          .runOutcomes({ runId: view.runId })
+          .pipe(Effect.orElseSucceed((): OutcomeRecords | null => null)),
+      }),
+    );
+    if (!asked.ok) return asked;
+    metrics.set(view.runId, metricsOf(asked.value.metrics, view.created));
+    recorded.set(view.runId, asked.value);
+  }
+  return {
+    ok: true as const,
+    report: reportOf(hosted.runs, metrics, since, recorded),
+    unreadable: hosted.unreadable,
+  };
+});
+
+const capped = (lines: ReadonlyArray<string>, cap = 20): string[] =>
+  lines.length > cap ? [...lines.slice(0, cap), `  …and ${lines.length - cap} more`] : [...lines];
+
+const percent = (share: number | null) => (share === null ? "" : ` (${Math.round(share * 100)}%)`);
+
+/** The Runs a measure counts, as far as the text has room for. */
+const citing = (runs: ReadonlyArray<string>, cap = 10) =>
+  runs.length === 0
+    ? ""
+    : `: ${runs.slice(0, cap).join(", ")}${runs.length > cap ? ` …and ${runs.length - cap} more` : ""}`;
+
+/** The measures, as `run report` prints them under the tallies. */
+const measureLines = (measures: Measures): string[] => {
+  const { rounds, dispositions, steering, verifications, parks, peakContext } = measures;
+  const recorded = peakContext.filter((one) => one.tokens !== null);
+  return [
+    `review rounds: ${rounds.runs.length} Runs with a rally, median ${rounds.median ?? "none"}, ${rounds.atCap.count} hit the cap${citing(rounds.atCap.runs)}`,
+    ...capped(rounds.runs.map((one) => `  ${one.runId}  ${one.reached} of ${one.cap}`)),
+    `dispositions: ${(["merged", "superseded", "abandoned"] as const)
+      .map((kind) => `${dispositions[kind].count} ${kind}${percent(dispositions[kind].share)}`)
+      .join(", ")}`,
+    ...(["merged", "superseded", "abandoned"] as const).flatMap((kind) =>
+      dispositions[kind].count === 0 ? [] : [`  ${kind}${citing(dispositions[kind].runs)}`],
+    ),
+    `steering by origin: ${(["human", "chat", "agent", "host"] as const)
+      .map((origin) => `${steering.byOrigin[origin].count} ${origin}`)
+      .join(", ")}`,
+    ...capped(
+      steering.runs.map(
+        (one) =>
+          `  ${one.runId}  ${one.steer} steers, ${one.followup} follow-ups, ${one.deliver} deliveries, ${one.correction} corrections`,
+      ),
+    ),
+    `verifications: ${verifications.total}, ${verifications.byCollector.collie} by Collie, ${verifications.byCollector.agent} by agents; ${verifications.repeated.count} repeated${citing(verifications.repeated.runs)}; ${verifications.executableOnly.count} named only by their executable${citing(verifications.executableOnly.runs)}`,
+    `parks: ${parks.collectExpiries.count} collect-budget expiries${citing(parks.collectExpiries.runs)}`,
+    ...capped(
+      parks.byReason.map((one) => `  ${one.count}× ${one.reason.slice(0, 120)}${citing(one.runs)}`),
+    ),
+    `peak context tokens: ${recorded.length} of ${peakContext.length} Runs recorded; the rest not recorded`,
+    ...capped(recorded.map((one) => `  ${one.runId}  ${one.tokens} on ${one.agent}`)),
+  ];
+};
+
+/** `run report` in words, which chat reads too. */
+export const reportLines = (report: Report, unreadable: string | null): string => {
+  const unread = unreadable === null ? [] : [`runs: ${unreadable}`];
+  if (report.total === 0) return [...unread, "No runs found."].join("\n");
+  return [
+    `${report.total} Runs`,
+    ...report.workflows.map(
+      (t) =>
+        `${t.workflow}  ${t.total}: ${t.complete} complete, ${t.failed} failed, ${t.suspended} suspended, ${t.pending} pending; ${t.withMr} recorded a merge request; ${t.stopped} stopped; ${t.answered} decisions answered; rework ${t.rework}; verifications ${t.verifications.pass} pass, ${t.verifications.fail} fail, ${t.verifications.unstable} unstable`,
+    ),
+    ...(report.failed.length === 0 ? [] : ["failed:"]),
+    ...capped(report.failed.map((r) => `  ${r.runId}  ${r.workflow}  ${r.reason.slice(0, 120)}`)),
+    ...(report.completed.length === 0 ? [] : ["complete:"]),
+    ...capped(report.completed.map((r) => `  ${r.runId}  ${r.workflow}  ${r.value}`)),
+    ...(report.stopped.length === 0 ? [] : ["stopped:"]),
+    ...capped(report.stopped.map((r) => `  ${r.runId}  ${r.workflow}`)),
+    ...measureLines(report.measures),
+    ...unread,
+  ].join("\n");
+};

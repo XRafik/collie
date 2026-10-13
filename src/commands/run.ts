@@ -52,7 +52,7 @@ import { currentReports } from "../drift";
 import { newest } from "../cards";
 import { metricsOf } from "../metrics";
 import { requestedByLine, ranOn, type Metrics, type RunAgent } from "../board-model";
-import { reportOf } from "../report";
+import { reportFor, reportLines } from "../report";
 import { latest, statusLine } from "../disposition";
 import { epochMs } from "../time";
 import type { PluginEnv } from "../env";
@@ -666,39 +666,13 @@ const runReport = Command.make(
             return err("invalid_input", `--since is not a date: ${from}`);
           const resolved = yield* context(global, false);
           if (resolved._tag === "ContextFailure") return resolved.result;
-          const hosted = yield* runViews(resolved.env, null);
-          const metrics = new Map<string, Metrics>();
-          for (const view of hosted.runs) {
-            const records = yield* asksRun(resolved.env, view.runId, (client) =>
-              client.runMetrics({ runId: view.runId }),
-            );
-            if (!records.ok) return records;
-            metrics.set(view.runId, metricsOf(records.value, view.created));
-          }
-          const report = reportOf(hosted.runs, metrics, from);
-          const unreadable = hosted.unreadable === null ? [] : [`runs: ${hosted.unreadable}`];
-          const human =
-            report.total === 0
-              ? [...unreadable, "No runs found."].join("\n")
-              : [
-                  `${report.total} Runs`,
-                  ...report.workflows.map(
-                    (t) =>
-                      `${t.workflow}  ${t.total}: ${t.complete} complete, ${t.failed} failed, ${t.suspended} suspended, ${t.pending} pending; ${t.withMr} recorded a merge request; ${t.stopped} stopped; ${t.answered} decisions answered; rework ${t.rework}; verifications ${t.verifications.pass} pass, ${t.verifications.fail} fail, ${t.verifications.unstable} unstable`,
-                  ),
-                  ...(report.failed.length === 0 ? [] : ["failed:"]),
-                  ...capped(
-                    report.failed.map(
-                      (r) => `  ${r.runId}  ${r.workflow}  ${r.reason.slice(0, 120)}`,
-                    ),
-                  ),
-                  ...(report.completed.length === 0 ? [] : ["complete:"]),
-                  ...capped(report.completed.map((r) => `  ${r.runId}  ${r.workflow}  ${r.value}`)),
-                  ...(report.stopped.length === 0 ? [] : ["stopped:"]),
-                  ...capped(report.stopped.map((r) => `  ${r.runId}  ${r.workflow}`)),
-                  ...unreadable,
-                ].join("\n");
-          return { ok: true, data: { ...report, unreadable: hosted.unreadable }, human };
+          const done = yield* reportFor(resolved.env, from);
+          if (!done.ok) return done;
+          return {
+            ok: true,
+            data: { ...done.report, unreadable: done.unreadable },
+            human: reportLines(done.report, done.unreadable),
+          };
         }),
         global.json,
       );

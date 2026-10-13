@@ -76,6 +76,7 @@ import {
   CheckEvent,
   outputsOf,
 } from "./run-record";
+import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
 import { readDrift } from "./drift";
@@ -342,6 +343,11 @@ export const HostRpcs = RpcGroup.make(
     success: RunDispositions,
     error: HostRefused,
   }),
+  Rpc.make("runOutcomes", {
+    payload: { runId: Schema.String },
+    success: OutcomeRecords,
+    error: HostRefused,
+  }),
   Rpc.make("runOutputs", {
     payload: { runId: Schema.String },
     success: RunOutputs,
@@ -516,6 +522,7 @@ const handlers = (
         runDrift: ({ runId }) => record(runId, readDrift(runDir(dir, runId))),
         runIntent: ({ runId }) => record(runId, readIntent(runDir(dir, runId))),
         runDispositions: ({ runId }) => record(runId, readDispositions(runDir(dir, runId))),
+        runOutcomes: ({ runId }) => record(runId, outcomeRecordsOf(dir, runId)),
         runOutputs: ({ runId }) => record(runId, outputsOf(dir, runId)),
         runChecks: ({ runId }) =>
           Effect.gen(function* () {
