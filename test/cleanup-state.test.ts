@@ -90,8 +90,11 @@ test(
           target: `${state}/notes.txt`,
           reason: "not a kind Collie knows",
         });
-        // A Schedule is the host's own, and never a sweeper's.
-        expect(listed.keep.map((item) => item.target)).not.toContain(`${state}/schedules`);
+        expect(listed.keep).toContainEqual({
+          kind: "state",
+          target: `${state}/schedules`,
+          reason: "the Schedules this host fires",
+        });
 
         const swept = yield* collie(world, ["cleanup", "--apply"]);
         expect(swept.envelope).toMatchObject({ ok: true });
