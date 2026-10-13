@@ -47,6 +47,7 @@ import {
   settleNewsFor,
   anyRuns,
   cleanupListing,
+  runProgress,
   type Door,
 } from "./lifecycle";
 import { peersOf } from "./peers";
@@ -60,6 +61,7 @@ import { asText as newsText, NATIVE } from "./news";
 import { reportFor, reportLines } from "./report";
 import { epochMs } from "./time";
 import { findRun, listRuns, type RunFacts } from "./runs";
+import { readyLines } from "./following";
 import { donePasses, markersOf, runningCheck } from "./checks";
 import { deliveriesOf, herdOf } from "./steering";
 import { loadDefinitions, layers } from "./definitions";
@@ -359,7 +361,12 @@ const runAnswer = Effect.fn("Tools.runAnswer")(function* (env: PluginEnv, run: R
           "",
           ...kept.map((one) => `- ${one.name} (${one.pass}) ${one.result}: ${one.log}`),
         ];
-  return [...running, facts, ...done].join("\n");
+  const progress = yield* runProgress(env, run.id);
+  const ready =
+    !progress.ok || progress.value === null
+      ? []
+      : ["", "### Ready to release", "", ...readyLines(progress.value.ready)];
+  return [...running, facts, ...done, ...ready].join("\n");
 });
 
 /** What `collie_herd` answers with: the board, so chat and board can never disagree about a card. */

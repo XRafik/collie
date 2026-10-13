@@ -22,12 +22,14 @@ import type { PluginEnv } from "./env";
 import { listTasks, type TaskRecord } from "./task";
 import { ago, agoMs, agoShort, spanned, epochMs } from "./time";
 import { readVerifications, type Verification } from "./verify";
+import { approvedIn } from "./verify-spec";
+import { findingsIn, isBlocking } from "./output";
 import { markersOf, runningCheck } from "./checks";
 import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
 import { shell } from "./mr";
-import type { ForgeChecks, OfferView } from "./board-model";
+import type { ForgeChecks, Mergeability, OfferView } from "./board-model";
 import { everyDelivery, SENT_STATES, toldIn, type Delivery } from "./steering";
 import { readCards } from "./cards";
 import {
@@ -35,6 +37,7 @@ import {
   mrLabel,
   mrWords,
   readMrRef,
+  readyToRelease,
   SECTIONS,
   sectionOf,
   sortBoard,
@@ -47,6 +50,7 @@ import {
   type MrState,
   type Proposal,
   type Question,
+  type ReadyToRelease,
   type Reopened,
   type Section,
   type StepState,
@@ -147,6 +151,8 @@ export type { ForgeChecks } from "./board-model";
 export interface ForgeFacts {
   readonly checks: ForgeChecks;
   readonly head: string | null;
+  readonly draft?: boolean;
+  readonly mergeable?: Mergeability;
 }
 
 /**
@@ -204,6 +210,8 @@ export interface Sentence {
   summary: string | null;
   /** What checked that merge request, where it is open; null reads as unchecked. */
   checks: Checks | null;
+  /** Whether it is mergeable now; absent reads checks that passed as ready. */
+  readiness?: ReadyToRelease | null;
   /** A live agent of the Run's, which the next move can be handed to. */
   agent: string | null;
   /**
@@ -330,7 +338,12 @@ function decisionSentence(decision: Decision): string {
 const short = (sha: string) => sha.slice(0, 7);
 
 /** An open merge request: whether it is ready, and the human's next move. */
-function openSentence(mr: string, checks: Checks | null, agent: string | null): string {
+function openSentence(
+  mr: string,
+  checks: Checks | null,
+  agent: string | null,
+  readiness: ReadyToRelease | null,
+): string {
   const label = mrLabel(mr);
   const ref = readMrRef(mr);
   const running =
@@ -340,8 +353,12 @@ function openSentence(mr: string, checks: Checks | null, agent: string | null): 
   const handed = agent === null ? "" : `, or tell ${agent} to`;
   const seen: Checks = checks ?? { state: "unchecked" };
   switch (seen.state) {
-    case "passed":
-      return `Ready to release: ${label} is open and its checks passed at ${short(seen.at)}. Next: merge it${handed}.`;
+    case "passed": {
+      const lacking = readiness?.missing[0];
+      return lacking === undefined
+        ? `Ready to release: ${label} is open and its checks passed at ${short(seen.at)}. Next: merge it${handed}.`
+        : `${label} is open and its checks passed at ${short(seen.at)}, but ${lacking.said}.`;
+    }
     case "failed":
       return `${label} is open, but ${seen.name} failed at ${short(seen.at)}. Next: fix ${seen.name}${handed}.`;
     case "running":
@@ -359,6 +376,7 @@ function doneSentence(
   checks: Checks | null = null,
   agent: string | null = null,
   summary: string | null = null,
+  readiness: ReadyToRelease | null = null,
 ): string {
   if (disposition === null) {
     if (planReady) return "Plan ready to implement.";
@@ -371,7 +389,7 @@ function doneSentence(
       const noun = ref === null ? "merge request" : mrWords(ref).noun;
       return `${noun[0]!.toUpperCase()}${noun.slice(1)} ${mrLabel(mr)} closed without merging.`;
     }
-    return openSentence(mr, checks, agent);
+    return openSentence(mr, checks, agent, readiness);
   }
   switch (disposition.kind) {
     case "merged": {
@@ -438,6 +456,7 @@ export function sentenceFor(facts: Sentence): string {
         facts.checks,
         facts.agent,
         facts.summary,
+        facts.readiness ?? null,
       );
     case "failed":
       return alsoBecame(failedSentence(facts), facts.disposition);
@@ -542,15 +561,27 @@ export function lastFailure(
  * What Collie's own checks say at one revision: the branch's head where it could be read,
  * else the newest revision Collie checked. An agent's record is a claim and never counts.
  */
-export function checksAt(records: ReadonlyArray<Verification>, head: string | null): Checks {
+export function checksAt(
+  records: ReadonlyArray<Verification>,
+  head: string | null,
+  /**
+   * The checks the Run was started with: each must have passed at that revision. With none,
+   * something Collie ran must have.
+   */
+  approved?: ReadonlyArray<string>,
+): Checks {
   const collie = records.filter((record) => record.by === "collie");
   const at = head ?? collie.at(-1)?.end.head_sha ?? "";
   const newest = new Map<string, Verification>();
   for (const record of collie)
     if (at !== "" && record.end.head_sha === at) newest.set(record.name, record);
-  if (newest.size === 0) return { state: "unchecked" };
   const red = [...newest.values()].find((record) => record.result !== record.expect);
-  return red === undefined ? { state: "passed", at } : { state: "failed", name: red.name, at };
+  if (red !== undefined) return { state: "failed", name: red.name, at };
+  const unrun =
+    approved === undefined || approved.length === 0
+      ? newest.size === 0
+      : approved.some((name) => !newest.has(name));
+  return unrun ? { state: "unchecked" } : { state: "passed", at };
 }
 
 /** The commit the Run's branch is at now in its checkout, or null where that cannot be read. */
@@ -970,15 +1001,30 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
       (mrState === null || mrState === "open");
     // Collie's own evidence counts at the head the forge reported, where it reported one.
     const forged = mr === null ? null : (forge.get(mrLabel(mr)) ?? null);
-    const checks = awaitingMerge
-      ? withForge(
-          checksAt(
-            yield* readVerifications(leader.evidence).pipe(Effect.catch(() => Effect.succeed([]))),
-            forged?.head ?? (yield* branchHead(leader, now)),
+    const verified = awaitingMerge
+      ? {
+          records: yield* readVerifications(leader.evidence).pipe(
+            Effect.catch(() => Effect.succeed([])),
           ),
-          forged,
-        )
+          head: forged?.head ?? (yield* branchHead(leader, now)),
+          approved: (yield* approvedIn(leader.evidence)).map((spec) => spec.name),
+        }
       : null;
+    const checks =
+      verified === null
+        ? null
+        : withForge(checksAt(verified.records, verified.head, verified.approved), forged);
+    const readiness = readyToRelease({
+      succeeded: leader.state === "succeeded",
+      mr,
+      mrState,
+      draft: forged?.draft ?? false,
+      checks: check !== null && checks?.state !== "failed" ? { state: "running" } : checks,
+      ci: forged?.checks ?? null,
+      blocking:
+        mr === null ? 0 : (yield* findingsIn(leader.dir)).filter((one) => isBlocking(one)).length,
+      mergeable: forged?.mergeable ?? null,
+    });
     const finishedAt = settledNow ? endedAt(leader) : 0;
     const view: TaskView = {
       id,
@@ -990,6 +1036,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         mr,
         mrState,
         checks,
+        readiness,
         summary: leader.summary,
         agent: agents.find((one) => one.run === leader.id)?.name ?? null,
         planReady,
@@ -1042,7 +1089,8 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
       ended: finishedAt > 0 ? finishedAt : null,
       mrState,
       checks,
-      ready: checks?.state === "passed",
+      ready: readiness.ready,
+      readiness,
       check,
       reopened,
       planReady,

@@ -124,7 +124,7 @@ import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
-import { watchedMr, type MrPanels } from "./merges";
+import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
 import { buildRunDetail, type PlanCache } from "./views";
@@ -142,6 +142,8 @@ import {
   SharedSettings,
   ShellResult,
   PROTOCOL,
+  mrLabel,
+  readinessOfRun,
   ProposalRefused,
   PART_BYTES,
   RequestConflict,
@@ -218,7 +220,7 @@ import {
   type RelayHeader,
 } from "./peers-model";
 import { latest, readDispositions } from "./disposition";
-import { runAgents } from "./launches";
+import { runAgents, stepsOf } from "./launches";
 import { factsOfView, settled } from "./runs";
 import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
@@ -2089,6 +2091,25 @@ const frontDoorHandlers = (
             Effect.flatMap(({ answerRead }) => answerRead(askerEnv(client), tool, input)),
             Effect.provideContext(bun),
           ),
+        progress: ({ runId }) =>
+          Effect.gen(function* () {
+            const view = yield* registry.view(runId);
+            if (view === null) return null;
+            const board = Option.getOrElse(yield* Stream.runHead(boards), () => []);
+            const card = board.find((one) => one.runs.includes(runId));
+            const mr = card?.run === runId ? card.mr : null;
+            const forged =
+              mr === null ? undefined : (yield* readForge(env.stateDir)).get(mrLabel(mr));
+            return {
+              ready: readinessOfRun(
+                runId,
+                card,
+                view.status.status === "complete" || view.status.status === "failed",
+              ),
+              ci: forged?.checks ?? null,
+              steps: yield* stepsOf(env.stateDir, runId),
+            };
+          }).pipe(Effect.provideContext(bun)),
         runDetail: ({ runId, tail, pages, refreshMr }) => {
           let fresh = refreshMr;
           const detail = Effect.gen(function* () {

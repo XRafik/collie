@@ -472,6 +472,10 @@ export const runShown = (env: PluginEnv, runId: string) =>
     ),
   );
 
+/** Where a Run has got to: Ready to release, its steps and its CI, from the host that has it. */
+export const runProgress = (env: PluginEnv, runId: string) =>
+  asksRun(env, runId, (client) => client.progress({ runId }));
+
 /**
  * The checkout a Run's verifications are about: the one the host placed it on. A
  * verification collected anywhere else would bind a real result to a tree nobody is

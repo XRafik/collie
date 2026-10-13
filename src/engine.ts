@@ -156,7 +156,14 @@ import { listTasks, newTask, taskOfWorkspace, writeTask } from "./task";
 import { nowIso } from "./time";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { approvedFrom, VerifySpecSchema, type VerifySpec } from "./verify-spec";
+import {
+  approvedFile,
+  approvedFrom,
+  approvedIn,
+  encodeApproved,
+  VerifySpecSchema,
+  type VerifySpec,
+} from "./verify-spec";
 import {
   encodeVerifying,
   fingerprint,
@@ -1916,11 +1923,7 @@ const mergeRequestOf = (fs: FileSystem.FileSystem, dir: string, runId: string) =
     Effect.orElseSucceed(() => null),
   );
 
-const approvedPath = (dir: string, runId: string) => `${evidenceDir(dir, runId)}/approved.json`;
-
-const ApprovedJson = Schema.fromJsonString(Schema.Array(VerifySpecSchema));
-const decodeApproved = Schema.decodeUnknownEffect(ApprovedJson);
-const encodeApproved = Schema.encodeSync(ApprovedJson);
+const approvedPath = (dir: string, runId: string) => approvedFile(evidenceDir(dir, runId));
 
 /**
  * This Run's checks as they were when the Run started. Frozen at
@@ -1948,14 +1951,7 @@ export const freezeApproved = Effect.fn("Engine.freezeApproved")(function* (opti
   yield* fs.writeFileString(path, encodeApproved(approved));
 });
 
-const approvedOf = Effect.fn("Engine.approvedOf")(function* (dir: string, runId: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const none: ReadonlyArray<VerifySpec> = [];
-  const text = yield* fs
-    .readFileString(approvedPath(dir, runId))
-    .pipe(Effect.orElseSucceed(() => "[]"));
-  return yield* decodeApproved(text).pipe(Effect.orElseSucceed(() => none));
-});
+const approvedOf = (dir: string, runId: string) => approvedIn(evidenceDir(dir, runId));
 
 /** Where a host keeps what a Run claimed, so a resume knows whose the claim was. */
 const claimPath = (dir: string, runId: string) => `${runDir(dir, runId)}/helle.json`;

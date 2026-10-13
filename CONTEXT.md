@@ -339,13 +339,15 @@ now; **Ready to release** leads it. Not a **Decision**: a Decision is Collie ask
 has not been mentioned. A Run that ended with nothing to file — no branch, no merge
 request, no plan, no question — has **Landed** and is not waiting on anyone.
 
-**Ready to release** — A Waiting on you Task whose leading Run succeeded, whose merge
-request is open, and whose checks passed: every check Collie collected passed at the
-revision the merge request's branch is at, and the forge's pipeline, where Collie could
-read it, passed too, with nothing failing or still running. Its card says what is ready,
-where, that the checks passed and what the human does next. An open merge request whose
-checks failed, are running or were never run is still Waiting on you, and its card says
-which.
+**Ready to release** — A Waiting on you Task whose merge request the forge would merge now:
+its leading Run succeeded; the merge request is open and not a draft; every check approved
+for the Run passed at its head; the forge's pipeline at that head passed, or there is none;
+no blocking review finding is unresolved; and the forge says it can merge. It is one fact,
+computed once in the board model, that the board, `collie run show`, `collie run wait
+--until ready` and chat all read, with each missing fact named and marked as one that may
+still come by itself (CI running, the forge still working it out) or one only a human can
+move. A card leaves Ready to release when CI or mergeability later says no. An open merge
+request that is not ready is still Waiting on you, and its card says what is missing.
 
 **Reopened** — A finished Run one of whose agents was sent a steer Delivery after the Run
 finished. Not a status: the Run still reads `succeeded`, `failed` or `stopped`, because

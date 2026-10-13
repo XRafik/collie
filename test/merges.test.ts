@@ -326,6 +326,42 @@ test("a GitHub check rollup that is red, pending or green is what the card's che
     }),
   ));
 
+test("a draft, and what the forge says of merging, reach the card's readiness", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const green = [{ name: "build", state: "passed" }] as const;
+      const draft = (yield* cardAfter(
+        MR,
+        forge("gitlab", { mrs: [mr65({ head: HEAD, draft: true, checks: green })] }),
+      )).card;
+      expect(draft.ready).toBe(false);
+      expect(draft.readiness?.missing.map((one) => one.fact)).toEqual(["not-draft"]);
+
+      const conflicted = (yield* cardAfter(
+        PR,
+        github("open", green, {
+          mrs: [
+            {
+              project: "github.com/cego/collie",
+              iid: "30",
+              state: "open",
+              head: HEAD,
+              checks: green,
+              mergeable: "conflict",
+            },
+          ],
+        }),
+      )).card;
+      expect(conflicted.readiness?.missing).toEqual([
+        {
+          fact: "mergeable",
+          said: "the forge says it cannot merge: conflicting",
+          settling: false,
+        },
+      ]);
+    }),
+  ));
+
 test("a merged GitHub pull request lands its card, by github's word", () =>
   runEffect(
     Effect.gen(function* () {

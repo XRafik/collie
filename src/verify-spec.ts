@@ -26,6 +26,20 @@ export type VerifySpec = Schema.Schema.Type<typeof VerifySpecSchema>;
 
 const decodeGiven = Schema.decodeUnknownResult(Schema.fromJsonString(VerifySpecSchema));
 
+const ApprovedJson = Schema.fromJsonString(Schema.Array(VerifySpecSchema));
+const decodeApproved = Schema.decodeUnknownEffect(ApprovedJson);
+export const encodeApproved = Schema.encodeSync(ApprovedJson);
+
+/** Where a Run's checks are frozen, in its evidence directory. */
+export const approvedFile = (evidenceDir: string) => `${evidenceDir}/approved.json`;
+
+/** The checks a Run was started with, frozen in its evidence directory; none where unreadable. */
+export const approvedIn = (evidenceDir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return yield* decodeApproved(yield* fs.readFileString(approvedFile(evidenceDir)));
+  }).pipe(Effect.orElseSucceed((): ReadonlyArray<VerifySpec> => []));
+
 /** `--verify` values, each one verify.json entry as JSON; the first that is not one is named. */
 export function givenVerifications(
   values: ReadonlyArray<string>,
@@ -56,7 +70,6 @@ export class ApprovedUnreadable extends Data.TaggedError("ApprovedUnreadable")<{
 }
 
 /** What a layer's file holds: the specs, whole. A file is taken or refused, never merged. */
-const ApprovedJson = Schema.fromJsonString(Schema.Array(VerifySpecSchema));
 export const encodeApprovedFile = Schema.encodeSync(
   Schema.fromJsonString(Schema.Array(VerifySpecSchema), { space: 2 }),
 );

@@ -529,6 +529,8 @@ Retry with the same `--request-id` once you have the values.
 collie --json run wait <run-id> --follow
 collie --json run wait <run-id> --timeout "10 minutes"
 collie --json run wait <run-id> --until attention
+collie --json run wait <run-id> --until ready
+collie --json run wait <run-id> --until needs-human
 collie --json run show <run-id>
 collie --json run list
 collie --json run output <run-id>
@@ -554,19 +556,35 @@ rest; where the host will not start it says so and still lists the others.
 A run that stops to ask a question is **not** ended, so a plain `run wait` waits straight
 through it. `--until attention` is the wait that does not: it returns as soon as the run is
 suspended — at a question, held, stopped or parked — or has ended, whichever comes first,
-and returns immediately when that is already true. `--until terminal` is the default
-spelled out; any other value is `invalid_input`.
+and returns immediately when that is already true. A Run that parked its own work while
+its status is still `pending` counts too. `--until terminal` is the default spelled out.
+
+`--until ready` returns once the Run is Ready to release (see `ready` below). When what is
+missing can only be moved by a human — the Run is at attention, or it has ended and nothing
+missing may still come by itself — it ends instead as `invalid_state`, naming what is
+missing. `--until needs-human` returns at either: ready, or nothing will move without you.
+Both ask the host for the Run's readiness every two seconds; the envelope they return
+carries it as `data.ready`. A host that cannot say five times running, such as an older build, ends the wait as `operation_failed`. Any other value is `invalid_input`.
 
 Answer what the wait returned with `run answer <run-id> <option> --decision <name>` — see
 [Answer a question](#answer-a-question).
 
 `--follow` streams instead of returning one envelope: one newline-delimited
 `{"type":"status","run":…}` line each time the run's status changes, carrying the same
-`run` object as `run show`. Failures still arrive as a normal envelope — a timeout, or a
+`run` object as `run show`, and one line for each other change, with the Run's id as `run`:
+`{"type":"step","operation":…,"agent":…,"state":"started"|"finished"}`,
+`{"type":"agent","agent":…,"operation":…}` when an agent is launched,
+`{"type":"parked","reason":…}`, `{"type":"mr","mr":…}` when the merge request opens and
+`{"type":"ci","ci":…}` when the forge's pipeline changes state. Without `--json` each is
+one line: `run-1a2b: step 01-a.md finished`, `run-1a2b: parked: …`, `run-1a2b: CI running`. Failures still arrive as a normal envelope — a timeout, or a
 run the host could not watch — so a consumer reads each line as JSON and branches on
 whether `type` is present.
 
-`run show` is the Run as the host has it. Its `run` object carries:
+`run show` is the Run as the host has it. Beside `run`, `data.ready` is Ready to release
+for this Run — `ready`, and `missing[]`, each a `fact` (`succeeded`, `leads`, `mr-open`,
+`not-draft`, `checks`, `ci`, `review` or `mergeable`), what is `said` of it, and whether it
+is `settling`, may still come by itself — or `null` from a host that cannot say. A Run that
+does not lead its Task's card is never ready. Its `run` object carries:
 
 | Field                                    | What it tells you                                                                                                                                                                                    |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -636,7 +654,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `ended`                   | When the leading Run ended, or `null` while it has not.                                                                                                         |
 | `planReady`, `offer`      | A finished plan nobody has implemented, and the offer its card's first action invokes.                                                                          |
 | `checks`                  | What checked an open merge request: `passed` or `failed` (with `name`) at revision `at`, `running`, or `unchecked`; else `null`.                                |
-| `ready`                   | Ready to release: the leading Run succeeded, its merge request is open, and its `checks` passed.                                                                |
+| `ready`, `readiness`      | Ready to release: the forge would merge it now. `readiness` names each fact missing, as `run show`'s `data.ready` does.                                         |
 | `check`                   | The check Collie is running for the leading Run, as `collie run checks` gives `running` (with its `log` and `lastLines`), or `null`.                            |
 | `reopened`                | A finished Run whose agent took a steer after it ended: the `delivery`, the `agent`, the first line it was `told` and its `status` now; else `null`.            |
 | `run`, `runs[]`           | The Run a card acts on, and every Run of the Task.                                                                                                              |
@@ -1886,6 +1904,11 @@ chat's tools all go through these, so the host is the only writer of what they r
 for the asking channel exactly as the Machine's Native chat would, with no board selection
 standing in for a Run nobody named. It records nothing. Desktop's Flock chat reads through
 it.
+
+`progress` answers for one Run what its status does not carry: its Ready to release, the
+forge's pipeline at its merge request's head, and each operation's latest agent and whether
+it has written its Output. `run show`, `run wait` and chat read it; `null` is a Run the host
+does not have.
 
 `runDetail` streams one Run's details while a drawer is open — intent, plan, review,
 log tail, verifications, metrics, steering cards, the files it kept as evidence, its diff

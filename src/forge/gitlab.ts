@@ -4,6 +4,7 @@ import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import {
   mrPath,
   type ForgeChecks,
+  type Mergeability,
   type MrDetails,
   type MrPanel,
   type MrRef,
@@ -72,8 +73,34 @@ const MrDetailsJson = Schema.fromJsonString(
     user_notes_count: optionalCount,
     approvals_required: optionalCount,
     approvals_left: optionalCount,
+    detailed_merge_status: optionalText,
+    merge_status: optionalText,
   }),
 );
+
+/** What GitLab says while it is still working out whether it can merge. */
+const SETTLING_MERGE = new Set([
+  "checking",
+  "unchecked",
+  "preparing",
+  "approvals_syncing",
+  "cannot_be_merged_recheck",
+]);
+
+/**
+ * GitLab's own answer to "can this merge now", which carries its approval rules: the
+ * detailed status where this GitLab has one, else the older `merge_status`.
+ */
+function mergeabilityOf(
+  detailed: string | null | undefined,
+  legacy: string | null | undefined,
+): Mergeability | undefined {
+  const said = detailed ?? (legacy === "can_be_merged" ? "mergeable" : legacy);
+  if (said === undefined || said === null || said === "") return undefined;
+  const words = said.replaceAll("_", " ");
+  if (said === "mergeable") return { state: "mergeable", said: words };
+  return { state: SETTLING_MERGE.has(said) ? "unknown" : "blocked", said: words };
+}
 
 /**
  * One merge request, in one `glab mr view` call. `gitlabForProject` first, because "no
@@ -115,7 +142,8 @@ export function mrDetails<R>(
     const draft = mr.draft === true || mr.work_in_progress === true;
     const pipeline = mr.head_pipeline?.status ?? mr.pipeline?.status ?? "";
     const updated = mr.updated_at ? epochMs(mr.updated_at) : Number.NaN;
-    return {
+    const mergeable = mergeabilityOf(mr.detailed_merge_status, mr.merge_status);
+    const details = {
       _tag: "Details",
       iid: mr.iid === undefined || mr.iid === null ? ref.iid : String(mr.iid),
       project: ref.project,
@@ -141,6 +169,7 @@ export function mrDetails<R>(
       url: mr.web_url ?? "",
       autoMerge: mr.merge_when_pipeline_succeeds === true,
     } satisfies MrDetails;
+    return mergeable === undefined ? details : { ...details, mergeable };
   });
 }
 

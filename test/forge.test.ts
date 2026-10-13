@@ -103,6 +103,26 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
+    test("says whether it would merge it now, by its own rules and in its own words", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const mergeable = (over: Partial<FakeMr>) =>
+            forge
+              .details(ref(name), "/w", fakeForge(name, model(name, { mrs: [mr(name, over)] })).run)
+              .pipe(Effect.map((panel) => (panel._tag === "Details" ? panel.mergeable : null)));
+          expect(yield* mergeable({})).toEqual({ state: "mergeable", said: "mergeable" });
+          expect((yield* mergeable({ mergeable: "conflict" }))?.state).toBe("blocked");
+          expect((yield* mergeable({ mergeable: "unapproved" }))?.state).toBe("blocked");
+          expect((yield* mergeable({ mergeable: "checking" }))?.state).toBe("unknown");
+          expect((yield* mergeable({ mergeable: "conflict" }))?.said).toBe(
+            name === "gitlab" ? "conflict" : "conflicting",
+          );
+          expect((yield* mergeable({ mergeable: "unapproved" }))?.said).toBe(
+            name === "gitlab" ? "not approved" : "blocked",
+          );
+        }),
+      ));
+
     test("reads the whole panel: draft, people, branches, approval, auto-merge and when it moved", () =>
       runEffect(
         Effect.gen(function* () {

@@ -646,7 +646,11 @@ carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup
 revision they ran at, which is the one Collie's own checks are counted at too: a failing
 one names itself (`cego/collie#30 is open, but lint failed at 1a2b3c4.`), a pending one
 reads `cego/collie#30 is open; its checks are still running.`, and Ready to release needs
-every check the card knows of to have passed. No `gh`, or one nobody logged in to, leaves
+every check the card knows of to have passed. It also needs what the forge would merge on:
+the merge request is not a draft, no blocking review finding is unresolved, and the forge
+says it can merge — GitLab's detailed merge status, GitHub's mergeable state. Otherwise the
+card says the first thing missing: `cego/collie#30 is open and its checks passed at
+1a2b3c4, but the forge says it cannot merge: conflicting.` No `gh`, or one nobody logged in to, leaves
 the card `nothing has checked it` and says nothing about why. A pull request's details —
 title, state, author and assignees, branches, checks, approval, comments, head and
 whether it moved since the review — show in the drawer and Desktop's record as a merge

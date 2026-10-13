@@ -32,8 +32,24 @@ export const FakeMr = Schema.Struct({
   autoMerge: Schema.optionalKey(Schema.Boolean),
   approved: Schema.optionalKey(Schema.Boolean),
   updatedAt: Schema.optionalKey(Schema.String),
+  /** Whether the forge would merge it now; mergeable where unsaid. */
+  mergeable: Schema.optionalKey(Schema.Literals(["yes", "conflict", "unapproved", "checking"])),
 });
 export type FakeMr = typeof FakeMr.Type;
+
+const GITLAB_MERGE_STATUS = {
+  yes: "mergeable",
+  conflict: "conflict",
+  unapproved: "not_approved",
+  checking: "checking",
+} as const;
+
+const GITHUB_MERGE_STATE = {
+  yes: { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" },
+  conflict: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" },
+  unapproved: { mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED" },
+  checking: { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" },
+} as const;
 
 export const ForgeModel = Schema.Struct({
   installed: Schema.Boolean,
@@ -163,6 +179,7 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       target_branch: mr.targetBranch ?? null,
       merge_when_pipeline_succeeds: mr.autoMerge ?? false,
       approvals_left: mr.approved === true ? 0 : null,
+      detailed_merge_status: GITLAB_MERGE_STATUS[mr.mergeable ?? "yes"],
       updated_at: mr.updatedAt ?? null,
       web_url: `https://${mr.project}/-/merge_requests/${mr.iid}`,
     });
@@ -335,6 +352,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       url: `https://${pull.project}/pull/${pull.iid}`,
       autoMergeRequest: pull.autoMerge === true ? { enabledAt: "2026-10-01T00:00:00Z" } : null,
       headRefOid: pull.head ?? null,
+      ...GITHUB_MERGE_STATE[pull.mergeable ?? "yes"],
       mergeCommit: pull.mergedSha === undefined ? null : { oid: pull.mergedSha },
       statusCheckRollup: (pull.checks ?? []).map((check) => ({
         __typename: "CheckRun",

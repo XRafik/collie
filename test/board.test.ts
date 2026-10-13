@@ -16,7 +16,7 @@ import {
   workingLabel,
   type Sentence,
 } from "../src/board";
-import { mrLabel } from "../src/board-model";
+import { mrLabel, type Mergeability } from "../src/board-model";
 import {
   Answered,
   Controlled,
@@ -1596,14 +1596,31 @@ test("a succeeded Run's open merge request is ready only on checks at its branch
       );
 
       yield* appendVerification(run.evidence, checked("lint", head));
-      const green = yield* board(env, [run], {
-        alive: [agent("builder", "idle")],
-        registered: [registered("builder", run.id)],
-      });
+      const forgeSays = (mergeable: Mergeability) =>
+        board(env, [run], {
+          alive: [agent("builder", "idle")],
+          registered: [registered("builder", run.id)],
+          mrStates: new Map([["cego/collie#30", "open"]]),
+          forge: new Map([["cego/collie#30", { checks: { state: "passed" }, head, mergeable }]]),
+        });
+      // Green, but nobody has asked the forge whether it can merge.
+      expect((yield* view).readiness?.missing.map((one) => one.fact)).toEqual([
+        "mr-open",
+        "ci",
+        "mergeable",
+      ]);
+      const green = yield* forgeSays({ state: "mergeable", said: "mergeable" });
       expect(green[0]!.ready).toBe(true);
+      expect(green[0]!.readiness).toEqual({ ready: true, missing: [] });
       expect(sectionOf(green[0]!)).toBe("waiting");
       expect(green[0]!.sentence).toBe(
         `Ready to release: cego/collie#30 is open and its checks passed at ${head.slice(0, 7)}. Next: merge it, or tell builder to.`,
+      );
+      // The forge's approval rules are its own: green and unapproved is not ready.
+      const unapproved = yield* forgeSays({ state: "blocked", said: "not approved" });
+      expect(unapproved[0]!.ready).toBe(false);
+      expect(unapproved[0]!.sentence).toBe(
+        `cego/collie#30 is open and its checks passed at ${head.slice(0, 7)}, but the forge says it cannot merge: not approved.`,
       );
     }),
   ));
@@ -1622,7 +1639,7 @@ test("where the branch cannot be read, the newest revision Collie checked counts
       yield* appendVerification(run.evidence, checked("test", "bbbbbbbnew"));
       const [view] = yield* board(env, [run]);
       expect(view!.checks).toEqual({ state: "passed", at: "bbbbbbbnew" });
-      expect(view!.sentence).toContain("passed at bbbbbbb.");
+      expect(view!.sentence).toContain("passed at bbbbbbb");
     }),
   ));
 
@@ -1995,7 +2012,17 @@ test("a Reopened Run whose agent is idle again stands on its own facts", () =>
   runEffect(
     Effect.gen(function* () {
       const card = yield* reopened("idle", "2026-09-14T10:02:00Z", {
-        forge: new Map([["cego/collie#30", { checks: { state: "passed" }, head: "abc1234def" }]]),
+        mrStates: new Map([["cego/collie#30", "open"]]),
+        forge: new Map([
+          [
+            "cego/collie#30",
+            {
+              checks: { state: "passed" },
+              head: "abc1234def",
+              mergeable: { state: "mergeable", said: "mergeable" },
+            },
+          ],
+        ]),
       });
       expect(sectionOf(card)).toBe("waiting");
       expect(card.ready).toBe(true);
