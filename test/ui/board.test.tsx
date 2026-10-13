@@ -1481,63 +1481,6 @@ test("a new record opens at the top of what it is showing", () =>
     }),
   ));
 
-const GATE: TaskView["decision"] = {
-  kind: "gate",
-  run: "rg",
-  id: "g1",
-  step: "mr",
-  verifications: ["tests", "lint", "typecheck"],
-};
-
-const HOLDING = task({
-  id: "tg",
-  name: "Upload cap",
-  state: "blocked",
-  decision: GATE,
-  sentence: "Holding at the mr gate until you approve the list.",
-  run: "rg",
-});
-
-test("a gate card lists what would prove the run, and answers on the card", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const app = yield* mount(appState({ tasks: [HOLDING] }));
-      const said = app.said();
-
-      expect(said).toContain("Holding at the mr gate until you approve the list.");
-      expect(said).toContain("tests");
-      expect(said).toContain("typecheck");
-
-      yield* app.clickOn("Approve");
-      expect(app.acted()).toEqual([
-        { _tag: "Answer", runId: "rg", choiceId: "g1", value: "approve" },
-      ]);
-    }),
-  ));
-
-test("Edit the list opens the record, and approves what is left of it", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const app = yield* mount(appState({ tasks: [HOLDING] }));
-
-      yield* app.clickOn("Edit the list");
-      // The record is open on the gate, with every verification on it.
-      expect(app.said()).toContain("What proves this run");
-      expect(app.said()).toContain("✓ lint");
-
-      // Dropping one, then approving what is left.
-      yield* app.clickOn("✓ lint");
-      expect(app.said()).toContain("○ lint");
-      yield* app.clickOn("Approve the list");
-      expect(app.acted().at(-1)).toEqual({
-        _tag: "Answer",
-        runId: "rg",
-        choiceId: "g1",
-        value: "approve:tests,typecheck",
-      });
-    }),
-  ));
-
 const THREE = [
   task({ id: "ta", name: "Aaa seeder", run: "ra" }),
   task({ id: "tb", name: "Bbb uploader", run: "rb" }),

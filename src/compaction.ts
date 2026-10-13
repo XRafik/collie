@@ -156,9 +156,10 @@ export interface CompactionPort {
   ): Effect.Effect<Submission | null, PortError, PortServices>;
   /**
    * Whether the harness has shown, through these controls, that it can take a prompt.
-   * Absent where its controls give no such sign before the first prompt.
+   * Absent where its controls give no such sign before the first prompt. A failure is why
+   * it cannot tell yet.
    */
-  readonly ready?: (ctx: ReadyContext) => Effect.Effect<boolean, never, PortServices>;
+  readonly ready?: (ctx: ReadyContext) => Effect.Effect<boolean, PortError, PortServices>;
   /** What this request has established, or `null` while it is still unresolved. */
   poll(
     ctx: AgentContext,
@@ -393,12 +394,20 @@ export const awaitReady = Effect.fn("Compaction.awaitReady")(function* (
     return null;
   }
   const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
-  while (!(yield* ready(record))) {
+  let why = "";
+  for (;;) {
+    const up = yield* ready(record).pipe(
+      Effect.tap(() => Effect.sync(() => (why = ""))),
+      Effect.catch((cause) => {
+        why = reason(cause);
+        return Effect.succeed(false);
+      }),
+    );
+    if (up) return null;
     if ((yield* Clock.currentTimeMillis) >= deadline)
-      return `${record.harness} gave no sign it was up within ${Math.round(budgetMs / 1000)}s`;
+      return `${record.harness} gave no sign it was up within ${Math.round(budgetMs / 1000)}s${why === "" ? "" : ` (${why})`}`;
     yield* Effect.sleep(deps.pollMs);
   }
-  return null;
 });
 
 /**

@@ -4,7 +4,9 @@
 against a revision, `implement` is `build → review → fix → mr`, plans build in slices, and
 a gate reads evidence before a merge request is opened. What remains outstanding is live
 evidence rather than design — see Consequences. D3's halt is amended 2026-09-29: the gate
-no longer stops the Run before the merge request.
+no longer stops the Run before the merge request. D2's permission, and the gate asking
+before it collects, are superseded by
+[ADR-0055](0055-a-run-never-asks-to-run-its-checks.md): nobody approves a Run's checks.
 
 A Run has an **outcome** it must prove, and the proof is a collected **Verification**
 bound to the tree it ran on. An agent writing `"verdict": "clean"` is a claim, and Collie
@@ -52,7 +54,9 @@ a tree that moved is `unstable` and never `pass`. `--expect fail` is how a bug i
 to exist. What _Collie itself_ may run is a Run's approved set, read from
 `.collie/verify.json` or the config directory when the Run starts _(or given with the
 start, by the human or by chat; see [ADR-0011's 2026-09-29 amendment](0011-the-conversation-is-a-native-harness.md))_ and copied into
-`run.json`: a permission that moved under a Run is not a permission.
+`run.json`: a permission that moved under a Run is not a permission. _(Superseded by
+[ADR-0055](0055-a-run-never-asks-to-run-its-checks.md): a Run's checks are not a
+permission, and where nothing names any, the Run's own agent names them.)_
 
 **D3. An outcome decides what closes a Run.** One pure table (`src/outcome.ts`): a feature
 names what it built and the review says the scope was met; a bug records a regression that
@@ -130,12 +134,15 @@ A Run started before this resumes only while its workflow still has the steps it
 That is visible and intended: the alternative is a Run silently doing something else.
 
 A project with no `.collie/verify.json` is told so at the gate rather than passed: an empty
-approved set would make the gate say yes to anything.
+approved set would make the gate say yes to anything. _(Superseded by ADR-0055: the
+Run's agent names checks where none are written down. A Run still left with none after
+its gate fixes is held unproved, as a failing check is.)_
 
 The gate asks before it collects: it is a decision on the board, answered with **Approve**,
 the list cut down, or **Skip**. What it refuses is a Run claiming more than it proved, not
 a human deciding what this Run has to prove — and either way the answer is on the record,
-so a merge request opened past a skipped gate can be read back as one.
+so a merge request opened past a skipped gate can be read back as one. _(Superseded by
+ADR-0055: the gate never asks, and the board has no evidence gate to answer.)_
 
 A merge request now says what was actually verified and by whom, which is a smaller claim
 than the one the description used to make.

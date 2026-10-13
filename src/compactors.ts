@@ -996,7 +996,6 @@ const codex: CompactionPort = {
       ? Effect.succeed(false)
       : withCodex(ctx.endpoint, (client) => boundThread(client, ctx.cwd)).pipe(
           Effect.map((thread) => thread !== null),
-          Effect.orElseSucceed(() => false),
         ),
   install: (ctx) =>
     codexEndpoint(ctx).pipe(

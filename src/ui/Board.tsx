@@ -9,7 +9,6 @@ import {
   foldWaiting,
   sectionOf,
   type Decision,
-  type Gate,
   type HeaderSentence,
   type Proposal,
   type Question,
@@ -30,10 +29,6 @@ export interface Decide {
   answer: (question: Question, value: string) => void;
   confirm: (proposal: Proposal) => void;
   decline: (proposal: Proposal) => void;
-  /** A gate: the list as it stands, or `null` for the whole of it. */
-  approve: (gate: Gate, verifications: ReadonlyArray<string> | null) => void;
-  /** Opens the record on the list, which is the only place it can be cut down. */
-  edit: (gate: Gate) => void;
   /** What has been typed into this question and not sent. */
   draft: (question: Question) => string;
   /** Whether the keyboard is in this question's field. */
@@ -559,7 +554,6 @@ function Card(props: {
 function Deciding(props: { decision: Decision; decide: Decide }) {
   const question = () => (props.decision.kind === "question" ? props.decision : null);
   const proposal = () => (props.decision.kind === "proposal" ? props.decision : null);
-  const gate = () => (props.decision.kind === "gate" ? props.decision : null);
   return (
     <box style={{ flexDirection: "column" }}>
       <Show when={question() !== null}>
@@ -567,24 +561,6 @@ function Deciding(props: { decision: Decision; decide: Decide }) {
       </Show>
       <Show when={proposal() !== null}>
         <Proposed proposal={proposal()!} decide={props.decide} />
-      </Show>
-      <Show when={gate() !== null}>
-        <Gated gate={gate()!} decide={props.decide} />
-      </Show>
-    </box>
-  );
-}
-
-function Gated(props: { gate: Gate; decide: Decide }) {
-  return (
-    <box style={{ flexDirection: "column" }}>
-      {/* With nothing offered, the card's sentence says how to grant a check. */}
-      <Show when={props.gate.verifications.length > 0}>
-        <text fg={C.text}>{props.gate.verifications.join(" · ")}</text>
-        <box style={{ flexDirection: "row", flexWrap: "wrap" }}>
-          <Button label="Approve" primary onPress={() => props.decide.approve(props.gate, null)} />
-          <Button label="Edit the list" onPress={() => props.decide.edit(props.gate)} />
-        </box>
       </Show>
     </box>
   );

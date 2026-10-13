@@ -4,7 +4,10 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
   agentTabs,
+  askedFor,
+  atWork,
   offersTerminal,
+  opensHerdrForNoPane,
   shownAgent,
   opensHerdrWithoutPane,
   recipients,
@@ -76,6 +79,83 @@ test.each([
   expect(
     agentTabs(agents, shown).map((one) => [one.name, one.run, one.label, one.state, one.shown]),
   ).toEqual(entries.map((entry) => [...entry]));
+});
+
+test.each([
+  {
+    case: "a blocked agent is chosen over a working one listed after it",
+    agents: [live("plan-1", "planner", "blocked"), live("impl-1", "implementer", "working")],
+    chosen: "plan-1",
+  },
+  {
+    case: "a blocked agent is chosen over a working one listed before it",
+    agents: [live("impl-1", "implementer", "working"), live("plan-1", "planner", "blocked")],
+    chosen: "plan-1",
+  },
+  {
+    case: "another Run's blocked agent is chosen over the card's Run's working one",
+    agents: [
+      live("impl-1", "implementer", "blocked", "run-2.implement"),
+      live("review-1", "reviewer", "working"),
+    ],
+    chosen: "impl-1",
+  },
+  {
+    case: "a working agent is chosen over idle, done and unknown ones",
+    agents: [
+      live("plan-1", "planner", "idle"),
+      live("impl-1", "implementer", "working", "run-1.implement"),
+      live("review-1", "reviewer", "done"),
+      live("review-2", "reviewer", "unknown"),
+    ],
+    chosen: "impl-1",
+  },
+  {
+    case: "among several working, the card's Run's last-listed agent is chosen over another Run's",
+    agents: [
+      live("review-1", "reviewer", "working"),
+      live("review-2", "reviewer", "working"),
+      live("impl-1", "implementer", "working", "run-1.implement"),
+    ],
+    chosen: "review-2",
+  },
+  {
+    case: "with no candidate of the card's Run, the last-listed candidate is chosen",
+    agents: [
+      live("plan-1", "planner", "idle"),
+      live("impl-1", "implementer", "working", "run-1.implement"),
+      live("review-1", "reviewer", "working", "run-1.implement"),
+    ],
+    chosen: "review-1",
+  },
+  {
+    case: "all idle names no agent",
+    agents: [live("plan-1", "planner"), live("impl-1", "implementer", "idle", "run-1.implement")],
+    chosen: null,
+  },
+  { case: "no agents names no agent", agents: [], chosen: null },
+  {
+    case: "an agent from an older host, with no role, is still chosen by its status",
+    agents: [live("impl-1", undefined, "idle"), live("impl-2", undefined, "working")],
+    chosen: "impl-2",
+  },
+])("the tab opens on the agent at work: $case", ({ agents, chosen }) => {
+  expect(atWork(agents, "run-1")?.name ?? null).toBe(chosen);
+});
+
+test("a pick is asked for over the agent at work, which is asked for as its tab, and else none", () => {
+  const agents = [live("plan-1", "planner"), live("impl-1", "implementer", "working")];
+  const [planner, implementer] = agentTabs(agents, null);
+  expect(askedFor(agents, "run-1", planner!)).toEqual(planner!);
+  expect(askedFor(agents, "run-1", null)).toEqual(implementer!);
+  expect(askedFor([live("plan-1", "planner")], "run-1", null)).toBeNull();
+});
+
+test("a pane not found opens herdr's client only for Go to pane before a pick", () => {
+  const picked = agentTabs([live("impl-1", "implementer", "working")], null)[0]!;
+  expect(opensHerdrForNoPane(true, null)).toBe(true);
+  expect(opensHerdrForNoPane(true, picked)).toBe(false);
+  expect(opensHerdrForNoPane(false, null)).toBe(false);
 });
 
 test("the agent shown is the board's entry for it, kept once it leaves, and none before it arrives", () => {

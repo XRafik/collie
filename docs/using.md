@@ -358,7 +358,7 @@ stash stack — looks like, which is the thing this exists to prevent.
 `renovate` changes the repository too, but it does not build one branch — it moves across
 every Renovate Bot branch it merges. So it gets a checkout of its own that is **detached**
 at the repository's default branch as the remote has it, at
-`~/.herdr/worktrees/<repo>/renovate`, and no branch is created or claimed for the run.
+`~/.herdr/worktrees/<repo>/roaming`, and no branch is created or claimed for the run.
 There is no `--input branch=` for it, and nothing it does binds a branch to its worktree:
 it fetches and checks out each Renovate branch inside that one checkout and pushes with an
 explicit refspec, so a Renovate branch that already has a checkout of yours is left where
@@ -368,16 +368,33 @@ it is and reported, never taken over.
 one the run was started in. The repository has to be checked out locally already — cloning
 from a URL is not something a run does. Two renovate runs on two repositories get two
 checkouts, one per repository. A second one on the _same_ repository is refused rather
-than handed the first's working tree. So are two repositories that share a name — the
-path is `<repo>` as the directory is called, so two `api`s want the same one — and so is
-anything else in the way, rather than being built over.
+than handed the first's working tree while the first may still go on — running, waiting,
+or stopped, since a resume picks a stopped run up again. So are two repositories that
+share a name — the path is `<repo>` as the directory is called, so two `api`s want the
+same one — and so is anything else in the way, rather than being built over.
 
-A refusal says only what is known: which repository git says owns the path, and which
-run recorded it where a run record proves one did. Nothing is guessed, and neither the
-checkout nor either repository is touched. Looking and creating happen under one lock
-keyed by that path, so two runs starting at the same moment cannot both find it free.
-The path is yours again once that run's checkout is removed or pruned; a resumed run
-reuses only the checkout it recorded itself, and never claims a new one.
+A run whose workflow has ended — failed or finished — does not keep the path from the next
+renovation of its repository. The new run takes the checkout over when git still lists it
+as one of that repository's, it is the very checkout the ended run made — not one made at
+the same path since, which is someone else's — no other run that may go on works in it —
+recorded it or not, a run started inside it, or through a link to it, counts — no agent in
+any herdr session is working inside it, wherever its pane was opened (a herdr that will
+not list its sessions cannot say, so that is a refusal too), and it holds nothing
+to lose: no uncommitted or untracked change, no ignored file the default branch would
+overwrite, and no commit that only its detached `HEAD` reaches once the fetch is done (a
+branch checked out in it keeps its commits as a branch). The ended runs' agents are closed
+first, as a stop closes them, and the tree is checked again after; then it is moved,
+detached, to the default branch as just fetched, and the log says whose it was. It is
+recorded as the new run's before the lock on its path is let go, so a start right behind
+it finds it taken. Anything less is a refusal naming what keeps it, and nothing is removed
+or forced.
+
+A refusal says only what is known: which repository git says owns the path, which run
+recorded it where a run record proves one did, and why that run keeps it. Nothing is
+guessed, and neither the checkout nor either repository is touched. Looking and creating
+happen under one lock keyed by that path, so two runs starting at the same moment cannot
+both find it free. A resumed run reuses only the checkout it recorded itself, and never
+claims a new one.
 
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
@@ -612,13 +629,6 @@ does not, with the proposal's id and hash beside **Confirm** — your yes is con
 payload, and nothing else on the card can give it. **Decline** declines it. Either way the
 card leaves Needs you and the header recounts.
 
-A run holding at its [evidence gate](cli.md#outcomes), parked because nothing is approved
-for Collie to run, is a decision card too, and says which checks its checkout's
-`.collie/verify.json` offers. **Approve** grants the list as it stands and takes the run up
-again, and **Edit the list** opens the record with the names to tick off — `Approve the
-list` grants what is left. There is no Skip: with nothing approved, no check could prove
-the run. The answer goes on the record under whoever gave it.
-
 The sentence is the step's own words where its workflow gives it a `summary`
 (the module says what it is doing), and the step kind's own verb where it does not. A
 step id never reaches it.
@@ -664,6 +674,12 @@ Only what that Task can be asked for is listed: an item that would come back "th
 already finished" is not offered at all. Nothing is offered on one board and withheld on
 another — there is one board and one set of actions on a card — and no herdr id is on
 screen anywhere: a Task is its name, a workspace is its project, an agent is its role.
+
+**Resume** succeeds when the host takes up suspended work or recovers the Run into the
+engine. The old park note clears before Output arrives; a new park shows its current
+reason. If the Run is already running, finished, failed, or still missing its module,
+Collie shows the refusal. Desktop does not announce “Resumed” for that refusal.
+See [Stop and resume](cli.md#stop-and-resume) for recovery and delivery reconciliation.
 
 The drawer's header carries the same as buttons, without the one that opens what is already
 open, and adds **Mark merged** and **Mark abandoned** once the work is over — recorded
@@ -997,28 +1013,33 @@ machine herdr no longer lists is not shown.
 
 Every Decision and action the TUI board has is on Desktop's cards, and goes to the Machine
 the card is on. A question is answered with its options, or typed into where it has none;
-an evidence gate is approved with the checks still ticked; and a proposal is read in a
-drawer whose Confirm stays off until all of it has been on screen, then sent with its id
+and a proposal is read in a drawer whose Confirm stays off until all of it has been on
+screen, then sent with its id
 and content hash. Each card's `⋯` menu offers what the TUI menu does, by the same rules —
 Steer…, the Run's offers (asked of its host when opened, with a field for each argument),
 Resume, Follow-up, Hold or Release, Stop, and Mark merged, abandoned or superseded — and
 the card's first action is the TUI card's own. Following a check's output is not on Desktop
 yet. Open merge request opens it in your browser.
 
-**Go to pane** asks the card's Machine to focus the Run's newest live agent, or its
-workspace where it has none, on that Machine's own herdr, and opens the card's record on
-its **Terminal** tab, which shows that agent's pane. It is herdr's own controller for the
+**Go to pane** opens the card's record on its **Terminal** tab, and the tab asks the card's
+Machine to focus the Task's agent that is blocked waiting for you, else one that is
+working — the card's own Run's first, then the one registered last — else the Run's newest
+live agent, or its workspace where it has none, on that Machine's own herdr. The tab shows
+that agent's pane, and opening the tab by clicking it does the same. It is herdr's own controller for the
 pane, run over the connection Desktop already holds to the Machine: one more channel on
 its SSH master, so going to a pane never asks for another login or SSO approval, or a
 local process for this computer. Nothing beyond Desktop is needed on this computer. Type
 into it as into herdr — Esc and Ctrl+C go to the agent, not to the record, and Ctrl+C
 copies instead while text is selected; a multi-line paste arrives as one paste; the wheel
-scrolls the pane's own history; and the pane follows the record's size. A link in it opens
-in your browser. A pane cannot write your clipboard.
+scrolls the pane's own history. The terminal fills the record below its tabs, and herdr's
+pane is resized to the cells drawn whenever the window, the Flock chat beside it or the Zoom
+changes. It takes the keyboard as it opens, after a pick or Reattach — unless you are typing in a
+field outside it, such as the Flock chat — and on any click in its box, and draws in CaskaydiaMono Nerd Font where it is installed, at 16 pixels, else in a
+common terminal font. A link in it opens in your browser. A pane cannot write your clipboard.
 Leaving the tab or closing the record gives the pane back, so a herdr window showing it
 returns to its own size. A terminal that ends says why — the pane closed, another client
 took it over, the Machine's connection dropped, or herdr refused — and **Reattach** finds
-the Run's newest live agent again. The tab stays while its Machine is away, and Reattach
+the agent at work again, by the same rule. The tab stays while its Machine is away, and Reattach
 says that Machine is not connected until it is back. The card and the tab say where the pane is, as
 "vm-mk › workspace 3 › tab 2".
 
@@ -1027,9 +1048,13 @@ across a plan Run and its `.implement` Run — the tab lists every agent the car
 beside Open in herdr, each as its role (numbered where two share one, as "reviewer 1") with
 herdr's status, and its herdr name and terminal title on hover. The one marked is the pane
 the Machine says it focused. Picking another gives the shown pane back and opens the chosen
-one, and Reattach then reopens the chosen agent rather than the newest. An agent that ends
-while shown stays listed as **ended** until you pick another. Leaving the tab forgets the
-choice, so coming back, like Go to pane, shows the newest live agent again.
+one, and Reattach then reopens the chosen agent rather than the agent at work. The tab
+never switches by itself: an agent starting or stopping work only changes its dot and word,
+and the switcher is how to look at any other live agent. An agent that ends while shown
+stays listed as **ended** until you pick another. Leaving the tab forgets the choice, so
+coming back, like Go to pane, shows the agent at work again. Where an agent you picked has
+no pane any more, the tab says so and asks you to pick another; where the agent at work has
+none, Go to pane opens herdr's own client, as below.
 
 Where there is no pane to show — a Run with no live agent, or a Machine on a Collie whose
 focus does not name one — Go to pane does what it did before, and **Open in herdr** on the
@@ -1156,7 +1181,7 @@ Machine's.
 Flock's settings each time it opens. It is grouped under headings, in order: **Agents**, **Runs**, **Board**, **Chat**,
 **Notifications**, **GitLab and credentials** and **About**. It holds every setting the TUI's
 Settings offers — each default a Run reads, `proactive`, the extra `models.<harness>` and each
-`notifications.<kind>` — and the Flock chat's own speak-first switch. Each setting has a plain
+`notifications.<kind>` — and the Flock chat's own settings. Each setting has a plain
 name with its config key in small print, a sentence or two on what it changes (what 0 or
 unset means where that matters, and that `scope`, `density` and `questions` change the TUI's
 board, not Desktop's), a control that fits it (a choice, a number, a switch, or text), its
@@ -1164,10 +1189,15 @@ default, and the same refusals as the TUI. Durations — `quiet_ms`, `handoff_ti
 `board_quiet_ms` — are shown and typed in minutes, decimals where a value is not a whole
 number of them, and still stored in milliseconds, so `config.json` and `collie settings` are
 unchanged. **Reset to default**, shown while a setting is set, unsets it. Each says whether
-**Every Machine** shares it or it is for **This computer only**: the Flock chat's switch,
-like the bell in the chat's header, is this computer's. The groups, names, descriptions and
+**Every Machine** shares it or it is for **This computer only**. Under **Chat**, the Flock
+chat's **Flock chat harness**, **Flock chat model**, **Machine rule** and **Flock chat speaks
+first** are this computer's, like the bell in the chat's header. The harness offers
+`claude` and `pi`; the model is a one-line field, with **Unset: opus** for Claude and
+**Unset: pi's own default** for Pi. It is checked as a Run's model is, including
+**More Claude Code models** and Pi's `provider/model` form, and a refusal saves nothing.
+The groups, names, descriptions and
 units live with each key in the one list of settings (`src/settings.ts`) that the TUI's
-Settings reads too, so a new setting shows up in both, except the three for this computer only,
+Settings reads too, so a new setting shows up in both, except those for this computer only,
 whose are in `DESKTOP_SETTINGS` (`desktop/src/shared/flock-settings.ts`); the TUI does not show the names,
 descriptions or minutes yet. The ones every Machine shares are the Flock's: Desktop keeps them in
 `flock-settings.json` beside its chat, and gives them to every Machine through that
@@ -1387,12 +1417,46 @@ state directory, links followed, because a Run's state changes only through the 
 Machine whose Collie is too old for files is told to upgrade. There is no shell on a
 Machine.
 
-It is a session of your own Claude Code, on your own Claude seat, driven through the Agent
-SDK in Desktop's main process: `opus` at medium effort with summarised thinking, and none
-of your settings, hooks, skills or CLAUDE.md. Your first message starts it, and it stays warm until Desktop quits. Its session
-id is minted once and kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or
-`~/.local/state/collie-desktop/`), so a restart resumes the same conversation; Claude Code
-keeps and compacts the transcript on this computer.
+**Settings › Chat** names the Flock chat's harness and model, for this computer only.
+The harness offers `claude` and `pi`, using your own install and login on this computer.
+Claude runs through the Agent SDK. Unset, its model is `opus`; a set model such as `sonnet`
+runs at medium effort with summarised thinking. None of your Claude settings, hooks, skills
+or CLAUDE.md loads.
+
+On Pi, write the model as `provider/model`, for example `openai-codex/gpt-6.1-sol`.
+Unset, Pi uses its configured default model and thinking level.
+Clearing a model override passes Pi's configured provider/model and thinking level explicitly,
+so reopening the same conversation does not restore its previous model override.
+Desktop starts `pi --mode rpc` on its login PATH, with Collie's system prompt and its own session directory.
+Explicit system and append sources exclude your `SYSTEM.md` and `APPEND_SYSTEM.md` files.
+None of your Pi extensions, skills, prompt templates or context files loads. Its own
+`read`, `bash`, `edit`, `write`, `grep`, `find` and `ls` tools reach this computer without
+asking first. Pi missing from PATH is said in the chat.
+
+Pi reaches Collie's tools, the five Machine file tools and AskUserQuestion through one
+streamable-HTTP MCP endpoint on `127.0.0.1`, started on its first session. A random bearer
+token protects every request. Only the child process's environment carries the token;
+the generated extension reads it there. A private MCP server name keeps your Pi MCP
+configuration from replacing these tools; the chat still shows their Collie names. The
+endpoint remains until Desktop quits. Its
+24-hour tool timeout leaves time for a question click or a slow Machine read. A question
+in a turn Desktop starts is answered at once that the human is not in that turn.
+
+A model change waits for the turn under way to end, then the next message continues the
+same conversation on the new model. A harness change waits too, then starts a fresh
+conversation and clears its model; both chat windows reload it. Earlier conversations
+lists the current harness's history. Switching back to Claude shows its own conversations
+again. You can ask the chat to read or change these settings through `collie_chat_harness`,
+with the same checks as Settings.
+
+Your first message starts the session, and it stays warm between turns. Its session id
+and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or
+`~/.local/state/collie-desktop/`), so a restart resumes the same conversation. Claude Code
+keeps and compacts its transcript; Pi keeps its session files under Desktop's `pi-sessions/`.
+Desktop reads Pi's current branch and earlier conversations from those files.
+The Machine rule, News and card note reach Pi after your words as a bracketed note of
+Desktop's own. Reading the transcript back leaves the context out of your bubble and keeps
+the card as its pill.
 
 Replies stream in as Markdown, rendered as the record renders it: nothing in it runs or
 keeps a style, and a web link opens in your browser. Each tool call is one row — the tool, the Machine it
@@ -1416,8 +1480,8 @@ sent now like any other. A file over 20 MB, or files over 30 MB together, are re
 composer with the reason. Desktop keeps one copy of each file, by its sha256, under its state
 directory's `attachments/`. The model is handed your words, then a block of Desktop's own
 listing each file's name, type, size and the path of that copy, then each image as an image,
-each PDF up to 4 MB as a document, and each UTF-8 text up to 100 KB as text headed with its
-name; anything else, or anything larger, is in the listing alone, so the model can Read it
+each PDF up to 4 MB as a document on Claude, and each UTF-8 text up to 100 KB as text headed with its
+name; Pi receives PDFs by the listing alone. Anything else, or anything larger, is in the listing alone, so the model can read it
 there. An image whose long edge is over 2000 px is scaled to 2000 px first, and never up, and the
 original is what a Run gets. The message shows its chips at once, and again when the
 conversation is read back after a restart; a copy Desktop no longer has shows its name alone. An image
@@ -1531,7 +1595,11 @@ though that was all of them. A follow-up is understood — the conversation is t
 own session, running for as long as its pane does. A chat that has to be started again —
 its process gone — starts a new conversation rather than resuming the last one, which
 would carry that whole history into every turn. Claude's runs on the latest Opus at
-medium effort.
+medium effort, with the auto-compact window a Run's agents get (see
+[Compaction between pieces of work](#compaction-between-pieces-of-work)).
+
+**Chat chooses a workflow by its description**, which `collie_workspaces` lists beside each
+one; an ad-hoc request that is none of the others is `general`, in either chat.
 
 **Chat knows which card you have open.** Every message you send carries one line naming
 the open card, attached as you send it and never when you click — so opening ten cards and
@@ -1592,9 +1660,10 @@ repository's name: "monorepo" is the one checkout of that name under the
 the Flock chat alike. Two checkouts of one name are refused with both paths. What proves a
 Run is chat's to choose too: a start you ask chat for
 carries the checks chat chose (`start` with `verify`), and chat adds or withdraws a running
-Run's (`set_verification`) at once. Collie runs those commands itself, outside any agent's
-permission rules; the merge request lists each one with its command, and you verify the
-work there before it lands.
+Run's (`set_verification`) at once. Where nobody chose any, the Run's own agent names them
+before it builds. Nobody approves a check: Collie runs them itself, outside any agent's
+permission rules, the merge request lists each one with its command, and you verify the
+work there before it lands ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 That the rest is really there is a gate: `test/chat-parity.test.ts` walks the CLI's own
 command tree and fails on a command with no conversational route, so the list cannot
 quietly fall behind the CLI.
@@ -1709,10 +1778,17 @@ survives the picker closing, the Control Plane closing, and the terminal being d
 
 ### Why a run stopped
 
+`implement` sends a `blocker` or `major` reported by its builder to reviewers before
+starting the next ticket. They review the tickets built so far; later tickets are outside
+that review's scope. The same implementer fixes their findings, followed by another
+review. Each rally is bounded to four rounds and stops on no progress or an unanswered
+blocking dispute. Later tickets start only after the rally settles. When the last review
+already covers the finished plan, it is reused; further work gets another review.
+
 The detail panel of a run that stopped opens with **Stopped**: one line saying why — the
 review loop out of iterations or making no progress, a blocking finding the implementer
 disputed, a last fix whose own account did not hold up, a stop someone asked for, or work
-the run parked itself — a pane that would not take a prompt, nothing approved to prove it,
+the run parked itself — a pane that would not take a prompt, a check that still fails, or none named, after its gate fixes,
 a workspace that closed with its checkout gone — then which actions are safe right now. Where nothing recorded says why, it says that rather than guessing.
 
 It is the same classification `collie run show` and `collie run wait --until attention`
@@ -1747,7 +1823,14 @@ is never the one asked or handed work.
 
 - **Fix findings** — the live implementer of a Run this review was started from is handed
   them, where there is one; otherwise an implementer on this review's own run applies them
-  as a fix round, `disputed` and all, and the fix is reviewed again at once. The rally goes on by
+  as a fix round, `disputed` and all, and the fix is reviewed again at once. It works in the
+  reviewed branch's checkout — the one that branch already has, or a new one cut from it —
+  which becomes the review Run's own: your checkout is never switched under you, and
+  `collie verify --run <id> --cwd <that checkout>` is recorded rather than refused. Where
+  that branch has an open merge request, each round's commits are pushed to it, never
+  forced, so its pipeline and the next review see them; not where it merges itself once
+  green, and nothing is pushed where there is no merge request. A target with no branch to
+  fix starts no fixer, and the Run's log says why. The rally goes on by
   itself until nothing blocking is left, it stops making progress, or four rounds have run,
   and then asks again. A hand-off offers **Review again** for when the implementer is done.
 - **Fix findings in a full implement run** — starts `implement` with the review itself as
@@ -1785,8 +1868,9 @@ Fixing one is a different matter. A fix round is an `implement` run, and a mutat
 works in a checkout of its own branch — which `herdr worktree` can only cut from the
 repository it is asked in. So a review of a merge request in another project, or from a
 directory that is not a checkout of it, will review and comment fine, but chaining into
-`implement` from there stops and says so instead of building in the wrong repository.
-Clone that project and start the fix round from there.
+`implement` from there stops and says so instead of building in the wrong repository, and
+**Fix findings** is refused the same way, with the menu back. Clone that project and start
+the fix round from there.
 
 A step pointed at a merge request needs `glab` and `glab auth status --hostname <host>` for
 that host. The "does this directory have a GitLab remote" check stays where it belongs, on
@@ -1808,6 +1892,7 @@ checkout there is no branch and no working tree to review, so the target menu is
   "quiet_ms": 600000,
   "board_quiet_ms": 300000,
   "compact_at_tokens": 372000,
+  "claude_auto_compact_window": 400000,
   "notifications": { "run-done": false },
   "proactive": true,
   "models": { "opencode": ["mycorp/local-model"] },
@@ -1891,7 +1976,10 @@ reads `…but silent for 9m` and takes the quiet edge. Five minutes by default. 
 nudged and nothing is given up on — it is shown, so a hung run is visible before you notice
 by accident.
 
-`compact_at_tokens` is where compaction between pieces of work kicks in — see
+`compact_at_tokens` is where compaction between pieces of work kicks in, and
+`claude_auto_compact_window` is where Claude Code compacts by itself: 400000 tokens until
+set, `auto` for the model's own window, or a whole number from 100000 to 1000000. It is
+Claude Code's alone; Codex, OpenCode and Pi are passed nothing. See
 [Compaction between pieces of work](#compaction-between-pieces-of-work).
 
 `gitlab_host` is the one GitLab this Machine works against, `gitlab.cego.dk` unless you
@@ -1919,6 +2007,29 @@ This is the harnesses' own compaction, asked for through their own official inte
 and their automatic compaction is left switched on. A harness that compacts before
 Collie's threshold has already done the job; Collie's threshold is an extra floor, not a
 replacement.
+
+So two compactions are at work, and they are set apart:
+
+- `compact_at_tokens` is Collie's floor, checked only at a work boundary, before a reused
+  agent is given its next piece of work.
+- Claude Code's own compaction happens whenever a conversation fills its auto-compact
+  window, which is `claude_auto_compact_window` ("Claude Code's auto-compact window" under
+  Settings). Collie starts every Claude Code agent of a Run, and the Home's native chat
+  on Claude Code, with it as `--autocompact <value>`: 400000 until set, or `auto` for the
+  model's own tuned window, which on a 1M model is about 967K. The flag is for that launch
+  alone, outranks your `~/.claude/settings.json` and managed settings, and writes nothing
+  to `~/.claude`. It is
+  read at each start, so an edit reaches the next agent without restarting the host; an
+  agent already running keeps the window it was started with.
+
+A `CLAUDE_CODE_AUTO_COMPACT_WINDOW` exported on a Machine still overrides the setting, so
+look there first if an agent ignores it. Whether the installed `claude` takes
+`--autocompact` is read from its `--help`; one that does not is started without it and the
+Run's log, or the chat's, says so. A value in `config.json` Claude Code would not take —
+hand-edited to `50000`, say — stops that launch, naming the setting and the value (the
+native chat is then unavailable, the board unaffected), rather than being
+replaced by 400000. A window below `compact_at_tokens` only means Claude compacts first,
+which is fine.
 
 If a harness is too old for Collie's compaction controls, or its version cannot be
 checked, the Run still starts without those controls and logs the reason. Native

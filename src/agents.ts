@@ -45,7 +45,14 @@ import {
 import { COMPACTION_PORTS, ranOutSince, submittedDelivery } from "./compactors";
 import { kindForRole } from "./cards";
 import { Oversight } from "./oversight";
-import { FALLBACK_DEFAULTS, loadDefaults, readConfig, type Defaults } from "./config";
+import {
+  autoCompactWindowAsWritten,
+  FALLBACK_DEFAULTS,
+  loadDefaults,
+  readConfig,
+  type Defaults,
+} from "./config";
+import type { YamlMap } from "./yaml";
 import { RanOn } from "./board-model";
 import * as dispatch from "./dispatcher";
 import type * as Types from "effect/Types";
@@ -54,6 +61,8 @@ import { currentEnv, type PluginEnv } from "./env";
 import {
   HARNESSES,
   foldPreferences,
+  autoCompactWindowFor,
+  installedHelp,
   isPermissionMode,
   permissionsAsWritten,
   personaPrefix,
@@ -812,7 +821,7 @@ const stoppable = <A, E>(
 ): Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | WorkflowEngine.WorkflowInstance> =>
   Effect.gen(function* () {
     const wait = yield* WorkflowEngine.WorkflowInstance;
-    const raced = yield* Effect.race(
+    const raced = yield* Effect.raceFirst(
       collecting.pipe(
         Effect.exit,
         Effect.map((exit) => ({ collected: true as const, exit })),
@@ -995,6 +1004,8 @@ export interface AgentHost {
   readonly patience?: dispatch.Patience;
   /** Each harness's compaction controls; the shipped ones where none are given. */
   readonly ports?: CompactionPorts;
+  /** A harness's `--help`, by its kind; the installed one's where left out. */
+  readonly help?: (kind: string) => Effect.Effect<string>;
 }
 
 type AgentServices = FileSystem.FileSystem | Path.Path | BunServices;
@@ -1167,7 +1178,8 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     },
   ) {
     const found = yield* entryFor(about, about.agent, null);
-    if (found.entry === null) return { sent: false, why: found.reason ?? "no such agent" };
+    if (found.entry === null)
+      return { sent: false, why: found.reason ?? "no such agent", gone: found.gone };
     const entry = found.entry;
     const draft: dispatch.DeliveryDraft = {
       run: about.runId,
@@ -1323,10 +1335,10 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     const wanted = ask.permissions ?? undefined;
     // Read at each start rather than kept from the host's: a host outlives the
     // Settings change that flips this, and every agent after it has to see the change.
-    const written = yield* readConfig(host.env.userDir).pipe(
-      Effect.map((config) => permissionsAsWritten(config.permissions)),
-      Effect.orElseSucceed(() => undefined),
+    const config = yield* readConfig(host.env.userDir).pipe(
+      Effect.orElseSucceed((): YamlMap => ({})),
     );
+    const written = permissionsAsWritten(config.permissions);
     const asked = isPermissionMode(wanted)
       ? wanted
       : isPermissionMode(written)
@@ -1337,6 +1349,19 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         ? yield* adapter.bypassForbidden(host.env)
         : false;
     const permissions = forbidden ? "auto" : asked;
+    const window = yield* autoCompactWindowFor(
+      adapter,
+      autoCompactWindowAsWritten(config.claude_auto_compact_window),
+      host.help ?? installedHelp,
+    );
+    // Parked, never started on the default: 400000 would replace a window meant smaller.
+    if ("refused" in window)
+      return yield* new AgentParked({
+        operation: ask.operation,
+        reason: `${window.refused} in ${host.env.userDir}/config.json: fix it, then resume this Run`,
+      });
+    if (window.leftOff !== null)
+      yield* log(ask.runId, `${agent}: started without an auto-compact window: ${window.leftOff}`);
     yield* ensureTrusted(ask.runId, adapter, ask.cwd);
     const persona = `${dirFor(ask.runId)}/${stemOf(ask)}.persona.md`;
     yield* write(persona, `${yield* personaOf(ask.persona ?? ask.role)}\n`);
@@ -1370,6 +1395,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
                 persona,
                 ask.effort ?? undefined,
                 permissions,
+                window.passed ?? undefined,
               ),
               ...controls,
             ],
@@ -1382,7 +1408,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           );
         yield* log(
           ask.runId,
-          `${agent}: ${adapter.id} in ${tab.paneId}, permissions ${permissions}${forbidden ? `: ${adapter.id}'s managed settings forbid bypass` : ""}`,
+          `${agent}: ${adapter.id} in ${tab.paneId}, permissions ${permissions}${forbidden ? `: ${adapter.id}'s managed settings forbid bypass` : ""}${window.passed === null ? "" : `, auto-compact window ${window.passed}`}`,
         );
         const found = yield* entryFor(ask, agent, { paneId: tab.paneId, workspaceId: workspace });
         if (found.entry === null) return undefined;
@@ -1396,7 +1422,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     );
   });
 
-  const launch = (ask: AgentAsk) =>
+  /** `fresh` starts the agent even where herdr still lists it, as one gone at delivery. */
+  const launch = (
+    ask: AgentAsk,
+    fresh = false,
+  ): Effect.Effect<Launched, AgentUncertain | AgentParked> =>
     under(
       Effect.gen(function* () {
         // Derived, not minted: this is the name a replay looks for rather than starting
@@ -1413,7 +1443,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           });
         }
         const live = listing.success.find((one) => one.name === agent);
-        const alive = live !== undefined;
+        const alive = live !== undefined && !fresh;
         const fs = yield* FileSystem.FileSystem;
         // A launch file already here is this same work replayed, not new work for the agent.
         const replayed = yield* fs
@@ -1475,7 +1505,21 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const started = ask.skill === null ? "" : `${adapter.skillCommand(ask.skill)} `;
         const pointer = `${started}${stepPointer(file)}`;
         yield* write(sentPath(launched, "step"), pointer);
-        const asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
+        let asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
+        // The sender reads a failed listing as no agent, so only one that answers settles it.
+        if (alive && asked.gone === true) {
+          const again = yield* host.herdr.agentList().pipe(Effect.result);
+          if (again._tag === "Success" && !again.success.some((one) => one.name === agent)) {
+            // Nothing reached it, so a new one is this work's agent rather than a second.
+            yield* log(
+              ask.runId,
+              `${agent}: ${asked.why} before it was given ${ask.operation}; starting it again`,
+            );
+            return yield* launch(ask, true);
+          }
+          if (again._tag === "Success")
+            asked = yield* deliver(launched, pointer, { kind: "step", ref: stemOf(ask) });
+        }
         if (asked.refused) {
           return yield* refusedWith(ask, `${agent} was not given its work (${asked.why})`, file);
         }

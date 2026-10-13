@@ -137,7 +137,8 @@ export type Resolution =
 /**
  * Which Helle project a repository is. `group` is the GitLab group path and `slug` is
  * normally the repository name, so `<group>/<slug>` is the tail of the project's own
- * GitLab path; a project Helle lists without a group can only be matched by name.
+ * GitLab path; a project Helle lists without a group can only be matched by name — the
+ * last segment of that GitLab path where there is one, else the name the caller gives.
  * Group case is Helle's own typing (`Players` and `players` are both in there) and
  * never decides a match.
  */
@@ -150,7 +151,10 @@ export function resolveProject(
   const byGroup = projects.filter(
     (p) => p.group && path.endsWith(`/${p.group.toLowerCase()}/${p.slug.toLowerCase()}`),
   );
-  const matched = byGroup.length > 0 ? byGroup : projects.filter((p) => p.slug === repoName);
+  // The remote names the repository; the checkout's own clone may be named anything, and a
+  // roaming Run's clone is named by a hash that no Helle project will ever be called.
+  const name = gitlabPath?.split("/").pop() || repoName;
+  const matched = byGroup.length > 0 ? byGroup : projects.filter((p) => p.slug === name);
   if (matched.length === 1) return { _tag: "Project", slug: matched[0]!.slug };
   if (matched.length === 0) return { _tag: "None" };
   return { _tag: "Ambiguous", slugs: matched.map((p) => p.slug) };

@@ -58,6 +58,12 @@ export const HARNESS_NAMES = ["claude", "codex", "opencode", "pi"] as const;
 export const COMPACT_AT_TOKENS = 372_000;
 export const COMPACTION_OFF = 0;
 
+/** Claude Code's own auto-compact window, as its `--autocompact` takes it. */
+export type AutoCompactWindow = number | "auto";
+export const AUTO_COMPACT_WINDOW = 400_000;
+const AUTO_COMPACT_LEAST = 100_000;
+const AUTO_COMPACT_MOST = 1_000_000;
+
 export interface Defaults {
   harness: string;
   model: string;
@@ -85,6 +91,11 @@ export interface Defaults {
    * lower limit would silently compact an agent they had tried to leave alone.
    */
   compactAtTokens: number;
+  /**
+   * Claude Code's auto-compact window. As written rather than coerced, like
+   * `compactAtTokens`: a launch fails on a value Claude Code would not take.
+   */
+  claudeAutoCompactWindow: number | string;
   /** Extra models to accept per harness, for models the adapter table does not list. */
   models: Readonly<Record<string, ReadonlyArray<string>>>;
   /** `harness` or `harness/model`, in order: where work goes once its Subscription is Exhausted. */
@@ -126,6 +137,7 @@ export const FALLBACK_DEFAULTS: Defaults = {
   quietMs: 10 * 60 * 1000,
   boardQuietMs: 5 * 60 * 1000,
   compactAtTokens: COMPACT_AT_TOKENS,
+  claudeAutoCompactWindow: AUTO_COMPACT_WINDOW,
   models: {},
   fallbacks: [],
   trust: "auto",
@@ -272,6 +284,12 @@ export const SETTINGS: ReadonlyArray<Setting> = [
       "A reused agent whose context reaches this many tokens is asked to compact before its next piece of work. 0 turns compaction off.",
     unit: "tokens",
   }),
+  of("claude_auto_compact_window", "text", String(D.claudeAutoCompactWindow), {
+    group: "Agents",
+    label: "Claude Code's auto-compact window",
+    description: `Where Claude Code compacts by itself: a whole number of tokens from ${AUTO_COMPACT_LEAST} to ${AUTO_COMPACT_MOST}, or auto for the model's own window. Claude Code agents only, from the next one started.`,
+    unit: "tokens",
+  }),
   of("quiet_ms", "number", String(D.quietMs), {
     group: "Agents",
     label: "Quiet before a nudge",
@@ -344,6 +362,20 @@ function fallbackProblem(entry: string): string | null {
   return at === entry.length - 1 ? `"${entry}" names no model after its /` : null;
 }
 
+/** A window as Claude Code takes it, or why it would not. */
+export function autoCompactWindowOf(
+  typed: string,
+): { readonly window: AutoCompactWindow } | { readonly refused: string } {
+  const said = typed.trim();
+  if (said === "auto") return { window: "auto" };
+  const tokens = /^\d+$/.test(said) ? Number(said) : NaN;
+  return tokens >= AUTO_COMPACT_LEAST && tokens <= AUTO_COMPACT_MOST
+    ? { window: tokens }
+    : {
+        refused: `claude_auto_compact_window has to be a whole number of tokens from ${AUTO_COMPACT_LEAST} to ${AUTO_COMPACT_MOST}, or auto, not "${typed}"`,
+      };
+}
+
 export const settingOf = (key: string) => SETTINGS.find((setting) => setting.key === key);
 
 /**
@@ -383,12 +415,17 @@ export function parseSetting(
       if (bad !== undefined && bad !== null) return { refused: `fallbacks: ${bad}` };
       return { value: items.length === 0 ? null : items };
     }
-    case "text":
+    case "text": {
+      if (key === "claude_auto_compact_window") {
+        const window = autoCompactWindowOf(typed);
+        return "refused" in window ? window : { value: window.window };
+      }
       return key === "gitlab_host" && !isHostName(said)
         ? {
             refused: `gitlab_host has to be a host name, such as gitlab.example.com, not "${typed}"`,
           }
         : { value: said };
+    }
   }
 }
 

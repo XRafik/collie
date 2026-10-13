@@ -20,7 +20,6 @@ import { mrLabel } from "../src/board-model";
 import {
   Answered,
   Controlled,
-  EVIDENCE_GATE,
   foldWaiting,
   headerSentence,
   matchesTask,
@@ -32,7 +31,6 @@ import {
 } from "../src/board-model";
 import { recordAudit } from "../src/audit";
 import { recordDisposition } from "../src/disposition";
-import { nothingApproved } from "../src/outcome";
 import {
   appendVerification,
   encodeVerifying,
@@ -70,6 +68,7 @@ function facts(over: Partial<Sentence> = {}): Sentence {
     resumed: null,
     disposition: null,
     mr: null,
+    summary: null,
     abandoned: null,
     planReady: false,
     mrState: null,
@@ -123,14 +122,6 @@ const FORMS: Array<[string, Sentence, string]> = [
       },
     }),
     "Collie proposes a correction and waits for your yes.",
-  ],
-  [
-    "gate",
-    facts({
-      state: "blocked",
-      decision: { kind: "gate", run: "r1", id: "g1", step: "review", verifications: ["bun test"] },
-    }),
-    "Holding at the review gate until you approve the list.",
   ],
   [
     "failed",
@@ -549,6 +540,24 @@ test("a Task's Runs are one card, and a Run with no Task is its own", () =>
       const own = views.find((view) => view.id === "r-alone")!;
       expect(own.name).toBe("Review");
       expect(own.project).toBe("spilnu");
+    }),
+  ));
+
+test("a finished Run that left nothing to file says what it reported, as its own claim", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const chore = yield* madeRun(dir, {
+        id: "r-chore",
+        workflow: "odd-job",
+        task: "task-1",
+        state: "succeeded",
+        summary: "Upgraded vm-mk's install to 0.45.1.",
+      });
+
+      const [view] = yield* board(env, [chore]);
+
+      expect(view!.sentence).toBe("Finished; it says: “Upgraded vm-mk's install to 0.45.1.”");
     }),
   ));
 
@@ -1211,43 +1220,15 @@ test("a fan-out started from a plan's end menu lists every repository its plan n
     }),
   ));
 
-test("a Repo run parked with nothing approved is its fan-out's Decision, answered on that Repo run", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const { dir, env } = yield* scratch();
-      const { parent } = yield* startedFromPlan(dir);
-      const api = yield* madeRun(dir, {
-        id: "r-api",
-        task: "task-1",
-        parent: "r-fan",
-        repo: "api",
-        state: "waiting",
-        cwd: `${dir}/root/api`,
-        parked: nothingApproved("r-api"),
-      });
+/** The note a Run parked at the evidence gate before ADR-0055 still carries. */
+const oldGate = (run: string) =>
+  "nothing is approved for Collie to run, so no command can prove this Run. " +
+  `Grant it one with \`collie run intent verification ${run} --name <name> -- <command>\` ` +
+  `and \`collie run resume ${run}\`; for Runs started later, add .collie/verify.json, ` +
+  "or `collie run intent remember <run>` once a Run has them, for that repository's later Runs, " +
+  "or verify.json in your Collie config — a Run reads that file only when it starts";
 
-      const [view] = yield* board(env, [api, parent]);
-
-      expect(sectionOf(view!)).toBe("needs-you");
-      expect(view!.decision).toEqual({
-        kind: "gate",
-        run: "r-api",
-        id: EVIDENCE_GATE,
-        step: "evidence",
-        verifications: [],
-        repo: "api",
-      });
-      expect(view!.sentence).toBe(
-        "api is holding at the evidence gate, and nothing is offered to approve. Grant a check with chat's set_verification, or collie run intent verification r-api --name <name> -- <command>.",
-      );
-      // Chat is told which Run its answer goes to, as the card's buttons know.
-      expect(herdLines([view!], epochMs("2026-09-14T10:05:00Z"))).toContain(
-        "Its gate is answered on run r-api.",
-      );
-    }),
-  ));
-
-test("a Repo run's gate that offers checks names its repository and asks for the list", () =>
+test("a Repo run parked by the old evidence gate puts no Decision on its fan-out's card", () =>
   runEffect(
     Effect.gen(function* () {
       const { dir, env } = yield* scratch();
@@ -1265,15 +1246,13 @@ test("a Repo run's gate that offers checks names its repository and asks for the
         repo: "api",
         state: "waiting",
         cwd: `${root}/api`,
-        parked: nothingApproved("r-api"),
+        parked: oldGate("r-api"),
       });
 
       const [view] = yield* board(env, [api, parent]);
 
-      expect(view!.decision).toMatchObject({ run: "r-api", repo: "api", verifications: ["test"] });
-      expect(view!.sentence).toBe(
-        "api is holding at the evidence gate until you approve the list.",
-      );
+      expect(view!.decision).toBeNull();
+      expect(view!.sentence).not.toContain("gate");
     }),
   ));
 
@@ -1351,7 +1330,7 @@ test("a held card names who held it and why, from the hold its trail recorded", 
     }),
   ));
 
-test("a Run parked at its evidence gate is a gate decision listing the checks it could be held to", () =>
+test("a Run parked by the old evidence gate is no Decision, whatever its checkout offers", () =>
   runEffect(
     Effect.gen(function* () {
       const { dir, env } = yield* scratch();
@@ -1365,21 +1344,15 @@ test("a Run parked at its evidence gate is a gate decision listing the checks it
       const run = yield* madeRun(dir, {
         task: "task-1",
         state: "waiting",
+        id: "r-single",
         cwd,
-        parked: nothingApproved("r1"),
+        parked: oldGate("r-single"),
       });
 
       const [view] = yield* board(env, [run]);
 
-      expect(sectionOf(view!)).toBe("needs-you");
-      expect(view!.decision).toEqual({
-        kind: "gate",
-        run: "r1",
-        id: EVIDENCE_GATE,
-        step: "evidence",
-        verifications: ["test"],
-      });
-      expect(view!.sentence).toBe("Holding at the evidence gate until you approve the list.");
+      expect(view!.decision).toBeNull();
+      expect(view!.sentence).not.toContain("approve");
     }),
   ));
 
@@ -2030,12 +2003,23 @@ test(
             }),
           );
 
+          let seen = "";
           const following = yield* Effect.forkChild(
-            collie(world, ["run", "checks", runId, "--follow"]),
+            collie(world, ["run", "checks", runId, "--follow"], {}, (chunk) =>
+              Effect.sync(() => {
+                seen += chunk;
+              }),
+            ),
           );
-          yield* Effect.sleep("1 second");
+          yield* until(
+            () => Effect.succeed(seen),
+            (out) => out.includes("compiling\n"),
+          );
           yield* fs.writeFileString(log, "1 pass\n", { flag: "a" });
-          yield* Effect.sleep("1 second");
+          yield* until(
+            () => Effect.succeed(seen),
+            (out) => out.includes("1 pass\n"),
+          );
           yield* appendVerification(run.evidence, {
             ...checked("unit", "abc"),
             run: runId,

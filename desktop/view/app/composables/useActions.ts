@@ -50,6 +50,7 @@ const joined = (parts: ReadonlyArray<Uint8Array>) => {
   return whole;
 };
 
+export { failureOf } from "../../../src/shared/actions";
 export const useActions = () => {
   const toast = useToast();
   const act = useAtomSet(() => actAtom, { mode: "promiseExit" });

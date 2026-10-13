@@ -39,7 +39,6 @@ import {
   renderApproved,
   renderEvidence,
   renderProgress,
-  requireApproved,
   settleFinalFix,
   settleRound,
   splitDisputed,
@@ -143,10 +142,7 @@ const Opened = Schema.Struct({
   pushed: Schema.Boolean,
 });
 
-/**
- * A ceiling, not a target: at most four reviews and four fixes after the build. The Run
- * leaves the loop at the first review with nothing blocking.
- */
+/** At most four rounds per rally; leave when no blocking finding remains. */
 const ROUNDS = 4;
 
 /** The checks whose latest run by Collie, on the tree in front of it, failed. */
@@ -171,7 +167,7 @@ export default defineWorkflow({
   id: "implement",
   title: "implement — build the plan, review it, fix until nothing blocks",
   description:
-    "Builds from a plan dir, a Linear issue or a description, gets one complete review, fixes what blocks until a review finds nothing blocking, then opens the merge request.",
+    "Builds a change on a branch of its own and ends in a merge request: from a plan dir, a Linear issue or a description, it gets one complete review and fixes what blocks until a review finds nothing blocking.",
   input: Schema.Struct({
     plan: Schema.String.annotate({
       description:
@@ -184,11 +180,10 @@ export default defineWorkflow({
   // The branch it builds, on a worktree of its own, so two Runs never share an index.
   checkout: "branch",
   // What kind of result this Run has to prove is the human's to say, and an unclassified
-  // Run is held to its approved commands rather than made a feature by default.
+  // Run is held to its checks rather than made a feature by default.
   outcome: {
     selectable: ["feature", "bug", "refactor", "investigation", "docs", "migration"],
   },
-  verifies: true,
   // A follow-up builds on the same branch, so it is this workflow again rather than
   // another one — and there is nothing to carry on from without a branch to carry it on.
   followUps: [
@@ -254,9 +249,9 @@ export default defineWorkflow({
       // A repository's share that did not build fails, so no wave waits on work that is not there.
       const unbuilt = (reason: string) =>
         share === "" ? Effect.succeed(reason) : Effect.fail(new WorkflowError({ reason }));
-      const approved = yield* requireApproved(kind);
+      const checksNow = Effect.map(host.approved(runId), renderApproved);
 
-      const input: typeof Implementing.Type = {
+      let input: typeof Implementing.Type = {
         inputs: {
           plan: source.value,
           plan_kind: source.kind,
@@ -265,7 +260,7 @@ export default defineWorkflow({
           outcome: kind,
         },
         run: { dir: place.dir, id: runId },
-        verify: renderApproved(approved),
+        verify: yield* checksNow,
       };
       // Where a question the plan does not cover goes: the planner's own pane while one
       // is live, and otherwise the human's.
@@ -292,6 +287,7 @@ export default defineWorkflow({
       const handed: Handed[] = [];
       const assumed: string[] = [];
       let build: typeof Built.Type | null = null;
+      let rallied: Rallied | null = null;
       for (;;) {
         // Identities before work: two tickets nobody can tell apart would share one
         // result, and finding that out after an agent has been paid for is too late.
@@ -302,6 +298,7 @@ export default defineWorkflow({
         if (ticket === undefined) break;
         const before = (yield* host.evidence(runId, cwd)).verifications.length;
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "started", []);
+        rallied = null;
         build = yield* agentWork({
           operation: ticket?.file ?? "build",
           agent: BUILDER,
@@ -310,6 +307,7 @@ export default defineWorkflow({
           instructions: prompts.build,
           input: {
             ...input,
+            verify: yield* checksNow,
             ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
             progress: renderProgress(handed),
             session,
@@ -330,38 +328,49 @@ export default defineWorkflow({
         built.add(done.item);
         if (ticket === null) for (const one of tickets) built.add(one.file);
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "done", claimsOf(build, ticket));
-        // A ticket that did not land stops the plan here: the next one is written against
-        // work that is not there, and building it would be building on nothing. A finding
-        // nobody is blocked by is carried, exactly as a review's is.
         const blocking = (build.findings ?? []).filter(isBlocking);
         if (blocking.length > 0) {
-          return yield* unbuilt(
-            `${done.item}: stopped with ${blocking.length} blocking finding(s)`,
-          );
+          rallied = yield* rally({
+            cwd,
+            plan: source.kind === "plan-dir" ? source.value : "",
+            proves: kind,
+            risks: place.options.risks ?? "",
+            input,
+            build: {
+              item: done.item,
+              completed: handed.map((one) => one.item),
+              findings: blocking,
+            },
+          });
+          const unresolved = rallied.halted ?? rallied.unsettled.join("; ");
+          if (unresolved !== "") return yield* unbuilt(`${done.item}: ${unresolved}`);
         }
         tickets = yield* ticketsNow;
       }
       if (build === null) return yield* new WorkflowError({ reason: "nothing was built" });
+      // The builder may have named the checks, and every prompt from here shows them.
+      input = { ...input, verify: yield* checksNow };
 
-      const rallied = yield* rally({
-        cwd,
-        plan: source.kind === "plan-dir" ? source.value : "",
-        proves: kind,
-        risks: place.options.risks ?? "",
-        input,
-      });
+      if (rallied === null || rallied.unreviewed !== "") {
+        rallied = yield* rally({
+          cwd,
+          plan: source.kind === "plan-dir" ? source.value : "",
+          proves: kind,
+          risks: place.options.risks ?? "",
+          input,
+        });
+      }
       if (rallied.halted !== null) {
         yield* host.record(runId, rallied.halted);
         return yield* unbuilt(rallied.halted);
       }
 
-      // The gate: Collie's own run of every approved command, on this tree, and then what
-      // this kind of result still has no evidence for. An Output saying the tests pass is
-      // a claim; a record in the journal, bound to this tree, is not.
-      const granted = yield* requireApproved(kind);
-      // Each pass is journaled, so a replay follows the results the merge request will
-      // cite rather than a fresh run of checks that may come out differently. What passed
-      // is not run again until a gate fix changes the tree.
+      // The gate: Collie's own run of every check, on this tree, and then what this kind of
+      // result still has no evidence for. An Output saying the tests pass is a claim; a
+      // record in the journal, bound to this tree, is not. Each pass is journaled, so a
+      // replay follows the results the merge request will cite rather than a fresh run of
+      // checks that may come out differently. What passed is not run again until a gate fix
+      // changes the tree.
       let passes = 0;
       let passed: ReadonlyArray<string> = [];
       let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
@@ -395,13 +404,14 @@ export default defineWorkflow({
             passed: Schema.Array(Schema.String),
           }),
           execute: Effect.gen(function* () {
+            const checks = yield* host.approved(runId);
             const now = [...passed];
-            for (const spec of granted) {
+            for (const spec of checks) {
               if (now.includes(spec.name)) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(granted, rallied.reviewed)), passed: now };
+            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
@@ -416,7 +426,7 @@ export default defineWorkflow({
           execute: Effect.gen(function* () {
             const failing = failingNow(
               yield* host.evidence(runId, cwd),
-              granted.map((spec) => spec.name),
+              (yield* host.approved(runId)).map((spec) => spec.name),
             );
             const failed: Array<{ name: string; at: string }> = [];
             for (const name of failing) {
@@ -443,8 +453,7 @@ export default defineWorkflow({
         const findings = gaps.fixable.map((gap) => ({
           severity: "blocker",
           title: gap,
-          detail:
-            "Collie ran the approved checks on this tree, and this is what they did not prove.",
+          detail: "Collie read this Run's checks on this tree, and this is what is still unproved.",
         }));
         const fixed = yield* agentWork({
           operation: `gate-fix-${at}`,
@@ -453,6 +462,7 @@ export default defineWorkflow({
           instructions: prompts.fix,
           input: {
             ...input,
+            verify: yield* checksNow,
             iteration: String(at),
             max_iterations: String(ROUNDS),
             findings: formatFindings(findings),
@@ -482,7 +492,7 @@ export default defineWorkflow({
         success: Schema.Void,
         error: WorkflowError,
         execute: Effect.gen(function* () {
-          const approved = yield* requireApproved(kind);
+          const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
           const reading = Effect.suspend(() => readGaps(approved, reviewed));
           for (const spec of approved)
@@ -516,10 +526,11 @@ export default defineWorkflow({
           yield* host.parked(runId, null);
         }),
       });
+      const checks = yield* host.approved(runId);
       // Failed before this Run changed anything, and still fails: reported, never passed.
       const failing = failingNow(
         yield* host.evidence(runId, cwd),
-        granted.map((spec) => spec.name),
+        checks.map((spec) => spec.name),
       );
       const preexisting = baseline.filter((one) => failing.includes(one.name));
       const unsettled = [
@@ -547,7 +558,7 @@ export default defineWorkflow({
         instructions: prompts.mr,
         input: {
           ...input,
-          verify: renderApproved(spawned(granted, settledEvidence.verifications)),
+          verify: renderApproved(spawned(checks, settledEvidence.verifications)),
           // Read after the gate settled, so the merge request cites the passing runs.
           evidence: renderEvidence(settledEvidence),
           unreviewed,
@@ -707,6 +718,12 @@ const disputesOf = (findings: ReadonlyArray<Finding>): string[] =>
         `disputed blocking finding: [${one.severity}] ${one.title}${one.file ? ` (${one.file})` : ""}${one.reason ? `: ${one.reason}` : ""}`,
     );
 
+interface PartialBuild {
+  readonly item: string;
+  readonly completed: ReadonlyArray<string>;
+  readonly findings: ReadonlyArray<Finding>;
+}
+
 /** Where a rally stood when it stopped: what halted it, and what the last fix left. */
 interface Rallied {
   /** Why the loop stopped short, or null where it converged. */
@@ -730,6 +747,7 @@ const rally = (ask: {
   readonly proves: string;
   readonly risks: string;
   readonly input: typeof Implementing.Type;
+  readonly build?: PartialBuild;
 }): Effect.Effect<
   Rallied,
   WorkflowError,
@@ -739,6 +757,7 @@ const rally = (ask: {
     const host = yield* Host;
     const agents = yield* Agents;
     const runId = (yield* Run).id;
+    const prefix = ask.build === undefined ? "" : `${ask.build.item}.`;
     let disputed: Finding[] = [];
     let seen: { readonly at: number; readonly keys: ReadonlyArray<string> } | null = null;
 
@@ -751,7 +770,12 @@ const rally = (ask: {
         proves: ask.proves,
         previous: "",
         // The last round's fix, which a follow-up review checks each of its findings against.
-        answered: at === 1 ? "" : agents.outputFor(runId, `fix-${at - 1}`),
+        answered: at === 1 ? "" : agents.outputFor(runId, `${prefix}fix-${at - 1}`),
+        prefix,
+        obstacle:
+          ask.build === undefined
+            ? ""
+            : `Review the built part of this plan: ${ask.build.completed.join(", ")}. Later tickets have not started and are outside this review, including its scope judgement. Check these findings reported by the implementer:\n${formatFindings(ask.build.findings)}`,
         risks: ask.risks,
         at,
         of: ROUNDS,
@@ -789,12 +813,13 @@ const rally = (ask: {
       seen = { at, keys: round.keys };
 
       const fixed = yield* agentWork({
-        operation: `fix-${at}`,
+        operation: `${prefix}fix-${at}`,
         agent: BUILDER,
         role: "implementer",
         instructions: prompts.fix,
         input: {
           ...ask.input,
+          verify: renderApproved(yield* host.approved(runId)),
           iteration: String(at),
           max_iterations: String(ROUNDS),
           findings: formatFindings(round.live),

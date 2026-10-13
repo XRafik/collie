@@ -9,7 +9,7 @@ import {
   endsWithoutPatch,
   isOutcome,
   KINDS,
-  nothingApproved,
+  noCheckNamed,
   renderEvidence,
 } from "../src/outcome";
 import type { Collected, Outcome } from "../src/outcome";
@@ -105,12 +105,13 @@ test("an unclassified Run proves the approved set and is asked for nothing else"
   expect(evidenceGaps("unspecified", collected()).join(" ")).not.toContain("ticket");
 });
 
-test("a Run with nothing approved is told so and how to repair it, rather than passing on an empty set", () => {
-  const gaps = evidenceGaps("unspecified", collected({ approved: [], verifications: [] }));
-  expect(gaps).toHaveLength(1);
-  expect(gaps[0]).toContain("collie run intent verification");
-  expect(gaps[0]).toContain(".collie/verify.json");
-  expect(gaps[0]).toContain("only when it starts");
+test("a Run with no check named is a gap its implementer closes by naming the checks", () => {
+  const got = collected({ approved: [], verifications: [] });
+  expect(evidenceGaps("unspecified", got)).toEqual([noCheckNamed]);
+  expect(checkGaps("feature", got)).toContain(noCheckNamed);
+  expect(noCheckNamed).toContain("collie run intent verification");
+  for (const kind of ["investigation", "plan", "review"] as const)
+    expect(evidenceGaps(kind, got)).not.toContain(noCheckNamed);
 });
 
 test("the approved set has to pass here, now, and by Collie", () => {
@@ -247,8 +248,6 @@ test("a gap is a check's only where a verification on this tree could close it",
     '01.md promised check "typecheck", which has no passing verification on this tree',
   ]);
   expect(evidenceGaps("feature", got)).toHaveLength(4);
-  // Nothing approved is a grant only the human or chat can make.
-  expect(checkGaps("unspecified", collected({ approved: [] }))).toEqual([]);
 });
 
 test("a bug is a fail then a pass, on two different trees", () => {
@@ -333,7 +332,7 @@ test("an investigation is a conclusion with references that hold it up, and may 
   // No approved set is demanded: nothing was changed for a command to prove.
   expect(
     evidenceGaps("investigation", collected({ approved: [], verifications: [] })),
-  ).not.toContain(nothingApproved());
+  ).not.toContain(noCheckNamed);
 
   const full = {
     conclusion: "The stall is in the prompt submission, not the harness.",

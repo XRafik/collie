@@ -85,7 +85,10 @@ const locationOf = (file: string, line: number | null) =>
         {{ detail?.title ?? placed.task.run }}
       </p>
     </PageHeader>
-    <div class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 [scrollbar-gutter:stable]">
+    <div
+      class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4"
+      :class="{ '[scrollbar-gutter:stable]': tab !== 'terminal' }"
+    >
       <div class="flex flex-col gap-4" :class="readingClass">
         <RetryNotice
           v-if="trouble !== null"
@@ -107,7 +110,10 @@ const locationOf = (file: string, line: number | null) =>
         </p>
         <UTabs v-model="tab" :items="tabs" :content="false" variant="link" />
       </div>
-      <div class="flex flex-col gap-4" :class="columnClass(tab ?? '')">
+      <div
+        class="flex flex-col gap-4"
+        :class="[columnClass(tab ?? ''), { 'min-h-0 flex-1': tab === 'terminal' }]"
+      >
         <template v-if="detail !== null">
           <ReviewComments
             v-if="tab === 'plan' || tab === 'diff'"
