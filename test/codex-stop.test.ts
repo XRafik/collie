@@ -18,6 +18,7 @@ import { compactionSweeper, sweep } from "../src/cleanup";
 import { Herdr } from "../src/herdr";
 import { recordClaudeEvent } from "../src/compactors";
 import { installControls } from "../src/compaction";
+import { processOf } from "../src/processes";
 import { FakeHerdr } from "./support/recorder";
 import { agentName } from "../src/naming";
 import { COMPACTION_PORTS, codexPort } from "../src/compactors";
@@ -299,6 +300,24 @@ test("a process left in the server's session gets one SIGTERM and ends", () =>
     Effect.gen(function* () {
       yield* working({ child: "ends" });
       const child = (yield* events()).find((one) => one.child !== undefined)!.child!;
+      expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
+      expect(alive(child)).toBe(false);
+    }),
+  ));
+
+test("a process the first stop noted is still the server's after the server has gone, and the next stop ends it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working({ ignoreInterrupt: true, child: "ends" });
+      const child = (yield* events()).find((one) => one.child !== undefined)!.child!;
+      expect((yield* halted({ stopMs: 300 })).left).toHaveLength(1);
+
+      // Its turn ends and it exits, leaving the process it started.
+      yield* release();
+      const pid = yield* serverPid();
+      while (alive(pid)) yield* TestClock.withLive(Effect.sleep("20 millis"));
+      expect(alive(child)).toBe(true);
+
       expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
       expect(alive(child)).toBe(false);
     }),
@@ -714,7 +733,14 @@ test("the sweep keeps an unlisted agent's record while its server is not Quiet, 
       expect(listed.keep.map((one) => one.reason).join("\n")).toContain(
         `its Codex turn has not stopped: ${agent} is not stopped: acknowledged`,
       );
+      const interrupts = () =>
+        events().pipe(
+          Effect.map((all) => all.filter((one) => one.method === "turn/interrupt").length),
+        );
+      const asked = yield* interrupts();
       yield* sweep([sweeper], `${rig.root}/state`, "host");
+      // Stopped again: interrupted again, and signalled once.
+      expect(yield* interrupts()).toBeGreaterThan(asked);
       expect((yield* events()).filter((one) => one.signal === "SIGTERM")).toHaveLength(1);
 
       yield* release();
@@ -727,6 +753,43 @@ test("the sweep keeps an unlisted agent's record while its server is not Quiet, 
       expect(yield* recorded()).toBeNull();
       // Told to the Run that launched it, with the turn it stopped.
       expect(yield* agentsLog()).toContain(`${agent}: quiet — thread ${THREAD} turn ${TURN}`);
+    }),
+  ));
+
+test("a sweep stops again a record whose earlier stop failed before it signalled anything", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working();
+      const pid = yield* serverPid();
+      const started = (yield* processOf(pid))!.started;
+      yield* editControl((record) => ({
+        ...record,
+        stop: {
+          state: "failed",
+          at: 0,
+          turns: null,
+          reason: "the connection was lost",
+          signalled: [],
+          left: [{ pid, started }],
+          noted: [],
+        },
+      }));
+      yield* closedByHand;
+      const sweeper = compactionSweeper(
+        `${rig.root}/state`,
+        [new FakeHerdr(rig.pluginEnv())],
+        hostOf().ports,
+        25_000,
+      );
+      expect((yield* sweeper.judge).keep.map((one) => one.reason).join("\n")).toContain(
+        "the connection was lost",
+      );
+      const swept = yield* sweep([sweeper], `${rig.root}/state`, "host");
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(swept.remove.map((one) => one.target)).toEqual([
+        `${rig.root}/state/compaction/${agent}`,
+      ]);
+      expect(alive(pid)).toBe(false);
     }),
   ));
 

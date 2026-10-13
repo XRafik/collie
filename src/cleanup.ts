@@ -50,7 +50,12 @@ import { uploadsDir } from "./uploads";
 /** One kind of thing Collie cleans. */
 export interface Sweeper {
   readonly judge: Effect.Effect<
-    { remove: ReadonlyArray<CleanupItem>; keep: ReadonlyArray<CleanupKept> },
+    {
+      remove: ReadonlyArray<CleanupItem>;
+      keep: ReadonlyArray<CleanupKept>;
+      /** Kept for now, but a sweep still offers each to `remove`: a stop to try again. */
+      retry?: ReadonlyArray<CleanupItem>;
+    },
     never,
     BunServices
   >;
@@ -163,8 +168,9 @@ export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: Sw
     const keep: CleanupKept[] = [];
     for (const sweeper of sweepers) {
       const judged = yield* sweeper.judge;
-      keep.push(...judged.keep);
-      for (const item of judged.remove) {
+      const retried = new Set((judged.retry ?? []).map((item) => item.target));
+      keep.push(...judged.keep.filter((one) => !retried.has(one.target)));
+      for (const item of [...judged.remove, ...(judged.retry ?? [])]) {
         const outcome = yield* sweeper.remove(item);
         if ("kept" in outcome) {
           keep.push({ kind: item.kind, target: item.target, reason: outcome.kept });
@@ -572,18 +578,25 @@ export const compactionSweeper = (
       const live = yield* listed;
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
+      const retry: CleanupItem[] = [];
       for (const name of names) {
         const target = `${root}/${name}`;
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
         else if (!live.has(name)) {
           const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
           const kept = record === null ? null : yield* keptFor(record);
-          if (kept !== null) keep.push({ kind, target, reason: kept });
-          else remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+          if (kept !== null) {
+            keep.push({ kind, target, reason: kept });
+            retry.push({ kind, target, bytes: 0, reason: kept });
+          } else remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
         }
       }
       const sizes = yield* sizesOf(remove.map((item) => item.target));
-      return { remove: remove.map((item, at) => ({ ...item, bytes: sizes[at] ?? 0 })), keep };
+      return {
+        remove: remove.map((item, at) => ({ ...item, bytes: sizes[at] ?? 0 })),
+        keep,
+        retry,
+      };
     }),
     remove: (item) =>
       Effect.gen(function* () {
@@ -749,7 +762,9 @@ export const taskWorkspacesSweeper = (opts: {
   const verdict = (
     task: TaskRecord,
   ): Effect.Effect<
-    { keep: string } | { remove: string; terminals: ReadonlySet<string> } | null,
+    | { keep: string }
+    | { remove: string; terminals: ReadonlySet<string>; writing: string | null }
+    | null,
     never,
     BunServices
   > =>
@@ -784,9 +799,9 @@ export const taskWorkspacesSweeper = (opts: {
       const foreign = paneNotOwned(task, panes.value, terminals);
       if (foreign !== undefined)
         return { keep: `holds a pane Collie did not open (${foreign.paneId})` };
+      // Kept in a listing, while a sweep stops it again.
       const writing = yield* stillWriting(task);
-      if (writing !== null) return { keep: writing };
-      return { remove: `Finished ${minutes} min ago`, terminals };
+      return { remove: `Finished ${minutes} min ago`, terminals, writing };
     });
 
   const taskAt = (target: string) => opts.tasks.find((task) => task.workspace === target);
@@ -795,13 +810,17 @@ export const taskWorkspacesSweeper = (opts: {
     judge: Effect.gen(function* () {
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
+      const retry: CleanupItem[] = [];
       for (const task of opts.tasks) {
         const judged = yield* verdict(task);
         if (judged === null) continue;
         if ("keep" in judged) keep.push({ kind, target: task.workspace, reason: judged.keep });
-        else remove.push({ kind, target: task.workspace, bytes: 0, reason: judged.remove });
+        else if (judged.writing !== null) {
+          keep.push({ kind, target: task.workspace, reason: judged.writing });
+          retry.push({ kind, target: task.workspace, bytes: 0, reason: judged.writing });
+        } else remove.push({ kind, target: task.workspace, bytes: 0, reason: judged.remove });
       }
-      return { remove, keep };
+      return { remove, keep, retry };
     }),
     remove: (item) =>
       Effect.gen(function* () {

@@ -1023,7 +1023,7 @@ const stopCodex = (
     const before = (one: SeenProcess) =>
       signalled.some((seen) => seen.pid === one.pid && seen.started === one.started);
     /** One SIGTERM, never a second, even across stops. */
-    const once = (one: ProcessInfo) =>
+    const once = (one: SeenProcess) =>
       before(one)
         ? Effect.void
         : terminate(one.pid).pipe(
@@ -1038,9 +1038,10 @@ const stopCodex = (
       reason: why,
       signalled,
       left: [],
+      noted: target.noted,
     });
     if (server === null)
-      return yield* survivors(target.pid, [], null, deadline, "failed", signalled, once);
+      return yield* survivors(target.pid, target.noted, null, deadline, "failed", signalled, once);
     if (!server.command.includes(target.command))
       return refused(`pid ${target.pid} is \`${server.command}\`, not \`${target.command}\``);
     if (target.started !== null && server.started !== target.started)
@@ -1048,6 +1049,7 @@ const stopCodex = (
 
     let turns: Stopped["turns"] = null;
     let session: ProcessInfo[] = [];
+    const noted = [...target.noted];
     let submitted = 0;
     let acknowledged = 0;
     const short = (): Stopped["state"] =>
@@ -1059,6 +1061,7 @@ const stopCodex = (
       reason,
       signalled,
       left: [server, ...session].map(seen),
+      noted,
     });
     return yield* withCodex(target.endpoint, (client) =>
       Effect.gen(function* () {
@@ -1072,6 +1075,9 @@ const stopCodex = (
         );
         turns = running;
         session = yield* sessionOf(target.pid);
+        for (const one of session)
+          if (!noted.some((seen) => seen.pid === one.pid && seen.started === one.started))
+            noted.push(seen(one));
         yield* once(server);
         for (const one of running) {
           // Its turns have all ended and it has gone: nothing is left to answer.
@@ -1092,15 +1098,7 @@ const stopCodex = (
         }
         for (;;) {
           if (!(yield* stillRunning(server)))
-            return yield* survivors(
-              target.pid,
-              session,
-              running,
-              deadline,
-              short(),
-              signalled,
-              once,
-            );
+            return yield* survivors(target.pid, noted, running, deadline, short(), signalled, once);
           // Read back rather than assumed: a lost connection is not a turn that ended.
           let unread: string | null = null;
           const unended = yield* Effect.forEach(running, (one) =>
@@ -1139,15 +1137,15 @@ const SURVIVOR_GRACE_MS = 2_000;
  */
 const survivors = (
   root: number,
-  noted: ReadonlyArray<ProcessInfo>,
+  noted: ReadonlyArray<SeenProcess>,
   turns: Stopped["turns"],
   deadline: number,
   short: Stopped["state"],
   signalled: ReadonlyArray<SeenProcess>,
-  once: (one: ProcessInfo) => Effect.Effect<void>,
+  once: (one: SeenProcess) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
-    const proven = (one: ProcessInfo) =>
+    const proven = (one: SeenProcess) =>
       noted.some((seen) => seen.pid === one.pid && seen.started === one.started);
     const sessions = yield* readsSessions;
     const remaining = sessions ? sessionOf(root) : Effect.filter(noted, (one) => stillRunning(one));
@@ -1156,7 +1154,14 @@ const survivors = (
     for (;;) {
       const left = yield* remaining;
       if (left.length === 0)
-        return { state: "quiet", turns, reason: null, signalled, left: [] } satisfies Stopped;
+        return {
+          state: "quiet",
+          turns,
+          reason: null,
+          signalled,
+          left: [],
+          noted,
+        } satisfies Stopped;
       if ((yield* Clock.currentTimeMillis) >= until) {
         const named = left.map(
           (one) =>
@@ -1168,6 +1173,7 @@ const survivors = (
           reason: `its server exited, but ${named.join(", ")} of its session is still running`,
           signalled,
           left: left.map((one) => ({ pid: one.pid, started: one.started })),
+          noted,
         } satisfies Stopped;
       }
       yield* Effect.sleep(50);

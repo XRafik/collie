@@ -217,6 +217,7 @@ const servedBy = (state: Stopped["state"]) =>
               reason: state === "quiet" ? null : "turn tu-1 still running after 30s",
               signalled: [],
               left: [],
+              noted: [],
             } satisfies Stopped;
           }),
       },
@@ -249,7 +250,7 @@ test("a Finished Task's workspace whose agent's turn has not stopped is kept, wi
   runEffect(
     Effect.gen(function* () {
       yield* arranged();
-      const { ports } = yield* servedBy("acknowledged");
+      const { stops, ports } = yield* servedBy("acknowledged");
       const swept = taskWorkspacesSweeper({
         stateDir: rig.stateDir,
         sessions: [{ herd: null, herdr: new Herdr(rig.pluginEnv()) }],
@@ -269,5 +270,9 @@ test("a Finished Task's workspace whose agent's turn has not stopped is kept, wi
       expect((yield* swept.judge).keep.map((one) => one.reason).join("\n")).toContain(
         "thread th-1 turn tu-1",
       );
+      // A later sweep stops it again rather than repeating the old reason.
+      yield* sweep([swept], rig.stateDir, "host");
+      expect(stops).toEqual(["impl", "impl"]);
+      expect(yield* closes).toBe(0);
     }),
   ));

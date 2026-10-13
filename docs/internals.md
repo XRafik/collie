@@ -670,8 +670,10 @@ start time (`/proc/<pid>/stat`, or `ps -o lstart=`) and command, and by its thre
 in the agent's directory; notes its running turns and its session (or, without `/proc`,
 its descendants); sends it one SIGTERM, which drains it; sends `turn/interrupt` for each
 turn; waits for it to exit; and gives each noted process of its session still running one
-SIGTERM. Nothing gets a second signal: the record keeps what was signalled, and a later
-stop of the same record only looks again. The record is removed only once the agent is
+SIGTERM. Nothing gets a second signal: the record keeps what was signalled and what was
+noted of the server's session, and a later stop of the same record interrupts again and
+signals only what it has not, proving survivors from that note after the server has gone.
+Every sweep stops a kept record again. The record is removed only once the agent is
 Quiet; otherwise it keeps the state reached, what was still running, and every step is a line in the Run's
 `agents.log` with the full thread and turn ids, the endpoint, the pid and the transcript.
 The stand-in server the tests run in its place is `test/support/codex-server.ts`.

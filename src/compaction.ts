@@ -164,6 +164,8 @@ export interface Stopped {
   readonly signalled: ReadonlyArray<SeenProcess>;
   /** What was still running when it gave up: whatever may still write in the checkout. */
   readonly left: ReadonlyArray<SeenProcess>;
+  /** The server's session as noted before a drain: the only processes a stop may signal. */
+  readonly noted: ReadonlyArray<SeenProcess>;
 }
 
 /** The server a stop acts on, as its control record names it. */
@@ -177,6 +179,8 @@ export interface StopTarget {
   readonly started: string | null;
   /** What an earlier stop already signalled, which never gets a second. */
   readonly signalled: ReadonlyArray<SeenProcess>;
+  /** What an earlier stop noted of its session, still proof after the server has gone. */
+  readonly noted: ReadonlyArray<SeenProcess>;
 }
 
 export interface CompactionPort {
@@ -287,6 +291,7 @@ const ControlSchema = Schema.Struct({
       reason: Schema.NullOr(Schema.String),
       signalled: Schema.Array(SeenProcess).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
       left: Schema.Array(SeenProcess).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+      noted: Schema.Array(SeenProcess).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
@@ -531,7 +536,14 @@ const stopRecord = Effect.fn("Compaction.stopRecord")(function* (
 const targetOf = (record: ControlRecord): StopTarget | null => {
   const { endpoint, pid, command } = record;
   if (endpoint === null || pid === null || command === null) return null;
-  return { ...record, endpoint, pid, command, signalled: record.stop?.signalled ?? [] };
+  return {
+    ...record,
+    endpoint,
+    pid,
+    command,
+    signalled: record.stop?.signalled ?? [],
+    noted: record.stop?.noted ?? [],
+  };
 };
 
 const appendTo = (file: string) => (line: string) =>
@@ -699,8 +711,10 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
       // cannot prove this agent is still absent.
       if (yield* listed) return "herdr lists its agent again";
       const record = yield* readControl(deps.stateDir, name);
-      // One an earlier stop left is only looked at again, so no launch waits out its budget.
-      const budget = record?.stop ? 0 : (deps.stopMs ?? STOP_WAIT_MS);
+      // A server an earlier stop already signalled is only looked at again, so no launch
+      // waits out its budget.
+      const signalled = record?.stop?.signalled.some((one) => one.pid === record.pid) ?? false;
+      const budget = signalled ? 0 : (deps.stopMs ?? STOP_WAIT_MS);
       const reached = record === null ? null : yield* stopRecord(deps, record, budget);
       if (reached !== null && reached.state !== "quiet")
         return `its Codex turn has not stopped: ${notStopped(name, reached, reached.target)}`;
