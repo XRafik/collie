@@ -714,7 +714,7 @@ test(
 );
 
 test(
-  "implement on a plan spanning repositories is refused naming each one that approves nothing",
+  "implement on a plan spanning repositories is admitted where one names no checks, and refuses one --verify for all",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -730,15 +730,34 @@ test(
         );
         const outcome = yield* hosted(
           Effect.gen(function* () {
-            const [implement] = yield* loaded(yield* Registry, [shipped("implement")]);
+            const registry = yield* Registry;
+            const [implement] = yield* loaded(registry, [shipped("implement")]);
+            const verified = yield* registry
+              .start({
+                generation: implement!,
+                request: "r0",
+                project: rig.projectDir,
+                input: {},
+                text: { plan },
+                verify: [{ name: "unit", executable: "true", argv: [], cwd: "worktree" }],
+                task: null,
+              })
+              .pipe(Effect.result);
+            const started = yield* start(implement!, { request: "r1", text: { plan } });
+            const rows = yield* (yield* Store).runs;
+            yield* fs.writeFileString(`${rig.projectDir}/web/.collie/verify.json`, '[{"name":');
             return {
-              started: yield* start(implement!, { request: "r1", text: { plan } }),
-              rows: yield* (yield* Store).runs,
+              verified,
+              started,
+              rows,
+              unreadable: yield* start(implement!, { request: "r2", text: { plan } }),
             };
           }),
         );
-        expect(refusedWith(outcome.started)).toContain("nothing is approved in web");
-        expect(outcome.rows).toEqual([]);
+        expect(refusedWith(outcome.verified)).toContain("this plan spans repositories");
+        expect(refusedWith(outcome.started)).toBe("");
+        expect(outcome.rows.length).toBeGreaterThan(0);
+        expect(refusedWith(outcome.unreadable)).toContain("web/.collie/verify.json");
       }),
     ),
   120_000,

@@ -80,6 +80,7 @@ const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 
@@ -1032,6 +1033,19 @@ const OPERATOR_CHECKS: readonly Check[] = [
     },
   },
   {
+    id: "checks/a-run-names-its-own-checks-and-collie-runs-them-unasked",
+    statement:
+      "A Run in a repository with no checks file names its own checks, and Collie runs them at the gate with no approval asked.",
+    owner: CHECKS_UNASKED,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "a check the builder names is run by Collie at the gate and listed in the merge request, with nothing asked",
+    },
+  },
+  {
     id: "checks/a-running-checks-output-opens-live-from-the-board",
     statement:
       "While Collie runs a check for a Run, the drawer shows its last lines, and Open check output opens a pane in the Task's workspace that prints the output as it is written and says how the check ended.",
@@ -1039,7 +1053,7 @@ const OPERATOR_CHECKS: readonly Check[] = [
     needs: "operator",
     proof: {
       kind: "operator",
-      how: "With HERDR_PLUGIN_STATE_DIR pointed at a scratch directory and herdr on a disposable Herd, never the live one: start one Run whose one approved check prints for a few seconds, open its card's drawer while the check runs, choose Open check output, and record the pane's workspace, the lines it printed as they came, its closing line, and the revision.",
+      how: "With HERDR_PLUGIN_STATE_DIR pointed at a scratch directory and herdr on a disposable Herd, never the live one: start one Run whose one check prints for a few seconds, open its card's drawer while the check runs, choose Open check output, and record the pane's workspace, the lines it printed as they came, its closing line, and the revision.",
     },
   },
   {

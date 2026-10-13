@@ -167,8 +167,8 @@ test("an Intent's authority is the set; the seed is only for a Run with no Inten
   expect(seedIntent("r1", {}).authority.run_verification).toEqual([]);
 });
 
-test("the approved set renders as the commands a human would recognise", () => {
-  expect(renderApproved([])).toContain("none approved");
+test("a Run's checks render as the commands a human would recognise", () => {
+  expect(renderApproved([])).toContain("no check is named");
   const rendered = renderApproved([TESTS, LINT]);
   expect(rendered).toContain("tests: bun test");
   expect(rendered).toContain("lint: bun run lint");

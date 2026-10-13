@@ -126,7 +126,7 @@ import { latest, readDispositions } from "./disposition";
 import { openFindingsIn } from "./output";
 import { isSingleRepo, planIssuesIn, planReposOf } from "./plan";
 import { SELF, inputsFor, offersFrom, type Declared, type Offer } from "./offers";
-import { isOutcome, needsApproved, nothingApprovedToStart } from "./outcome";
+import { isOutcome } from "./outcome";
 import { Store, storeLayer, type Admission, type RunRow, type StoreApi } from "./store";
 import {
   Answered,
@@ -281,7 +281,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly message: string;
   }
 
-  /** One command Collie may run for this Run, granted by a human or chosen by chat. */
+  /** One of this Run's checks, named by a human, chat or the Run's agent. */
   export interface VerifySpec {
     readonly name: string;
     readonly executable: string;
@@ -328,7 +328,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly asking: (runId: string, question: DecisionSpec) => Effect.Effect<void>;
     /** What has been verified for this run, and the tree in front of it now. */
     readonly evidence: (runId: string, cwd: string) => Effect.Effect<CheckEvidence>;
-    /** Runs one approved command and records it. A name nobody approved is refused. */
+    /** Runs one of this Run's checks and records it. A name not among them is refused. */
     readonly verify: (options: {
       readonly runId: string;
       readonly name: string;
@@ -351,7 +351,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly cwd: string;
       readonly file: string;
     }) => Effect.Effect<Posted>;
-    /** What this Run may have Collie run for it; a workflow cannot add to the list. */
+    /** This Run's checks as they stand now, which anyone may add to. */
     readonly approved: (runId: string) => Effect.Effect<ReadonlyArray<VerifySpec>>;
     /** One value from the operator's own configuration, by dotted name; empty for none. */
     readonly config: (dotted: string) => Effect.Effect<string>;
@@ -507,8 +507,6 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly outcome?: OutcomeContract;
     /** A worktree the host cuts before the Run exists; absent works where it was started. */
     readonly checkout?: "branch" | "roaming";
-    /** Its gate runs the approved set, so a start with nothing approved is refused. */
-    readonly verifies?: boolean;
     readonly followUps?: ReadonlyArray<FollowUp>;
     readonly actions?: ReadonlyArray<ActionProvider>;
   }
@@ -563,14 +561,6 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     /** The answers it takes; none is a question answered in the operator's own words. */
     readonly options?: ReadonlyArray<string>;
   }): Effect.Effect<string, never, Run | Host | WorkflowEngine | WorkflowInstance>;
-
-  /**
-   * What this Run may have Collie run to prove its kind of result. With nothing approved
-   * where that kind needs something, the Run parks with the repair; a resume asks again.
-   */
-  export function requireApproved(
-    kind: string,
-  ): Effect.Effect<ReadonlyArray<VerifySpec>, never, Run | Host | WorkflowInstance>;
 
   /** What a parent asks for when part of its own work is another workflow. */
   export interface ChildAsk {
@@ -1190,7 +1180,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   /** Whether this plan is one repository and that repository is the run's own root. */
   export function isSingleRepo(plan: PlanRepos): boolean;
 
-  /** The approved commands as a human would type them, for a prompt to name them. */
+  /** This Run's checks as a human would type them, for a prompt to name them. */
   export function renderApproved(approved: ReadonlyArray<VerifySpec>): string;
 
   /** What was actually collected, and by whom, for a merge request to say what it proved. */
@@ -1376,9 +1366,9 @@ const isWritten = (exported: unknown): exported is WrittenDefinition =>
 
 /** A definition as the entry the rest of the host reads. */
 const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
-  const { hints, outcome, checkout, verifies, followUps, actions } = definition;
+  const { hints, outcome, checkout, followUps, actions } = definition;
   const declared = Object.fromEntries(
-    Object.entries({ hints, outcome, checkout, verifies, followUps, actions }).filter(
+    Object.entries({ hints, outcome, checkout, followUps, actions }).filter(
       ([, value]) => value !== undefined,
     ),
   );
@@ -1872,7 +1862,7 @@ const decodeApproved = Schema.decodeUnknownEffect(ApprovedJson);
 const encodeApproved = Schema.encodeSync(ApprovedJson);
 
 /**
- * What this Run may have Collie run for it, as it was when the Run started. Frozen at
+ * This Run's checks as they were when the Run started. Frozen at
  * admission, so editing the file changes the next Run and never a live one.
  */
 export const freezeApproved = Effect.fn("Engine.freezeApproved")(function* (options: {
@@ -2119,22 +2109,11 @@ export const hostLayer = (options: {
             const spec = approved.find((entry) => entry.name === asked.name);
             if (spec === undefined) {
               return yield* new WorkflowError({
-                reason: `"${asked.name}" is not among this Run's approved verifications`,
+                reason: `"${asked.name}" is not among this Run's checks`,
               });
             }
             // The workflow's checkout has to be the Run's own; the grant's directory is resolved from it.
-            const row = yield* store.run(asked.runId);
-            const placed =
-              row === null
-                ? null
-                : placedOf(
-                    row,
-                    yield* decodeStrings(row.options ?? "{}").pipe(
-                      Effect.orElseSucceed((): Record<string, string> => ({})),
-                    ),
-                  );
-            const worktree = placed?.worktree?.path ?? null;
-            const own = { id: asked.runId, cwd: placed?.cwd ?? dir, worktree };
+            const own = yield* treeOf(yield* store.run(asked.runId), asked.runId, dir);
             if (!(yield* insideRun(asked.cwd, own))) {
               return yield* new WorkflowError({
                 reason: `"${asked.cwd}" is not inside run ${asked.runId}`,
@@ -3033,6 +3012,24 @@ const encodePlacing = Schema.encodeSync(PlacingJson);
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 
+/** The directories a Run owns: its cwd and its worktree, as its placement recorded them. */
+const treeOf = Effect.fn("Engine.treeOf")(function* (
+  row: RunRow | null,
+  runId: string,
+  dir: string,
+) {
+  const placed =
+    row === null
+      ? null
+      : placedOf(
+          row,
+          yield* decodeStrings(row.options ?? "{}").pipe(
+            Effect.orElseSucceed((): Record<string, string> => ({})),
+          ),
+        );
+  return { id: runId, cwd: placed?.cwd ?? dir, worktree: placed?.worktree?.path ?? null };
+});
+
 /** Where a row works: as placed, or, while it is being placed, as its receipt says so far. */
 const workingPlace = (row: RunRow): Placed => {
   if (!unplaced(row)) return placedOf(row, {});
@@ -3089,11 +3086,11 @@ const fanOutOf = Effect.fn("Engine.fanOutOf")(function* (
 });
 
 /**
- * The approved set a start is admitted with, settled before anything exists: a Run of a
- * workflow that verifies, whose outcome needs the set, is refused where nothing is approved
- * — in each repository, for a plan that fans out over several.
+ * The checks a start is admitted with, settled before anything exists. None is fine: the
+ * Run's agent names them (ADR-0055). A checks file that does not read is refused by name,
+ * and so is `--verify` for a plan that spans repositories.
  */
-const refuseUnprovable = Effect.fn("Engine.refuseUnprovable")(function* (o: {
+const checksOfStart = Effect.fn("Engine.checksOfStart")(function* (o: {
   readonly generation: Generation;
   readonly input: Readonly<Record<string, Schema.Json>>;
   readonly launch: Readonly<Record<string, string>>;
@@ -3111,28 +3108,15 @@ const refuseUnprovable = Effect.fn("Engine.refuseUnprovable")(function* (o: {
       }).pipe(Effect.catch((cause) => refusedInput(cause.message)));
     });
   const approved = o.verify ?? (yield* readApproved(o.project));
-  const kind = o.launch.outcome ?? "";
-  if (!o.generation.verifies || !needsApproved(isOutcome(kind) ? kind : "unspecified"))
-    return approved;
   const fanOut = yield* fanOutOf(o.generation, o.input, o.launch, o.from);
-  if (fanOut === null) {
-    if (approved.length === 0) return yield* refusedInput(nothingApprovedToStart());
-    return approved;
-  }
   // Placement refuses a plan it cannot fan out, and says why.
-  if (fanOut.refusal !== null) return approved;
+  if (fanOut === null || fanOut.refusal !== null) return approved;
   if (o.verify !== undefined)
     return yield* refusedInput(
       "--verify gives one repository's checks, and this plan spans repositories: each is held to its own .collie/verify.json or remembered checks",
     );
   const path = yield* Path.Path;
-  const bare: string[] = [];
-  for (const repo of fanOut.repos)
-    if ((yield* readApproved(path.join(o.from, repo.path))).length === 0) bare.push(repo.path);
-  if (bare.length > 0)
-    return yield* refusedInput(
-      `${nothingApprovedToStart()}. A plan spanning repositories is held to each one's own .collie/verify.json or remembered checks, and nothing is approved in ${bare.join(", ")}`,
-    );
+  for (const repo of fanOut.repos) yield* readApproved(path.join(o.from, repo.path));
   return approved;
 });
 
@@ -3317,7 +3301,6 @@ export interface Generation {
   readonly fixedOutcome: string | null;
   /** What it needs of the repository, which is what the host places a Run of it on. */
   readonly checkout: CheckoutKind;
-  readonly verifies: boolean;
   /** The file and the revision this was built from: what makes a later start the same code. */
   readonly source: string;
   readonly metadata: Schema.Json;
@@ -3710,7 +3693,6 @@ const makeRegistry: (
       fields: entry.input,
       hints: entry.metadata?.hints ?? {},
       fixedOutcome: entry.metadata?.outcome?.fixed ?? null,
-      verifies: entry.metadata?.verifies === true,
       checkout: entry.metadata?.checkout ?? "none",
       source: yield* sourceOf(route.entry),
       metadata: describeMetadata(entry.metadata),
@@ -4887,7 +4869,7 @@ const makeRegistry: (
     // freezes what it carries.
     const approved =
       (yield* store.requested(options.request)) === null
-        ? yield* refuseUnprovable({
+        ? yield* checksOfStart({
             generation,
             input: settled.input,
             launch,
@@ -5224,8 +5206,21 @@ const makeRegistry: (
       readonly name: string;
       readonly command: Omit<VerifySpec, "name"> | null;
     }) {
-      if ((yield* store.run(options.runId)) === null) {
+      const row = yield* store.run(options.runId);
+      if (row === null) {
         return yield* new HostRefused({ reason: `no run "${options.runId}" was started here` });
+      }
+      // Resolved as the gate resolves it, so a check that could never run is refused now.
+      if (options.command !== null) {
+        const own = yield* treeOf(row, options.runId, dir);
+        const at =
+          options.command.cwd === "worktree"
+            ? (own.worktree ?? own.cwd)
+            : (yield* Path.Path).resolve(own.cwd, options.command.cwd);
+        if (!(yield* insideRun(at, own)))
+          return yield* new HostRefused({
+            reason: `${REFUSED_INPUT}: check "${options.name}" would run in "${at}", which is not inside run ${options.runId}`,
+          });
       }
       return yield* granting.withPermits(1)(
         Effect.gen(function* () {

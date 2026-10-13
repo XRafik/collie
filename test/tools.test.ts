@@ -48,7 +48,6 @@ import { appendLog } from "../src/oversight";
 import { readAudit, trimAudit } from "../src/audit";
 import { writeMrStates } from "../src/merges";
 import { FrontDoorRpcs, mrLabel, type Declaration, type FLOCK_READS } from "../src/board-model";
-import { nothingApproved } from "../src/outcome";
 
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Any));
 
@@ -1374,16 +1373,12 @@ test("a Run shows its plan, findings, disposition, outcome and the last lines it
     }),
   ));
 
-test("an evidence gate waits on the human with the checks it offers and how to approve them", () =>
+test("a Run parked at the old evidence gate is waiting on the human for nothing", () =>
   inWorld(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       yield* save(world.user, ["gated.workflow.ts"]);
-      const run = yield* startedRun(
-        "gated",
-        { note: "x" },
-        (view) => view.parked === nothingApproved(view.runId),
-      );
+      const run = yield* startedRun("gated", { note: "x" }, (view) => (view.parked ?? "") !== "");
       yield* fs.makeDirectory(`${project}/.collie`, { recursive: true });
       yield* fs.writeFileString(
         `${project}/.collie/verify.json`,
@@ -1391,12 +1386,8 @@ test("an evidence gate waits on the human with the checks it offers and how to a
       );
 
       const waiting = waitingOnTheHuman(yield* call("collie_receipts", { run: run.id }));
-      expect(waiting).toContain("evidence gate");
-      expect(waiting).toContain("unit");
-      expect(waiting).toContain(
-        `{"kind":"answer","run":"${run.id}","choiceId":"evidence-gate","answer":"approve"}`,
-      );
-      expect(waiting).toContain("approve:<name>,<name>");
+      expect(waiting).toContain("- nothing");
+      expect(waiting).not.toContain("evidence gate");
     }),
   ));
 

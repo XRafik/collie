@@ -629,13 +629,6 @@ does not, with the proposal's id and hash beside **Confirm** — your yes is con
 payload, and nothing else on the card can give it. **Decline** declines it. Either way the
 card leaves Needs you and the header recounts.
 
-A run holding at its [evidence gate](cli.md#outcomes), parked because nothing is approved
-for Collie to run, is a decision card too, and says which checks its checkout's
-`.collie/verify.json` offers. **Approve** grants the list as it stands and takes the run up
-again, and **Edit the list** opens the record with the names to tick off — `Approve the
-list` grants what is left. There is no Skip: with nothing approved, no check could prove
-the run. The answer goes on the record under whoever gave it.
-
 The sentence is the step's own words where its workflow gives it a `summary`
 (the module says what it is doing), and the step kind's own verb where it does not. A
 step id never reaches it.
@@ -1020,8 +1013,8 @@ machine herdr no longer lists is not shown.
 
 Every Decision and action the TUI board has is on Desktop's cards, and goes to the Machine
 the card is on. A question is answered with its options, or typed into where it has none;
-an evidence gate is approved with the checks still ticked; and a proposal is read in a
-drawer whose Confirm stays off until all of it has been on screen, then sent with its id
+and a proposal is read in a drawer whose Confirm stays off until all of it has been on
+screen, then sent with its id
 and content hash. Each card's `⋯` menu offers what the TUI menu does, by the same rules —
 Steer…, the Run's offers (asked of its host when opened, with a field for each argument),
 Resume, Follow-up, Hold or Release, Stop, and Mark merged, abandoned or superseded — and
@@ -1646,9 +1639,10 @@ repository's name: "monorepo" is the one checkout of that name under the
 the Flock chat alike. Two checkouts of one name are refused with both paths. What proves a
 Run is chat's to choose too: a start you ask chat for
 carries the checks chat chose (`start` with `verify`), and chat adds or withdraws a running
-Run's (`set_verification`) at once. Collie runs those commands itself, outside any agent's
-permission rules; the merge request lists each one with its command, and you verify the
-work there before it lands.
+Run's (`set_verification`) at once. Where nobody chose any, the Run's own agent names them
+before it builds. Nobody approves a check: Collie runs them itself, outside any agent's
+permission rules, the merge request lists each one with its command, and you verify the
+work there before it lands ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 That the rest is really there is a gate: `test/chat-parity.test.ts` walks the CLI's own
 command tree and fails on a command with no conversational route, so the list cannot
 quietly fall behind the CLI.
@@ -1773,7 +1767,7 @@ already covers the finished plan, it is reused; further work gets another review
 The detail panel of a run that stopped opens with **Stopped**: one line saying why — the
 review loop out of iterations or making no progress, a blocking finding the implementer
 disputed, a last fix whose own account did not hold up, a stop someone asked for, or work
-the run parked itself — a pane that would not take a prompt, nothing approved to prove it,
+the run parked itself — a pane that would not take a prompt, a check that still fails, or none named, after its gate fixes,
 a workspace that closed with its checkout gone — then which actions are safe right now. Where nothing recorded says why, it says that rather than guessing.
 
 It is the same classification `collie run show` and `collie run wait --until attention`

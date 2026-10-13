@@ -1464,7 +1464,7 @@ function intentChange(
                   if (failed === "") return result;
                   return {
                     ...result,
-                    human: `${result.human}\nThe grant holds, but intent show will not list it: ${failed}`,
+                    human: `${result.human}\nThe check change stands, but intent show will not reflect it: ${failed}`,
                   };
                 }),
               ),
@@ -1640,9 +1640,9 @@ const intentAuthority = Command.make(
 ).pipe(Command.withDescription("Grant or withdraw what Collie may do to a Run without asking"));
 
 /**
- * The one grant that is not a `k=v` word: a command Collie may run itself, bound argument
- * for argument. The wrapper is part of what was approved — `bun test` and `bun test
- * --bail` are two different permissions.
+ * The one amendment that is not a `k=v` word: a check Collie runs itself, bound argument
+ * for argument. The wrapper is part of the check — `bun test` and `bun test --bail` are
+ * two different ones.
  */
 const intentVerification = Command.make(
   "verification",
@@ -1656,7 +1656,7 @@ const intentVerification = Command.make(
       Flag.withDefault("worktree"),
     ),
     remove: Flag.Boolean("remove").pipe(
-      Flag.withDescription("Withdraw the grant of this name instead of making one"),
+      Flag.withDescription("Withdraw the check of this name instead of naming one"),
       Flag.withDefault(false),
     ),
     command: Argument.String("command").pipe(
@@ -1669,7 +1669,7 @@ const intentVerification = Command.make(
   ({ runId, name, cwd, remove, command, propagate: wants, requestId }) => {
     const [executable, ...argv] = command;
     const granted = remove || executable === undefined ? null : { executable, argv, cwd };
-    const missing = err("invalid_input", "A verification grant needs a command, after `--`.");
+    const missing = err("invalid_input", "A check needs a command, after `--`.");
     return intentChange(
       "run-intent-verification",
       runId,
@@ -1690,7 +1690,9 @@ const intentVerification = Command.make(
       },
     );
   },
-).pipe(Command.withDescription("Let Collie run one exact command itself, as a verification"));
+).pipe(
+  Command.withDescription("Name one exact command Collie runs itself as a check for this Run"),
+);
 
 const intentRemember = Command.make(
   "remember",
@@ -1722,7 +1724,7 @@ const intentRemember = Command.make(
     }),
 ).pipe(
   Command.withDescription(
-    "Save a Run's approved checks as its repository's own, for every Run started there later",
+    "Save a Run's checks as its repository's own, for every Run started there later",
   ),
 );
 

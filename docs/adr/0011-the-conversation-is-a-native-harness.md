@@ -128,6 +128,10 @@ request: it lists each check the Run was held to with its command, and the human
 before anything lands. The same holds for a `start`'s `verify`, which `collie_do` carries
 out as the start it is part of.
 
+_[ADR-0055](0055-a-run-never-asks-to-run-its-checks.md) extends this to the Run's own
+agent: where nothing written down names a check, it names them, and nothing waits for a
+grant._
+
 Recording evidence stays out of reach: there is still no `verify` action kind, so chat can
 choose a command but never say it passed. And chat itself still has no shell: the
 commands it chooses run at the gate, not in the conversation.

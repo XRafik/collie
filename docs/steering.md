@@ -159,14 +159,14 @@ content of every untracked file git is not ignoring — and a result whose two s
 differ is `unstable`, never `pass`. So is one where either snapshot says the tree was too
 large to look at: two unmeasured trees are not one tree.
 
-Collie will also run a verification itself, but only one in the run's approved set,
-matched argument for argument. A human grants one with `run intent verification`; so does
-chat, with `set_verification`, which `collie_propose` carries out in the same call with no
-yes ([ADR-0011](adr/0011-the-conversation-is-a-native-harness.md#amended-2026-09-29-chat-may-choose-what-proves-a-run)).
-Collie spawns it itself, outside any agent's permission rules.
-The wrapper is part of what was approved — `bun test` and `bun test --bail` are not the
-same permission. It runs at the run's finish, and only where a `command_exit` rule names
-it and nothing has verified that name yet.
+Collie will also run a verification itself, but only one of the run's checks, matched
+argument for argument. Anyone names one with `run intent verification` — a human, the
+run's own agent, or chat with `set_verification`, which `collie_propose` carries out in
+the same call — and nobody approves it
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). Collie spawns it itself,
+outside any agent's permission rules. The wrapper is part of the check — `bun test` and
+`bun test --bail` are not the same one. It runs at the run's finish, and only where a
+`command_exit` rule names it and nothing has verified that name yet.
 
 The baseline workflows and personas route their test, lint and typecheck runs through the
 collector, so a card can say `verified` rather than `claimed`. The implementer also writes
@@ -316,7 +316,7 @@ a re-check of an unchanged tree clears nothing.
 
 A finished run's status is history, so `finish` settles rather than acts:
 
-- A verification the run was granted, that a `command_exit` rule names and nobody ran, is
+- One of the run's checks that a `command_exit` rule names and nobody ran is
   run by Collie first — bounded at ten minutes, so a command that hangs cannot hold the
   ending for ever.
 - The run gets an **alignment** verdict. `true` is the strong claim and needs everything

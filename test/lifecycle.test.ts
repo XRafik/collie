@@ -449,19 +449,20 @@ test(
 );
 
 test(
-  "a start nothing is approved to prove is refused with the repair, and nothing is admitted",
+  "a start with no checks written down is admitted, for its agent to name them",
   () =>
     provesWith(
-      "collie-lifecycle-unprovable-",
+      "collie-lifecycle-unnamed-",
       (world) =>
         Effect.gen(function* () {
           const started = yield* collie(world, ["run", "start", "proved", "--input", "note=x"]);
-          expect(started.exit).toBe(2);
-          expect(started.envelope.error?.code).toBe("invalid_input");
-          expect(started.envelope.error?.message).toContain("--verify");
-          expect(started.envelope.error?.message).toContain(".collie/verify.json");
-          const listed = yield* collie(world, ["run", "list"]);
-          expect(listed.envelope.data).toMatchObject({ runs: [] });
+          expect(started.envelope.ok).toBe(true);
+          const runId = (yield* payloadOf(started.envelope)).runId ?? "";
+          const finished = yield* collie(world, ["run", "wait", runId]);
+          expect((yield* payloadOf(finished.envelope)).run?.status).toEqual({
+            status: "complete",
+            value: "",
+          });
           yield* stopHost(world.state);
         }),
       ["proved.workflow.ts"],
@@ -529,7 +530,62 @@ test(
 );
 
 test(
-  "a verify.json that does not read is refused by name, never taken as nothing approved",
+  "a check named outside the Run's tree is refused naming the directory and the Run, and one inside is kept",
+  () =>
+    provesWith(
+      "collie-lifecycle-outside-",
+      (world) =>
+        Effect.gen(function* () {
+          const started = yield* collie(world, ["run", "start", "proved", "--input", "note=x"]);
+          const runId = (yield* payloadOf(started.envelope)).runId ?? "";
+          yield* collie(world, ["run", "wait", runId]);
+          const name = (check: string, ...cwd: ReadonlyArray<string>) =>
+            collie(world, [
+              "run",
+              "intent",
+              "verification",
+              runId,
+              "--name",
+              check,
+              ...cwd,
+              "--",
+              "true",
+            ]);
+
+          for (const outside of ["/", "../.."]) {
+            const refused = yield* name("away", "--cwd", outside);
+            expect(refused.envelope.ok).toBe(false);
+            expect(refused.envelope.error?.message).toContain(`is not inside run ${runId}`);
+          }
+          expect((yield* name("unit")).envelope.ok).toBe(true);
+          const kept = yield* name("lint", "--cwd", ".");
+          expect(kept.envelope.data).toMatchObject({
+            approved: [
+              { name: "unit", cwd: "worktree" },
+              { name: "lint", cwd: "." },
+            ],
+          });
+          const withdrawn = yield* collie(world, [
+            "run",
+            "intent",
+            "verification",
+            runId,
+            "--name",
+            "lint",
+            "--cwd",
+            "/",
+            "--remove",
+          ]);
+          expect(withdrawn.envelope.data).toMatchObject({ approved: [{ name: "unit" }] });
+          yield* stopHost(world.state);
+        }),
+      ["proved.workflow.ts"],
+    ),
+  240_000,
+);
+
+test(
+  "a verify.json that does not read is refused by name, never taken as no checks",
   () =>
     provesWith(
       "collie-lifecycle-bad-verify-",
