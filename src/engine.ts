@@ -138,6 +138,7 @@ import {
 } from "./board-model";
 import { TASK_INPUT, checkoutFor, repositoryName, workOf } from "./worktree";
 import { Herdr, herdrFailureReason } from "./herdr";
+import { liveHerds } from "./herds";
 
 import type { PluginEnv } from "./env";
 import { WorktreeRecordSchema } from "./run";
@@ -3703,7 +3704,7 @@ const makeRegistry: (
             const recorders = others
               .filter((row) => workingPlace(row).worktree?.path === at)
               .map((row) => row.run);
-            const latest = recorders.at(-1);
+            const latest = others.findLast((row) => workingPlace(row).worktree?.path === at);
             if (latest === undefined) return null;
             // Whoever works in it, recorded or not and by whatever path, gives it up too.
             const real = (dir: string) => fs.realPath(dir).pipe(Effect.orElseSucceed(() => dir));
@@ -3716,7 +3717,13 @@ const makeRegistry: (
             const runs = new Set(
               [...recorders, ...users].flatMap((run) => [run, ...descendantsOf(rows, run)]),
             );
-            return { run: latest, release: releaseRuns([...runs]) };
+            return {
+              run: latest.run,
+              worktree: workingPlace(latest).worktree ?? null,
+              release: releaseRuns([...runs]).pipe(
+                Effect.flatMap((why) => (why === null ? agentIn(here) : Effect.succeed(why))),
+              ),
+            };
           }),
         claimed: (worktree) =>
           ask.record({
@@ -4406,11 +4413,27 @@ const makeRegistry: (
     return status === "complete" || status === "failed";
   });
 
-  /**
-   * Closes the agents of Runs whose workflows have ended, so a new Run can take over what
-   * they held; null once they are closed, or why not. A stopped Run has not ended: a
-   * resume would go on where it left off.
-   */
+  /** Why a live agent in any session works inside `dir`, or null when none does. */
+  const agentIn = Effect.fn("Engine.agentIn")(function* (dir: string) {
+    const real = (at: string) => fs.realPath(at).pipe(Effect.orElseSucceed(() => at));
+    for (const { herdr } of yield* liveHerds(placing.herdr, placing.env)) {
+      const panes = yield* Effect.result(herdr.paneList());
+      if (panes._tag === "Failure") return "herdr would not say which agents work in it";
+      for (const pane of panes.success) {
+        if (!pane.agent) continue;
+        for (const at of [pane.cwd, pane.foregroundCwd]) {
+          if (at === null) continue;
+          const there = yield* real(at);
+          if (there === dir || there.startsWith(`${dir}/`)) {
+            return `agent ${pane.agent} in pane ${pane.paneId} works in it`;
+          }
+        }
+      }
+    }
+    return null;
+  }, Effect.provideContext(bun));
+
+  /** Closes ended Runs' agents; null once closed, or why not. A stopped Run may resume. */
   const releaseRuns = Effect.fn("Engine.releaseRuns")(function* (runs: ReadonlyArray<string>) {
     for (const runId of runs) {
       if (!(yield* workflowEnded(runId))) return `${runId} has not ended and may still go on in it`;

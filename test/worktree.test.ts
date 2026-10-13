@@ -1469,13 +1469,13 @@ const renovateCheckout = (inputs: Record<string, string> = {}, cwd = rig.project
     workspaceLabel: "Tasks",
     recordedBy: (at) =>
       Effect.sync(() => {
-        const run = recorded.find((one) => one.worktree?.path === at)?.id;
+        const run = recorded.find((one) => one.worktree?.path === at);
         if (run === undefined) return null;
         const release = Effect.sync(() => {
           releases += 1;
           return releasedAs;
         });
-        return { run, release };
+        return { run: run.id, worktree: run.worktree, release };
       }),
     claimed: (worktree) =>
       FileSystem.FileSystem.pipe(
@@ -1696,7 +1696,8 @@ const worktreeOwnedBy = Effect.fn("worktreeTest.worktreeOwnedBy")(function* (
 
 /** A Renovate Run that recorded this checkout, as one that is still running would. */
 const renovateRunAt = (at: string) =>
-  Effect.sync(() => {
+  Effect.gen(function* () {
+    const made = yield* (yield* FileSystem.FileSystem).stat(`${at}/.git`);
     const run = runFacts({
       id: "renovate-project",
       workflow: "renovate",
@@ -1707,7 +1708,7 @@ const renovateRunAt = (at: string) =>
         created_by_collie: true,
         managed_by: "git",
         workspace_id: null,
-        made_at: null,
+        made_at: Option.getOrThrow(made.mtime).getTime(),
         root_tab_id: null,
         root_pane_id: null,
       },
@@ -1726,7 +1727,7 @@ const fakeGitWithRoaming = (taken: string, answers: Record<string, string>) =>
     ]),
     "status --porcelain": "",
     "rev-list HEAD --not --branches --remotes": "",
-    "checkout --quiet --detach": "",
+    "checkout --quiet --no-overwrite-ignore --detach": "",
     ...answers,
   });
 
@@ -1743,8 +1744,6 @@ test("a second Renovate Run on one repository is refused while the first may go 
 
       const checkout = yield* renovateCheckout();
 
-      // What is known, and only that: which repository git says owns it, the Run whose
-      // record proves it is a Renovate Run's, and why that Run keeps it.
       expect(checkout.refused).toBe(
         `no worktree for ${rig.projectDir}: ${taken} is a checkout of ${rig.projectDir}, recorded by Run ${runId}: ${runId} has not ended and may still go on in it`,
       );
@@ -1782,7 +1781,7 @@ test("a Renovate Run takes over the checkout an ended Run of the repository left
       expect(releases).toBe(1);
       expect(yield* askedIn()).toContainEqual({
         cwd: taken,
-        command: "checkout --quiet --detach origin/master",
+        command: "checkout --quiet --no-overwrite-ignore --detach origin/master",
       });
       const commands = yield* asked();
       expect(commands.some((c) => c.startsWith("worktree add"))).toBe(false);
@@ -1793,6 +1792,26 @@ test("a Renovate Run takes over the checkout an ended Run of the repository left
       expect(commands.indexOf("rev-list HEAD --not --branches --remotes")).toBeGreaterThan(fetched);
       // Recorded as the new Run's before the lock goes, so the next start finds it taken.
       expect(claims).toEqual([{ path: taken, locked: true }]);
+    }),
+  ));
+
+test("a checkout made at a recorded path since the Run recorded it is never taken over", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const taken = join(rig.root, ".herdr", "worktrees", "project", "roaming");
+      yield* worktreeOwnedBy(taken, rig.projectDir);
+      const runId = yield* renovateRunAt(taken);
+      yield* (yield* FileSystem.FileSystem).utimes(`${taken}/.git`, 0, 1_000);
+      yield* fakeGitWithRoaming(taken, {});
+
+      const checkout = yield* renovateCheckout();
+
+      expect(checkout.refused).toBe(
+        `no worktree for ${rig.projectDir}: ${taken} is a checkout of ${rig.projectDir}, recorded by Run ${runId}, but not the checkout that Run made`,
+      );
+      expect(releases).toBe(0);
+      expect(claims).toEqual([]);
+      expect((yield* asked()).some((c) => c.startsWith("checkout"))).toBe(false);
     }),
   ));
 

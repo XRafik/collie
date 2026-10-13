@@ -1130,6 +1130,80 @@ test(
 );
 
 test(
+  "a roaming start is refused an ended Run's checkout where moving it would overwrite an ignored file",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const fs = yield* FileSystem.FileSystem;
+        const git = (...args: string[]) =>
+          exec(["git", ...args], {
+            cwd: rig.projectDir,
+            env: {
+              PATH: "/usr/bin:/bin",
+              HOME: rig.root,
+              GIT_AUTHOR_NAME: "t",
+              GIT_AUTHOR_EMAIL: "t@example.com",
+              GIT_COMMITTER_NAME: "t",
+              GIT_COMMITTER_EMAIL: "t@example.com",
+            },
+          }).pipe(
+            Effect.flatMap((done) =>
+              done.exitCode === 0 ? Effect.void : Effect.die(new Error(done.stderr)),
+            ),
+          );
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            // The default branch now tracks a file the checkout holds, ignored, as its own.
+            yield* fs.writeFileString(`${rig.projectDir}/.git/info/exclude`, "generated.txt\n");
+            yield* fs.writeFileString(`${rig.projectDir}/generated.txt`, "tracked");
+            yield* git("add", "-f", "generated.txt");
+            yield* git("commit", "--quiet", "-m", "track generated.txt");
+            yield* fs.writeFileString(`${roaming}/generated.txt`, "local");
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("would be overwritten");
+        expect(yield* fs.readFileString(`${roaming}/generated.txt`)).toBe("local");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while an agent no Run recorded works in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            // Started in the repository, and moved into the checkout since.
+            yield* rig.addPane("p-moved", "t-moved", rig.projectDir, "claude", null, roaming);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("agent claude in pane p-moved works in it");
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a stop closes the Run's agent and keeps its Task's workspace, and a resume starts the work again",
   () =>
     runEffect(

@@ -144,6 +144,8 @@ export interface CheckoutAsk extends BranchAsk {
 /** The Run that recorded a checkout, and how a new Run takes the checkout from it. */
 export interface Recorded {
   readonly run: string;
+  /** The checkout as that Run recorded it. */
+  readonly worktree: WorktreeRecord | null;
   /** Closes the agents of every Run that recorded it; null once done, or why it may not be taken. */
   readonly release: Effect.Effect<string | null>;
 }
@@ -734,6 +736,15 @@ const describeOccupied = (at: string, owner: string | null, recorded: Recorded |
       : `a checkout of ${owner}`
   }${recorded === null ? "" : `, recorded by Run ${recorded.run}`}`;
 
+/** Whether the checkout at `at` is the one Collie made and recorded, not one made there since. */
+const isTheOneMade = Effect.fn("worktree.isTheOneMade")(function* (
+  at: string,
+  record: WorktreeRecord | null,
+) {
+  if (record === null || !record.created_by_collie || record.made_at === null) return false;
+  return (yield* madeAt(at)) === record.made_at;
+});
+
 /** What moving a roaming checkout to the default branch would lose, or null for nothing. */
 const wouldLose = Effect.fn("worktree.wouldLose")(function* (
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
@@ -824,6 +835,9 @@ const claimRoaming = Effect.fn("worktree.claimRoaming")(function* (opts: {
   if (taken !== null && (recorded === null || taken.owner !== opts.repo || !opts.listed)) {
     return { refused: held };
   }
+  if (recorded !== null && !(yield* isTheOneMade(at, recorded.worktree))) {
+    return { refused: `${held}, but not the checkout that Run made` };
+  }
 
   // "As the remote has it" is a fetch, not this checkout's memory of the last one: a
   // repository nobody has fetched for a week would otherwise start the Run on a stale
@@ -848,9 +862,13 @@ const claimRoaming = Effect.fn("worktree.claimRoaming")(function* (opts: {
     // Again, now its agents are closed: one could have written to it until then.
     const after = yield* kept;
     if (after !== null) return { refused: after };
-    const moved = yield* run("git", ["checkout", "--quiet", "--detach", base], at);
+    const moved = yield* run(
+      "git",
+      ["checkout", "--quiet", "--no-overwrite-ignore", "--detach", base],
+      at,
+    );
     if (moved.code !== 0) {
-      return { refused: whatItSaid(moved) || `git would not move ${at} to ${base}` };
+      return { refused: `${held}: ${whatItSaid(moved) || `git would not move it to ${base}`}` };
     }
     return { path: at, base, from: recorded.run };
   }
