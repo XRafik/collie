@@ -87,6 +87,29 @@ export const copyInto = Effect.fn("attachments.copyInto")(function* (
   return named.map(({ name, from }): Attached => ({ name, from }));
 });
 
+/** Keeps words over the delivery cap as a file in `dir`, named by digest so a retry keeps one. */
+export const keepMessage = Effect.fn("attachments.keepMessage")(function* (
+  dir: string,
+  words: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stem = `message-${sha256Hex(words).slice(0, 8)}`;
+  const bytes = new TextEncoder().encode(words);
+  yield* fs.makeDirectory(dir, { recursive: true });
+  for (let nth = 0; ; nth++) {
+    const name = `${stem}${nth === 0 ? "" : `-${nth}`}.md`;
+    const file = path.join(dir, name);
+    const written = yield* fs.writeFile(file, bytes, { flag: "wx" }).pipe(
+      Effect.as(true),
+      Effect.catchTag("PlatformError", (cause) =>
+        cause.reason._tag === "AlreadyExists" ? Effect.succeed(false) : Effect.fail(cause),
+      ),
+    );
+    if (written || sameBytes(yield* fs.readFile(file), bytes)) return name;
+  }
+});
+
 /** Every file in `dir`, by name; none where there is no such directory. */
 export const listAttachments = Effect.fn("attachments.list")(function* (dir: string) {
   const fs = yield* FileSystem.FileSystem;

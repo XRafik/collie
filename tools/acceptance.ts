@@ -81,12 +81,37 @@ const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
 const FORGES = "GitHub and GitLab, equally well (this MR)";
+const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
+  {
+    id: "front-door/the-diff-tab-takes-a-comment-on-either-side",
+    statement: "The Diff tab takes a comment on a line range on either side.",
+    owner: REVIEW_COMMENTS,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "desktop/test/diff-comments.test.ts",
+      name: "the Diff tab takes a comment on a line range on either side",
+    },
+  },
+  {
+    id: "front-door/review-comments-reach-the-chosen-agent-word-for-word",
+    statement: "Review comments reach the chosen agent word for word as one delivery.",
+    owner: REVIEW_COMMENTS,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-deliver.test.ts",
+      name: "review comments reach the chosen agent word for word as one delivery, at any length",
+    },
+  },
   {
     id: "front-door/a-file-too-large-for-a-message-is-refused",
     statement:
@@ -899,6 +924,32 @@ const BACKEND: readonly Check[] = [
       name: "glab and gh are run only by their adapters",
     },
   },
+  {
+    id: "backend/a-message-over-the-delivery-cap-arrives-whole",
+    statement:
+      "A message over the delivery cap arrives whole, as a file in the Run, whichever door sent it.",
+    owner: REVIEW_COMMENTS,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/attachments.test.ts",
+      name: "a message over the delivery cap is kept whole in the Run, and the agent is told where",
+    },
+  },
+  {
+    id: "backend/a-rewritten-plan-reaches-the-records-details",
+    statement:
+      "A rewritten ticket, and a finished Run's rewritten plan, reach the record's details.",
+    owner: REVIEW_COMMENTS,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/run-detail.test.ts",
+      name: "a rewritten ticket, and a finished Run's rewritten plan, reach the record's details",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */
@@ -1076,6 +1127,17 @@ const WORKFLOWS: readonly Check[] = [
 
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
+  {
+    id: "desktop/review-comments-reach-a-remote-runs-agent-and-its-rewrite-shows",
+    statement:
+      "On a remote Machine, review comments on a plan and on a diff reach the Run's agent whole, and the Plan tab shows the agent's rewrite without a ticket being closed.",
+    owner: REVIEW_COMMENTS,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In Desktop with a remote Machine reached: on a plan Run waiting at its menu, comment on `SPEC.md` and on an expanded ticket with more than 8 KiB in all, then Send; record that the planner's pane names the attached file, that the file holds the comments as written, and that the Plan tab shows the rewritten plan, the expanded ticket included, without closing it. On an implement Run's Diff tab, comment on an added line and on a removed line, then Send, and record the same. Record the revision.",
+    },
+  },
   {
     id: "chat/an-ad-hoc-request-starts-general",
     statement: "An ad-hoc request in chat starts `general`, not `implement` or `plan`.",
