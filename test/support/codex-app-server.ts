@@ -30,7 +30,7 @@ export interface StandInConfig {
   readonly subagent?: boolean;
   /** A continuation that starts a new turn after an interrupt, unless it is draining. */
   readonly queued?: boolean;
-  /** A child process in its session; `stubborn` ignores SIGTERM. */
+  /** A child process in its session; `stubborn` ignores SIGTERM, noting each in `record`.child. */
   readonly child?: "plain" | "stubborn";
   /** While this file exists, an interrupt is answered and the turn carries on. */
   readonly holdWhile?: string;
@@ -42,6 +42,8 @@ export interface StandInConfig {
   readonly foreignThread?: boolean;
   /** A file it creates once it is up. */
   readonly touch?: string;
+  /** While this file exists, every answer comes a second late. */
+  readonly slowWhile?: string;
 }
 
 const config: StandInConfig = JSON.parse(readFileSync(process.argv[2]!, "utf8"));
@@ -92,8 +94,10 @@ if (config.foreignThread)
 
 if (config.child) {
   const script =
-    config.child === "stubborn" ? `trap '' TERM; while :; do sleep 0.05; done` : "exec sleep 600";
-  const child = Bun.spawn(["sh", "-c", script], {
+    config.child === "stubborn"
+      ? `trap 'echo TERM >> "$0"' TERM; while :; do sleep 0.05; done`
+      : "exec sleep 600";
+  const child = Bun.spawn(["sh", "-c", script, `${config.record}.child`], {
     stdio: ["ignore", "ignore", "ignore"],
   });
   record({ child: child.pid });
@@ -126,7 +130,9 @@ const server = Bun.serve({
     message(ws, raw) {
       const { id, method, params = {} } = JSON.parse(String(raw));
       record({ method, params });
-      const reply = (result: Answer) => void ws.send(JSON.stringify({ id, result }));
+      const late = config.slowWhile !== undefined && existsSync(config.slowWhile) ? 1_000 : 0;
+      const reply = (result: Answer) =>
+        void setTimeout(() => ws.send(JSON.stringify({ id, result })), late);
       const refuse = (message: string) =>
         void ws.send(JSON.stringify({ id, error: { code: -32600, message } }));
       const thread = threads.find((t) => t.id === params.threadId);

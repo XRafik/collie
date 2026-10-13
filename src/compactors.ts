@@ -1097,48 +1097,59 @@ export const codexPort = (
 });
 
 type Covered = Stop["turns"][number];
+type Seen = Stop["processes"][number];
 
 /** One SIGTERM, to a process that may already be gone. */
 const sigterm = (pid: number) => Effect.ignore(Effect.try(() => process.kill(pid, "SIGTERM")));
 
-/**
- * Where the server's processes are found once it has exited: its own session, where it
- * leads one and the platform can say, or else the descendants it had before the signal.
- */
-type Noted =
-  | { readonly session: number; readonly since: string | null }
-  | { readonly descendants: ReadonlyArray<Process> };
+const sameProcess = (
+  one: { pid: number; started: string },
+  other: { pid: number; started: string },
+) => one.pid === other.pid && one.started === other.started;
 
 /**
- * Stops a Codex agent where its turns run, in order, on one connection opened before any
- * signal: prove the server is this agent's, list its running turns, SIGTERM it once so it
- * drains (no new turn, steer or continuation), interrupt every running turn, wait for the
- * server to exit, then SIGTERM once whatever of its session is left. Nothing gets a second
- * signal, a server an earlier stop signalled included, and nothing is signalled that is
- * not proven the agent's.
+ * Stops a Codex agent where its turns run. Its one SIGTERM drains the server (no new turn,
+ * steer or continuation) and goes out on a connection opened first, so the interrupts
+ * still reach it. Nothing is signalled twice, across stops too, or without proof it is the
+ * agent's.
  */
 const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext, budgetMs: number) {
   const { record, say } = ctx;
   const pid = record.pid!;
   const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
   const covered: Covered[] = [];
+  const prior = record.stop;
   let reached: Stop["state"] = "failed";
-  let signalled = record.stop?.signalled === true;
+  let signalled = prior?.signalled === true;
   let pastSignal = false;
+  let session = prior?.session ?? null;
+  const processes: Seen[] = (prior?.processes ?? []).map((one) => ({ ...one }));
   const ended = (state: Stop["state"], why: string | null) =>
     Clock.currentTimeMillis.pipe(
-      Effect.map((at): Stop => ({ state, at, turns: covered, reason: why, signalled })),
+      Effect.map((at): Stop => ({
+        state,
+        at,
+        turns: covered,
+        reason: why,
+        signalled,
+        session,
+        processes,
+      })),
     );
   const notQuiet = (why: string) => ended(reached, why);
 
   const live = yield* processOf(pid);
   if (live === null) {
-    // Nothing is left of the server itself; only what it started may be, and only a
-    // session and a recorded start time can prove that without the server.
+    // Only what it started may be left, found by its session or by what a stop saw.
     const sessions = (yield* processOf(process.pid))?.session != null;
-    const noted: Noted | null =
-      sessions && record.started !== null ? { session: pid, since: record.started } : null;
-    const left = noted === null ? null : yield* survivors(noted, pid, deadline);
+    if (session === null && sessions && record.started !== null)
+      session = { id: pid, since: record.started };
+    if (session === null && prior === null)
+      return yield* ended(
+        "failed",
+        `pid ${pid} has exited and nothing proves what it started is gone (${record.started === null ? "no start time is recorded" : "this platform cannot say a session"}); remove ${record.dir} once you have checked`,
+      );
+    const left = yield* survivors(session, processes, pid, deadline);
     return yield* ended(left === null ? "quiet" : "failed", left);
   }
   if (record.command === null || !live.command.includes(record.command))
@@ -1170,16 +1181,28 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
       for (const thread of threads.filter((one) => one.active))
         for (const turn of yield* runningTurns(client, thread.id))
           covered.push({ thread: thread.id, turn, transcript: thread.transcript });
-      const noted: Noted =
-        live.session === pid
-          ? { session: pid, since: live.started }
-          : { descendants: descendantsOf(yield* allProcesses(), pid) };
+      if (live.session === pid) session = { id: pid, since: live.started };
+      else
+        for (const one of descendantsOf(yield* allProcesses(), pid))
+          if (!processes.some((seen) => sameProcess(seen, one)))
+            processes.push({
+              pid: one.pid,
+              started: one.started,
+              command: one.command,
+              termed: false,
+            });
 
       const still = yield* processOf(pid);
       if (still?.started !== live.started || still.command !== live.command)
         return yield* ended("failed", `pid ${pid} changed before it was signalled`);
-      if (!signalled) yield* sigterm(pid);
-      signalled = pastSignal = true;
+      yield* Effect.uninterruptible(
+        Effect.andThen(
+          signalled ? Effect.void : sigterm(pid),
+          Effect.sync(() => {
+            signalled = pastSignal = true;
+          }),
+        ),
+      );
       for (const one of covered) {
         yield* say(`interrupt submitted: ${where(one)}`);
         if (reached === "failed") reached = "submitted";
@@ -1196,11 +1219,20 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
         return yield* notQuiet(
           `the server was still up after ${Math.round(budgetMs / 1000)}s${running.length === 0 ? "" : `, with ${running.map((one) => `turn ${one.turn}`).join(", ")} still running`}`,
         );
-      const left = yield* survivors(noted, pid, deadline);
+      const left = yield* survivors(session, processes, pid, deadline);
       return left === null ? yield* ended("quiet", null) : yield* notQuiet(left);
     }),
   );
+  const remaining = deadline - (yield* Clock.currentTimeMillis);
   return yield* stopped.pipe(
+    // Slack for awaitExit to say how far it got before the budget does.
+    Effect.timeoutOption(Math.max(0, remaining) + 250),
+    Effect.flatMap(
+      Option.match({
+        onNone: () => notQuiet(`the stop ran out of its ${Math.round(budgetMs / 1000)}s budget`),
+        onSome: Effect.succeed,
+      }),
+    ),
     Effect.catch((cause) =>
       notQuiet(
         !pastSignal
@@ -1238,36 +1270,48 @@ const awaitExit = Effect.fn("Compactors.awaitExit")(function* (
 });
 
 /**
- * Whatever of the server's processes is still running once it has exited, each sent one
- * SIGTERM and looked at again. Null where nothing is left; otherwise what is, by pid.
+ * Whatever the server started that is still running once it has exited: its session's
+ * members and what a stop saw, each sent one SIGTERM unless `seen` says it had one, until
+ * the deadline. Null where nothing is left; otherwise what is, by pid.
  */
 const survivors = Effect.fn("Compactors.survivors")(function* (
-  noted: Noted,
+  session: Stop["session"],
+  seen: Seen[],
   pid: number,
   deadline: number,
 ) {
   const alive = Effect.gen(function* () {
-    if ("descendants" in noted) {
-      const now = yield* Effect.forEach(noted.descendants, (one) => processOf(one.pid));
-      return now.filter(
-        (one, at): one is Process => one !== null && one.started === noted.descendants[at]!.started,
-      );
-    }
-    return (yield* allProcesses()).filter(
-      (one) =>
-        one.session === noted.session &&
-        one.pid !== pid &&
-        (noted.since === null || Number(one.started) >= Number(noted.since)),
+    const known = yield* Effect.forEach(seen, (one) => processOf(one.pid));
+    const found = known.filter(
+      (one, at): one is Process => one !== null && one.started === seen[at]!.started,
     );
+    if (session === null) return found;
+    const members = (yield* allProcesses()).filter(
+      (one) =>
+        one.session === session.id &&
+        one.pid !== pid &&
+        (session.since === null || Number(one.started) >= Number(session.since)),
+    );
+    return [...found, ...members.filter((one) => !found.some((other) => sameProcess(one, other)))];
   });
-  const found = yield* alive;
-  if (found.length === 0) return null;
-  for (const one of found) yield* sigterm(one.pid);
-  const until = Math.max(deadline, (yield* Clock.currentTimeMillis) + 1_000);
   for (;;) {
     const left = yield* alive;
     if (left.length === 0) return null;
-    if ((yield* Clock.currentTimeMillis) >= until)
+    for (const one of left) {
+      const at = seen.findIndex((other) => sameProcess(one, other));
+      if (at >= 0 && seen[at]!.termed) continue;
+      yield* Effect.uninterruptible(
+        Effect.andThen(
+          sigterm(one.pid),
+          Effect.sync(() => {
+            if (at >= 0) seen[at] = { ...seen[at]!, termed: true };
+            else
+              seen.push({ pid: one.pid, started: one.started, command: one.command, termed: true });
+          }),
+        ),
+      );
+    }
+    if ((yield* Clock.currentTimeMillis) >= deadline)
       return `left running after one SIGTERM: ${left.map((one) => `pid ${one.pid} (${one.command})`).join(", ")}`;
     yield* Effect.sleep(100);
   }

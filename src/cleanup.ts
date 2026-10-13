@@ -34,7 +34,7 @@ import { latest, readDispositions } from "./disposition";
 import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
-import { CONTROL_DIR, endpointPid, putDownControl, readControl, stopSaid } from "./compaction";
+import { CONTROL_DIR, putDownControl, readControl, stopSaid } from "./compaction";
 import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
@@ -536,7 +536,7 @@ const removeIf = (
 /**
  * Compaction controls of agents no herdr session lists: their endpoint stopped and their
  * state removed. Nothing is judged where herdr will not list its agents, and a record whose
- * server a stop left running is kept until that server has gone.
+ * stop is short of Quiet is stopped again and kept until it is.
  */
 export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herdr>): Sweeper => {
   const kind = "compaction";
@@ -563,14 +563,16 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
         else if (!live.has(name)) {
           const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
-          const running = yield* endpointPid(record).pipe(Effect.orElseSucceed(() => null));
-          if (record?.stop != null && running !== null)
-            keep.push({
-              kind,
-              target,
-              reason: `its Codex turn has not stopped: ${stopSaid(name, record, record.stop)}`,
-            });
-          else remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+          // A stop short of Quiet is taken up again by the removal, which keeps it if it still is.
+          remove.push({
+            kind,
+            target,
+            bytes: 0,
+            reason:
+              record?.stop == null
+                ? "herdr no longer lists its agent"
+                : `herdr no longer lists its agent; stopping it again (${stopSaid(name, record, record.stop)})`,
+          });
         }
       }
       const sizes = yield* sizesOf(remove.map((item) => item.target));

@@ -456,7 +456,7 @@ The worktree outlives the merge request: it is still there when the run ends, so
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
 no commit that is not on the remote already, nothing is working in it or could be resumed
 in it while its work has not landed (a stopped agent's Codex server still running there
-counts, its pane gone or not), its merge request is merged or closed on GitHub or
+counts, its pane gone or not, and so does a stop of it short of Quiet), its merge request is merged or closed on GitHub or
 GitLab (or a Disposition says what became of it, or its remote branch is gone), and its
 Task's workspace has closed. A squash merge counts: the head that merged is on the remote. A
 `renovate` checkout has no branch to ask either question about, so a clean one nothing is
@@ -2335,8 +2335,8 @@ every ten minutes, whether or not a pane is open. A sweep removes:
 - **Uploads** under `uploads/`, a week after a front door last asked for them; a Run given
   one holds its own copy.
 - **Compaction controls** of an agent no herdr session lists any more, with the endpoint it
-  held open. One whose server a stop left running is kept, listed with "its Codex turn has
-  not stopped" and the reason, until that server has exited.
+  held open. One whose stop fell short of Quiet is stopped again at each sweep, and kept,
+  listed with "its Codex turn has not stopped" and why, until it is Quiet.
 - **Runner copies** under `~/.cache/collie/runners`, but the running version's and the
   newest.
 - **Desktop's own files**, on a computer with Desktop: staged updates, runner copies, usage

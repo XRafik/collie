@@ -1531,11 +1531,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         // A step already sent is this same work replayed, not new work for the agent.
         const replayed = yield* exists(sentPath(landed, "step"));
         // Recorded as soon as its agent exists, so a stop made meanwhile finds it to stop.
-        const launched = yield* Effect.uninterruptibleMask((restore) =>
+        const launched = yield* Effect.uninterruptible(
           Effect.gen(function* () {
             const terminalId = alive
               ? (live.terminalId ?? undefined)
-              : yield* restore(start(ask, agent, { agents: listing.success, listedAt }));
+              : yield* start(ask, agent, { agents: listing.success, listedAt });
             landed.at = yield* Clock.currentTimeMillis;
             const launched: Launched =
               terminalId === undefined ? landed : { ...landed, terminalId };

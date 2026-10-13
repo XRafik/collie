@@ -679,9 +679,12 @@ Every path that puts down a recorded endpoint runs the same stop, under the lock
 already holds: `installControls` before a new agent of the
 same name (failing with `NotQuiet`, which `start` parks on), `retire` before a Fallback's
 successor, a launch's put-down of stale controls and the cleanup sweep (both keeping the
-record). A record's `stop.signalled` keeps a later stop from sending a second SIGTERM. A
-control record whose agent herdr does not list and whose server still runs holds its
-checkout: worktree pruning and a takeover read it through `unlistedServers`. A launch
+record). The record's `stop` keeps what a later stop needs: whether the server had its
+SIGTERM, its session, and every process it started that a stop saw with whether that had
+its SIGTERM, so nothing gets a second one and survivors are found after the server has
+exited. Where none of that can be known, a stop fails rather than calling the agent Quiet.
+Every phase of a stop shares one deadline. A control record whose agent herdr does not
+list, and whose server still runs or whose stop fell short of Quiet, holds its checkout: worktree pruning and a takeover read it through `unlistedServers`. A launch
 writes its launch file as soon as its agent exists, so a concurrent `halt` finds it, and
 `agentWork` starts no agent once a stop is asked for and halts one that landed as it came.
 

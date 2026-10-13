@@ -184,36 +184,33 @@ test("a gone agent's recorded pid now running something else is not signalled", 
     }),
   ));
 
-test("a gone agent's controls stay while the server a stop left is running, and go once it has exited", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const target = `${rig.stateDir}/compaction/gone`;
-      const pid = yield* stoppedServer(rig.stateDir, "gone", rig.projectDir);
-      const sweeper = compactionSweeper(rig.stateDir, [new Herdr(rig.pluginEnv())]);
+test(
+  "a gone agent's controls are stopped again at each sweep, and go once its server has exited",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const target = `${rig.stateDir}/compaction/gone`;
+        const pid = yield* stoppedServer(rig.stateDir, "gone", rig.projectDir);
+        const sweeper = compactionSweeper(rig.stateDir, [new Herdr(rig.pluginEnv())]);
 
-      expect(yield* sweeper.judge).toEqual({
-        remove: [],
-        keep: [
-          {
-            kind: "compaction",
-            target,
-            reason:
-              "its Codex turn has not stopped: gone is not stopped, only acknowledged: codex server ws://127.0.0.1:1 pid " +
-              `${pid} (the server was still up after 30s)`,
-          },
-        ],
-      });
+        const first = yield* sweep([sweeper], rig.stateDir, "host");
+        expect(first.remove).toEqual([]);
+        expect(first.keep.map((one) => one.target)).toEqual([target]);
+        expect(first.keep[0]?.reason).toStartWith(
+          `its Codex turn has not stopped: gone is not stopped, only failed: codex server ws://127.0.0.1:1 pid ${pid}`,
+        );
 
-      process.kill(pid, "SIGKILL");
-      yield* until(
-        () => sweeper.judge,
-        (judged) => judged.remove.length === 1,
-      );
-      yield* sweep([sweeper], rig.stateDir, "host");
-      expect(yield* fs.exists(target)).toBe(false);
-    }),
-  ));
+        process.kill(pid, "SIGKILL");
+        yield* until(
+          () => sweep([sweeper], rig.stateDir, "host"),
+          (report) => report.remove.length === 1,
+        );
+        expect(yield* fs.exists(target)).toBe(false);
+      }),
+    ),
+  60_000,
+);
 
 test("cleanup keeps every compaction control when herdr will not list its agents", () =>
   runEffect(

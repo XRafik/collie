@@ -4,7 +4,7 @@
 // `codex app-server`, behind the real Codex port; herdr is the fake one.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Duration, Effect, FileSystem, Option, Path, Schema } from "effect";
+import { Clock, Duration, Effect, FileSystem, Option, Path, Schema } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./support/recorder";
 import { runEffect } from "./support/effect";
@@ -15,7 +15,8 @@ import { PARKED, STOP, controlPath, foundationLayer } from "../src/engine";
 import { readLaunches } from "../src/launches";
 import { stoppedServer } from "./support/stopped-server";
 import { agentName } from "../src/naming";
-import { controlDir, readControl, type ControlRecord } from "../src/compaction";
+import { controlDir, readControl, unlistedServers, type ControlRecord } from "../src/compaction";
+import { compactionSweeper, sweep } from "../src/cleanup";
 import { codexPort } from "../src/compactors";
 import type { StandInConfig } from "./support/codex-app-server";
 
@@ -253,7 +254,6 @@ test(
           `${agent} is quiet: thread ${MAIN.thread} turn ${MAIN.turn} (transcript ${transcript}) on codex server ${endpoint} pid ${pid}`,
         );
         expect(lines).toContain(`stopped ${agent}`);
-        // Quiet, so the record has nothing left to find.
         expect(yield* fs.exists(yield* controlFile())).toBe(false);
       }),
     ),
@@ -556,11 +556,9 @@ test(
           expect(parked).toContain(id);
         expect(yield* starts()).toBe(1);
         expect(yield* stillWriting()).toBe(true);
-        // Its record stays for the next try, naming the same server.
         expect((yield* control()).pid).toBe(pid);
         expect((yield* control()).stop?.state).toBe("acknowledged");
 
-        // The turn ends, the server drains out, and the same name starts again.
         yield* fs.remove(hold);
         const replacement = yield* hostWith(
           {
@@ -738,6 +736,103 @@ test(
         expect(kept?.stop?.state).toBe("failed");
         expect(kept?.stop?.reason).toContain("did not answer, so nothing was signalled");
       }).pipe(Effect.scoped),
+    ),
+  30_000,
+);
+
+/** How many SIGTERMs the stubborn child has ignored. */
+const childTerms = () =>
+  fs.readFileString(`${recordFile()}.child`).pipe(
+    Effect.map((text) => text.split("\n").filter(Boolean).length),
+    Effect.orElseSucceed(() => 0),
+  );
+
+test(
+  "a child left after the server exits holds the checkout, and a later stop never signals it again",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* writing({ child: "stubborn" });
+        const child = (yield* recorded()).find((entry) => entry.child !== undefined)?.child;
+        yield* session(halted, host);
+        yield* until(childTerms, (terms) => terms === 1);
+
+        const held = yield* unlistedServers(rig.pluginEnv().stateDir, new Set());
+        expect(held.map((one) => one.cwd)).toEqual([rig.projectDir]);
+        expect(held[0]?.why).toContain(`pid ${child}`);
+
+        const again = yield* session(halted, host);
+        expect(again.left.join("\n")).toContain(`pid ${child}`);
+        expect(yield* childTerms()).toBe(1);
+        expect(alive(child)).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test(
+  "a record from an older build whose server has exited is not called quiet",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* writing({ child: "stubborn" });
+        yield* session(halted, host);
+        yield* fs.writeFileString(
+          yield* controlFile(),
+          encodeJson({ ...(yield* control()), started: null, stop: null }),
+        );
+
+        const halt = yield* session(halted, host);
+
+        expect(halt.left.join("\n")).toContain("nothing proves what it started is gone");
+        expect(yield* fs.exists(yield* controlFile())).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test(
+  "cleanup stops a held agent again, and removes its record once it is quiet",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const hold = path.join(rig.root, "hold");
+        yield* fs.writeFileString(hold, "");
+        const host = yield* writing({ holdWhile: hold });
+        expect((yield* session(halted, host)).stopped).toEqual([]);
+        yield* closedByHand;
+        yield* fs.remove(hold);
+
+        const stateDir = rig.pluginEnv().stateDir;
+        yield* sweep(
+          [compactionSweeper(stateDir, [new FakeHerdr(rig.pluginEnv())])],
+          stateDir,
+          "host",
+        );
+
+        expect(yield* interrupts()).toHaveLength(2);
+        expect(yield* fs.exists(yield* controlFile())).toBe(false);
+        expect(yield* stillWriting()).toBe(false);
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a stop whose server answers slowly ends within its budget",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const slow = path.join(rig.root, "slow");
+        const host = yield* writing({ slowWhile: slow });
+        yield* fs.writeFileString(slow, "");
+
+        const before = yield* Clock.currentTimeMillis;
+        const halt = yield* session(halted, host);
+
+        expect((yield* Clock.currentTimeMillis) - before).toBeLessThan(2_500);
+        expect(halt.left.join("\n")).toContain("ran out of its");
+      }),
     ),
   30_000,
 );

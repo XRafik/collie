@@ -237,6 +237,19 @@ const StopSchema = Schema.Struct({
   reason: Schema.NullOr(Schema.String),
   /** Whether the server has had its one SIGTERM, from this stop or an earlier one. */
   signalled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  /** The session the server led, where the platform said, so its members are found after it. */
+  session: Schema.NullOr(
+    Schema.Struct({ id: Schema.Number, since: Schema.NullOr(Schema.String) }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** What it started that a stop has seen, and whether each has had its one SIGTERM. */
+  processes: Schema.Array(
+    Schema.Struct({
+      pid: Schema.Number,
+      started: Schema.String,
+      command: Schema.String,
+      termed: Schema.Boolean,
+    }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 export interface Stop extends Schema.Schema.Type<typeof StopSchema> {}
 
@@ -511,15 +524,18 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
         yield* Effect.ignore(Effect.sync(() => process.kill(pid, "SIGTERM")));
         yield* deps.log(`${name}: stopped its compaction endpoint (pid ${pid})`);
       }
-      yield* fs.remove(path.join(deps.stateDir, CONTROL_DIR, name), { recursive: true });
+      yield* fs.remove(path.join(deps.stateDir, CONTROL_DIR, name), {
+        recursive: true,
+        force: true,
+      });
       return true;
     }),
   );
 });
 
 /**
- * Why each checkout an unlisted agent's server is still running in is held: its pane is
- * gone, but what it was running may still write there.
+ * Why each checkout an unlisted agent's server, or a stop of it short of Quiet, holds: its
+ * pane is gone, but what it was running may still write there.
  */
 export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function* (
   stateDir: string,
@@ -533,10 +549,15 @@ export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function*
     if (listed.has(name)) continue;
     const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
     const pid = yield* endpointPid(record).pipe(Effect.orElseSucceed(() => null));
-    if (record !== null && pid !== null)
+    if (record === null) continue;
+    // A stop short of Quiet may have left what the server started running after it.
+    if (pid !== null || record.stop !== null)
       held.push({
         cwd: record.cwd,
-        why: `${name}'s ${record.harness} server (pid ${pid}) may still be working in it`,
+        why:
+          pid !== null
+            ? `${name}'s ${record.harness} server (pid ${pid}) may still be working in it`
+            : `${stopSaid(name, record, record.stop!)}, so what it started may still be working in it`,
       });
   }
   return held;
