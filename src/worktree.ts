@@ -89,7 +89,11 @@ export const destinationLock = (stateDir: string, at: string) =>
 export const isDestinationLock = (name: string) => /^worktree-[0-9a-f]+\.lock$/.test(name);
 
 const MrViewJson = Schema.fromJsonString(
-  Schema.Struct({ source_branch: Schema.optionalKey(Schema.String) }),
+  Schema.Struct({
+    source_branch: Schema.optionalKey(Schema.String),
+    source_project_id: Schema.optionalKey(Schema.Number),
+    target_project_id: Schema.optionalKey(Schema.Number),
+  }),
 );
 
 /** What deciding a Run's branch needs to know. */
@@ -391,8 +395,8 @@ function letters(text: string): string {
  * it has one: a fix round continues the work that was reviewed, and cutting it from the
  * default branch instead would build something unrelated and then be unable to push it.
  * A reviewed branch this checkout has never fetched is fetched once for that reason —
- * and if it still is not there, the Run is refused rather than started on the wrong
- * history.
+ * and if it is neither there nor a local branch, the Run is refused rather than started
+ * on the wrong history.
  *
  * Otherwise the repository's default branch, which is where new work starts — as
  * `origin/master` rather than `master`, because a fresh worktree takes what the remote
@@ -408,7 +412,9 @@ const baseFor = Effect.fn("worktree.baseFor")(function* (
   const exists = (ref: string) => run("git", ["rev-parse", "--verify", ref], cwd);
   if ((yield* exists(`origin/${branch}`)).code === 0) return { base: `origin/${branch}` };
   if (opts.reviewed) {
-    // The branch holds the work that was reviewed, so it is on the remote whether or
+    // A local branch is checked out as it is, so the base goes unused.
+    if ((yield* exists(`refs/heads/${branch}`)).code === 0) return { base: branch };
+    // Otherwise it holds the work that was reviewed, so it is on the remote whether or
     // not this checkout has heard of it yet.
     yield* run("git", ["fetch", "origin", branch], cwd);
     if ((yield* exists(`origin/${branch}`)).code === 0) return { base: `origin/${branch}` };
@@ -478,6 +484,10 @@ const reviewedBranch = Effect.fn("worktree.reviewedBranch")(function* (
     );
     if (view.code !== 0) return { refused: `glab could not read !${mr.iid}` };
     const seen = Schema.decodeUnknownOption(MrViewJson)(view.stdout).pipe(Option.getOrUndefined);
+    // A fork's branch is not on this checkout's remote, and a local one of the same name is other work.
+    if (seen?.source_project_id !== seen?.target_project_id) {
+      return { refused: `!${mr.iid} comes from a fork, so its branch is not in this checkout` };
+    }
     const source = seen?.source_branch?.trim();
     return source
       ? { branch: source, reviewed: true }

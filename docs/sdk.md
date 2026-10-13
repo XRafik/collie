@@ -561,9 +561,16 @@ const place = yield * host.place((yield * Run).id);
 //                   so on: whose agents `askRoute` and `handOffWork` may reach
 ```
 
-`place.cwd` is decided before your body runs, and your body never makes a checkout. A
-workflow that [declares](#what-a-definition-declares) `checkout` is given a worktree of its
-own there; every other one works where it was started, and a child where its parent works.
+`place.cwd` is decided before your body runs. A workflow that
+[declares](#what-a-definition-declares) `checkout` is given a worktree of its own there;
+every other one works where it was started, and a child where its parent works. One call
+moves it: `host.checkoutReviewed(runId)` asks for the checkout of the branch the Run's
+diff target names — the one git already has, or one cut from that branch — and records it
+as the Run's own, so read `place` again after it rather than keeping `place.cwd`
+([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). It answers
+`{ cwd, branch }`, or `{ refused }` in the resolver's own words where the target has no
+branch to work on; asking again answers from the record. Take it inside an `Activity`, so a
+replay does not cut a second checkout. Shipped `review` takes it before its own fixer starts.
 
 `place.dir` is where what a Run produces belongs, and where the things that read a Run look:
 a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its findings in

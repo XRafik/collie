@@ -348,8 +348,11 @@ Task is (ADR-0006). A Workflow declares one — `checkout` in its metadata — a
 cuts it at admission, before the Run exists, from the checkout the Run starts from: a
 directory that is not a git checkout is refused, named. `implement` and `renovate` declare
 one; `plan`, `architecture` and `review` declare none, and the `implement` they chain into
-is placed by its own declaration, in the same Task. A Renovate Run's is the one that holds
-no branch — see Renovate Run.
+is placed by its own declaration, in the same Task. A `review` Run that fixes its own
+findings is given the reviewed branch's checkout when the fix starts, and from then on that
+checkout is the Run's: what it verifies is that tree
+([ADR-0054](docs/adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A
+Renovate Run's is the one that holds no branch — see Renovate Run.
 
 Two managers, and a Run records which: Collie makes the checkout with `git worktree add`
 by default, and `--input workspace=new` asks herdr for it instead, which opens it as a
