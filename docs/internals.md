@@ -1031,6 +1031,32 @@ default timeout is 30 seconds rather than Bun's five: a test that starts process
 slower on a busy machine, and that is not a hang. For debugging, `bun test
 ./test/engine.test.ts` runs one file against the sources, without workers.
 
+One whole suite runs at a time on a Machine, per user. `bun run test` takes a lock,
+`collie-test-suite-<uid>.lock` in `TMPDIR`, and a second waits its turn: it prints once who
+holds the lock — the pid, its command line and when it started — and then, every 30
+seconds, how long it has waited (`tools/suite-lock.ts`). Which forms take the lock:
+
+- `bun run check`, `bun run test`, and `bun run test <args>`, whose arguments go to
+  `bun test` inside the lock: a focused run through the script still waits for a whole
+  suite.
+- `bun test <file>`, `bun test -t <name>` and `bun run test:live` do not: they run the
+  sources directly, beside whatever suite is running.
+
+### Tests against an installed harness
+
+A handful of tests ask the installed Claude, Codex, OpenCode and Pi whether they still take what
+Collie's adapters pass them, Pi's version floor among them. Their answer depends on the
+version installed on the machine, so they are never part of `bun run test` or `bun run
+check`: `onMachineWith` (`test/support/live.ts`) runs them only where
+`COLLIE_LIVE_HARNESSES=1` is set and the harness is on `PATH`, and the suite runner drops
+that variable. `bun run test:live` sets it for the files that hold them, and `test/live-tests.test.ts`
+fails where a file of them is missing from that script. A harness
+that is not installed is skipped even then, so a machine with some of them checks those.
+
+Run them when a change touches a harness adapter — how an agent is launched in
+`src/agents.ts` or `src/harness.ts`, or a harness's controls in `src/compactors.ts` — or
+compaction in `src/compaction.ts`, and after upgrading a harness.
+
 Bun records file durations in `.scratch/test-timings.json` and uses them to schedule slow
 files first next time. When that file is absent, the runner seeds it from the measured
 durations in `tools/test-timings.json`, so a fresh checkout starts its longest files first

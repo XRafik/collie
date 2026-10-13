@@ -23,13 +23,20 @@ import { resolve } from "node:path";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import solidPlugin from "@opentui/solid/bun-plugin";
 import { Effect } from "effect";
-import { lockHolder, withLock } from "../src/lock";
+import { inTurn } from "./suite-lock";
 import { sweepDeadRoots } from "../test/support/sweep";
+import { LIVE_HARNESSES } from "../test/support/live-switch";
 
 const out = resolve(".scratch/test-bin");
 const collie = `${out}/collie`;
 const herdr = `${out}/fake-herdr`;
 const forge = `${out}/fake-forge`;
+
+/** This environment, less the switch for live-harness tests, which only `test:live` sets. */
+const suiteEnv = () => {
+  const { [LIVE_HARNESSES]: _, ...rest } = process.env;
+  return rest;
+};
 
 const suite = Effect.promise(async () => {
   const started = performance.now();
@@ -78,7 +85,7 @@ const suite = Effect.promise(async () => {
     ],
     {
       env: {
-        ...process.env,
+        ...suiteEnv(),
         COLLIE_TEST_BINARY: collie,
         COLLIE_TEST_FAKE_HERDR: herdr,
         COLLIE_TEST_FAKE_FORGE: forge,
@@ -92,16 +99,9 @@ const suite = Effect.promise(async () => {
 
 // Per user, so one user's suite never waits on a lock it cannot break.
 const lock = `${tmpdir()}/collie-test-suite-${process.getuid?.() ?? "user"}.lock`;
-const turn = (claims: number) => withLock(lock, Effect.succeed(null), suite, claims);
 
 BunRuntime.runMain(
-  Effect.gen(function* () {
-    const now = yield* turn(1);
-    if (now !== null) return now;
-    const holder = yield* lockHolder(lock);
-    console.error(`test: waiting for the suite in process ${holder?.pid ?? "?"} to finish`);
-    return (yield* turn(Number.MAX_SAFE_INTEGER)) ?? 1;
-  }).pipe(
+  inTurn(lock, suite, (line) => Effect.sync(() => console.error(line))).pipe(
     Effect.flatMap((code) => Effect.sync(() => process.exit(code))),
     Effect.provide(BunServices.layer),
   ),
