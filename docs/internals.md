@@ -1141,3 +1141,16 @@ another suite, so its external wall time is not a useful execution comparison. T
 runner now prints its time including builds after it takes the suite lock, excluding
 queuing. Startup improved, but the overall gain is within the full suite's observed
 variation. Reporting and resume are now the longest files, each about 94–95 s.
+
+A further split moved the three reporting harness cases and the first resume collection
+case into two more files, with shared fixtures and every assertion and timer retained.
+All 2,644 tests passed, but the suite took 105.34 s including builds (102.57 s in Bun).
+The workflow files and remaining reporting file slowed under that distribution of work.
+The split was reverted.
+
+The old checked-in scheduling seed covered 183 files and omitted both reporting and
+resume. Starting with that seed and no saved timings passed all 2,644 tests in 143.36 s
+including builds (140.82 s in Bun). Refreshing the seed from measured durations for all
+196 current files, again with no saved timings, passed in 97.79 s including builds
+(95.32 s in Bun). This improves a fresh checkout by 32%; durations only are saved, and
+every test still runs. Later runs continue replacing those estimates with local timings.
