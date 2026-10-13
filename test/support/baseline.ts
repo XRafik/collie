@@ -17,6 +17,8 @@ import { Rig, FakeHerdr } from "./recorder";
 import { exec } from "./command";
 import { fastForward, runEffect } from "./effect";
 import { FakeBin } from "./bin";
+import { CLI, FORGE_HOST, PROJECT, forgeOnPath, type ForgeModel } from "./forge";
+import { mrTarget, type MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
 import { Children, Host, Run, WorkflowError, type ActionFacts, type ChildAsk } from "../../src/sdk";
@@ -46,6 +48,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  general: "odd-job",
 } as const;
 type Shipped = keyof typeof UNRELATED;
 
@@ -116,6 +119,13 @@ const children = Layer.succeed(Children)(
 /** A host layer a test may wrap, for the one capability it has no service to answer with. */
 type HostOverride = Layer.Layer<Host, never, Host>;
 
+/** The host's own layers, placing checkouts through the rig's herdr. */
+const foundation = () => ({
+  dir,
+  userDir: rig.userDir,
+  placing: { herdr: hostOf().herdr, env: hostOf().env },
+});
+
 const session = <A, E>(
   run: Effect.Effect<
     A,
@@ -136,8 +146,8 @@ const session = <A, E>(
     Effect.provide(children),
     Effect.provide(
       override === undefined
-        ? foundationLayer({ dir, userDir: rig.userDir })
-        : override.pipe(Layer.provideMerge(foundationLayer({ dir, userDir: rig.userDir }))),
+        ? foundationLayer(foundation())
+        : override.pipe(Layer.provideMerge(foundationLayer(foundation()))),
     ),
     Effect.scoped,
     Effect.orDie,
@@ -1127,6 +1137,13 @@ scenario(
           fixed: [{ title: "the guard is on the wrong side", file: "src/a.ts" }],
         };
         yield* rig.queueOutputs([SYNTHESIS, fixed, settled]);
+        yield* repository();
+        yield* exec(["git", "branch", "fix-the-guard"], { cwd: rig.projectDir });
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add(
+          "glab",
+          `[ "$1 $2" = "mr view" ] && echo '{"source_branch": "fix-the-guard"}'; exit 0`,
+        );
         const target = "mr:gitlab.example.com/group/project!42";
         const rows = yield* parked({
           entry: shipped("review"),
@@ -1134,7 +1151,7 @@ scenario(
           input: { target },
           decision: "post-1",
         });
-        expect(optionsOf(rows, "post-1")).toContain("Post to MR");
+        expect(optionsOf(rows, "post-1")).toContain("Post to merge request");
 
         yield* answeredThen({
           entry: shipped("review"),
@@ -1148,9 +1165,10 @@ scenario(
         // The fix is reviewed again at once: a round of the rally, not a fix taken on its word.
         expect(yield* prompts()).toHaveLength(3);
         expect(yield* asked("r-review-mr", "review-2-1")).toContain("Iteration 2");
-        expect(yield* asked("r-review-mr", "fix")).toContain(
-          "glab mr checkout <iid> --repo gitlab.example.com/group/project",
-        );
+        const fix = yield* asked("r-review-mr", "fix");
+        expect(fix).toContain(`Project root: ${rig.root}/.herdr/worktrees/project/fix-the-guard`);
+        expect(fix).toContain("the checkout of `fix-the-guard`");
+        expect(fix).not.toContain("glab mr checkout");
         expect(yield* persona("r-review-mr", "fix")).toContain("You are an implementer");
         // Nothing is left to fix after a clean review, so fixing is not offered again.
         const rows2 = yield* parked({
@@ -1164,6 +1182,91 @@ scenario(
     ),
   120_000,
 );
+
+const REVIEWED = {
+  gitlab: {
+    diff: "glab mr diff '30' --repo 'gitlab.example.com/group/app'",
+    view: "glab mr view '30' --repo 'gitlab.example.com/group/app'",
+    other: "gh",
+  },
+  github: {
+    diff: "gh pr diff '30' --repo 'owner/repo'",
+    view: "gh pr view '30' --repo 'owner/repo'",
+    other: "glab",
+  },
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  const noun = name === "gitlab" ? "merge request" : "pull request";
+  const target = mrTarget(PROJECT[name], "30");
+  /** The forge on PATH, holding the one merge request this review is of. */
+  const reviewing = () =>
+    Effect.gen(function* () {
+      const bin = yield* FakeBin.make(`${rig.root}/bin`);
+      const forge = yield* forgeOnPath(bin, name, {
+        installed: true,
+        loggedIn: [FORGE_HOST[name]],
+        login: "tester",
+        mrs: [{ project: PROJECT[name], iid: "30", state: "open", author: "ann" }],
+      });
+      return { bin, forge };
+    });
+  const posted = (runId: string, synthesis: typeof SYNTHESIS) =>
+    Effect.gen(function* () {
+      const { bin, forge } = yield* reviewing();
+      yield* rig.queueOutputs([synthesis]);
+      const rows = yield* parked({
+        entry: shipped("review"),
+        runId,
+        input: { target },
+        decision: "post-1",
+      });
+      expect(optionsOf(rows, "post-1")).toContain(`Post to ${noun}`);
+      const review = yield* asked(runId, "review-1");
+      expect(review).toContain(REVIEWED[name].diff);
+      expect(review).toContain(REVIEWED[name].view);
+      expect(review).not.toMatch(new RegExp(`\\b${REVIEWED[name].other}\\b`));
+      const result = yield* answered({
+        entry: shipped("review"),
+        runId,
+        input: { target },
+        decision: "post-1",
+        value: `Post to ${noun}`,
+      });
+      yield* bin.restore();
+      return { said: said(result), model: yield* forge.model() };
+    });
+
+  scenario(
+    `a review of a ${name} ${noun} reads it with that forge's commands, and posting a clean one approves it`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const clean = { ...SYNTHESIS, verdict: "clean", findings: [] };
+          const { said: message, model } = yield* posted(`r-review-${name}-clean`, clean);
+          expect(message).toContain("and approved it");
+          expect(Object.values(model.notes ?? {})).toHaveLength(1);
+          expect(model.approved).toHaveLength(1);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `posting a review of a ${name} ${noun} with findings left notes it and approves nothing`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { said: message, model } = yield* posted(`r-review-${name}-findings`, SYNTHESIS);
+          expect(message).toContain("posted the review to");
+          expect(message).not.toContain("approve");
+          expect(Object.values(model.notes ?? {})).toHaveLength(1);
+          expect(model.approved ?? []).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+}
 
 scenario(
   "fix findings goes on by itself until a review is clean",
@@ -1179,7 +1282,8 @@ scenario(
         };
         const clean = { ...SYNTHESIS, verdict: "clean", findings: [] };
         yield* rig.queueOutputs([SYNTHESIS, fixed, other, fixed, clean]);
-        const target = "branch:main...HEAD";
+        const reviewed = yield* reviewedBranch();
+        const target = "branch:main...feature";
         yield* parked({
           entry: shipped("review"),
           runId: "r-rally",
@@ -1198,8 +1302,128 @@ scenario(
         expect(yield* prompts()).toHaveLength(5);
         // Pointed at the review it follows, which is where the second round's finding is.
         expect(yield* asked("r-rally", "fix-2")).toContain(`${runDir(dir, "r-rally")}/review.md`);
+        expect(yield* asked("r-rally", "fix")).toContain(`Project root: ${reviewed}`);
+        expect(yield* asked("r-rally", "fix-2")).toContain(`Project root: ${reviewed}`);
+        const listed = yield* exec(["git", "worktree", "list", "--porcelain"], {
+          cwd: rig.projectDir,
+        });
+        expect(listed.stdout.match(/^branch refs\/heads\/feature$/gm)).toHaveLength(1);
         // A clean review still asks, so a merge request review can still be posted.
         expect(optionsOf(rows, "post-2")).not.toContain("Fix findings");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a review's fix works in the reviewed branch's own checkout, and is verified there",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const reviewed = yield* reviewedBranch();
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(evidenceDir(dir, "r-fix-tree"), { recursive: true });
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, "r-fix-tree")}/approved.json`,
+          asApproved([{ name: "unit", executable: "true", argv: [], cwd: "worktree" }]),
+        );
+        const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
+        yield* rig.queueOutputs([
+          SYNTHESIS,
+          fixed,
+          { ...SYNTHESIS, verdict: "clean", findings: [] },
+        ]);
+        const target = "branch:main...feature";
+        yield* parked({
+          entry: shipped("review"),
+          runId: "r-fix-tree",
+          input: { target },
+          decision: "post-1",
+        });
+        yield* answeredThen({
+          entry: shipped("review"),
+          runId: "r-fix-tree",
+          input: { target },
+          decision: "post-1",
+          value: "Fix findings",
+          until: "post-2",
+        });
+
+        const verified = (cwd: string) =>
+          session(
+            Host.pipe(
+              Effect.flatMap((host) => host.verify({ runId: "r-fix-tree", name: "unit", cwd })),
+              Effect.result,
+            ),
+          );
+        const there = yield* verified(reviewed);
+        expect(there._tag === "Failure" ? there.failure.reason : "").toBe("");
+        expect(
+          (yield* readVerifications(evidenceDir(dir, "r-fix-tree"))).map((one) => one.cwd),
+        ).toEqual([reviewed]);
+        const started = yield* verified(rig.projectDir);
+        expect(started._tag === "Failure" ? started.failure.reason : "").toContain(
+          "is not inside run r-fix-tree",
+        );
+
+        const fix = yield* asked("r-fix-tree", "fix");
+        expect(fix).toContain(`Project root: ${reviewed}`);
+        expect(fix).toContain(`collie verify --run r-fix-tree --cwd ${reviewed} -- <command>`);
+        expect(fix).not.toContain("Do not push");
+        expect(fix).toContain("has an open merge request");
+        expect(fix).toContain("never force");
+        expect(fix).toContain("merges itself once green");
+        expect(fix).toContain("has no open merge request, do not push");
+        expect(fix).toContain("Never open or edit a merge request, and never comment");
+        const section = fix.slice(fix.indexOf("The review is written"), fix.indexOf("OUTPUT_PATH"));
+        expect(section).not.toMatch(/\b(glab|gh) /);
+        expect(yield* asked("r-fix-tree", "review-2-1")).toContain(`Project root: ${reviewed}`);
+
+        const row = yield* session(Store.pipe(Effect.flatMap((store) => store.run("r-fix-tree"))));
+        const placed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))(
+          row?.checkout ?? "null",
+        );
+        expect(placed).toMatchObject({
+          cwd: reviewed,
+          branch: "feature",
+          workspace: null,
+          worktree: { path: reviewed, managed_by: "git", created_by_collie: false },
+        });
+        expect(row?.task).toBeNull();
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a review with no branch to fix starts no fixer, says why, and asks again",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* repository();
+        yield* rig.queueOutputs([SYNTHESIS]);
+        const target = "branch:main...HEAD";
+        yield* parked({
+          entry: shipped("review"),
+          runId: "r-fix-none",
+          input: { target },
+          decision: "post-1",
+        });
+        const rows = yield* answeredThen({
+          entry: shipped("review"),
+          runId: "r-fix-none",
+          input: { target },
+          decision: "post-1",
+          value: "Fix findings",
+          until: "post-2",
+        });
+
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(`${runDir(dir, "r-fix-none")}/log.txt`)).toContain(
+          "HEAD is not a branch, so there is nothing to fix on it",
+        );
+        expect(optionsOf(rows, "post-2")).toContain("Fix findings");
       }),
     ),
   120_000,
@@ -1215,7 +1439,8 @@ scenario(
           ...SYNTHESIS,
           findings: [{ severity: "major", title, file: "src/a.ts" }],
         });
-        const target = "branch:main...HEAD";
+        yield* reviewedBranch();
+        const target = "branch:main...feature";
         yield* rig.queueOutputs([
           SYNTHESIS,
           ...["a", "b", "c", "d"].flatMap((title) => [fixed, raising(title)]),
@@ -1249,7 +1474,8 @@ scenario(
     runEffect(
       Effect.gen(function* () {
         const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
-        const target = "branch:main...HEAD";
+        yield* reviewedBranch();
+        const target = "branch:main...feature";
         // The same finding back after a fix is a round that changed nothing: the human decides.
         yield* rig.queueOutputs([SYNTHESIS, fixed, SYNTHESIS]);
         yield* parked({
@@ -1404,17 +1630,25 @@ scenario("what a finished Run of each shipped module offers is the module's own 
       expect(yield* declaredIn(shipped("architecture"))).toEqual([]);
 
       // A renovation that failed holding the claim offers to recover it, on the repository
-      // it was started on; one that failed holding nothing has nothing to recover.
+      // it was started on; one that failed holding nothing offers to renovate it again.
       const renovate = yield* declaredIn(shipped("renovate"));
       const failed = facts({ succeeded: false, claim: "project" });
       const recovery = offersFrom(renovate, failed, { self: idOf("renovate") });
       expect(recovery.map((offer) => [offer.id, offer.workflow])).toEqual([
         ["recover", idOf("renovate")],
       ]);
-      expect(offersFrom(renovate, facts({ succeeded: false }))).toEqual([]);
+      const unclaimed = facts({ succeeded: false });
+      const again = offersFrom(renovate, unclaimed, { self: idOf("renovate") });
+      expect(again.map((offer) => [offer.id, offer.workflow])).toEqual([
+        ["renovate-again", idOf("renovate")],
+      ]);
+      expect(offersFrom(renovate, facts({ succeeded: true }))).toEqual([]);
       const repository = "https://gitlab.example.com/team/project";
       expect(
         inputsFor(recovery[0]!, { runDir: "/r", facts: failed, input: { repository } }),
+      ).toEqual({ repository });
+      expect(
+        inputsFor(again[0]!, { runDir: "/r", facts: unclaimed, input: { repository } }),
       ).toEqual({ repository });
     }),
   ),
@@ -1522,6 +1756,17 @@ const repository = () =>
       yield* exec(["git", ...args], { cwd: rig.projectDir });
     }
     yield* exec(["git", "commit", "-qm", "first", "--allow-empty"], { cwd: rig.projectDir });
+  });
+
+/** A real repository whose `feature` branch has a checkout of its own, as a reviewed branch does. */
+const reviewedBranch = () =>
+  Effect.gen(function* () {
+    yield* repository();
+    const checkout = `${rig.root}/reviewed`;
+    yield* exec(["git", "worktree", "add", "-q", "-b", "feature", checkout], {
+      cwd: rig.projectDir,
+    });
+    return checkout;
   });
 
 /** A plan of tickets on disk, which is the only thing that makes a build a list. */
@@ -1777,7 +2022,7 @@ scenario(
           { file: "01-first.md", title: "the first one", checks: "unit" },
           { file: "02-second.md", title: "the second one", checks: "unit" },
         ]);
-        yield* approve("r-impl-build-findings", ["unit"]);
+        yield* approve("r-impl-build-findings", []);
         const finding = {
           severity: "major",
           title: "the agent reported a missing guard",
@@ -1785,7 +2030,10 @@ scenario(
           detail: "an empty list goes through it",
         };
         yield* rig.queueOutputs([
-          { ...BUILT, verdict: "findings", findings: [finding] },
+          {
+            writes: [naming("r-impl-build-findings", ["unit"])],
+            output: { ...BUILT, verdict: "findings", findings: [finding] },
+          },
           { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [finding] },
           { verdict: "clean", fixed: [{ title: finding.title, file: finding.file }], checks: [] },
           CLEAN_SYNTHESIS,
@@ -1806,7 +2054,9 @@ scenario(
         expect(review).toContain(finding.title);
         expect(review).toContain("01-first.md");
         expect(review).toContain("Later tickets have not started");
-        expect(yield* asked("r-impl-build-findings", "01-first.md.fix-1")).toContain(finding.title);
+        const fix = yield* asked("r-impl-build-findings", "01-first.md.fix-1");
+        expect(fix).toContain(finding.title);
+        expect(fix).toContain(`- unit: true (in ${rig.projectDir})`);
         expect(yield* asked("r-impl-build-findings", "01-first.md.review-2-1")).toContain(
           `${dir}/agents/r-impl-build-findings/01-first.md.fix-1.json`,
         );
@@ -2674,52 +2924,141 @@ scenario(
   120_000,
 );
 
-scenario(
-  "implement prepares GitHub delivery for the existing branch's pull request",
-  () =>
-    runEffect(
-      Effect.gen(function* () {
-        const bin = yield* FakeBin.make(`${rig.root}/bin`);
-        yield* bin.add(
-          "gh",
-          `case "$1" in api) echo '{"login":"tester"}';; repo) echo '{"nameWithOwner":"team/project"}';; esac; exit 0`,
-        );
-        yield* repository();
-        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:team/project.git"], {
-          cwd: rig.projectDir,
-        });
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        const runId = "r-impl-github";
-        const url = "https://github.com/team/project/pull/89";
-        yield* approve(runId, ["unit"]);
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, { ...OPENED, mr_url: url }]);
-        const status = yield* running(
-          { entry: shipped("implement"), runId, input: { plan } },
-          (reading) =>
-            until(
-              () => reading,
-              (got) => got !== "pending",
-            ),
-        );
-        expect(status).toBe("complete");
-        const builder = yield* persona(runId, "build");
-        expect(builder).toContain("Before every GitHub push");
-        expect(builder).toContain("git remote get-url origin");
-        expect(builder).toContain("gh pr list --repo <origin-owner/repository> --head");
-        expect(builder).toContain("--json number,autoMergeRequest");
-        expect(builder).toContain("the read fails or any result has auto-merge enabled");
-        const prompt = yield* asked(runId, "mr");
-        expect(prompt).toContain("Forge: `github`");
-        expect(prompt).toContain("gh pr view");
-        expect(prompt).toContain("gh pr edit");
-        expect(prompt).toContain("--repo team/project");
-        expect(prompt).toContain("Do **not** open a second");
-        expect(yield* prompts()).toHaveLength(3);
-        yield* bin.restore();
-      }),
-    ),
-  120_000,
-);
+const DELIVERY = {
+  gitlab: { origin: "git@gitlab.example.com:group/app.git", other: "gh" },
+  github: { origin: "git@github.com:owner/repo.git", other: "glab" },
+} as const;
+
+/** A checkout on `name`'s forge, its fake on PATH, and the other forge's CLI there to be unasked. */
+const deliveringOn = (name: MrForge, mrs: ForgeModel["mrs"] = []) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    const forge = yield* forgeOnPath(bin, name, {
+      installed: true,
+      loggedIn: [FORGE_HOST[name]],
+      login: "tester",
+      mrs,
+    });
+    const other = yield* forgeOnPath(bin, name === "gitlab" ? "github" : "gitlab", {
+      installed: true,
+      loggedIn: [],
+      login: null,
+      mrs: [],
+    });
+    yield* repository();
+    yield* exec(["git", "remote", "set-url", "origin", DELIVERY[name].origin], {
+      cwd: rig.projectDir,
+    });
+    // An old GitLab remote beside origin does not make the checkout GitLab's.
+    yield* exec(["git", "remote", "add", "gitlab", "git@gitlab.example.com:old/app.git"], {
+      cwd: rig.projectDir,
+    });
+    return { bin, forge, other };
+  });
+
+for (const name of ["gitlab", "github"] as const) {
+  const noun = name === "gitlab" ? "merge request" : "pull request";
+
+  scenario(
+    `implement opens a ${noun} on a ${name} checkout with that forge's own command`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, other } = yield* deliveringOn(name);
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-open`;
+          yield* approve(runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+          const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+          yield* bin.restore();
+          expect(said(result)).toBe(OPENED.mr_url);
+          const prompt = yield* asked(runId, "mr");
+          expect(prompt).toContain(`${CLI[name]} ${name === "gitlab" ? "mr" : "pr"} create`);
+          expect(prompt).toContain("--assignee tester");
+          expect(prompt).not.toMatch(new RegExp(`\\b${DELIVERY[name].other}\\b`));
+          // Branch naming and readiness asked this forge alone.
+          expect(yield* other.calls()).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement updates a ${name} branch's open ${noun} rather than opening a second`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          // The fake checkout stands on master, which is the branch the step reads.
+          const { bin } = yield* deliveringOn(name, [
+            { project: PROJECT[name], iid: "31", state: "open", sourceBranch: "master" },
+          ]);
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-existing`;
+          yield* approve(runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+          yield* ran({
+            entry: shipped("implement"),
+            runId,
+            input: { plan },
+          });
+          yield* bin.restore();
+          const prompt = yield* asked(runId, "mr");
+          expect(prompt).toContain(name === "gitlab" ? "glab mr note '31'" : "gh pr comment '31'");
+          expect(prompt).toContain(
+            name === "gitlab"
+              ? "https://gitlab.example.com/group/app/-/merge_requests/31"
+              : "https://github.com/owner/repo/pull/31",
+          );
+          expect(prompt).toContain(`Do **not** open a second ${noun}`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement does not push to a ${name} ${noun} that merges itself once green`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* deliveringOn(name, [
+            {
+              project: PROJECT[name],
+              iid: "31",
+              state: "open",
+              sourceBranch: "master",
+              autoMerge: true,
+            },
+          ]);
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-auto-merge`;
+          yield* approve(runId, ["unit"]);
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS]);
+          const result = yield* ran({
+            entry: shipped("implement"),
+            runId,
+            input: { plan },
+          });
+          yield* bin.restore();
+          const why = `not pushed: auto-merge is on for ${
+            name === "gitlab"
+              ? "https://gitlab.example.com/group/app/-/merge_requests/31"
+              : "https://github.com/owner/repo/pull/31"
+          }`;
+          expect(said(result)).toBe(why);
+          expect(yield* prompts()).toHaveLength(2);
+          const fs = yield* FileSystem.FileSystem;
+          expect(yield* fs.readFileString(`${runDir(dir, runId)}/log.txt`)).toContain(why);
+        }),
+      ),
+    120_000,
+  );
+}
 
 scenario(
   "implement fails when the delivery agent has not pushed and supplied a merge request",
@@ -2895,36 +3234,71 @@ const parkedWhy = (runId: string) =>
     Effect.orElseSucceed(() => ""),
   );
 
+/** What `collie run intent verification` leaves for a Run: its checks, as the host keeps them. */
+const naming = (runId: string, names: ReadonlyArray<string>) => ({
+  path: `${evidenceDir(dir, runId)}/approved.json`,
+  text: asApproved(
+    names.map((name) => ({ name, executable: "true", argv: [], cwd: rig.projectDir })),
+  ),
+});
+
+const GATE_FIX = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
+
 scenario(
-  "a Run with nothing approved to prove it stops before any agent, and says how to approve something",
+  "a Run with no checks builds without waiting, is asked to name them, and is held until one is",
   () =>
     runEffect(
       Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
         yield* repository();
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
         yield* approve("r-impl-none", []);
-
-        const status = yield* stalled({
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, GATE_FIX, GATE_FIX, GATE_FIX]);
+        const options = {
           entry: shipped("implement"),
           runId: "r-impl-none",
           input: { plan },
-        });
+          options: { outcome: "feature" },
+        };
 
-        expect(status).toBe("suspended");
-        expect(yield* rig.cmds()).not.toContain("agent start");
-        const why = yield* parkedWhy("r-impl-none");
-        // This Run can still be proved; the file only helps the Runs started after it.
-        expect(why).toContain("collie run intent verification r-impl-none --name");
-        expect(why).toContain("collie run resume r-impl-none");
-        expect(why).toContain(".collie/verify.json");
-        expect(why).toContain("only when it starts");
+        expect(yield* stalled(options)).toBe("suspended");
+        const building = yield* asked("r-impl-none", "build");
+        expect(building).toContain("(no check is named for this Run yet)");
+        expect(building).toContain("collie run intent verification r-impl-none --name <name>");
+        for (const at of [1, 2, 3, 4])
+          expect(yield* asked("r-impl-none", `gate-fix-${at}`)).toContain("no check is named");
+        expect(yield* parkedWhy("r-impl-none")).toContain("no check is named");
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/r-impl-none/mr.prompt.md`)).toBe(false);
+        expect(
+          yield* session(Store.pipe(Effect.flatMap((store) => store.asked("r-impl-none")))),
+        ).toEqual([]);
+
+        yield* approve("r-impl-none", ["unit"]);
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          OPENED,
+        ]);
+        expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
+        yield* bin.restore();
+        expect(yield* parkedWhy("r-impl-none")).toBe("");
+        const opening = yield* asked("r-impl-none", "mr");
+        expect(opening).toMatch(/- unit: \S*true \(in /);
+        expect(opening).toContain("- unit: pass (by collie)");
+        expect((yield* prompts()).filter((one) => one.includes("build-step-1"))).toHaveLength(1);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "the same Run, granted a verification and resumed, builds and is held to it at its gate",
+  "a check the builder names is run by Collie at the gate and listed in the merge request, with nothing asked",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -2932,69 +3306,68 @@ scenario(
         yield* bin.add("glab", `exit 0`);
         yield* repository();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        yield* approve("r-impl-grant", []);
-        yield* stalled({ entry: shipped("implement"), runId: "r-impl-grant", input: { plan } });
-
-        yield* approve("r-impl-grant", ["unit"]);
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-        const result = yield* resumed({
+        yield* approve("r-impl-named", []);
+        yield* rig.queueOutputs([
+          { writes: [naming("r-impl-named", ["unit"])], output: BUILT },
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const result = yield* ran({
           entry: shipped("implement"),
-          runId: "r-impl-grant",
+          runId: "r-impl-named",
           input: { plan },
+          options: { outcome: "feature" },
         });
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
-        expect(yield* parkedWhy("r-impl-grant")).toBe("");
-        expect(yield* asked("r-impl-grant", "build")).toContain(
-          `- unit: true (in ${rig.projectDir})`,
-        );
-        const opening = yield* asked("r-impl-grant", "mr");
-        expect(opening).toContain("unit");
-        expect(opening).toContain("by collie");
+        expect(yield* parkedWhy("r-impl-named")).toBe("");
+        const opening = yield* asked("r-impl-named", "mr");
+        // Listed with the command Collie spawned for it, and its run by Collie.
+        expect(opening).toMatch(/- unit: \S*true \(in /);
+        expect(opening).toContain("- unit: pass (by collie)");
+        expect(
+          yield* session(Store.pipe(Effect.flatMap((store) => store.asked("r-impl-named")))),
+        ).toEqual([]);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "a grant emptied while the Run works stops it at its gate with the same repair, not an empty approval",
+  "checks withdrawn to none while the Run works are held exactly as checks never named",
   () =>
     runEffect(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
         yield* repository();
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
         yield* approve("r-impl-emptied", ["unit"]);
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-        // A human withdraws the last grant once the build has been handed out.
-        let asks = 0;
-        const withdrawn: HostOverride = Layer.effect(Host)(
-          Effect.gen(function* () {
-            const host = yield* Host;
-            return Host.of({
-              ...host,
-              approved: (runId) => ((asks += 1) === 1 ? host.approved(runId) : Effect.succeed([])),
-            });
-          }),
-        );
+        yield* rig.queueOutputs([
+          { writes: [naming("r-impl-emptied", [])], output: BUILT },
+          CLEAN_SYNTHESIS,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+        ]);
 
         const status = yield* stalled({
           entry: shipped("implement"),
           runId: "r-impl-emptied",
           input: { plan },
-          host: withdrawn,
         });
         yield* bin.restore();
 
         expect(status).toBe("suspended");
-        expect(yield* parkedWhy("r-impl-emptied")).toContain(
-          "collie run intent verification r-impl-emptied --name",
+        expect(yield* asked("r-impl-emptied", "build")).toContain(
+          `- unit: true (in ${rig.projectDir})`,
         );
-        // Stopped at the gate: built and reviewed, and nobody asked to open anything.
-        expect(yield* prompts()).toHaveLength(2);
-        // Nor asked to approve a list with nothing in it.
+        expect(yield* asked("r-impl-emptied", "gate-fix-1")).toContain("no check is named");
+        expect(yield* parkedWhy("r-impl-emptied")).toContain("no check is named");
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/r-impl-emptied/mr.prompt.md`)).toBe(false);
         expect(
           yield* session(Store.pipe(Effect.flatMap((store) => store.asked("r-impl-emptied")))),
         ).toEqual([]);
@@ -3004,7 +3377,7 @@ scenario(
 );
 
 scenario(
-  "a Run whose outcome needs no evidence is not stopped for having nothing approved",
+  "a Run whose outcome needs no evidence is not stopped for having no checks",
   () =>
     runEffect(
       // Its agent never answers, so what it waits on is the clock.
@@ -3014,7 +3387,7 @@ scenario(
           yield* approve("r-impl-inv", []);
           yield* rig.queueOutputs([null]);
 
-          // Its agent writes nothing, which parks it for that; never for what was approved.
+          // Its agent writes nothing, which parks it for that; never for having no checks.
           const why = yield* parkedOn({
             entry: shipped("implement"),
             runId: "r-impl-inv",
@@ -3089,29 +3462,119 @@ const MERGED = {
 const RELEASED = { verdict: "clean", findings: [], version: "1.2.0", tagged: true };
 const RECORDED = { verdict: "clean", findings: [], checked_off: true, status: "renovated" };
 
+const RENOVATING = {
+  gitlab: {
+    origin: "git@gitlab.example.com:group/app.git",
+    preamble: "Repository checkout or GitLab URL",
+    create: "glab mr create --assignee whoever-is-configured",
+  },
+  github: {
+    origin: "git@github.com:owner/repo.git",
+    preamble: "Repository checkout or GitHub URL",
+    create: "gh pr create --assignee tester",
+  },
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  scenario(
+    `renovate on a ${name} checkout is given that forge's content, assigned as that forge assigns`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const bin = yield* renovatable();
+          yield* forgeOnPath(bin, name, {
+            installed: true,
+            loggedIn: [FORGE_HOST[name]],
+            login: "tester",
+            mrs: [],
+          });
+          yield* exec(["git", "remote", "set-url", "origin", RENOVATING[name].origin], {
+            cwd: rig.projectDir,
+          });
+          const runId = `r-ren-${name}`;
+          yield* rig.queueOutputs([
+            TRACKED,
+            { verdict: "clean", up_to_date: false, is_package: false, merge_requests: BUMPS },
+            { verdict: "clean", branch: "renovate/batch" },
+            { verdict: "clean", verified: false },
+          ]);
+          const result = yield* ran({
+            entry: shipped("renovate"),
+            runId,
+            input: {},
+            host: withoutHelle,
+          });
+          yield* bin.restore();
+          expect(reasonOf(result)).toContain("stage was not verified");
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["track", "assess", "batch", "stage"]) {
+            const prompt = yield* asked(runId, step);
+            expect(prompt).toContain(RENOVATING[name].preamble);
+            expect(prompt).not.toMatch(other);
+          }
+          expect(yield* asked(runId, "batch")).toContain(RENOVATING[name].create);
+        }),
+      ),
+    120_000,
+  );
+}
+
 scenario(
-  "renovate keeps its GitLab requirement when the origin is on GitHub",
+  "a fork's landing reads its forge, and gets the GitHub content on a GitHub checkout",
   () =>
     runEffect(
       Effect.gen(function* () {
-        const bin = yield* FakeBin.make(`${rig.root}/bin`);
-        yield* bin.add(
-          "gh",
-          `case "$1" in api) echo '{"login":"tester"}';; repo) echo '{"nameWithOwner":"team/project"}';; esac; exit 0`,
-        );
-        yield* repository();
-        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:team/project.git"], {
+        const fs = yield* FileSystem.FileSystem;
+        const fork = `${rig.root}/fork-on`;
+        yield* fs.makeDirectory(fork, { recursive: true });
+        for (const name of ["renovate.workflow.ts", "renovate.gitlab.md", "renovate.github.md"])
+          yield* fs.copyFile(`${ROOT}workflows/${name}`, `${fork}/${name}`);
+        yield* fs.copyFile(`${fixtures}/landing-on.workflow.ts`, `${fork}/landing-on.workflow.ts`);
+        const bin = yield* renovatable();
+        yield* forgeOnPath(bin, "github", {
+          installed: true,
+          loggedIn: ["github.com"],
+          login: "tester",
+          mrs: [],
+        });
+        yield* exec(["git", "remote", "set-url", "origin", RENOVATING.github.origin], {
           cwd: rig.projectDir,
         });
-        yield* rig.queueOutputs([
-          TRACKED,
-          { verdict: "clean", up_to_date: true, is_package: false },
-          { verdict: "clean", tagged: false, up_to_date: true },
-          RECORDED,
-        ]);
-        const result = yield* ran({ entry: shipped("renovate"), runId: "r-ren-github", input: {} });
+        yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        yield* ran({
+          entry: `${fork}/landing-on.workflow.ts`,
+          runId: "r-fork-on",
+          input: {},
+          host: withoutHelle,
+        });
         yield* bin.restore();
-        expect(said(result)).toBe("nothing to renovate here: renovate requires GitLab");
+        const merging = yield* asked("r-fork-on", "merge");
+        expect(merging).toContain("gh pr merge <n> --match-head-commit");
+        expect(merging).toContain("Here, squash every merge.");
+        expect(merging).not.toMatch(/\bglab\b/);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "renovate on a checkout on neither forge renovates nothing, and says why",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* renovatable();
+        yield* exec(["git", "remote", "set-url", "origin", "git@bitbucket.org:team/project.git"], {
+          cwd: rig.projectDir,
+        });
+        const result = yield* ran({
+          entry: shipped("renovate"),
+          runId: "r-ren-neither",
+          input: {},
+        });
+        yield* bin.restore();
+        expect(said(result)).toBe(
+          "nothing to renovate here: bitbucket.org is neither GitHub nor GitLab",
+        );
         expect(yield* prompts()).toHaveLength(0);
       }),
     ),
@@ -3302,7 +3765,7 @@ scenario(
         const fs = yield* FileSystem.FileSystem;
         const fork = `${rig.root}/fork`;
         yield* fs.makeDirectory(fork, { recursive: true });
-        for (const name of ["renovate.workflow.ts", "renovate.md"]) {
+        for (const name of ["renovate.workflow.ts", "renovate.gitlab.md", "renovate.github.md"]) {
           yield* fs.copyFile(`${ROOT}workflows/${name}`, `${fork}/${name}`);
         }
         yield* fs.copyFile(`${fixtures}/landing.workflow.ts`, `${fork}/landing.workflow.ts`);
@@ -3357,6 +3820,92 @@ scenario(
 
 /** A prompt with the Run it is about taken out, so two Runs' prompts can be compared. */
 const byRun = (prompt: string) => prompt.replaceAll(/r-(fork|shipped)/g, "<run>");
+
+const CHORE = "upgrade the VM's install to 0.45.1";
+const DONE = { summary: "Upgraded the VM's install to 0.45.1 and restarted the host." };
+
+scenario(
+  "a general Run launches one generalist on the goal and ends with its summary",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([DONE]);
+        const result = yield* ran({
+          entry: shipped("general"),
+          runId: "r-general",
+          input: { goal: CHORE },
+        });
+
+        expect(said(result)).toBe(DONE.summary);
+        const agents = yield* launched();
+        expect(agents).toHaveLength(1);
+        expect(agents[0]?.args).toContain("--model opus --effort medium");
+        const work = yield* asked("r-general", "task");
+        expect(work).toContain(CHORE);
+        expect(work).toContain(`Project root: ${rig.projectDir}`);
+        expect(work).toContain("collie run intent verification r-general --name");
+        expect(yield* persona("r-general", "task")).toContain("You are a generalist");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a general Run whose agent was blocked fails with the agent's reason",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ summary: "Nothing upgraded.", blocked: "the VM is down" }]);
+        const result = yield* ran({
+          entry: shipped("general"),
+          runId: "r-general-blocked",
+          input: { goal: CHORE },
+        });
+
+        expect(result._tag === "Failure" && result.failure).toBeInstanceOf(WorkflowError);
+        expect(reasonOf(result)).toBe("the VM is down");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a general Run at the Projects root is told the root is not a repository, and elsewhere is not",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([DONE, DONE]);
+        yield* ran({
+          entry: shipped("general"),
+          runId: "r-general-root",
+          input: { goal: CHORE },
+          options: { workspace: "projects-root" },
+        });
+        yield* ran({ entry: shipped("general"), runId: "r-general-here", input: { goal: CHORE } });
+
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "it is not a repository: find the\nrepository",
+        );
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "--cwd <its directory, relative to the project root>",
+        );
+        expect(yield* asked("r-general-here", "task")).not.toContain("it is not a repository");
+      }),
+    ),
+  120_000,
+);
+
+scenario("a general Run declares no checkout, no gate, no outcome and offers nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const described = yield* loadEntry(shipped("general")).pipe(Effect.orDie);
+      expect(described.metadata?.checkout).toBeUndefined();
+      expect(described.metadata?.outcome).toBeUndefined();
+      expect(described.metadata?.hints).toEqual({ goal: "goal" });
+      expect(declaredByModule(described.metadata)).toEqual([]);
+    }),
+  ),
+);
 
 /**
  * Registers one pass in the test file that calls it: every scenario as shipped, with the

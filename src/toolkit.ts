@@ -15,6 +15,7 @@ import {
   sectionOf,
   SECTIONS,
   type TaskView,
+  mrNounOf,
 } from "./board-model";
 import { isString, type JsonObject } from "./schema";
 
@@ -235,8 +236,7 @@ export const CollieTools = Toolkit.make(
     title: "What actually happened",
     description:
       "Everything one Run is waiting on the human for — the Choice it asks with how to " +
-      "answer it, an evidence gate with the checks it offers and how to approve them, and " +
-      "the proposals with their id and hash — and every message that has been sent " +
+      "answer it, and the proposals with their id and hash — and every message that has been sent " +
       "to its agents with the state each actually reached. `submitted` is that herdr took " +
       "it, `acknowledged` is that the agent wrote back, `verified` is that something " +
       "independent checked — they are three different facts and none of them stands in for " +
@@ -353,18 +353,13 @@ function cardLine(view: TaskView): string {
   const project = view.project === "" ? "" : ` (${view.project})`;
   const where =
     view.mr !== null
-      ? `, mr ${mrLabel(view.mr)}`
+      ? `, ${mrNounOf(view.mr)} ${mrLabel(view.mr)}`
       : view.branch !== null
         ? `, branch ${view.branch}`
         : "";
   const agents =
     view.agents.length === 0 ? "" : `, agents ${view.agents.map((agent) => agent.name).join(", ")}`;
-  const decision = view.decision;
-  const answered =
-    decision?.kind === "gate" && decision.run !== view.run
-      ? ` Its gate is answered on run ${decision.run}.`
-      : "";
-  return `- run ${view.run}: ${view.name}${project}, ${view.state}${where}${agents}. ${view.sentence}${answered}`;
+  return `- run ${view.run}: ${view.name}${project}, ${view.state}${where}${agents}. ${view.sentence}`;
 }
 
 /** The board as chat reads it: the header, then each section's cards in the board's order. */

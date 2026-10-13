@@ -60,6 +60,18 @@ revalidated, the capability gate in front of every send, and the request id as t
 so the same message twice is one message. What comes back says whether it was delivered, and
 never that it was accepted for sending.
 
+**Amended 2026-10-12: resume reports actual take-up.** Resume is applied when it wakes
+suspended work or recovery takes the named Run into the engine. Registration of an
+unrelated module and recovery of another Run do not count. Already running, finished,
+failed, and still unavailable Runs return not applied, with a reason. Hold and stop keep
+D5's recorded-control contract.
+
+The shared wake boundary clears a stale park note before work starts. Admission and
+module recovery do the same; a fresh park writes its current reason. A retry that parks
+again was still taken up. Request replay returns the recorded outcome without another
+send. The host, lifecycle, admission, and Desktop tests cover these judgments through
+the existing interfaces.
+
 ## What this does not decide
 
 Collie's model-mediated steering — where a model proposes actions and a human confirms one by

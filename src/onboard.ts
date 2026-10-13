@@ -9,7 +9,9 @@ import type { PlatformError } from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hostname } from "node:os";
 import { inTerminal } from "./in-terminal";
-import { doctor, glabHosts, onPath, pushCheck } from "./doctor";
+import { doctor } from "./doctor";
+import { onPath } from "./doctor-check";
+import { glabHosts, pushCheck } from "./forge/gitlab-checks";
 import { gitlabHostOf } from "./config";
 import { tokenPage } from "./gitlab-token";
 import type { PluginEnv } from "./env";
@@ -190,7 +192,7 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
           stderr: `timed out after ${COMMAND_LIMIT}`,
         })),
       ),
-      Effect.catch(() => Effect.succeed({ code: 127, stdout: "", stderr: "" })),
+      Effect.catch((cause) => Effect.succeed({ code: 127, stdout: "", stderr: String(cause) })),
     );
   const exec = (cmd: string, args: ReadonlyArray<string>, cwd: string) => piped(cmd, args, cwd);
   const lastWords = (output: string) => output.trim().split("\n").slice(-3).join(" ");

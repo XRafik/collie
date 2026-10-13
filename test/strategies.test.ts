@@ -17,6 +17,13 @@ import { linearIssues, shell } from "../src/mr";
 import { Herdr } from "../src/herdr";
 import { reviewedTargets } from "../src/inputs";
 import { runFacts } from "./support/records";
+import {
+  exclusiveClashes,
+  launchInputProblem,
+  repositoryOf,
+  strategyMeaning,
+  strategyNamed,
+} from "../src/strategies";
 
 let rig: Rig;
 let bin: FakeBin;
@@ -194,3 +201,21 @@ test("the previous review of a change is found whatever the reviewing Run called
       expect(found.map((candidate) => candidate.value)).toEqual(["mr:acme/app!42"]);
     }),
   ));
+
+test("repository is what gitlab-repository was, and the old name is still read as it", () => {
+  expect(strategyNamed("gitlab-repository")).toBe("repository");
+  expect(strategyNamed("diff-target")).toBe("diff-target");
+  const url = "https://github.com/acme/app";
+  for (const strategy of ["repository", "gitlab-repository"])
+    expect(
+      repositoryOf({ inputs: { repository: url }, strategies: { repository: strategy } }),
+    ).toMatchObject({
+      name: "repository",
+      value: url,
+    });
+  // One launch Input either way, and the refusal names the current name.
+  expect(launchInputProblem(["repository"], { repository: "gitlab-repository" })).toBeNull();
+  expect(launchInputProblem(["text"], {})).toContain("or repository");
+  expect(exclusiveClashes({ a: "repository", b: "gitlab-repository" })).toHaveLength(1);
+  expect(strategyMeaning("repository")).toContain("GitHub");
+});

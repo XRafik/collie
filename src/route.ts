@@ -4,6 +4,7 @@
 // the checkouts it was shown places nothing.
 
 import { Effect } from "effect";
+import { mrRefOf } from "./board-model";
 import type { PluginEnv } from "./env";
 import { askOnce, budgetedDeps, type BudgetedDeps } from "./evaluator";
 import { projectFromRemote, projectHere, shell } from "./mr";
@@ -33,7 +34,8 @@ const URL_IN_WORDS = /(?:https?:\/\/|git@)\S+/g;
  */
 export function placedByUrl(words: string, candidates: ReadonlyArray<Placeable>) {
   for (const [url] of words.matchAll(URL_IN_WORDS)) {
-    const project = projectFromRemote(url.replace(/\/-\/.*$/, "").replace(/\/+$/, ""));
+    const project =
+      mrRefOf(url)?.project ?? projectFromRemote(url.replace(/\/-\/.*$/, "").replace(/\/+$/, ""));
     if (project === null) continue;
     const found = candidates.find((one) => one.project?.toLowerCase() === project.toLowerCase());
     if (found !== undefined) return found;

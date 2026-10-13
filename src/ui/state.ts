@@ -29,7 +29,7 @@ import {
   type TaskView,
 } from "../board-model";
 import { mrTarget } from "../mr";
-import { parseMrTarget, parseMrUrl } from "../board-model";
+import { openMrLabel, parseMrTarget, parseMrUrl } from "../board-model";
 import type { Live } from "../live";
 import type { Selection } from "../selection";
 
@@ -1140,7 +1140,7 @@ function itemFor(view: TaskView, action: CardAction, primary: boolean): MenuItem
     case "open-mr":
       return {
         key: "w",
-        label: primary ? "Open MR" : "Open merge request",
+        label: openMrLabel(action.mr, primary),
         command: { _tag: "OpenMr", target: mrTarget(action.mr.project, action.mr.iid), runId },
       };
     case "offer":

@@ -1,4 +1,6 @@
+import { homedir } from "node:os";
 import { Config, type Duration, Effect, Option, Path } from "effect";
+import { withoutLauncher } from "../../../src/env";
 
 const BIN = Effect.runSync(
   Path.Path.pipe(
@@ -52,6 +54,9 @@ export const withoutLauncher = (env: Readonly<Record<string, string | undefined>
   return kept;
 };
 
+/** Where children start: Desktop's own folder goes when an update replaces it. */
+export const CHILD_CWD = homedir();
+
 /** Gives children the cleaned environment; Bun otherwise ignores changes made since it started. */
 export const childEnv = () => withoutLauncher(desktopEnv(), BIN);
 
@@ -68,6 +73,7 @@ export const readLoginEnv = (shell: string, limit: Duration.Input = LIMIT) =>
     const child = Bun.spawn(
       [shell, "-ilc", `printf '%s' '${BEGIN}'; env -0; printf '%s' '${END}'`],
       {
+        cwd: CHILD_CWD,
         env: childEnv(),
         stdin: "ignore",
         stdout: "pipe",

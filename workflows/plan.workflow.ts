@@ -127,7 +127,7 @@ export default defineWorkflow({
   id: "plan",
   title: "plan — turn a goal into a spec and tickets",
   description:
-    "Uses the goal and repository context to write a spec and tickets, asking only for missing decisions.",
+    "Turns a goal into a spec and tickets, using the repository for context and asking only for missing decisions.",
   input: Schema.Struct({ goal: Schema.String }),
   output: Schema.String,
   // The planner's own, which a Run's --model or a scope around it can still change, and a

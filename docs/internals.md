@@ -38,6 +38,21 @@ that does not say who it is within five seconds is replaced too when `host.build
 writes as it starts, names an older build of the same installation; otherwise the client
 reports it as `HostUnavailable` with its pid.
 
+Desktop starts a host the way any client does: it runs `collie bridge --as desktop` (or
+`--as chat`), and the bridge starts `collie host --dir <state>` where none answers. Desktop
+starts the bridge, and every other child, in `$HOME` (`CHILD_CWD` in
+`desktop/src/bun/login-env.ts`), because its own `app/bin` folder is deleted when an update
+replaces it. A client starts the host in its state directory, and the host `chdir`s there
+itself as it starts, so a host started from any directory outlives that directory: one
+left in a deleted directory could not start `claude`, `git` or Bun's shell. Neither can begin
+in a directory already deleted — a compiled Bun program refuses to start there — which is
+why each is started somewhere that lasts. Electrobun's
+launcher variables (`ELECTROBUN_*` and CEF's `LD_PRELOAD`) are stripped from what Desktop
+gives a child, again from what a client gives a host, and from the host's own environment
+as it starts (`withoutLauncher` and `leaveLauncher` in `src/env.ts`), so neither the host
+nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host keeps
+`LD_LIBRARY_PATH` and `ICU_DATA`.
+
 The host writes what it does to `host.log` in its state directory — its start, a stop and
 whether the grace ran out, every warning the engine and the registry log — since its own
 stdout and stderr go nowhere. Lines are flushed every 100 ms, so a host killed outright can
@@ -67,11 +82,11 @@ A human's controls are the host's to settle, whichever door they come in by
 plain Effect at its next boundary and suspends on; release clears it and resumes. A stop is
 read inside the Activity that waits on an agent and suspends that Activity's own instance,
 so a resume reattaches to the launch already recorded. A Run that cannot go on by itself — a
-pane that will not take a prompt, nothing approved to prove it, a workspace closed with its
+pane that will not take a prompt, a check that still fails, or none named, after its gate fixes, a workspace closed with its
 checkout gone — parks with the reason and the repair, and `run resume` picks it up.
 
 Beside the database, a Run's files are its audit trail: `agents/<run>/<operation>.prompt.md`
-with the Output it came back with, `evidence/<run>/` with the verifications it was granted
+with the Output it came back with, `evidence/<run>/` with its checks
 and the ones collected, and `runs/<run>/` with its cards, its `plan/` and the review it left.
 Nothing an older Collie recorded is read ([ADR-0027](adr/0027-one-engine-and-a-hard-cutover.md)),
 and the host's cleanup sweep removes it once it has not changed for a day.
@@ -469,6 +484,27 @@ Without the pin the compiled runner falls back to its own installation (`process
 is the binary when bun runs it from `/$bunfs/`), so a `bin/collie` started from another
 directory still finds its workflows and the host it starts. Only `bun src/main.ts` in development
 falls all the way through to the current directory.
+
+## The forge boundary
+
+Collie reaches GitLab and GitHub through one interface, `Forge` in `src/forge/forge.ts`,
+with an adapter per forge: `src/forge/gitlab.ts` runs `glab`, and `src/forge/github.ts`
+runs `gh` ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1). Each forge's doctor
+checks sit beside its adapter, in `src/forge/gitlab-checks.ts` and
+`src/forge/github-checks.ts`, and a workflow's content file for one forge
+(`<name>.gitlab.md`, `<name>.github.md`) may name that forge's CLI. A caller asks the
+forge of the merge request in front of it (`forgeOf(ref)`, from the reference's host), and
+gets answers rather than CLI calls: whether the CLI is ready for a host, who it is logged
+in as, one merge request as the panel, how far a merged commit is deployed, and a note.
+An operation is added to the interface when its first caller moves onto it.
+
+An adapter runs its commands through a `Runner` (`src/mr.ts`), the same seam the tests
+fake. `test/support/forge.ts` is a fake of each forge built on one model of a forge, with
+two faces: a Runner answering the argv its adapter uses, and a `FakeBin` executable on
+PATH answering from the same model for host-driven tests. `test/forge.test.ts` runs one
+contract against both. `test/forge-boundary.test.ts` fails on a `glab` or `gh` invocation
+in `src/` or `workflows/` outside its adapter, and on workflow content that names either; its
+allowlist names each file that still does, with the ticket that moves it.
 
 ## Definitions and layers
 

@@ -2,6 +2,7 @@
 // as `desktop`, never through Collie's own host client.
 
 import { expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { Config, Deferred, Effect, Option, Queue, Schedule, Schema, Stream } from "effect";
 import { type BoardMessage, type BoardSnapshot, PROTOCOL } from "../src/board-model";
 import { readAudit } from "../src/audit";
@@ -94,6 +95,26 @@ test(
           }).pipe(Effect.flip);
           expect(refused.reason).toBe("no Run r-nobody");
 
+          const ended = yield* door.start({
+            project: world.project,
+            id: "plain",
+            request: "start-finished",
+            input: { note: "done" },
+          });
+          yield* door
+            .runDetail({ runId: ended.runId, tail: false, pages: 0, refreshMr: false })
+            .pipe(
+              Stream.filter((one) => one?.status === "succeeded"),
+              Stream.runHead,
+              Effect.orDie,
+            );
+          const noWork = yield* act(reached, "resume-finished", {
+            _tag: "Resume",
+            runId: ended.runId,
+          }).pipe(Effect.flip);
+          expect(noWork.reason).toContain("finished");
+          expect(noWork.reason).not.toContain("Resumed");
+
           const trail = yield* readAudit(runDir(world.state, runId));
           expect(trail.map((line) => line.actor)).toEqual([
             { origin: "desktop", requestId: "start-1", from: { client: "mk-pc" } },
@@ -101,7 +122,7 @@ test(
           ]);
           yield* stopHost(world.state);
         }).pipe(Effect.orDie),
-      ["proof.workflow.ts", "helper.ts", "notes.md"],
+      ["proof.workflow.ts", "helper.ts", "notes.md", "plain.workflow.ts"],
     ),
   120_000,
 );
@@ -278,6 +299,14 @@ test("a bridge whose shell finds no collie is a Machine without Collie, in the s
         "echo 'Permission denied' >&2; exit 1",
       ]).pipe(Effect.flip);
       expect(other).toEqual({ state: "unreachable", reason: "Permission denied" });
+    }).pipe(Effect.scoped),
+  ));
+
+test("a bridge starts in the home directory, never Desktop's app folder an update deletes", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const failed = yield* openBridge(["/bin/sh", "-c", "pwd >&2; exit 1"]).pipe(Effect.flip);
+      expect(failed).toEqual({ state: "unreachable", reason: homedir() });
     }).pipe(Effect.scoped),
   ));
 

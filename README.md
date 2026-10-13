@@ -61,6 +61,7 @@ has none yet.
 | `review`       | Reviews a merge request, a branch diff, or the working tree, writes one review, and offers to post it                                                     |
 | `architecture` | Runs the architect over the project, reports into the run directory, then offers: implement now or stop                                                   |
 | `renovate`     | Merges the month's Renovate merge requests on one repository, tags a release, and checks the repository off the team's Renovate issue                     |
+| `general`      | One agent does one ad-hoc task where you started it, with no branch or merge request, and the run ends with its summary                                   |
 
 The bundled workflows are a shared starting point, not a restriction. `collie workflow
 fork <id>` writes a module of your own that imports what it keeps and replaces what it

@@ -34,6 +34,7 @@ import {
   staleSince,
   type Judged,
   type JudgementDeps,
+  gitOutput,
   type RuleFacts,
 } from "./drift";
 import {
@@ -44,6 +45,7 @@ import {
   writeIntentHeld,
   type Intent,
 } from "./intent";
+import { mrPath, parseMrUrl } from "./board-model";
 import { reason } from "./naming";
 import { appendPendingReport } from "./live";
 import { withDirLock, withLock } from "./lock";
@@ -251,11 +253,11 @@ const judgedOf = (at: Watched) =>
 export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched) {
   const fs = yield* FileSystem.FileSystem;
   const base = yield* baseOf(at.cwd);
-  const committed = yield* shell("git", ["diff", "--name-only", `${base}..HEAD`], at.cwd);
-  const dirty = yield* shell("git", ["diff", "--name-only", "HEAD"], at.cwd);
+  const committed = yield* gitOutput(["diff", "--name-only", `${base}..HEAD`], at.cwd);
+  const dirty = yield* gitOutput(["diff", "--name-only", "HEAD"], at.cwd);
   // Untracked too: a file an agent created is exactly what a `protected_paths` rule is
   // for, and it is in no diff until somebody commits it.
-  const untracked = yield* shell("git", ["ls-files", "--others", "--exclude-standard"], at.cwd);
+  const untracked = yield* gitOutput(["ls-files", "--others", "--exclude-standard"], at.cwd);
   const branch = yield* shell("git", ["rev-parse", "--abbrev-ref", "HEAD"], at.cwd);
   const outputs: Record<string, Record<string, string>> = {};
   const names = yield* fs.readDirectory(at.agentsDir).pipe(Effect.orElseSucceed(() => []));
@@ -269,11 +271,11 @@ export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched
   const verifications: Record<string, { exit: number; ref: string }> = {};
   const verified = yield* readVerifications(at.evidenceDir).pipe(Effect.orElseSucceed(() => []));
   for (const one of verified) verifications[one.name] = { exit: one.exit, ref: one.id };
-  const mr = /https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(at.mr ?? "");
+  const mr = parseMrUrl(at.mr ?? "");
   return {
-    changedFiles: [...new Set(lines(`${committed.stdout}\n${dirty.stdout}\n${untracked.stdout}`))],
+    changedFiles: [...new Set(lines(`${committed}\n${dirty}\n${untracked}`))],
     branch: branch.code === 0 ? branch.stdout.trim() : null,
-    mrTarget: mr === null ? null : { project: mr[1]!, iid: mr[2]! },
+    mrTarget: mr?.project == null ? null : { project: mrPath(mr), iid: mr.iid },
     outputs,
     verifications,
   } satisfies RuleFacts;
@@ -285,7 +287,13 @@ const checkRuleDrift = Effect.fn("Oversight.checkRuleDrift")(function* (
   intent: Intent,
   where: string,
 ) {
-  const found = checkRules(intent, yield* ruleFacts(at), yield* nowIso());
+  const facts = yield* ruleFacts(at).pipe(Effect.result);
+  if (facts._tag === "Failure") {
+    const skipped = `rule check skipped at ${where}: ${facts.failure.reason}`;
+    yield* recordSkipped(at.runDir, at.runId, skipped).pipe(Effect.ignore);
+    return yield* said(at, skipped);
+  }
+  const found = checkRules(intent, facts.success, yield* nowIso());
   const before = yield* readDrift(at.runDir).pipe(Effect.orElseSucceed(() => []));
   for (const report of newReports(found, before)) {
     yield* appendDrift(at.runDir, report).pipe(Effect.ignore);

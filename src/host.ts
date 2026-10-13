@@ -88,21 +88,20 @@ import {
 } from "./cleanup";
 import { once, recordAudit, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
-import { currentEnv } from "./env";
+import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
 import { watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
-import { buildRunDetail } from "./views";
+import { buildRunDetail, type PlanCache } from "./views";
 import {
   Answered,
   ASKED_KINDS,
   CleanupReport,
   Controlled,
   Disposition,
-  EVIDENCE_GATE,
   FrontDoorRpcs,
   HostRefused,
   NewsBatch,
@@ -116,7 +115,6 @@ import {
   SteerOutcome,
   Attachments,
   type FrontDoor,
-  type PlanPanel,
   type Where,
 } from "./board-model";
 import {
@@ -124,12 +122,14 @@ import {
   attachmentRefusal,
   attachmentsDir,
   copyInto,
+  keepMessage,
   namesIn,
   sha256Hex,
   type Attached,
 } from "./attachments";
 import { boardMessages, shareBoard } from "./board-stream";
 import { recordDisposition } from "./disposition";
+import { MAX_DELIVERY_BYTES } from "./dispatcher";
 import {
   NEWS_TRAIL,
   newsPath,
@@ -159,15 +159,13 @@ import {
   reconcileStep,
   stepResults,
   type ProposalLine,
-  type Actor,
   type ProposalRecord,
   voiceOf,
   type Asker,
   type Voice,
 } from "./proposals";
 import { carryOut, carryOutAsked, followUpField } from "./run-actions";
-import { nothingApproved } from "./outcome";
-import { approvedFrom, VerifySpecSchema, type VerifySpec } from "./verify-spec";
+import { VerifySpecSchema } from "./verify-spec";
 import { everyRegistered } from "./registry";
 import { listTasks, readTask } from "./task";
 import { nowIso } from "./time";
@@ -410,7 +408,8 @@ const handlers = (
           const into = attachmentsDir(runDir(dir, runId));
           // Files go only into a Run this host has.
           const known =
-            (attachments ?? []).length === 0
+            (attachments ?? []).length === 0 &&
+            Buffer.byteLength(text, "utf8") <= MAX_DELIVERY_BYTES
               ? Effect.void
               : Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(runDir(dir, runId))).pipe(
                   Effect.orElseSucceed(() => false),
@@ -441,17 +440,20 @@ const handlers = (
                 },
                 copyInto(into, attachments ?? []).pipe(
                   Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
-                  Effect.flatMap((copied) =>
-                    registry.steer({
-                      runId,
-                      text: [text, ...copied.map((one) => attachedLine(`${into}/${one.name}`))]
-                        .filter((line) => line !== "")
-                        .join("\n"),
-                      request,
-                      operation,
-                      agent,
-                      mode,
-                    }),
+                  Effect.flatMap((copied) => {
+                    const lines = copied.map((one) => attachedLine(`${into}/${one.name}`));
+                    const whole = [text, ...lines].filter((line) => line !== "").join("\n");
+                    return Buffer.byteLength(whole, "utf8") <= MAX_DELIVERY_BYTES
+                      ? Effect.succeed(whole)
+                      : keepMessage(into, text).pipe(
+                          Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+                          Effect.map((kept) =>
+                            [TOO_LONG, attachedLine(`${into}/${kept}`), ...lines].join("\n"),
+                          ),
+                        );
+                  }),
+                  Effect.flatMap((told) =>
+                    registry.steer({ runId, text: told, request, operation, agent, mode }),
                   ),
                 ),
               );
@@ -462,6 +464,10 @@ const handlers = (
       });
     }),
   );
+
+/** What an agent is told in place of words over the delivery cap, which are never split (ADR-0051). */
+const TOO_LONG =
+  "This message was too long to send in one piece, so it is in the attached file. Read it whole and act on it.";
 
 /** What a steer's request has to ask again, as `AskedFor` is a start's. */
 type SteerAsked = {
@@ -667,9 +673,9 @@ const frontDoorHandlers = (
       const usage = yield* Usage;
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
       const recordingUsage = yield* Semaphore.make(1);
-      // A finished Run's plan cannot change, so every drawer on it shares one read.
+      // Every drawer on a finished Run shares one read of its plan until a file of it changes.
       // ponytail: kept for the host's life; evict by age if a host lives for months.
-      const plans = new Map<string, PlanPanel | null>();
+      const plans: PlanCache = new Map();
       const stampOf = (client: { readonly id: number }) => stampIn(declared, client);
       const doorOf = (client: { readonly id: number }) => stampOf(client).origin;
       /** Who asks on a channel: its front door, and a chat's voice. */
@@ -845,62 +851,7 @@ const frontDoorHandlers = (
           return yield* act(file, lines);
         }).pipe(plainly);
       /** A Run picked up again: what current files allow is registered, then its stop cleared. */
-      const takeUp = (runId: string) =>
-        registry.recover.pipe(
-          Effect.andThen(registry.control({ runId, control: "stop", set: false })),
-        );
-      /**
-       * A gate answered: the checks named, or every one the checkout and config offer, are
-       * granted as `set_verification` grants them, then the Run is taken up again.
-       */
-      const passGate = (runId: string, value: string, actor: Actor) =>
-        Effect.gen(function* () {
-          const run = factsOfView(env.stateDir, yield* known(runId));
-          if (run.parked !== nothingApproved(runId))
-            return yield* new HostRefused({
-              reason: `${runId} is not holding at its evidence gate`,
-            });
-          if (value !== "approve" && !value.startsWith("approve:"))
-            return yield* new HostRefused({
-              reason: `${REFUSED_INPUT}: the gate is answered with approve or approve:<name>,<name>; with nothing approved no check could prove this Run, so it is not skipped`,
-            });
-          const offered = yield* approvedFrom({ cwd: run.cwd, userDir: env.userDir }).pipe(
-            Effect.orElseSucceed((): ReadonlyArray<VerifySpec> => []),
-          );
-          const named =
-            value === "approve"
-              ? null
-              : value
-                  .slice("approve:".length)
-                  .split(",")
-                  .map((one) => one.trim());
-          const unknown = (named ?? []).filter(
-            (name) => !offered.some((spec) => spec.name === name),
-          );
-          if (unknown.length > 0)
-            return yield* new HostRefused({
-              reason: `${REFUSED_INPUT}: the gate offers no check called ${unknown.join(", ")}`,
-            });
-          const chosen = offered.filter((spec) => named === null || named.includes(spec.name));
-          if (chosen.length === 0)
-            return yield* new HostRefused({
-              reason: `${REFUSED_INPUT}: ${nothingApproved(runId)}`,
-            });
-          const granted = yield* carryOutAsked(
-            env,
-            chosen.map(({ name, ...command }) => ({
-              kind: "set_verification" as const,
-              run: runId,
-              name,
-              command,
-            })),
-            actor,
-          );
-          const failed = granted.find((one) => one.state !== "applied");
-          if (failed !== undefined) return yield* new HostRefused({ reason: failed.note });
-          yield* takeUp(runId);
-          return { runId, decision: EVIDENCE_GATE, value, fresh: true };
-        });
+      const takeUp = (runId: string) => registry.resume(runId);
       // Debounced apart from the tick, so a burst of writes cannot hold the tick back.
       // Shared, so every subscriber rides one recursive watch: setting one up walks the tree.
       const changed = yield* Stream.mergeAll(
@@ -982,23 +933,11 @@ const frontDoorHandlers = (
             ),
           ),
         answer: ({ runId, decision, value, request }, { client }) =>
-          decision === EVIDENCE_GATE
-            ? once(
-                trail(runId),
-                {
-                  operation: "answer",
-                  request,
-                  ...whoOf(client),
-                  asked: { value },
-                  result: Answered,
-                },
-                passGate(runId, value, { ...whoOf(client), requestId: request }),
-              ).pipe(plainly)
-            : fresh(
-                () => runId,
-                { operation: "answer", request, ...whoOf(client), result: Answered },
-                registry.answer({ runId, decision, value, request }),
-              ),
+          fresh(
+            () => runId,
+            { operation: "answer", request, ...whoOf(client), result: Answered },
+            registry.answer({ runId, decision, value, request }),
+          ),
         control: ({ runId, control, set, request, reason }, { client }) =>
           auditedControl(
             runId,
@@ -1636,10 +1575,17 @@ const installationOf = Effect.fn("Host.installationOf")(function* (dir: string) 
  * Losing the lock is not a failure. It means a host is already here, which is what the
  * caller wanted; the client that started this one connects to that host instead.
  */
-export const serve = (dir: string): Effect.Effect<void, never, BunServices | Scope.Scope> =>
+export const serve = (named: string): Effect.Effect<void, never, BunServices | Scope.Scope> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dir, { recursive: true });
+    yield* fs.makeDirectory(named, { recursive: true });
+    // Resolved where it was named, before the chdir below moves where that is.
+    const dir = yield* fs.realPath(named);
+    // Whatever it was started in may be deleted under it, as a Desktop update does its app folder.
+    yield* Effect.sync(() => {
+      process.chdir(dir);
+      leaveLauncher();
+    });
     const lock = lockOf(dir);
     yield* ensureLockDir(lock);
     // `withLock` breaks a claim whose holder is gone before its last attempt, so a host
@@ -2017,19 +1963,26 @@ const diagnose = Effect.fn("Host.diagnose")(function* (dir: string) {
  * it belongs to.
  */
 const spawnHost = Effect.fn("Host.spawn")(function* (
-  dir: string,
+  named: string,
   hostEnv: Readonly<Record<string, string>>,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
   const command = yield* hostCommand;
   // Which installation's workflows this host serves, decided by the client that needed
   // it rather than guessed from wherever the host process happens to start.
   const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
   return yield* Effect.gen(function* () {
+    yield* fs.makeDirectory(named, { recursive: true });
+    // The host starts in it, so a relative one would name somewhere else from there.
+    const dir = yield* fs.realPath(named);
     const handle = yield* spawner.spawn(
       ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
-        env: { ...hostEnv, HERDR_PLUGIN_ROOT: install },
-        extendEnv: true,
+        cwd: dir,
+        // A client started by Desktop may carry its launcher's LD_PRELOAD.
+        // oxlint-disable-next-line effecttsgo/process-env
+        env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+        extendEnv: false,
         detached: true,
         stdin: "ignore",
         stdout: "ignore",
@@ -2040,7 +1993,7 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
     // host it has just started: it leaves a child alone only once it is unreferenced.
     yield* Effect.asVoid(handle.unref);
     return handle;
-  }).pipe(Effect.catch((cause) => unavailable(dir, String(cause))));
+  }).pipe(Effect.catch((cause) => unavailable(named, String(cause))));
 });
 
 const CommandJson = Schema.fromJsonString(Schema.Array(Schema.String));

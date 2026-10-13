@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `general` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -45,7 +45,9 @@ herdr actions, and the `collie` CLI.
   harness has been shown to do about one** → [`docs/steering.md`](docs/steering.md),
   alongside `src/intent.ts`, `src/dispatcher.ts`, `src/steering.ts` and
   `src/steering-caps.ts`. A capability moves to `proven` only from a recorded live result
-  in the Run's `CAPABILITIES.md`.
+  in the Run's `CAPABILITIES.md`. A message over the delivery cap is never split: the
+  host's `steer` in `src/host.ts` keeps it as a file in the Run and tells the agent where
+  ([ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md)).
 - **Changing whether a finished Run takes steering, or what reopening one means** →
   [ADR-0041](docs/adr/0041-a-finished-run-still-takes-steering.md), alongside `admit` in
   `src/proposals.ts`, the host's steer and stop in `src/engine.ts`, `steerRun` in
@@ -118,6 +120,16 @@ herdr actions, and the `collie` CLI.
   `src/harness.ts`, applied by `choose` in `src/agents.ts` against the `fallbacks` setting,
   with `test/fallback.test.ts`. Usage
   chooses where work runs, never whether it runs.
+- **Changing Review comments — drafts on a Run's plan or diff, what is sent and to whom, or
+  how the Diff tab draws** →
+  [ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md), alongside
+  `desktop/src/shared/review-comments.ts` (drafts, anchors and the composed message, with
+  `desktop/test/review-comments.test.ts`), `recipients` in
+  `desktop/src/shared/record-terminal.ts` (who may get them) and the `Deliver` action in
+  `act` in `desktop/src/bun/machine.ts` (one `deliver`, word for word, with
+  `test/desktop-deliver.test.ts`). Desktop never knows the delivery cap. The Diff tab draws
+  each file with `@pierre/diffs`' `FileDiff` in `desktop/view/app/components/DiffFile.vue`;
+  whether a line is in a hunk, and a selection's anchor, are the shared module's.
 - **Changing how large Desktop draws, or its Zoom** →
   [ADR-0047](docs/adr/0047-desktop-draws-at-its-monitors-own-scale.md), alongside
   `desktop/src/shared/scale.ts` (the monitor of a window from `hyprctl -j`, the zoom and the
@@ -157,7 +169,7 @@ herdr actions, and the `collie` CLI.
   assume about suspension and recovery** →
   [ADR-0014](docs/adr/0014-native-workflows-run-on-effects-own-engine.md), alongside
   `src/engine.ts` and `test/engine.test.ts`. The two non-default cluster settings
-  and the five upstream behaviours the proof measured are recorded there; an Effect
+  and the six upstream behaviours the proof measured are recorded there; an Effect
   upgrade rechecks them rather than assuming them.
 - **Naming something, or writing a test that needs a real host** →
   [ADR-0028](docs/adr/0028-names-are-the-domains-and-the-proof-drives-the-shipped-host.md),
@@ -208,7 +220,13 @@ herdr actions, and the `collie` CLI.
   [`docs/cli.md`](docs/cli.md#a-workflow-saved-as-a-module), alongside `src/strategies.ts`,
   `src/inputs.ts`, `src/engine.ts` and `test/strategies.test.ts`. What Collie does with an
   Input is the strategy's, never the field's name: read one with `workSourceOf`,
-  `diffTargetOf` or `gitlabRepositoryOf` rather than by looking a name up.
+  `diffTargetOf` or `repositoryOf` rather than by looking a name up.
+- **Changing how Collie reaches a forge — GitLab or GitHub, `glab` or `gh`** →
+  [ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md) and
+  [`docs/internals.md`](docs/internals.md#the-forge-boundary), alongside the interface in
+  `src/forge/forge.ts`, the adapters `src/forge/gitlab.ts` and `src/forge/github.ts`, the
+  fakes in `test/support/forge.ts`, the contract `test/forge.test.ts` and the boundary
+  `test/forge-boundary.test.ts`. A CLI is run only by its own adapter.
 - **Changing how a workflow runs an agent, builds its prompt or collects its
   Output** →
   [ADR-0020](docs/adr/0020-an-agent-is-launched-once-and-its-output-is-decoded.md) and
@@ -232,9 +250,9 @@ herdr actions, and the `collie` CLI.
   [`docs/sdk.md`](docs/sdk.md#reviewing-and-fixing-until-it-converges), alongside
   `src/output.ts`, `src/outcome.ts`, `src/verify.ts` and `test/rally.test.ts`. The engine
   and a module make the same decision through `settleRound`; a check is a claim until the
-  verification journal has it on this revision. The approved set is the human's or chat's:
-  chat's `set_verification` is carried out with no yes, and Collie spawns what it names
-  ([ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-09-29-chat-may-choose-what-proves-a-run)).
+  verification journal has it on this revision. Nobody approves a Run's checks: a human,
+  chat or the Run's own agent names them, and Collie spawns what they name
+  ([ADR-0055](docs/adr/0055-a-run-never-asks-to-run-its-checks.md)).
 - **Changing how a list of work, a ticket slice or a repository fan-out recovers** →
   [ADR-0024](docs/adr/0024-a-list-of-work-is-known-by-its-names.md) and
   [`docs/sdk.md`](docs/sdk.md#a-list-of-work-one-item-at-a-time), alongside `src/slices.ts`,
@@ -251,7 +269,7 @@ herdr actions, and the `collie` CLI.
 - **Changing what a shipped workflow does** →
   [ADR-0026](docs/adr/0026-a-shipped-workflow-is-a-module-like-any-other.md) and
   [`docs/sdk.md`](docs/sdk.md), alongside `workflows/*.workflow.ts`, their Markdown beside
-  them and the scenarios in `test/support/baseline.ts`. All five are modules loaded through the public
+  them and the scenarios in `test/support/baseline.ts`. All six are modules loaded through the public
   contract: the Markdown is content, what happens is TypeScript, and what each one proves
   and offers is its own declaration rather than its name. One that expects to be varied —
   `renovate` — takes the varying steps as ordinary functions, so a fork supplies three and

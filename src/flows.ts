@@ -20,7 +20,7 @@ import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
 import { insideCheckout } from "./agent-start";
 import { placeableUnder, placedByUrl, routed, routerDeps } from "./route";
 import { offerFields, offerInput, StepResult, type RunDetail } from "./board-model";
-import { loadDefaults, setSetting } from "./config";
+import { gitlabHostOf, loadDefaults, setSetting } from "./config";
 import { parseSetting, settingText } from "./settings";
 import { herdOf } from "./steering";
 import { chatHarnessOf, ensureChatFor } from "./chat";
@@ -89,8 +89,9 @@ import {
 import type { Focus } from "./ui/bridge";
 import { buildHistory, buildSettings, buildWorkflows } from "./views";
 import { nowIso } from "./time";
-import { repoArgs, shell } from "./mr";
-import { parseMrTarget } from "./board-model";
+import { shell } from "./mr";
+import { forgeOf } from "./forge/forge";
+import { parseMrTarget, readMrRef } from "./board-model";
 import type { ChildProcessSpawner } from "effect/process";
 import {
   agentForKey,
@@ -426,10 +427,7 @@ const startModule = Effect.fn("Flows.startModule")(function* (
     const candidates = strategy === "goal" ? [] : yield* placeableUnder(root);
     const byUrl = placedByUrl(words, candidates);
     // A repository URL no checkout here has is cloned by the Run, as it always was.
-    if (
-      strategy === "goal" ||
-      (byUrl === null && strategy === "gitlab-repository" && isUrl(words))
-    ) {
+    if (strategy === "goal" || (byUrl === null && strategy === "repository" && isUrl(words))) {
       rooted = true;
       at = { ...env, cwd: root, workspaceId: null };
     } else {
@@ -446,7 +444,7 @@ const startModule = Effect.fn("Flows.startModule")(function* (
       }
       at = { ...env, cwd: placed.path, workspaceId: null };
       inferred.set(WORKSPACE, byUrl === null ? "your words" : `its remote, ${placed.project}`);
-      if (strategy === "gitlab-repository" && byUrl !== null) {
+      if (strategy === "repository" && byUrl !== null) {
         text[launchInput.name] = placed.path;
         inferred.set(launchInput.name, "the checkout its URL names");
       }
@@ -454,7 +452,7 @@ const startModule = Effect.fn("Flows.startModule")(function* (
   }
   if (launchInput !== undefined && text[launchInput.name] === undefined) {
     if (words !== "" && (yield* wordsAre(strategy, words, at.cwd))) text[launchInput.name] = words;
-    else if (strategy === "gitlab-repository" && (yield* insideCheckout(at.cwd))) {
+    else if (strategy === "repository" && (yield* insideCheckout(at.cwd))) {
       text[launchInput.name] = at.cwd;
       inferred.set(
         launchInput.name,
@@ -539,9 +537,9 @@ const wordsAre = Effect.fn("Flows.wordsAre")(function* (
   cwd: string,
 ) {
   if (strategy === "goal" || strategy === "work-source") return true;
-  if (strategy === "gitlab-repository") return /^(https?:\/\/|git@|\/)/.test(words);
+  if (strategy === "repository") return /^(https?:\/\/|git@|\/)/.test(words);
   if (strategy !== "diff-target") return false;
-  if (/\/-\/merge_requests\/\d+/.test(words) || /^!?\d+$/.test(words)) return true;
+  if (readMrRef(words, { project: null }) !== null) return true;
   if (/\s/.test(words)) return false;
   const ref = yield* shell("git", ["rev-parse", "--verify", "--quiet", `${words}^{commit}`], cwd);
   return ref.code === 0;
@@ -558,6 +556,7 @@ const infer = Effect.fn("Flows.infer")(function* (
     cwd: env.cwd,
     runs: yield* listRuns(env),
     task: opts.task.mode === "continue" ? opts.task.task.id : null,
+    gitlabHost: yield* gitlabHostOf(env).pipe(Effect.orElseSucceed(() => undefined)),
   }).pipe(Effect.orElseSucceed(() => null));
   if (settled === null || settled.needsAsking || settled.value === "") return null;
   return settled;
@@ -1332,19 +1331,15 @@ export const runCommand = Effect.fn("Flows.runCommand")(function* (
     case "OpenMr": {
       const ref = parseMrTarget(command.target);
       if (!ref) return `${command.target} is not a merge request`;
-      // The run's own checkout, where it has one: `repoArgs` carries a qualified
-      // target, but an unqualified `mr:42` — every older run has one — is resolved by
-      // glab from the directory it runs in, so from a board of every workspace this
-      // used to open *this* repository's !42.
+      // The run's own checkout, where it has one: an unqualified `mr:42` — every older
+      // run has one — is resolved from the directory the CLI runs in, so from a board of
+      // every workspace this used to open *this* repository's !42.
       const run = command.runId === null ? null : yield* runOf(command.runId);
-      const opened = yield* shell(
-        "glab",
-        ["mr", "view", ref.iid, ...repoArgs(ref.project), "--web"],
-        run?.cwd ?? env.cwd,
-      );
+      const forge = forgeOf(ref);
+      const opened = yield* forge.open(ref, run?.cwd ?? env.cwd, shell);
       return opened.code === 0
         ? `opened ${command.target} in a browser`
-        : `glab could not open ${command.target} (exit ${opened.code})`;
+        : `${forge.display} could not open ${command.target} (exit ${opened.code})`;
     }
 
     case "SetDefault": {

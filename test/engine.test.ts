@@ -349,13 +349,14 @@ test(
           "planned",
           // A fork of a shipped workflow, which is code an author writes the same way.
           "landing",
-          // The shipped five, held to the same declarations: a workflow Collie ships is
+          // The shipped six, held to the same declarations: a workflow Collie ships is
           // a module an author could have written, or the contract is two contracts.
           "plan",
           "review",
           "architecture",
           "implement",
           "renovate",
+          "general",
         ];
         const checked = yield* host.ask({
           op: "checks",

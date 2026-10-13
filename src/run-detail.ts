@@ -14,7 +14,8 @@ import {
 } from "./board-model";
 import { attachmentsDir } from "./attachments";
 import { classifyWorkSource } from "./inputs";
-import { pipelineStatus, shell } from "./mr";
+import { shell } from "./mr";
+import { forgeOfUrl } from "./forge/forge";
 import { REVIEW_FILE } from "./output";
 import { settled, type RunFacts } from "./runs";
 import { workSourceOf } from "./strategies";
@@ -331,8 +332,11 @@ export const fetchRef = Effect.fn("RunDetail.fetchRef")(function* (
       return patch(shown.stdout);
     }
     case "pipeline": {
-      const status = yield* pipelineStatus(name, glabCwd, shell);
-      return status === null ? yield* refused(`GitLab did not say how ${name} went`) : text(status);
+      const forge = forgeOfUrl(name);
+      const status = yield* forge.runStatus(name, glabCwd, shell);
+      return status === null
+        ? yield* refused(`${forge.display} did not say how ${name} went`)
+        : text(status);
     }
     case "review":
       return yield* under(run.dir, REVIEW_FILE, "review");

@@ -48,7 +48,6 @@ import { appendLog } from "../src/oversight";
 import { readAudit, trimAudit } from "../src/audit";
 import { writeMrStates } from "../src/merges";
 import { FrontDoorRpcs, mrLabel, type Declaration, type FLOCK_READS } from "../src/board-model";
-import { nothingApproved } from "../src/outcome";
 
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Any));
 
@@ -1313,7 +1312,7 @@ test("a Run's own merge request is shown as recorded, with what the merge watch 
       const pull = "https://github.com/cego/collie/pull/61";
       yield* fs.writeFileString(`${run.dir}/merge-request`, `${pull}\n`);
       expect(yield* call("collie_run", { run: run.id })).toContain(
-        `Merge request: ${pull} — not watched`,
+        `Pull request: ${pull} — not watched`,
       );
 
       const label = mrLabel(pull);
@@ -1323,7 +1322,7 @@ test("a Run's own merge request is shown as recorded, with what the merge watch 
         new Map([[label, { checks: { state: "failed", name: "test" }, head: null }]]),
       );
       expect(yield* call("collie_run", { run: run.id })).toContain(
-        `Merge request: ${pull} — open, checks failed (test)`,
+        `Pull request: ${pull} — open, checks failed (test)`,
       );
     }),
   ));
@@ -1374,16 +1373,12 @@ test("a Run shows its plan, findings, disposition, outcome and the last lines it
     }),
   ));
 
-test("an evidence gate waits on the human with the checks it offers and how to approve them", () =>
+test("a Run parked at the old evidence gate is waiting on the human for nothing", () =>
   inWorld(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       yield* save(world.user, ["gated.workflow.ts"]);
-      const run = yield* startedRun(
-        "gated",
-        { note: "x" },
-        (view) => view.parked === nothingApproved(view.runId),
-      );
+      const run = yield* startedRun("gated", { note: "x" }, (view) => (view.parked ?? "") !== "");
       yield* fs.makeDirectory(`${project}/.collie`, { recursive: true });
       yield* fs.writeFileString(
         `${project}/.collie/verify.json`,
@@ -1391,12 +1386,8 @@ test("an evidence gate waits on the human with the checks it offers and how to a
       );
 
       const waiting = waitingOnTheHuman(yield* call("collie_receipts", { run: run.id }));
-      expect(waiting).toContain("evidence gate");
-      expect(waiting).toContain("unit");
-      expect(waiting).toContain(
-        `{"kind":"answer","run":"${run.id}","choiceId":"evidence-gate","answer":"approve"}`,
-      );
-      expect(waiting).toContain("approve:<name>,<name>");
+      expect(waiting).toContain("- nothing");
+      expect(waiting).not.toContain("evidence gate");
     }),
   ));
 
@@ -1445,7 +1436,7 @@ const rootAtWorldHome = () => {
   env = { ...env, raw: { ...env.raw, GITTE_CWD: world.home } };
 };
 
-test("where work can start lists the workspaces, the Home as no checkout, open Tasks, the Projects root and each workflow's Inputs", () =>
+test("where work can start lists the workspaces, the Home as no checkout, open Tasks, the Projects root and each workflow's Inputs and description", () =>
   inWorld(
     Effect.gen(function* () {
       yield* save(world.user, ["branches.workflow.ts"]);
@@ -1475,9 +1466,9 @@ test("where work can start lists the workspaces, the Home as no checkout, open T
       expect(said).not.toContain(gone.id);
       expect(said).toContain(`Projects root: ${world.home}`);
       expect(said).toContain("a checkout under it is named by its directory name");
-      expect(said).toContain("- proof (note)");
-      expect(said).toContain("- hello (name)");
-      expect(said).toContain("- branches (goal?, size)");
+      expect(said).toContain("- proof (note) — Records one launch, then waits to be answered.");
+      expect(said.split("\n")).toContain("- hello (name)");
+      expect(said.split("\n")).toContain("- branches (goal?, size)");
     }),
   ));
 

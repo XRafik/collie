@@ -28,7 +28,7 @@ import {
   type BoardSnapshot,
   PROTOCOL,
   FrontDoorRpcs,
-  type HostRefused,
+  HostRefused,
   type ProposalRefused,
   type RequestConflict,
   type RunDetail,
@@ -47,7 +47,7 @@ import {
 } from "../shared/flock";
 import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
-import { childEnv } from "./login-env";
+import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 
 const children = new Set<Bun.Subprocess>();
@@ -149,7 +149,7 @@ export const openBridge = Effect.fn("Desktop.openBridge")(function* (
   env: Readonly<Record<string, string | undefined>> = childEnv(),
 ) {
   const child = yield* spawned(() =>
-    Bun.spawn([...command], { env, stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
+    Bun.spawn([...command], { env, cwd: CHILD_CWD, stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
   );
   const said = yield* stderrTail(child.stderr, (chunk) => process.stderr.write(chunk));
   const ready = Promise.withResolvers<void>();
@@ -244,6 +244,7 @@ const ran = (command: ReadonlyArray<string>) =>
       try: () =>
         Bun.spawn([...command], {
           env: childEnv(),
+          cwd: CHILD_CWD,
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
@@ -357,6 +358,7 @@ const openMaster = Effect.fn("Desktop.openMaster")(function* (
   const master = yield* spawned(() =>
     Bun.spawn([ssh, "-M", "-N", "-S", control, "-o", "ControlPersist=no", target], {
       env: childEnv(),
+      cwd: CHILD_CWD,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "pipe",
@@ -913,7 +915,13 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
       case "Resume":
         return door
           .resume({ runId: action.runId, request })
-          .pipe(Effect.map((done) => done.detail || `Resumed ${action.runId}`));
+          .pipe(
+            Effect.flatMap((done) =>
+              done.applied
+                ? Effect.succeed(done.detail || `Resumed ${action.runId}`)
+                : Effect.fail(new HostRefused({ reason: done.detail })),
+            ),
+          );
       case "Confirm":
         return door
           .confirm({ proposal: action.proposal, hash: action.hash, request })
@@ -940,6 +948,24 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
               outcome.ok
                 ? Effect.succeed(outcome.human)
                 : Effect.fail<Unsteered>({ _tag: "Unsteered", message: outcome.human }),
+            ),
+          );
+      case "Deliver":
+        return door
+          .act({
+            actions: [
+              { kind: "deliver", run: action.runId, agent: action.agent, text: action.text },
+            ],
+            request,
+          })
+          .pipe(
+            Effect.flatMap(([done]) =>
+              done?.state === "applied"
+                ? Effect.succeed(`Sent to ${action.agent}`)
+                : Effect.fail<Unsteered>({
+                    _tag: "Unsteered",
+                    message: done?.note || "the host said nothing about it",
+                  }),
             ),
           );
       case "FollowUp":

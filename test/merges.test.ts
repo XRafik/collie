@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem } from "effect";
 import { buildBoard } from "../src/board";
 import { sectionOf } from "../src/board-model";
 import { readDispositions } from "../src/disposition";
-import { readForge, readMrStates, settleMerges } from "../src/merges";
+import { readForge, readMrStates, settleMerges, watchedMr } from "../src/merges";
+import { sinceReview } from "../src/mr";
 import { appendVerification } from "../src/verify";
 import type { Runner } from "../src/mr";
 import { readEnv } from "../src/env";
@@ -11,20 +12,34 @@ import { madeRun } from "./support/records";
 import { task } from "./support/task";
 import { runEffect } from "./support/effect";
 import { epochMs } from "../src/time";
+import { fakeForge, type Check, type FakeMr, type ForgeModel } from "./support/forge";
 
-/** A GitLab that answers every readiness check and says one thing about every MR. */
-function gitlab(state: string, log: string[] = []): Runner {
-  return (cmd, args) => {
-    log.push(`${cmd} ${args.join(" ")}`);
-    if (args[0] === "api") return Effect.succeed({ code: 0, stdout: '{"username":"mk"}' });
-    if (args[0] === "mr")
-      return Effect.succeed({
-        code: 0,
-        stdout: `{"iid":65,"state":"${state}","title":"Cards","web_url":"https://gitlab.cego.dk/mk/collie/-/merge_requests/65"}`,
-      });
-    return Effect.succeed({ code: 0, stdout: "" });
-  };
+const GITLAB = "gitlab.cego.dk/mk/collie";
+
+/** The shared fake of a forge, with its calls also kept in `log`. */
+function forge(name: "gitlab" | "github", over: Partial<ForgeModel>, log: string[] = []): Runner {
+  const fake = fakeForge(name, {
+    installed: true,
+    loggedIn: [name === "gitlab" ? "gitlab.cego.dk" : "github.com"],
+    login: "mk",
+    mrs: [],
+    ...over,
+  });
+  return (cmd, args, cwd) =>
+    Effect.tap(fake.run(cmd, args, cwd), () => Effect.sync(() => log.push(fake.calls.at(-1)!)));
 }
+
+const mr65 = (over: Partial<FakeMr>): FakeMr => ({
+  project: GITLAB,
+  iid: "65",
+  state: "open",
+  title: "Cards",
+  ...over,
+});
+
+/** A GitLab that answers every readiness check and says one thing about its MR. */
+const gitlab = (state: FakeMr["state"], log: string[] = []) =>
+  forge("gitlab", { mrs: [mr65({ state })] }, log);
 
 const MR = "https://gitlab.cego.dk/mk/collie/-/merge_requests/65";
 
@@ -119,41 +134,20 @@ test("a closed merge request is news, not a verdict, and a fresh answer is not a
 /** A GitLab whose merge landed and whose deploy jobs have taken it as far as `live` says. */
 function deployed(live: { stage: string; prod: string | null }, log: string[] = []): Runner {
   const merged = "35ae2cea5e5848602729dbc0e8a87ed0d9049c46";
-  return (cmd, args) => {
-    log.push(`${cmd} ${args.join(" ")}`);
-    const route = args[0] === "api" ? (args.at(-1) ?? "") : "";
-    if (route.endsWith("/environments"))
-      return Effect.succeed({
-        code: 0,
-        stdout: JSON.stringify([
-          { name: "stage", tier: "staging" },
-          { name: "prod", tier: "production" },
-          { name: "review/x", tier: "development" },
-        ]),
-      });
-    if (route.includes("/deployments?"))
-      return Effect.succeed({
-        code: 0,
-        stdout: JSON.stringify([
-          ...(live.prod ? [{ sha: live.prod, environment: { name: "prod" } }] : []),
-          { sha: live.stage, environment: { name: "stage" } },
-          { sha: "0000000", environment: { name: "prod" } },
-        ]),
-      });
-    if (route.includes("/merge_base?"))
+  return forge(
+    "gitlab",
+    {
+      mrs: [mr65({ state: "merged", mergedSha: merged })],
+      environments: [
+        { name: "stage", tier: "staging", deployed: live.stage },
+        { name: "prod", tier: "production", deployed: live.prod ?? "0000000" },
+        { name: "review/x", tier: "development", deployed: merged },
+      ],
       // Only a descendant of the merge commit has it as the merge-base.
-      return Effect.succeed({
-        code: 0,
-        stdout: JSON.stringify({ id: route.includes("refs[]=child") ? merged : "0000000" }),
-      });
-    if (args[0] === "api") return Effect.succeed({ code: 0, stdout: '{"username":"mk"}' });
-    if (args[0] === "mr")
-      return Effect.succeed({
-        code: 0,
-        stdout: `{"iid":65,"state":"merged","merge_commit_sha":"${merged}","title":"Cards","web_url":"${MR}"}`,
-      });
-    return Effect.succeed({ code: 0, stdout: "" });
-  };
+      ancestry: { child: [merged] },
+    },
+    log,
+  );
 }
 
 test("a merged card follows its deploy jobs: on stage, then in production, then asked no more", () =>
@@ -238,48 +232,31 @@ test("what is working, or already disposed of, is not asked about", () =>
 
 const HEAD = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b";
 
-/** A GitLab whose merge request is open with its head pipeline in `pipeline`. */
-const piped =
-  (pipeline: string): Runner =>
-  (_cmd, args) => {
-    if (args[0] === "api") return Effect.succeed({ code: 0, stdout: '{"username":"mk"}' });
-    if (args[0] === "mr")
-      return Effect.succeed({
-        code: 0,
-        stdout: `{"iid":65,"state":"opened","sha":"${HEAD}","head_pipeline":{"status":"${pipeline}"},"web_url":"${MR}"}`,
-      });
-    return Effect.succeed({ code: 0, stdout: "" });
-  };
+/** A GitLab whose merge request is open with its head pipeline `state`. */
+const piped = (state: Check["state"]): Runner =>
+  forge("gitlab", { mrs: [mr65({ head: HEAD, checks: [{ name: "build", state }] })] });
 
 const PR = "https://github.com/cego/collie/pull/30";
 
-/** A `gh` that says one thing about the pull request, or exits `code` with nothing. */
-const github =
-  (said: Pull | null, code = 0, log: string[] = []): Runner =>
-  (cmd, args) => {
-    log.push(`${cmd} ${args.join(" ")}`);
-    if (cmd !== "gh" || said === null) return Effect.succeed({ code: code || 1, stdout: "" });
-    return Effect.succeed({
-      code,
-      stdout: Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(said),
-    });
-  };
-
-interface Rollup {
-  readonly name?: string;
-  readonly context?: string;
-  readonly status?: string;
-  readonly conclusion?: string | null;
-  readonly state?: string;
-}
-type Pull = ReturnType<typeof pull>;
-
-const pull = (state: string, rollup: ReadonlyArray<Rollup>, merged: string | null = null) => ({
-  state,
-  headRefOid: HEAD,
-  mergeCommit: merged === null ? null : { oid: merged },
-  statusCheckRollup: rollup,
-});
+/** A GitHub whose pull request #30 is `state`, with `checks`. */
+const github = (
+  state: FakeMr["state"],
+  checks: ReadonlyArray<Check>,
+  over: Partial<ForgeModel> = {},
+): Runner =>
+  forge("github", {
+    mrs: [
+      {
+        project: "github.com/cego/collie",
+        iid: "30",
+        state,
+        head: HEAD,
+        mergedSha: state === "merged" ? HEAD : "",
+        checks,
+      },
+    ],
+    ...over,
+  });
 
 /** The card after one round of the watch, read back the way the CLI's board reads it. */
 const cardAfter = Effect.fn("merges.cardAfter")(function* (mr: string, run: Runner) {
@@ -318,7 +295,7 @@ test("a GitLab pipeline that failed, is running or passed is what the card's che
       const going = (yield* cardAfter(MR, piped("running"))).card;
       expect(going.checks).toEqual({ state: "running" });
       expect(going.sentence).toBe("mk/collie!65 is open; its pipeline is still running.");
-      const green = (yield* cardAfter(MR, piped("success"))).card;
+      const green = (yield* cardAfter(MR, piped("passed"))).card;
       expect(green.ready).toBe(true);
       expect(green.sentence).toBe(
         "Ready to release: mk/collie!65 is open and its checks passed at 1a2b3c4. Next: merge it.",
@@ -329,33 +306,19 @@ test("a GitLab pipeline that failed, is running or passed is what the card's che
 test("a GitHub check rollup that is red, pending or green is what the card's checks say", () =>
   runEffect(
     Effect.gen(function* () {
-      const lint = {
-        __typename: "CheckRun",
-        name: "lint",
-        status: "COMPLETED",
-        conclusion: "FAILURE",
-      };
-      const tests = {
-        __typename: "CheckRun",
-        name: "test",
-        status: "COMPLETED",
-        conclusion: "SUCCESS",
-      };
-      const pending = { __typename: "StatusContext", context: "ci/build", state: "PENDING" };
-      const queued = { __typename: "CheckRun", name: "e2e", status: "QUEUED", conclusion: null };
+      const lint = { name: "lint", state: "failed" } as const;
+      const tests = { name: "test", state: "passed" } as const;
+      const queued = { name: "e2e", state: "running" } as const;
 
-      const red = (yield* cardAfter(PR, github(pull("OPEN", [tests, lint])))).card;
+      const red = (yield* cardAfter(PR, github("open", [tests, lint]))).card;
       expect(red.checks).toEqual({ state: "failed", name: "lint", at: HEAD });
       expect(red.sentence).toBe(
         "cego/collie#30 is open, but lint failed at 1a2b3c4. Next: fix lint.",
       );
-      expect((yield* cardAfter(PR, github(pull("OPEN", [tests, pending])))).card.checks).toEqual({
+      expect((yield* cardAfter(PR, github("open", [tests, queued]))).card.checks).toEqual({
         state: "running",
       });
-      expect((yield* cardAfter(PR, github(pull("OPEN", [tests, queued])))).card.checks).toEqual({
-        state: "running",
-      });
-      const green = (yield* cardAfter(PR, github(pull("OPEN", [tests])))).card;
+      const green = (yield* cardAfter(PR, github("open", [tests]))).card;
       expect(green.ready).toBe(true);
       expect(green.sentence).toBe(
         "Ready to release: cego/collie#30 is open and its checks passed at 1a2b3c4. Next: merge it.",
@@ -366,7 +329,7 @@ test("a GitHub check rollup that is red, pending or green is what the card's che
 test("a merged GitHub pull request lands its card, by github's word", () =>
   runEffect(
     Effect.gen(function* () {
-      const { card, run } = yield* cardAfter(PR, github(pull("MERGED", [], HEAD)));
+      const { card, run } = yield* cardAfter(PR, github("merged", []));
       const recorded = yield* readDispositions(run.dir);
       expect(recorded.map((line) => [line.by, line.kind, line.ref])).toEqual([
         ["github", "merged", "cego/collie#30"],
@@ -379,8 +342,8 @@ test("a merged GitHub pull request lands its card, by github's word", () =>
 test("no gh, or a gh nobody logged in to, leaves the card unchecked and says nothing of it", () =>
   runEffect(
     Effect.gen(function* () {
-      for (const code of [127, 4]) {
-        const { card } = yield* cardAfter(PR, github(null, code));
+      for (const over of [{ installed: false }, { loggedIn: [] }]) {
+        const { card } = yield* cardAfter(PR, github("open", [], over));
         expect(card.checks).toEqual({ state: "unchecked" });
         expect(card.sentence).toBe("cego/collie#30 is open; nothing has checked it.");
       }
@@ -428,11 +391,11 @@ test("green forge checks with Collie's evidence at an older head pass on the for
         by: "collie",
       });
       const now = epochMs("2026-09-17T10:00:00Z");
-      const tests = { name: "test", status: "COMPLETED", conclusion: "SUCCESS" };
+      const tests = { name: "test", state: "passed" } as const;
       yield* settleMerges({
         stateDir,
         cwd: "/project",
-        run: github(pull("OPEN", [tests])),
+        run: github("open", [tests]),
         views: yield* buildBoard({ env, runs: [made], now }),
         now,
         checked: new Map(),
@@ -442,5 +405,100 @@ test("green forge checks with Collie's evidence at an older head pass on the for
       const [card] = yield* buildBoard({ env, runs: [made], now });
       expect(card!.checks).toEqual({ state: "passed", at: HEAD });
       expect(card!.sentence).toContain("passed at 1a2b3c4.");
+    }),
+  ));
+
+test("a pull request's panel is read for the drawer as a merge request's is, and says whether it moved", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const reviewedAt = epochMs("2026-09-17T09:00:00Z");
+      for (const [target, run] of [
+        [MR, forge("gitlab", { mrs: [mr65({ head: HEAD, updatedAt: "2026-09-17T11:00:00Z" })] })],
+        [
+          PR,
+          forge("github", {
+            mrs: [
+              {
+                project: "github.com/cego/collie",
+                iid: "30",
+                state: "open",
+                title: "Cards",
+                head: HEAD,
+                updatedAt: "2026-09-17T11:00:00Z",
+              },
+            ],
+          }),
+        ],
+      ] as const) {
+        const panel = yield* watchedMr({
+          panels: new Map(),
+          target,
+          cwd: "/project",
+          run,
+          now: epochMs("2026-09-17T12:00:00Z"),
+          fresh: true,
+        });
+        expect(panel).toMatchObject({ _tag: "Details", title: "Cards", headSha: "1a2b3c4" });
+        expect(panel?._tag === "Details" ? sinceReview(panel, reviewedAt) : "").toBe(
+          "changed 2h after this review — head 1a2b3c4",
+        );
+      }
+    }),
+  ));
+
+test("a merged pull request is followed to stage, then production, then asked no more", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-pr-deploys-" });
+      const env = readEnv({ HERDR_PLUGIN_STATE_DIR: stateDir, COLLIE_CWD: "/project" });
+      const made = yield* madeRun(stateDir, {
+        state: "succeeded",
+        mr: PR,
+        created: "2026-09-17T09:00:00Z",
+      });
+      const states = new Map();
+      const checked = new Map<string, number>();
+      let now = epochMs("2026-09-17T10:00:00Z");
+      const deployedTo = (prod: string, log: string[] = []) =>
+        forge(
+          "github",
+          {
+            mrs: [
+              { project: "github.com/cego/collie", iid: "30", state: "merged", mergedSha: HEAD },
+            ],
+            environments: [
+              { name: "staging", tier: "staging", deployed: "child" },
+              { name: "production", tier: "production", deployed: prod },
+            ],
+            ancestry: { child: [HEAD] },
+          },
+          log,
+        );
+      const settle = (run: Runner) =>
+        Effect.gen(function* () {
+          yield* settleMerges({
+            stateDir,
+            cwd: "/project",
+            run,
+            views: yield* buildBoard({ env, runs: [made], mrStates: states, now }),
+            now,
+            checked,
+            states,
+            panels: new Map(),
+          });
+          return (yield* buildBoard({ env, runs: [made], now }))[0]!;
+        });
+      expect((yield* settle(deployedTo("0ld"))).sentence).toBe(
+        "Merged as cego/collie#30. On stage.",
+      );
+      now += 6 * 60_000;
+      expect((yield* settle(deployedTo(HEAD))).sentence).toBe(
+        "Merged as cego/collie#30. In production.",
+      );
+      now += 6 * 60_000;
+      const log: string[] = [];
+      yield* settle(deployedTo(HEAD, log));
+      expect(log).toEqual([]);
     }),
   ));

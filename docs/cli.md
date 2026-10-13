@@ -216,8 +216,8 @@ or an execution exists — so a value one of them refuses costs nothing to refus
 `collie verify --run <run-id> -- <command>` records against a module's Run as it does
 against any other: the same collector, the same binding to the tree the command ran on, and
 the same refusal for a directory that is not that Run's. A module can ask for one itself,
-but only for a command its approved set named when the Run started, or one granted it since
-with `run intent verification` or chat's `set_verification`.
+but only for one of the Run's checks: those it started with, or one named since with
+`run intent verification` or chat's `set_verification`.
 
 A module may be made of other modules. A child is a Run of its own — `run list` has it,
 `run show` says whose it is, and the Task it belongs to is its parent's — and it is started
@@ -270,9 +270,11 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
   `agent_blocked` for ten minutes leaves the Run `suspended`, with `parked` in its view —
   and in `run show` — saying what held, for how long, and where the prompt is. `run resume`
   hands that prompt to the same agent rather than starting another.
-- **A Run with nothing approved to prove it parks before its first agent**, where its
-  outcome needs the approved set. `parked` names the repair: `run intent verification`
-  grants this Run a command through the host, and `run resume` carries it on.
+- **A Run never waits for its checks.** Where nothing written down names any, its agent
+  names them before it builds with `run intent verification`, through the host, and Collie
+  runs them at the gate without asking anyone
+  ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). A Run parked at the old
+  evidence gate by an earlier build goes on with `run resume`.
 - **A Run's agents live in its Task's workspace**, opened by the start that made the Task.
   A stop closes only its agents' panes there. If herdr has closed that workspace by the next launch, it
   is reopened on the Run's checkout and the Task records the new id; with the checkout gone
@@ -282,7 +284,9 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
 - **`run steer` says something to the Run's agent** through the one sender, with the same
   incarnation and harness-capability checks as every other delivery, and tells you whether
   it was delivered rather than that it was accepted for sending: anything not sent is
-  `operation_failed`, with why. A finished Run's live agent takes one as a running Run's
+  `operation_failed`, with why. A message over 8 KiB is kept whole as a file in the Run's
+  `attachments/`, and the agent is told where to read it
+  ([steering](steering.md#delivery)). A finished Run's live agent takes one as a running Run's
   does, whether or not its module is still loaded. It carries out nothing:
   `collie steer` is still the only thing that proposes an action, and a proposal still
   names its exact payload to be confirmed.
@@ -357,8 +361,10 @@ they came. Everything else is new work, and gets a new branch called
 6. A slug of the work itself — the description, or the issue id.
 7. Otherwise a slug of the run's own name.
 
-The login is `GITLAB_USER_LOGIN` where the environment sets it, and otherwise whoever
-`glab` is logged in as for this checkout's host. Neither is the merge request's assignee
+The login is the checkout's forge's (ADR-0050 D5). On GitLab it is `GITLAB_USER_LOGIN`
+where the environment sets it, and otherwise whoever `glab` is logged in as for this
+checkout's host; on GitHub it is `GITHUB_ACTOR`, and otherwise whoever `gh` is logged in
+as. Neither is the merge request's assignee
 and neither is your OS username. Where there is no login to be had the run does not start
 and says to log in — it is an authentication failure, not a question about branches.
 
@@ -406,6 +412,7 @@ Examples:
 
 ```sh
 collie run start review --input target=https://gitlab.example.com/acme/app/-/merge_requests/2 --input plan= --input proves=
+collie run start review --input target=https://github.com/acme/app/pull/30 --input plan= --input proves=
 collie run start review --input target=worktree --input plan= --input proves=
 collie run start implement --input plan=ENG-123
 collie run start plan --input goal="one registry" --input workspace=projects-root
@@ -428,7 +435,7 @@ root for `workspace`:
       "inputs": [
         {
           "name": "target",
-          "meaning": "The change to review: mr:<iid>, mr:<group/project>!<iid>, branch:<base>...<head>, or worktree",
+          "meaning": "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, <owner>/<repo>#<n>, branch:<base>...<head>, or worktree",
           "facts": ["mr:acme/app!2 (open merge request !2)"],
           "question": "review — an MR, a branch diff, or the working tree — target?",
           "required": true,
@@ -548,7 +555,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `age`, `at`               | How long it has been going, and when it last changed.                                                                                                           |
 | `drift`, `held`           | The one line each carries, or `null`.                                                                                                                           |
 | `heldBy`                  | Who set the hold that stands — the front door it came through — and the reason given with it, or `null`.                                                        |
-| `decision`                | The question, proposal or gate waiting on you, or `null`. One of the two ways into Needs you.                                                                   |
+| `decision`                | The question or proposal waiting on you, or `null`. One of the two ways into Needs you.                                                                         |
 | `agents[]`                | The live agents on it, its Repo runs' included.                                                                                                                 |
 | `children[]`              | Its plan's repositories, in wave order: `repo`, its `run` (`null` until it starts), its `state` (`done`, `active`, `blocked`, `failed` or `todo`) and its `mr`. |
 | `mr`, `mrState`, `branch` | What it is building, where it can be read, and what the forge last said about the merge request.                                                                |
@@ -560,19 +567,6 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `check`                   | The check Collie is running for the leading Run, as `collie run checks` gives `running` (with its `log` and `lastLines`), or `null`.                            |
 | `reopened`                | A finished Run whose agent took a steer after it ended: the `delivery`, the `agent`, the first line it was `told` and its `status` now; else `null`.            |
 | `run`, `runs[]`           | The Run a card acts on, and every Run of the Task.                                                                                                              |
-
-A `gate` is a Run parked at its evidence gate with nothing approved, listing the checks its
-checkout's `.collie/verify.json` (or your config's `verify.json`) offers. Answer it with
-`collie run answer <run-id> approve --decision evidence-gate`, or `approve:<name>,<name>`
-for part of the list: the host grants those, as `run intent verification` does, and takes
-the Run up again. It is not skipped, since with nothing approved no check could prove it.
-
-A fan-out's own Run never parks, so where neither it nor any of its Runs asks anything, the
-first of its Repo runs in wave order parked at its gate is the Task's `decision`. That gate's
-`run` is the Repo run, which is the one an answer releases, and its `repo` names the
-repository, as the sentence does. A gate whose checkout and config offer no checks says so,
-and names how to grant one: chat's `set_verification`, or
-`collie run intent verification <run-id> --name <name> -- <command>`.
 
 A fan-out finds its plan from its work source even where the kind was never recorded with
 its input, as for an implement Run started from a plan's end menu: a plan directory is the
@@ -613,10 +607,18 @@ still running. `resume`
 asks the host to pick a suspended run up again. It re-enters the workflow's current code
 and reuses every Activity already done, so completed work and its Outputs are kept and
 never redone, and an agent still live is reattached to rather than started a second
-time; one a stop closed is started again with the prompt it had. It clears a stop first, hands a run parked on a pane the same prompt, and registers
-the modules as they are now — so a run whose module was missing and has been put back is
-carried on without restarting the host. On a run the engine is already working it changes
-nothing.
+time; one a stop closed is started again with the prompt it had. The host registers the
+modules as they are now, then clears the stop before waking work. A restored module is
+picked up without restarting the host.
+
+Resume succeeds only when the host wakes suspended work or recovers this Run's unfinished
+admission or unavailable module into the engine. It clears the old park note before work
+starts; if work parks again, the new reason is shown. Take-up does not promise completion.
+A Run already running, finished, failed, or still missing its module returns
+`operation_failed` and a nonzero exit. A missing module's file is named.
+Repeating the same request returns its recorded result; a fresh request judges the Run again.
+Delivery reconciliation remains explicit: `not-sent` permits one resend, while `sent` waits
+for Output. An unresolved delivery stays uncertain.
 
 A finished execution keeps its recorded result; `resume` does not reopen its steps. Use
 the Run's follow-up action to continue unfinished work on the same Task and branch.
@@ -634,7 +636,7 @@ about it without asking; everything Collie says about drift is a comparison agai
 Every Run has one from the moment the host admits it, written before any of its work
 runs, and a Run started from another — a child, or a follow-up offered on a card —
 inherits that one's as it stands. `run intent` reads and amends it; `run intent
-verification` grants the run a command through the host (below).
+verification` names one of the run's checks through the host (below).
 
 ```sh
 collie --json run start implement --input plan=./plans/steering \
@@ -688,7 +690,7 @@ or the Herd makes, and what they cost, is recorded under `herd/<herdKey>/budget.
 usage, and never used to refuse the next one. An Intent written by an earlier build with
 `model_calls_per_run` still reads; the number decides nothing.
 
-The one grant that is not a `k=v` word is a command Collie may run itself:
+The one amendment that is not a `k=v` word is a check, a command Collie runs itself:
 
 ```sh
 collie run intent verification <run-id> --name unit -- bun test
@@ -696,16 +698,16 @@ collie run intent verification <run-id> --name unit --remove
 ```
 
 It is bound argument for argument — `bun test` and `bun test --bail` are two different
-permissions — and `--cwd` is `worktree` or a path relative to the run's cwd. A granted
-verification whose name a `rule:command_exit` constraint refers to is run once, at the
-run's finish, so that rule is checked against a result rather than against nobody having
+checks — and `--cwd` is `worktree` or a path relative to the run's cwd. Anyone may name or
+withdraw one, the run's own agent included, and nobody approves it. A check whose name a
+`rule:command_exit` constraint refers to is run once, at the run's finish, so that rule is checked against a result rather than against nobody having
 looked. Everything else on `steering/verifications.jsonl` is written by an agent calling
 `collie verify`, and is recorded `by: agent`.
 
 `--propagate` applies the amended Intent to every child run that is still going: the
 child's own constraints are kept, the parent's are replaced, and anything the two disagree
 about is reported rather than resolved. A child inherits its parent's constraints and goal
-at birth, never its authority — a grant is per run.
+at birth, never its authority, which is per run.
 
 ```sh
 collie --json run intent defaults show
@@ -763,7 +765,7 @@ through a generated extension; this is the third way in.
 | `collie_herd`         | Every run in the Herd, bounded, saying how many it left out                                                                                                                                                                                  |
 | `collie_run`          | One run: its goal, constraints, the Choice it waits on and how to answer it, its answers with who and when, its result, the Runs it started, its merge request and branch, plan, findings, disposition, last log lines, cards and open drift |
 | `collie_workspaces`   | The workspaces this session has (the Home marked as no checkout), the Tasks whose workspace is open, the Projects root, and each workflow with its Inputs                                                                                    |
-| `collie_receipts`     | What one run waits on the human for — its Choice, an evidence gate, proposals — and what state each message to its agents actually reached                                                                                                   |
+| `collie_receipts`     | What one run waits on the human for — its Choice and proposals — and what state each message to its agents actually reached                                                                                                                  |
 | `collie_definitions`  | The Workflows and Personas there are; one resolved and checked, or one Persona's body                                                                                                                                                        |
 | `collie_installation` | What Collie needs, which workspace the Home is, what a cleanup would close, the defaults                                                                                                                                                     |
 | `collie_news`         | What this conversation has not been told; reading it settles those items for it                                                                                                                                                              |
@@ -998,7 +1000,7 @@ collie run start implement --input plan=<source> --input outcome=bug
 
 What kind of result a run has to prove, and so what evidence closes it:
 
-| `outcome`       | What closes it, beyond the approved verifications passing on the final tree                                                                                 |
+| `outcome`       | What closes it, beyond the run's checks passing on the final tree                                                                                           |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | _(empty)_       | nothing more. Unclassified work is not a feature by default.                                                                                                |
 | `feature`       | the tickets it built are named, every check a ticket's `**Checks:**` line promised has a passing verification, and the review says the agreed scope was met |
@@ -1009,11 +1011,12 @@ What kind of result a run has to prove, and so what evidence closes it:
 | `migration`     | `migrate-up` and `migrate-down` (or `rollback`) both passing                                                                                                |
 
 The gate runs before the merge request, which is where the claim is made. Collie runs the
-run's own approved set itself at the tree as it stands, then says what is missing. A check
+run's own checks itself at the tree as it stands, reading them again at every pass, then
+says what is missing. A check
 that failed runs once more; gaps a check could still close go to the implementer for up to
 four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
 Repair the checks and resume the Run: the pending proof reruns them even when the repair
-only changes the environment. A changed tree or approved set also gets fresh proof while
+only changes the environment. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
@@ -1023,13 +1026,13 @@ pass a later fail contradicts is not one. In `implement`, a check that fails at 
 before any fix, where the branch leaves the default branch, in the run's own checkout. One that
 fails there too remains required on the Run's tree: the base's exit code cannot show
 whether the branch added different failures. If merge request handling is unavailable,
-the Run suspends with the reason instead of completing without delivery. A run with
-nothing approved is told so rather than passed —
-an empty set would make the gate say yes to anything — and a run whose outcome needs the
-approved set is refused at `run start` when it has none (see [What Collie may run
-itself](#what-collie-may-run-itself)). A grant withdrawn while the run works parks it at its
-gate; `collie run intent verification <run-id> --name … -- <command>` and then `collie run
-resume <run-id>` carry it on.
+the Run suspends with the reason instead of completing without delivery. A run with no
+check named is not passed — an empty set would make the gate say yes to anything — and
+that is a gap the implementer closes: each gate fix is told to name the repository's checks
+with `collie run intent verification`. Still none after the fixes, or every one withdrawn,
+and the Run is held like a check that still fails; naming one with `collie run intent
+verification <run-id> --name … -- <command>` and then `collie run resume <run-id>` proves
+it again.
 
 An investigation that concludes there is nothing to change skips the merge request with a
 note and finishes. That is a real outcome, and nothing is invented to have something to
@@ -1045,13 +1048,18 @@ read — and neither opens a merge request, so there is no gate to stop them. Th
 read once when the run finishes, and what is missing is recorded on the run and shown on
 the board and in `run show`.
 
-For an `implement` Run's final delivery, a GitHub origin uses `gh`; a GitLab checkout
-uses `glab`. Both front doors ask the same host service for readiness, assignee,
-repository template and Linear tickets. GitHub readiness requires `gh` installed,
-logged in to github.com and able to read the origin repository. An existing pull
-request on the branch is updated. Before every GitHub push, including build and fix
-steps, the implementer reads the origin repository's open pull requests for the branch
-and refuses a push if auto-merge is enabled or that reading fails.
+For an `implement` Run's final delivery, the checkout's forge — its `origin`'s host, else
+`upstream`'s — decides: GitHub's adapter writes `gh` commands and GitLab's `glab` ones,
+and the prompt names no other CLI. Both front doors ask the same host service for
+readiness, assignee, template, Linear tickets and this branch's open merge request.
+The commands quote repository, branch and assignee values so the shell passes them literally.
+Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
+to read the repository. An existing merge request on the branch is updated rather than
+given a second one. If any request returned for the branch merges itself once green,
+delivery does not push: the step records `not pushed: auto-merge is on for <url>` and
+starts no agent. Before every
+GitHub push in the build and fix steps, the implementer still reads the branch's open pull
+requests and refuses a push if auto-merge is enabled or that reading fails.
 An unavailable forge parks the Run with the repair it needs.
 A delivery agent that did not push, supplied no merge request URL or reported findings
 fails the Run with the reason and a follow-up repair; it cannot report successful delivery.
@@ -1143,12 +1151,12 @@ What the command prints is shown as it runs — its stdout on stdout and its std
 stderr, or both on stderr under `--json`, where stdout is the one envelope — and the exit
 status is the command's own, so a failure says why the first time.
 
-| Flag       | What it does                                                                |
-| ---------- | --------------------------------------------------------------------------- |
-| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted. |
-| `--cwd`    | Where to run it. Must be inside that run's own checkout; defaults to it.    |
-| `--name`   | What to call it on a card. The executable by default.                       |
-| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.     |
+| Flag       | What it does                                                                                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                              |
+| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it. |
+| `--name`   | What to call it on a card. The executable by default.                                                                                                    |
+| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                  |
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command
@@ -1162,23 +1170,29 @@ collie verify --run <run-id> --name regression --expect fail -- bun test test/bu
 ### What Collie may run itself
 
 An agent may `collie verify` anything; Collie runs only this run's
-[approved set](../CONTEXT.md), matched argument for argument. The set is settled when the run starts — the `--verify`
+[checks](../CONTEXT.md), matched argument for argument, and nobody approves them
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). They are settled when the run starts — the `--verify`
 entries given with it, else `.collie/verify.json` in the project, else the checks remembered
 for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, by `origin`, then
-`upstream`), else `~/.collie/user/verify.json`, whichever is found first and taken whole — and copied into the run's Intent as its `run_verification` grant. Editing the file afterwards changes the next run and never a
-running one. From then on the Intent is the set: `run intent verification` adds to it or
-removes from it, and an Intent whose list has been emptied is a run Collie may run nothing
-for — the seed is not put back behind the human who removed it. A Run of a workflow module
-keeps its set with the host rather than in an Intent, and the same command amends it there.
+`upstream`), else `~/.collie/user/verify.json`, whichever is found first and taken whole — and copied into the run's Intent as its `run_verification` list. Editing the file afterwards changes the next run and never a
+running one. Where none of those has any, the run starts anyway and its agent names them
+before it builds. From then on the Intent is the set: `run intent verification` adds to it
+or removes from it, whoever calls it, and an Intent whose list has been emptied is a run
+with no checks — the seed is not put back behind whoever removed them. A check whose
+directory is outside the run's tree — `worktree` is its worktree, anything else is resolved
+against its cwd — is refused when it is named, naming that directory and the run. A Run of
+a workflow module keeps its set with the host rather than in an Intent, and the same command
+amends it there.
 
 ```json
 [{ "name": "tests", "executable": "bun", "argv": ["test"], "cwd": "worktree" }]
 ```
 
 A file that is there and does not decode is an error naming it, never an empty set, and
-the start is refused. So is a start of a workflow that [declares](sdk.md#what-a-definition-declares)
-`verifies` when its outcome needs the set and nothing is approved: nothing could prove it,
-so it is `invalid_input` with the repair, and no Run, worktree or Task is made.
+the start is refused as `invalid_input`, so a typo is never quietly replaced by an agent's
+choice. So is `--verify` given to a plan that spans repositories: each repository is held to
+its own `.collie/verify.json` or remembered checks. No start is refused for having no
+checks.
 
 ```sh
 collie run start implement --input plan=… \
@@ -1284,20 +1298,20 @@ human line and a failure prints `error.message`.
 
 ### Error codes
 
-| Code                  | When                                                                                                                                                       |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace_required`  | The command needs a workspace and none could be determined.                                                                                                |
-| `workspace_not_found` | The `--workspace` id is not a workspace herdr has.                                                                                                         |
-| `workflow_not_found`  | No layer defines that workflow.                                                                                                                            |
-| `persona_not_found`   | No layer defines that persona.                                                                                                                             |
-| `run_not_found`       | No run with that id, or none by that id in the Task this command is scoped to.                                                                             |
-| `task_not_found`      | `--task` named a Task that does not exist.                                                                                                                 |
-| `target_exists`       | A fork would overwrite a file that is already there.                                                                                                       |
-| `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                                                                     |
-| `timeout`             | `run wait --timeout` gave up.                                                                                                                              |
-| `invalid_state`       | The run, or the installation, is not in a state where that makes sense — resuming one that already succeeded, or `upgrade --to` on a development checkout. |
-| `invalid_input`       | A flag or argument was wrong.                                                                                                                              |
-| `operation_failed`    | Anything else, including a caught defect.                                                                                                                  |
+| Code                  | When                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `workspace_required`  | The command needs a workspace and none could be determined.                                                        |
+| `workspace_not_found` | The `--workspace` id is not a workspace herdr has.                                                                 |
+| `workflow_not_found`  | No layer defines that workflow.                                                                                    |
+| `persona_not_found`   | No layer defines that persona.                                                                                     |
+| `run_not_found`       | No run with that id, or none by that id in the Task this command is scoped to.                                     |
+| `task_not_found`      | `--task` named a Task that does not exist.                                                                         |
+| `target_exists`       | A fork would overwrite a file that is already there.                                                               |
+| `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                             |
+| `timeout`             | `run wait --timeout` gave up.                                                                                      |
+| `invalid_state`       | The run, or the installation, is not in a state where that makes sense — `upgrade --to` on a development checkout. |
+| `invalid_input`       | A flag or argument was wrong.                                                                                      |
+| `operation_failed`    | Anything else, including a caught defect.                                                                          |
 
 ## Retrying safely
 
@@ -1571,7 +1585,12 @@ over SSH with its own key, or over HTTPS where glab configured git to use it. An
 forwarded into the session does not count, since it goes when the computer it came from
 sleeps. That host is `--gitlab-host`, else `GITLAB_HOST`, else the
 [`gitlab_host` setting](using.md#your-defaults). Any other host glab knows is named in one
-`other gitlabs` note, unchecked, and never fails the run.
+`other gitlabs` note, unchecked, and never fails the run. Where any checkout under the
+Projects root is on GitHub — its `origin`, else `upstream`, is on github.com — a `gh` check
+follows: `gh` on PATH, else a failure fixed by installing it from https://cli.github.com,
+and `gh auth status --hostname github.com`, whose failure's fix is `gh auth login
+--hostname github.com`. Its detail says how many checkouts use GitHub. A Machine with no
+GitHub checkout is not asked about `gh`.
 
 **herdr** names what upgrading does to the running panes. From a herdr before 0.9.0, the
 running server must stop once, which ends every program in its panes: `herdr update`, then
@@ -1743,7 +1762,7 @@ without being read. The review's findings come as
 a list. The merge request is what the merge watch last read, asked again after 5 minutes or
 when `refreshMr` is set. Large items are fetched by reference with `runFile`: `log`,
 `review`, `diff:<path>`, `evidence:<name>`, `verification:<id>`, `plan:<file>`, `attachment:<name>` (one of the Run's attachments), `file:<path>` (read
-only, from the Run's checkout) and `pipeline:<url>` (the status glab reads for that pipeline), text as it is and anything else as base64. Each answer is
+only, from the Run's checkout) and `pipeline:<url>` (the status glab reads for a GitLab pipeline, or gh for a GitHub Actions run), text as it is and anything else as base64. Each answer is
 at most 4 MiB from `offset` (or `length` bytes where asked) and says the item's whole
 `size`, so a long log or a video is read in parts. A part of an item is base64 whatever it
 is, so a character split across two parts is whole once they are joined. A reference is refused where it leaves
@@ -1786,6 +1805,8 @@ Version 2 changed two meanings: a `chat` channel's repeated `declare` replaces t
 speaks with rather than being ignored, and `news` with `keys` settles only those. A version
 1 client repeats no declaration and sends no `keys`, so it is still served as before.
 Desktop's Flock chat writes through no host older than version 2, and says so.
+Version 3 removes the `gate` Decision. A version 2 client is still served because it never
+receives one.
 
 `discover` and `start` name the project asking, because one host serves the machine and a
 project's own `.collie/workflows` is its own: two projects can run different implementations

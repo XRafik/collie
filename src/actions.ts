@@ -14,9 +14,9 @@ const Attachments = Schema.Array(Schema.String).annotate({
  * Everything the model may propose, and nothing else. A closed union is the security
  * boundary, with one deliberate hole: `set_verification.command` and `start.verify` are an
  * executable and its arguments that Collie spawns itself at the gate, outside any agent's
- * permission rules. Chat's `collie_propose` carries `set_verification` out in the same call,
- * with no yes, so what chat read in the repository decides what Collie runs. The human
- * reads what ran in the merge request, before it lands (ADR-0011, 2026-09-29).
+ * permission rules. Chat's `collie_propose` names a check with `set_verification` in the
+ * same call, with no yes, as the Run's own agent may: nobody approves a check. The human
+ * reads what ran in the merge request, before it lands (ADR-0055).
  */
 export const ActionSchema = Schema.Union([
   Schema.Struct({
@@ -30,7 +30,7 @@ export const ActionSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("set_verification"),
     run: Schema.String,
-    /** The check's name; a grant of a name already there replaces it. */
+    /** The check's name; naming one already there replaces it. */
     name: Schema.String,
     /** What Collie runs for it; absent withdraws the check of that name. */
     command: Schema.optionalKey(VerifySpecSchema.mapFields(Struct.omit(["name"]))),
