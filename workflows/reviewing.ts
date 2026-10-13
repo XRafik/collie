@@ -60,6 +60,7 @@ const REVIEW = content.template("review", {
   risks: text,
   obstacle: text,
   checks: text,
+  criteria: text,
 });
 
 /** The reviews to reconcile, and the one before them. */
@@ -115,6 +116,8 @@ export interface ReviewAsk {
   readonly obstacle?: string;
   /** The commit a worktree's change is diffed against: the default branch as last integrated. */
   readonly base?: string;
+  /** What the builder says of each criterion, and its assumptions, for the reviewer to check. */
+  readonly criteria?: string;
 }
 
 /** What the reviewers and the synthesis are both told, beside the section they are given. */
@@ -170,7 +173,7 @@ export const reviewPass = (ask: ReviewAsk) =>
         role: "reviewer",
         seat: only!.seat,
         instructions: REVIEW,
-        input: { ...input, checks },
+        input: { ...input, checks, criteria: ask.criteria ?? "" },
         output: SynthesisSchema,
       });
       yield* leaveReview(dir, alone);
@@ -184,7 +187,7 @@ export const reviewPass = (ask: ReviewAsk) =>
           role: "reviewer",
           seat,
           instructions: REVIEW,
-          input: { ...input, checks },
+          input: { ...input, checks, criteria: ask.criteria ?? "" },
           output: ReviewOutputSchema,
         }),
       { concurrency: "unbounded" },

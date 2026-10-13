@@ -345,7 +345,8 @@ the same role is never the answer, however recently it was started from the same
 name the role — who may be asked is your workflow's declaration, not an assumption Collie
 makes about it. Give that work's Output an `assumptions` field and carry what it says to the
 human, as implement's `Built` does into the merge request: a field the schema lacks is
-decoded away.
+decoded away. Ask it again for each piece of work rather than once per Run: a planner that
+has gone since is otherwise still described as live. Shipped `implement` asks per ticket.
 
 The work itself is written to `<state>/agents/<run>/<operation>.prompt.md` and the message
 names that file. One send is one message and not a transcript: a step's prompt carries a
@@ -942,8 +943,10 @@ for (const [at, ticket] of tickets.entries()) {
 
 `orderedTickets` (and `orderedTicketsOf`) reads a plan directory as tickets in an order they
 can be built in — `Blocked by` before blocked, plan order among the rest — narrowed to one
-repository where you name one. Skipping is your own `continue` with a reason recorded: no
-agent, no tab and no Output written as though somebody had answered. An empty list is no
+repository where you name one. Each ticket's `criteria` are its acceptance criteria, one per
+checkbox under its Acceptance criteria heading (`criteriaIn` reads them from a ticket's
+text); a ticket with no checkboxes has none. Skipping is your own `continue` with a reason
+recorded: no agent, no tab and no Output written as though somebody had answered. An empty list is no
 work, and findings are yours to carry — nothing here ends a list because an item found
 something.
 
@@ -1179,6 +1182,17 @@ before anything exists: `new`, or the absolute path of a directory. Anything els
 `PlanOutputSchema` are exported so a step you write declares the same contract the engine
 reads, rather than a copy of it. `FindingSchema`, `FixedSchema` and `CheckSchema` are the
 pieces they are built from.
+
+`CriterionSchema` is how a builder answers one of its ticket's acceptance criteria:
+`criterion`, copied from the ticket, and `met`, the test or file that shows it, or
+`not met: <reason>`. Implement's `Built` carries them as an optional `criteria` list.
+`unmetCriteria(ticket, criteria, answers)` turns each criterion left unanswered or not met
+into a blocking finding against the ticket. `answerFor(criterion, answers)` is the answer a
+criterion has; a copy that dropped the criterion's formatting still counts. Shipped
+`implement` hands what is unmet back to the builder before any reviewer is launched, twice at
+most, and carries what is still unmet into the review as blocking. The reviewer's prompt
+shows every criterion, its answer and the builder's assumptions. A workflow that never reads
+the field is unaffected.
 
 They are deliberately loose where judgement lives. `severity` is free text: `blocker`,
 `major` and `minor` are what the shipped prompts ask for, but a fork's own word is a

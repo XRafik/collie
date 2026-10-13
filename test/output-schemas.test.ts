@@ -10,6 +10,7 @@
 import { expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  CriterionSchema,
   FixOutputSchema,
   MrOutputSchema,
   PlanOutputSchema,
@@ -18,6 +19,7 @@ import {
   parseFixOutput,
   parseReviewOutput,
   parseSynthesis,
+  unmetCriteria,
   type Parsed,
 } from "../src/output";
 import { YamlValueJsonSchema } from "../src/yaml";
@@ -134,4 +136,47 @@ test("the merge request and plan steps carry what a card reads, and no more", ()
     issues_dir: "plan/issues",
   });
   expect(Schema.decodeUnknownExit(PlanOutputSchema)({ issues_dir: " " })._tag).toBe("Failure");
+});
+
+test("each criterion is answered with how it is met, and one unanswered or unmet blocks", () => {
+  const Built = Schema.Struct({ criteria: Schema.optionalKey(Schema.Array(CriterionSchema)) });
+  expect(Schema.decodeUnknownSync(Built)({})).toEqual({});
+  expect(
+    Schema.decodeUnknownSync(Built)({
+      criteria: [{ criterion: "**A.** it does a", met: "test/a.test.ts" }],
+    }),
+  ).toEqual({ criteria: [{ criterion: "**A.** it does a", met: "test/a.test.ts" }] });
+  expect(Schema.decodeUnknownExit(Built)({ criteria: [{ criterion: "a", met: " " }] })._tag).toBe(
+    "Failure",
+  );
+
+  const criteria = [
+    "**A.** It does `a`, with one entry per thing.",
+    "**B.** It does b.",
+    "**C.** It does c.",
+  ];
+  const unmet = unmetCriteria("05-x.md", criteria, [
+    // Copied with its formatting dropped, it is still the same criterion.
+    { criterion: "A. It does a, with one entry per thing", met: "test/a.test.ts" },
+    { criterion: "**B.** It does b.", met: "Not met: b needs a service nobody has" },
+  ]);
+  expect(unmet).toEqual([
+    {
+      file: "05-x.md",
+      severity: "blocker",
+      title: "acceptance criterion not met: **B.** It does b.",
+      detail: "Not met: b needs a service nobody has",
+    },
+    {
+      file: "05-x.md",
+      severity: "blocker",
+      title: "acceptance criterion not answered: **C.** It does c.",
+      detail: "The builder's Output says nothing of how this criterion is met.",
+    },
+  ]);
+  expect(unmetCriteria("05-x.md", [], [])).toEqual([]);
+  // Answered by its bold lead alone, it is still answered.
+  expect(unmetCriteria("05-x.md", criteria.slice(0, 1), [{ criterion: "A.", met: "t" }])).toEqual(
+    [],
+  );
 });

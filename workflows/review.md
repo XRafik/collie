@@ -88,6 +88,8 @@ is bound to the tree you checked it on: `collie verify --run {{run.id}} --cwd {{
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
 
+{{criteria}}
+
 ### Your judgement on the outcome
 
 The outcome above decides one extra field in your Output, a boolean that only a reviewer

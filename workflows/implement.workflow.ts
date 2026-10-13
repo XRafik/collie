@@ -15,6 +15,7 @@
 // slice is told, and what the merge request has to say.
 
 import {
+  CriterionSchema,
   FindingSchema,
   FixOutputSchema,
   IntegrationSchema,
@@ -24,6 +25,7 @@ import {
   Run,
   WorkflowError,
   agentWork,
+  answerFor,
   checkGapsOf,
   classifyWorkSource,
   contentOf,
@@ -43,7 +45,9 @@ import {
   settleFinalFix,
   settleRound,
   splitDisputed,
+  unmetCriteria,
   type CheckEvidence,
+  type Criterion,
   type Finding,
   type Handed,
   type Integration,
@@ -76,6 +80,14 @@ const prompts = {
     progress: text,
     session: Schema.Struct({ ask: text }),
     obstacle: text,
+    criteria: text,
+  }),
+  criteria: content.template("criteria", {
+    ...Implementing.fields,
+    ticket: Schema.Struct({ file: text, title: text }),
+    criteria: text,
+    findings: text,
+    session: Schema.Struct({ ask: text }),
   }),
   fix: content.template("fix", {
     ...Implementing.fields,
@@ -115,6 +127,9 @@ const Built = Schema.Struct({
   commits: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
     description: "the commit subjects you left behind",
   }),
+  criteria: Schema.optionalKey(Schema.Array(CriterionSchema)).annotate({
+    description: "one entry per acceptance criterion you were given",
+  }),
   tests: Schema.optionalKey(Schema.String),
   /** A bug's reproduction, an investigation's answer, a docs run: whichever applies. */
   reproduced: Schema.optionalKey(Schema.String),
@@ -141,6 +156,8 @@ const SliceRecord = Schema.Struct({
   title: Schema.String,
   blockedBy: Schema.Array(Schema.String),
   checks: Schema.Array(Schema.String),
+  // A reading journaled before tickets carried their criteria has none.
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 /** What the step that opens the merge request reports, and what it linked. */
@@ -156,6 +173,9 @@ const Opened = Schema.Struct({
 
 /** At most four rounds per rally; leave when no blocking finding remains. */
 const ROUNDS = 4;
+
+/** How often a ticket's unanswered criteria go back to its builder before a reviewer sees them. */
+const CRITERIA_TRIES = 2;
 
 /** The checks whose latest run by Collie, on the tree in front of it, failed. */
 const failingNow = (evidence: CheckEvidence, names: ReadonlyArray<string>) =>
@@ -274,9 +294,12 @@ export default defineWorkflow({
         run: { dir: place.dir, id: runId },
         verify: yield* checksNow,
       };
-      // Where a question the plan does not cover goes: the planner's own pane while one
-      // is live, and otherwise the human's.
-      const session = { ask: yield* agents.askRoute("planner", place.lineage) };
+      // Where a question the plan does not cover goes: the planner's own pane while one is
+      // live, and otherwise the builder decides and records it under assumptions. Asked
+      // again for each ticket, so a planner that has gone is never described as live.
+      const sessionNow = Effect.map(agents.askRoute("planner", place.lineage), (ask) => ({
+        ask,
+      }));
 
       // The default branch merged in where it has moved, at each ticket boundary and before
       // each review round, so drift is met while it is small and a reviewer sees what will
@@ -311,11 +334,12 @@ export default defineWorkflow({
       const ticketsNow = Effect.gen(function* () {
         readings += 1;
         if (source.kind !== "plan-dir") return [];
-        return yield* Activity.make({
+        const read = yield* Activity.make({
           name: `tickets.${readings}`,
           success: Schema.Array(SliceRecord),
           execute: orderedTicketsOf(source.value, place.options.repo ?? ""),
         });
+        return read.map((one) => ({ ...one, criteria: one.criteria ?? [] }));
       });
       let tickets: ReadonlyArray<Slice> = yield* ticketsNow;
       // One ticket is not a plan to slice: one pass builds all of it, and only tickets
@@ -324,6 +348,7 @@ export default defineWorkflow({
       const built = new Set<string>();
       const handed: Handed[] = [];
       const assumed: string[] = [];
+      const answeredFor: Answered[] = [];
       let build: typeof Built.Type | null = null;
       let rallied: Rallied | null = null;
       for (;;) {
@@ -337,6 +362,9 @@ export default defineWorkflow({
         const before = (yield* host.evidence(runId, cwd)).verifications.length;
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "started", []);
         const merged = built.size > 0 ? yield* integrateNow : null;
+        const session = yield* sessionNow;
+        // A plan built in one pass answers every ticket's criteria.
+        const criteria = ticket?.criteria ?? tickets.flatMap((one) => one.criteria);
         rallied = null;
         build = yield* agentWork({
           operation: ticket?.file ?? "build",
@@ -350,6 +378,7 @@ export default defineWorkflow({
             ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
             progress: renderProgress(handed),
             session,
+            criteria: renderCriteria(criteria),
             obstacle:
               merged?.status === "conflicted"
                 ? `${conflictOf(merged)}\n\nFinish that merge before this ticket's work goes on: resolve those files, \`git add\` them and \`git commit --no-edit\`. Never rebase, reset or abort it.`
@@ -357,23 +386,57 @@ export default defineWorkflow({
           },
           output: Built,
         });
+        const item = ticket?.file ?? "build";
+        // Each criterion answered before any reviewer is launched: one left unanswered or
+        // unmet goes back to the builder, and what is still unmet after that is the review's.
+        let answers: ReadonlyArray<Criterion> = build.criteria ?? [];
+        const assumptions = [...(build.assumptions ?? [])];
+        const commits = [...(build.commits ?? [])];
+        for (let tries = 1; tries <= CRITERIA_TRIES; tries++) {
+          const unmet = unmetCriteria(item, criteria, answers);
+          if (unmet.length === 0) break;
+          const answered = yield* agentWork({
+            operation: `${item}.criteria-${tries}`,
+            agent: BUILDER,
+            role: "implementer",
+            pushes: true,
+            instructions: prompts.criteria,
+            input: {
+              ...input,
+              verify: yield* checksNow,
+              ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
+              criteria: renderCriteria(criteria),
+              findings: formatFindings(unmet),
+              session: yield* sessionNow,
+            },
+            output: Built,
+          });
+          answers = [...answers, ...(answered.criteria ?? [])];
+          assumptions.push(...(answered.assumptions ?? []));
+          commits.push(...(answered.commits ?? []));
+        }
         const done: Handed = {
-          item: ticket?.file ?? "build",
+          item,
           title: ticket?.title ?? "",
-          commits: [...(build.commits ?? [])],
+          commits,
           verifications: (yield* host.evidence(runId, cwd)).verifications
             .slice(before)
             .map((one) => `${one.name}: ${one.result}`),
         };
         handed.push(done);
-        for (const one of build.assumptions ?? []) assumed.push(`assumed in ${done.item}: ${one}`);
+        answeredFor.push({ item, criteria, answers, assumptions });
+        for (const one of assumptions) assumed.push(`assumed in ${item}: ${one}`);
         built.add(done.item);
         if (ticket === null) for (const one of tickets) built.add(one.file);
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "done", claimsOf(build, ticket));
-        const blocking = (build.findings ?? []).filter(isBlocking);
+        const blocking = [
+          ...(build.findings ?? []).filter(isBlocking),
+          ...unmetCriteria(done.item, criteria, answers),
+        ];
         if (blocking.length > 0) {
           rallied = yield* rally({
             ...rallyAsk,
+            criteria: renderAnswered(answeredFor),
             input,
             build: {
               item: done.item,
@@ -391,7 +454,7 @@ export default defineWorkflow({
       input = { ...input, verify: yield* checksNow };
 
       if (rallied === null || rallied.unreviewed !== "") {
-        rallied = yield* rally({ ...rallyAsk, input });
+        rallied = yield* rally({ ...rallyAsk, criteria: renderAnswered(answeredFor), input });
       }
       if (rallied.halted !== null) {
         yield* host.record(runId, rallied.halted);
@@ -566,6 +629,7 @@ export default defineWorkflow({
               previous: `${place.dir}/review.md`,
               answered: fixes === 0 ? "" : agents.outputFor(runId, `gate-fix-${fixes}`),
               risks: place.options.risks ?? "",
+              criteria: renderAnswered(answeredFor),
               base,
               at: ROUNDS + 1,
               of: ROUNDS + 1,
@@ -786,6 +850,42 @@ const spawned = (
       : { name: spec.name, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };
   });
 
+/** A ticket's criteria as its builder is given them. */
+const renderCriteria = (criteria: ReadonlyArray<string>) =>
+  criteria.length === 0
+    ? "None: this work names no checkbox criteria, so `criteria` stays empty."
+    : criteria.map((one) => `- ${one}`).join("\n");
+
+/** What a builder said of one item's criteria, and what it decided that the plan did not. */
+interface Answered {
+  readonly item: string;
+  readonly criteria: ReadonlyArray<string>;
+  readonly answers: ReadonlyArray<Criterion>;
+  readonly assumptions: ReadonlyArray<string>;
+}
+
+const showsAnything = (one: Answered) => one.criteria.length > 0 || one.assumptions.length > 0;
+
+/** Every built item's criteria, answers and assumptions, as a reviewer is shown them. */
+const renderAnswered = (all: ReadonlyArray<Answered>) =>
+  all.some(showsAnything)
+    ? [
+        "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts:",
+        ...all
+          .filter(showsAnything)
+          .map((one) =>
+            [
+              `\n${one.item}:`,
+              ...one.criteria.map(
+                (criterion) =>
+                  `- ${criterion}\n  → ${answerFor(criterion, one.answers)?.met ?? "not answered"}`,
+              ),
+              ...one.assumptions.map((assumption) => `- assumed: ${assumption}`),
+            ].join("\n"),
+          ),
+      ].join("\n")
+    : "";
+
 /** A merge of the default branch that stopped on conflicts, as the builder is told it. */
 const conflictOf = (merged: Integration) =>
   `Collie merged ${merged.ref} (${merged.sha}) into this branch, and the merge stopped on conflicts in: ${merged.files.join(", ")}.`;
@@ -829,6 +929,8 @@ const rally = (ask: {
   readonly risks: string;
   readonly input: typeof Implementing.Type;
   readonly build?: PartialBuild;
+  /** The builder's answers to each ticket's criteria, and its assumptions, for the reviewer. */
+  readonly criteria: string;
   /** Merges the default branch where it moved, answering with what a review is diffed against. */
   readonly integrate: Effect.Effect<
     Integration & { readonly base: string },
@@ -885,6 +987,7 @@ const rally = (ask: {
             ? ""
             : `Review the built part of this plan: ${ask.build.completed.join(", ")}. Later tickets have not started and are outside this review, including its scope judgement. Check these findings reported by the implementer:\n${formatFindings(ask.build.findings)}`,
         risks: ask.risks,
+        criteria: ask.criteria,
         base: merged.base,
         at,
         of: ROUNDS,

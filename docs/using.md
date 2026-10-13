@@ -1984,12 +1984,19 @@ about an edit while it is building a ticket. Each reading is recorded, so a repl
 restart follows the lists that were read rather than reading them again.
 
 **A decision the plan does not cover.** The implementer's prompt names the live planner's
-agent and pane and tells it to ask there rather than stopping. Where nobody can answer,
-the same prompt tells it to decide and record the decision under `assumptions`, and each
-one is listed in the merge request for you. It asks for one authority: an answer in the
-pane, or the answer written into the ticket and the pane saying only that — because an
-implementer that builds a pane answer while the file says something wider believes it is
-done.
+agent and pane and tells it to ask there rather than stopping. Which planner is live is read
+again for each ticket, so one that has gone is never named. Where nobody can answer, the
+same prompt tells it to decide and record the decision under `assumptions`. The reviewer is
+shown each one, and each is listed in the merge request for you. It asks for one authority:
+an answer in the pane, or the answer written into the ticket and the pane saying only that —
+because an implementer that builds a pane answer while the file says something wider
+believes it is done.
+
+**Each acceptance criterion answered.** A ticket's checkboxes under its Acceptance criteria
+heading are its acceptance criteria. The builder's Output says how each is met, by the test
+or the file that shows it, or why it is not. One left unanswered or not met goes back to the
+builder before any reviewer starts, and what is still unmet after two tries is a blocking
+finding in the review.
 
 ## Reviewing someone else's merge request
 

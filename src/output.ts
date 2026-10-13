@@ -171,6 +171,72 @@ export const CheckSchema = Schema.Struct({
   note: Schema.optionalKey(Schema.String),
 });
 
+/** How one of a ticket's acceptance criteria is met, in the builder's words. */
+export const CriterionSchema = Schema.Struct({
+  criterion: Schema.String.annotate({
+    description: "the criterion, copied from the ticket",
+  }).pipe(said("criterion")),
+  met: Schema.String.annotate({
+    description: 'how it is met — the test or the file that shows it — or "not met: <reason>"',
+  }).pipe(said("met")),
+});
+export type Criterion = typeof CriterionSchema.Type;
+
+/** A criterion as compared: its words, without the formatting a copy may drop. */
+const criterionKey = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.:;\s]+$/, "")
+    .trim();
+
+/**
+ * The newest answer to this criterion. A copy without its formatting counts, and so does its
+ * bold lead alone.
+ */
+export const answerFor = (
+  criterion: string,
+  answers: ReadonlyArray<Criterion>,
+): Criterion | undefined => {
+  const lead = /^\*\*(.+?)\*\*/.exec(criterion)?.[1];
+  const keys = [criterionKey(criterion), ...(lead === undefined ? [] : [criterionKey(lead)])];
+  return answers.findLast((one) => keys.includes(criterionKey(one.criterion)));
+};
+
+/**
+ * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
+ * as a blocking finding against the ticket.
+ */
+export function unmetCriteria(
+  ticket: string,
+  criteria: ReadonlyArray<string>,
+  answers: ReadonlyArray<Criterion>,
+): Finding[] {
+  return criteria.flatMap((criterion): Finding[] => {
+    const met = answerFor(criterion, answers)?.met;
+    if (met === undefined)
+      return [
+        {
+          file: ticket,
+          severity: "blocker",
+          title: `acceptance criterion not answered: ${criterion}`,
+          detail: "The builder's Output says nothing of how this criterion is met.",
+        },
+      ];
+    if (/^not met\b/i.test(met.trim()))
+      return [
+        {
+          file: ticket,
+          severity: "blocker",
+          title: `acceptance criterion not met: ${criterion}`,
+          detail: met,
+        },
+      ];
+    return [];
+  });
+}
+
 export const FixOutputSchema = Schema.Struct({
   verdict: VerdictSchema,
   findings: optionalList(FindingSchema),

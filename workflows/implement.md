@@ -78,6 +78,15 @@ not redo their work. What they left:
 Where no ticket is named, the work source is not a plan of several tickets and the whole
 of it is yours.
 
+The acceptance criteria this work is held to, one by one:
+
+{{criteria}}
+
+In your Output, `criteria` has one entry for each of them: `criterion` copied from the list
+above, and `met` saying how it is met (the test or the file that shows it), or
+`not met: <reason>`. A criterion left out, or not met, comes back to you before any
+reviewer sees the work, and the reviewer is shown every answer and every assumption.
+
 Build it test first, with {{skill:tdd}} at the seams the spec names: the failing test,
 then the code that makes it pass. As you go, run the typecheck and the test files you
 touched, each through `collie verify` as below. The whole suite is the gate's: Collie runs
@@ -205,6 +214,29 @@ command you ran, one entry each, by the name `collie verify` recorded it under: 
 where you gave one, else the script it runs (`typecheck` for `bun run typecheck`), else
 the tool and its subcommand (`bun test`), else the tool (`tsc`). A check with no record
 on this tree is not a passing check, whatever the note says.
+
+## criteria
+
+Before anyone reviews {{ticket.file}}, each of its acceptance criteria needs an answer.
+These do not have one yet:
+
+{{findings}}
+
+Meet each one, or, where it cannot be met, say plainly why. The ticket's whole list:
+
+{{criteria}}
+
+Build what is missing test first, with {{skill:tdd}}, and run the typecheck and the test
+files you touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
+Commit to this branch and push it, as in the build: `git push -u origin HEAD -o ci.skip`
+on GitLab, or `git push -u origin HEAD` on GitHub. A push that fails is reported as
+`"pushed": false`, not fatal.
+
+{{session.ask}}
+
+Then write your Output: `criteria` answers every criterion in the whole list above, not
+only these, with `met` naming the test or the file that shows it or `not met: <reason>`.
+List the commits you left and any decision you made under `assumptions`.
 
 ## merge
 

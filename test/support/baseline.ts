@@ -1865,16 +1865,18 @@ const reviewedBranch = () =>
   });
 
 /** A plan of tickets on disk, which is the only thing that makes a build a list. */
-const planOf = (tickets: ReadonlyArray<{ file: string; title: string; checks: string }>) =>
+const planOf = (
+  tickets: ReadonlyArray<{ file: string; title: string; checks: string; body?: string }>,
+  where = `${rig.root}/plan`,
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const where = `${rig.root}/plan`;
     yield* fs.makeDirectory(`${where}/issues`, { recursive: true });
     yield* fs.writeFileString(`${where}/SPEC.md`, "# The spec\n");
     for (const ticket of tickets) {
       yield* fs.writeFileString(
         `${where}/issues/${ticket.file}`,
-        `# ${ticket.title}\n\n**Checks:** ${ticket.checks}\n`,
+        `# ${ticket.title}\n\n**Checks:** ${ticket.checks}\n${ticket.body ?? ""}`,
       );
     }
     return where;
@@ -2046,6 +2048,145 @@ scenario(
 
         expect(said(result)).toBe(OPENED.mr_url);
         expect(yield* asked("r-grow", "02-second.md")).toContain("Ticket: 02-second.md");
+      }),
+    ),
+  120_000,
+);
+
+const CRITERIA = [
+  "## Acceptance criteria",
+  "",
+  "- [ ] **Counted.** Every registry is counted once.",
+  "- [ ] **Named.** Each one is named in the log.",
+].join("\n");
+
+scenario(
+  "a criterion the builder left unanswered goes back to it before any reviewer, who sees every answer",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-criteria", ["unit"]);
+        yield* rig.queueOutputs([
+          {
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "test/count.test.ts",
+              },
+            ],
+            assumptions: ["a registry nobody reads is still counted"],
+          },
+          {
+            ...BUILT,
+            criteria: [{ criterion: "Named. Each one is named in the log", met: "src/log.ts" }],
+          },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-criteria",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const first = yield* asked("r-criteria", "01-first.md");
+        expect(first).toContain("- **Counted.** Every registry is counted once.");
+        const back = yield* asked("r-criteria", "01-first.md.criteria-1");
+        expect(back).toContain(
+          "acceptance criterion not answered: **Named.** Each one is named in the log.",
+        );
+        expect(back).not.toContain("not answered: **Counted.**");
+        const order = (yield* prompts()).flatMap((message) =>
+          ["01-first.md.criteria-1", "02-second.md", "review-1"].filter((operation) =>
+            message.includes(`/${operation}.prompt.md`),
+          ),
+        );
+        expect(order).toEqual(["01-first.md.criteria-1", "02-second.md", "review-1"]);
+        const review = yield* asked("r-criteria", "review-1");
+        expect(review).toContain(
+          "- **Counted.** Every registry is counted once.\n  → test/count.test.ts",
+        );
+        expect(review).toContain("- **Named.** Each one is named in the log.\n  → src/log.ts");
+        expect(review).toContain("- assumed: a registry nobody reads is still counted");
+        // A ticket with no checkboxes has nothing to answer, and goes nowhere twice.
+        expect(yield* asked("r-criteria", "02-second.md")).toContain(
+          "None: this work names no checkbox criteria",
+        );
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/r-criteria/02-second.md.criteria-1.prompt.md`)).toBe(
+          false,
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "the planner route is read again for each ticket, so a planner that has gone is not called live",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        // The plan is a planner Run's own, so that Run is in this one's lineage.
+        const plan = yield* planOf(
+          [
+            { file: "01-first.md", title: "the first one", checks: "unit" },
+            { file: "02-second.md", title: "the second one", checks: "unit" },
+          ],
+          `${dir}/runs/r-planner/plan`,
+        );
+        // Named for this pass: herdr's forgetting outlives the rig.
+        const planner = `planner-${idOf("plan")}`;
+        yield* rig.addAgent(planner, "9-1");
+        const env = hostOf().env;
+        yield* registerAgent(yield* registryPath(env.stateDir, scopeFor(env, rig.projectDir)), {
+          role: "planner",
+          agent: planner,
+          paneId: "9-1",
+          workspaceId: null,
+          runId: "r-planner",
+          workflow: "plan",
+          at: "2026-09-23T10:00:00Z",
+          incarnation: { terminalId: `term-${planner}`, agentSession: null },
+        }).pipe(Effect.orDie);
+        yield* approve("r-planned", ["unit"]);
+        yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-planned", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-planned`;
+        yield* until(
+          () =>
+            fs.exists(`${agents}/01-first.md.prompt.md`).pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        rig.dropAgent(planner);
+        yield* fs.writeFileString(`${agents}/01-first.md.json`, asJson(BUILT));
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked("r-planned", "01-first.md")).toContain(
+          `still live as agent \`${planner}\``,
+        );
+        const second = yield* asked("r-planned", "02-second.md");
+        expect(second).not.toContain(planner);
+        expect(second).toContain("There is no planner live for this work");
       }),
     ),
   120_000,

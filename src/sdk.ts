@@ -60,6 +60,7 @@ export { IntegrationSchema, type Integration } from "./integrate";
 
 export {
   CheckSchema,
+  CriterionSchema,
   FindingSchema,
   FixOutputSchema,
   FixedSchema,
@@ -75,6 +76,7 @@ export {
  * workflow says it the same way.
  */
 export {
+  answerFor,
   blockingKeys,
   findingKey,
   formatFindings,
@@ -84,9 +86,11 @@ export {
   settleRound,
   splitDisputed,
   substantiated,
+  unmetCriteria,
   unsubstantiated,
   type Check,
   type CheckEvidence,
+  type Criterion,
   type FinalFix,
   type Finding,
   type FixOutput,
@@ -138,6 +142,7 @@ export { identityProblem, renderProgress, type Handed } from "./slices";
  */
 export {
   checksIn,
+  criteriaIn,
   isSingleRepo,
   orderedTickets,
   orderedTicketsOf,

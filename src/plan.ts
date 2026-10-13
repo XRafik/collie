@@ -23,6 +23,36 @@ export function checksIn(text: string): string[] {
 }
 
 /**
+ * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
+ * Acceptance criteria heading where it has one. A nested list and fenced code are not.
+ */
+export function criteriaIn(text: string): string[] {
+  const lines = text.split("\n");
+  const heading = lines.findIndex((line) => /^#+\s+acceptance criteria\b/i.test(line));
+  const section = heading === -1 ? lines : lines.slice(heading + 1);
+  const end = heading === -1 ? -1 : section.findIndex((line) => /^#+\s/.test(line));
+  const criteria: string[][] = [];
+  let open: string[] | null = null;
+  let fenced = false;
+  for (const line of end === -1 ? section : section.slice(0, end)) {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    const box = fenced ? null : /^[-*]\s+\[[ xX]\]\s+(.*)$/.exec(line);
+    if (box) {
+      open = [box[1]!.trim()];
+      criteria.push(open);
+    } else if (
+      !fenced &&
+      open !== null &&
+      /^\s+\S/.test(line) &&
+      !/^\s+([-*+]|\d+[.)])\s/.test(line)
+    )
+      open.push(line.trim());
+    else open = null;
+  }
+  return criteria.map((parts) => parts.join(" "));
+}
+
+/**
  * How many tickets a Run wrote. The plan a Run was *given* is somebody else's work, so
  * only its own directory is counted: writing tickets is what leaves a plan to build from.
  */
@@ -362,6 +392,8 @@ export interface Slice {
   blockedBy: ReadonlyArray<string>;
   /** The verification names its `**Checks:**` line promised will prove it. */
   checks: ReadonlyArray<string>;
+  /** Its acceptance criteria, which the builder answers one by one. */
+  criteria: ReadonlyArray<string>;
 }
 
 /** The first heading, else the file name without its number — what a hand-off calls it. */
@@ -401,6 +433,7 @@ export function orderedTickets(
     title: titleOf(ticket.file, ticket.text),
     blockedBy: blockersIn(BLOCKED_LINE.exec(ticket.text)?.[1]?.trim() ?? "") ?? [],
     checks: checksIn(ticket.text),
+    criteria: criteriaIn(ticket.text),
   }));
 
   const here = new Set(slices.map((slice) => slice.number));

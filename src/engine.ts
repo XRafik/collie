@@ -964,6 +964,31 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     note?: string;
   }
 
+  /** How one of a ticket's acceptance criteria is met: a test, a file, or "not met: <reason>". */
+  export interface Criterion {
+    readonly criterion: string;
+    readonly met: string;
+  }
+
+  /**
+   * The newest answer to this criterion. A copy without its formatting counts, and so does its
+   * bold lead alone.
+   */
+  export function answerFor(
+    criterion: string,
+    answers: ReadonlyArray<Criterion>,
+  ): Criterion | undefined;
+
+  /**
+   * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
+   * as a blocking finding against the ticket.
+   */
+  export function unmetCriteria(
+    ticket: string,
+    criteria: ReadonlyArray<string>,
+    answers: ReadonlyArray<Criterion>,
+  ): Finding[];
+
   export interface Synthesis extends ReviewOutput {
     summary: string;
     dropped: Finding[];
@@ -1122,6 +1147,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
    */
   export const FindingSchema: Schema.Codec<Finding, unknown, never, never>;
   export const FixedSchema: Schema.Codec<Fixed, unknown, never, never>;
+  export const CriterionSchema: Schema.Codec<Criterion, unknown, never, never>;
   export const CheckSchema: Schema.Codec<Check, unknown, never, never>;
   export const ReviewOutputSchema: Schema.Codec<ReviewReport, unknown, never, never>;
   export const SynthesisSchema: Schema.Codec<SynthesisReport, unknown, never, never>;
@@ -1207,10 +1233,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly blockedBy: ReadonlyArray<string>;
     /** The verification names its **Checks:** line promised will prove it. */
     readonly checks: ReadonlyArray<string>;
+    /** Its acceptance criteria, which the builder answers one by one. */
+    readonly criteria: ReadonlyArray<string>;
   }
 
   /** The verification names a ticket's **Checks:** line promises. */
   export function checksIn(text: string): string[];
+
+  /**
+   * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
+   * Acceptance criteria heading where it has one. A nested list and fenced code are not.
+   */
+  export function criteriaIn(text: string): string[];
 
   /** A plan's tickets in an order they can be built in, narrowed to one repository. */
   export function orderedTickets(
