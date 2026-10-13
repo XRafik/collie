@@ -1102,3 +1102,23 @@ variation does not establish a further speed gain.
 | Precompiled Solid compiler preload | 68.28 s; all passed                      | Faster isolated starts did not improve the suite             |
 | Lazy Solid compiler preload        | 56.63 s; all passed                      | No useful gain over the existing preload                     |
 | Minified compiled CLI              | Help-start median 50.0 ms versus 54.4 ms | Smaller binary started more slowly                           |
+
+### Measurements with the peer and forge coverage, 13 October 2026
+
+After merging the latest master, the suite has 2,642 tests. On the local Linux machine
+with Bun 1.4.3 and 20 available logical CPUs, the first complete green baseline took
+113.05 s including builds. These measurements cover more tests than the earlier table.
+
+The peer-settings proof now waits for both the model's timestamp and the Flock sender,
+then asserts that snapshot. The timestamp and sender are written separately; observing
+the first write is not evidence the whole update finished. A temporary 100 ms delay
+between those writes reproduced the old failure and passed with that synchronization.
+The delay was removed from production code.
+The synchronized suite passed all 2,642 tests in 101.05 s including builds; lint,
+formatting and type checking also passed. The variation from the first baseline is
+larger than the I/O-thread experiment's apparent gain, so no gain is established there.
+
+| Experiment                     | Measurement                         | Decision                                                    |
+| ------------------------------ | ----------------------------------- | ----------------------------------------------------------- |
+| 10 workers                     | 124.25 s; all 2,642 passed          | Keep 20 workers                                             |
+| Two Bun I/O threads per worker | 106.06 s; one peer-settings failure | No default change; exposed the incomplete settings snapshot |

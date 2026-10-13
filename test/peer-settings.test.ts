@@ -64,12 +64,15 @@ test(
             );
             yield* first.lists([second]);
             expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
-            yield* until(
-              () => readSettingsSet(second.world.config),
-              (has) => has.set.model === "2099-10-12T10:00:00.000Z",
-            );
             const [laptop] = yield* peersOf(second.world.state);
-            expect((yield* readSettingsSet(second.world.config)).flock?.by).toBe(laptop!.name);
+            // The timestamp and sender are separate writes. Wait for the whole update,
+            // and assert that snapshot rather than reading during the next write.
+            const received = yield* until(
+              () => readSettingsSet(second.world.config),
+              (has) =>
+                has.set.model === "2099-10-12T10:00:00.000Z" && has.flock?.by === laptop!.name,
+            );
+            expect(received.flock?.by).toBe(laptop!.name);
             const there = yield* frontDoor(socketOf(second.world.state));
             expect(
               (yield* there.settings()).settings.find((one) => one.key === "gitlab_host"),
