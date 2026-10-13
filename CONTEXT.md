@@ -506,7 +506,7 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 
 **Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
 
-**Integration** — The default branch merged into a Run's branch where it has moved since, with a merge commit in the Run's own checkout: never a rebase and never a force push. It never touches uncommitted work, leaves a conflict for the builder to finish, and is recorded in the Run log as `integrated <branch>@<sha>`. A review is diffed against the merge-base it leaves.
+**Integration** — The default branch merged into a Run's branch where it has moved since, with a merge commit in the Run's own checkout: never a rebase and never a force push. It never touches uncommitted work, never counts a default branch it could not fetch, leaves a conflict for the builder to finish, and is recorded in the Run log as `integrated <branch>@<sha>`. A review is diffed against the merge-base it leaves.
 
 **Acceptance criterion** — One checkbox under a ticket's Acceptance criteria heading. The builder's Output answers each with how it is met (a test, a file) or `not met: <reason>`. One unanswered or not met goes back to the builder before any reviewer sees the work, and the reviewer is shown every answer.
 

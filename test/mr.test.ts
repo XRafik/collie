@@ -4,6 +4,7 @@ import { runEffect } from "./support/effect";
 import { forgeOfHost } from "../src/forge/forge";
 import { fakeForge, CLI, FORGE_HOST, PROJECT, type ForgeModel } from "./support/forge";
 import {
+  autoMergingHere,
   forgeHere,
   prepareMergeRequest,
   linearIssues,
@@ -688,5 +689,32 @@ test("a bare !42 is posted on the Flock's GitLab even where its name does not sa
         postNote({ target: "mr:42", cwd: "/w", body: "LGTM", ...options }, fake.run);
       expect((yield* post({})).message).toBe("code.example.com is neither GitHub nor GitLab");
       expect((yield* post({ gitlabHost: "code.example.com" })).ok).toBe(true);
+    }),
+  ));
+
+test("whether a branch's merge request merges itself is unknown, not no, where its forge cannot say", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const asked = (listed: { code?: number; stdout?: string }) =>
+        Effect.result(
+          autoMergingHere(
+            "/w",
+            runner({
+              "git remote get-url origin": { stdout: "git@gitlab.example.com:group/app.git\n" },
+              "git rev-parse --abbrev-ref HEAD": { stdout: "feature\n" },
+              "glab mr": listed,
+            }),
+          ),
+        );
+      const merging = yield* asked({
+        stdout: '[{"iid":3,"web_url":"https://u/3","merge_when_pipeline_succeeds":true}]',
+      });
+      expect(merging).toMatchObject({ _tag: "Success", success: "https://u/3" });
+      expect(yield* asked({ stdout: "" })).toMatchObject({ _tag: "Success", success: null });
+      const unread = yield* asked({ code: 1 });
+      expect(unread._tag).toBe("Failure");
+      expect(unread._tag === "Failure" ? unread.failure : "").toContain(
+        "could not list gitlab.example.com/group/app's merge requests",
+      );
     }),
   ));

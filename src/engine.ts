@@ -413,8 +413,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly target?: string;
       readonly source?: { readonly value: string; readonly kind: string };
     }) => Effect.Effect<MrReady>;
-    /** The checkout's branch's open merge request where it merges itself once green, else null. */
-    readonly autoMerging: (cwd: string) => Effect.Effect<string | null>;
+    /**
+     * The checkout's branch's open merge request where it merges itself once green, else null.
+     * Fails, saying why, where the forge cannot be read: not knowing is not a no.
+     */
+    readonly autoMerging: (cwd: string) => Effect.Effect<string | null, WorkflowError>;
     /**
      * Blocks until this Run holds the shared claim on the repository it works in, and
      * answers null where that repository has none. Waiting here costs wall clock and no
@@ -972,11 +975,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /**
    * The newest answer to this criterion. A copy without its formatting counts, and so does its
-   * bold lead alone.
+   * bold lead alone where no other criterion \`among\` the ticket's opens with the same lead.
    */
   export function answerFor(
     criterion: string,
     answers: ReadonlyArray<Criterion>,
+    among?: ReadonlyArray<string>,
   ): Criterion | undefined;
 
   /**
@@ -1093,6 +1097,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export function leaveReview(
     dir: string,
     synthesis: SynthesisReport,
+  ): Effect.Effect<void, never, FileSystem.FileSystem>;
+
+  /** The findings still standing after a last fix settleFinalFix accepted; the prose stays. */
+  export function leaveOutstanding(
+    dir: string,
+    outstanding: ReadonlyArray<Finding>,
   ): Effect.Effect<void, never, FileSystem.FileSystem>;
 
   /** How many findings the Run that owns this directory left for somebody to fix. */
@@ -2510,9 +2520,11 @@ export const hostLayer = (options: {
         autoMerging: (cwd) =>
           under(
             Effect.gen(function* () {
-              const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir);
+              const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
+                Effect.mapError((cause) => `the configuration could not be read: ${cause.message}`),
+              );
               return yield* autoMergingHere(cwd, runShell, gitlabHost);
-            }).pipe(Effect.orElseSucceed(() => null)),
+            }).pipe(Effect.mapError((reason) => new WorkflowError({ reason }))),
           ),
         claim: <E, R>(asked: {
           readonly runId: string;

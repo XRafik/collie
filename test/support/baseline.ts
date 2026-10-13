@@ -35,6 +35,7 @@ import {
   runDir,
 } from "../../src/engine";
 import { VerifySpecSchema } from "../../src/verify-spec";
+import { findingsIn } from "../../src/output";
 import { collect, fingerprint, readVerifications } from "../../src/verify";
 import { inputsFor, offersFrom } from "../../src/offers";
 import { Store } from "../../src/store";
@@ -800,6 +801,7 @@ scenario(
   () =>
     runEffect(
       Effect.gen(function* () {
+        yield* noMergeRequests;
         yield* repository();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
         const blocked = {
@@ -1337,6 +1339,7 @@ scenario(
   () =>
     runEffect(
       Effect.gen(function* () {
+        yield* noMergeRequests;
         const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
         const other = {
           ...SYNTHESIS,
@@ -1384,6 +1387,7 @@ scenario(
   () =>
     runEffect(
       Effect.gen(function* () {
+        yield* noMergeRequests;
         const reviewed = yield* reviewedBranch();
         const fs = yield* FileSystem.FileSystem;
         yield* fs.makeDirectory(evidenceDir(dir, "r-fix-tree"), { recursive: true });
@@ -1500,6 +1504,7 @@ scenario(
   () =>
     runEffect(
       Effect.gen(function* () {
+        yield* noMergeRequests;
         const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
         const raising = (title: string) => ({
           ...SYNTHESIS,
@@ -1539,6 +1544,7 @@ scenario(
   () =>
     runEffect(
       Effect.gen(function* () {
+        yield* noMergeRequests;
         const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
         yield* reviewedBranch();
         const target = "branch:main...feature";
@@ -1837,20 +1843,38 @@ const approve = (runId: string, names: ReadonlyArray<string>) =>
   );
 
 /**
+ * A glab that finds no merge request from the branch: a push is only known not to be a
+ * merge once the forge has said so.
+ */
+const noMergeRequests = Effect.acquireRelease(
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", "exit 0");
+    return bin;
+  }),
+  (bin) => bin.restore(),
+);
+
+/**
  * A real repository with a GitLab remote. What binds a verification is the tree it ran
  * on, and a directory git knows nothing about has no tree to move.
  */
 const repository = () =>
   Effect.gen(function* () {
+    // Fetched from a bare repository beside it, and known to the forge by `upstream`.
+    const origin = `${rig.root}/project-origin.git`;
+    yield* exec(["git", "init", "-q", "--bare", origin], { cwd: rig.root });
     for (const args of [
       ["init", "-q"],
       ["config", "user.email", "t@example.com"],
       ["config", "user.name", "t"],
-      ["remote", "add", "origin", "https://gitlab.example.com/group/project.git"],
+      ["remote", "add", "origin", origin],
+      ["remote", "add", "upstream", "https://gitlab.example.com/group/project.git"],
+      ["commit", "-qm", "first", "--allow-empty"],
+      ["push", "-q", "origin", "HEAD"],
     ]) {
       yield* exec(["git", ...args], { cwd: rig.projectDir });
     }
-    yield* exec(["git", "commit", "-qm", "first", "--allow-empty"], { cwd: rig.projectDir });
   });
 
 /** A real repository whose `feature` branch has a checkout of its own, as a reviewed branch does. */
@@ -2134,6 +2158,85 @@ scenario(
 );
 
 scenario(
+  "criteria still unanswered after two hand-backs stop the work before any reviewer",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-unmet", ["unit"]);
+        yield* rig.queueOutputs([BUILT, BUILT, BUILT]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-unmet",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toContain(
+          "01-first.md: acceptance criteria still unanswered or unmet after 2 hand-backs, so no review starts",
+        );
+        expect(said(result)).toContain("**Named.** Each one is named in the log.");
+        const sent = (yield* prompts()).join("\n");
+        expect(sent).toContain("01-first.md.criteria-2.prompt.md");
+        expect(sent).not.toContain("review-1");
+        expect(sent).not.toContain("02-second.md.prompt.md");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "the criteria in a work source given as words are answered as a ticket's are",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        yield* approve("r-words", ["unit"]);
+        yield* rig.queueOutputs([
+          BUILT,
+          {
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "test/count.test.ts",
+              },
+            ],
+          },
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-words",
+          input: {
+            plan: "Count the registries.\n\n- [ ] **Counted.** Every registry is counted once.",
+          },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked("r-words", "build")).toContain(
+          "- **Counted.** Every registry is counted once.",
+        );
+        expect(yield* asked("r-words", "build.criteria-1")).toContain(
+          "acceptance criterion not answered: **Counted.** Every registry is counted once.",
+        );
+        expect(yield* asked("r-words", "review-1")).toContain("  → test/count.test.ts");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "the planner route is read again for each ticket, so a planner that has gone is not called live",
   () =>
     runEffect(
@@ -2258,6 +2361,7 @@ const builtUntilParked = (
   tickets: ReadonlyArray<string>,
   outputs: ReadonlyArray<Schema.Json | null>,
   hands: ReadonlyArray<{ readonly operation: string; readonly step: Step }>,
+  parkedOn = "Cannot open the merge request",
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -2280,7 +2384,7 @@ const builtUntilParked = (
     const result = yield* Effect.raceFirst(
       Effect.map(Fiber.join(running), Option.some),
       Effect.as(
-        until(logged, (said) => said.includes("Cannot open the merge request")),
+        until(logged, (said) => said.includes(parkedOn)),
         Option.none(),
       ),
     );
@@ -2394,7 +2498,7 @@ scenario(
 
         const merge = yield* asked("r-merge", "merge-1");
         expect(merge).toContain("conflicts in: shared.txt");
-        expect(merge).toContain("Finish that merge and nothing else");
+        expect(merge).toContain("Settle that and nothing else");
         const order = (yield* prompts()).flatMap((message) =>
           ["merge-1", "review-1"].filter((operation) => message.includes(`${operation}.prompt.md`)),
         );
@@ -2414,7 +2518,7 @@ scenario(
         const { result } = yield* builtUntilParked(
           "r-unfinished",
           ["01-first.md"],
-          [null, BUILT],
+          [null, BUILT, BUILT],
           [
             {
               operation: "build",
@@ -2427,8 +2531,69 @@ scenario(
         );
 
         expect(Option.isSome(result) ? reasonOf(result.value) : "").toContain(
-          "was not finished before review",
+          "origin/master is not integrated, so the work stops",
         );
+        expect(yield* asked("r-unfinished", "merge-1-2")).toContain("conflicts in: shared.txt");
+        expect(yield* prompts()).not.toContainEqual(expect.stringContaining("review-1"));
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "work left uncommitted before a review goes back to the builder, and the merge follows its commit",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { git, commitHere, moveMaster } = yield* withOrigin();
+        const fs = yield* FileSystem.FileSystem;
+        let moved = "";
+        yield* builtUntilParked(
+          "r-uncommitted",
+          ["01-first.md"],
+          [null, null, CLEAN_SYNTHESIS],
+          [
+            {
+              operation: "build",
+              step: Effect.gen(function* () {
+                yield* fs.writeFileString(`${rig.projectDir}/wip.txt`, "half\n").pipe(Effect.orDie);
+                moved = yield* moveMaster("upstream.txt", "new\n");
+              }),
+            },
+            { operation: "merge-1", step: Effect.asVoid(commitHere("wip.txt", "done\n")) },
+          ],
+        );
+
+        expect(yield* asked("r-uncommitted", "merge-1")).toContain("uncommitted changes");
+        expect(yield* git(rig.projectDir, "merge-base", "HEAD", "origin/master")).toBe(moved);
+        expect(yield* asked("r-uncommitted", "review-1")).toContain(`${moved}...HEAD`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a default branch that cannot be fetched parks the Run before any review",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { git } = yield* withOrigin();
+        const { log } = yield* builtUntilParked(
+          "r-unfetched",
+          ["01-first.md"],
+          [null],
+          [
+            {
+              operation: "build",
+              step: Effect.asVoid(
+                git(rig.projectDir, "remote", "set-url", "origin", `${rig.root}/gone.git`),
+              ),
+            },
+          ],
+          "not integrated: could not fetch master from origin",
+        );
+
+        expect(log).toContain("not integrated: could not fetch master from origin");
         expect(yield* prompts()).not.toContainEqual(expect.stringContaining("review-1"));
       }),
     ),
@@ -3588,6 +3753,71 @@ scenario(
 );
 
 scenario(
+  "a last fix that stands leaves only the findings still standing for the card to count",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        yield* approve("r-final-stands", ["unit"]);
+        yield* collect(evidenceDir(dir, "r-final-stands"), {
+          run: "r-final-stands",
+          name: "unit",
+          executable: "true",
+          argv: [],
+          cwd: rig.projectDir,
+          by: "agent",
+        }).pipe(Effect.orDie);
+        const found = (title: string, severity = "blocker") => ({
+          severity,
+          title,
+          file: "src/a.ts",
+          detail: "it breaks",
+        });
+        const round = (title: string): Schema.Json[] => [
+          { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [found(title)] },
+          { verdict: "clean", fixed: [{ title, file: "src/a.ts" }], checks: [{ name: "unit" }] },
+        ];
+        yield* rig.queueOutputs([
+          BUILT,
+          ...round("one"),
+          ...round("two"),
+          ...round("three"),
+          {
+            ...CLEAN_SYNTHESIS,
+            verdict: "findings",
+            findings: [found("four"), found("a nit", "minor")],
+          },
+          {
+            verdict: "clean",
+            fixed: [{ title: "four", file: "src/a.ts" }],
+            checks: [{ name: "unit" }],
+          },
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-final-stands",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect((yield* findingsIn(runDir(dir, "r-final-stands"))).map((one) => one.title)).toEqual([
+          "a nit",
+        ]);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(`${runDir(dir, "r-final-stands")}/review.md`)).toContain(
+          "four",
+        );
+      }).pipe(Effect.orDie),
+    ),
+  120_000,
+);
+
+scenario(
   "the merge request lists the commands the gate spawned, including one re-granted during the gate",
   () =>
     runEffect(
@@ -3712,9 +3942,10 @@ scenario(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* bin.add("gh", `exit 127`);
+        // It answers for the branch's pull requests, and is otherwise not there.
+        yield* bin.add("gh", `[ "$1" = "pr" ] && { echo '[]'; exit 0; }; exit 127`);
         yield* repository();
-        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:team/project.git"], {
+        yield* exec(["git", "remote", "set-url", "upstream", "git@github.com:team/project.git"], {
           cwd: rig.projectDir,
         });
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
@@ -3732,7 +3963,7 @@ scenario(
           ]),
         );
         yield* exec(
-          ["git", "remote", "set-url", "origin", "git@gitlab.example.com:team/project.git"],
+          ["git", "remote", "set-url", "upstream", "git@gitlab.example.com:team/project.git"],
           {
             cwd: rig.projectDir,
           },
@@ -3791,7 +4022,7 @@ const deliveringOn = (name: MrForge, mrs: ForgeModel["mrs"] = []) =>
       mrs: [],
     });
     yield* repository();
-    yield* exec(["git", "remote", "set-url", "origin", DELIVERY[name].origin], {
+    yield* exec(["git", "remote", "set-url", "upstream", DELIVERY[name].origin], {
       cwd: rig.projectDir,
     });
     // An old GitLab remote beside origin does not make the checkout GitLab's.
@@ -4089,9 +4320,10 @@ scenario(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* bin.add("gh", `exit 127`);
+        // It answers for the branch's pull requests, and is otherwise not there.
+        yield* bin.add("gh", `[ "$1" = "pr" ] && { echo '[]'; exit 0; }; exit 127`);
         yield* repository();
-        yield* exec(["git", "remote", "set-url", "origin", "git@github.com:team/project.git"], {
+        yield* exec(["git", "remote", "set-url", "upstream", "git@github.com:team/project.git"], {
           cwd: rig.projectDir,
         });
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
@@ -4346,6 +4578,7 @@ scenario(
       // Its agent never answers, so what it waits on is the clock.
       fastForward(
         Effect.gen(function* () {
+          yield* noMergeRequests;
           yield* repository();
           yield* approve("r-impl-inv", []);
           yield* rig.queueOutputs([null]);

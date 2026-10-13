@@ -43,8 +43,8 @@ The work source above is one of five kinds. Do the one that matches
   disagree with is `disputed` with a reason, exactly as in a fix round — never silently
   skipped.
 - **linear** — a Linear issue id. Fetch it with the Linear MCP (`get_issue`) and treat
-  its description as the spec. Before building, write that spec to
-  `{{run.dir}}/plan/SPEC.md` and a short task list to `{{run.dir}}/plan/issues/NN-*.md`,
+  its description as the spec. Before building, write that description word for word,
+  checkboxes included, to `{{run.dir}}/plan/SPEC.md` and a short task list to `{{run.dir}}/plan/issues/NN-*.md`,
   one file per slice, so the run records what you decided to build. Every ticket you write
   carries a `**Checks:**` line naming the `collie verify` commands that will prove it —
   from the checks above or the ones you named. Clear work states its acceptance checks before it starts;
@@ -240,23 +240,24 @@ List the commits you left and any decision you made under `assumptions`.
 
 ## merge
 
-Collie merges the default branch into this branch before each review, so the reviewer
-sees what will actually merge. This time the merge stopped:
+Collie merges the default branch into this branch at each ticket boundary and before each
+review, so the reviewer sees what will actually merge, and no work goes on until it has.
+This time it stopped:
 
 {{conflict}}
 
-Finish that merge and nothing else: resolve each conflicted file so both sides' intent
-survives, `git add` them, and `git commit --no-edit`. Never rebase, reset or abort it, and
-never force-push: this branch's history only grows. Run the typecheck and the test files
-the conflicts touched, each through
-`collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
+Settle that and nothing else. Work left uncommitted is committed as it stands. A merge in
+progress is finished: resolve each conflicted file so both sides' intent survives, `git add`
+them, and `git commit --no-edit`. Never rebase, reset or abort it, and never force-push:
+this branch's history only grows. Run the typecheck and the test files the conflicts
+touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
 
 Push the merge — `git push -u origin HEAD -o ci.skip` on GitLab, or
 `git push -u origin HEAD` on GitHub. A push that fails is reported as `"pushed": false`,
 not fatal.
 
-Then write your Output: `commits` names the merge commit, and `findings` anything the
-merge could not settle.
+Then write your Output: `commits` names each commit you made, and `findings` anything
+you could not settle.
 
 ## mr
 

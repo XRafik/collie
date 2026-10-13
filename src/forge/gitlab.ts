@@ -44,7 +44,9 @@ export function hostOf(project: string | null): string | null {
 const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
 const optionalFlag = Schema.optionalKey(Schema.NullOr(Schema.Boolean));
 const optionalCount = Schema.optionalKey(Schema.NullOr(Schema.Number));
-const optionalStatus = Schema.optionalKey(Schema.NullOr(Schema.Struct({ status: optionalText })));
+const optionalStatus = Schema.optionalKey(
+  Schema.NullOr(Schema.Struct({ status: optionalText, sha: optionalText })),
+);
 
 const MrDetailsJson = Schema.fromJsonString(
   Schema.Struct({
@@ -157,7 +159,7 @@ export function mrDetails<R>(
       fork: mr.source_project_id !== mr.target_project_id,
       targetBranch: mr.target_branch ?? "",
       pipeline,
-      checks: pipelineChecks(pipeline),
+      checks: headChecks(mr.head_pipeline ?? mr.pipeline ?? null, mr.sha ?? ""),
       approvals: approvalsLine(mr.approvals_required, mr.approvals_left),
       unresolved: mr.blocking_discussions_resolved === false,
       notes: mr.user_notes_count ?? 0,
@@ -192,8 +194,19 @@ function approvalsLine(
   return `${left} of ${required} still needed`;
 }
 
+/** A pipeline counts for the head it ran on; its own head pipeline need not say which. */
+function headChecks(
+  pipeline: { readonly status?: string | null; readonly sha?: string | null } | null,
+  head: string,
+): ForgeChecks {
+  if (pipeline === null) return { state: "none" };
+  if (pipeline.sha && head !== "" && pipeline.sha !== head) return { state: "unknown" };
+  return pipelineChecks(pipeline.status ?? "");
+}
+
 /** GitLab's head pipeline status, as the card reads it. */
 export function pipelineChecks(status: string): ForgeChecks {
+  if (status === "") return { state: "none" };
   if (status === "success" || status === "passed") return { state: "passed" };
   if (status === "failed") return { state: "failed", name: "pipeline" };
   if (

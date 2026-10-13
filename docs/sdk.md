@@ -591,7 +591,8 @@ replay does not cut a second checkout. Shipped `review` takes it before its own 
 `place.dir` is where what a Run produces belongs, and where the things that read a Run look:
 a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its findings in
 `findings.json` — `leaveReview` writes both. A card counts those; nothing counts a Run's
-prose.
+prose. After a last fix `settleFinalFix` accepted, `leaveOutstanding(dir, outstanding)`
+leaves the findings it says still stand, and the review's prose as it was.
 
 `place.options` is the other half of the launch. The names in `RESERVED_INPUTS` are the
 host's, so they are never in your payload — a caller asking for extra review axes or naming
@@ -640,14 +641,14 @@ It answers with an `Integration` (`IntegrationSchema` journals it):
   merge still unfinished is answered the same way, however often it is asked about.
 - `waiting`: the checkout had uncommitted changes, untracked files among them, and was left
   alone.
-- `unavailable`: nothing was merged, with the `reason`: no default branch, one that cannot be
-  read, or a merge git refused without a conflict.
+- `unavailable`: nothing was merged, with the `reason`: no default branch, a fetch that
+  failed, one that cannot be read, or a merge git refused without a conflict.
 
 `ref` and `sha` are what the branch is measured against from then on, so a reviewer's diff
-is `<sha>...HEAD`. Where the fetch fails, `ref` is the default branch as last fetched, and
-`reason` says so. Each merge is recorded in the Run log as `integrated <branch>@<sha>`.
+is `<sha>...HEAD`. Each merge is recorded in the Run log as `integrated <branch>@<sha>`.
 Take it inside an `Activity`, so a replay does not merge again. Shipped `implement` calls it
-before every ticket after the first and before every review round.
+before every ticket after the first, before every review round and before the gate's fresh
+review, and goes on only from `unchanged` or `merged`.
 The shipped `renovate` workflow still requires GitLab for its merge and release commands.
 
 `host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on
@@ -1187,10 +1188,11 @@ pieces they are built from.
 `criterion`, copied from the ticket, and `met`, the test or file that shows it, or
 `not met: <reason>`. Implement's `Built` carries them as an optional `criteria` list.
 `unmetCriteria(ticket, criteria, answers)` turns each criterion left unanswered or not met
-into a blocking finding against the ticket. `answerFor(criterion, answers)` is the answer a
-criterion has; a copy that dropped the criterion's formatting still counts. Shipped
+into a blocking finding against the ticket. `answerFor(criterion, answers, among)` is the
+answer a criterion has; a copy that dropped the criterion's formatting still counts, and so
+does its bold lead alone where no other criterion `among` the ticket's shares it. Shipped
 `implement` hands what is unmet back to the builder before any reviewer is launched, twice at
-most, and carries what is still unmet into the review as blocking. The reviewer's prompt
+most, and stops the work if any is still unmet, so no reviewer starts on it. The reviewer's prompt
 shows every criterion, its answer and the builder's assumptions. A workflow that never reads
 the field is unaffected.
 

@@ -273,7 +273,7 @@ const mergeableNow = {
 test("ready to release is mergeable now, and nothing is missing", () => {
   expect(readyToRelease(mergeableNow)).toEqual({ ready: true, missing: [] });
   // No pipeline at all is not a pipeline that has not passed.
-  expect(readyToRelease({ ...mergeableNow, ci: { state: "unknown" } }).ready).toBe(true);
+  expect(readyToRelease({ ...mergeableNow, ci: { state: "none" } }).ready).toBe(true);
 });
 
 test("each fact ready to release needs is named when it is missing, and whether it may yet come", () => {
@@ -295,6 +295,8 @@ test("each fact ready to release needs is named when it is missing, and whether 
   expect(missing({ ci: { state: "failed", name: "lint" } })).toEqual([["ci", false]]);
   expect(missing({ ci: { state: "running" } })).toEqual([["ci", true]]);
   expect(missing({ ci: null })).toEqual([["ci", true]]);
+  // A pipeline that exists and has not passed (canceled, manual, skipped, or of an older head).
+  expect(missing({ ci: { state: "unknown" } })).toEqual([["ci", false]]);
   expect(missing({ blocking: 2 })).toEqual([["review", false]]);
   expect(missing({ mergeable: { state: "blocked", said: "not_approved" } })).toEqual([
     ["mergeable", false],

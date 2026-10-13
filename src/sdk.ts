@@ -105,10 +105,18 @@ export {
 
 /**
  * What a Run leaves behind about a review, and where. `leaveReview` writes both halves —
- * the prose a human reads and the findings whatever comes next counts — and `riskLine` is
+ * the prose a human reads and the findings whatever comes next counts — `leaveOutstanding`
+ * the findings still standing after a last fix `settleFinalFix` accepted, and `riskLine`
  * the paragraph an extra axis adds to what a reviewer is asked.
  */
-export { FINDINGS_FILE, REVIEW_FILE, leaveReview, openFindingsIn, riskLine } from "./output";
+export {
+  FINDINGS_FILE,
+  REVIEW_FILE,
+  leaveOutstanding,
+  leaveReview,
+  openFindingsIn,
+  riskLine,
+} from "./output";
 
 export type { Snapshot, Verification } from "./verify";
 export type { VerifySpec } from "./verify-spec";
@@ -604,8 +612,9 @@ export interface HostApi {
   /**
    * The URL of the checkout's branch's open merge request where it merges itself once
    * green, else null: a push to it would be a merge (ADR-0050 D4). Read fresh each time.
+   * Fails, saying why, where the forge cannot be read: not knowing is not a no.
    */
-  readonly autoMerging: (cwd: string) => Effect.Effect<string | null>;
+  readonly autoMerging: (cwd: string) => Effect.Effect<string | null, WorkflowError>;
   /**
    * Blocks until this Run holds the shared claim on the repository it works in, and
    * answers null where that repository has none. Waiting here costs wall clock and no

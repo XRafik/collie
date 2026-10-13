@@ -191,16 +191,23 @@ const criterionKey = (text: string) =>
     .replace(/[.:;\s]+$/, "")
     .trim();
 
+/** A criterion's bold lead, where it opens with one. */
+const leadOf = (criterion: string) => /^\*\*(.+?)\*\*/.exec(criterion)?.[1];
+
 /**
  * The newest answer to this criterion. A copy without its formatting counts, and so does its
- * bold lead alone.
+ * bold lead alone where no other criterion `among` the ticket's opens with the same lead.
  */
 export const answerFor = (
   criterion: string,
   answers: ReadonlyArray<Criterion>,
+  among: ReadonlyArray<string> = [criterion],
 ): Criterion | undefined => {
-  const lead = /^\*\*(.+?)\*\*/.exec(criterion)?.[1];
-  const keys = [criterionKey(criterion), ...(lead === undefined ? [] : [criterionKey(lead)])];
+  const lead = leadOf(criterion);
+  const unique =
+    lead !== undefined &&
+    among.filter((other) => criterionKey(leadOf(other) ?? "") === criterionKey(lead)).length <= 1;
+  const keys = [criterionKey(criterion), ...(unique ? [criterionKey(lead)] : [])];
   return answers.findLast((one) => keys.includes(criterionKey(one.criterion)));
 };
 
@@ -214,7 +221,7 @@ export function unmetCriteria(
   answers: ReadonlyArray<Criterion>,
 ): Finding[] {
   return criteria.flatMap((criterion): Finding[] => {
-    const met = answerFor(criterion, answers)?.met;
+    const met = answerFor(criterion, answers, criteria)?.met;
     if (met === undefined)
       return [
         {
@@ -294,6 +301,21 @@ export const leaveReview = (
       ]),
     ),
     Effect.asVoid,
+    Effect.orDie,
+  );
+
+/**
+ * The findings still standing after a last fix `settleFinalFix` accepted, for whatever
+ * counts them next. The review's prose stays as the reviewers wrote it.
+ */
+export const leaveOutstanding = (
+  dir: string,
+  outstanding: ReadonlyArray<Finding>,
+): Effect.Effect<void, never, FileSystem.FileSystem> =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      fs.writeFileString(`${dir}/${FINDINGS_FILE}`, encodeFindings(outstanding)),
+    ),
     Effect.orDie,
   );
 

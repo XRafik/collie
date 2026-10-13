@@ -1168,8 +1168,10 @@ to read the repository. An existing merge request on the branch is updated rathe
 given a second one. Before every step that pushes — each build, fix round and gate fix,
 and delivery — the host reads the branch's open merge request. Where it merges itself once
 green, the step starts no agent: the Run records `not pushed: auto-merge is on for <url>`
-and parks as Needs you until auto-merge is off and the Run is resumed. `review`'s fix
-round is held to the same rule. The commands contain no command substitution: GitLab's
+and parks as Needs you until auto-merge is off and the Run is resumed. Where the forge
+cannot be read, the step starts no agent either: the Run records `not pushed: whether it
+merges itself is unknown: <why>` and parks until it is resumed with the forge readable.
+`review`'s fix round is held to the same rule. The commands contain no command substitution: GitLab's
 description and note are read from the file by `glab api` (`-F description=@<file>`).
 An unavailable forge parks the Run with the repair it needs.
 A delivery agent that did not push, supplied no merge request URL or reported findings

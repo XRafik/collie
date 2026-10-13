@@ -108,9 +108,13 @@ export const Checks = Schema.Union([
 ]);
 export type Checks = typeof Checks.Type;
 
-/** What the forge said of a merge request's own checks: a pipeline or a check rollup. */
+/**
+ * What the forge said of a merge request's own checks: a pipeline or a check rollup. `none`
+ * is no pipeline at all; `unknown` is one that has not passed at its head: canceled, manual,
+ * skipped, or run on an older head.
+ */
 export const ForgeChecks = Schema.Union([
-  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown"]) }),
+  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown", "none"]) }),
   Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
 ]);
 export type ForgeChecks = typeof ForgeChecks.Type;
@@ -188,6 +192,7 @@ export function readyToRelease(facts: ReleaseFacts): ReadyToRelease {
     if (facts.ci === null) lack("ci", "the forge has not been asked about its pipeline", true);
     else if (facts.ci.state === "failed") lack("ci", `${facts.ci.name} failed in CI`);
     else if (facts.ci.state === "running") lack("ci", "CI is still running", true);
+    else if (facts.ci.state === "unknown") lack("ci", "its pipeline has not passed at its head");
     if (facts.mergeable === null)
       lack("mergeable", "the forge has not said whether it can merge", true);
     else if (facts.mergeable.state === "blocked")

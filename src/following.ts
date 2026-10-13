@@ -78,7 +78,7 @@ export function followEvents(before: Followed, after: Followed): ReadonlyArray<F
     }
     const ci = after.progress.ci;
     const prior = before.progress?.ci ?? null;
-    if (ci !== null && (prior === null ? ci.state !== "unknown" : ciSaid(prior) !== ciSaid(ci)))
+    if (ci !== null && (prior === null ? ci.state !== "none" : ciSaid(prior) !== ciSaid(ci)))
       events.push({ type: "ci", ci });
   }
   const parked = after.view?.parked ?? null;

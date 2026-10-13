@@ -9,7 +9,8 @@ import { whatItSaid, type Runner } from "./mr";
 /**
  * What an integration did. `ref` and `sha` are what the branch is now measured against —
  * a reviewer's diff is `<sha>...HEAD`. `conflicted` leaves the merge in progress for the
- * builder to finish; `waiting` merged nothing because the checkout has work of its own.
+ * builder to finish; `waiting` merged nothing because the checkout has work of its own;
+ * `unavailable` could not tell where the default branch is, a failed fetch included.
  */
 export const IntegrationSchema = Schema.Struct({
   status: Schema.Literals(["unchanged", "merged", "conflicted", "waiting", "unavailable"]),
@@ -41,7 +42,16 @@ export const integrateDefault = (
     if (branch === null)
       return { ...none, status: "unavailable", reason: "no default branch" } satisfies Integration;
     const remote = (yield* git("remote", "get-url", "origin")).code === 0;
-    const fetched = remote ? yield* git("fetch", "-q", "origin", branch) : null;
+    if (remote) {
+      const fetched = yield* git("fetch", "-q", "origin", branch);
+      if (fetched.code !== 0)
+        return {
+          ...none,
+          status: "unavailable",
+          branch,
+          reason: `could not fetch ${branch} from origin: ${whatItSaid(fetched)}`,
+        } satisfies Integration;
+    }
     const tracked = (yield* git("rev-parse", "--verify", "-q", `origin/${branch}^{commit}`)).code;
     const ref = remote && tracked === 0 ? `origin/${branch}` : branch;
     const resolved = yield* git("rev-parse", "--verify", "-q", `${ref}^{commit}`);
@@ -52,16 +62,7 @@ export const integrateDefault = (
         branch,
         reason: `${ref} cannot be read`,
       } satisfies Integration;
-    const at = {
-      ...none,
-      branch,
-      ref,
-      sha: resolved.stdout.trim(),
-      reason:
-        fetched === null || fetched.code === 0
-          ? ""
-          : `could not fetch ${branch}, so ${ref} is as last fetched: ${whatItSaid(fetched)}`,
-    };
+    const at = { ...none, branch, ref, sha: resolved.stdout.trim() };
     const unmerged = Effect.map(git("diff", "--name-only", "--diff-filter=U"), (said) =>
       said.stdout.split("\n").filter((file) => file !== ""),
     );

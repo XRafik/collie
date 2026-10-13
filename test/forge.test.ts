@@ -3,6 +3,7 @@ import { ConfigProvider, Effect, FileSystem } from "effect";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
+import { gitlab, pipelineChecks } from "../src/forge/gitlab";
 import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
 import { epochMs } from "../src/time";
@@ -193,7 +194,7 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* checksOf([{ name: "e2e", state: "running" }])).toEqual({
             state: "running",
           });
-          expect(yield* checksOf([])).toEqual({ state: "unknown" });
+          expect(yield* checksOf([])).toEqual({ state: "none" });
         }),
       ));
 
@@ -658,3 +659,29 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 }
+
+test("a GitLab pipeline of an older head is not this head's CI, and one that was canceled has not passed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const checksOf = (over: Partial<FakeMr>) =>
+        Effect.map(
+          gitlab.details(
+            ref("gitlab"),
+            "/w",
+            fakeForge(
+              "gitlab",
+              model("gitlab", {
+                mrs: [mr("gitlab", { checks: [{ name: "test", state: "passed" }], ...over })],
+              }),
+            ).run,
+          ),
+          (panel) => (panel._tag === "Details" ? panel.checks : undefined),
+        );
+      expect(yield* checksOf({ head: "new-head" })).toEqual({ state: "passed" });
+      expect(yield* checksOf({ head: "new-head", pipelineAt: "old-head" })).toEqual({
+        state: "unknown",
+      });
+      expect(pipelineChecks("canceled")).toEqual({ state: "unknown" });
+      expect(pipelineChecks("")).toEqual({ state: "none" });
+    }),
+  ));

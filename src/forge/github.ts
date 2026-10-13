@@ -85,7 +85,7 @@ const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 /** A pull request's check rollup: a check run's conclusion, or a status context's state. */
 export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
   const checks = rollup ?? [];
-  if (checks.length === 0) return { state: "unknown" };
+  if (checks.length === 0) return { state: "none" };
   const verdicts = checks.map((one) => ({
     name: one.name ?? one.context ?? "a check",
     // A check run has a conclusion once it completes; a status context has only a state.
@@ -156,7 +156,7 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       sourceBranch: pull.headRefName ?? "",
       fork: pull.isCrossRepository === true,
       targetBranch: pull.baseRefName ?? "",
-      pipeline: checks.state === "unknown" ? "" : checks.state,
+      pipeline: checks.state === "none" ? "" : checks.state,
       checks,
       approvals: APPROVALS.get(pull.reviewDecision ?? "") ?? "",
       unresolved: false,

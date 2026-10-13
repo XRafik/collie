@@ -117,6 +117,6 @@ test("follow says each step started and finished, each agent once, a park, the m
   expect(followEvents(reviewed, reviewed)).toEqual([]);
   // No pipeline at all is not news on the first look.
   expect(
-    followEvents(first, { view: view(), progress: progress({ ci: { state: "unknown" } }) }),
+    followEvents(first, { view: view(), progress: progress({ ci: { state: "none" } }) }),
   ).toEqual([]);
 });

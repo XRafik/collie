@@ -24,6 +24,8 @@ export const FakeMr = Schema.Struct({
   author: Schema.optionalKey(Schema.String),
   assignees: Schema.optionalKey(Schema.Array(Schema.String)),
   head: Schema.optionalKey(Schema.String),
+  /** The revision its pipeline ran on, where that is not its head. */
+  pipelineAt: Schema.optionalKey(Schema.String),
   mergedSha: Schema.optionalKey(Schema.String),
   checks: Schema.optionalKey(Schema.Array(Check)),
   sourceBranch: Schema.optionalKey(Schema.String),
@@ -172,7 +174,8 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       assignees: (mr.assignees ?? []).map((username) => ({ username })),
       sha: mr.head ?? null,
       merge_commit_sha: mr.mergedSha ?? null,
-      head_pipeline: pipeline === null ? null : { status: pipeline },
+      head_pipeline:
+        pipeline === null ? null : { status: pipeline, sha: mr.pipelineAt ?? mr.head ?? null },
       source_branch: mr.sourceBranch ?? null,
       source_project_id: mr.fork === true ? 7 : 3,
       target_project_id: 3,

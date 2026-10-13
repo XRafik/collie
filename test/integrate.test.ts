@@ -140,14 +140,14 @@ test("a checkout with uncommitted changes waits for the builder's commit", () =>
     }),
   ));
 
-test("a fetch that fails integrates the default branch as last fetched, and says so", () =>
+test("a fetch that fails integrates nothing: the default branch as last fetched may be stale", () =>
   runEffect(
     Effect.gen(function* () {
       const { run } = yield* repositories;
       yield* git(run, "remote", "set-url", "origin", `${run}/gone.git`);
       const done = yield* integrateDefault(shell, run);
-      expect(done).toMatchObject({ status: "unchanged", ref: "origin/master" });
-      expect(done.reason).toContain("could not fetch master, so origin/master is as last fetched");
+      expect(done).toMatchObject({ status: "unavailable", branch: "master", sha: "" });
+      expect(done.reason).toContain("could not fetch master from origin");
     }),
   ));
 

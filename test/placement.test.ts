@@ -14,6 +14,7 @@ import { Clock, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./support/recorder";
 import { exec } from "./support/command";
+import { FakeBin } from "./support/bin";
 import { fastForward, runEffect as runLive } from "./support/effect";
 import { installFakeSkills } from "./support/defs";
 import { fixtures, until } from "./support/host";
@@ -1759,6 +1760,11 @@ for (const chain of CHAINS) {
         Effect.gen(function* () {
           yield* aTask;
           yield* approvedByOperator;
+          // A forge that finds no merge request from the branch, so the build may push.
+          yield* Effect.acquireRelease(
+            FakeBin.make(`${rig.root}/bin`).pipe(Effect.tap((bin) => bin.add("glab", "exit 0"))),
+            (bin) => bin.restore(),
+          );
           yield* rig.queueOutputs(chain.outputs);
           const seen = yield* chainedFrom({
             entry: shipped(chain.name),
@@ -1785,7 +1791,7 @@ for (const chain of CHAINS) {
           ]);
           expect((yield* readTask(env().stateDir, "task-1"))?.workspace).toBe("wT");
           expect(yield* rig.cmds()).not.toContain("workspace create");
-        }),
+        }).pipe(Effect.scoped),
       ),
     180_000,
   );

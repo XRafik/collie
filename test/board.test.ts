@@ -51,6 +51,8 @@ import { madeRun } from "./support/records";
 import { collie, proves } from "./support/world";
 import { stopHost, until } from "./support/host";
 import { epochMs } from "../src/time";
+import { seedIntent, writeIntent } from "../src/intent";
+import { approvedFile, encodeApproved } from "../src/verify-spec";
 import { planDirOf } from "../src/run-detail";
 
 function facts(over: Partial<Sentence> = {}): Sentence {
@@ -2148,6 +2150,50 @@ test("an agent's own record of a check never counts toward ready", () => {
     at: "abc",
   });
 });
+
+test("a Run's checks are its Intent's as they stand, each passed as the command it names now", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const { repo, head } = yield* checkout("mk/ship");
+      const run = yield* madeRun(dir, {
+        task: "task-1",
+        state: "succeeded",
+        branch: "mk/ship",
+        cwd: repo,
+        mr: PR,
+        finished: "2026-09-14T09:30:00Z",
+      });
+      const spec = (name: string, executable = "true") => ({
+        name,
+        executable,
+        argv: [],
+        cwd: "worktree",
+      });
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(approvedFile(run.evidence), encodeApproved([spec("test")]));
+      yield* appendVerification(run.evidence, checked("test", head));
+      const checks = Effect.map(board(env, [run]), (views) => views[0]!.checks);
+      expect(yield* checks).toEqual({ state: "passed", at: head });
+
+      const intent = seedIntent(run.id, { runVerification: [spec("test")] });
+      const amended = (verification: ReadonlyArray<ReturnType<typeof spec>>) =>
+        writeIntent(run.dir, {
+          ...intent,
+          authority: { ...intent.authority, run_verification: verification },
+        });
+      // A check added after the seeded one passed has not run.
+      yield* amended([spec("test"), spec("typecheck")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      // A pass of the command a check named before is not a pass of the one it names now.
+      yield* amended([spec("test", "false")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      // A check withdrawn after it failed no longer holds the Run back.
+      yield* appendVerification(run.evidence, checked("lint", head, "fail"));
+      yield* amended([spec("test")]);
+      expect(yield* checks).toEqual({ state: "passed", at: head });
+    }),
+  ));
 
 test("following a check hands on each line while the check is still running", () =>
   runEffect(

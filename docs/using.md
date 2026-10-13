@@ -646,9 +646,12 @@ carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup
 revision they ran at, which is the one Collie's own checks are counted at too: a failing
 one names itself (`cego/collie#30 is open, but lint failed at 1a2b3c4.`), a pending one
 reads `cego/collie#30 is open; its checks are still running.`, and Ready to release needs
-every check the card knows of to have passed. It also needs what the forge would merge on:
-the merge request is not a draft, no blocking review finding is unresolved, and the forge
-says it can merge — GitLab's detailed merge status, GitHub's mergeable state. Otherwise the
+every check the card knows of to have passed: each of the Run's checks as its Intent has
+them now, passed as the command each names, and the forge's pipeline at the merge
+request's head. A merge request with no pipeline lacks nothing there; one whose pipeline
+ran at another revision, or has not passed, does. It also needs what the forge would merge
+on: the merge request is not a draft, no blocking review finding is unresolved — after a
+last fix that stood without a review, the findings it left — and the forge says it can merge — GitLab's detailed merge status, GitHub's mergeable state. Otherwise the
 card says the first thing missing: `cego/collie#30 is open and its checks passed at
 1a2b3c4, but the forge says it cannot merge: conflicting.` No `gh`, or one nobody logged in to, leaves
 the card `nothing has checked it` and says nothing about why. A pull request's details —
@@ -1906,11 +1909,13 @@ survives the picker closing, the Control Plane closing, and the terminal being d
 Before every ticket after the first, and before every review round, `implement` fetches the
 default branch. Where it has moved, Collie merges it into the Run's branch with a merge
 commit and records `integrated <branch>@<sha>` in the Run's log. It never rebases and never
-force-pushes. A checkout with uncommitted changes is left alone until the builder commits,
-and an unchanged default branch is skipped. A conflict is the builder's next work: the next
-ticket's prompt names the conflicted files and has the merge finished first. Before a review,
-a merge step finishes it, and a merge still unfinished after that stops the Run. The reviewer diffs against the merge-base after the integration,
-so it sees what will actually merge.
+force-pushes. A checkout with uncommitted changes is left alone and handed back for the
+builder to commit, and an unchanged default branch is skipped. A conflict at a ticket
+boundary is the builder's next work: that ticket's prompt names the conflicted files and has
+the merge finished first. Before a review, a merge step finishes it. Work goes on only from
+an integrated checkout: what still stops the merge after two hand-backs stops the Run, and a
+fetch that fails parks it until resumed. The reviewer diffs against the merge-base after the
+integration, so it sees what will actually merge.
 
 ### Why a run stopped
 

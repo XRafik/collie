@@ -416,8 +416,9 @@ interface Doing<Output extends OutputContract> {
 
 /**
  * Parks the Run while the checkout's merge request merges itself once green, since a push
- * to it is a merge. Suspending inside the Activity leaves it unrecorded, so a resume asks
- * the forge again; once it has said no, a replay does not.
+ * to it is a merge, or while its forge cannot say whether it does. Suspending inside the
+ * Activity leaves it unrecorded, so a resume asks the forge again; once it has said no, a
+ * replay does not.
  */
 const untilPushable = (operation: string, cwd: string) =>
   Activity.make({
@@ -425,7 +426,14 @@ const untilPushable = (operation: string, cwd: string) =>
     execute: Effect.gen(function* () {
       const host = yield* Host;
       const runId = (yield* Run).id;
-      const url = yield* host.autoMerging(cwd);
+      const read = yield* Effect.result(host.autoMerging(cwd));
+      if (read._tag === "Failure") {
+        const why = `not pushed: whether it merges itself is unknown: ${read.failure.reason}`;
+        yield* host.record(runId, why);
+        yield* host.parked(runId, `${why}. Resume ${runId} once the forge can be read.`);
+        return yield* Workflow.suspend(yield* WorkflowEngine.WorkflowInstance);
+      }
+      const url = read.success;
       if (url === null) return yield* host.parked(runId, null);
       const why = `not pushed: auto-merge is on for ${url}`;
       yield* host.record(runId, why);
