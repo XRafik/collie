@@ -1123,6 +1123,7 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
   let signalled = prior?.signalled === true;
   let pastSignal = false;
   let session = prior?.session ?? null;
+  let noted = prior?.noted === true;
   const processes: Seen[] = (prior?.processes ?? []).map((one) => ({ ...one }));
   const ended = (state: Stop["state"], why: string | null) =>
     Clock.currentTimeMillis.pipe(
@@ -1132,24 +1133,30 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
         turns: covered,
         reason: why,
         signalled,
+        noted,
         session,
         processes,
       })),
     );
   const notQuiet = (why: string) => ended(reached, why);
+  const kept = Effect.suspend(() =>
+    Effect.flatMap(ended(reached, "the stop was cut short"), ctx.keep),
+  );
 
   const live = yield* processOf(pid);
   if (live === null) {
     // Only what it started may be left, found by its session or by what a stop saw.
     const sessions = (yield* processOf(process.pid))?.session != null;
-    if (session === null && sessions && record.started !== null)
+    if (session === null && sessions && record.started !== null) {
       session = { id: pid, since: record.started };
-    if (session === null && prior === null)
+      noted = true;
+    }
+    if (!noted)
       return yield* ended(
         "failed",
         `pid ${pid} has exited and nothing proves what it started is gone (${record.started === null ? "no start time is recorded" : "this platform cannot say a session"}); remove ${record.dir} once you have checked`,
       );
-    const left = yield* survivors(session, processes, pid, deadline);
+    const left = yield* survivors(session, processes, pid, deadline, kept);
     return yield* ended(left === null ? "quiet" : "failed", left);
   }
   if (record.command === null || !live.command.includes(record.command))
@@ -1191,16 +1198,19 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
               command: one.command,
               termed: false,
             });
+      noted = true;
 
       const still = yield* processOf(pid);
       if (still?.started !== live.started || still.command !== live.command)
         return yield* ended("failed", `pid ${pid} changed before it was signalled`);
       yield* Effect.uninterruptible(
-        Effect.andThen(
-          signalled ? Effect.void : sigterm(pid),
-          Effect.sync(() => {
-            signalled = pastSignal = true;
-          }),
+        (signalled ? Effect.void : sigterm(pid)).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              signalled = pastSignal = true;
+            }),
+          ),
+          Effect.andThen(kept),
         ),
       );
       for (const one of covered) {
@@ -1219,7 +1229,7 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
         return yield* notQuiet(
           `the server was still up after ${Math.round(budgetMs / 1000)}s${running.length === 0 ? "" : `, with ${running.map((one) => `turn ${one.turn}`).join(", ")} still running`}`,
         );
-      const left = yield* survivors(session, processes, pid, deadline);
+      const left = yield* survivors(session, processes, pid, deadline, kept);
       return left === null ? yield* ended("quiet", null) : yield* notQuiet(left);
     }),
   );
@@ -1279,6 +1289,8 @@ const survivors = Effect.fn("Compactors.survivors")(function* (
   seen: Seen[],
   pid: number,
   deadline: number,
+  /** Writes the stop so far once a survivor is marked signalled. */
+  kept: ReturnType<StopContext["keep"]>,
 ) {
   const alive = Effect.gen(function* () {
     const known = yield* Effect.forEach(seen, (one) => processOf(one.pid));
@@ -1301,13 +1313,20 @@ const survivors = Effect.fn("Compactors.survivors")(function* (
       const at = seen.findIndex((other) => sameProcess(one, other));
       if (at >= 0 && seen[at]!.termed) continue;
       yield* Effect.uninterruptible(
-        Effect.andThen(
-          sigterm(one.pid),
-          Effect.sync(() => {
-            if (at >= 0) seen[at] = { ...seen[at]!, termed: true };
-            else
-              seen.push({ pid: one.pid, started: one.started, command: one.command, termed: true });
-          }),
+        sigterm(one.pid).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              if (at >= 0) seen[at] = { ...seen[at]!, termed: true };
+              else
+                seen.push({
+                  pid: one.pid,
+                  started: one.started,
+                  command: one.command,
+                  termed: true,
+                });
+            }),
+          ),
+          Effect.andThen(kept),
         ),
       );
     }

@@ -178,10 +178,12 @@ export interface CompactionPort {
   ): Effect.Effect<CompactionOutcome | null, PortError, PortServices>;
 }
 
-/** The agent a stop is for, and where it says each state it reaches. */
+/** The agent a stop is for, where it says each state it reaches, and where it keeps progress. */
 export interface StopContext {
   readonly record: ControlRecord;
   readonly say: (line: string) => Effect.Effect<void, never, PortServices>;
+  /** Writes the stop so far, so a stop cut short leaves what it signalled on the record. */
+  readonly keep: (stop: Stop) => Effect.Effect<void, never, PortServices>;
 }
 
 export interface CompactionPorts {
@@ -237,6 +239,8 @@ const StopSchema = Schema.Struct({
   reason: Schema.NullOr(Schema.String),
   /** Whether the server has had its one SIGTERM, from this stop or an earlier one. */
   signalled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  /** Whether a stop has noted where the server's processes are: its session or descendants. */
+  noted: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
   /** The session the server led, where the platform said, so its members are found after it. */
   session: Schema.NullOr(
     Schema.Struct({ id: Schema.Number, since: Schema.NullOr(Schema.String) }),
@@ -585,6 +589,7 @@ const stopServer = Effect.fn("Compaction.stopServer")(function* (
   const reached = yield* stop({
     record,
     say: (line) => Effect.ignore(deps.log(`${agent}: ${line}`)),
+    keep: (progress) => Effect.ignore(writeControl(deps.stateDir, { ...record, stop: progress })),
   });
   if (reached.state === "quiet") yield* fs.remove(record.dir, { recursive: true, force: true });
   else yield* writeControl(deps.stateDir, { ...record, stop: reached });

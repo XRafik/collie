@@ -30,6 +30,7 @@ export const stoppedServer = (stateDir: string, agent: string, cwd: string) =>
           turns: [],
           reason: "the server was still up after 30s",
           signalled: true,
+          noted: true,
         },
         attempt: null,
       }),

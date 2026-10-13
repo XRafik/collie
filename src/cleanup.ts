@@ -49,6 +49,8 @@ export interface Sweeper {
   readonly remove: (
     item: CleanupItem,
   ) => Effect.Effect<{ freed: number } | { kept: string }, never, BunServices>;
+  /** What a sweep takes up again before it judges, answering with what that removed. */
+  readonly retry?: Effect.Effect<ReadonlyArray<CleanupItem>, never, BunServices>;
 }
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -152,7 +154,15 @@ export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: Sw
     const journal = path.join(stateDir, JOURNAL);
     const removed: CleanupItem[] = [];
     const keep: CleanupKept[] = [];
+    const record = (gone: CleanupItem) =>
+      Effect.gen(function* () {
+        removed.push(gone);
+        yield* appendJournal(journal, JournalJson, { at: yield* nowIso(), by, ...gone }).pipe(
+          Effect.ignore,
+        );
+      });
     for (const sweeper of sweepers) {
+      if (sweeper.retry) yield* Effect.forEach(yield* sweeper.retry, record);
       const judged = yield* sweeper.judge;
       keep.push(...judged.keep);
       for (const item of judged.remove) {
@@ -161,11 +171,7 @@ export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: Sw
           keep.push({ kind: item.kind, target: item.target, reason: outcome.kept });
           continue;
         }
-        const gone = { ...item, bytes: outcome.freed };
-        removed.push(gone);
-        yield* appendJournal(journal, JournalJson, { at: yield* nowIso(), by, ...gone }).pipe(
-          Effect.ignore,
-        );
+        yield* record({ ...item, bytes: outcome.freed });
       }
     }
     yield* trimJournal(journal);
@@ -536,7 +542,7 @@ const removeIf = (
 /**
  * Compaction controls of agents no herdr session lists: their endpoint stopped and their
  * state removed. Nothing is judged where herdr will not list its agents, and a record whose
- * stop is short of Quiet is stopped again and kept until it is.
+ * stop is short of Quiet is kept, and stopped again at each sweep, until it is.
  */
 export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herdr>): Sweeper => {
   const kind = "compaction";
@@ -563,16 +569,14 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
         else if (!live.has(name)) {
           const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
-          // A stop short of Quiet is taken up again by the removal, which keeps it if it still is.
-          remove.push({
-            kind,
-            target,
-            bytes: 0,
-            reason:
-              record?.stop == null
-                ? "herdr no longer lists its agent"
-                : `herdr no longer lists its agent; stopping it again (${stopSaid(name, record, record.stop)})`,
-          });
+          if (record?.stop == null)
+            remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+          else
+            keep.push({
+              kind,
+              target,
+              reason: `its Codex turn has not stopped: ${stopSaid(name, record, record.stop)}`,
+            });
         }
       }
       const sizes = yield* sizesOf(remove.map((item) => item.target));
@@ -593,6 +597,27 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (done === true) return { freed: bytes };
         return done === false ? { kept: "its controls are in use" } : done;
       }),
+    // A stop short of Quiet is stopped again; the judge then finds it gone or keeps it.
+    retry: Effect.gen(function* () {
+      const gone: CleanupItem[] = [];
+      const live = yield* listed;
+      if (live === null) return gone;
+      const fs = yield* FileSystem.FileSystem;
+      for (const name of yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []))) {
+        if (live.has(name)) continue;
+        const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+        if (record?.stop == null) continue;
+        const target = `${root}/${name}`;
+        const bytes = yield* sizeOf(target);
+        const done = yield* putDownControl(
+          { ports: COMPACTION_PORTS, stateDir, log: () => Effect.void },
+          name,
+          Effect.map(listed, (now) => now === null || now.has(name)),
+        ).pipe(Effect.orElseSucceed(() => false));
+        if (done === true) gone.push({ kind, target, bytes, reason: "its stop is Quiet now" });
+      }
+      return gone;
+    }),
   };
 };
 

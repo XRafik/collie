@@ -836,3 +836,43 @@ test(
     ),
   30_000,
 );
+
+test(
+  "a server that exits after a stop refused it is not called quiet where nothing identifies what it started",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* writing({ foreignThread: true, child: "stubborn" });
+        expect((yield* session(halted, host)).left.join("\n")).toContain("ambiguous identity");
+        process.kill((yield* control()).pid!, "SIGKILL");
+        // With no start time, its session cannot be told from a reused one.
+        yield* fs.writeFileString(
+          yield* controlFile(),
+          encodeJson({ ...(yield* control()), started: null }),
+        );
+
+        const halt = yield* session(halted, host);
+
+        expect(halt.left.join("\n")).toContain("nothing proves what it started is gone");
+        expect(yield* fs.exists(yield* controlFile())).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test(
+  "a stop cut short while it waits on a child leaves its SIGTERM on the record",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* writing({ child: "stubborn" });
+        yield* session(halted.pipe(Effect.timeoutOption(Duration.millis(900))), host);
+        yield* until(childTerms, (terms) => terms === 1);
+
+        yield* session(halted, host);
+
+        expect(yield* childTerms()).toBe(1);
+      }),
+    ),
+  30_000,
+);
