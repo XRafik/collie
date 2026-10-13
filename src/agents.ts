@@ -45,7 +45,14 @@ import {
 import { COMPACTION_PORTS, ranOutSince, submittedDelivery } from "./compactors";
 import { kindForRole } from "./cards";
 import { Oversight } from "./oversight";
-import { FALLBACK_DEFAULTS, loadDefaults, readConfig, type Defaults } from "./config";
+import {
+  autoCompactWindowAsWritten,
+  FALLBACK_DEFAULTS,
+  loadDefaults,
+  readConfig,
+  type Defaults,
+} from "./config";
+import type { YamlMap } from "./yaml";
 import { RanOn } from "./board-model";
 import * as dispatch from "./dispatcher";
 import type * as Types from "effect/Types";
@@ -54,6 +61,8 @@ import { currentEnv, type PluginEnv } from "./env";
 import {
   HARNESSES,
   foldPreferences,
+  autoCompactWindowFor,
+  installedHelp,
   isPermissionMode,
   permissionsAsWritten,
   personaPrefix,
@@ -995,6 +1004,8 @@ export interface AgentHost {
   readonly patience?: dispatch.Patience;
   /** Each harness's compaction controls; the shipped ones where none are given. */
   readonly ports?: CompactionPorts;
+  /** A harness's `--help`, by its kind; the installed one's where left out. */
+  readonly help?: (kind: string) => Effect.Effect<string>;
 }
 
 type AgentServices = FileSystem.FileSystem | Path.Path | BunServices;
@@ -1323,10 +1334,10 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     const wanted = ask.permissions ?? undefined;
     // Read at each start rather than kept from the host's: a host outlives the
     // Settings change that flips this, and every agent after it has to see the change.
-    const written = yield* readConfig(host.env.userDir).pipe(
-      Effect.map((config) => permissionsAsWritten(config.permissions)),
-      Effect.orElseSucceed(() => undefined),
+    const config = yield* readConfig(host.env.userDir).pipe(
+      Effect.orElseSucceed((): YamlMap => ({})),
     );
+    const written = permissionsAsWritten(config.permissions);
     const asked = isPermissionMode(wanted)
       ? wanted
       : isPermissionMode(written)
@@ -1337,6 +1348,19 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         ? yield* adapter.bypassForbidden(host.env)
         : false;
     const permissions = forbidden ? "auto" : asked;
+    const window = yield* autoCompactWindowFor(
+      adapter,
+      autoCompactWindowAsWritten(config.claude_auto_compact_window),
+      host.help ?? installedHelp,
+    );
+    // Parked, never started on the default: 400000 would replace a window meant smaller.
+    if ("refused" in window)
+      return yield* new AgentParked({
+        operation: ask.operation,
+        reason: `${window.refused} in ${host.env.userDir}/config.json: fix it, then resume this Run`,
+      });
+    if (window.leftOff !== null)
+      yield* log(ask.runId, `${agent}: started without an auto-compact window: ${window.leftOff}`);
     yield* ensureTrusted(ask.runId, adapter, ask.cwd);
     const persona = `${dirFor(ask.runId)}/${stemOf(ask)}.persona.md`;
     yield* write(persona, `${yield* personaOf(ask.persona ?? ask.role)}\n`);
@@ -1370,6 +1394,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
                 persona,
                 ask.effort ?? undefined,
                 permissions,
+                window.passed ?? undefined,
               ),
               ...controls,
             ],
@@ -1382,7 +1407,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           );
         yield* log(
           ask.runId,
-          `${agent}: ${adapter.id} in ${tab.paneId}, permissions ${permissions}${forbidden ? `: ${adapter.id}'s managed settings forbid bypass` : ""}`,
+          `${agent}: ${adapter.id} in ${tab.paneId}, permissions ${permissions}${forbidden ? `: ${adapter.id}'s managed settings forbid bypass` : ""}${window.passed === null ? "" : `, auto-compact window ${window.passed}`}`,
         );
         const found = yield* entryFor(ask, agent, { paneId: tab.paneId, workspaceId: workspace });
         if (found.entry === null) return undefined;

@@ -11,6 +11,7 @@ import {
   chatPath,
   decideChat,
   DEFAULT_CHAT_HARNESS,
+  ensureChatFor,
   mcpConfig,
   piExtension,
   preferredHarness,
@@ -21,6 +22,8 @@ import {
   type ChatRecord,
 } from "../src/chat";
 import { writeConfigValue } from "../src/config";
+import { Rig, FakeHerdr, type Call } from "./support/recorder";
+import { FakeBin } from "./support/bin";
 import type { AgentInfo, PaneInfo } from "../src/herdr";
 import { TOOLS } from "../src/tools";
 import { runEffect } from "./support/effect";
@@ -159,7 +162,7 @@ test("chat keeps native tools and adds Collie's tools", () => {
     extension: "/d/c.ts",
     settings: "/d/settings.json",
   };
-  const claude = chatArgs("claude", "s-1", files);
+  const claude = chatArgs("claude", "s-1", files, 400000);
   expect(claude).toEqual([
     "--session-id",
     "s-1",
@@ -173,8 +176,12 @@ test("chat keeps native tools and adds Collie's tools", () => {
     "opus",
     "--effort",
     "medium",
+    "--autocompact",
+    "400000",
   ]);
-  const pi = chatArgs("pi", "s-2", files);
+  expect(chatArgs("claude", "s-1", files, "auto").slice(-2)).toEqual(["--autocompact", "auto"]);
+  expect(chatArgs("claude", "s-1", files, null)).not.toContain("--autocompact");
+  const pi = chatArgs("pi", "s-2", files, 400000);
   expect(pi).toEqual([
     "--session-id",
     "s-2",
@@ -306,5 +313,77 @@ test("both adapters are told about the same Collie, in one place", () =>
         expect(extension).toContain(`"${key}":"${value}"`);
         expect(config).toMatchObject({ mcpServers: { collie: { env: { [key]: value } } } });
       }
+    }),
+  ));
+
+/** A Home's chat launched on Claude Code, against a fake herdr and a stand-in `claude`. */
+const launchedChat = (opts: { readonly config?: string; readonly help?: string }) =>
+  Effect.gen(function* () {
+    const rig = yield* Rig.scoped();
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* Effect.addFinalizer(() => bin.restore());
+    yield* bin.add("claude", "exit 0");
+    const fs = yield* FileSystem.FileSystem;
+    if (opts.config !== undefined)
+      yield* fs.writeFileString(`${rig.pluginEnv().userDir}/config.json`, opts.config);
+    const lines: string[] = [];
+    const ensured = yield* ensureChatFor(
+      new FakeHerdr(rig.pluginEnv()),
+      rig.pluginEnv(),
+      KEY,
+      { chatPaneId: "1-2" },
+      "claude",
+      (line) => Effect.sync(() => lines.push(line)),
+      ["/bin/collie"],
+      () => Effect.succeed(opts.help ?? "  --autocompact <auto|tokens>"),
+    );
+    const started = (yield* rig.calls()).find((call: Call) => call.cmd === "agent start");
+    const argv = started?.argv ?? [];
+    return {
+      ensured,
+      lines,
+      started: started !== undefined,
+      args: argv.includes("--") ? argv.slice(argv.indexOf("--") + 1) : [],
+    };
+  }).pipe(Effect.scoped);
+
+test("the Home's chat on Claude Code starts with a 400000 auto-compact window when none is set", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const chat = yield* launchedChat({});
+      expect(chat.ensured.kind).toBe("launched");
+      expect(chat.args.slice(-2)).toEqual(["--autocompact", "400000"]);
+    }),
+  ));
+
+test("the Home's chat takes the window written to the config at its launch", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const chat = yield* launchedChat({ config: `{ "claude_auto_compact_window": 500000 }` });
+      expect(chat.args.slice(-2)).toEqual(["--autocompact", "500000"]);
+    }),
+  ));
+
+test("a claude whose help does not list --autocompact opens the chat without it, and says why", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const chat = yield* launchedChat({ help: "  --model <model>" });
+      expect(chat.ensured.kind).toBe("launched");
+      expect(chat.args).not.toContain("--autocompact");
+      expect(chat.lines).toContainEqual(
+        "chat: started without an auto-compact window: claude --help does not list --autocompact",
+      );
+    }),
+  ));
+
+test("a window Claude Code would not take leaves the chat unavailable, naming it, and starts nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const chat = yield* launchedChat({ config: `{ "claude_auto_compact_window": 50000 }` });
+      expect(chat.ensured.kind).toBe("unavailable");
+      const why = chat.ensured.kind === "unavailable" ? chat.ensured.why : "";
+      expect(why).toContain("claude_auto_compact_window");
+      expect(why).toContain("50000");
+      expect(chat.started).toBe(false);
     }),
   ));
