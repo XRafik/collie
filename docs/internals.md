@@ -113,7 +113,8 @@ Plan artefacts are the same story from the other side: `SPEC.md`, tickets, wayfi
 and architecture reports go into the run's `plan/` directory and never into the repository
 ([ADR-0002](adr/0002-plan-artefacts-live-in-the-run-directory.md)). Glossary and ADR changes
 made while planning _are_ written into the repository — those are domain knowledge, not
-plans.
+plans. A new ADR is written as a draft named by its slug and numbered when its branch lands
+([Numbering a branch's ADRs](#numbering-a-branchs-adrs)).
 
 A plan can also move while it is being built. `implement` reads its tickets by name each
 time it reaches its list, so a ticket edited since is built as it reads now and a completed
@@ -892,6 +893,30 @@ target release's own `install.sh`, so `upgrade --to` or `onboard --to` a release
 it installs that release's runner unchecked. Rotating a key means changing both its secret and
 its public key file, and
 releases signed with the old key stop verifying.
+
+### Numbering a branch's ADRs
+
+A new ADR on a branch has no number: it is `docs/adr/draft-<slug>.md`, and text names it
+`ADR-draft-<slug>`, whether a document, a code comment or a test. Two branches open at once
+would otherwise both take the next number, and whichever lands second renumbers its ADR and
+every reference to it by hand.
+
+Whoever lands the branch numbers its drafts first, from the branch's checkout:
+
+```sh
+bun run tools/adr-number.ts            # against origin/HEAD, or master without one
+bun run tools/adr-number.ts --base master
+```
+
+Each draft takes the next number above the highest on the default branch and on this
+branch, in slug order. Every reference to it in the repository follows: the link to
+`draft-<slug>.md` becomes `NNNN-<slug>.md` and `ADR-draft-<slug>` becomes `ADR-NNNN`.
+It changes only the drafts and the files that name them, and commits nothing; review the
+working tree and commit it with the landing. With no drafts left it changes nothing. A
+number the default branch already has twice is reported and left as it is.
+
+`test/docs-links.test.ts` fails on a plain-text `ADR-NNNN` or `ADR-draft-<slug>` in the
+docs, `src`, `workflows`, `test` or `desktop` that names no ADR file.
 
 Collie Desktop is built by the same release, from the same tag, by the workflow's
 `desktop` job: `bun run build` in `desktop/` builds the stable channel at

@@ -69,3 +69,34 @@ test("every link between the repository's documents resolves, anchors included",
       expect(broken).toEqual([]);
     }),
   ));
+
+// A plain-text ADR reference is the one a code comment makes, and the Markdown walk above
+// cannot see it: renumbered ADRs left them pointing at the wrong decision.
+test("every plain-text ADR reference names an ADR that exists", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const adrs = yield* fs.readDirectory(`${ROOT}/docs/adr`);
+      const numbers = new Set(adrs.map((name) => /^(\d{4})-/.exec(name)?.[1]));
+      const drafts = new Set(adrs.map((name) => /^draft-([a-z0-9-]+)\.md$/.exec(name)?.[1]));
+      const files = [
+        ...new Bun.Glob("*.md").scanSync({ cwd: ROOT }),
+        ...new Bun.Glob(
+          "{docs,src,workflows,test,desktop}/**/*.{md,ts,tsx,vue,toml,json}",
+        ).scanSync({ cwd: ROOT }),
+      ].filter((path: string) => !path.split("/").includes("node_modules"));
+      expect(files).toContain("src/engine.ts");
+
+      const dangling: string[] = [];
+      for (const file of files) {
+        const text = yield* fs.readFileString(`${ROOT}/${file}`);
+        for (const [mention, number, slug] of text.matchAll(
+          /ADR-(?:(\d{4})|draft-([a-z0-9]+(?:-[a-z0-9]+)*))/g,
+        )) {
+          const exists = number !== undefined ? numbers.has(number) : drafts.has(slug);
+          if (!exists) dangling.push(`${file}: ${mention}`);
+        }
+      }
+      expect(dangling).toEqual([]);
+    }),
+  ));

@@ -289,7 +289,7 @@ Task workspace when no other Run or human pane needs it. A stale local branch or
 changes are refused, preserving that work. `run show` and the drawer say who started it
 and whether its report was delivered. Start another investigation to ask again.
 
-Once Schedules (ADR-0052) are implemented,
+Once Schedules are implemented,
 `--machine` will also add, pause and remove a peer's Schedule. Its own host fires it;
 this change adds no scheduler.
 
