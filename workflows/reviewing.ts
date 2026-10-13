@@ -22,6 +22,7 @@ import {
   leaveReview,
   mrForgeFacts,
   parseMrTarget,
+  renderRecordedChecks,
   repoArgs,
   riskLine,
   targetKind,
@@ -54,6 +55,7 @@ const REVIEW = content.template("review", {
   disputed: text,
   risks: text,
   obstacle: text,
+  checks: text,
 });
 
 /** The reviews to reconcile, and the one before them. */
@@ -136,8 +138,10 @@ export const reviewPass = (ask: ReviewAsk) =>
   Effect.gen(function* () {
     const agents = yield* Agents;
     const { id } = yield* Run;
-    const { dir } = yield* (yield* Host).place(id);
+    const host = yield* Host;
+    const { dir, cwd } = yield* host.place(id);
     const input = told(ask, { dir, id });
+    const checks = renderRecordedChecks(yield* host.evidence(id, cwd));
     // The round comes first, and the first round keeps the plain names: a Run with one
     // review reads as one, and a rally's rounds sort in the order they happened.
     const prefix = ask.prefix ?? "";
@@ -158,7 +162,7 @@ export const reviewPass = (ask: ReviewAsk) =>
         role: "reviewer",
         seat: only!.seat,
         instructions: REVIEW,
-        input,
+        input: { ...input, checks },
         output: SynthesisSchema,
       });
       yield* leaveReview(dir, alone);
@@ -172,7 +176,7 @@ export const reviewPass = (ask: ReviewAsk) =>
           role: "reviewer",
           seat,
           instructions: REVIEW,
-          input,
+          input: { ...input, checks },
           output: ReviewOutputSchema,
         }),
       { concurrency: "unbounded" },

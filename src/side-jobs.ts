@@ -115,7 +115,7 @@ const every = <E, R>(spaced: Duration.Input, round: Effect.Effect<unknown, E, R>
 const LOOK_EVERY = "5 seconds";
 /**
  * How often the merge watch looks. Its board asks herdr nothing, only the Runs' own files,
- * and GitLab is asked about a merge request every 5 minutes whatever this is.
+ * and a forge is asked about a merge request every 5 minutes whatever this is.
  */
 const MERGES_EVERY = "10 seconds";
 /** How long after one cleanup sweep ends the next begins (ADR-0045). */

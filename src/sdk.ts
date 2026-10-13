@@ -113,7 +113,7 @@ export { renderApproved } from "./verify-spec";
  * What kind of result a Run is for, and what the journal says it actually collected —
  * for a merge request to say what was proved rather than what an Output claimed.
  */
-export { isOutcome, renderEvidence, type Outcome } from "./outcome";
+export { isOutcome, renderEvidence, renderRecordedChecks, type Outcome } from "./outcome";
 
 /**
  * Which of the five kinds of work a work source is. A workflow that reads a plan

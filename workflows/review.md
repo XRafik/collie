@@ -35,8 +35,16 @@ changed but not fixed, or fixed. Then review what has changed since that review,
 callers and tests the fixes touched, and raise what is new. A finding you carry forward
 is the same finding: keep its file and title unless the code moved under it.
 
-Review against the project's own standards too — `CLAUDE.md`, `CONTEXT.md`, `README.md`
-and the code around the change.
+Review against the project's own standards too — `CLAUDE.md`, `README.md` and the code
+around the change. Of `CONTEXT.md`, read only the entries for the terms the diff touches,
+never the whole glossary.
+
+Every finding has one of three severities: `blocker` (wrong, unsafe, or breaks a
+contract), `major` (will bite us), `minor` (worth fixing, not worth blocking). Only `minor`
+lets a change ship without another fix, and a severity outside the three blocks.
+
+Where a finding is one instance of a class of bug, list every instance of it in the diff
+in that finding, or say there is no other.
 
 {{risks}}
 
@@ -62,6 +70,14 @@ Do not raise one of those again unless you can answer the reason it was disputed
 can, raise it with a `"rebuttal"` saying why that reason does not hold; that puts it back
 in front of the implementer. If you cannot, leave it alone — it is the human's call now,
 not another round's.
+
+The checks already recorded for this Run, the latest of each — `by collie` is one Collie
+ran itself, `by agent` one an agent ran through the collector:
+
+{{checks}}
+
+Read these rather than running them again. Run only targeted checks — the test file or
+command that confirms or refutes a finding — and never the whole suite.
 
 Where you run something to check a finding, run it through the collector so the result
 is bound to the tree you checked it on: `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`; Collie records the result

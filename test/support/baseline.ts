@@ -562,6 +562,18 @@ scenario(
           `Write the spec to \`${runDir(dir, "r-plan")}/plan/SPEC.md\``,
         );
         expect(yield* persona("r-plan", "grill")).toContain("You are a planner");
+        // A changelog is for a rewrite, which none of the first three steps is.
+        for (const step of ["grill", "spec", "tickets"])
+          expect([step, (yield* asked("r-plan", step)).includes("changelog")]).toEqual([
+            step,
+            false,
+          ]);
+        expect((yield* persona("r-plan", "grill")).replace(/\s+/g, " ")).toContain(
+          "Write a `changelog` only when a step asks for one",
+        );
+        expect((yield* asked("r-plan", "spec")).replace(/\s+/g, " ")).toContain(
+          "the spec does not restate them",
+        );
         expect((yield* launched())[0]?.args).toContain("--model opus --effort xhigh");
       }),
     ),
@@ -2235,6 +2247,56 @@ once(
         expect(synthesis).toContain("the guard is missing");
         expect(synthesis).toContain(`${dir}/agents/r-impl-build-panel/build.review-1.json`);
         expect(synthesis).toContain(`${dir}/agents/r-impl-build-panel/build.review-2.json`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a reviewer is handed the checks already recorded on its tree, and reads each rule once",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* repository();
+        const run = {
+          entry: shipped("review"),
+          runId: "r-review-recorded",
+          input: { target: "worktree" },
+        };
+        const runId = run.runId;
+        yield* approve(runId, ["unit"]);
+        yield* rig.queueOutputs([SYNTHESIS, SYNTHESIS]);
+        yield* parked({ ...run, decision: "post-1" });
+        yield* session(
+          Host.pipe(
+            Effect.flatMap((host) => host.verify({ runId, name: "unit", cwd: rig.projectDir })),
+            Effect.orDie,
+          ),
+        );
+        yield* answeredThen({ ...run, decision: "post-1", value: "Review again", until: "post-2" });
+        expect(yield* asked(runId, "review-1")).toContain("(nothing is recorded for this Run)");
+        const review = yield* asked(runId, "review-2-1");
+        expect(review).toMatch(/- unit: pass \(by collie\), on this tree, at \d{4}-/);
+        const text = review.replace(/\s+/g, " ");
+        expect(text).toContain("never the whole suite");
+        expect(text).toContain("read only the entries for the terms the diff touches");
+        expect(text).toContain("list every instance of it in the diff in that finding");
+
+        const both = `${yield* persona(runId, "review-2-1")}\n${review}`.replace(/\s+/g, " ");
+        const rules = [
+          "is a follow-up",
+          "unless you can answer the reason",
+          "collie verify --run",
+          '`"scope_met": true`',
+          "`summary` — two sentences",
+          "Every `blocker` and `major`",
+          "`minor` (worth fixing, not worth blocking)",
+          "Change nothing outside your Output file",
+          "```json",
+        ];
+        expect(rules.map((rule) => [rule, both.split(rule).length - 1])).toEqual(
+          rules.map((rule) => [rule, 1]),
+        );
       }),
     ),
   120_000,

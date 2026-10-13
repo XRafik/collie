@@ -301,12 +301,12 @@ is.
 commands do the rest — whichever door you come in, it is the host that settles it:
 
 ```bash
-collie --json run answer <run-id> yes --decision keep --request-id "$(uuidgen)"
-collie --json run hold <run-id> --request-id "$(uuidgen)"
-collie --json run release <run-id> --request-id "$(uuidgen)"
-collie --json run stop <run-id> --request-id "$(uuidgen)"
-collie --json run resume <run-id> --request-id "$(uuidgen)"
-collie --json run steer <run-id> "check the migration too" --request-id "$(uuidgen)"
+collie --json run answer <run-id> yes --decision keep [--request-id <id>]
+collie --json run hold <run-id> [--request-id <id>]
+collie --json run release <run-id> [--request-id <id>]
+collie --json run stop <run-id> [--request-id <id>]
+collie --json run resume <run-id> [--request-id <id>]
+collie --json run steer <run-id> "check the migration too" [--request-id <id>]
 ```
 
 - **`--decision` names the question** where a module is waiting on more than one; leave it
@@ -662,7 +662,7 @@ naming the question:
 
 ```sh
 collie --json run show <run-id>                            # read waiting
-collie --json run answer <run-id> "Implement now" --decision next-1 --request-id "$(uuidgen)"
+collie --json run answer <run-id> "Implement now" --decision next-1 [--request-id <id>]
 collie --json run show <run-id>                            # confirm it took
 ```
 
@@ -677,8 +677,8 @@ does. A refusal is `invalid_input` where your answer was the reason, and otherwi
 ## Stop and resume
 
 ```sh
-collie --json run stop <run-id> --request-id "$(uuidgen)"
-collie --json run resume <run-id> --request-id "$(uuidgen)"
+collie --json run stop <run-id> [--request-id <id>]
+collie --json run resume <run-id> [--request-id <id>]
 ```
 
 `stop` parks the run where it is — at its next boundary, or inside the wait it is in — and
@@ -728,7 +728,7 @@ collie --json run start implement --input plan=./plans/steering \
   --constraint "no new dependencies"
 
 collie --json run intent show <run-id>
-collie --json run intent set-goal <run-id> "<goal>" --request-id "$(uuidgen)"
+collie --json run intent set-goal <run-id> "<goal>" [--request-id <id>]
 collie --json run intent add-constraint <run-id> "<text>" --severity block
 collie --json run intent remove-constraint <run-id> <constraint-id>
 collie --json run intent authority <run-id> auto_correct=true --propagate
@@ -1325,9 +1325,9 @@ to change the set, or delete it to withdraw it.
 ## Hold and release
 
 ```sh
-collie --json run hold <run-id> --request-id "$(uuidgen)"
-collie --json run hold --workspace <workspace-id> --request-id "$(uuidgen)"
-collie --json run release <run-id> --request-id "$(uuidgen)"
+collie --json run hold <run-id> [--request-id <id>]
+collie --json run hold --workspace <workspace-id> [--request-id <id>]
+collie --json run release <run-id> [--request-id <id>]
 ```
 
 `hold` stops a run taking on **new** work; whatever is already running carries on. The run
@@ -1422,12 +1422,12 @@ human line and a failure prints `error.message`.
 Every mutation — `run start`, `run answer`, `run stop`, `run resume`, `workflow fork`,
 `persona fork` — accepts `--request-id`. Collie writes a receipt under its state directory
 keyed by that id, so retrying the same id returns the original result instead of repeating
-the effect. Generate one per intended action and reuse it for every retry of that action:
+the effect. Choose one per intended action — any unique string — and reuse it for every
+retry of that action:
 
 ```sh
-id=$(uuidgen)
-collie --json run start implement --input plan="$PWD/plan" --request-id "$id" \
-  || collie --json run start implement --input plan="$PWD/plan" --request-id "$id"
+collie --json run start implement --input plan="$PWD/plan" --request-id start-plan-1 \
+  || collie --json run start implement --input plan="$PWD/plan" --request-id start-plan-1
 ```
 
 A receipt is reserved before the action starts. If execution is interrupted before its
@@ -1786,7 +1786,8 @@ installation id is written once, by the first host to own the directory, and sur
 restarts and upgrades.
 
 The host also runs what nobody has to have a pane open for: the merge watch, which asks
-GitLab about each waiting merge request every 5 minutes and records a merge; each Herd's
+the merge request's forge, GitLab or GitHub, about each waiting one every 5 minutes and
+records a merge; each Herd's
 News, which it also supersedes once an item's cause no longer holds; and the
 [cleanup](#cleaning-up) sweep, every ten minutes.
 

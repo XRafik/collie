@@ -1231,6 +1231,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     got: { readonly verifications: ReadonlyArray<Verification>; readonly final: Snapshot },
   ): string;
 
+  /** Every check this Run's journal holds, latest of each and its baseline, for a reviewer to read. */
+  export function renderRecordedChecks(
+    got: { readonly verifications: ReadonlyArray<Verification>; readonly final: Snapshot },
+  ): string;
+
   /**
    * Everything still missing before this Run may say it proved its kind of result, one
    * sentence each. Empty means the evidence is there. An Output is a claim whatever it

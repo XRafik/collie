@@ -20,7 +20,7 @@ import type { Runner } from "./mr";
 import { runDir } from "./engine";
 import { nowIso } from "./time";
 
-/** How long one merge request's answer stands before GitLab is asked again. */
+/** How long one merge request's answer stands before its forge is asked again. */
 export const MERGE_POLL_MS = 5 * 60_000;
 
 /** What the merge watch last read of each merge request, by label, and when. */
@@ -71,7 +71,7 @@ function stateOf(state: string): MrState {
 
 /**
  * One round: every Task waiting on a merge request whose answer is stale is asked about,
- * a merged one gets its `merged` disposition recorded as GitLab's word, and what was
+ * a merged one gets its `merged` disposition recorded as its forge's word, and what was
  * learned is written where `collie --json board` reads it. `checked` and `states` are the
  * caller's memory between rounds; the file is everyone else's.
  */
