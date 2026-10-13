@@ -394,14 +394,35 @@ test(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const bin = yield* fs.makeTempDirectoryScoped({ prefix: "collie-bin-" });
+        const checkout = join(bin, "project");
+        yield* fs.makeDirectory(checkout);
+        yield* exec(["git", "init", "-q"], { cwd: checkout });
+        yield* exec(
+          [
+            "git",
+            "-c",
+            "user.email=t@example.test",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+          ],
+          { cwd: checkout },
+        );
+        yield* exec(["git", "remote", "add", "origin", "git@gitlab.example.com:group/app.git"], {
+          cwd: checkout,
+        });
         yield* fs.writeFileString(
           join(bin, "glab"),
-          `#!/bin/sh\necho '{"iid": 42, "state": "opened", "title": "t"}'\n`,
+          `#!/bin/sh\necho '[{"iid": 42, "state": "opened", "title": "t"}]'\n`,
           { mode: 0o755 },
         );
         const bare = yield* cli(
           ["--json", "run", "start", "review", "--input", "plan=", "--input", "proves="],
-          { PATH: `${bin}:/usr/bin:/bin` },
+          { PATH: `${bin}:/usr/bin:/bin`, COLLIE_CWD: checkout },
         );
         expect(yield* parseEnvelope(bare.stdout)).toMatchObject({
           ok: false,
@@ -509,6 +530,7 @@ test(
             "-m",
             "first",
           ],
+          ["remote", "add", "upstream", "git@gitlab.example.com:group/app.git"],
         ])
           yield* exec(["git", ...args], { cwd: checkout });
         const starts = yield* documentedStarts();
