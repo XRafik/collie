@@ -26,6 +26,8 @@ import {
   type PlanPanel,
   type RunDetail,
   type TaskView,
+  mrWords,
+  readMrRef,
 } from "../board-model";
 import { truncated } from "../views";
 import type { Live } from "../live";
@@ -597,8 +599,9 @@ function MergeRequest(props: { url: string | null; panel: MrPanel | null; review
     if (props.url !== null) return props.url;
     return "no merge request yet — opened by the mr step";
   };
+  const ref = () => (props.url === null ? null : readMrRef(props.url));
   return (
-    <Titled title="merge request">
+    <Titled title={ref() === null ? "merge request" : mrWords(ref()!).noun}>
       <Show when={details() !== null} fallback={<text fg={C.dim}>{instead()}</text>}>
         <MergeRequestDetails mr={details()!} reviewedAt={props.reviewedAt} />
       </Show>
@@ -609,13 +612,14 @@ function MergeRequest(props: { url: string | null; panel: MrPanel | null; review
 function MergeRequestDetails(props: { mr: MrDetails; reviewedAt: number }) {
   const renderer = useRenderer();
   const moved = () => sinceReview(props.mr, props.reviewedAt);
+  const words = () => mrWords(props.mr);
   return (
     <box style={{ flexDirection: "column" }}>
-      <text fg={C.text}>{`!${props.mr.iid} · ${props.mr.title}`}</text>
+      <text fg={C.text}>{`${words().sign}${props.mr.iid} · ${props.mr.title}`}</text>
       <text fg={C.dim}>{`${props.mr.state}${props.mr.author ? ` · ${props.mr.author}` : ""}`}</text>
       <text fg={C.dim}>
         {[
-          props.mr.pipeline ? `pipeline ${props.mr.pipeline}` : "",
+          props.mr.pipeline ? `${words().checks} ${props.mr.pipeline}` : "",
           props.mr.approvals,
           props.mr.unresolved ? "unresolved discussion(s)" : "",
           props.mr.notes > 0 ? `${props.mr.notes} note(s)` : "",

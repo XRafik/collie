@@ -64,6 +64,10 @@ reaches. An **operator** check is one only a person at a terminal can make, read
 evidence file. **None** means the promise is written down and nobody has proved it yet;
 the owner column says who can.
 
+The Diff tab's comment interaction test drives its selection handlers, composer state,
+and saved Run drafts on both sides. Its anchor-helper test proves only the quote and
+location. Live rendering and remote delivery still need their operator observations.
+
 ### Recording an operator result
 
 Some checks cannot be automated — that a restarted Home still draws its conversation, that

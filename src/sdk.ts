@@ -48,7 +48,9 @@ export { SOURCES, SOURCE_NAMES, isSource, type Source } from "./offers";
  * What a review is about its target: which kind of change it names, and the glab
  * arguments that point a command at its project from anywhere.
  */
-export { repoArgs, targetKind } from "./mr";
+export { targetKind } from "./mr";
+export { repoArgs } from "./forge/gitlab";
+export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";
@@ -608,7 +610,8 @@ export interface HostApi {
    * Puts a note on the merge request a Run was pointed at, sent by Collie rather than
    * written out again by an agent — asking for a file to be repeated verbatim is how
    * verbatim stops being true. The refusal is the message: a target that is not a merge
-   * request, no `glab` for that project, or one assigned to whoever is running this.
+   * request, no CLI or login for its forge, or one assigned to whoever is running this.
+   * With `approve`, the merge request is approved too, and the message says whether it was.
    */
   readonly post: (options: {
     readonly runId: string;
@@ -616,6 +619,8 @@ export interface HostApi {
     readonly cwd: string;
     /** The file to send, as the Run wrote it. */
     readonly file: string;
+    /** Approve the merge request too: a review with nothing live left to fix. */
+    readonly approve?: boolean;
   }) => Effect.Effect<Posted>;
 }
 
@@ -647,7 +652,7 @@ export interface MrReady {
   readonly ok: boolean;
   /** The checkout's forge; absent on a host that only supports GitLab. */
   readonly provider?: "gitlab" | "github";
-  /** The GitHub owner/repository, so gh addresses the checkout's origin explicitly. */
+  /** The repository's path on its forge — `owner/repo` or `group/project` — for `--repo`. */
   readonly repository?: string;
   /** Why it cannot be done here. Empty where it can. */
   readonly reason: string;
@@ -657,6 +662,21 @@ export interface MrReady {
   readonly template: string;
   /** The Linear issues this branch answers. */
   readonly issues: ReadonlyArray<string>;
+  /** "GitLab" or "GitHub"; absent where the checkout's forge could not be read. */
+  readonly forge?: string;
+  /** "merge request" or "pull request", as the forge says it. */
+  readonly noun?: string;
+  /** The URL of this branch's open merge request, or empty for none. */
+  readonly existing?: string;
+  /** Whether `existing` merges itself once green, so a push to it is a merge. */
+  readonly autoMerge?: boolean;
+  /** The command lines an agent runs, written by the forge's adapter. */
+  readonly commands?: {
+    /** Opens one, with `<title>` and `<file>` (the description file) left to fill in. */
+    readonly create: string;
+    /** Posts `<file>` as a note on `existing`; empty where there is none. */
+    readonly comment: string;
+  };
 }
 
 /** What became of a note: whether it landed, and the sentence a human reads either way. */

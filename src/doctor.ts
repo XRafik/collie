@@ -11,52 +11,42 @@
 // a pane that is the herdr this plugin will actually talk to, and it need not be on
 // PATH at all.
 
-import { Clock, Effect, FileSystem, Option, Path, Result, Schema } from "effect";
+import { Clock, Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
-import { gitlabHostOf, loadDefaults } from "./config";
+import { loadDefaults } from "./config";
 import { savedModules } from "./discovery";
 import { layers, loadDefinitions, skillDirs, skillInstalled } from "./definitions";
 import type { PluginEnv } from "./env";
 import { HARNESSES } from "./harness";
 import { Herdr } from "./herdr";
-import { shell, whatItSaid, type Ran, type Runner } from "./mr";
+import { shell, type Runner } from "./mr";
 import { manifestField } from "./release";
 import { err } from "./operations";
 import { probeHelle, probeLinearMcp, type Probe } from "./optional";
 import { projectsRoot } from "./projects";
 import { claudeSettingsPath, readStatusLine, STATUS_LINE_ARGS } from "./statusline";
-import { daysLeft, RENEW_WITHIN_DAYS, TokenSelf, tokenPage } from "./gitlab-token";
 import { collieCache, humanBytes } from "./cleanup";
 import { anyRuns, cleanupListing, machineList } from "./lifecycle";
 import { peersOf } from "./peers";
 import { tmpdir } from "node:os";
+import {
+  FETCH_LIMIT,
+  answered,
+  failed,
+  jsonIn,
+  noted,
+  onPath,
+  passed,
+  runnable,
+  warned,
+  type Check,
+  type Outcome,
+} from "./doctor-check";
+import { gitlabChecks } from "./forge/gitlab-checks";
+import { githubChecks } from "./forge/github-checks";
 
-export interface Check {
-  /** How the check is named, in the rendering and in `--json`. */
-  name: string;
-  ok: boolean;
-  /** What was found. */
-  detail: string;
-  /** The command or the one thing to do about it; empty when there is nothing to fix. */
-  fix: string;
-  /** Set up and not working: nothing a Run needs by default, so `ok`, but shown as `!`. */
-  warn?: boolean;
-}
-
-/**
- * What one check found. Every check chooses one of these once, rather than deciding
- * `ok`, `detail` and `fix` in three ternaries over the same condition — where a new
- * state means editing all three in step and a reader has to hold the predicate three
- * times to read one answer.
- */
-type Outcome = Omit<Check, "name">;
-
-const passed = (detail: string): Outcome => ({ ok: true, detail, fix: "" });
-const failed = (detail: string, fix: string): Outcome => ({ ok: false, detail, fix });
-/** Nothing is wrong, but there is still something a reader may want to run. */
-const noted = (detail: string, fix: string): Outcome => ({ ok: true, detail, fix });
-/** Configured and broken, for something no Run needs by default: not a failure, but not a ✓. */
-const warned = (detail: string, fix: string): Outcome => ({ ok: true, detail, fix, warn: true });
+export type { Check } from "./doctor-check";
+export { onPath } from "./doctor-check";
 
 /** An optional integration, as doctor reports it: absent is a note, broken is a warning. */
 const optional = (probe: Probe): Outcome =>
@@ -76,26 +66,6 @@ const isString = Schema.is(Schema.String);
 const located = Effect.fn("Doctor.located")(function* (search: string, bin: string) {
   if (!bin.includes("/")) return yield* onPath(search, bin);
   return (yield* runnable(bin)) ? bin : null;
-});
-
-/**
- * The first directory on PATH holding `name` as something this machine can run, or
- * null. The executable bit is the question, not the file: a shim or a harness that
- * is there but not executable fails with permission denied at the point of use,
- * which is exactly the confusion `doctor` exists to end.
- */
-export const onPath = Effect.fn("Doctor.onPath")(function* (search: string, name: string) {
-  const path = yield* Path.Path;
-  for (const dir of search.split(":").filter((d) => d !== "")) {
-    if (yield* runnable(path.join(dir, name))) return dir;
-  }
-  return null;
-});
-
-const runnable = Effect.fn("Doctor.runnable")(function* (file: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const info = yield* Effect.result(fs.stat(file));
-  return Result.isSuccess(info) && (info.success.mode & 0o111) !== 0;
 });
 
 /**
@@ -149,7 +119,6 @@ const asked = Effect.fn("Doctor.asked")(function* (env: PluginEnv) {
  * The settings ride along as arguments rather than as this process's environment,
  * because that environment is inherited by every agent Collie starts.
  */
-const FETCH_LIMIT = "20 seconds";
 const FETCH = [
   "GIT_TERMINAL_PROMPT=0",
   "GIT_ASKPASS=",
@@ -164,16 +133,6 @@ const FETCH = [
 
 const fetchRemote = (root: string, run: Runner<ChildProcessSpawner.ChildProcessSpawner>) =>
   Effect.timeoutOption(run("env", FETCH, root), FETCH_LIMIT);
-
-/**
- * A command that answers or is taken to have said nothing. An install ends by running
- * `doctor`, so nothing it asks over a network may wait on an unreachable host for as
- * long as it likes.
- */
-const answered = (command: Effect.Effect<Ran, never, ChildProcessSpawner.ChildProcessSpawner>) =>
-  Effect.timeoutOption(command, FETCH_LIMIT).pipe(
-    Effect.map(Option.getOrElse((): Ran => ({ code: 124, stdout: "", stderr: "timed out" }))),
-  );
 
 /**
  * How many commits this installation's checkout is behind its upstream, or null when
@@ -299,80 +258,6 @@ const projects = Effect.fn("Doctor.projects")(function* (env: PluginEnv) {
 });
 
 const ClaudeStatus = Schema.fromJsonString(Schema.Struct({ loggedIn: Schema.Boolean }));
-
-/**
- * Each host `glab auth status` names (its unindented lines), and whether git reaches it
- * over HTTPS. Read whatever the exit code: one host with a bad token fails the command
- * for all of them.
- */
-export const glabHosts = (status: string) =>
-  status
-    .split("\n")
-    .filter((line) => /^[a-z0-9.-]+(:\d+)?$/i.test(line))
-    .map((host) => ({
-      host,
-      https: status.includes(`Git operations for ${host} configured to use https protocol`),
-    }));
-
-/** The JSON object in a command's output, from the line it starts on, so a preamble is skipped. */
-const jsonIn = (text: string) => {
-  const lines = text.split("\n");
-  const from = lines.findIndex((line) => line.trimStart().startsWith("{"));
-  const json = from === -1 ? "" : lines.slice(from).join("\n");
-  return json.slice(0, json.lastIndexOf("}") + 1);
-};
-
-const tokenExpiry = Effect.fn("Doctor.tokenExpiry")(function* (
-  host: string,
-  root: string,
-  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
-) {
-  const renew = `make a token at ${tokenPage(host)}, then glab auth login --hostname ${host} --stdin`;
-  const answer = yield* answered(
-    run("glab", ["api", "--hostname", host, "personal_access_tokens/self"], root),
-  );
-  const token = Schema.decodeUnknownOption(TokenSelf)(jsonIn(answer.stdout));
-  if (answer.code !== 0 || Option.isNone(token)) {
-    return warned(`${host} would not say when its token expires`, renew);
-  }
-  const expires = token.value.expires_at;
-  if (expires === null) return passed(`${host}: the token never expires`);
-  const days = daysLeft(expires, yield* Clock.currentTimeMillis);
-  if (days < 0) return failed(`${host}: the token expired on ${expires}`, renew);
-  if (days < RENEW_WITHIN_DAYS) return warned(`${host}: the token expires on ${expires}`, renew);
-  return passed(`${host}: the token expires on ${expires}`);
-});
-
-/** An agent sshd forwarded into this session, which goes when the computer it came from sleeps. */
-const FORWARDED_AGENT = /^\/tmp\/ssh-[^/]+\/agent\.\d+$/;
-
-/** Whether this Machine's own keys reach `host` over SSH, or glab's token over HTTPS. */
-export const pushCheck = Effect.fn("Doctor.pushCheck")(function* (
-  host: { host: string; https: boolean },
-  env: PluginEnv,
-  ssh: boolean,
-  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
-) {
-  if (host.https) return passed(`pushes to ${host.host} over HTTPS with glab's token`);
-  if (!ssh) return failed("no ssh on PATH", "install the OpenSSH client");
-  const forwarded = FORWARDED_AGENT.test(env.raw["SSH_AUTH_SOCK"] ?? "");
-  const args = ["-oBatchMode=yes", "-oConnectTimeout=5", "-T"];
-  if (forwarded) args.push("-oIdentityAgent=none");
-  const answer = yield* answered(run("ssh", [...args, `git@${host.host}`], env.pluginRoot));
-  if (answer.code === 0) return passed(`pushes to ${host.host} with this Machine's own key`);
-  if (answer.code === 124)
-    return failed(`${host.host} did not answer within ${FETCH_LIMIT}`, `ssh -T git@${host.host}`);
-  if (whatItSaid(answer).includes("Host key verification failed")) {
-    return failed(
-      `${host.host}'s host key is not known here`,
-      `ssh-keyscan ${host.host} >> ~/.ssh/known_hosts`,
-    );
-  }
-  return failed(
-    `cannot push to ${host.host}${forwarded ? " without the forwarded SSH agent" : ""}`,
-    `[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519; GITLAB_HOST=${host.host} glab ssh-key add ~/.ssh/id_ed25519.pub --title "$(hostname)"`,
-  );
-});
 
 /**
  * Every check, in one pass, whatever the state of the machine: a prerequisite that
@@ -548,18 +433,6 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
         : noted(`${behind} commit${behind === 1 ? "" : "s"} behind its remote`, "collie upgrade")),
   });
 
-  const glabDir = yield* onPath(search, "glab");
-  const host = yield* gitlabHostOf(env);
-  // The whole status only names the other hosts: one with a bad token fails it for all.
-  const [auth, everyHost] = glabDir
-    ? yield* Effect.all(
-        [
-          answered(run("glab", ["auth", "status", "--hostname", host], root)),
-          answered(run("glab", ["auth", "status"], root)),
-        ],
-        { concurrency: "unbounded" },
-      )
-    : [null, null];
   checks.push({ name: "workflows", ...(yield* overrides(env)) });
   checks.push({ name: "personas", ...(yield* personas(env)) });
   checks.push({ name: "projects root", ...(yield* projects(env)) });
@@ -584,48 +457,8 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
   }
   checks.push({ name: "disk", ...(yield* diskSpace(env, run)) });
 
-  checks.push({
-    name: "glab",
-    ...(!glabDir
-      ? failed(
-          "not installed; the workflows that open or review a merge request will not work",
-          "install glab — https://gitlab.com/gitlab-org/cli",
-        )
-      : auth?.code === 0
-        ? passed(`logged in to ${host}`)
-        : auth?.code === 124
-          ? failed(
-              `installed, but did not answer within ${FETCH_LIMIT}`,
-              `glab auth status --hostname ${host}`,
-            )
-          : failed(
-              `installed, but not logged in to ${host}`,
-              `glab auth login --hostname ${host}`,
-            )),
-  });
-
-  // A host glab has never heard of is the `glab` check's failure, not two more.
-  const known = auth ? glabHosts(whatItSaid(auth)).find((one) => one.host === host) : undefined;
-  if (known !== undefined || auth?.code === 0) {
-    const ssh = (yield* onPath(search, "ssh")) !== null;
-    checks.push({ name: "gitlab token", ...(yield* tokenExpiry(host, root, run)) });
-    checks.push({
-      name: "git push",
-      ...(yield* pushCheck(known ?? { host, https: false }, env, ssh, run)),
-    });
-  }
-  const others = everyHost
-    ? glabHosts(whatItSaid(everyHost)).filter((one) => one.host !== host)
-    : [];
-  if (others.length > 0) {
-    checks.push({
-      name: "other gitlabs",
-      ...noted(
-        `${others.map((one) => one.host).join(", ")}: glab knows ${others.length === 1 ? "it" : "them"}, and only ${host} is checked`,
-        "",
-      ),
-    });
-  }
+  checks.push(...(yield* gitlabChecks(env, search, run)));
+  checks.push(...(yield* githubChecks(env, search, run)));
 
   // Optional, and only where work could reach for them: Helle for a module that waits
   // on it, Linear for an agent Claude Code runs. Absent is a note; set up and broken is

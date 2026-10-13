@@ -192,9 +192,27 @@ test("a credential in a claim does not reach the card", () => {
 });
 
 test("inspect entries are suggestions, and nothing here runs them", () => {
-  const entries = inspectFor({ worktree: "/repo/wt", base: "abc", mr: "!42" });
+  const entries = inspectFor({
+    worktree: "/repo/wt",
+    base: "abc",
+    mr: "https://gitlab.example.com/group/app/-/merge_requests/42",
+  });
   expect(entries.map((entry) => entry.what)).toEqual(["what changed", "the merge request"]);
   expect(entries[0]?.how).toBe("git -C /repo/wt diff abc..HEAD");
+  expect(entries[1]?.how).toBe("glab mr view 42 --repo gitlab.example.com/group/app --comments");
+  // A pull request is read with gh, never told to run glab.
+  const pull = inspectFor({
+    worktree: null,
+    base: "abc",
+    mr: "https://github.com/cego/collie/pull/30",
+  });
+  expect(pull).toEqual([
+    {
+      what: "the pull request",
+      how: "gh pr view 30 --repo cego/collie --comments",
+      note: "what the reviewers will read",
+    },
+  ]);
   expect(inspectFor({ worktree: null, base: "abc", mr: null })).toEqual([]);
 });
 

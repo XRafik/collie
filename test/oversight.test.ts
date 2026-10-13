@@ -14,6 +14,7 @@ import { foundationLayer, loadEntry, runDir, type Herd } from "../src/engine";
 import {
   Oversight,
   checkDrift,
+  ruleFacts,
   standForElection,
   writeCard,
   type Correcting,
@@ -422,6 +423,19 @@ const recipient = (sent: string[]): Correcting => ({
   agent: { agent: "r1-build", harness: "claude", terminalId: "term-1" },
   send: (correction) => Effect.sync(() => sent.push(correction.text)).pipe(Effect.as(true)),
 });
+
+test.each([
+  ["merge request", "https://gitlab.example.com/acme/app/-/merge_requests/42", "acme/app", "42"],
+  ["pull request", "https://github.com/acme/app/pull/30", "acme/app", "30"],
+])("a Run's %s is the drift rules' target", (_, url, project, iid) =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* repository();
+      const facts = yield* ruleFacts({ ...watchedAt("r1"), mr: url });
+      expect(facts.mrTarget).toEqual({ project, iid });
+    }),
+  ),
+);
 
 test("drift the Intent lets Collie correct goes to the agent, and is submitted, never verified", () =>
   runEffect(

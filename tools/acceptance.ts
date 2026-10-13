@@ -81,12 +81,38 @@ const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
 const MACHINES = "machines reach each other (this MR)";
+const FORGES = "GitHub and GitLab, equally well (this MR)";
+const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
+  {
+    id: "front-door/the-diff-tab-takes-a-comment-on-either-side",
+    statement: "The Diff tab takes a comment on a line range on either side.",
+    owner: REVIEW_COMMENTS,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "desktop/test/diff-comments.test.ts",
+      name: "the Diff tab takes a comment on a line range on either side",
+    },
+  },
+  {
+    id: "front-door/review-comments-reach-the-chosen-agent-word-for-word",
+    statement: "Review comments reach the chosen agent word for word as one delivery.",
+    owner: REVIEW_COMMENTS,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-deliver.test.ts",
+      name: "review comments reach the chosen agent word for word as one delivery, at any length",
+    },
+  },
   {
     id: "front-door/a-file-too-large-for-a-message-is-refused",
     statement:
@@ -383,6 +409,58 @@ const FRONT_DOOR: readonly Check[] = [
       layer: "ui",
       file: "test/board.test.ts",
       name: "a Run whose work shipped by hand says so, without its status being edited",
+    },
+  },
+  {
+    id: "front-door/a-pull-requests-card-names-it-as-github-does-and-opens-it",
+    statement:
+      "A card's sentence names a GitHub pull request as pull request cego/collie#30 and its checks, and a GitLab merge request with its own noun and pipeline.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/board.test.ts",
+      name: "a (gitlab|github) card names its merge request as its forge does",
+    },
+  },
+  {
+    id: "front-door/a-pull-request-card-opens-and-disposes-of-its-own-reference",
+    statement:
+      "A card offers Open pull request for a GitHub pull request and records collie#30 when disposed of, as a GitLab card records its merge request reference.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/board-model.test.ts",
+      name: "a card offers to open .* and disposing of it records",
+    },
+  },
+  {
+    id: "front-door/desktop-names-a-pull-request-and-its-checks",
+    statement:
+      "Desktop's link card names a pull request #30, shows its checks, and names its record tab Pull request; a GitLab card keeps its own wording.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "desktop/test/links.test.ts",
+      name: "(a pull request's card is titled|a pull request's checks are|a Run's record calls its tab)",
+    },
+  },
+  {
+    id: "front-door/a-pull-request-url-from-the-home-is-placed-in-its-checkout",
+    statement:
+      "From the Home, a pull request URL typed as a review target starts in the checkout whose remote is that repository, with mr:github.com/<owner>/<repo>#<n> as its target, as a merge request URL does.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/launch.test.ts",
+      name: "a pull request URL is placed in the checkout whose remote it names",
     },
   },
 ];
@@ -706,151 +784,171 @@ const BACKEND: readonly Check[] = [
     },
   },
   {
-    id: "ui/desktop-reaches-a-paired-machine-without-ssh",
+    id: "backend/a-merge-request-reference-is-read-in-one-place",
     statement:
-      "Desktop reaches a paired Machine, upgrades it and gives it credentials without SSH.",
-    owner: MACHINES,
-    needs: "ui",
-    proof: {
-      kind: "test",
-      layer: "ui",
-      file: "test/desktop-peers.test.ts",
-      name: "Desktop reads a paired board and runs commands and credentials over its link, with SSH used only on demand",
-    },
-  },
-  {
-    id: "machines/desktop-opens-the-link-before-ssh",
-    statement:
-      "Desktop reopened on the laptop shows vm-mk live without SSO; Go to pane opens one SSH master on first use.",
-    owner: MACHINES,
-    needs: "operator",
-    proof: {
-      kind: "operator",
-      how: "Quit and reopen Desktop on mk's laptop, record vm-mk live through Paired link without SSO, then Go to pane twice and record one approval per Desktop session. Record the revision.",
-    },
-  },
-  {
-    id: "backend/a-command-reaches-the-machine-that-has-its-run",
-    statement:
-      "A command about a Run reaches the Machine that has it, recorded as its front door from this Machine.",
-    owner: MACHINES,
+      "A GitHub pull request URL or target reads as a merge request, and writes back its target, label, short label, URL, noun and checks word, as a GitLab one does.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/peers.test.ts",
-      name: "a command about a Run on a Machine herdr lists pairs the two by itself and reaches the Run, recorded as its front door from this Machine",
+      file: "test/board-model.test.ts",
+      name: "a GitHub (target|URL) reads as one merge request and writes back",
     },
   },
   {
-    id: "backend/remote-run-records-and-intent-use-the-owning-host",
+    id: "backend/one-forge-contract-holds-for-gitlab-and-github",
     statement:
-      "Run records, Intent changes, remembered checks, override clearing and verification reach the owning Machine from a caller with no Runs.",
-    owner: MACHINES,
+      "The GitLab and GitHub adapters answer the same contract against a fake of each forge: readiness, login, a merge request's state and checks, a note, and how far a merge is deployed.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/remote-cli.test.ts",
-      name: "every Run record and Intent mutation reaches its owning Machine from an empty caller",
+      file: "test/forge.test.ts",
+      name: "the (gitlab|github) forge",
     },
   },
   {
-    id: "backend/a-remote-check-log-streams-live",
-    statement:
-      "A remote check's CLI follow prints its output while the owning host's check is still running.",
-    owner: MACHINES,
+    id: "backend/a-pull-requests-merge-is-learned-and-its-details-shown",
+    statement: "A pull request's merge is learned and its details shown as a merge request's are.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/remote-cli.test.ts",
-      name: "a remote check's CLI follow prints output while the owning host's marker is still present",
+      file: "test/merges.test.ts",
+      name: "(a merged GitHub pull request lands its card|a pull request's panel is read for the drawer)",
     },
   },
   {
-    id: "backend/an-undialable-machine-is-reached-by-dial-back",
+    id: "backend/a-checkouts-forge-is-its-origins",
     statement:
-      "A Machine that cannot be dialled is reached by dial-back, and one that is away is refused within five seconds.",
-    owner: MACHINES,
+      "A checkout's forge is its origin's host, else its upstream's: a GitHub origin beside a gitlab remote is GitHub, and a host on neither forge has none.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/peers.test.ts",
-      name: "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
+      file: "test/mr.test.ts",
+      name: "(a host's forge is|a checkout's forge is)",
     },
   },
   {
-    id: "backend/paired-machines-share-settings-without-desktop",
-    statement: "Paired Machines keep each other's settings level without Desktop.",
-    owner: MACHINES,
+    id: "backend/implement-delivers-on-the-checkouts-own-forge",
+    statement:
+      "implement opens or updates the merge request on the checkout's own forge, assigned to that forge's login, and does not push to one that merges itself once green.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/peer-settings.test.ts",
-      name: "paired hosts share the latest settings without Desktop, keep edit times and leave gitlab_host local",
+      file: "test/baseline.test.ts",
+      name: "implement (opens a|updates a|does not push to a) .*(gitlab|github)",
     },
   },
   {
-    id: "backend/paired-machines-level-their-releases",
-    statement: "Paired Machines keep each other's release level without Desktop.",
-    owner: MACHINES,
+    id: "backend/a-pull-request-is-reviewed-and-a-clean-post-approves-it",
+    statement:
+      "A pull request is reviewed by URL or ref with gh's own commands, and Post posts the note and approves a clean one, as a merge request's does with glab.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/peer-settings.test.ts",
-      name: "the newer paired release upgrades the older one, replaces its host and restores the link",
+      file: "test/baseline.test.ts",
+      name: "(a review of a|posting a review of a) (gitlab|github)",
     },
   },
   {
-    id: "backend/agents-on-different-machines-message-each-other",
+    id: "backend/the-doctor-checks-gh-where-a-checkout-is-on-github",
     statement:
-      "Two Runs' agents on different Machines message each other, and each message names its sender.",
-    owner: MACHINES,
+      "The doctor checks gh where a checkout under the Projects root is on GitHub, fails with the command that fixes it, and asks a Machine with no GitHub checkout nothing about gh.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/agent-origin.test.ts",
-      name: "two paired hosts carry an agent conversation and resolve Native chat reads by Run",
+      file: "test/doctor.test.ts",
+      name: "(GitHub checkout|gh logged out|gh that did not answer)",
     },
   },
   {
-    id: "backend/a-remote-run-reports-and-closes",
+    id: "backend/a-merged-pull-request-is-followed-to-stage-and-production",
     statement:
-      "A Run an agent starts on another Machine reports back to it and closes once it has.",
-    owner: MACHINES,
+      "A merged pull request is followed to stage and production through GitHub's deployments, as a merge request is through GitLab's, and a pipeline: reference to an Actions run says how it went.",
+    owner: FORGES,
     needs: "backend",
     proof: {
       kind: "test",
       layer: "backend",
-      file: "test/reports.test.ts",
-      name: "a Run started by an agent on another Machine reports back and closes",
+      file: "test/merges.test.ts",
+      name: "a merged pull request is followed to stage",
     },
   },
   {
-    id: "machines/a-vm-investigation-reports-from-the-laptop",
+    id: "backend/a-roaming-run-starts-from-a-github-repository-url",
     statement:
-      "A VM implementer asks the laptop to investigate Desktop on its branch, receives the findings and sees the laptop workspace close.",
-    owner: MACHINES,
-    needs: "operator",
+      "A roaming Run starts from a GitHub repository URL, cloned with gh, as from a GitLab one cloned with glab's token; a URL on neither forge is refused.",
+    owner: FORGES,
+    needs: "backend",
     proof: {
-      kind: "operator",
-      how: "Start investigate on mk-laptop from the VM's live implement agent, reproduce a Machines page state, and record the findings Delivery, automatic workspace close and revision.",
+      kind: "test",
+      layer: "backend",
+      file: "test/worktree.test.ts",
+      name: "a roaming Run's repository is cloned through its URL's forge",
     },
   },
   {
-    id: "machines/an-implementer-asks-a-remote-planner",
+    id: "backend/renovate-works-a-github-repository-with-its-github-content",
     statement:
-      "A live Claude implementer on the laptop asks a VM planner a question and gets the answer.",
-    owner: MACHINES,
-    needs: "operator",
+      "renovate works a GitHub repository with its GitHub content and a GitLab one with its GitLab content, the same steps and the same Linear tracking in both, and refuses a checkout on neither forge.",
+    owner: FORGES,
+    needs: "backend",
     proof: {
-      kind: "operator",
-      how: "Ask the laptop implementer to message the VM planner using collie_do; record both sender lines, the reply and the revision.",
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "renovate on a (gitlab|github) checkout is given that forge's content",
+    },
+  },
+  {
+    id: "backend/glab-and-gh-are-run-only-by-their-adapters",
+    statement:
+      "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/forge-boundary.test.ts",
+      name: "glab and gh are run only by their adapters",
+    },
+  },
+  {
+    id: "backend/a-message-over-the-delivery-cap-arrives-whole",
+    statement:
+      "A message over the delivery cap arrives whole, as a file in the Run, whichever door sent it.",
+    owner: REVIEW_COMMENTS,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/attachments.test.ts",
+      name: "a message over the delivery cap is kept whole in the Run, and the agent is told where",
+    },
+  },
+  {
+    id: "backend/a-rewritten-plan-reaches-the-records-details",
+    statement:
+      "A rewritten ticket, and a finished Run's rewritten plan, reach the record's details.",
+    owner: REVIEW_COMMENTS,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/run-detail.test.ts",
+      name: "a rewritten ticket, and a finished Run's rewritten plan, reach the record's details",
     },
   },
 ];
@@ -1030,6 +1128,17 @@ const WORKFLOWS: readonly Check[] = [
 
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
+  {
+    id: "desktop/review-comments-reach-a-remote-runs-agent-and-its-rewrite-shows",
+    statement:
+      "On a remote Machine, review comments on a plan and on a diff reach the Run's agent whole, and the Plan tab shows the agent's rewrite without a ticket being closed.",
+    owner: REVIEW_COMMENTS,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In Desktop with a remote Machine reached: on a plan Run waiting at its menu, comment on `SPEC.md` and on an expanded ticket with more than 8 KiB in all, then Send; record that the planner's pane names the attached file, that the file holds the comments as written, and that the Plan tab shows the rewritten plan, the expanded ticket included, without closing it. On an implement Run's Diff tab, comment on an added line and on a removed line, then Send, and record the same. Record the revision.",
+    },
+  },
   {
     id: "chat/an-ad-hoc-request-starts-general",
     statement: "An ad-hoc request in chat starts `general`, not `implement` or `plan`.",
@@ -1346,6 +1455,198 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On a Mac with bodil installed and BODIL_REMOTE_VM set, save the module from docs/sdk.md as `~/.collie/user/workflows/bodil.workflow.ts` and record that `collie workflow show bodil` lists plan, brands and name. Run `collie run start bodil --input plan=<a small plan> --input brands=happytiger --input name=collie-try`; record that `bodil ls` shows collie-try, that the implementer's pane works in `~/work/gitte/worktrees/collie-try/monorepo` on `dabo/collie-try`, and the merge request's source branch. When the Run finishes, record that `bodil ls` no longer lists collie-try and the worktree is still there. Record the revision.",
+    },
+  },
+  {
+    id: "operator/implement-on-cego-collie-opens-a-pull-request",
+    statement:
+      "implement on cego/collie opens a pull request assigned to madskronborg, on a branch named madskronborg/<task>.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk, start implement on a small change in a cego/collie checkout with no GITHUB_ACTOR set. Record the branch it names, the pull request it opens on GitHub and its assignee, and that the card says pull request. Repeat the start on mk-laptop with no GITLAB_USER_LOGIN and record that it names its branch. Record the revision.",
+    },
+  },
+  {
+    id: "operator/a-review-posted-to-a-pull-request-approves-a-clean-one",
+    statement:
+      "A review of a colleague's cego/collie pull request posts as one GitHub review, which approves it where the review was clean.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Run `collie run start review --input target=https://github.com/cego/collie/pull/<n>` on a colleague's open pull request, and choose Post to pull request. Record the review GitHub shows, whether it approves, and the Run's last line. Repeat on a gitlab.cego.dk merge request and record its note. Record the revision.",
+    },
+  },
+  {
+    id: "operator/renovate-renovates-on-both-forges",
+    statement:
+      "renovate on a gitlab.cego.dk project still renovates as before, and on a GitHub repository with open Renovate pull requests it reaches its batch pull request with gh alone.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Run `collie run start renovate --input repository=https://gitlab.cego.dk/<a project>` and record that it renovates as before. Where a GitHub repository with open Renovate pull requests is at hand, start renovate on it and record the batch pull request it opens and that no glab call appears in its agent's pane. Record the revision.",
+    },
+  },
+  {
+    id: "operator/a-pull-request-url-starts-a-review-in-its-checkout",
+    statement:
+      "On a Machine with a cego/collie checkout under the Projects root, a review started from the Home with a cego/collie pull request URL starts in that checkout.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "From the Home, start review and type `https://github.com/cego/collie/pull/<n>` as its target. Record the checkout it says it starts in and the Run's target from `collie run show`, which reads `mr:github.com/cego/collie#<n>`. Record the revision.",
+    },
+  },
+  {
+    id: "ui/desktop-reaches-a-paired-machine-without-ssh",
+    statement:
+      "Desktop reaches a paired Machine, upgrades it and gives it credentials without SSH.",
+    owner: MACHINES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-peers.test.ts",
+      name: "Desktop reads a paired board and runs commands and credentials over its link, with SSH used only on demand",
+    },
+  },
+  {
+    id: "machines/desktop-opens-the-link-before-ssh",
+    statement:
+      "Desktop reopened on the laptop shows vm-mk live without SSO; Go to pane opens one SSH master on first use.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Quit and reopen Desktop on mk's laptop, record vm-mk live through Paired link without SSO, then Go to pane twice and record one approval per Desktop session. Record the revision.",
+    },
+  },
+  {
+    id: "backend/a-command-reaches-the-machine-that-has-its-run",
+    statement:
+      "A command about a Run reaches the Machine that has it, recorded as its front door from this Machine.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peers.test.ts",
+      name: "a command about a Run on a Machine herdr lists pairs the two by itself and reaches the Run, recorded as its front door from this Machine",
+    },
+  },
+  {
+    id: "backend/remote-run-records-and-intent-use-the-owning-host",
+    statement:
+      "Run records, Intent changes, remembered checks, override clearing and verification reach the owning Machine from a caller with no Runs.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/remote-cli.test.ts",
+      name: "every Run record and Intent mutation reaches its owning Machine from an empty caller",
+    },
+  },
+  {
+    id: "backend/a-remote-check-log-streams-live",
+    statement:
+      "A remote check's CLI follow prints its output while the owning host's check is still running.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/remote-cli.test.ts",
+      name: "a remote check's CLI follow prints output while the owning host's marker is still present",
+    },
+  },
+  {
+    id: "backend/an-undialable-machine-is-reached-by-dial-back",
+    statement:
+      "A Machine that cannot be dialled is reached by dial-back, and one that is away is refused within five seconds.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peers.test.ts",
+      name: "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
+    },
+  },
+  {
+    id: "backend/paired-machines-share-settings-without-desktop",
+    statement: "Paired Machines keep each other's settings level without Desktop.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peer-settings.test.ts",
+      name: "paired hosts share the latest settings without Desktop, keep edit times and leave gitlab_host local",
+    },
+  },
+  {
+    id: "backend/paired-machines-level-their-releases",
+    statement: "Paired Machines keep each other's release level without Desktop.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peer-settings.test.ts",
+      name: "the newer paired release upgrades the older one, replaces its host and restores the link",
+    },
+  },
+  {
+    id: "backend/agents-on-different-machines-message-each-other",
+    statement:
+      "Two Runs' agents on different Machines message each other, and each message names its sender.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/agent-origin.test.ts",
+      name: "two paired hosts carry an agent conversation and resolve Native chat reads by Run",
+    },
+  },
+  {
+    id: "backend/a-remote-run-reports-and-closes",
+    statement:
+      "A Run an agent starts on another Machine reports back to it and closes once it has.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/reports.test.ts",
+      name: "a Run started by an agent on another Machine reports back and closes",
+    },
+  },
+  {
+    id: "machines/a-vm-investigation-reports-from-the-laptop",
+    statement:
+      "A VM implementer asks the laptop to investigate Desktop on its branch, receives the findings and sees the laptop workspace close.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Start investigate on mk-laptop from the VM's live implement agent, reproduce a Machines page state, and record the findings Delivery, automatic workspace close and revision.",
+    },
+  },
+  {
+    id: "machines/an-implementer-asks-a-remote-planner",
+    statement:
+      "A live Claude implementer on the laptop asks a VM planner a question and gets the answer.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Ask the laptop implementer to message the VM planner using collie_do; record both sender lines, the reply and the revision.",
     },
   },
   {

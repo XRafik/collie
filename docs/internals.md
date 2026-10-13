@@ -587,6 +587,27 @@ is the binary when bun runs it from `/$bunfs/`), so a `bin/collie` started from 
 directory still finds its workflows and the host it starts. Only `bun src/main.ts` in development
 falls all the way through to the current directory.
 
+## The forge boundary
+
+Collie reaches GitLab and GitHub through one interface, `Forge` in `src/forge/forge.ts`,
+with an adapter per forge: `src/forge/gitlab.ts` runs `glab`, and `src/forge/github.ts`
+runs `gh` ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1). Each forge's doctor
+checks sit beside its adapter, in `src/forge/gitlab-checks.ts` and
+`src/forge/github-checks.ts`, and a workflow's content file for one forge
+(`<name>.gitlab.md`, `<name>.github.md`) may name that forge's CLI. A caller asks the
+forge of the merge request in front of it (`forgeOf(ref)`, from the reference's host), and
+gets answers rather than CLI calls: whether the CLI is ready for a host, who it is logged
+in as, one merge request as the panel, how far a merged commit is deployed, and a note.
+An operation is added to the interface when its first caller moves onto it.
+
+An adapter runs its commands through a `Runner` (`src/mr.ts`), the same seam the tests
+fake. `test/support/forge.ts` is a fake of each forge built on one model of a forge, with
+two faces: a Runner answering the argv its adapter uses, and a `FakeBin` executable on
+PATH answering from the same model for host-driven tests. `test/forge.test.ts` runs one
+contract against both. `test/forge-boundary.test.ts` fails on a `glab` or `gh` invocation
+in `src/` or `workflows/` outside its adapter, and on workflow content that names either; its
+allowlist names each file that still does, with the ticket that moves it.
+
 ## Definitions and layers
 
 `discovery.ts` owns where a workflow module is found: project `.collie/workflows/`, then the

@@ -615,3 +615,39 @@ test("a Linear login onboarding left unfinished keeps the row short, though doct
       expect(row("done").ready).toBe(true);
     }),
   ));
+
+test("a failing gh check is a failed step with its fix, as a failing glab check is", () =>
+  run(
+    Effect.gen(function* () {
+      const checks = [
+        {
+          name: "glab",
+          ok: false,
+          detail: "installed, but not logged in to gitlab.example.com",
+          fix: "glab auth login --hostname gitlab.example.com",
+        },
+        {
+          name: "gh",
+          ok: false,
+          detail: "installed, but not logged in to github.com (used by 1 checkout)",
+          fix: "gh auth login --hostname github.com",
+        },
+      ];
+      const envelope = {
+        ok: false,
+        error: { code: "operation_failed", message: "", details: { checks } },
+      };
+      const route = {
+        collie: () => Effect.succeed({ out: JSON.stringify(envelope), err: "", code: 1 }),
+      };
+      expect(Option.getOrThrow(yield* doctorOn(route)).steps).toEqual(
+        checks.map(({ name, detail, fix }) => ({
+          step: name,
+          title: name,
+          status: "failed",
+          detail,
+          command: fix,
+        })),
+      );
+    }),
+  ));

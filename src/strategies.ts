@@ -5,8 +5,10 @@
 // fan-out, the previous review, the repository a roaming Run is cut from — finds the
 // field here rather than looking up a name the shipped workflows happen to use.
 //
-// Nothing is imported: this is read from definitions, records, launches and labels alike,
-// and a dependency in either direction would put a cycle between two of them.
+// Nothing else is imported: this is read from definitions, records, launches and labels
+// alike, and a dependency in either direction would put a cycle between two of them.
+
+import { parseMrTarget } from "./board-model";
 
 /** The name of one of `INPUT_STRATEGIES`; `definitions.ts` is where they are listed. */
 export type InputStrategy = string;
@@ -45,10 +47,10 @@ export type TargetKind = "mr" | "branch" | "worktree";
 /**
  * A diff target's kind is its value's shape; both the picker and a resume read it back.
  * Empty for any other shape, which is a target nobody normalised, never the working tree.
- * The one definition: an `mr:` is one `parseMrTarget` reads, so `mr:group/app` is none.
+ * An `mr:` is one `parseMrTarget` reads, on either forge, so `mr:group/app` is none.
  */
 export function targetKind(value: string): TargetKind | "" {
-  if (/^mr:(?:.*!)?\d+$/.test(value)) return "mr";
+  if (parseMrTarget(value) !== null) return "mr";
   if (value.startsWith("branch:")) return "branch";
   return value.trim() === "worktree" ? "worktree" : "";
 }
@@ -94,8 +96,16 @@ export const workSourceOf = (where: Settled) =>
 /** The change this Run is reviewing, and null for a workflow that reviews nothing. */
 export const diffTargetOf = (where: Settled) => settledBy(where, "diff-target");
 
+/** `repository`'s old name, which a module may still hint and a recorded Run still carry. */
+const OLD_NAMES = new Map<InputStrategy, InputStrategy>([["gitlab-repository", "repository"]]);
+
+/** A strategy under its current name. */
+export const strategyNamed = (strategy: InputStrategy): InputStrategy =>
+  OLD_NAMES.get(strategy) ?? strategy;
+
 /** The repository a roaming Run is cut from, and null for the one it was started in. */
-export const gitlabRepositoryOf = (where: Settled) => settledBy(where, "gitlab-repository");
+export const repositoryOf = (where: Settled) =>
+  settledBy(where, "repository") ?? settledBy(where, "gitlab-repository");
 
 /**
  * Strategies only one field may carry, and the launch Input is the one field that carries
@@ -106,15 +116,20 @@ export const EXCLUSIVE_STRATEGIES: ReadonlyArray<InputStrategy> = [
   "goal",
   "work-source",
   "diff-target",
-  "gitlab-repository",
+  "repository",
 ];
+
+/** Hints under their current names, so an old name is held to what its new one is. */
+const named = (hints: Readonly<Record<string, InputStrategy>>) =>
+  Object.fromEntries(Object.entries(hints).map(([name, hint]) => [name, strategyNamed(hint)]));
 
 /** Why these inputs do not name exactly one launch Input, or null where they do. */
 export function launchInputProblem(
   fields: ReadonlyArray<string>,
-  hints: Readonly<Record<string, InputStrategy>>,
+  given: Readonly<Record<string, InputStrategy>>,
 ): string | null {
   if (fields.length === 0) return null;
+  const hints = named(given);
   const launch = Object.keys(hints)
     .filter((name) => EXCLUSIVE_STRATEGIES.includes(hints[name] ?? ""))
     .sort();
@@ -133,8 +148,9 @@ export function launchInputProblem(
 
 /** Every exclusive strategy two fields both claim, one sentence each. */
 export function exclusiveClashes(
-  inputs: Readonly<Record<string, InputStrategy>>,
+  given: Readonly<Record<string, InputStrategy>>,
 ): ReadonlyArray<string> {
+  const inputs = named(given);
   return EXCLUSIVE_STRATEGIES.flatMap((strategy) => {
     const owners = fieldsWithStrategy(inputs, strategy);
     return owners.length > 1
@@ -153,9 +169,13 @@ const STRATEGY_MEANINGS = new Map<InputStrategy, string>([
   ["plan-dir", "A plan directory, holding SPEC.md and issues/"],
   [
     "diff-target",
-    "The change to review: mr:<iid>, mr:<group/project>!<iid>, branch:<base>...<head>, or worktree",
+    "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, <owner>/<repo>#<n>, branch:<base>...<head>, or worktree",
   ],
-  ["gitlab-repository", "A GitLab repository URL, or the absolute path of a local checkout"],
+  ["repository", "A GitLab or GitHub repository URL, or the absolute path of a local checkout"],
+  [
+    "gitlab-repository",
+    "A GitLab or GitHub repository URL, or the absolute path of a local checkout",
+  ],
   ["flag", "true or false"],
   ["optional", "Anything, or empty"],
 ]);

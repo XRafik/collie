@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
 import { Clock, DateTime, Effect, FileSystem, Option } from "effect";
 import { runEffect } from "./support/effect";
+import { forgeOnPath } from "./support/forge";
 import { Rig, TEST_LOGIN as LOGIN } from "./support/recorder";
 import { FakeBin } from "./support/bin";
 import {
@@ -234,6 +235,19 @@ test("a run described in words branches off the default branch, under the operat
     }),
   ));
 
+test("a generated branch refuses a checkout on neither forge", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering({
+        ...gitAnswers(),
+        "remote get-url origin": "git@bitbucket.org:acme/app.git",
+      });
+      expect((yield* plan({ plan_kind: "text" })).refused).toBe(
+        "bitbucket.org is neither GitHub nor GitLab",
+      );
+    }),
+  ));
+
 test("the login comes from glab where the environment does not name one", () =>
   runEffect(
     Effect.gen(function* () {
@@ -256,6 +270,40 @@ test("a login nobody can establish is an authentication error, not a branch ques
       expect(refused.branch).toBe("");
       // Nothing the caller could type settles this: they have to log in.
       expect(refused.refused).toContain("glab");
+    }),
+  ));
+
+const onGithub = () =>
+  fakeGitAnswering({ ...gitAnswers(), "remote get-url origin": "git@github.com:acme/app.git" });
+
+test("on a GitHub checkout the branch is named under GITHUB_ACTOR, else gh's login, never glab's", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* onGithub();
+      const glabAsked = `${rig.root}/glab-asked`;
+      yield* bin.add("glab", `touch "${glabAsked}"; echo '{"username": "gitlab-me"}'`);
+      yield* bin.add("gh", `echo '{"login": "madskronborg"}'`);
+
+      expect(
+        yield* plan({ plan_kind: "text" }, undefined, { login: "mk", githubLogin: "actor" }),
+      ).toMatchObject({ branch: "actor/add-a-picker" });
+      // GITLAB_USER_LOGIN names nothing on GitHub.
+      expect(yield* plan({ plan_kind: "text" }, undefined, { login: "mk" })).toMatchObject({
+        branch: "madskronborg/add-a-picker",
+      });
+      const fs = yield* FileSystem.FileSystem;
+      expect(yield* fs.exists(glabAsked)).toBe(false);
+    }),
+  ));
+
+test("a GitHub checkout with no login says to log in to gh or set GITHUB_ACTOR", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* onGithub();
+      yield* bin.add("gh", "exit 1");
+      expect((yield* plan({ plan_kind: "text" }, undefined, { login: null })).refused).toBe(
+        "no GitHub login to name a branch under: GITHUB_ACTOR is unset and gh could not say who you are. Log in with `gh auth login`, or set GITHUB_ACTOR.",
+      );
     }),
   ));
 
@@ -1197,6 +1245,48 @@ test("a review of a merge request whose branch is only on the remote is cut from
     }),
   ));
 
+test("a review of a pull request is fixed on its head branch, read through gh", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering({
+        ...gitAnswers("somewhere-else", ["fix-the-parser"]),
+        "remote get-url origin": "git@github.com:acme/app.git",
+      });
+      yield* forgeOnPath(bin, "github", {
+        installed: true,
+        loggedIn: ["github.com"],
+        login: "tester",
+        mrs: [
+          {
+            project: "github.com/acme/app",
+            iid: "30",
+            state: "open",
+            sourceBranch: "fix-the-parser",
+          },
+        ],
+      });
+      expect(
+        yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:github.com/acme/app#30",
+          target_kind: "mr",
+        }),
+      ).toMatchObject({ branch: "fix-the-parser", source: "from the reviewed branch" });
+      // A pull request of another repository is refused in its own words.
+      expect(
+        (yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:github.com/cego/collie#30",
+          target_kind: "mr",
+        })).refused,
+      ).toBe(
+        "cego/collie#30 is in github.com/cego/collie, and this is a checkout of github.com/acme/app",
+      );
+    }),
+  ));
+
 test("a review whose target nobody normalised is refused, not fixed on the caller's branch", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1487,6 +1577,46 @@ const renovateCheckout = (inputs: Record<string, string> = {}, cwd = rig.project
         Effect.provide(BunServices.layer),
       ),
   });
+
+test("a roaming Run's repository is cloned through its URL's forge, and one on neither is refused", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitAnswering(
+        { ...gitAnswers(), "worktree list --porcelain": porcelain([]) },
+        {},
+        { clone: 'mkdir -p "$4/.git"' },
+      );
+      const forge = (name: "gitlab" | "github") =>
+        forgeOnPath(bin, name, {
+          installed: true,
+          loggedIn: [name === "gitlab" ? "gitlab.example.com" : "github.com"],
+          login: "tester",
+          mrs: [],
+        });
+      const github = yield* forge("github");
+      yield* forge("gitlab");
+
+      const fromGithub = yield* renovateCheckout({ repository: "https://github.com/acme/app" });
+      expect(fromGithub.refused ?? "").not.toContain("could not clone");
+      expect((yield* github.model()).cloned).toEqual([
+        expect.stringMatching(/^github\.com\/acme\/app \/.*renovate-repositories\//),
+      ]);
+
+      const fromGitlab = yield* renovateCheckout({
+        repository: "https://gitlab.example.com/acme/app",
+      });
+      expect(fromGitlab.refused ?? "").not.toContain("could not clone");
+      expect(
+        (yield* asked()).some((c) =>
+          c.startsWith("clone --quiet https://gitlab.example.com/acme/app.git"),
+        ),
+      ).toBe(true);
+
+      expect(
+        (yield* renovateCheckout({ repository: "https://bitbucket.org/acme/app" })).refused,
+      ).toBe("bitbucket.org is neither GitHub nor GitLab");
+    }),
+  ));
 
 test("a Renovate Run gets a detached checkout at the default branch, bound to no branch", () =>
   runEffect(
@@ -1958,7 +2088,8 @@ test("a merge request Collie cannot read is a run that does not start", () =>
   runEffect(
     Effect.gen(function* () {
       yield* fakeGit("some-other-branch");
-      yield* bin.add("glab", `exit 1`);
+      // Installed and logged in, but the merge request will not be read.
+      yield* bin.add("glab", `[ "$1" = mr ] && exit 1; exit 0`);
 
       // Never `slugify(name)`: the fixes belong on the branch that was reviewed, and a
       // new branch named after the run would leave the merge request untouched.
@@ -1970,6 +2101,15 @@ test("a merge request Collie cannot read is a run that does not start", () =>
           target_kind: "mr",
         }),
       ).toMatchObject({ refused: "glab could not read !42" });
+      yield* bin.add("glab", `exit 1`);
+      expect(
+        yield* plan({
+          plan: "/runs/review-1",
+          plan_kind: "review",
+          target: "mr:42",
+          target_kind: "mr",
+        }),
+      ).toMatchObject({ refused: "glab is not installed" });
     }),
   ));
 
@@ -1992,7 +2132,7 @@ test("a merge request in another project cannot be fixed from this checkout", ()
         }),
       ).toMatchObject({
         refused:
-          "!7 is in gitlab.example.com/other/thing, and this is a checkout of gitlab.example.com/acme/app",
+          "other/thing!7 is in gitlab.example.com/other/thing, and this is a checkout of gitlab.example.com/acme/app",
       });
     }),
   ));
@@ -2401,7 +2541,9 @@ test("a merge request from a fork is refused even where its branch name is local
           target: "mr:gitlab.example.com/acme/app!42",
           target_kind: "mr",
         }),
-      ).toMatchObject({ refused: "!42 comes from a fork, so its branch is not in this checkout" });
+      ).toMatchObject({
+        refused: "acme/app!42 comes from a fork, so its branch is not in this checkout",
+      });
     }),
   ));
 
@@ -2422,7 +2564,7 @@ test("a checkout with no GitLab remote cannot be shown to be the reviewed projec
           target_kind: "mr",
         }),
       ).toMatchObject({
-        refused: `${rig.projectDir} has no GitLab remote, so !42 may not be its own`,
+        refused: `${rig.projectDir} has no remote, so acme/app!42 may not be its own`,
       });
     }),
   ));

@@ -124,7 +124,7 @@ import { buildBoard, mrOf } from "./board";
 import { watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
-import { buildRunDetail } from "./views";
+import { buildRunDetail, type PlanCache } from "./views";
 import {
   Answered,
   ASKED_KINDS,
@@ -146,7 +146,6 @@ import {
   SteerOutcome,
   Attachments,
   type FrontDoor,
-  type PlanPanel,
   type Where,
 } from "./board-model";
 import {
@@ -154,12 +153,14 @@ import {
   attachmentRefusal,
   attachmentsDir,
   copyInto,
+  keepMessage,
   namesIn,
   sha256Hex,
   type Attached,
 } from "./attachments";
 import { boardMessages, shareBoard } from "./board-stream";
 import { recordDisposition } from "./disposition";
+import { MAX_DELIVERY_BYTES } from "./dispatcher";
 import {
   NEWS_TRAIL,
   newsPath,
@@ -615,7 +616,8 @@ const handlers = (
           const into = attachmentsDir(runDir(dir, runId));
           // Files go only into a Run this host has.
           const known =
-            (attachments ?? []).length === 0
+            (attachments ?? []).length === 0 &&
+            Buffer.byteLength(text, "utf8") <= MAX_DELIVERY_BYTES
               ? Effect.void
               : Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(runDir(dir, runId))).pipe(
                   Effect.orElseSucceed(() => false),
@@ -646,12 +648,22 @@ const handlers = (
                 },
                 copyInto(into, attachments ?? []).pipe(
                   Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
-                  Effect.flatMap((copied) =>
+                  Effect.flatMap((copied) => {
+                    const lines = copied.map((one) => attachedLine(`${into}/${one.name}`));
+                    const whole = [text, ...lines].filter((line) => line !== "").join("\n");
+                    return Buffer.byteLength(whole, "utf8") <= MAX_DELIVERY_BYTES
+                      ? Effect.succeed(whole)
+                      : keepMessage(into, text).pipe(
+                          Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+                          Effect.map((kept) =>
+                            [TOO_LONG, attachedLine(`${into}/${kept}`), ...lines].join("\n"),
+                          ),
+                        );
+                  }),
+                  Effect.flatMap((told) =>
                     registry.steer({
                       runId,
-                      text: [text, ...copied.map((one) => attachedLine(`${into}/${one.name}`))]
-                        .filter((line) => line !== "")
-                        .join("\n"),
+                      text: told,
                       request,
                       operation,
                       agent,
@@ -668,6 +680,10 @@ const handlers = (
       });
     }),
   );
+
+/** What an agent is told in place of words over the delivery cap, which are never split (ADR-0051). */
+const TOO_LONG =
+  "This message was too long to send in one piece, so it is in the attached file. Read it whole and act on it.";
 
 /** What a steer's request has to ask again, as `AskedFor` is a start's. */
 type SteerAsked = {
@@ -875,9 +891,9 @@ const frontDoorHandlers = (
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
       const recordingUsage = yield* Semaphore.make(1);
       const recordingShell = yield* Semaphore.make(1);
-      // A finished Run's plan cannot change, so every drawer on it shares one read.
+      // Every drawer on a finished Run shares one read of its plan until a file of it changes.
       // ponytail: kept for the host's life; evict by age if a host lives for months.
-      const plans = new Map<string, PlanPanel | null>();
+      const plans: PlanCache = new Map();
       const stampOf = (client: { readonly id: number }) => stampIn(declared, client);
       const doorOf = (client: { readonly id: number }) => stampOf(client).origin;
       /** Who asks on a channel: its front door, and a chat's voice. */

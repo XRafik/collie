@@ -4,6 +4,7 @@ import {
   cardActions,
   dispositionActions,
   mrUrlOf,
+  openMrLabel,
   type Proposal,
   primaryAction,
   type TaskView,
@@ -108,7 +109,7 @@ const doing = (action: CardAction, primary: boolean) => {
       const url = mrUrlOf(action.mr);
       return url === null
         ? null
-        : { label: primary ? "Open MR" : "Open merge request", press: () => openLink(url) };
+        : { label: openMrLabel(action.mr, primary), press: () => openLink(url) };
     }
     case "offer": {
       const offer = action.offer.id;

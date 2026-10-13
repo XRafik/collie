@@ -1,4 +1,4 @@
-// What the MR step needs to know before it can run: whether GitLab is reachable
+// What the MR step needs to know before it can run: whether its forge is reachable
 // at all, who to assign, which template to fill, and which Linear tickets this
 // branch is answering. Push is this step's business and nothing else's.
 
@@ -10,14 +10,14 @@ import { isString } from "./schema";
 import { targetKind, workSourceOf, type Settled } from "./strategies";
 import {
   type MrDetails,
-  type MrPanel,
+  type MrForge,
   type MrRef,
-  type MrUnavailable,
+  mrPath,
+  mrTarget,
   parseMrTarget,
-  parseMrUrl,
 } from "./board-model";
-import { epochMs } from "./time";
-import type { MrReady } from "./sdk";
+import { FORGES, forgeOf, forgeOfHost, type Forge } from "./forge/forge";
+import type { MrReady, Posted } from "./sdk";
 
 export type Runner<R = never> = (
   cmd: string,
@@ -37,10 +37,6 @@ export function whatItSaid(result: Ran): string {
   return [result.stdout.trim(), result.stderr?.trim() ?? ""].filter(Boolean).join("\n");
 }
 
-const UserJson = Schema.fromJsonString(Schema.Struct({ username: Schema.String }));
-
-export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
-
 /** A Linear id, the shape it takes in a branch name, a URL, or an Output. */
 const LINEAR_ID = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
 
@@ -54,26 +50,6 @@ const LINEAR_ID = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
 export function branchTargetHead(target: string): string | null {
   if (!target.startsWith("branch:")) return null;
   return target.slice("branch:".length).split("...").at(-1)?.trim() ?? "";
-}
-
-export type MrRole = "assignee" | "reviewer";
-
-/**
- * Puts a user on the merge request in that role, next to whoever is there already.
- * Who ran this is a fact, so the engine records it itself rather than asking an agent to.
- */
-export function addMrRole<R>(
-  mr: MrRef,
-  role: MrRole,
-  who: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<{ code: number; stdout: string }, never, R> {
-  return run(
-    "glab",
-    ["mr", "update", mr.iid, ...repoArgs(mr.project), `--${role}`, `+${who}`],
-    cwd,
-  );
 }
 
 /**
@@ -94,15 +70,9 @@ export function assignedTo<R>(
   run: Runner<R>,
 ): Effect.Effect<boolean, never, R> {
   return Effect.gen(function* () {
-    const panel = yield* mrDetails(mr, cwd, run);
+    const panel = yield* forgeOf(mr).details(mr, cwd, run);
     return panel._tag === "Details" && panel.assignees.includes(who);
   });
-}
-
-/** What became of a note: whether it landed, and the sentence a human reads either way. */
-export interface Posted {
-  readonly ok: boolean;
-  readonly message: string;
 }
 
 /**
@@ -114,51 +84,46 @@ export interface Posted {
  * rather than to write to themselves.
  */
 export function postNote<R>(
-  options: { readonly target: string; readonly cwd: string; readonly body: string },
+  options: {
+    readonly target: string;
+    readonly cwd: string;
+    readonly body: string;
+    /** Approve it too, which a review with nothing live left asks for. */
+    readonly approve?: boolean;
+    /** The Flock's GitLab, which is GitLab whatever its name. */
+    readonly gitlabHost?: string;
+  },
   run: Runner<R>,
 ): Effect.Effect<Posted, never, R> {
   return Effect.gen(function* () {
     const mr = parseMrTarget(options.target);
     if (!mr)
       return { ok: false, message: `${options.target || "this run"} is not a merge request` };
-    const ready = yield* gitlabForProject(mr.project, options.cwd, run);
+    const here =
+      mr.project === null
+        ? yield* forgeHere(options.cwd, run, options.gitlabHost)
+        : { ok: true as const, forge: forgeOf(mr) };
+    if (!here.ok) return { ok: false, message: here.reason };
+    if (here.forge.name !== forgeOf(mr).name)
+      return {
+        ok: false,
+        message: `${options.target} is a GitLab target, but this checkout is on GitHub`,
+      };
+    const forge = here.forge;
+    const ready = yield* forge.ready(mr.project, options.cwd, run);
     if (!ready.ok) return { ok: false, message: ready.reason };
-    const me = yield* glabLogin(options.cwd, run);
+    const me = yield* forge.login(options.cwd, run, mr.project);
     if (me !== null && (yield* assignedTo(mr, me, options.cwd, run))) {
       return {
         ok: false,
         message: `${options.target} is assigned to you, so its findings are yours to fix rather than to post`,
       };
     }
-    const where = mr.project ? `${mr.project}!${mr.iid}` : `!${mr.iid}`;
-    // `--repo` is what lets this work from a directory that is not that checkout.
-    const note = yield* run(
-      "glab",
-      ["mr", "note", mr.iid, ...repoArgs(mr.project), "--message", options.body],
-      options.cwd,
-    );
-    return note.code === 0
-      ? { ok: true, message: `posted the review to ${where}` }
-      : { ok: false, message: `glab mr note ${where} failed (exit ${note.code})` };
+    return yield* forge.post(mr, options.body, options.approve === true, options.cwd, run);
   });
 }
 
-export function mrTarget(project: string | null, iid: string): string {
-  return project ? `mr:${project}!${iid}` : `mr:${iid}`;
-}
-
-export { targetKind };
-
-/** The glab arguments that point a command at a project rather than at the cwd. */
-export function repoArgs(project: string | null): string[] {
-  return project ? ["--repo", project] : [];
-}
-
-/** The host part of `host/group/project`, which is what glab authenticates against. */
-export function hostOf(project: string | null): string | null {
-  const host = project?.split("/")[0];
-  return host && host.includes(".") ? host : null;
-}
+export { mrTarget, targetKind };
 
 /**
  * `git@host:group/project.git` and `https://host/group/project.git` both name the
@@ -231,128 +196,25 @@ export function projectHere<R>(
     return null;
   });
 }
-/**
- * Absent and `null` are the same answer here, and GitLab gives both: a merge request with
- * no second pipeline sends `"pipeline": null`, not a missing key. A schema that allowed
- * the key to be omitted but not null rejected real merge requests outright, and the panel
- * reported one it had just read successfully as "not a merge request" — then cached that
- * for the whole TTL. Every field a GitLab version or a token might not answer is optional
- * *and* nullable for that reason.
- */
-const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
-const optionalFlag = Schema.optionalKey(Schema.NullOr(Schema.Boolean));
-const optionalCount = Schema.optionalKey(Schema.NullOr(Schema.Number));
-const optionalStatus = Schema.optionalKey(Schema.NullOr(Schema.Struct({ status: optionalText })));
+/** A checkout's forge and the project it pushes to, or why it has none. */
+export type ForgeHere =
+  | { readonly ok: true; readonly forge: Forge; readonly project: string }
+  | { readonly ok: false; readonly reason: string };
 
-const MrDetailsJson = Schema.fromJsonString(
-  Schema.Struct({
-    iid: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
-    title: optionalText,
-    state: optionalText,
-    draft: optionalFlag,
-    work_in_progress: optionalFlag,
-    author: Schema.optionalKey(Schema.NullOr(Schema.Struct({ username: optionalText }))),
-    assignees: Schema.optionalKey(
-      Schema.NullOr(Schema.Array(Schema.Struct({ username: optionalText }))),
-    ),
-    source_branch: optionalText,
-    target_branch: optionalText,
-    sha: optionalText,
-    merge_commit_sha: optionalText,
-    squash_commit_sha: optionalText,
-    updated_at: optionalText,
-    web_url: optionalText,
-    head_pipeline: optionalStatus,
-    pipeline: optionalStatus,
-    blocking_discussions_resolved: optionalFlag,
-    user_notes_count: optionalCount,
-    approvals_required: optionalCount,
-    approvals_left: optionalCount,
-  }),
-);
-
-/**
- * One merge request, in one `glab mr view` call. `gitlabForProject` first, because "no
- * glab" and "not logged in to that host" are answers a panel can state rather than
- * failures a fetch should discover.
- *
- * Never called from a render path and never for a list: the app fetches this when a Run
- * with a merge-request target becomes the Selection, and caches it per ref.
- */
-export function mrDetails<R>(
-  ref: MrRef,
+/** The forge of the checkout at `cwd`: its `origin`'s host, else `upstream`'s (ADR-0050 D2). */
+export function forgeHere<R>(
   cwd: string,
   run: Runner<R>,
-): Effect.Effect<MrPanel, never, R> {
-  return Effect.gen(function* () {
-    const ready = yield* gitlabForProject(ref.project, cwd, run);
-    if (!ready.ok) return { _tag: "Unavailable", reason: ready.reason } satisfies MrUnavailable;
-
-    const where = ref.project ? `${ref.project}!${ref.iid}` : `!${ref.iid}`;
-    const view = yield* run(
-      "glab",
-      ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
-      cwd,
-    );
-    if (view.code !== 0) {
-      return {
-        _tag: "Unavailable",
-        reason: `glab could not read ${where}`,
-      } satisfies MrUnavailable;
-    }
-    const decoded = Schema.decodeUnknownOption(MrDetailsJson)(view.stdout);
-    if (Option.isNone(decoded)) {
-      return {
-        _tag: "Unavailable",
-        reason: `what glab said about ${where} is not a merge request`,
-      } satisfies MrUnavailable;
-    }
-    const mr = decoded.value;
-    const draft = mr.draft === true || mr.work_in_progress === true;
-    const updated = mr.updated_at ? epochMs(mr.updated_at) : Number.NaN;
-    return {
-      _tag: "Details",
-      iid: mr.iid === undefined || mr.iid === null ? ref.iid : String(mr.iid),
-      project: ref.project,
-      title: mr.title ?? "",
-      state: draft ? "draft" : (mr.state ?? ""),
-      author: mr.author?.username ?? "",
-      assignees: (mr.assignees ?? [])
-        .map((one) => one.username ?? "")
-        .filter((name) => name !== ""),
-      sourceBranch: mr.source_branch ?? "",
-      targetBranch: mr.target_branch ?? "",
-      pipeline: mr.head_pipeline?.status ?? mr.pipeline?.status ?? "",
-      approvals: approvalsLine(mr.approvals_required, mr.approvals_left),
-      unresolved: mr.blocking_discussions_resolved === false,
-      notes: mr.user_notes_count ?? 0,
-      headSha: (mr.sha ?? "").slice(0, 7),
-      head: mr.sha ?? "",
-      mergedSha:
-        mr.state === "merged" ? (mr.merge_commit_sha ?? mr.squash_commit_sha ?? mr.sha ?? "") : "",
-      updatedAt: Number.isFinite(updated) ? updated : 0,
-      url: mr.web_url ?? "",
-    } satisfies MrDetails;
+  gitlabHost?: string,
+): Effect.Effect<ForgeHere, never, R> {
+  return Effect.map(projectHere(cwd, run), (project): ForgeHere => {
+    if (project === null) return { ok: false, reason: "this repo has no remote" };
+    const host = project.split("/")[0]!;
+    const name = forgeOfHost(host, gitlabHost);
+    return name === null
+      ? { ok: false, reason: `${host} is neither GitHub nor GitLab` }
+      : { ok: true, forge: FORGES[name], project };
   });
-}
-
-/**
- * Approvals are not on the merge-request object on every GitLab; where neither field is
- * answered the panel says nothing about them rather than guessing at zero.
- */
-function approvalsLine(
-  requiredOrNull: number | null | undefined,
-  leftOrNull: number | null | undefined,
-): string {
-  const required = requiredOrNull ?? undefined;
-  const left = leftOrNull ?? undefined;
-  if (required === undefined && left === undefined) return "";
-  if (left === 0) return "approved";
-  if (required === undefined) return `${left} still needed`;
-  // How many are still needed is the fact this GitLab did not answer, and standing the
-  // requirement in for it would claim nobody has approved yet.
-  if (left === undefined) return `${required} approval(s) required`;
-  return `${left} of ${required} still needed`;
 }
 
 /**
@@ -369,101 +231,18 @@ export function sinceReview(details: MrDetails, reviewedAt: number): string {
   return `changed ${when} this review — head ${details.headSha}`;
 }
 
-export interface Readiness {
-  ok: boolean;
-  /** Why not, phrased for the runner's skip note. */
-  reason: string;
-}
-
-export interface MrFacts {
-  /** The GitLab username the MR is assigned to, or null when it could not be resolved. */
-  assignee: string | null;
-  /** Path of the repo's MR template, relative to the repo, or null when it has none. */
-  template: string | null;
-  /** Linear ids this branch answers, deduplicated, in the order they were found. */
-  issues: string[];
-}
-
-/** glab has to exist and the repo has to actually be on GitLab. */
-export function gitlabReadiness<R>(
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<Readiness, never, R> {
-  return Effect.gen(function* () {
-    const glab = yield* run("glab", ["--version"], cwd);
-    if (glab.code !== 0) return { ok: false, reason: "glab is not installed" };
-
-    const remotes = yield* run("git", ["remote", "-v"], cwd);
-    if (remotes.code !== 0 || remotes.stdout.trim() === "") {
-      return { ok: false, reason: "this repo has no remote" };
-    }
-    if (!/gitlab/i.test(remotes.stdout)) return { ok: false, reason: "no GitLab remote" };
-    return { ok: true, reason: "" };
-  });
-}
-
-/**
- * What a step pointed at someone else's merge request needs: glab, and glab logged
- * in to that host. The cwd's remotes are none of its business — the whole point of
- * carrying the project is that no checkout is required.
- */
-export function gitlabForProject<R>(
-  project: string | null,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<Readiness, never, R> {
-  return Effect.gen(function* () {
-    const glab = yield* run("glab", ["--version"], cwd);
-    if (glab.code !== 0) return { ok: false, reason: "glab is not installed" };
-
-    const host = hostOf(project);
-    if (!host) {
-      // No project to check against: fall back to what this directory can prove.
-      return yield* gitlabReadiness(cwd, run);
-    }
-    const auth = yield* run("glab", ["auth", "status", "--hostname", host], cwd);
-    return auth.code === 0
-      ? { ok: true, reason: "" }
-      : { ok: false, reason: `glab is not logged in to ${host}` };
-  });
-}
-
-/**
- * Whoever glab is logged in as for this checkout's host, and null where it will not
- * say. The authenticated user, not a configured assignee: a branch belongs to whoever
- * is pushing it, and the two are different people whenever an assignee is set at all.
- */
-export function glabLogin<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, never, R> {
-  return Effect.gen(function* () {
-    const me = yield* run("glab", ["api", "user"], cwd);
-    if (me.code !== 0) return null;
-    return Option.match(Schema.decodeUnknownOption(UserJson)(me.stdout), {
-      onNone: () => null,
-      onSome: (user) => (user.username === "" ? null : user.username),
-    });
-  });
-}
-
-/** The configured assignee wins; otherwise whoever glab is logged in as. */
+/** The configured assignee wins; otherwise whoever the forge's CLI is logged in as. */
 export function resolveAssignee<R>(
   cwd: string,
   configured: YamlValue | undefined,
+  forge: Forge,
   run: Runner<R>,
+  project: string | null = null,
 ): Effect.Effect<string | null, never, R> {
   return Effect.gen(function* () {
     if (configured !== undefined && isString(configured) && configured.trim() !== "")
       return configured.trim();
-    return yield* glabLogin(cwd, run);
-  });
-}
-
-export function templateFile(
-  cwd: string,
-): Effect.Effect<string | null, PlatformError, FileSystem.FileSystem | Path.Path> {
-  return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const pathService = yield* Path.Path;
-    return (yield* fs.exists(pathService.join(cwd, MR_TEMPLATE))) ? MR_TEMPLATE : null;
+    return yield* forge.login(cwd, run, project);
   });
 }
 
@@ -495,29 +274,16 @@ function matchAll(text: string): string[] {
   return [...text.matchAll(LINEAR_ID)].map((m) => m[1]!);
 }
 
-export function mrFacts<R>(
-  opts: {
-    cwd: string;
-    configuredAssignee?: YamlValue;
-  } & Settled,
-  run: Runner<R>,
-): Effect.Effect<MrFacts, PlatformError, FileSystem.FileSystem | Path.Path | R> {
-  return Effect.gen(function* () {
-    return {
-      assignee: yield* resolveAssignee(opts.cwd, opts.configuredAssignee, run),
-      template: yield* templateFile(opts.cwd),
-      issues: yield* linearIssues(opts, run),
-    };
-  });
-}
-
 /** The forge this branch pushes to, and the facts its delivery prompt needs. */
 export function prepareMergeRequest<R>(
   opts: {
     readonly cwd: string;
     readonly target?: string;
     readonly source?: { readonly value: string; readonly kind: string };
-    readonly configuredAssignee?: YamlValue;
+    /** `<forge>.assignee` from the user's config, by forge: one forge's never answers for another. */
+    readonly assignees?: Partial<Record<MrForge, YamlValue>>;
+    /** The Flock's GitLab, which is GitLab whatever its name. */
+    readonly gitlabHost?: string;
   },
   run: Runner<R>,
 ): Effect.Effect<MrReady, PlatformError, FileSystem.FileSystem | Path.Path | R> {
@@ -529,175 +295,60 @@ export function prepareMergeRequest<R>(
       template: "",
       issues: [],
     });
+    const ref = opts.target === undefined ? null : parseMrTarget(opts.target);
+    const here =
+      ref?.project != null
+        ? { ok: true as const, forge: forgeOf(ref), project: ref.project }
+        : yield* forgeHere(opts.cwd, run, opts.gitlabHost);
+    if (!here.ok) return unavailable(here.reason);
+    if (ref !== null && here.forge.name !== forgeOf(ref).name)
+      return unavailable(`${opts.target} is a GitLab target, but this checkout is on GitHub`);
+    const { forge, project } = here;
+    const ready = yield* forge.ready(project, opts.cwd, run);
+    if (!ready.ok) return unavailable(ready.reason);
+    const assignee = yield* resolveAssignee(
+      opts.cwd,
+      opts.assignees?.[forge.name],
+      forge,
+      run,
+      project,
+    );
+    if (assignee === null && forge.name === "github")
+      return unavailable("gh did not report a GitHub login");
+    const branch = (yield* run(
+      "git",
+      ["rev-parse", "--abbrev-ref", "HEAD"],
+      opts.cwd,
+    )).stdout.trim();
+    // A detached checkout, as renovate's is, is on no branch to have a merge request.
+    const found =
+      branch === "HEAD" || branch === ""
+        ? { ok: true as const, open: null }
+        : yield* forge.forBranch(project, branch, opts.cwd, run);
+    if (!found.ok) return unavailable(found.reason);
     const work = {
       cwd: opts.cwd,
       inputs: { source: opts.source?.value ?? "", source_kind: opts.source?.kind ?? "" },
       strategies: { source: "work-source" },
     };
-    const origin =
-      opts.target === undefined
-        ? yield* run("git", ["remote", "get-url", "origin"], opts.cwd)
-        : null;
-    const repository =
-      origin?.code === 0
-        ? /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+\/[\w.-]+?)(?:\.git)?\/?$/.exec(
-            origin.stdout.trim(),
-          )?.[1]
-        : undefined;
-    if (repository !== undefined) {
-      if ((yield* run("gh", ["--version"], opts.cwd)).code !== 0)
-        return unavailable("gh is not installed");
-      if ((yield* run("gh", ["auth", "status", "--hostname", "github.com"], opts.cwd)).code !== 0)
-        return unavailable("gh is not logged in to github.com");
-      const repo = yield* run(
-        "gh",
-        ["repo", "view", repository, "--json", "nameWithOwner"],
-        opts.cwd,
-      );
-      const decoded = Schema.decodeUnknownOption(
-        Schema.fromJsonString(Schema.Struct({ nameWithOwner: Schema.String })),
-      )(repo.stdout);
-      if (
-        repo.code !== 0 ||
-        Option.isNone(decoded) ||
-        decoded.value.nameWithOwner.toLowerCase() !== repository.toLowerCase()
-      )
-        return unavailable(`gh cannot read ${repository}`);
-      const me = yield* run("gh", ["api", "user", "--hostname", "github.com"], opts.cwd);
-      const user = Schema.decodeUnknownOption(
-        Schema.fromJsonString(Schema.Struct({ login: Schema.String })),
-      )(me.stdout);
-      if (me.code !== 0 || Option.isNone(user) || user.value.login.trim() === "")
-        return unavailable("gh did not report a GitHub login");
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      let template = "";
-      for (const candidate of [
-        ".github/pull_request_template.md",
-        ".github/PULL_REQUEST_TEMPLATE.md",
-        "pull_request_template.md",
-        "docs/pull_request_template.md",
-      ])
-        if (yield* fs.exists(path.join(opts.cwd, candidate))) {
-          template = candidate;
-          break;
-        }
-      return {
-        ok: true,
-        reason: "",
-        provider: "github",
-        repository,
-        assignee: user.value.login,
-        template,
-        issues: yield* linearIssues(work, run),
-      };
-    }
-    const ready = yield* opts.target === undefined
-      ? gitlabReadiness(opts.cwd, run)
-      : gitlabForProject(parseMrTarget(opts.target)?.project ?? null, opts.cwd, run);
-    if (!ready.ok) return unavailable(ready.reason);
-    const facts = yield* mrFacts({ ...work, configuredAssignee: opts.configuredAssignee }, run);
     return {
       ok: true,
       reason: "",
-      provider: "gitlab",
-      assignee: facts.assignee ?? "",
-      template: facts.template ?? "",
-      issues: facts.issues,
+      provider: forge.name,
+      repository: mrPath({ project, iid: "" }),
+      assignee: assignee ?? "",
+      template: (yield* forge.template(opts.cwd)) ?? "",
+      issues: yield* linearIssues(work, run),
+      forge: forge.display,
+      noun: forge.noun,
+      existing: found.open?.url ?? "",
+      autoMerge: found.open?.autoMerge ?? false,
+      commands: forge.commands({
+        project,
+        branch,
+        assignee: assignee ?? "",
+        existing: found.open?.iid ?? null,
+      }),
     };
-  });
-}
-
-const EnvironmentsJson = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ name: Schema.String, tier: optionalText })),
-);
-const DeploymentsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({ sha: Schema.String, environment: Schema.Struct({ name: Schema.String }) }),
-  ),
-);
-const PipelineJson = Schema.fromJsonString(Schema.Struct({ status: Schema.String }));
-
-/** `https://host/group/project/-/pipelines/7`'s status, or null where GitLab does not say. */
-export function pipelineStatus<R>(
-  url: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<string | null, never, R> {
-  return Effect.gen(function* () {
-    const m = /^https?:\/\/([^/\s]+)\/(.+?)\/-\/pipelines\/(\d+)(?:[/?#]\S*)?$/.exec(url.trim());
-    if (!m) return null;
-    const [, host, project, id] = m;
-    // The address is agent text: only a host the human signed glab in to is called.
-    if ((yield* run("glab", ["auth", "status", "--hostname", host!], cwd)).code !== 0) return null;
-    const answer = yield* run(
-      "glab",
-      ["api", "--hostname", host!, `projects/${encodeURIComponent(project!)}/pipelines/${id}`],
-      cwd,
-    );
-    if (answer.code !== 0) return null;
-    return Option.getOrNull(
-      Option.map(Schema.decodeUnknownOption(PipelineJson)(answer.stdout), (one) => one.status),
-    );
-  });
-}
-
-const MergeBaseJson = Schema.fromJsonString(Schema.Struct({ id: optionalText }));
-
-export type DeployTier = "production" | "staging";
-
-/**
- * The furthest a merged commit has got: live in production, live on staging, or neither.
- * "Live" is what the newest successful deployment of each environment has on it, which is
- * the commit itself or one descending from it — GitLab's merge-base says which. A project
- * with no staging or production environment answers null, and so does GitLab not
- * answering: the board then says "merged", which is true, rather than guessing further.
- */
-export function liveTier<R>(
-  ref: MrRef,
-  mergedSha: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<DeployTier | null, never, R> {
-  return Effect.gen(function* () {
-    const host = hostOf(ref.project);
-    if (!host || !ref.project || mergedSha === "") return null;
-    const path = encodeURIComponent(ref.project.slice(host.length + 1));
-    const api = (route: string) =>
-      run("glab", ["api", "--hostname", host, `projects/${path}/${route}`], cwd);
-    const environments = yield* api("environments");
-    const tiers = new Map<string, DeployTier>();
-    for (const env of Option.getOrElse(
-      Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout),
-      () => [],
-    )) {
-      if (env.tier === "production" || env.tier === "staging") tiers.set(env.name, env.tier);
-    }
-    if (tiers.size === 0) return null;
-    const deployments = yield* api(
-      "deployments?status=success&order_by=created_at&sort=desc&per_page=50",
-    );
-    // Newest first, so the first deployment seen per environment is what is live there.
-    const live = new Map<string, string>();
-    for (const deployment of Option.getOrElse(
-      Schema.decodeUnknownOption(DeploymentsJson)(deployments.stdout),
-      () => [],
-    )) {
-      if (tiers.has(deployment.environment.name) && !live.has(deployment.environment.name))
-        live.set(deployment.environment.name, deployment.sha);
-    }
-    const carries = (sha: string) =>
-      Effect.gen(function* () {
-        if (sha === mergedSha) return true;
-        const base = yield* api(`repository/merge_base?refs[]=${mergedSha}&refs[]=${sha}`);
-        const decoded = Schema.decodeUnknownOption(MergeBaseJson)(base.stdout);
-        return Option.isSome(decoded) && decoded.value.id === mergedSha;
-      });
-    for (const tier of ["production", "staging"] as const) {
-      for (const [name, sha] of live) {
-        if (tiers.get(name) === tier && (yield* carries(sha))) return tier;
-      }
-    }
-    return null;
   });
 }

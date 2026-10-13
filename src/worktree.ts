@@ -19,21 +19,20 @@ import {
   type WorktreeListing,
 } from "./herdr";
 import type { CheckoutKind } from "./definitions";
-import { diffTargetOf, gitlabRepositoryOf, workSourceOf } from "./strategies";
+import { diffTargetOf, repositoryOf, workSourceOf } from "./strategies";
 import { defaultBase, linearIssueOf } from "./inputs";
 import { disambiguate, GLYPH, tabLabel } from "./naming";
 import {
   branchTargetHead,
-  glabLogin,
-  hostOf,
   projectFromRemote,
+  forgeHere,
   projectHere,
-  repoArgs,
   shell,
   whatItSaid,
   type Runner,
 } from "./mr";
-import { parseMrTarget } from "./board-model";
+import { mrWords, parseMrTarget } from "./board-model";
+import { FORGES, forgeOf, forgeOfHost } from "./forge/forge";
 import { withLock } from "./lock";
 import type { AgentEntry } from "./registry";
 import type { WorktreeRecord } from "./run";
@@ -88,14 +87,6 @@ export const destinationLock = (stateDir: string, at: string) =>
 /** Whether a state-directory entry is one of `destinationLock`'s. */
 export const isDestinationLock = (name: string) => /^worktree-[0-9a-f]+\.lock$/.test(name);
 
-const MrViewJson = Schema.fromJsonString(
-  Schema.Struct({
-    source_branch: Schema.optionalKey(Schema.String),
-    source_project_id: Schema.optionalKey(Schema.Number),
-    target_project_id: Schema.optionalKey(Schema.Number),
-  }),
-);
-
 /** What deciding a Run's branch needs to know. */
 export interface BranchAsk {
   /** Where the Run was started, which is the repository the worktree is cut from. */
@@ -118,6 +109,10 @@ export interface BranchAsk {
    * (`PluginEnv.gitlabLogin`). Null or absent leaves it to glab.
    */
   login?: string | null | undefined;
+  /** The same on GitHub (`PluginEnv.githubLogin`); null or absent leaves it to gh. */
+  githubLogin?: string | null | undefined;
+  /** The Flock's GitLab, which a checkout's or a repository URL's host is whatever its name. */
+  gitlabHost?: string | undefined;
   run?: Runner<ChildProcessSpawner.ChildProcessSpawner>;
 }
 
@@ -215,9 +210,6 @@ export function branchListed(
  */
 export const TASK_INPUT = "task";
 
-/** Named in the refusal, so an operator with no login is told what to set. */
-const LOGIN_ENV = "GITLAB_USER_LOGIN";
-
 /** How long the task half of a generated branch may be. */
 const SLUG_MAX = 40;
 
@@ -249,10 +241,13 @@ export const branchFor = Effect.fn("worktree.branchFor")(function* (opts: Branch
   if (asked.refused !== null) return refuse(asked.refused);
   let branch = asked.branch;
   if (asked.generated) {
-    const who = yield* whoami(opts, run);
+    const identity = yield* whoami(opts, run);
+    if (!identity.ok) return refuse(identity.reason);
+    const { forge, who } = identity;
     if (who === null) {
+      const variable = LOGIN_ENV[forge.name];
       return refuse(
-        `no GitLab login to name a branch under: ${LOGIN_ENV} is unset and glab could not say who you are. Log in with \`glab auth login\`, or set ${LOGIN_ENV}.`,
+        `no ${forge.display} login to name a branch under: ${variable} is unset and ${forge.cli} could not say who you are. Log in with \`${forge.cli} auth login\`, or set ${variable}.`,
       );
     }
     branch = `${who}/${asked.branch}`;
@@ -273,8 +268,8 @@ export const branchFor = Effect.fn("worktree.branchFor")(function* (opts: Branch
 });
 
 /**
- * The GitLab login a generated branch is namespaced under: the environment's, else the
- * authenticated user of whatever host this checkout pushes to. Never the local OS user
+ * The login a generated branch is namespaced under, on the checkout's forge: the
+ * environment's, else the authenticated user of whatever host this checkout pushes to. Never the local OS user
  * and never the merge request's assignee — a branch namespace says who is pushing, and
  * a wrong answer here is a branch under someone else's name.
  */
@@ -282,10 +277,15 @@ const whoami = Effect.fn("worktree.whoami")(function* (
   opts: BranchAsk,
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
 ) {
-  const named = opts.login?.trim();
-  if (named) return named;
-  return yield* glabLogin(opts.cwd, run);
+  const here = yield* forgeHere(opts.cwd, run, opts.gitlabHost);
+  if (!here.ok) return here;
+  const { forge } = here;
+  const named = (forge.name === "github" ? opts.githubLogin : opts.login)?.trim();
+  return { ...here, who: named ? named : yield* forge.login(opts.cwd, run, here.project) };
 });
+
+/** Named in the refusal, so an operator with no login is told what to set (ADR-0050 D5). */
+const LOGIN_ENV = { gitlab: "GITLAB_USER_LOGIN", github: "GITHUB_ACTOR" } as const;
 
 /** What `branchName` answers with: a name and how to treat it, or why there is none. */
 interface Named {
@@ -480,30 +480,25 @@ const reviewedBranch = Effect.fn("worktree.reviewedBranch")(function* (
     // whose own project cannot be read is refused for the same reason: nothing here
     // says it is the project the merge request is in, and a bare `mr:42` came from
     // this directory's remote in the first place.
+    const words = mrWords(mr);
+    const named = mr.project === null ? `${words.sign}${mr.iid}` : words.label;
     if (mr.project) {
       const here = yield* projectHere(cwd, run);
       if (here === null) {
-        return { refused: `${cwd} has no GitLab remote, so !${mr.iid} may not be its own` };
+        return { refused: `${cwd} has no remote, so ${named} may not be its own` };
       }
       if (mr.project !== here) {
-        return { refused: `!${mr.iid} is in ${mr.project}, and this is a checkout of ${here}` };
+        return { refused: `${named} is in ${mr.project}, and this is a checkout of ${here}` };
       }
     }
-    const view = yield* run(
-      "glab",
-      ["mr", "view", mr.iid, ...repoArgs(mr.project), "--output", "json"],
-      cwd,
-    );
-    if (view.code !== 0) return { refused: `glab could not read !${mr.iid}` };
-    const seen = Schema.decodeUnknownOption(MrViewJson)(view.stdout).pipe(Option.getOrUndefined);
-    // A fork's branch is not on this checkout's remote, and a local one of the same name is other work.
-    if (seen?.source_project_id !== seen?.target_project_id) {
-      return { refused: `!${mr.iid} comes from a fork, so its branch is not in this checkout` };
-    }
-    const source = seen?.source_branch?.trim();
+    const panel = yield* forgeOf(mr).details(mr, cwd, run);
+    if (panel._tag !== "Details") return { refused: panel.reason };
+    if (panel.fork === true)
+      return { refused: `${named} comes from a fork, so its branch is not in this checkout` };
+    const source = panel.sourceBranch.trim();
     return source
       ? { branch: source, reviewed: true }
-      : { refused: `!${mr.iid} names no source branch` };
+      : { refused: `${named} names no source branch` };
   }
   const head = branchTargetHead(target);
   if (head !== null) {
@@ -943,7 +938,7 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
   if (!mutates(opts.checkout)) return here;
 
   if (roams(opts.checkout)) {
-    const repository = gitlabRepositoryOf(opts)?.value ?? "";
+    const repository = repositoryOf(opts)?.value ?? "";
     let from = repository || opts.cwd;
     const project = remoteRepository(repository)
       ? (projectFromRemote(repository)?.split("/-/")[0] ?? null)
@@ -954,35 +949,12 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
       from = path.join(opts.stateDir, "renovate-repositories", Bun.hash(repository).toString(16));
       if (!(yield* fs.exists(path.join(from, ".git")))) {
         yield* fs.makeDirectory(path.dirname(from), { recursive: true });
-        const host = hostOf(project)!;
-        const token = (yield* shell(
-          "glab",
-          ["config", "get", "token", "--host", host],
-          opts.stateDir,
-        )).stdout.trim();
-        if (token === "") {
-          return { ...here, refused: `could not authenticate to ${host}` };
-        }
-        const credentials = Buffer.from(`oauth2:${token}`).toString("base64");
-        const cloned = yield* shell(
-          "env",
-          [
-            "GIT_CONFIG_COUNT=1",
-            "GIT_CONFIG_KEY_0=http.extraHeader",
-            `GIT_CONFIG_VALUE_0=Authorization: Basic ${credentials}`,
-            "git",
-            "clone",
-            "--quiet",
-            `https://${project}.git`,
-            from,
-          ],
-          opts.stateDir,
-        );
-        if (cloned.code !== 0) {
-          return {
-            ...here,
-            refused: `could not clone ${repository}: ${whatItSaid(cloned) || "git clone failed"}`,
-          };
+        const host = project.split("/")[0]!;
+        const forge = forgeOfHost(host, opts.gitlabHost);
+        if (forge === null) return { ...here, refused: `${host} is neither GitHub nor GitLab` };
+        const cloned = yield* FORGES[forge].clone(project, from, opts.stateDir, shell);
+        if (!cloned.ok) {
+          return { ...here, refused: `could not clone ${repository}: ${cloned.reason}` };
         }
       }
     }

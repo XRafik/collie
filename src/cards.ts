@@ -12,7 +12,8 @@
 // they are doing; the only thing that still takes focus is a pending question.
 
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { Significance } from "./board-model";
+import { Significance, mrWords, readMrRef } from "./board-model";
+import { forgeOf } from "./forge/forge";
 import { appendJournal, readJournal } from "./journal";
 import { redact } from "./conversation";
 import type { Verification } from "./verify";
@@ -208,10 +209,11 @@ export function inspectFor(options: {
       how: `git -C ${options.worktree} diff ${options.base}..HEAD`,
       note: "the whole change, as it stands",
     });
-  if (options.mr !== null)
+  const mr = options.mr === null ? null : readMrRef(options.mr);
+  if (mr !== null)
     entries.push({
-      what: "the merge request",
-      how: `glab mr view ${options.mr}`,
+      what: `the ${mrWords(mr).noun}`,
+      how: forgeOf(mr).review(mr).view,
       note: "what the reviewers will read",
     });
   return entries;

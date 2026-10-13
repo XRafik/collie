@@ -15,6 +15,7 @@ import {
   sectionOf,
   SECTIONS,
   type TaskView,
+  mrNounOf,
 } from "./board-model";
 import { isString, type JsonObject } from "./schema";
 
@@ -352,7 +353,7 @@ function cardLine(view: TaskView): string {
   const project = view.project === "" ? "" : ` (${view.project})`;
   const where =
     view.mr !== null
-      ? `, mr ${mrLabel(view.mr)}`
+      ? `, ${mrNounOf(view.mr)} ${mrLabel(view.mr)}`
       : view.branch !== null
         ? `, branch ${view.branch}`
         : "";
