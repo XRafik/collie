@@ -281,7 +281,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly message: string;
   }
 
-  /** One command Collie may run for this Run, granted by a human or chosen by chat. */
+  /** One of this Run's checks, named by a human, chat or the Run's agent. */
   export interface VerifySpec {
     readonly name: string;
     readonly executable: string;
