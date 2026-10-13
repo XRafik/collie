@@ -1122,7 +1122,13 @@ const stopCodex = (
       }),
     ).pipe(
       // Anything here is the connection: unanswered, refused or lost before the stop was done.
-      Effect.catch((cause) => Effect.succeed(notQuiet(reason(cause)))),
+      // Lost because the server exited is the stop going on, not failing.
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          if (yield* stillRunning(server)) return notQuiet(reason(cause));
+          return yield* survivors(target.pid, noted, turns, deadline, short(), signalled, once);
+        }),
+      ),
     );
   });
 

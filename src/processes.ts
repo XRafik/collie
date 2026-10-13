@@ -27,6 +27,8 @@ const fromProc = (pid: number) =>
     // A zombie has exited: nothing of it can run or be stopped.
     if (fields[0] === "Z") return null;
     const command = (yield* fs.readFileString(`${PROC}/${pid}/cmdline`)).replaceAll("\0", " ");
+    // Exiting: its memory, and with it its command line, is already gone.
+    if (command === "") return null;
     return {
       pid,
       command,
