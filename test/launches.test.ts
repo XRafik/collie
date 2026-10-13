@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Option, Schema, Stream } from "effect";
-import { frontDoor } from "../src/host";
+import { frontDoor, socketOf } from "../src/host";
 import { agentLines } from "../src/commands/run";
 import { LAUNCH_ORDER, launchDir, runAgents, type Launched } from "../src/launches";
 import { runFacts } from "../src/operations";
@@ -97,9 +97,9 @@ test("a Run's agents are its launch records, in launch order, with what each ran
         },
       ]);
       expect(agentLines(agents)).toEqual([
-        "  review  codex/gpt-5",
-        "  build  claude/opus xhigh",
-        "  re-review  claude/default",
+        `  review  ${agents[0]!.agent}  codex/gpt-5`,
+        `  build  ${agents[1]!.agent}  claude/opus xhigh`,
+        `  re-review  ${agents[2]!.agent}  claude/default`,
       ]);
       expect(yield* runAgents(state, "never-ran")).toEqual([]);
     }),
@@ -123,9 +123,10 @@ test("a Fallback's launch says what it fell back from and why, and an earlier on
         }),
         launched("r1", {}),
       ]);
-      expect(agentLines(yield* runAgents(state, "r1"))).toEqual([
-        "  review  codex/default (fell back from claude/opus: session 100%, resets 15:45)",
-        "  build  claude/default",
+      const agents = yield* runAgents(state, "r1");
+      expect(agentLines(agents)).toEqual([
+        `  review  ${agents[0]!.agent}  codex/default (fell back from claude/opus: session 100%, resets 15:45)`,
+        `  build  ${agents[1]!.agent}  claude/default`,
       ]);
       expect((yield* runAgents(state, "r1")).map(({ at }) => at)).toEqual([
         "2026-10-08T13:45:00.000Z",
@@ -142,7 +143,7 @@ test(
         const run = yield* settledRun(world, "hello");
         yield* seed(world.state, run.id, twoAgents(run.id));
 
-        const detail = yield* (yield* frontDoor(world.state))
+        const detail = yield* (yield* frontDoor(socketOf(world.state)))
           .runDetail({ runId: run.id, tail: false, pages: 1, refreshMr: false })
           .pipe(Stream.runHead, Effect.timeout("30 seconds"));
         expect(Option.getOrNull(detail)?.agents?.map((one) => one.operation)).toEqual([
@@ -176,7 +177,9 @@ test(
             ...(yield* suiteEnv),
           },
         });
-        expect(human.stdout).toContain("\n  review  codex/gpt-5\n  build  claude/opus xhigh\n");
+        expect(human.stdout).toContain(
+          `\n  review  ${run.id}-review-r1  codex/gpt-5\n  build  ${run.id}-build-r1  claude/opus xhigh\n`,
+        );
       }),
     ),
   60_000,

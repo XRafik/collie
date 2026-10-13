@@ -2,7 +2,7 @@
 
 ## Glossary
 
-**Workflow** — A TypeScript module saved as `<id>.workflow.ts` whose default export is its definition: its public id, what it takes and gives back, what it declares — hints, outcome, checkout, offers and the agents it prefers — and `run`, ordinary Effect code the host executes as a Run. It asks an agent with `agentWork`, a human with `ask` and another Workflow with `child`, each when the work reaches it, and composes everything else as ordinary TypeScript. Found where it was saved (see **Layer**); a shipped Workflow is one more module and gets nothing a user's does not.
+**Workflow** — A TypeScript module saved as `<id>.workflow.ts` whose default export is its definition: its public id, what it takes and gives back, what it declares — hints, outcome, checkout, whether it closes after reporting, offers and the agents it prefers — and `run`, ordinary Effect code the host executes as a Run. It asks an agent with `agentWork`, a human with `ask` and another Workflow with `child`, each when the work reaches it, and composes everything else as ordinary TypeScript. Found where it was saved (see **Layer**); a shipped Workflow is one more module and gets nothing a user's does not.
 
 **Operation** — One piece of agent work inside a Run, named by the Workflow that asks for it. The name is its identity: the agent's name, its prompt and Output files and the Activities that make it durable come from it, so it is stable within a Run and differs from every other. It has a role, injected as a Persona, a Harness, a Model, optionally the Skill it starts, and the schema its Output must decode against. An agent it starts gets a Tab of its own in its Task's workspace, labelled with its role; an operation that reuses an agent opens nothing.
 
@@ -61,9 +61,22 @@ are one Machine. Desktop names it by the label of the first enabled herdr machin
 reaches it, or by the hostname for Local, and adds its SSH target where two share a name.
 A computer Desktop reaches that has no Collie yet is known by its herdr profile id until a
 host there reports an installation id. Not the plugin installation a host serves, which
-`identity` calls `root`.
+`identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
+Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
 
-**Flock** — Every Herd on every Machine **Desktop** reaches.
+**Flock** — Every Herd on every Machine paired with this one, or reached by **Desktop**.
+
+**Peer** — A Machine paired with this one, known by its installation id and named by
+herdr's label for it. A peer this one can open a connection to listens and is dialled; one
+it cannot, such as a laptop, keeps a link open to it and is reached back over that link.
+Each host keeps a relay socket for each peer, `peers/<name>.sock`, that speaks what
+`host.sock` speaks ([ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md)).
+
+**Pairing** — The record each side of two **Peers** keeps in `peers.json`: who the other
+is, which side dials, and the secret and certificate the link is authenticated with. Made
+by itself the first time Collie reaches a herdr machine it has none for, over that
+machine's SSH login, and removed when herdr no longer lists the Machine. There is no
+command to pair or to forget.
 
 **Local** — The Machine Desktop runs on, reached through a bridge it starts without SSH and
 named by its hostname. Otherwise no different from any other Machine.
@@ -78,8 +91,9 @@ setting, it was given the credentials Desktop holds now but those its onboarding
 development checkout, which nothing upgrades, is never behind on its version. Each part is
 read from what the Machine's host and doctor last told Desktop, and from what Desktop last
 gave it. A Machine that is not in sync is **behind** on each part it lacks, and each has its
-own fix. Desktop brings a Machine level as it connects — upgrading it, syncing its settings,
-giving it credentials — so one that stays behind is one where that failed. Not "up to date",
+own fix. Paired hosts keep settings and release versions level without Desktop.
+Desktop also brings a Machine level as it connects and gives it credentials, so one that
+stays behind is one where that failed. Not "up to date",
 which is Desktop's own check for a newer release of itself.
 
 **Machine rule** — The human's own words, kept in Desktop's settings, about which Machine
@@ -172,12 +186,16 @@ an agent's.
 this record immediately. Unsolicited background suggestions remain pending.
 
 **Actor** — Who asked for an operation: the front door its channel declared (`board`,
-`desktop`, `cli-tty`, `cli`, `chat`, …) and the request id. The host records it in the Run's audit
+`desktop`, `cli-tty`, `cli`, `chat`, `agent`, …) and the request id. The host records it in the Run's audit
 trail with every start, answer, hold, stop, resume, offer invoked, grant, steer,
 disposition and follow-up. `board`, `desktop` and
 `cli-tty` are a human; `cli-tty` needs a terminal outside any agent's pane. A channel
 reached through `collie bridge` is the front door it was started as, and `desktop` adds
-where it came from: the computer it named and the SSH client the bridge saw. A chat's
+where it came from: the computer it named and the SSH client the bridge saw. Every front
+door's Actor names `from.machine` where the channel came from a **Peer**, stamped by the
+host that authenticated the link and never by a caller, and a host's own call to a peer is
+the `host` front door, which is never a human. An `agent` is never a human either;
+its `from.run` and `from.agent` name the launch or the registered pane. A chat's
 `collie_do` also names its conversation and carries the human's message from that turn,
 with the names of the **Attachments** it carried, attached by the tool host and never by
 the model.
@@ -195,6 +213,8 @@ delivery an older Collie held for the agent's next prompt), `reserved`, `deferre
 pane cannot take it yet, so it is tried again under the same id), `submitted`,
 `acknowledged`, `verified` and the terminal `failed`, `unknown`, `superseded`, `expired`.
 They are separate because they are separate facts. A `deliver` with no mode is `now`.
+A Delivery from an agent carries its sender line before the unchanged words: its agent,
+Run and Machine, and the tool and CLI address to answer.
 
 **Dispatcher** — The only code that sends text to an agent. Holds that agent's ledger lock
 across the compaction decision, the composition and the send.
@@ -454,6 +474,10 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 - `architecture` — runs the architect over the project and reports into its Run's plan directory.
 - `renovate` — claims the repository in Helle, merges or accounts for every Renovate Bot merge request, tags and watches the release, and records the result on the team's Renovate issue.
 - `general` — one agent does one ad-hoc task in place, in the checkout it was started for or at the Projects root, and the Run ends with the agent's summary. It is for whatever is not planning, building to a merge request, reviewing, renovating or surveying architecture. Work that should land as a merge request is `implement`'s (ADR-0056).
+
+- `investigate` — one investigator reproduces a goal on its Machine, returns findings and closes after its host reports to the requester.
+
+**Requester** — The agent Actor that started a Run, recorded as `requestedBy`: its Run, agent and Machine. Once the started Run settles, its host reports its status, summary or failure and where its full Output is to that address. The report records delivery or why it could not be delivered, without queuing later delivery. A Workflow declaring `closes: "reported"` then closes its own agents and its Task workspace when nothing else needs it.
 
 **Outcome** — The kind of result a Run has to prove, and the evidence that closes it: a feature names what it built, a bug reproduces before it is fixed, a refactor preserves behaviour, an investigation reaches a supported conclusion and may have no patch, docs run what they document, a migration proves it can go back. A Run nobody classified is `unspecified` and proves only its **Checks** — never a feature by default.
 

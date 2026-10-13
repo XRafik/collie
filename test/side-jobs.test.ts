@@ -5,7 +5,7 @@ import { Effect, FileSystem, Schedule, Schema, Stream } from "effect";
 import { readDispositions } from "../src/disposition";
 import { currentEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
-import { frontDoor } from "../src/host";
+import { frontDoor, socketOf } from "../src/host";
 import { newsPath, pending, read as readNews } from "../src/news";
 import { herdOf } from "../src/steering";
 import { writeTask } from "../src/task";
@@ -169,7 +169,7 @@ test(
           expect(started.envelope.ok).toBe(true);
           const herds = yield* Effect.scoped(
             Effect.gen(function* () {
-              const door = yield* frontDoor(world.state);
+              const door = yield* frontDoor(socketOf(world.state));
               const head = yield* Stream.runHead(door.board());
               return head._tag === "Some" && head.value._tag === "Snapshot" ? head.value.herds : [];
             }),

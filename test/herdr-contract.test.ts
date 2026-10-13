@@ -13,6 +13,7 @@ import { loadContract } from "./support/contract";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const repoFile = (name: string) => new URL(`../${name}`, import.meta.url).pathname;
 
 const pin = await runEffect(
@@ -261,3 +262,28 @@ test("a request missing a param herdr requires is reported", () => {
     "tab.move.insert_index is required by herdr, but the request omits it",
   ]);
 });
+
+// `machine list --json` answers with a bare array rather than an envelope, so herdr's
+// schema does not describe it either. This is the shape the pinned 0.9.3 prints for a
+// saved machine, read through the one call that asks it.
+test("machine list decodes what the pinned herdr prints, and keeps only the fields Collie reads", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const rig = yield* Rig.scoped();
+      const printed = [
+        {
+          id: "vm-mk",
+          label: "vm-mk",
+          target: "mk@10.1.70.29",
+          session: "default",
+          enabled: true,
+          last_seen: null,
+        },
+      ];
+      yield* Effect.promise(() => Bun.write(`${rig.logPath}.machines.json`, encodeJson(printed)));
+      const machines = yield* new Herdr(rig.pluginEnv()).machineList();
+      expect(machines).toEqual([
+        { id: "vm-mk", label: "vm-mk", target: "mk@10.1.70.29", session: "default", enabled: true },
+      ]);
+    }).pipe(Effect.orDie),
+  ));

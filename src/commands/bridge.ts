@@ -3,9 +3,10 @@
 // Started over SSH by Desktop, or locally without it. Nobody types it: a front door reads
 // past the ready marker and speaks the host's protocol from there.
 
-import { Option } from "effect";
+import { Effect, Option } from "effect";
 import { Command, Flag } from "effect/cli";
 import { bridge as pipeToHost } from "../bridge";
+import { root } from "./shared";
 
 export const bridge = Command.make(
   "bridge",
@@ -20,7 +21,10 @@ export const bridge = Command.make(
       Flag.optional,
     ),
   },
-  (flags) => pipeToHost(flags.as, Option.getOrNull(flags.client)),
+  (flags) =>
+    Effect.flatMap(root, (global) =>
+      pipeToHost(flags.as, Option.getOrNull(flags.client), Option.getOrNull(global.machine)),
+    ),
 ).pipe(
   Command.withDescription(
     "Pipe this Machine's host to stdio for a front door, starting the host if none runs",

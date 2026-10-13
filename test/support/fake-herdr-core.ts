@@ -351,6 +351,13 @@ function handle(
       }
     }
 
+    // herdr's saved SSH machines: `<log>.machines.json` where a test wrote one, none otherwise.
+    if (cmd === "machine list") {
+      const saved = `${log}.machines.json`;
+      const listed = (yield* fs.exists(saved)) ? yield* fs.readFileString(saved) : "[]";
+      return { code: 0, stdout: `${listed.trim()}\n`, stderr: "" };
+    }
+
     // Unset is a herdr from before `session list`, whose answer is no list at all.
     const sessions = yield* envString("FAKE_HERDR_SESSIONS");
     if (cmd === "session list" && sessions !== "") {
@@ -883,6 +890,14 @@ function handle(
           const rootTab = newTab(String(state.tabs + 1));
           result = { ...opened, tab: rootTab, root_pane: newPane(rootTab.tab_id) };
         }
+        break;
+      }
+      case "workspace close": {
+        const id = flag("--workspace");
+        state.workspaces = state.workspaces.filter((one) => one.workspace_id !== id);
+        state.closedWorkspaces.push(id ?? "");
+        state.paneList = state.paneList.filter((one) => one.workspace_id !== id);
+        result = { type: "ok" };
         break;
       }
       case "worktree remove": {

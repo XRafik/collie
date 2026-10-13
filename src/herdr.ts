@@ -26,6 +26,7 @@ import { isString } from "./schema";
 import { PLUGIN_ID } from "./env";
 import { reason } from "./naming";
 import { verifyIncarnation, type AgentEntry } from "./registry";
+import { HerdrMachine } from "./peers-model";
 
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "unknown";
 
@@ -50,6 +51,8 @@ export function herdrFailureReason(cause: unknown): string {
 }
 
 type HerdrEffect<A> = Effect.Effect<A, HerdrError, BunServices>;
+/** What running the CLI needs, and the fakes that answer for it. */
+type CliServices = ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path;
 type ExecResult = { code: number; stdout: string; stderr: string };
 type BoundaryValue = Schema.Json | string | undefined;
 type HerdrParams = Schema.JsonObject;
@@ -631,7 +634,7 @@ export class Herdr {
   constructor(private readonly env: PluginEnv) {}
 
   /** Runs the herdr CLI; parses stdout as JSON when it is JSON. */
-  cli(args: string[]): HerdrEffect<Schema.Json | string> {
+  cli(args: string[]): Effect.Effect<Schema.Json | string, HerdrError, CliServices> {
     const exec = this.exec.bind(this);
     return Effect.gen(function* () {
       const { code, stdout, stderr } = yield* exec(args);
@@ -654,7 +657,7 @@ export class Herdr {
   }
 
   /** The subprocess boundary alone, so a test double can answer in-process. */
-  protected exec(args: string[]): HerdrEffect<ExecResult> {
+  protected exec(args: string[]): Effect.Effect<ExecResult, HerdrError, CliServices> {
     const env = this.env;
     return Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -1024,6 +1027,13 @@ export class Herdr {
 
   agentList(): HerdrEffect<AgentInfo[]> {
     return this.cli(["agent", "list"]).pipe(Effect.flatMap(decodeAgentList));
+  }
+
+  /** herdr's saved SSH machines, which are the Machines this one may pair with. */
+  machineList(): Effect.Effect<ReadonlyArray<HerdrMachine>, HerdrError, CliServices> {
+    return this.cli(["machine", "list", "--json"]).pipe(
+      Effect.flatMap((reply) => decodeBoundary("machine list", Schema.Array(HerdrMachine), reply)),
+    );
   }
 
   /** Every herdr session on this computer that is running now. */

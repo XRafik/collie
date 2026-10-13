@@ -16,7 +16,7 @@ import { appendJournal, readJournal } from "./journal";
 import type { Metrics } from "./board-model";
 import { epochMs } from "./time";
 
-const MetricSchema = Schema.Struct({
+export const MetricSchema = Schema.Struct({
   at: Schema.String,
   kind: Schema.Literals([
     "context",

@@ -1,3 +1,4 @@
+import type { Asker } from "./proposals";
 import { Config, Effect, Option, Schema } from "effect";
 
 // Plugin environment as herdr hands it to an action or pane entrypoint.
@@ -52,6 +53,12 @@ export interface PluginEnv {
   cwdExplicit: boolean;
   context: PluginContext;
   raw: Record<string, string>;
+  /** The paired Machine a command was pointed at with `--machine`, for one that names no Run. */
+  machine?: string;
+  hostStamp?: string;
+  asker?: Asker;
+  /** A front door that can show an SSH login, which pairing on first reach needs. */
+  pairs?: boolean;
 }
 
 function first(env: Record<string, string | undefined>, ...keys: string[]): string | null {
@@ -165,6 +172,10 @@ const environmentKeys = [
   "COLLIE_BIN_DIR",
   "COLLIE_CWD",
   "COLLIE_MODE",
+  "COLLIE_RUN",
+  "COLLIE_AGENT",
+  "COLLIE_SSH_CONTROL",
+  "OPENCODE_CONFIG_CONTENT",
   // Which environment file Helle's credentials are read from, for a machine that keeps
   // them somewhere other than the MCP wrapper's default.
   "HELLE_ENV_FILE",

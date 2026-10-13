@@ -4,6 +4,7 @@
 import { Effect, FileSystem, Path, Result } from "effect";
 import { configValue, readConfig } from "./config";
 import type { PluginEnv } from "./env";
+import { projectFromRemote, shell } from "./mr";
 import { isString } from "./schema";
 
 export type ProjectsRootSource = "config" | "gitte" | "home";
@@ -57,4 +58,54 @@ export const checkoutsUnder = Effect.fn("Projects.checkoutsUnder")(function* (ro
     });
   yield* visit(root, 0);
   return found.sort();
+});
+
+export const repositoryCheckout = Effect.fn("Projects.repositoryCheckout")(function* (
+  env: PluginEnv,
+  named: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const expanded = named.startsWith("~/") ? path.join(env.home, named.slice(2)) : named;
+  const local = yield* fs.stat(path.resolve(env.cwd, expanded)).pipe(Effect.result);
+  if (
+    (Result.isSuccess(local) && local.success.type === "Directory") ||
+    named.startsWith("/") ||
+    named.startsWith(".") ||
+    named.startsWith("~")
+  )
+    return null;
+  const project = projectFromRemote(named.replace(/\/+$/, ""));
+  const bare = project === null && /^[^/:\s]+(?:\/[^/:\s]+)+$/.test(named);
+  if (project === null && !bare) return null;
+  const root = yield* projectsRoot(env);
+  const found: Array<{ path: string; remote: string }> = [];
+  for (const path of yield* checkoutsUnder(root.path)) {
+    for (const remote of ["origin", "upstream"]) {
+      const url = yield* shell("git", ["remote", "get-url", remote], path);
+      const configured = yield* shell("git", ["config", "--get", `remote.${remote}.url`], path);
+      const names = [url, configured]
+        .filter((one) => one.code === 0)
+        .map((one) => projectFromRemote(one.stdout));
+      if (
+        names.some(
+          (actual) =>
+            actual !== null &&
+            (project === null
+              ? actual.slice(actual.indexOf("/") + 1) === named
+              : actual === project),
+        )
+      ) {
+        found.push({ path, remote });
+        break;
+      }
+    }
+  }
+  if (found.length === 1) return found[0]!;
+  return {
+    error:
+      found.length === 0
+        ? `No checkout whose origin or upstream names "${named}" under the Projects root ${root.path}.`
+        : `"${named}" names ${found.length} checkouts under ${root.path} (${found.map((one) => one.path).join(", ")}); name its path.`,
+  };
 });

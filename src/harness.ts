@@ -3,7 +3,7 @@
 
 import { Effect, FileSystem, Option, Schema } from "effect";
 import type { PluginEnv } from "./env";
-import { isString } from "./schema";
+import { isJsonObject, isString, type JsonObject } from "./schema";
 import { type AutoCompactWindow, autoCompactWindowOf, PERMISSION_MODES } from "./settings";
 import { claudeTrust, type Trust } from "./trust";
 import { DEFAULT_MODEL, HARNESS_MODELS, type HarnessModels } from "./harness-choice";
@@ -86,6 +86,14 @@ export const claudeForbidsBypass = Effect.fn("Harness.claudeForbidsBypass")(func
   return false;
 });
 
+export interface McpLaunch {
+  readonly command: ReadonlyArray<string>;
+  readonly env: Readonly<Record<string, string>>;
+  readonly config: string;
+  readonly extension: string;
+  readonly settings?: JsonObject;
+}
+
 export interface HarnessAdapter extends HarnessModels {
   id: string;
   /** herdr agent kind, i.e. the canonical executable. */
@@ -115,6 +123,10 @@ export interface HarnessAdapter extends HarnessModels {
   autoCompactFlag?: string;
   /** Present when the harness asks before it will work in a directory. */
   trust?(home: string, backupDir: string): Trust;
+  mcp(launch: McpLaunch): {
+    readonly args: string[];
+    readonly env: Readonly<Record<string, string>>;
+  };
   /**
    * What the human channel types to *start* a skill in this harness. The skills
    * themselves are shared — `~/.agents/skills`, installed by skills.sh — so only the
@@ -138,6 +150,7 @@ export const HARNESSES: Harnesses = {
   claude: {
     id: "claude",
     kind: "claude",
+    mcp: ({ config }) => ({ args: ["--mcp-config", config], env: {} }),
     skillCommand: (name) => `/${name}`,
     stuckHint:
       "check your background shells with `/bashes`, read or kill any that will not finish (`BashOutput`, `KillShell`), and continue from there.",
@@ -156,6 +169,19 @@ export const HARNESSES: Harnesses = {
   codex: {
     id: "codex",
     kind: "codex",
+    mcp: ({ command, env }) => ({
+      args: [
+        "-c",
+        `mcp_servers.collie.command=${JSON.stringify(command[0])}`,
+        "-c",
+        `mcp_servers.collie.args=${JSON.stringify([...command.slice(1), "mcp"])}`,
+        ...Object.entries(env).flatMap(([key, value]) => [
+          "-c",
+          `mcp_servers.collie.env.${key}=${JSON.stringify(value)}`,
+        ]),
+      ],
+      env: {},
+    }),
     skillCommand: (name) => `the ${JSON.stringify(name)} skill`,
     modelArgs: (model) => ["-m", model],
     permissionArgs: {
@@ -167,6 +193,7 @@ export const HARNESSES: Harnesses = {
   pi: {
     id: "pi",
     kind: "pi",
+    mcp: ({ extension }) => ({ args: ["-e", extension], env: {} }),
     skillCommand: (name) => `/skill:${name}`,
     modelArgs: (model) => ["--model", model],
     // pi reads a path here as file contents, so the persona file can be passed directly.
@@ -179,6 +206,27 @@ export const HARNESSES: Harnesses = {
   opencode: {
     id: "opencode",
     kind: "opencode",
+    mcp: ({ command, env, settings = {} }) => {
+      const prior = settings.mcp;
+      const mcp: JsonObject = isJsonObject(prior) ? prior : {};
+      return {
+        args: [],
+        env: {
+          OPENCODE_CONFIG_CONTENT: JSON.stringify({
+            ...settings,
+            mcp: {
+              ...mcp,
+              collie: {
+                type: "local",
+                command: [...command, "mcp"],
+                environment: env,
+                enabled: true,
+              },
+            },
+          }),
+        },
+      };
+    },
     skillCommand: (name) => `the ${JSON.stringify(name)} skill`,
     modelArgs: (model) => ["--model", model],
     // No auto mode: its `--auto` approves every call rather than reviewing it.

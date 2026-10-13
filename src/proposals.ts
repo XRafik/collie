@@ -6,7 +6,7 @@
 // Nothing here runs an action: `confirm` returns the actions that may run, and who runs
 // them is `executors.ts` and the front door's business.
 
-import type { FrontDoor } from "./board-model";
+import type { FrontDoor, Where } from "./board-model";
 import { Data, DateTime, Duration, Effect, FileSystem, Path, Schema } from "effect";
 import type { Action, ActionKind } from "./actions";
 import { ActionSchema } from "./actions";
@@ -200,6 +200,7 @@ export const record = Effect.fn("Proposals.record")(function* (file: string, wha
 export interface Actor extends Voice {
   readonly origin: FrontDoor;
   readonly requestId: string;
+  readonly from?: Where | undefined;
 }
 
 /** Where a chat acted, and what the human said that turn: attached by the tool host, never the model. */

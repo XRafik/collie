@@ -10,15 +10,14 @@ import { Effect, Option } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { err } from "../operations";
 import {
+  asksRun,
   confirmProposed,
   declineProposed,
   reconcileDelivered,
   reconcileProposed,
   steerAbout,
 } from "../lifecycle";
-import { findRun } from "../runs";
 import { journalOf, read as readProposals, type ProposalRecord } from "../proposals";
-import { deliveriesOf } from "../steering";
 import { mutation } from "../envelope";
 import { answering, cliDoor, mutating, runIdArg, requestIdFlag } from "./shared";
 
@@ -139,29 +138,31 @@ export const runDeliveries = Command.make(
   ({ runId, reconcile, as, requestId }) =>
     answering((env) =>
       Effect.gen(function* () {
-        if ((yield* findRun(env, runId)) === null)
-          return err("run_not_found", `No Run "${runId}".`);
-        const mine = yield* deliveriesOf(env.stateDir, runId);
+        const read = yield* asksRun(
+          env,
+          runId,
+          (client) => client.deliveries({ runId }),
+          yield* cliDoor(env),
+        );
+        if (!read.ok) return read;
+        const mine = read.value;
+        if (mine === null) return err("run_not_found", `No Run "${runId}".`);
 
         const settleId = Option.getOrNull(reconcile);
         if (settleId === null)
           return {
             ok: true as const,
-            data: { deliveries: mine.map((entry) => entry.delivery) },
+            data: { deliveries: mine },
             human:
               mine
-                .map((e) =>
-                  [e.delivery.id, e.delivery.state, e.delivery.cause.kind, e.delivery.note ?? ""]
-                    .join("\t")
-                    .trimEnd(),
-                )
+                .map((e) => [e.id, e.state, e.cause.kind, e.note ?? ""].join("\t").trimEnd())
                 .join("\n") || "Nothing has been sent to this Run's agents.",
           };
 
         const how = Option.getOrNull(as);
         if (how !== "sent" && how !== "not-sent")
           return err("invalid_input", "--as is `sent` or `not-sent`.");
-        if (!mine.some((entry) => entry.delivery.id === settleId))
+        if (!mine.some((entry) => entry.id === settleId))
           return err("invalid_input", `No delivery "${settleId}" for this Run.`);
         const door = yield* cliDoor(env);
         return yield* mutation(env, "run-deliveries-reconcile", requestId, (id) =>

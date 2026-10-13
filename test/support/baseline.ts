@@ -37,7 +37,8 @@ import { VerifySpecSchema } from "../../src/verify-spec";
 import { collect, readVerifications } from "../../src/verify";
 import { inputsFor, offersFrom } from "../../src/offers";
 import { Store } from "../../src/store";
-import { registerAgent, registryPath, scopeFor } from "../../src/registry";
+import { everyRegistered, registerAgent, registryPath, scopeFor } from "../../src/registry";
+import { deliveriesOf } from "../../src/steering";
 import { fixtures, until } from "./host";
 
 const ROOT = new URL("../../", import.meta.url).pathname;
@@ -48,6 +49,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  investigate: "find-the-cause",
   general: "odd-job",
 } as const;
 type Shipped = keyof typeof UNRELATED;
@@ -473,6 +475,55 @@ scenario("a plan at the Projects root is told the root is not a repository", () 
       expect(interview).toContain("Each ticket's `Repo:` is a path relative to\nit.");
     }),
   ),
+);
+
+scenario(
+  "an implementer asks its live planner through a recorded Delivery",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([GRILLED, SPEC, TICKETS]);
+        yield* parked({ entry: shipped("plan"), runId: "r-plan", input: GOAL, decision: "next-1" });
+        const planner = (yield* everyRegistered(hostOf().env.stateDir)).find(
+          (one) => one.runId === "r-plan",
+        )!;
+        const route = yield* session(
+          Agents.pipe(Effect.flatMap((agents) => agents.askRoute("planner", ["r-impl", "r-plan"]))),
+        );
+        expect(route).toContain(`collie_do deliver to r-plan, agent ${planner.agent}`);
+        expect(route).not.toContain("herdr agent prompt");
+        const sent = yield* session(
+          Agents.pipe(
+            Effect.flatMap((agents) =>
+              agents.steer({
+                runId: "r-plan",
+                agent: planner.agent,
+                text: "Which ticket first?",
+                request: "planner-question",
+                mode: "boundary",
+                actor: {
+                  origin: "agent",
+                  from: {
+                    run: "r-impl",
+                    agent: "implementer",
+                    machine: { name: "laptop", installation: "laptop-installation" },
+                  },
+                },
+              }),
+            ),
+          ),
+        );
+        expect(sent.delivered).toBe(true);
+        expect((yield* prompts()).at(-1)).toContain("From implementer of r-impl on laptop.");
+        expect(
+          (yield* deliveriesOf(hostOf().env.stateDir, "r-plan")).some(
+            (one) =>
+              one.delivery.cause.ref === "planner-question" && one.delivery.state === "submitted",
+          ),
+        ).toBe(true);
+      }),
+    ),
+  120_000,
 );
 
 scenario(
@@ -1717,6 +1768,35 @@ const ran = (options: {
     }),
     options.host,
   );
+
+scenario(
+  "investigate asks one investigator and returns findings without proof or offers",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const output = {
+          summary: "The peer build is stale",
+          findings: [{ what: "A cached build", evidence: "MachinesPage.vue:12" }],
+        };
+        yield* rig.queueOutputs([output]);
+        const result = yield* ran({
+          entry: shipped("investigate"),
+          runId: "r-investigate",
+          input: { goal: "Why is the peer behind?" },
+        });
+        expect(result).toMatchObject({ _tag: "Success", success: output });
+        const messages = yield* prompts();
+        expect(messages).toHaveLength(1);
+        expect(yield* asked("r-investigate", "investigate")).toContain("Why is the peer behind?");
+        expect(yield* persona("r-investigate", "investigate")).toContain("investigator");
+        const entry = yield* loadEntry(shipped("investigate"));
+        expect(entry.metadata?.closes).toBe("reported");
+        expect(entry.metadata?.outcome).toBeUndefined();
+        expect(entry.metadata?.followUps ?? []).toHaveLength(0);
+      }),
+    ),
+  120_000,
+);
 
 const asApproved = Schema.encodeSync(Schema.fromJsonString(Schema.Array(VerifySpecSchema)));
 const asJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Any));

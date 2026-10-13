@@ -8,7 +8,7 @@ import { readIntent, seedIntent, writeIntent } from "../src/intent";
 import { appendMetric } from "../src/metrics";
 import { hosted, settledRun } from "./support/hosted";
 import { evidenceDir } from "../src/engine";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { readAudit } from "../src/audit";
 import { VerifySpecSchema } from "../src/verify-spec";
 
@@ -394,20 +394,35 @@ test(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const bin = yield* fs.makeTempDirectoryScoped({ prefix: "collie-bin-" });
-        const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "collie-target-" });
-        const git = (...args: string[]) =>
-          exec(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
-            cwd: checkout,
-          });
-        yield* git("init", "-q", "-b", "topic");
-        yield* git("commit", "-q", "--allow-empty", "-m", "base");
-        yield* git("remote", "add", "origin", "git@gitlab.example.com:team/project.git");
-        yield* fs.writeFileString(join(bin, "glab"), `#!/bin/sh\necho '[{"iid": 42}]'\n`, {
-          mode: 0o755,
+        const checkout = join(bin, "project");
+        yield* fs.makeDirectory(checkout);
+        yield* exec(["git", "init", "-q"], { cwd: checkout });
+        yield* exec(
+          [
+            "git",
+            "-c",
+            "user.email=t@example.test",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+          ],
+          { cwd: checkout },
+        );
+        yield* exec(["git", "remote", "add", "origin", "git@gitlab.example.com:group/app.git"], {
+          cwd: checkout,
         });
+        yield* fs.writeFileString(
+          join(bin, "glab"),
+          `#!/bin/sh\necho '[{"iid": 42, "state": "opened", "title": "t"}]'\n`,
+          { mode: 0o755 },
+        );
         const bare = yield* cli(
           ["--json", "run", "start", "review", "--input", "plan=", "--input", "proves="],
-          { COLLIE_CWD: checkout, PATH: `${bin}:/usr/bin:/bin` },
+          { PATH: `${bin}:/usr/bin:/bin`, COLLIE_CWD: checkout },
         );
         expect(yield* parseEnvelope(bare.stdout)).toMatchObject({
           ok: false,
@@ -516,6 +531,7 @@ test(
             "-m",
             "first",
           ],
+          ["remote", "add", "upstream", "git@gitlab.example.com:group/app.git"],
         ])
           yield* exec(["git", ...args], { cwd: checkout });
         const starts = yield* documentedStarts();
@@ -944,7 +960,7 @@ test("usage is each Subscription's reading in the standard envelope, and says wh
       ]);
 
       // Past the trail's length, reads at once each record and the trim keeps the newest.
-      const door = yield* frontDoor(state);
+      const door = yield* frontDoor(socketOf(state));
       yield* Effect.forEach(Array.from({ length: 230 }), () => door.usage(), {
         concurrency: "unbounded",
       });

@@ -1,3 +1,4 @@
+/** One shell argument, with its contents kept literal. */
 export function shellQuote(text: string): string {
   return `'${text.replace(/'/g, `'\\''`)}'`;
 }

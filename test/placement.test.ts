@@ -77,7 +77,7 @@ const gitRepo = Effect.fn("test.gitRepo")(function* (at: string) {
     );
   yield* git("init", "--quiet", "-b", "master");
   yield* git("commit", "--quiet", "--allow-empty", "-m", "init");
-  yield* git("remote", "add", "upstream", "git@gitlab.example.com:team/project.git");
+  yield* git("remote", "add", "upstream", "git@gitlab.example.com:group/app.git");
 });
 
 /** The sockets `session list` names, or null for a herdr that will not list them. */

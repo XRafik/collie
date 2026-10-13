@@ -122,6 +122,7 @@ export interface BranchAsk {
  * answer the branch resolver learns to take is not a second edit here.
  */
 export interface CheckoutAsk extends BranchAsk {
+  branchBase?: string | undefined;
   /** What this Run is called, for the tab a new checkout opens in. */
   workflow: string;
   /** What the Workflow declared it needs of the repository. */
@@ -982,6 +983,29 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
 
   const plan = yield* branchFor(opts);
   if (plan.refused) return { ...here, refused: plan.refused } satisfies Checkout;
+  if (opts.branchBase !== undefined) {
+    const local = yield* shell(
+      "git",
+      ["rev-parse", "--verify", "--quiet", `refs/heads/${plan.branch}`],
+      opts.cwd,
+    );
+    if (local.code === 0 && local.stdout.trim() !== opts.branchBase)
+      return {
+        ...here,
+        refused: `Local branch ${plan.branch} differs from the fetched revision; preserve or move it before starting remotely.`,
+      };
+    const trees = yield* gitWorktrees(shell, opts.cwd);
+    const existing = trees?.checkouts.find((one) => one.branch === plan.branch);
+    if (existing !== undefined) {
+      const dirty = yield* shell("git", ["status", "--porcelain"], existing.path);
+      if (dirty.code !== 0 || dirty.stdout.trim() !== "")
+        return {
+          ...here,
+          refused: `The checkout of ${plan.branch} has local changes; preserve them before starting remotely.`,
+        };
+    }
+    plan.base = opts.branchBase;
+  }
   here.branch = plan.branch;
   here.task = plan.task;
   here.branchSource = plan.source;

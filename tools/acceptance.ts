@@ -80,6 +80,7 @@ const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const MACHINES = "machines reach each other (this MR)";
 const FORGES = "GitHub and GitLab, equally well (this MR)";
 const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 const CHECKS_UNASKED = "checks run without asking (this MR)";
@@ -1498,6 +1499,187 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "From the Home, start review and type `https://github.com/cego/collie/pull/<n>` as its target. Record the checkout it says it starts in and the Run's target from `collie run show`, which reads `mr:github.com/cego/collie#<n>`. Record the revision.",
+    },
+  },
+  {
+    id: "ui/desktop-reaches-a-paired-machine-without-ssh",
+    statement:
+      "Desktop reaches a paired Machine, upgrades it and gives it credentials without SSH.",
+    owner: MACHINES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-peers.test.ts",
+      name: "Desktop reads a paired board and runs commands and credentials over its link, with SSH used only on demand",
+    },
+  },
+  {
+    id: "machines/desktop-opens-the-link-before-ssh",
+    statement:
+      "Desktop reopened on the laptop shows vm-mk live without SSO; Go to pane opens one SSH master on first use.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Quit and reopen Desktop on mk's laptop, record vm-mk live through Paired link without SSO, then Go to pane twice and record one approval per Desktop session. Record the revision.",
+    },
+  },
+  {
+    id: "backend/a-command-reaches-the-machine-that-has-its-run",
+    statement:
+      "A command about a Run reaches the Machine that has it, recorded as its front door from this Machine.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peers.test.ts",
+      name: "a command about a Run on a Machine herdr lists pairs the two by itself and reaches the Run, recorded as its front door from this Machine",
+    },
+  },
+  {
+    id: "backend/remote-run-records-and-intent-use-the-owning-host",
+    statement:
+      "Run records, Intent changes, remembered checks, override clearing and verification reach the owning Machine from a caller with no Runs.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/remote-cli.test.ts",
+      name: "every Run record and Intent mutation reaches its owning Machine from an empty caller",
+    },
+  },
+  {
+    id: "backend/a-remote-check-log-streams-live",
+    statement:
+      "A remote check's CLI follow prints its output while the owning host's check is still running.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/remote-cli.test.ts",
+      name: "a remote check's CLI follow prints output while the owning host's marker is still present",
+    },
+  },
+  {
+    id: "backend/an-undialable-machine-is-reached-by-dial-back",
+    statement:
+      "A Machine that cannot be dialled is reached by dial-back, and one that is away is refused within five seconds.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peers.test.ts",
+      name: "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
+    },
+  },
+  {
+    id: "backend/paired-machines-share-settings-without-desktop",
+    statement: "Paired Machines keep each other's settings level without Desktop.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peer-settings.test.ts",
+      name: "paired hosts share the latest settings without Desktop, keep edit times and leave gitlab_host local",
+    },
+  },
+  {
+    id: "backend/paired-machines-level-their-releases",
+    statement: "Paired Machines keep each other's release level without Desktop.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/peer-settings.test.ts",
+      name: "the newer paired release upgrades the older one, replaces its host and restores the link",
+    },
+  },
+  {
+    id: "backend/agents-on-different-machines-message-each-other",
+    statement:
+      "Two Runs' agents on different Machines message each other, and each message names its sender.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/agent-origin.test.ts",
+      name: "two paired hosts carry an agent conversation and resolve Native chat reads by Run",
+    },
+  },
+  {
+    id: "backend/a-remote-run-reports-and-closes",
+    statement:
+      "A Run an agent starts on another Machine reports back to it and closes once it has.",
+    owner: MACHINES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/reports.test.ts",
+      name: "a Run started by an agent on another Machine reports back and closes",
+    },
+  },
+  {
+    id: "machines/a-vm-investigation-reports-from-the-laptop",
+    statement:
+      "A VM implementer asks the laptop to investigate Desktop on its branch, receives the findings and sees the laptop workspace close.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Start investigate on mk-laptop from the VM's live implement agent, reproduce a Machines page state, and record the findings Delivery, automatic workspace close and revision.",
+    },
+  },
+  {
+    id: "machines/an-implementer-asks-a-remote-planner",
+    statement:
+      "A live Claude implementer on the laptop asks a VM planner a question and gets the answer.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Ask the laptop implementer to message the VM planner using collie_do; record both sender lines, the reply and the revision.",
+    },
+  },
+  {
+    id: "machines/a-steer-reaches-a-vm-run-from-the-laptop",
+    statement:
+      "With Desktop closed and vm-mk in the laptop's herdr, `collie run steer <a vm-mk Run> \"hello\"` on the laptop asks for one SSO approval the first time only and reaches that Run's agent; the Run's audit names the laptop, and `collie machine list` on both shows the other as live.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk's laptop, with Desktop closed, run `collie run steer <a vm-mk Run's id> \"hello\"` twice. Record the one SSO approval, that the VM agent's pane shows hello, the Run's `operations.jsonl` line with `from.machine`, and `collie machine list` on both Machines. Record the revision.",
+    },
+  },
+  {
+    id: "machines/dial-back-recovers-after-sleep",
+    statement:
+      "With Desktop closed, the VM reaches the laptop's board and Runs; after five minutes asleep, the laptop reconnects within a minute without SSO.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk run `collie --machine mk-laptop --json board`, start and steer a laptop Run. Close the laptop's lid for five minutes and reopen it. Record the board returning within a minute, no SSO prompt, and the revision.",
+    },
+  },
+  {
+    id: "machines/hosts-share-settings-and-releases-with-desktop-closed",
+    statement:
+      "With Desktop closed, an edit on vm-mk reaches the laptop and an upgrade on the laptop brings vm-mk along.",
+    owner: MACHINES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Change model in vm-mk's TUI Settings and read it on the laptop within a minute. Upgrade only the laptop; record both Machines on the same release within a minute, and the revision.",
     },
   },
 ];

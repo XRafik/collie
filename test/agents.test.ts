@@ -1025,6 +1025,7 @@ test("a waiting agent switches when a fallback is configured after it ran out", 
           while (!(yield* read(`${dir}/agents/r1/agents.log`)).includes("nothing has room"))
             yield* TestClock.withLive(Effect.sleep("10 millis"));
           fallbacks = ["codex/gpt-6.1-sol"];
+          yield* TestClock.adjust("1 minute");
         }),
       );
       const result = yield* session(started("r1"), {
@@ -1502,7 +1503,10 @@ test("a Claude Code agent is started with a 400000 auto-compact window when none
       yield* session(started("r1"));
 
       const args = launchArgs(yield* rig.calls());
-      expect(args.slice(-2)).toEqual(["--autocompact", "400000"]);
+      expect(args.slice(args.indexOf("--autocompact"), args.indexOf("--autocompact") + 2)).toEqual([
+        "--autocompact",
+        "400000",
+      ]);
       expect(yield* read(`${dir}/agents/r1/agents.log`)).toContain(
         "permissions auto, auto-compact window 400000",
       );
@@ -1860,6 +1864,10 @@ test("a question and a hand-off stay in the asking Run's lineage, whoever else r
       const route = yield* session(asked(["r-plan.implement", "r-plan"]));
       expect(route).toContain("`plan-grill`");
       expect(route).not.toContain("other-grill");
+      expect(route).toContain("collie_do deliver to r-plan, agent plan-grill");
+      expect(route).toContain("collie run steer r-plan --operation plan-grill");
+      expect(route).not.toContain("herdr agent prompt");
+      expect(route).not.toContain("herdr agent read");
       expect(yield* session(asked(["r-lonely"]))).toContain("There is no planner live");
 
       const handed = (lineage: ReadonlyArray<string>) =>

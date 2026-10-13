@@ -19,11 +19,67 @@ Put these before the subcommand:
 | ------------------- | ------------------------------------------------------------------ |
 | `--json`            | Emit one machine-readable envelope instead of text.                |
 | `--workspace <id>`  | Scope to that herdr workspace, and root the run at its directory.  |
+| `--machine <name>`  | Reach that paired Machine, by herdr's name for it.                 |
 | `--log-level <lvl>` | `all`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `none`. |
 
 ```sh
 collie --json --workspace wT run start plan --input goal="ship it"
 ```
+
+`--machine` is for a command that names no Run: `board`, `run start` and `run list`. A
+command that names a Run needs none (see [Another Machine's Runs](#another-machines-runs)).
+A start on another Machine opens its own Task there, so `--task`, `--continue-task` and
+`--here` are refused with it, and the module is the one that Machine has saved.
+
+## Another Machine's Runs
+
+A Run id names one Run, so a command about one goes to the Machine that has it: `run show`,
+`run wait`, `run steer`, `run answer`, `run hold`, `run stop`, `run resume`, `run action`,
+`run follow-up`, the Run's records (`output`, `metrics`, `cards`, `drift`, `disposition`,
+`deliveries` and `checks`), Intent edits and `verify` ask this Machine's host first, then each paired Machine, then each
+machine herdr lists that is not paired yet, pairing it on the way. The envelope is the one
+the command gives at home; `run show` adds `machine`, the Machine the Run is on. A Run no
+Machine has is `run_not_found`, and its `details` name every Machine asked (`machines`) and
+any that did not answer (`away`).
+
+Intent edits, override clearing and remembered checks execute on the owning host, with
+the caller recorded. `verify` runs inside its checkout and streams output back.
+`run checks --follow` streams that host's live log; paths it returns belong to that Machine.
+
+Adding a Machine to herdr (`herdr machine add`) is all it takes. The first command that
+reaches it pairs the two over its SSH login, which asks for that login's approval once,
+where the command runs; from then on the Machines talk over a TLS WebSocket the dialled
+one listens for on port 47217, with no SSH. Removing the Machine from herdr forgets the
+pairing on both sides. A host's own jobs never start an SSH login, so a Machine no command
+has reached yet is `invalid_state` for them: not paired yet.
+
+The receiving host records each operation as the front door that asked — `cli`, or
+`cli-tty` for a person at a terminal — with `from.machine` naming the Machine it came from
+(the installation id and the name it was paired under).
+
+### `collie machine`
+
+```sh
+collie machine list
+collie machine invite --for <installation> --name <name> [--address <host>]
+```
+
+`list` names each Machine paired with this one, which side dials (`out`: this one dials it;
+`in`: it dials this one), and whether it answers now. Its `data.machines` is each one's
+`installation`, `name`, `dials`, `url`, `build` (last read, or null), `state` (`live`, `connecting` or `away`), `since`
+and `failure`, never the secret. `data.build` is this Machine's build. A listener that could not take its port says why in
+`failure`.
+
+`live` means the control link is up. `connecting` names the dialler's last failure while
+it retries. `away` says when the listener lost its peer's control link and why. A call
+to an away Machine is `machine_unreachable`, with its name and what was seen, within
+five seconds. After sleep, the dialling host reconnects without an SSH login.
+
+`invite` is plumbing: it is what pairing runs on the other Machine over SSH, and nobody
+types it. It makes this Machine's certificate the first time (with `openssl`, an EC P-256
+key, its names and addresses and `--address` on it), mints a secret for the installation
+asking, keeps the pairing and starts the listener. Its `data` is this Machine's
+`installation`, the `port`, the `certificate` and the `secret`.
 
 ## Where a run roots
 
@@ -36,8 +92,9 @@ pick one of:
 - Pass `--workspace <id>`, which re-roots the run at that workspace's directory as well as
   scoping to it.
 
-`collie run list` lists every run, unless the selected workspace is a task workspace — then
-it lists that Task's. See [Tasks](#tasks).
+`collie run list` lists local and live peers' Runs with their `machine`. Its JSON includes
+`machines`, naming any peer that was away. A selected Task narrows local Runs to that
+Task; peer Runs stay visible. `--machine` lists only that Machine. See [Tasks](#tasks).
 
 ## Discover what is available
 
@@ -334,7 +391,7 @@ renaming a task workspace by hand changes nothing about what belongs to it, and 
 does not rename it back. See [Using Collie](using.md#what-a-task-workspace-is-called).
 
 Runs are scoped by Task, not by workspace. `collie run list` inside a task workspace lists
-that Task's Runs; anywhere else it lists every Run, and a Run is reachable by id from the
+that Task's local Runs and live peers' Runs; elsewhere it lists every reachable Run. A Run is reachable by id from the
 workspace it was started in. `--workspace <id>` picks which workspace that is.
 
 Checkouts are unchanged: a mutating run still gets a worktree of its own, keyed by its
@@ -1309,6 +1366,7 @@ human line and a failure prints `error.message`.
 | `target_exists`       | A fork would overwrite a file that is already there.                                                               |
 | `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                             |
 | `timeout`             | `run wait --timeout` gave up.                                                                                      |
+| `machine_unreachable` | A paired Machine did not answer within its bound; `details` name the `machine` and what was `seen`.                |
 | `invalid_state`       | The run, or the installation, is not in a state where that makes sense — `upgrade --to` on a development checkout. |
 | `invalid_input`       | A flag or argument was wrong.                                                                                      |
 | `operation_failed`    | Anything else, including a caught defect.                                                                          |
@@ -1487,8 +1545,8 @@ it does on any platform; `upgrade` stages nothing for it.
 collie upgrade --to 0.27.0
 ```
 
-Moves a released install to exactly that version (fetching tags, then resetting to the
-tag), and reports the same way, with `data.version`. A development checkout — on a branch
+Moves a released install to exactly that version (fetching tags and resetting a checkout
+to the tag, or fetching the signed runner for a plain install), and reports the same way, with `data.version`. A development checkout — on a branch
 other than `master`, detached on a commit that is not a release, with uncommitted changes,
 or ahead of its remote — is refused as `invalid_state` with the reason, and its checkout is left as it was.
 A host's `identity` names such a checkout's build as `development: "<version>+<sha>"`.
@@ -1650,8 +1708,11 @@ over — by its recorded start time, so a pid that now belongs to an unrelated p
 never adopted and never signalled.
 
 Clients talk to it over a unix socket in that same directory, with Effect's own RPC: the
-same schemas at both ends, and nothing listening off this machine. It answers `identity`,
-`discover`, `load`, `registrations`, `status`, `run`, `runs`, `watch`, `recover`, `offers`, `grant` and `steer` — one
+same schemas at both ends. Nothing listens off the Machine until another Machine pairs with
+it and dials it; then the host also listens on port 47217, over TLS, for that paired
+installation alone, and declares each channel it takes on its own socket
+([ADR-0057](adr/0057-a-machine-reaches-another-over-a-paired-link.md)). It answers `identity`,
+`discover`, `load`, `registrations`, `status`, `run`, `runs`, `watch`, `recover`, `offers`, `grant`, `steer`, `shown` (what `run show` prints) and, for pairing, `invite`, `pair`, `forget` and `peers`, plus `refresh` for release levelling — one
 registry, in front of as many clients as ask. `run` and `runs` are the read model the front
 doors show; `watch` streams it, current state first and a whole state each time; `recover`
 registers what current files now allow and hands over what is outstanding. One fiber in the
@@ -1704,11 +1765,12 @@ the human's message that turn as its tool host heard it; the host puts both in t
 everything done on that channel, the executors' own operations included.
 
 ```sh
-collie bridge --as <board|desktop|chat> [--client <name>]
+collie bridge --as <board|desktop|chat> [--client <name>] [--machine <name>]
 ```
 
 A front door on another computer reaches the host through this, run on the Machine — over
-SSH for Desktop, or spawned without it for Local. It starts the host if none runs, handing
+SSH for an unpaired Machine, or spawned locally for Local and a paired Machine.
+With `--machine`, it pipes Local's relay to the paired Machine. It starts the host if none runs, handing
 it the state directory and the herdr session socket (asked of `herdr status server` when a
 login shell sets none), declares the channel as the front door it was started as, prints
 `collie-bridge-ready` on a line of its own, and from then on copies bytes between its stdio
@@ -1870,3 +1932,30 @@ rather than a module reported as fine.
 The `effect` the toolchain pins is the one the host runs, and at runtime the executable
 serves its own `effect` and `collie` to the module it loads, so what an author typechecks
 against and what executes are the same Effect.
+
+### A shell over a front door
+
+`shell({script, stdin?, request})` runs a script in this Machine's login shell. It returns
+`{code, stdout, stderr}` and is bounded at ten minutes, including waiting for another
+shell call. More than 1 MiB of combined output is refused. A process that ignores termination
+is killed after one second. The host records its Actor and
+request in the shell audit. Stdin is hashed in the request record, so tokens passed on
+stdin are not copied into it. Desktop uses this operation for a paired Machine's
+commands and credentials.
+
+Hosts share settings without Desktop. When paired releases differ, the newer host
+upgrades the older one through `shell`. The `refresh` operation starts the
+older Machine's own new CLI detached; that client replaces its host. Clients wait for
+levelling within five seconds. Development checkouts are left alone and a mismatch names
+both builds.
+
+## An agent's commands
+
+A CLI command in a registered Run agent's pane records `origin: "agent"`, with its Run,
+agent name and Machine. A pane herdr cannot name stays `cli`. MCP uses the same origin,
+from the environment Collie writes at launch. A tool argument cannot name a sender.
+`run show` lists the agent names that `--operation` and `collie_do deliver` take.
+See [agents talking to each other](using.md#agents-talking-to-each-other).
+
+`run deliveries <id>` finds the Machine that holds the Run, as other Run reads do.
+Its `--reconcile` write is carried out there through the same host, under its request id.

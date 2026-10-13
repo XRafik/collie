@@ -34,6 +34,7 @@ import {
 } from "./steering";
 import { gate, interruptKeys } from "./steering-caps";
 import { nowIso, took, epochMs } from "./time";
+import type { Asker } from "./proposals";
 
 /** How long a message may sit `reserved` before a later reader calls it `unknown`. */
 export const SUBMIT_TIMEOUT_MS = 60_000;
@@ -44,6 +45,14 @@ const LISTING_MAX_AGE_MS = 5_000;
 /** A resource limit, not a style rule: one send is one message, not a transcript. */
 export const MAX_DELIVERY_BYTES = 8 * 1024;
 
+/** The exact message whose size is bounded and which reaches the agent. */
+export const deliveryText = (words: string, actor?: Asker): string => {
+  const sender = actor?.origin === "agent" || actor?.origin === "host" ? actor.from : undefined;
+  return sender?.run !== undefined && sender.agent !== undefined
+    ? `From ${sender.agent} of ${sender.run} on ${sender.machine?.name ?? sender.client ?? "this Machine"}. Answer with collie_do deliver to ${sender.run} (or collie run steer ${sender.run} --operation ${sender.agent} "…").\n${words}`
+    : words;
+};
+
 export interface DeliveryDraft {
   readonly run: string;
   /** Which harness is in that pane, so `now` and `interrupt` can be gated on it. */
@@ -53,6 +62,7 @@ export interface DeliveryDraft {
   readonly intentVersion: number;
   readonly attempt: number;
   readonly requestId: string;
+  readonly actor?: Asker;
   readonly note?: string;
   /**
    * How long a refusal herdr calls momentary may hold before this sender gives up, from
@@ -212,8 +222,9 @@ export const transaction = Effect.fn("Dispatcher.transaction")(function* <A, E, 
       let closed = false;
       const channel: Channel = {
         agent: entry.agent,
-        submit: (text, draft) =>
+        submit: (words, draft) =>
           Effect.gen(function* () {
+            const text = deliveryText(words, draft.actor);
             if (closed)
               return yield* new DispatcherDefect({
                 why: `${entry.agent}'s channel was used after its transaction closed`,

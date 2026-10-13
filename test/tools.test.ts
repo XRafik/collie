@@ -41,7 +41,7 @@ import { save, type World } from "./support/world";
 import { Herdr } from "../src/herdr";
 import { until } from "./support/host";
 import { exec } from "./support/command";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { runDir, type RunView } from "../src/engine";
 import { isSettled } from "../src/lifecycle";
 import { appendLog } from "../src/oversight";
@@ -894,7 +894,7 @@ test("a key an action does not take is refused by name, never dropped", () =>
       });
       expect(said).toContain("collie_do refused the request (InvalidInput)");
       expect(said).toContain('actions[0] (kind "start") does not take goal, constraints');
-      expect(said).toContain("a start takes kind, workflow, inputs, decisions, workspace");
+      expect(said).toContain("a start takes kind, machine, workflow, inputs, decisions, workspace");
       expect(said).toContain('put it in "inputs"');
       expect(said).toContain("update_intent");
       expect(said).toContain("Nothing was done");
@@ -1196,7 +1196,7 @@ const asking = (name: string) => (view: RunView) =>
 const answerAs = (as: typeof Declaration.Type, runId: string, decision: string, value: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(stateDir);
+      const door = yield* frontDoor(socketOf(stateDir));
       yield* door.declare(as);
       yield* door.answer({
         runId,
@@ -1396,7 +1396,7 @@ test("a Run with a branch and no merge request shows its branch", () =>
     Effect.gen(function* () {
       const git = ["git", "-c", "user.email=t@example.test", "-c", "user.name=t"];
       yield* exec([...git, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: project });
-      yield* exec([...git, "remote", "add", "origin", "git@gitlab.example.com:team/project.git"], {
+      yield* exec(["git", "remote", "add", "origin", "git@gitlab.example.com:group/app.git"], {
         cwd: project,
       });
       yield* save(world.user, ["builds.workflow.ts"]);
@@ -1479,7 +1479,7 @@ test("a start naming a path this Machine does not have is refused as no director
   inWorld(
     Effect.gen(function* () {
       rootAtWorldHome();
-      for (const named of ["/nowhere/monorepo", "~/nowhere", "src/nowhere"]) {
+      for (const named of ["/nowhere/monorepo", "~/nowhere", "./src/nowhere"]) {
         const refused = yield* workspaceNamed(env, named);
         const error = refused !== null && "error" in refused ? refused.error : "";
         expect(error).toContain(`no directory "${named}" on this Machine`);
@@ -1539,7 +1539,7 @@ test("a start rooted in Collie's own state is refused, whether named by the Home
 const readThroughHost = (tool: (typeof FLOCK_READS)[number], input: JsonObject) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(stateDir);
+      const door = yield* frontDoor(socketOf(stateDir));
       return yield* door.read({ tool, input });
     }),
   ).pipe(Effect.orDie);

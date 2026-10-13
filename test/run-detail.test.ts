@@ -8,7 +8,7 @@ import { runDir } from "../src/engine";
 import { currentEnv } from "../src/env";
 import { appState } from "../src/flows";
 import { Herdr } from "../src/herdr";
-import { frontDoor } from "../src/host";
+import { frontDoor, socketOf } from "../src/host";
 import { followRunDetail } from "../src/lifecycle";
 import { scopeFor } from "../src/registry";
 import { diffOf, fetchRef, keepDiffs, runDiff } from "../src/run-detail";
@@ -45,7 +45,7 @@ test(
           const fs = yield* FileSystem.FileSystem;
           const runId = yield* started(world, ["plain", "--input", "note=hi"]);
           const dir = runDir(world.state, runId);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           const seen: Array<RunDetail | null> = [];
           const reading = yield* door
             .runDetail({ runId, tail: true, pages: 1, refreshMr: false })
@@ -121,7 +121,7 @@ test(
           const runId = yield* started(world, ["targeted", "--input", `target=${MR}`], {
             PATH: `${bin}:/usr/bin:/bin`,
           });
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           const detail = yield* door
             .runDetail({ runId, tail: false, pages: 1, refreshMr: false })
             .pipe(

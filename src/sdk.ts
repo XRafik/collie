@@ -420,6 +420,7 @@ export interface Declarations {
    * in the checkout the Run was started for.
    */
   readonly checkout?: "branch" | "roaming";
+  readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
 }
@@ -853,6 +854,7 @@ export interface WorkflowMetadata {
    * in the checkout the Run was started for.
    */
   readonly checkout?: typeof DeclaredCheckout.Type;
+  readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
 }
@@ -953,6 +955,7 @@ const OfferFields = {
 /** What metadata has to be before any of it can be read: a module is JavaScript by now. */
 const DeclaredMetadata = Schema.Struct({
   hints: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  closes: Schema.optionalKey(Schema.Literal("reported")),
   outcome: Schema.optionalKey(
     Schema.Struct({
       fixed: Schema.optionalKey(Schema.String),
@@ -1076,6 +1079,7 @@ export function describeMetadata(metadata: WorkflowMetadata | undefined): Schema
     outcome: metadata?.outcome?.fixed ?? null,
     selectable: [...(metadata?.outcome?.selectable ?? [])],
     checkout: metadata?.checkout ?? null,
+    closes: metadata?.closes ?? null,
     followUps: (metadata?.followUps ?? []).map((offer) => ({
       id: offer.id,
       title: offer.title,

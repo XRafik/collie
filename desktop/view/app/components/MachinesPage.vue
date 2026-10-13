@@ -64,6 +64,9 @@ const missing = (run: OnboardRun) => run.steps.filter(({ status }) => !SETTLED.i
           <div class="flex items-center gap-2">
             <strong>{{ row.name }}</strong>
             <span class="text-sm text-muted">{{ row.target ?? "this computer" }}</span>
+            <span v-if="row.route" class="text-sm text-muted">{{
+              row.route === "link" ? "Paired link" : "SSH"
+            }}</span>
             <UBadge
               class="ml-auto"
               variant="subtle"

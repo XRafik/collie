@@ -25,7 +25,7 @@ const RevisionSchema = Schema.Struct({
   dirty: Schema.Boolean,
 });
 
-const CardSchema = Schema.Struct({
+export const CardSchema = Schema.Struct({
   id: Schema.String,
   run: Schema.String,
   kind: Schema.Literals(["slice", "review", "fix-round", "mr", "final", "followup", "hold"]),
