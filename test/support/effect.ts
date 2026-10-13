@@ -26,8 +26,8 @@ export const suiteEnv = Config.all({
 });
 
 /**
- * Runs `effect` on a test clock that a fiber of its own keeps moving, `tick` of it for
- * each millisecond of real time, from the wall clock's now: a session on it reads what
+ * Runs `effect` on a test clock that a fiber advances by `tick` between real one-millisecond
+ * sleeps, from the wall clock's now: a session on it reads what
  * sessions on the real clock wrote, so a lock or a timestamp of theirs is not in its
  * future. Its timers fire in order and many times faster, finalizers' included, and the
  * file and database IO between them still takes the real time it takes.

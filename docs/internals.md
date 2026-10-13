@@ -869,6 +869,9 @@ its time.
   and a fixed sleep is too long on an idle machine and too short on a busy one. Work that
   waits out its own timers runs under `fastForward`, test by test: a file whose time goes
   to real IO runs slower under a fast clock, because its polling keeps firing.
+  Before adjusting `TestClock`, wait for the actual sleep to be registered. A lock
+  release can precede that registration; the Home proof observes the Clock service's
+  sleep rather than assuming a filesystem event means the timer is ready.
 - **A test starts the build.** A helper that starts `collie` or its host runs
   `COLLIE_TEST_BINARY` when it is set, as `test/support/host.ts` does, and the sources only
   without it. A start from source is most of a second of CPU, and the suite makes over a
@@ -935,3 +938,27 @@ Experiments discarded after measurement:
 The fake CLI's minimal runtime reduced 50 isolated starts from 1.724 s to 1.318 s. Native
 fixture command execution reduced 100 `/bin/true` calls from 131 ms to 110 ms; full-suite
 measurements, rather than those microbenchmarks, decide whether the changes stay.
+
+### Follow-up measurements, 13 October 2026
+
+The same runner remains at 20 workers. A fresh green baseline took 55.25 s with 2,382
+tests passing. Two fixture races were repaired: a world's cleanup awaits the child's
+exit promise, and the Home proof waits for each real sleep registration before moving
+its test clock. The Home proof still covers seven restatements over 24 hours and now
+also checks each four-hour sleep. Delaying the filesystem operation by 100 ms reproduced
+the old failure and passed with that synchronization.
+
+The final complete verification passed all 2,382 tests in 60.98 s including builds
+(57.98 s reported by the test runner). This follow-up improves reliability; the timing
+variation does not establish a further speed gain.
+
+| Experiment                         | Measurement                              | Decision                                                     |
+| ---------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| 12 workers                         | 58.83 s; all passed                      | Keep 20 workers                                              |
+| 28 workers                         | 63.06 s; all passed                      | More workers did not help                                    |
+| Elapsed-time clock pacing          | 53.96 s; two failures                    | Reject IO-sensitive stop/resume regressions                  |
+| Append Git fixture config directly | 71.13 s; a Home timeout                  | No gain established; restore real Git configuration commands |
+| Larger SQLite statement cache      | Focused suite 21.28 s versus 21.11 s     | Too little gain to justify a production change               |
+| Precompiled Solid compiler preload | 68.28 s; all passed                      | Faster isolated starts did not improve the suite             |
+| Lazy Solid compiler preload        | 56.63 s; all passed                      | No useful gain over the existing preload                     |
+| Minified compiled CLI              | Help-start median 50.0 ms versus 54.4 ms | Smaller binary started more slowly                           |
