@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { Duration, Effect, FileSystem, Layer, Schema } from "effect";
+import { Duration, Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
@@ -116,7 +116,11 @@ const runEffect = <A, E>(effect: Effect.Effect<A, E, BunServices.BunServices>) =
 
 /** One host's lifetime: a fresh engine on the same directory is what a restart is. */
 const session = <A, E>(
-  run: Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem>,
+  run: Effect.Effect<
+    A,
+    E,
+    WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem | Path.Path
+  >,
   over?: Partial<AgentHost>,
 ) =>
   run.pipe(
@@ -565,7 +569,7 @@ test(
         const fs = yield* FileSystem.FileSystem;
         // Nothing within the budget: a long build still working, not one that did nothing.
         yield* rig.queueOutputs([null]);
-        yield* interrupted("r1", parked("r1"), { collectMs: 400 });
+        yield* interrupted("r1", suspended("r1"), { collectMs: 400 });
 
         yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"late"}`);
         const result = yield* releasedInto("r1");
@@ -2846,6 +2850,51 @@ test(
         expect(result._tag === "Success" && result.success.note).toBe("sent again");
         expect(sent(yield* rig.calls(), "Your task for this step")).toBe(2);
         expect(new Set((yield* steps("r1")).map((one) => one.delivery.id)).size).toBe(2);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a parked collection resumes on the same host and resends only the reconciled delivery",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const env = rig.pluginEnv({
+          FAKE_HERDR_PROMPT_LOST: "text",
+          FAKE_HERDR_AGENT_STATUS: "working,idle",
+        });
+        yield* session(
+          Effect.gen(function* () {
+            const engine = yield* WorkflowEngine.WorkflowEngine;
+            const payload = { runId: "r1", input: { skip: false } };
+            yield* rig.queueOutputs([{ verdict: "clean", note: "never" }]);
+            yield* work.execute(payload, { discard: true });
+            for (let tries = 0; !(yield* parked("r1")); tries++) {
+              if (tries === 500) throw new Error("collection never parked");
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            }
+            const [first] = yield* steps("r1");
+            expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(first!.delivery.id);
+            for (let tries = 0; !(yield* suspended("r1")); tries++) {
+              if (tries === 100) throw new Error("parked collection never suspended");
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            }
+            yield* reconciled("r1", "not-sent");
+            delete env.raw.FAKE_HERDR_PROMPT_LOST;
+            yield* rig.queueOutputs([{ verdict: "clean", note: "same host" }]);
+            yield* engine.resume(work, yield* work.executionId(payload));
+            const result = yield* work.execute(payload).pipe(Effect.result);
+            expect(result._tag === "Success" && result.success.note).toBe("same host");
+            const calls = yield* rig.calls();
+            expect(sent(calls, "Your task for this step")).toBe(2);
+            expect(calls.filter((call) => call.cmd === "agent start")).toHaveLength(1);
+            const delivered = yield* steps("r1");
+            expect(delivered.map((one) => one.delivery.attempt)).toEqual([1, 2]);
+            expect(new Set(delivered.map((one) => one.delivery.id)).size).toBe(2);
+          }),
+          { herdr: new FakeHerdr(env), confirmGraceMs: 300, collectMs: 300_000 },
+        );
       }),
     ),
   120_000,

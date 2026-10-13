@@ -1390,6 +1390,17 @@ const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
 /** The envelope a definition is executed with, read where the host hands it over. */
 const readEnvelope = Schema.decodeUnknownSync(Schema.Struct({ runId: Schema.String }));
 
+/** Observed Run entries; upstream resume returns no wake acknowledgment. */
+const entriesOf = new WeakMap<HostWorkflow, Map<string, number>>();
+
+const waitForEntry = (workflow: HostWorkflow, runId: string, before: number) =>
+  Effect.suspend(() =>
+    (entriesOf.get(workflow)?.get(runId) ?? 0) > before ? Effect.succeed(true) : Effect.fail(false),
+  ).pipe(
+    Effect.retry({ times: WAKE_TRIES, schedule: Schedule.spaced(WAKE_INTERVAL) }),
+    Effect.orElseSucceed(() => false),
+  );
+
 /**
  * The Effect workflow a definition is registered as, under the host's own name for this
  * generation. The Run it executes as is provided here, so no author passes it along.
@@ -1408,10 +1419,13 @@ const registrationOf = (definition: WorkflowDefinition, name: string): Registrat
     success: definition.output,
     error,
   });
+  const entries = new Map<string, number>();
+  entriesOf.set(workflow, entries);
   const body = workflow.toLayer((envelope) => {
     // SAFETY: the envelope decoded against the definition's own input struct.
     const input = envelope.input as never;
     const run = Run.of({ id: readEnvelope(envelope).runId, workflow: definition.id });
+    entries.set(run.id, (entries.get(run.id) ?? 0) + 1);
     return definition.run({ input }).pipe(
       Effect.provideService(Run, run),
       Effect.provideService(WorkflowAgents, definition.agents),
@@ -1764,7 +1778,7 @@ const HAND_OVER_TIMEOUT = "30 seconds";
 
 export const HOLD = "hold";
 export const STOP = "stop";
-/** Not a control: the Run's own word on why it parked, which only the Run writes. */
+/** Why work parked; the host clears it when taking that work up. */
 export const PARKED = "parked";
 
 /** What a Run nobody classified proves: the approved set, and no ticket's evidence. */
@@ -2215,14 +2229,16 @@ export const hostLayer = (options: {
           ),
         parked: (runId, why) => {
           const path = controlPath(dir, PARKED, runId);
-          return why === null
-            ? fs.remove(path, { force: true }).pipe(Effect.orDie)
-            : fs
-                .writeFileString(path, why)
-                .pipe(
-                  Effect.orDie,
-                  Effect.andThen(notify(runId, "needs-you", why, { key: `parked:${why}` })),
-                );
+          return (
+            why === null
+              ? fs.remove(path, { force: true }).pipe(Effect.orDie)
+              : fs
+                  .writeFileString(path, why)
+                  .pipe(
+                    Effect.orDie,
+                    Effect.andThen(notify(runId, "needs-you", why, { key: `parked:${why}` })),
+                  )
+          ).pipe(Effect.andThen(store.announce));
         },
         asking: (runId, question) =>
           store
@@ -3349,6 +3365,9 @@ export interface RegistryApi {
    * over anything still outstanding. A repaired file is picked up without a restart.
    */
   readonly recover: Effect.Effect<typeof Registrations.Type, never, HostServices>;
+  readonly resume: (
+    runId: string,
+  ) => Effect.Effect<typeof Controlled.Type, HostRefused, HostServices>;
   /**
    * What this Run offers to do next, decided by the module as it is now rather than as it
    * was when the Run started: an author who edits their actions changes what is offered.
@@ -3520,15 +3539,53 @@ const makeRegistry: (
   // Staged copies last only as long as this host: every generation below is staged from
   // the module as it is now, never restored.
   yield* clearGenerations(dir);
-  const register = Effect.fn("Engine.register")(function* (route: {
-    readonly workflow: string;
-    readonly name: string;
-    readonly entry: string;
-  }) {
+  const waking = yield* Semaphore.make(1);
+  const clearParked = (runId: string) =>
+    fs
+      .remove(controlPath(dir, PARKED, runId), { force: true })
+      .pipe(Effect.orDie, Effect.andThen(store.announce));
+
+  const restoreParked = (runId: string, old: Option.Option<string>) =>
+    Effect.gen(function* () {
+      if (
+        Option.isSome(old) &&
+        !(yield* fs.exists(controlPath(dir, PARKED, runId)).pipe(Effect.orDie))
+      ) {
+        yield* fs.writeFileString(controlPath(dir, PARKED, runId), old.value).pipe(Effect.orDie);
+        yield* store.announce;
+      }
+    });
+
+  const register = Effect.fn("Engine.register")(function* (
+    route: {
+      readonly workflow: string;
+      readonly name: string;
+      readonly entry: string;
+    },
+    recovered?: Set<string>,
+  ) {
     const entry = yield* stageGeneration({ dir, name: route.name, entry: route.entry }).pipe(
       Effect.flatMap(loadEntry),
     );
     const registration = entry.make(route.name);
+    const pending: Array<{ row: RunRow; parked: Option.Option<string> }> = [];
+    if (recovered !== undefined) {
+      for (const row of yield* store.runs) {
+        if (row.generation !== route.name || unplaced(row)) continue;
+        if (Option.isNone(yield* payloadOf(registration, row).pipe(Effect.option))) continue;
+        const status = pollStatus(
+          yield* engine.poll(registration.workflow, row.execution),
+          route.entry,
+        ).status;
+        if (status === "pending") {
+          pending.push({
+            row,
+            parked: yield* fs.readFileString(controlPath(dir, PARKED, row.run)).pipe(Effect.option),
+          });
+          yield* clearParked(row.run);
+        }
+      }
+    }
     // The composition root, and the only place a host binds anything into a module's
     // own Layer: explicitly provided to this generation, never a table something looks
     // itself up in. Everything else the module needs it provides for itself.
@@ -3539,6 +3596,14 @@ const makeRegistry: (
         ),
       ),
       hostScope,
+    ).pipe(
+      Effect.onError(() =>
+        Effect.forEach(pending, ({ row, parked }) =>
+          (entriesOf.get(registration.workflow)?.get(row.run) ?? 0) > 0
+            ? Effect.void
+            : restoreParked(row.run, parked),
+        ),
+      ),
     );
     const generation: Generation = {
       id: route.workflow,
@@ -3559,6 +3624,14 @@ const makeRegistry: (
     live.set(route.name, generation);
     unavailable.delete(route.name);
     newestOf.set(route.workflow, route.name);
+    for (const { row, parked } of pending) {
+      const accepted = yield* handOver(row, false).pipe(
+        Effect.catchTag("HostRefused", () => Effect.succeed(false)),
+      );
+      if (accepted || (entriesOf.get(registration.workflow)?.get(row.run) ?? 0) > 0)
+        recovered?.add(row.run);
+      else yield* restoreParked(row.run, parked);
+    }
     return generation;
   });
 
@@ -3868,7 +3941,7 @@ const makeRegistry: (
     );
 
   const executions: typeof Executions.Service = {
-    stop: (runId) => stopTree(runId).pipe(Effect.provideContext(hostServices)),
+    stop: (runId) => stopTree(runId).pipe(Effect.provideContext(hostServices), Effect.orDie),
     stopped: (runId) =>
       routed(runId).pipe(
         Effect.flatMap((found) =>
@@ -3983,7 +4056,7 @@ const makeRegistry: (
     );
     const row = yield* store.run(child.runId);
     if (row === null) return yield* refused(`no run "${child.runId}" was started here`);
-    const payload = yield* payloadOf(found.generation, row).pipe(
+    const payload = yield* payloadOf(found.generation.registration, row).pipe(
       Effect.mapError(() => refused(`${found.generation.entry} no longer takes ${row.input}`)),
     );
     // Executed on the parent's own fiber, which is what links the two: the engine
@@ -4035,10 +4108,10 @@ const makeRegistry: (
         )
       : Effect.void;
 
-  const payloadOf = (generation: Generation, row: RunRow) =>
+  const payloadOf = (registration: Registration, row: RunRow) =>
     decodeInput(row.input).pipe(
       Effect.flatMap((input) =>
-        Schema.decodeUnknownEffect(generation.registration.workflow.payloadSchema)({
+        Schema.decodeUnknownEffect(registration.workflow.payloadSchema)({
           runId: row.run,
           input,
         }),
@@ -4055,13 +4128,16 @@ const makeRegistry: (
    * Nothing happens where it cannot be handed over: the module is not registered here,
    * or no longer takes what it was started with. The row stays as it is, for a repair.
    */
-  const handOver = Effect.fn("Engine.handOver")(function* (row: RunRow) {
+  const handOver = Effect.fn("Engine.handOver")(function* (row: RunRow, clear = true) {
     const generation = live.get(row.generation);
-    if (generation === undefined || unplaced(row)) return;
-    const payload = yield* payloadOf(generation, row).pipe(Effect.result);
-    if (payload._tag === "Failure") return;
+    if (generation === undefined || unplaced(row)) return false;
+    const payload = yield* payloadOf(generation.registration, row).pipe(Effect.result);
+    if (payload._tag === "Failure") return false;
     yield* attachInto(row);
     yield* crash("admitted");
+    const before = entriesOf.get(generation.registration.workflow)?.get(row.run) ?? 0;
+    const old = yield* fs.readFileString(controlPath(dir, PARKED, row.run)).pipe(Effect.option);
+    if (clear) yield* clearParked(row.run);
     // Upstream retries a send it cannot route without end; the row stays unaccepted for the next host.
     yield* engine
       .execute(generation.registration.workflow, {
@@ -4080,9 +4156,15 @@ const makeRegistry: (
             );
           },
         }),
+        Effect.onError(() =>
+          clear && (entriesOf.get(generation.registration.workflow)?.get(row.run) ?? 0) === before
+            ? restoreParked(row.run, old)
+            : Effect.void,
+        ),
       );
     yield* crash("executed");
     yield* store.accepted(row.run);
+    return true;
   });
 
   /** A Run's own attachments, then its Lineage's, copied in before its first step. */
@@ -4114,17 +4196,18 @@ const makeRegistry: (
       store.run(row.run).pipe(
         Effect.flatMap((now) =>
           now === null || now.accepted !== null
-            ? Effect.void
+            ? Effect.succeed(false)
             : placeClaimed(now, false).pipe(Effect.flatMap(handOver)),
         ),
         Effect.catchTag("HostRefused", (failure) =>
-          Effect.logWarning(`${row.run} was not started: ${failure.reason}`),
+          Effect.logWarning(`${row.run} was not started: ${failure.reason}`).pipe(Effect.as(false)),
         ),
       ),
     );
 
   /** Every recorded answer handed again to a run still waiting; the engine keeps one completion. */
   const reconcileAnswers = Effect.gen(function* () {
+    const woken: string[] = [];
     for (const row of yield* store.runs) {
       const generation = live.get(row.generation);
       if (generation === undefined) continue;
@@ -4135,6 +4218,9 @@ const makeRegistry: (
         generation.entry,
       );
       if (state.status !== "suspended") continue;
+      const before = entriesOf.get(generation.registration.workflow)?.get(row.run) ?? 0;
+      const old = yield* fs.readFileString(controlPath(dir, PARKED, row.run)).pipe(Effect.option);
+      yield* clearParked(row.run);
       for (const one of answered) {
         yield* answerDecision(generation.registration, {
           name: one.decision,
@@ -4142,8 +4228,12 @@ const makeRegistry: (
           value: one.answer ?? "",
         });
       }
+      if (yield* waitForEntry(generation.registration.workflow, row.run, before))
+        woken.push(row.run);
+      else yield* restoreParked(row.run, old);
     }
-  });
+    return woken;
+  }).pipe(waking.withPermits(1));
 
   // What a host admitted and did not live to hand over. Every crash window ends here.
   // Forked, so a hand-over that stalls does not keep the host from serving.
@@ -4257,12 +4347,32 @@ const makeRegistry: (
    * and resuming afterwards does not bring it back. Returning only once the run has
    * settled is what makes the next thing an operator does land on it.
    */
-  const wake = Effect.fn("Engine.wake")(function* (found: {
-    readonly generation: Generation;
-    readonly execution: string;
-  }) {
+  const wake = Effect.fn("Engine.wake")(function* (
+    runId: string,
+    found: {
+      readonly generation: Generation;
+      readonly execution: string;
+    },
+  ) {
     const workflow = found.generation.registration.workflow;
-    yield* engine.resume(workflow, found.execution);
+    const status = pollStatus(
+      yield* engine.poll(workflow, found.execution),
+      found.generation.entry,
+    ).status;
+    if (status === "suspended") {
+      const entries = entriesOf.get(workflow);
+      const before = entries?.get(runId) ?? 0;
+      const old = yield* fs.readFileString(controlPath(dir, PARKED, runId)).pipe(Effect.option);
+      yield* clearParked(runId);
+      yield* engine
+        .resume(workflow, found.execution)
+        .pipe(Effect.onError(() => restoreParked(runId, old)));
+      const entered = yield* waitForEntry(workflow, runId, before);
+      if (!entered) {
+        yield* restoreParked(runId, old);
+        return yield* new HostRefused({ reason: `${runId} did not take up its suspended work` });
+      }
+    }
     yield* engine.poll(workflow, found.execution).pipe(
       Effect.map((result) => pollStatus(result, found.generation.entry).status),
       Effect.flatMap((status) =>
@@ -4271,7 +4381,8 @@ const makeRegistry: (
       Effect.retry({ times: WAKE_TRIES, schedule: Schedule.spaced(WAKE_INTERVAL) }),
       Effect.ignore,
     );
-  });
+    return status === "suspended";
+  }, waking.withPermits(1));
 
   /** Every question this run has been asked, with the answers its options allow. */
   const asked = Effect.fn("Engine.asked")(function* (runId: string) {
@@ -4381,28 +4492,35 @@ const makeRegistry: (
     runId: string,
     control: string,
     set: boolean,
+    recovered?: ReadonlySet<string>,
   ) {
     // A stop reaches the children a Run started: they are its work too.
     const runs = control === STOP ? [runId, ...descendantsOf(yield* store.runs, runId)] : [runId];
     // Written before anything is woken, so a run that wakes up never finds the request
     // that stopped it still there.
-    for (const one of runs) yield* setControl(one, control, set);
+    const stopped = new Set<string>();
+    for (const one of runs) {
+      if (control === STOP && !set && (yield* controlsOf(one)).includes(STOP)) stopped.add(one);
+      yield* setControl(one, control, set);
+    }
     // A file, not a row: nothing tells a watcher about it unless this does.
     yield* store.announce;
     // A hold is read at the next boundary and needs no waking. Everything else does: a
     // run parked on its question has nothing that would make it look again.
+    const woken: string[] = [];
     if (!(control === HOLD && set)) {
       for (const one of runs) {
+        if (recovered?.has(one) && !stopped.has(one)) continue;
         const found = yield* routed(one).pipe(Effect.option);
-        if (Option.isSome(found)) yield* wake(found.value);
+        if (Option.isSome(found) && (yield* wake(one, found.value))) woken.push(one);
       }
     }
-    return runs;
+    return { runs, woken };
   });
 
   /** A stop, and the agents of every Run it reached closed: the Runs, and what did not close. */
   const stopTree = Effect.fn("Engine.stopTree")(function* (runId: string) {
-    const runs = yield* applyControl(runId, STOP, true);
+    const { runs } = yield* applyControl(runId, STOP, true);
     // Closing their panes is what stops the agents; the Run only stops looking.
     const agents = yield* Agents;
     const left: string[] = [];
@@ -4665,6 +4783,29 @@ const makeRegistry: (
     };
   });
 
+  const recover = () =>
+    Effect.gen(function* () {
+      const recovered = new Set<string>();
+      yield* registering.withPermits(1)(
+        Effect.forEach(known, (route) =>
+          live.has(route.name)
+            ? Effect.void
+            : register(route, recovered).pipe(
+                Effect.catchTag("EntryError", (failure) =>
+                  Effect.sync(() =>
+                    unavailable.set(route.name, `${failure.file}: ${failure.message}`),
+                  ),
+                ),
+              ),
+        ),
+      );
+      for (const row of yield* store.pending) {
+        if (yield* recoverAdmission(row)) recovered.add(row.run);
+      }
+      for (const one of yield* reconcileAnswers) recovered.add(one);
+      return { registrations: yield* held, takenUp: recovered };
+    });
+
   return {
     load: (file: string) => registering.withPermits(1)(mint(file)),
 
@@ -4715,23 +4856,37 @@ const makeRegistry: (
           Stream.ensuring(Effect.sync(() => (watchers -= 1))),
         ),
 
-    recover: Effect.gen(function* () {
-      yield* registering.withPermits(1)(
-        Effect.forEach(known, (route) =>
-          live.has(route.name)
-            ? Effect.void
-            : register(route).pipe(
-                Effect.catchTag("EntryError", (failure) =>
-                  Effect.sync(() =>
-                    unavailable.set(route.name, `${failure.file}: ${failure.message}`),
-                  ),
-                ),
-              ),
-        ),
+    recover: recover().pipe(Effect.map((result) => result.registrations)),
+
+    resume: Effect.fn("Engine.Registry.resume")(function* (runId: string) {
+      const recovered = yield* recover();
+      const controlled = yield* applyControl(runId, STOP, false, recovered.takenUp).pipe(
+        Effect.result,
       );
-      for (const row of yield* store.pending) yield* recoverAdmission(row);
-      yield* reconcileAnswers;
-      return yield* held;
+      const recorded = { runId, control: STOP, set: false, left: [] };
+      if (controlled._tag === "Failure")
+        return {
+          ...recorded,
+          applied: recovered.takenUp.has(runId),
+          detail: controlled.failure.reason,
+        };
+      if (recovered.takenUp.has(runId) || controlled.success.woken.includes(runId))
+        return { ...recorded, applied: true, detail: "" };
+      const found = yield* routed(runId).pipe(Effect.result);
+      if (found._tag === "Failure")
+        return { ...recorded, applied: false, detail: found.failure.reason };
+      const status = pollStatus(
+        yield* engine.poll(found.success.generation.registration.workflow, found.success.execution),
+        found.success.generation.entry,
+      ).status;
+      return {
+        ...recorded,
+        applied: false,
+        detail:
+          status === "pending"
+            ? `${runId} is already running; no work was taken up`
+            : `${runId} has ${status === "complete" ? "finished" : status}; no work was taken up`,
+      };
     }),
 
     newest,
@@ -4863,7 +5018,7 @@ const makeRegistry: (
       });
 
       return { runId: options.runId, decision: name, value, fresh: settled._tag === "accepted" };
-    }),
+    }, waking.withPermits(1)),
 
     control: Effect.fn("Engine.Registry.control")(function* (options: {
       readonly runId: string;
