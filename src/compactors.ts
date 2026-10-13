@@ -49,7 +49,14 @@ import {
   type StopTarget,
   type Stopped,
 } from "./compaction";
-import { processOf, sessionOf, stillRunning, terminate, type ProcessInfo } from "./processes";
+import {
+  processOf,
+  readsSessions,
+  sessionOf,
+  stillRunning,
+  terminate,
+  type ProcessInfo,
+} from "./processes";
 import { withLock } from "./lock";
 import { carriedDelivery } from "./dispatcher";
 
@@ -1082,10 +1089,14 @@ const stopCodex = (
     );
   });
 
+/** How long the processes left of a server get to end, however late it exited in the budget. */
+const SURVIVOR_GRACE_MS = 2_000;
+
 /**
  * What is left of an exited server's session: each process noted before the drain that is
  * still the same process gets one SIGTERM and is looked at again; one nobody noted is
- * named and left alone. Quiet only when none is left.
+ * named and left alone. Without sessions, the noted descendants are all there is to look
+ * at. Quiet only when none is left.
  */
 const survivors = (
   root: number,
@@ -1097,11 +1108,14 @@ const survivors = (
   Effect.gen(function* () {
     const proven = (one: ProcessInfo) =>
       noted.some((seen) => seen.pid === one.pid && seen.started === one.started);
-    for (const one of yield* sessionOf(root)) if (proven(one)) yield* terminate(one.pid);
+    const sessions = yield* readsSessions;
+    const remaining = sessions ? sessionOf(root) : Effect.filter(noted, (one) => stillRunning(one));
+    for (const one of yield* remaining) if (proven(one)) yield* terminate(one.pid);
+    const until = Math.max(deadline, (yield* Clock.currentTimeMillis) + SURVIVOR_GRACE_MS);
     for (;;) {
-      const left = yield* sessionOf(root);
+      const left = yield* remaining;
       if (left.length === 0) return { state: "quiet", turns, reason: null } satisfies Stopped;
-      if ((yield* Clock.currentTimeMillis) >= deadline) {
+      if ((yield* Clock.currentTimeMillis) >= until) {
         const named = left.map(
           (one) => `pid ${one.pid}${proven(one) ? "" : " (not signalled: not proven its)"}`,
         );

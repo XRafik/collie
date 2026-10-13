@@ -461,12 +461,16 @@ export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
   agent: string,
   budgetMs: number = STOP_WAIT_MS,
 ) {
+  const stops = (record: ControlRecord | null) =>
+    record === null ? undefined : deps.ports[record.harness]?.stop;
+  // A harness whose work is in its pane has nothing to stop here, and does not wait on the lock.
+  if (stops(yield* readControl(deps.stateDir, agent)) === undefined) return null;
   return yield* withControlLock(
     deps.stateDir,
     agent,
     Effect.gen(function* () {
       const record = yield* readControl(deps.stateDir, agent);
-      const stop = record === null ? undefined : deps.ports[record.harness]?.stop;
+      const stop = stops(record);
       if (record === null || stop === undefined) return null;
       const { endpoint, pid, command } = record;
       if (endpoint === null || pid === null || command === null) return null;

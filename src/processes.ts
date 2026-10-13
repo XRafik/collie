@@ -62,14 +62,15 @@ const psRows = (text: string): ProcessInfo[] =>
       session: null,
     }));
 
-const hasProc = FileSystem.FileSystem.pipe(
+/** Whether this platform says which session a process is in, so it can be read after its leader exits. */
+export const readsSessions = FileSystem.FileSystem.pipe(
   Effect.flatMap((fs) => fs.exists(`${PROC}/self/stat`)),
   Effect.orElseSucceed(() => false),
 );
 
 /** This process as it is now, or null where no such process is running. */
 export const processOf = Effect.fn("Processes.processOf")(function* (pid: number) {
-  if (yield* hasProc) return yield* fromProc(pid).pipe(Effect.orElseSucceed(() => null));
+  if (yield* readsSessions) return yield* fromProc(pid).pipe(Effect.orElseSucceed(() => null));
   const [row] = psRows(yield* ps(["-ww", "-o", "pid=,ppid=,lstart=,command=", "-p", String(pid)]));
   return row ?? null;
 });
@@ -80,7 +81,7 @@ export const processOf = Effect.fn("Processes.processOf")(function* (pid: number
  * descendants now, which have to be taken before it exits.
  */
 export const sessionOf = Effect.fn("Processes.sessionOf")(function* (root: number) {
-  if (yield* hasProc) {
+  if (yield* readsSessions) {
     const fs = yield* FileSystem.FileSystem;
     const found: ProcessInfo[] = [];
     for (const name of yield* fs.readDirectory(PROC).pipe(Effect.orElseSucceed(() => []))) {
@@ -96,7 +97,10 @@ export const sessionOf = Effect.fn("Processes.sessionOf")(function* (root: numbe
   for (let grew = true; grew;) {
     grew = false;
     for (const one of all)
-      if (!tree.has(one.pid) && tree.has(one.parent)) grew = tree.add(one.pid).size > 0;
+      if (!tree.has(one.pid) && tree.has(one.parent)) {
+        tree.add(one.pid);
+        grew = true;
+      }
   }
   return all.filter((one) => one.pid !== root && tree.has(one.pid));
 });
@@ -107,4 +111,4 @@ export const stillRunning = (one: Pick<ProcessInfo, "pid" | "started">) =>
 
 /** One SIGTERM. Never repeated and never SIGKILL: a forced end is not a stop anyone can vouch for. */
 export const terminate = (pid: number) =>
-  Effect.ignore(Effect.sync(() => process.kill(pid, "SIGTERM")));
+  Effect.ignore(Effect.try(() => process.kill(pid, "SIGTERM")));

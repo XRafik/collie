@@ -42,7 +42,7 @@ import { taskFor } from "../src/operations";
 import { lineageAgent, readRegistry, registerAgent, registryPath, scopeFor } from "../src/registry";
 import { HerdrError } from "../src/herdr";
 import { agentName, shellQuote } from "../src/naming";
-import { controlDir, type CompactionPorts } from "../src/compaction";
+import { controlDir, withControlLock, type CompactionPorts } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
 
@@ -2963,3 +2963,18 @@ test(
     ),
   120_000,
 );
+
+test("a stop closes a Claude agent's pane even while its controls are locked, having nothing to stop there", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      const controls = { compactAtTokens: 1000, ports: claudeControls() };
+      yield* session(started("r1"), controls);
+      const halt = yield* withControlLock(
+        hostOf().env.stateDir,
+        agentFor("r1"),
+        session(halted("r1"), controls),
+      );
+      expect(halt).toEqual({ stopped: [agentFor("r1")], left: [] });
+    }),
+  ));

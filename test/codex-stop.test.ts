@@ -191,8 +191,7 @@ test("a stopped Codex agent's turn ends before the stop says it stopped, and not
       yield* serve();
       yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
       yield* started();
-      yield* aWhile;
-      expect(yield* sizeOf(written())).toBeGreaterThan(0);
+      yield* sizeOf(written()).pipe(Effect.repeat({ until: (size) => size > 0 }));
 
       const halt = yield* halted();
       const atStop = yield* sizeOf(written());

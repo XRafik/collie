@@ -430,10 +430,13 @@ onMachineWith("codex")(
         // full ids an interrupt is sent with.
         const thread = yield* read("v2/ThreadReadResponse.json");
         expect(thread).toContain(`"path"`);
-        expect(thread).toContain(`"status"`);
+        for (const status of ["active", "idle", "notLoaded", "systemError"])
+          expect(thread).toContain(`"${status}"`);
         const interrupt = yield* read("v2/TurnInterruptParams.json");
         for (const field of ["threadId", "turnId"]) expect(interrupt).toContain(`"${field}"`);
         expect(yield* read("v2/ThreadTurnsListResponse.json")).toContain(`"status"`);
+        const turnsList = yield* read("v2/ThreadTurnsListParams.json");
+        for (const field of ["sortDirection", "limit"]) expect(turnsList).toContain(`"${field}"`);
         // The item type the compaction lifecycle is read from.
         expect(notifications).toContain(`"contextCompaction"`);
         // The terminal turn statuses the failure mapping relies on.
