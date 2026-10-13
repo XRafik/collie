@@ -89,6 +89,8 @@ import {
   type HerdrMachine,
   herdrMachines,
   localRoute,
+  linkRoute,
+  pairedMachines,
   type ShellRoute,
   remoteRoute,
   removeFromHerdr,
@@ -318,8 +320,22 @@ const main = Effect.gen(function* () {
   const open = (machine: HerdrMachine) =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
-      const route = yield* remoteRoute("ssh", `${controls}/${opened++}`, machine, local).pipe(
-        Scope.provide(scope),
+      const peer = (yield* pairedMachines(collie)).find((one) => one.name === machine.label);
+      const ssh = yield* remoteRoute(
+        "ssh",
+        `${controls}/${opened++}`,
+        machine,
+        local,
+        peer !== undefined,
+        peer === undefined ? collie : undefined,
+      ).pipe(Scope.provide(scope));
+      const route = linkRoute(
+        collie,
+        { name: machine.label },
+        ssh,
+        local,
+        childEnv(),
+        peer !== undefined,
       );
       routes.set(route.machine.profile, { route, scope });
       return route;
@@ -746,6 +762,15 @@ const main = Effect.gen(function* () {
               [
                 door === undefined ? Effect.void : syncOn(settingsOf(door)),
                 route === undefined ? Effect.void : given.giveLacking(route),
+                route?.pair === undefined
+                  ? Effect.void
+                  : route.pair.pipe(
+                      Effect.flatMap((text) =>
+                        text === null
+                          ? Effect.void
+                          : PubSub.publish(news, { _tag: "Notice", machine: route.machine, text }),
+                      ),
+                    ),
               ],
               { concurrency: "unbounded", discard: true },
             ).pipe(Effect.forkIn(scope));
@@ -911,7 +936,7 @@ const main = Effect.gen(function* () {
           return yield* new ActionFailed({
             reason: "only a machine in herdr's list can be removed",
           });
-        yield* removeFromHerdr("herdr", profile).pipe(
+        yield* removeFromHerdr("herdr", profile, collie).pipe(
           Effect.mapError((reason) => new ActionFailed({ reason })),
         );
         const done = yield* Deferred.make<void>();

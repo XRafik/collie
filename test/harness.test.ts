@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 import {
   claudeForbidsBypass,
   foldPreferences,
@@ -289,5 +289,56 @@ test("preferences fold the same way without a harness to check them against", ()
   expect(foldPreferences([{ model: "opus" }, undefined, { effort: "low" }])).toEqual({
     model: "opus",
     effort: "low",
+  });
+});
+
+test("each harness wires the whole Collie Toolkit with its Run and agent environment", () => {
+  const launch = {
+    command: ["/bin/collie"],
+    env: { COLLIE_RUN: "run-source", COLLIE_AGENT: "source-agent" },
+    config: "/run/mcp.json",
+    extension: "/run/collie-tools.ts",
+  };
+  for (const id of ["claude", "codex", "pi", "opencode"]) {
+    const wired = HARNESSES[id]!.mcp(launch);
+    expect(wired.args.length + Object.keys(wired.env).length).toBeGreaterThan(0);
+    if (id === "claude") expect(wired.args).toEqual(["--mcp-config", launch.config]);
+    if (id === "pi") expect(wired.args).toEqual(["-e", launch.extension]);
+    if (id === "codex") {
+      expect(wired.args).toContain('mcp_servers.collie.command="/bin/collie"');
+      expect(wired.args).toContain('mcp_servers.collie.env.COLLIE_RUN="run-source"');
+      expect(wired.args).toContain('mcp_servers.collie.env.COLLIE_AGENT="source-agent"');
+    }
+    if (id === "opencode")
+      expect(JSON.parse(wired.env.OPENCODE_CONFIG_CONTENT!).mcp.collie).toEqual({
+        type: "local",
+        command: ["/bin/collie", "mcp"],
+        environment: launch.env,
+        enabled: true,
+      });
+  }
+});
+
+test("OpenCode keeps the launch's existing settings and other MCP servers", () => {
+  const wired = HARNESSES.opencode!.mcp({
+    command: ["collie"],
+    env: { COLLIE_RUN: "run-source", COLLIE_AGENT: "source-agent" },
+    config: "",
+    extension: "",
+    settings: {
+      theme: "dark",
+      mcp: {
+        other: { type: "remote", url: "https://example.test/mcp" },
+        collie: { enabled: false },
+      },
+    },
+  });
+  expect(
+    Schema.decodeUnknownSync(Schema.fromJsonString(Schema.JsonObject))(
+      wired.env.OPENCODE_CONFIG_CONTENT!,
+    ),
+  ).toMatchObject({
+    theme: "dark",
+    mcp: { other: { url: "https://example.test/mcp" }, collie: { enabled: true } },
   });
 });

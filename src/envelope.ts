@@ -6,7 +6,7 @@ import type { HerdrError } from "./herdr";
 import { currentPid, withLock } from "./lock";
 import { err, newRequestId, ExpectedError, type OpResult } from "./operations";
 
-const ResultBoundary = Schema.Union([
+export const ResultBoundary = Schema.Union([
   Schema.Struct({
     ok: Schema.Literal(true),
     data: Schema.ObjectKeyword,

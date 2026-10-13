@@ -26,7 +26,8 @@ import { probeHelle, probeLinearMcp, type Probe } from "./optional";
 import { projectsRoot } from "./projects";
 import { claudeSettingsPath, readStatusLine, STATUS_LINE_ARGS } from "./statusline";
 import { collieCache, humanBytes } from "./cleanup";
-import { anyRuns, cleanupListing } from "./lifecycle";
+import { anyRuns, cleanupListing, machineList } from "./lifecycle";
+import { peersOf } from "./peers";
 import { tmpdir } from "node:os";
 import {
   FETCH_LIMIT,
@@ -435,6 +436,25 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
   checks.push({ name: "workflows", ...(yield* overrides(env)) });
   checks.push({ name: "personas", ...(yield* personas(env)) });
   checks.push({ name: "projects root", ...(yield* projects(env)) });
+  if ((yield* peersOf(env.stateDir)).length > 0) {
+    const links = yield* machineList(env);
+    const failures = links.ok
+      ? links.value
+          .filter(
+            (one) => one.dials === "in" && one.failure?.startsWith("could not listen on port "),
+          )
+          .map((one) => one.failure)
+      : [links.error.message];
+    checks.push({
+      name: "paired links",
+      ...(failures.length === 0
+        ? passed("The paired listener has no recorded failure.")
+        : failed(
+            [...new Set(failures)].join("; "),
+            "Free the listening port, then run collie machine list again.",
+          )),
+    });
+  }
   checks.push({ name: "disk", ...(yield* diskSpace(env, run)) });
 
   checks.push(...(yield* gitlabChecks(env, search, run)));

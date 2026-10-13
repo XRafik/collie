@@ -545,11 +545,12 @@ const downloadable = Effect.fn("prepareTest.downloadable")(function* () {
       `${asset}.p256.sig`,
       signReleaseP256(runner, key.export({ type: "pkcs8", format: "pem" }).toString()),
     );
-  const install = () =>
+  const install = (extra: Record<string, string> = {}) =>
     run("install.sh", undefined, {
       COLLIE_RELEASE_BASE: `file://${home}/release`,
       COLLIE_PREPARING: "1",
       COLLIE_OPENSSL: Bun.env.COLLIE_OPENSSL ?? "openssl",
+      ...extra,
     });
   return { runner, signature, install };
 });
@@ -565,6 +566,31 @@ test("a downloaded runner signed by the release key is installed", () =>
 
       expect(done.code).toBe(0);
       expect(yield* fs.readFile(`${root}/bin/collie`)).toEqual(release.runner);
+    }),
+  ));
+
+test("an exact plain release stays selected on the next install", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const release = yield* downloadable();
+      yield* release.signature();
+      expect((yield* release.install({ COLLIE_VERSION: "0.2.0" })).code).toBe(0);
+      expect(yield* read(`${root}/herdr-plugin.toml`)).toContain('version = "0.2.0"');
+      expect((yield* release.install()).code).toBe(0);
+      expect(yield* read(`${root}/herdr-plugin.toml`)).toContain('version = "0.2.0"');
+    }),
+  ));
+
+test("an unavailable exact release never builds the older source", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const release = yield* downloadable();
+      yield* bin.add("bun", `echo build >> '${home}/builds'; exit 0`);
+      const manifest = yield* read(`${root}/herdr-plugin.toml`);
+      expect((yield* release.install({ COLLIE_VERSION: "0.2.0" })).code).not.toBe(0);
+      expect(yield* exists(`${home}/builds`)).toBe(false);
+      expect(yield* read(`${root}/herdr-plugin.toml`)).toBe(manifest);
+      expect(yield* read(`${root}/bin/collie`)).toBe("the runner already here");
     }),
   ));
 

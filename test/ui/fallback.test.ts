@@ -126,52 +126,61 @@ test(
           expect(
             (yield* collie(world, ["run", "start", "plain", "--input", "note=hi"])).envelope.ok,
           ).toBe(true);
-          const env = yield* currentEnv.pipe(Effect.orDie);
-          const app = appState(
-            {
-              herdr: new Herdr(env),
-              ...scopeFor(env, env.cwd),
-              stateDir: env.stateDir,
-              userDir: env.userDir,
-              paneId: env.paneId,
-              pluginRoot: env.pluginRoot,
-              tasksOf: yield* followBoard(env),
-            },
-            env,
-          );
-          const before = yield* app.load(focus());
-          expect(before.tasks.map((task) => task.name)).toEqual(["Plain"]);
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const env = yield* currentEnv.pipe(Effect.orDie);
+              const app = appState(
+                {
+                  herdr: new Herdr(env),
+                  ...scopeFor(env, env.cwd),
+                  stateDir: env.stateDir,
+                  userDir: env.userDir,
+                  paneId: env.paneId,
+                  pluginRoot: env.pluginRoot,
+                  tasksOf: yield* followBoard(env),
+                },
+                env,
+              );
+              const before = yield* app.load(focus());
+              expect(before.tasks.map((task) => task.name)).toEqual(["Plain"]);
 
-          yield* recordDisposition(`${world.state}/runs/${before.tasks[0]!.run}`, {
-            kind: "merged",
-            ref: "",
-            at: "2026-10-01T12:00:00Z",
-            by: "human",
-            note: null,
-          }).pipe(Effect.orDie);
-          const after = yield* app.load(focus()).pipe(
-            Effect.repeat({
-              until: (state) => state.tasks[0]?.disposition === "merged",
-              schedule: Schedule.spaced("200 millis"),
-              times: 50,
+              yield* recordDisposition(`${world.state}/runs/${before.tasks[0]!.run}`, {
+                kind: "merged",
+                ref: "",
+                at: "2026-10-01T12:00:00Z",
+                by: "human",
+                note: null,
+              }).pipe(Effect.orDie);
+              const after = yield* app.load(focus()).pipe(
+                Effect.repeat({
+                  until: (state) => state.tasks[0]?.disposition === "merged",
+                  schedule: Schedule.spaced("200 millis"),
+                  times: 50,
+                }),
+              );
+              expect(after.tasks[0]?.disposition).toBe("merged");
+
+              // A host gone away is said, and the cards it last sent are not passed off as live.
+              yield* stopHost(world.state);
+              const away = yield* app.load(focus()).pipe(
+                Effect.repeat({
+                  until: (state) => state.note !== null,
+                  schedule: Schedule.spaced("50 millis"),
+                  times: 100,
+                }),
+              );
+              expect(away.note).toContain("reconnecting to the workflow host");
+              expect(away.tasks[0]?.disposition).toBe("merged");
+              // Moving the cursor reads nothing, and says what the last read said.
+              const moved = yield* app.load(focus({ selected: away.tasks[0]!.id }));
+              expect(moved.note).toBe(away.note);
+              const reconnected = yield* until(
+                () => app.load(focus()),
+                (state) => state.note === null,
+              );
+              expect(reconnected.tasks[0]?.disposition).toBe("merged");
             }),
           );
-          expect(after.tasks[0]?.disposition).toBe("merged");
-
-          // A host gone away is said, and the cards it last sent are not passed off as live.
-          yield* stopHost(world.state);
-          const away = yield* app.load(focus()).pipe(
-            Effect.repeat({
-              until: (state) => state.note !== null,
-              schedule: Schedule.spaced("50 millis"),
-              times: 100,
-            }),
-          );
-          expect(away.note).toContain("reconnecting to the workflow host");
-          expect(away.tasks[0]?.disposition).toBe("merged");
-          // Moving the cursor reads nothing, and says what the last read said.
-          const moved = yield* app.load(focus({ selected: away.tasks[0]!.id }));
-          expect(moved.note).toBe(away.note);
           yield* stopHost(world.state);
         }),
       ["plain.workflow.ts"],

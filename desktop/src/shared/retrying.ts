@@ -2,10 +2,10 @@
 // No Bun-only import: the view bundles this.
 
 import { Cause, Clock, Deferred, Effect, Exit, Option, Stream } from "effect";
+import { backoff } from "../../../src/peers-model";
 import { saidOf } from "./said";
 
-/** How long to wait after `failures` failures in a row: 1 s, doubling, at most a minute. */
-export const backoff = (failures: number) => Math.min(1000 * 2 ** failures, 60_000);
+export { backoff };
 
 /** What went wrong, which try comes next, and when (epoch ms). */
 export interface Trouble {

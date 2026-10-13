@@ -60,6 +60,15 @@ and the one before. Version 1 has none before it.
   whose Task is in it; a Task with no Herd recorded is the host's own Herd's. Event turns stay with each conversation, which reads its Herd's
   News.
 
+## Amended 2026-10-12: a paired Machine reaches it over a link
+
+D2's "another computer reaches it through a bridge on the Machine itself" is now one of two
+ways. A paired Machine reaches the host through the relay socket its own host keeps for
+this one, piped to a TLS WebSocket and declared here by the listener, and it is served the
+whole host protocol as a bridge is
+([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)). `Where.machine` is
+additive, so `PROTOCOL` stays at 2.
+
 ## Amended 2026-10-07: one build, shared by every client
 
 Each client used to cost a build of its own per change. On a loaded Machine one build took

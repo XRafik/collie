@@ -54,10 +54,11 @@ import {
 } from "./config";
 import type { YamlMap } from "./yaml";
 import { RanOn } from "./board-model";
+import type { Asker } from "./proposals";
 import * as dispatch from "./dispatcher";
 import type * as Types from "effect/Types";
 import { bodySections, layers, personaHoles, skillDirs } from "./definitions";
-import { currentEnv, type PluginEnv } from "./env";
+import { currentEnv, selfCommand, type PluginEnv } from "./env";
 import {
   HARNESSES,
   foldPreferences,
@@ -80,6 +81,7 @@ import {
 } from "./harness";
 import { Herdr, herdrFailureReason, type AgentInfo, type HerdrError, type PaneInfo } from "./herdr";
 import { agentName, agentTabLabel, reason, shellQuote, unsafePathComponent } from "./naming";
+import { machineName } from "./peers";
 import { askRouteTo } from "./handoff";
 import { nowIso } from "./time";
 import { roomFor, subscriptionOf, type UsageReading } from "./usage-model";
@@ -282,6 +284,7 @@ export interface AgentsApi {
     /** One of the run's agents by name, which wins over `operation`. */
     readonly agent?: string;
     readonly mode?: DeliveryMode;
+    readonly actor?: Asker;
   }) => Effect.Effect<Steered>;
   /** The agent this Run launched last, which is whose work a correction is about; null for none. */
   readonly newest: (runId: string) => Effect.Effect<Launched | null>;
@@ -1175,6 +1178,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
       readonly intentVersion?: number;
       readonly attempt?: number;
       readonly requestId?: string;
+      readonly actor?: Asker;
     },
   ) {
     const found = yield* entryFor(about, about.agent, null);
@@ -1184,6 +1188,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     const draft: dispatch.DeliveryDraft = {
       run: about.runId,
       harness: adapterFor(about.harness).id,
+      actor: delivery.actor,
       cause: { kind: delivery.kind, ref: delivery.ref },
       mode: delivery.mode ?? "boundary",
       // Work, a repair and a steer share a causal key per thing they are about, which is
@@ -1365,6 +1370,44 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     yield* ensureTrusted(ask.runId, adapter, ask.cwd);
     const persona = `${dirFor(ask.runId)}/${stemOf(ask)}.persona.md`;
     yield* write(persona, `${yield* personaOf(ask.persona ?? ask.role)}\n`);
+    const { mcpConfig, piExtension } = yield* Effect.promise(() => import("./chat"));
+    const { TOOLS } = yield* Effect.promise(() => import("./tools"));
+    const command = selfCommand();
+    const serverEnv = {
+      HERDR_PLUGIN_ROOT: host.env.pluginRoot,
+      HERDR_PLUGIN_STATE_DIR: host.env.stateDir,
+      COLLIE_USER_DIR: host.env.userDir,
+      HERDR_SOCKET_PATH: host.env.socketPath ?? "",
+      COLLIE_CWD: ask.cwd,
+      COLLIE_RUN: ask.runId,
+      COLLIE_AGENT: agent,
+    };
+    const configFile = `${dirFor(ask.runId)}/${stemOf(ask)}.mcp.json`;
+    const extension = `${dirFor(ask.runId)}/${stemOf(ask)}.tools.ts`;
+    yield* write(configFile, mcpConfig(command, serverEnv));
+    if (adapter.id === "pi")
+      yield* write(
+        extension,
+        piExtension(
+          command,
+          TOOLS.map((tool) => ({
+            name: tool.name,
+            label: tool.title,
+            description: tool.description,
+            parameters: tool.input,
+          })),
+          serverEnv,
+          "",
+          "",
+        ),
+      );
+    const settings =
+      adapter.id === "opencode" && host.env.raw.OPENCODE_CONFIG_CONTENT !== undefined
+        ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.JsonObject))(
+            host.env.raw.OPENCODE_CONFIG_CONTENT,
+          )
+        : undefined;
+    const mcp = adapter.mcp({ command, env: serverEnv, config: configFile, extension, settings });
     return yield* withControlLock(
       host.env.stateDir,
       agent,
@@ -1382,6 +1425,8 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const tab = reused ?? (yield* host.herdr.tabCreate({ label, cwd: ask.cwd, workspace }));
         // herdr ignores --cwd on tab create, so the pane is told where it is explicitly.
         yield* host.herdr.paneRun(tab.paneId, `cd ${shellQuote(ask.cwd)}`);
+        for (const [key, value] of Object.entries(mcp.env))
+          yield* host.herdr.paneRun(tab.paneId, `export ${key}=${shellQuote(value)}`);
         yield* host.herdr
           .agentStart({
             name: agent,
@@ -1398,6 +1443,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
                 window.passed ?? undefined,
               ),
               ...controls,
+              ...mcp.args,
             ],
           })
           .pipe(
@@ -1473,7 +1519,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const file = `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
         // Written before it goes out and never rewritten: what a human reads to see what
         // was actually asked, rather than what a prompt would be built as now.
-        yield* write(file, prefix === "" ? ask.prompt : `${prefix}\n\n${ask.prompt}`);
+        const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine.`;
+        yield* write(
+          file,
+          `${address}\n\n${prefix === "" ? ask.prompt : `${prefix}\n\n${ask.prompt}`}`,
+        );
         if (!alive || !replayed) {
           const late = yield* awaitReady(
             compactionDeps(host, ask.runId),
@@ -1894,6 +1944,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: DeliveryMode;
+    readonly actor?: Asker;
   }) =>
     under(
       Effect.gen(function* () {
@@ -1903,7 +1954,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           agent !== undefined
             ? launches.findLast((one) => one.agent === agent)
             : operation !== undefined
-              ? launches.findLast((one) => one.operation === operation)
+              ? launches.findLast((one) => one.operation === operation || one.agent === operation)
               : launches.at(-1);
         if (launched === undefined) {
           const about =
@@ -1923,6 +1974,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           kind: "steer",
           ref: options.request,
           mode: options.mode,
+          actor: options.actor,
         });
         yield* log(
           options.runId,

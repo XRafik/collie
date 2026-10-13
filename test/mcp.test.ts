@@ -4,8 +4,16 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import manifest from "../herdr-plugin.toml";
 import type { JsonObject } from "../src/schema";
 import { rebuiltAnswer } from "../src/mcp";
+import { connect } from "../src/host";
+import { everyRegistered } from "../src/registry";
+import { readAudit } from "../src/audit";
+import { runDir } from "../src/engine";
+import { until } from "./support/host";
+import { twoMachines } from "./support/peers";
 import { TOOLS } from "../src/tools";
 import { runEffect, suiteEnv } from "./support/effect";
+
+const encodeValue = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 const root = new URL("../", import.meta.url).pathname;
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.JsonObject));
@@ -20,7 +28,9 @@ const decode = Schema.decodeUnknownEffect(
   ),
 );
 
-const openServer = Effect.fn("McpTest.open")(function* () {
+const openServer = Effect.fn("McpTest.open")(function* (
+  launchEnv: Readonly<Record<string, string>> = {},
+) {
   const fs = yield* FileSystem.FileSystem;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-mcp-" });
@@ -40,6 +50,7 @@ const openServer = Effect.fn("McpTest.open")(function* () {
         HERDR_SOCKET_PATH: `${dir}/no-herdr.sock`,
         COLLIE_CWD: dir,
         ...(yield* suiteEnv),
+        ...launchEnv,
       },
       extendEnv: false,
       stdin: Stream.fromQueue(input).pipe(Stream.encodeText),
@@ -173,3 +184,75 @@ test("a rebuilt binary that warns on stderr still answers", () =>
       expect(yield* rebuiltAnswer(binary, dir, "collie_herd", {})).toBe("the answer");
     }).pipe(Effect.scoped),
   ));
+
+test(
+  "a Run agent's stdio MCP records the launched address and refuses a forged sender",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-mcp-agent-",
+        (first) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const outputs = `${first.world.home}/outputs.json`;
+            yield* fs.writeFileString(outputs, encodeValue([{ verdict: "done" }]));
+            const started = yield* first.cli(["run", "start", "attended", "--input", "work=MCP"], {
+              FAKE_HERDR_OUTPUTS: outputs,
+            });
+            const { runId } = Schema.decodeUnknownSync(Schema.Struct({ runId: Schema.String }))(
+              started.envelope.data,
+            );
+            const host = yield* connect(first.world.state);
+            yield* until(
+              () => host.run({ runId }),
+              (view) => (view?.waiting ?? []).some((one) => one.answer === null),
+            );
+            const agent = (yield* everyRegistered(first.world.state)).find(
+              (one) => one.runId === runId,
+            )!;
+            const server = yield* openServer({
+              ...first.env,
+              COLLIE_RUN: runId,
+              COLLIE_AGENT: agent.agent,
+            });
+            const actions = [
+              {
+                kind: "deliver",
+                run: runId,
+                agent: agent.agent,
+                text: "MCP words",
+                mode: "boundary",
+              },
+            ];
+            const forged = yield* server.request("tools/call", {
+              name: "collie_do",
+              arguments: { sender: "somebody else", actions },
+            });
+            expect(encodeValue(forged)).toContain("refus");
+            const before = (yield* readAudit(runDir(first.world.state, runId))).filter(
+              (one) => one.operation === "deliver",
+            ).length;
+            const answer = yield* server.request("tools/call", {
+              name: "collie_do",
+              arguments: { actions },
+            });
+            expect(encodeValue(answer)).toContain("deliver: applied");
+            const trail = (yield* readAudit(runDir(first.world.state, runId))).filter(
+              (one) => one.operation === "deliver",
+            );
+            expect(trail).toHaveLength(before + 1);
+            expect(trail.at(-1)?.actor).toMatchObject({
+              origin: "agent",
+              from: {
+                run: runId,
+                agent: agent.agent,
+                machine: { installation: expect.any(String) },
+              },
+            });
+            yield* server.close;
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);

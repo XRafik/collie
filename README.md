@@ -60,6 +60,7 @@ has none yet.
 | `implement`    | Builds from a plan, a Linear issue, or a description on a branch of its own, has the change reviewed, fixes the findings, then opens the merge request    |
 | `review`       | Reviews a merge request, a branch diff, or the working tree, writes one review, and offers to post it                                                     |
 | `architecture` | Runs the architect over the project, reports into the run directory, then offers: implement now or stop                                                   |
+| `investigate`  | Runs one investigator on the Machine that can observe the problem, reports findings to the requesting agent, then closes                                  |
 | `renovate`     | Merges the month's Renovate merge requests on one repository, tags a release, and checks the repository off the team's Renovate issue                     |
 | `general`      | One agent does one ad-hoc task where you started it, with no branch or merge request, and the run ends with its summary                                   |
 

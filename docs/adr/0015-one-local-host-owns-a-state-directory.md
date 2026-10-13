@@ -74,6 +74,14 @@ is recorded before it is executed, which is what makes that recovery possible; d
 not this. `collie native` stays as the fixture host the recovery proof drives, and the
 operator controls it measured — hold, release, stop, resume — are not on this protocol yet.
 
+## Amended 2026-10-12: a Machine a peer dials also listens
+
+D3's "nothing listening off this machine" holds for every Machine that has not paired. A
+Machine another one dials also listens on a TLS WebSocket, port 47217, and serves only the
+installations it is paired with; each channel it takes is declared on a fresh `host.sock`
+connection by this host, then piped. Removing the last peer that dials it closes the port
+([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)).
+
 ## Consequences
 
 - A host is a process nobody started on purpose, so it has to be findable: the lock names

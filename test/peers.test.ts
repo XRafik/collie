@@ -1,0 +1,601 @@
+// Two Machines reach each other over a paired link (ADR-0057): adding a Machine to herdr
+// is all it takes, a command about a Run goes to the Machine that has it, and the host
+// there records who asked and from where. Two real hosts, each with its own state
+// directory and fake herdr, paired on 127.0.0.1.
+
+import { expect, test } from "bun:test";
+import { createConnection } from "node:net";
+import { Clock, Deferred, Effect, Exit, Fiber, FileSystem, Schema } from "effect";
+import { readAudit } from "../src/audit";
+import { runDir } from "../src/engine";
+import { connect, connectPeer, ownerOf } from "../src/host";
+import { certOf, certificateFor, keyOf, peersOf, relayOf } from "../src/peers";
+import { runEffect } from "./support/effect";
+import { stopHost, until } from "./support/host";
+import { twoMachines, type Side } from "./support/peers";
+
+const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const Started = Schema.Struct({ runId: Schema.String });
+const Shown = Schema.Record(Schema.String, Schema.Json);
+const CallLine = Schema.fromJsonString(
+  Schema.Struct({ cmd: Schema.String, argv: Schema.Array(Schema.String) }),
+);
+
+const read = (file: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.readFileString(file)).pipe(Effect.orDie);
+
+/** What a fake agent answers each prompt with, so a Run gets as far as its question. */
+const answering = (side: Side) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const outputs = `${side.world.home}/outputs.json`;
+    yield* fs.writeFileString(
+      outputs,
+      encode(Array.from({ length: 4 }, () => ({ verdict: "done" }))),
+    );
+    return { FAKE_HERDR_OUTPUTS: outputs };
+  }).pipe(Effect.orDie);
+
+/** A Run of `attended` on `side`, waiting on its question with its agent alive. */
+const waitingRun = (side: Side) =>
+  Effect.gen(function* () {
+    const extra = yield* answering(side);
+    const started = yield* side.cli(
+      ["run", "start", "attended", "--input", "work=the link"],
+      extra,
+    );
+    expect(started.envelope.error).toBeUndefined();
+    const { runId } = Schema.decodeUnknownSync(Started)(started.envelope.data);
+    const client = yield* connect(side.world.state).pipe(Effect.orDie);
+    yield* until(
+      () => client.run({ runId }).pipe(Effect.orDie),
+      (view) => (view?.waiting ?? []).some((one) => one.answer === null),
+    );
+    return { runId, extra };
+  });
+
+const prompts = (side: Side) =>
+  read(side.herdrLog).pipe(
+    Effect.map((text) =>
+      text
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => Schema.decodeUnknownSync(CallLine)(line))
+        .filter((call) => call.cmd === "agent prompt")
+        .map((call) => call.argv.join(" ")),
+    ),
+  );
+
+test("Bun's WebSocket trusts the certificate Collie makes, pinned as the only CA, and no other", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const one = yield* fs.makeTempDirectoryScoped({ prefix: "collie-pin-" });
+      const other = yield* fs.makeTempDirectoryScoped({ prefix: "collie-pin-other-" });
+      const certificate = yield* certificateFor(one, "127.0.0.1");
+      const elsewhere = yield* certificateFor(other, "127.0.0.1");
+      expect((yield* fs.stat(keyOf(one))).mode & 0o777).toBe(0o600);
+      expect(yield* read(certOf(one))).toBe(certificate);
+      const server = Bun.serve({
+        hostname: "127.0.0.1",
+        port: 0,
+        tls: { cert: certificate, key: yield* read(keyOf(one)) },
+        fetch: (request, server) =>
+          server.upgrade(request) ? undefined : new Response("", { status: 400 }),
+        websocket: { message: (ws, message) => void ws.send(message) },
+      });
+      yield* Effect.addFinalizer(() => Effect.sync(() => server.stop(true)));
+      const dial = (ca: string) =>
+        Effect.callback<string>((resume) => {
+          const ws = new WebSocket(`wss://127.0.0.1:${server.port}/`, { tls: { ca } });
+          ws.onopen = () => ws.send("hello");
+          ws.onmessage = (event) => {
+            resume(Effect.succeed(String(event.data)));
+            ws.close();
+          };
+          ws.onerror = () => resume(Effect.succeed("refused"));
+        });
+      expect(yield* dial(certificate)).toBe("hello");
+      expect(yield* dial(elsewhere)).toBe("refused");
+    }).pipe(Effect.orDie),
+  ));
+
+test(
+  "a command about a Run on a Machine herdr lists pairs the two by itself and reaches the Run, recorded as its front door from this Machine",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-peers-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId } = yield* waitingRun(second);
+            yield* first.lists([second]);
+
+            const steered = yield* first.cli(["run", "steer", runId, "hello from the laptop"]);
+            expect(steered.envelope.error).toBeUndefined();
+            expect(steered.envelope.ok).toBe(true);
+            expect(
+              (yield* prompts(second)).some((text) => text.includes("hello from the laptop")),
+            ).toBe(true);
+
+            // The one login was the pairing's.
+            const logins = (yield* read(first.sshLog))
+              .split("\n")
+              .filter((line) => line.startsWith("login"));
+            expect(logins).toHaveLength(1);
+            expect(logins[0]).toContain("machine");
+
+            const fs = yield* FileSystem.FileSystem;
+            const firstPeers = yield* peersOf(first.world.state);
+            const secondPeers = yield* peersOf(second.world.state);
+            const firstId = (yield* read(`${first.world.state}/installation`)).trim();
+            const secondId = (yield* read(`${second.world.state}/installation`)).trim();
+            expect(firstPeers).toMatchObject([
+              { installation: secondId, name: "second", dials: "out" },
+            ]);
+            expect(secondPeers).toMatchObject([{ installation: firstId, dials: "in" }]);
+            for (const side of [first, second])
+              expect((yield* fs.stat(`${side.world.state}/peers.json`)).mode & 0o777).toBe(0o600);
+
+            const delivered = (yield* readAudit(runDir(second.world.state, runId)).pipe(
+              Effect.orDie,
+            )).find((line) => line.operation === "deliver");
+            expect(delivered?.actor.origin).toBe("cli");
+            expect(delivered?.actor.from?.machine).toEqual({
+              installation: firstId,
+              name: secondPeers[0]!.name,
+            });
+
+            // A second command needs no login at all.
+            const shown = yield* first.cli(["run", "show", runId]);
+            expect(shown.envelope.error).toBeUndefined();
+            const local = yield* second.cli(["run", "show", runId]);
+            expect(shown.envelope.data).toEqual({
+              ...Schema.decodeUnknownSync(Shown)(local.envelope.data),
+              machine: "second",
+            });
+            expect(
+              (yield* read(first.sshLog)).split("\n").filter((line) => line.startsWith("login")),
+            ).toHaveLength(1);
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
+
+/** Whether something accepts a connection on this port of 127.0.0.1. */
+const listening = (port: string) =>
+  Effect.callback<boolean>((resume) => {
+    const conn = createConnection({ host: "127.0.0.1", port: Number(port) });
+    conn.once("connect", () => {
+      conn.destroy();
+      resume(Effect.succeed(true));
+    });
+    conn.once("error", () => resume(Effect.succeed(false)));
+  });
+
+/** A WebSocket to a listener: open, or refused. */
+const dialListener = (
+  port: string,
+  ca: string,
+  headers: Readonly<Record<string, string>>,
+  path = "/channel?as=cli&client=probe",
+) =>
+  Effect.callback<string>((resume) => {
+    const ws = new WebSocket(`wss://127.0.0.1:${port}${path}`, {
+      headers: { ...headers },
+      tls: { ca },
+    });
+    ws.onopen = () => {
+      resume(Effect.succeed("open"));
+      ws.close();
+    };
+    ws.onerror = () => resume(Effect.succeed("refused"));
+  });
+
+test(
+  "dial-back tickets are single-use, expire, belong to one installation, and a control link requires its secret",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-tickets-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const [peer] = yield* peersOf(first.world.state);
+            const [laptop] = yield* peersOf(second.world.state);
+            yield* stopHost(first.world.state);
+            const port = second.env.COLLIE_PEER_PORT!;
+            const ca = peer!.certificate!;
+            const headers = { Authorization: `Bearer ${peer!.secret}` };
+            expect(
+              yield* dialListener(port, ca, { Authorization: "Bearer wrong" }, "/control"),
+            ).toBe("refused");
+            const other = yield* second.cli([
+              "machine",
+              "invite",
+              "--for",
+              "another-installation",
+              "--name",
+              "another",
+            ]);
+            const Other = Schema.Struct({ secret: Schema.String });
+            const otherHeaders = {
+              Authorization: `Bearer ${Schema.decodeUnknownSync(Other)(other.envelope.data).secret}`,
+            };
+            const minted = yield* Deferred.make<string>();
+            const control = yield* Effect.acquireRelease(
+              Effect.callback<WebSocket>((resume) => {
+                const ws = new WebSocket(`wss://127.0.0.1:${port}/control`, {
+                  headers,
+                  tls: { ca },
+                });
+                ws.onopen = () => resume(Effect.succeed(ws));
+                ws.onmessage = (event) => {
+                  const Dial = Schema.fromJsonString(Schema.Struct({ dial: Schema.String }));
+                  const dial = Schema.decodeUnknownOption(Dial)(event.data);
+                  if (dial._tag === "Some")
+                    Deferred.doneUnsafe(minted, Exit.succeed(dial.value.dial));
+                };
+              }),
+              (ws) => Effect.sync(() => ws.close()),
+            );
+            const waiting = yield* Effect.forkScoped(
+              relayAnswer(
+                relayOf(second.world.state, laptop!.name),
+                '{"as":"cli","client":"probe"}',
+              ),
+            );
+            const ticket = yield* Deferred.await(minted);
+            const path = `/reverse?ticket=${ticket}`;
+            expect(yield* dialListener(port, ca, otherHeaders, path)).toBe("refused");
+            expect(yield* dialListener(port, ca, headers, path)).toBe("open");
+            expect(yield* dialListener(port, ca, headers, path)).toBe("refused");
+            yield* Fiber.await(waiting);
+            const expired = yield* Deferred.make<string>();
+            control.onmessage = (event) => {
+              const dial = Schema.decodeUnknownOption(
+                Schema.fromJsonString(Schema.Struct({ dial: Schema.String })),
+              )(event.data);
+              if (dial._tag === "Some") Deferred.doneUnsafe(expired, Exit.succeed(dial.value.dial));
+            };
+            yield* Effect.forkScoped(
+              relayAnswer(
+                relayOf(second.world.state, laptop!.name),
+                '{"as":"cli","client":"expiry"}',
+              ),
+            );
+            const expires = yield* Deferred.await(expired);
+            yield* Effect.sleep("10 seconds");
+            expect(yield* dialListener(port, ca, headers, `/reverse?ticket=${expires}`)).toBe(
+              "refused",
+            );
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
+
+/** One line written to a relay socket, and the line it answered with. */
+const relayAnswer = (path: string, header: string) =>
+  Effect.callback<string>((resume) => {
+    const conn = createConnection(path);
+    let said = "";
+    conn.once("connect", () => conn.write(`${header}\n`));
+    conn.on("data", (chunk) => {
+      said += chunk.toString("utf8");
+      if (said.includes("\n")) conn.destroy();
+    });
+    conn.once("close", () => resume(Effect.succeed(said.trim())));
+  });
+
+const Board = Schema.Struct({ tasks: Schema.Array(Schema.Struct({ id: Schema.String })) });
+const NotFound = Schema.Struct({ machines: Schema.Array(Schema.String) });
+test(
+  "an invitation refuses a relay name that escapes its directory or exceeds a unix socket path",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-name-",
+        (_, second) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const kept = `${second.world.state}/outside.sock`;
+            yield* fs.writeFileString(kept, "kept");
+            for (const name of ["../outside", "x".repeat(105)]) {
+              const refused = yield* second.cli([
+                "machine",
+                "invite",
+                "--for",
+                "invalid",
+                "--name",
+                name,
+              ]);
+              expect(refused.envelope.ok).toBe(false);
+              expect(yield* fs.readFileString(kept)).toBe("kept");
+              expect(yield* peersOf(second.world.state)).toHaveLength(0);
+            }
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
+
+const Machines = Schema.Struct({
+  machines: Schema.Array(Schema.Struct({ name: Schema.String, state: Schema.String })),
+});
+
+test(
+  "an undialable Machine is reached by dial-back, reconnects without a login, and an away Machine is refused within five seconds",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-reverse-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId, extra } = yield* waitingRun(first);
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const [laptop] = yield* peersOf(second.world.state);
+            const state = (side: Side, name: string) =>
+              side
+                .cli(["machine", "list"])
+                .pipe(
+                  Effect.map(
+                    (read) =>
+                      Schema.decodeUnknownSync(Machines)(read.envelope.data).machines.find(
+                        (one) => one.name === name,
+                      )?.state,
+                  ),
+                );
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+            expect(
+              (yield* second.cli(["run", "steer", runId, "hello by dial-back"])).envelope.ok,
+            ).toBe(true);
+            expect(
+              (yield* prompts(first)).some((text) => text.includes("hello by dial-back")),
+            ).toBe(true);
+            const audit = yield* readAudit(runDir(first.world.state, runId)).pipe(Effect.orDie);
+            expect(
+              audit.find((line) => line.operation === "deliver")?.actor.from?.machine?.name,
+            ).toBe("second");
+            const started = yield* second.cli(
+              ["--machine", laptop!.name, "run", "start", "attended", "--input", "work=reverse"],
+              extra,
+            );
+            expect(started.envelope.error).toBeUndefined();
+
+            const [dialled] = yield* peersOf(first.world.state);
+            yield* Effect.callback<void>((resume) => {
+              const ws = new WebSocket(`${dialled!.url}/control`, {
+                headers: { Authorization: `Bearer ${dialled!.secret}` },
+                tls: { ca: dialled!.certificate },
+              });
+              ws.onclose = () => resume(Effect.void);
+              ws.onerror = () => resume(Effect.die("the replacement control link was refused"));
+              return Effect.sync(() => ws.close());
+            }).pipe(Effect.timeout("5 seconds"));
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+
+            yield* stopHost(first.world.state);
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "away",
+            );
+            const at = yield* Clock.currentTimeMillis;
+            const away = yield* second.cli(["--machine", laptop!.name, "board"]);
+            expect(away.envelope.error?.code).toBe("machine_unreachable");
+            expect((yield* Clock.currentTimeMillis) - at).toBeLessThan(5000);
+            yield* first.cli(["machine", "list"]);
+            yield* until(
+              () => state(second, laptop!.name),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+
+            yield* stopHost(second.world.state);
+            yield* until(
+              () => state(first, "second"),
+              (state) => state === "connecting",
+            );
+            yield* second.cli(["machine", "list"]);
+            yield* until(
+              () => state(first, "second"),
+              (state) => state === "live",
+            );
+            expect((yield* second.cli(["--machine", laptop!.name, "board"])).envelope.ok).toBe(
+              true,
+            );
+            expect(
+              (yield* read(first.sshLog)).split("\n").filter((line) => line.startsWith("login")),
+            ).toHaveLength(1);
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "across Machines a Run is answered and stopped, and --machine reaches the board and a start, with the envelopes they give at home",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-peers-across-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId, extra } = yield* waitingRun(second);
+            yield* first.lists([second]);
+
+            const answered = yield* first.cli(["run", "answer", runId, "yes", "--decision", "go"]);
+            expect(answered.envelope.error).toBeUndefined();
+            const firstId = (yield* read(`${first.world.state}/installation`)).trim();
+            expect(answered.envelope.data).toMatchObject({
+              run: runId,
+              decision: "go",
+              value: "yes",
+            });
+
+            const board = yield* first.cli(["--machine", "second", "board"]);
+            const home = yield* second.cli(["board"]);
+            expect(board.envelope.ok).toBe(true);
+            const ids = (envelope: { readonly data?: unknown }) =>
+              Schema.decodeUnknownSync(Board)(envelope.data).tasks.map((task) => task.id);
+            expect(ids(board.envelope)).toEqual(ids(home.envelope));
+
+            const started = yield* first.cli(
+              ["--machine", "second", "run", "start", "attended", "--input", "work=from afar"],
+              extra,
+            );
+            expect(started.envelope.error).toBeUndefined();
+            expect(
+              Object.keys(Schema.decodeUnknownSync(Shown)(started.envelope.data)).sort(),
+            ).toEqual(["fresh", "registration", "requestId", "runId", "workflow"].sort());
+            const other = Schema.decodeUnknownSync(Started)(started.envelope.data).runId;
+            const listed = yield* second.cli(["run", "list"]);
+            expect(encode(listed.envelope.data)).toContain(other);
+
+            const stopped = yield* first.cli(["run", "stop", other]);
+            expect(stopped.envelope.error).toBeUndefined();
+            const trail = yield* readAudit(runDir(second.world.state, other)).pipe(Effect.orDie);
+            for (const line of trail.filter((one) => ["start", "stop"].includes(one.operation)))
+              expect(line.actor.from?.machine?.installation).toBe(firstId);
+            const answerLine = (yield* readAudit(runDir(second.world.state, runId)).pipe(
+              Effect.orDie,
+            )).find((line) => line.operation === "answer");
+            expect(answerLine?.actor).toMatchObject({
+              origin: "cli",
+              from: { machine: { installation: firstId } },
+            });
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "a listener lets in only its paired installation over its own certificate, a relay only a front door, and a far host of another build is refused, left running",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-peers-refused-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId } = yield* waitingRun(second);
+            // A host nobody dials listens on nothing but its socket.
+            expect(yield* listening(second.env.COLLIE_PEER_PORT!)).toBe(false);
+            yield* first.lists([second]);
+            expect((yield* first.cli(["run", "show", runId])).envelope.ok).toBe(true);
+            expect(yield* listening(second.env.COLLIE_PEER_PORT!)).toBe(true);
+
+            const port = second.env.COLLIE_PEER_PORT!;
+            const [paired] = yield* peersOf(first.world.state);
+            const ca = paired!.certificate!;
+            expect(
+              yield* dialListener(port, ca, { Authorization: `Bearer ${paired!.secret}` }),
+            ).toBe("open");
+            expect(yield* dialListener(port, ca, { Authorization: "Bearer not-the-secret" })).toBe(
+              "refused",
+            );
+            expect(yield* dialListener(port, ca, {})).toBe("refused");
+            const fs = yield* FileSystem.FileSystem;
+            const elsewhere = yield* certificateFor(
+              yield* fs.makeTempDirectoryScoped({ prefix: "collie-pin-elsewhere-" }),
+              "127.0.0.1",
+            );
+            expect(
+              yield* dialListener(port, elsewhere, { Authorization: `Bearer ${paired!.secret}` }),
+            ).toBe("refused");
+
+            const relay = relayOf(first.world.state, "second");
+            expect(yield* relayAnswer(relay, '{"as":"nobody","client":"x"}')).toContain("refused");
+            expect(yield* relayAnswer(relay, '{"as":"host","client":"x"}')).toContain(
+              "only this Machine's host speaks as host",
+            );
+
+            const local = yield* connect(second.world.state).pipe(Effect.orDie);
+            const claimed = yield* local
+              .declare({ frontDoor: "cli", from: { machine: { installation: "x", name: "y" } } })
+              .pipe(Effect.flip);
+            expect(claimed._tag).toBe("HostRefused");
+
+            const before = yield* ownerOf(second.world.state);
+            const mismatch = yield* Effect.scoped(
+              connectPeer(
+                first.world.state,
+                "second",
+                { as: "cli", client: "probe" },
+                { build: "0.0.0-elsewhere" },
+              ),
+            ).pipe(Effect.flip);
+            expect(mismatch._tag).toBe("HostVersionMismatch");
+            if (mismatch._tag === "HostVersionMismatch") {
+              expect(mismatch.client).toBe("0.0.0-elsewhere");
+              expect(mismatch.restart).toContain(mismatch.host);
+            }
+            expect((yield* ownerOf(second.world.state))?.pid).toBe(before?.pid);
+
+            const nowhere = yield* first.cli(["run", "show", "run-nowhere"]);
+            expect(nowhere.envelope.error?.code).toBe("run_not_found");
+            const asked = Schema.decodeUnknownSync(NotFound)(
+              nowhere.envelope.error?.details,
+            ).machines;
+            expect(asked).toHaveLength(2);
+            expect(asked).toContain("second");
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "a Machine herdr no longer lists is forgotten on both sides when the host that dials it starts, and the other stops listening",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-peers-forget-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId } = yield* waitingRun(second);
+            yield* first.lists([second]);
+            expect((yield* first.cli(["run", "show", runId])).envelope.ok).toBe(true);
+            expect(yield* peersOf(second.world.state)).toHaveLength(1);
+
+            yield* first.lists([]);
+            const { stopHost } = yield* Effect.promise(() => import("./support/host"));
+            yield* stopHost(first.world.state);
+            yield* first.cli(["machine", "list"]);
+            yield* until(
+              () => Effect.all([peersOf(first.world.state), peersOf(second.world.state)]),
+              ([mine, theirs]) => mine.length === 0 && theirs.length === 0,
+            );
+            yield* until(
+              () => listening(second.env.COLLIE_PEER_PORT!),
+              (open) => !open,
+            );
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
