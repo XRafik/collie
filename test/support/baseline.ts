@@ -1134,7 +1134,7 @@ scenario(
         expect(yield* prompts()).toHaveLength(3);
         expect(yield* asked("r-review-mr", "review-2-1")).toContain("Iteration 2");
         expect(yield* asked("r-review-mr", "fix")).toContain(
-          "glab mr checkout 42 --repo gitlab.example.com/group/project",
+          "glab mr checkout '42' --repo 'gitlab.example.com/group/project'",
         );
         expect(yield* persona("r-review-mr", "fix")).toContain("You are an implementer");
         // Nothing is left to fix after a clean review, so fixing is not offered again.
@@ -1152,13 +1152,13 @@ scenario(
 
 const REVIEWED = {
   gitlab: {
-    diff: "glab mr diff 30 --repo gitlab.example.com/group/app",
-    view: "glab mr view 30 --repo gitlab.example.com/group/app",
+    diff: "glab mr diff '30' --repo 'gitlab.example.com/group/app'",
+    view: "glab mr view '30' --repo 'gitlab.example.com/group/app'",
     other: "gh",
   },
   github: {
-    diff: "gh pr diff 30 --repo owner/repo",
-    view: "gh pr view 30 --repo owner/repo",
+    diff: "gh pr diff '30' --repo 'owner/repo'",
+    view: "gh pr view '30' --repo 'owner/repo'",
     other: "glab",
   },
 } as const;
@@ -2694,7 +2694,7 @@ for (const name of ["gitlab", "github"] as const) {
           });
           yield* bin.restore();
           const prompt = yield* asked(runId, "mr");
-          expect(prompt).toContain(name === "gitlab" ? "glab mr note 31" : "gh pr comment 31");
+          expect(prompt).toContain(name === "gitlab" ? "glab mr note '31'" : "gh pr comment '31'");
           expect(prompt).toContain(
             name === "gitlab"
               ? "https://gitlab.example.com/group/app/-/merge_requests/31"

@@ -1052,6 +1052,7 @@ For an `implement` Run's final delivery, the checkout's forge — its `origin`'s
 `upstream`'s — decides: GitHub's adapter writes `gh` commands and GitLab's `glab` ones,
 and the prompt names no other CLI. Both front doors ask the same host service for
 readiness, assignee, template, Linear tickets and this branch's open merge request.
+The commands quote repository, branch and assignee values so the shell passes them literally.
 Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
 to read the repository. An existing merge request on the branch is updated rather than
 given a second one. If any request returned for the branch merges itself once green,

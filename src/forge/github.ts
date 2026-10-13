@@ -10,6 +10,7 @@ import {
   type MrRef,
 } from "../board-model";
 import { whatItSaid, type Runner } from "../mr";
+import { shellQuote } from "../naming";
 import { epochMs } from "../time";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 
@@ -391,11 +392,13 @@ export const github: Forge = {
   forBranch,
   template,
   commands: ({ project, branch, assignee, existing }) => {
-    const repo = mrPath({ project, iid: "" });
+    const repo = shellQuote(mrPath({ project, iid: "" }));
     return {
-      create: `gh pr create --repo ${repo} --head ${branch} --assignee ${assignee} --title "<title>" --body-file <file>`,
+      create: `gh pr create --repo ${repo} --head ${shellQuote(branch)} --assignee ${shellQuote(assignee)} --title "<title>" --body-file <file>`,
       comment:
-        existing === null ? "" : `gh pr comment ${existing} --repo ${repo} --body-file <file>`,
+        existing === null
+          ? ""
+          : `gh pr comment ${shellQuote(existing)} --repo ${repo} --body-file <file>`,
     };
   },
   ready,
@@ -456,11 +459,12 @@ export const github: Forge = {
     }),
   open: (ref, cwd, run) => run("gh", ["pr", "view", ref.iid, "--repo", mrPath(ref), "--web"], cwd),
   review: (ref) => {
-    const repo = `--repo ${mrPath(ref)}`;
+    const repo = `--repo ${shellQuote(mrPath(ref))}`;
+    const iid = shellQuote(ref.iid);
     return {
-      diff: `gh pr diff ${ref.iid} ${repo}`,
-      view: `gh pr view ${ref.iid} ${repo} --comments`,
-      checkout: `gh pr checkout ${ref.iid} ${repo}`,
+      diff: `gh pr diff ${iid} ${repo}`,
+      view: `gh pr view ${iid} ${repo} --comments`,
+      checkout: `gh pr checkout ${iid} ${repo}`,
     };
   },
 };

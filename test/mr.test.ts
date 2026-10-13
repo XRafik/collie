@@ -178,7 +178,7 @@ for (const name of ["gitlab", "github"] as const) {
           autoMerge: false,
         });
         expect(ready.commands?.create).toContain(`${CLI[name]} `);
-        expect(ready.commands?.create).toContain("--assignee me");
+        expect(ready.commands?.create).toContain("--assignee 'me'");
         expect(ready.commands?.comment).toBe("");
         expect((yield* prepare(checkout(), { [name]: "lander" })).assignee).toBe("lander");
       }),

@@ -4,6 +4,7 @@ import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { ForgeChecks, MrDetails, MrPanel, MrRef, MrUnavailable } from "../board-model";
 import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
+import { shellQuote } from "../naming";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 
 export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
@@ -407,11 +408,11 @@ export const gitlab: Forge = {
   forBranch,
   template,
   commands: ({ project, assignee, existing }) => ({
-    create: `glab mr create --assignee ${assignee} --title "<title>" --description "$(cat <file>)"`,
+    create: `glab mr create --assignee ${shellQuote(assignee)} --title "<title>" --description "$(cat <file>)"`,
     comment:
       existing === null
         ? ""
-        : `glab mr note ${existing} --repo ${project} --message "$(cat <file>)"`,
+        : `glab mr note ${shellQuote(existing)} --repo ${shellQuote(project)} --message "$(cat <file>)"`,
   }),
   ready: gitlabForProject,
   login: glabLogin,
@@ -459,13 +460,12 @@ export const gitlab: Forge = {
   open: (ref, cwd, run) =>
     run("glab", ["mr", "view", ref.iid, ...repoArgs(ref.project), "--web"], cwd),
   review: (ref) => {
-    const repo = repoArgs(ref.project)
-      .map((arg) => ` ${arg}`)
-      .join("");
+    const repo = ref.project === null ? "" : ` --repo ${shellQuote(ref.project)}`;
+    const iid = shellQuote(ref.iid);
     return {
-      diff: `glab mr diff ${ref.iid}${repo}`,
-      view: `glab mr view ${ref.iid}${repo} --comments`,
-      checkout: `glab mr checkout ${ref.iid}${repo}`,
+      diff: `glab mr diff ${iid}${repo}`,
+      view: `glab mr view ${iid}${repo} --comments`,
+      checkout: `glab mr checkout ${iid}${repo}`,
     };
   },
 };

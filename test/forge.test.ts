@@ -242,6 +242,69 @@ for (const name of ["gitlab", "github"] as const) {
         expect(line).toContain("30");
       }
     });
+
+    test("keeps shell characters in delivery arguments literal", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "forge-delivery-" });
+          const bin = yield* FakeBin.make(`${cwd}/bin`);
+          try {
+            yield* bin.add(CLI[name], `printf '%s\\n' "$@"`);
+            yield* fs.writeFileString(`${cwd}/body.txt`, "description");
+            const branch = "feature/$(printf${IFS}changed)";
+            const assignee = "account$(printf${IFS}changed)";
+            const existing = `https://${PROJECT[name]}/30?query=$(printf\${IFS}changed)`;
+            const commands = forge.commands({ project: PROJECT[name], branch, assignee, existing });
+            const created = yield* shell(
+              "sh",
+              ["-c", commands.create.replace("<title>", "Change").replace("<file>", "body.txt")],
+              cwd,
+            );
+            expect(created.code).toBe(0);
+            const args = created.stdout.trimEnd().split("\n");
+            expect(args[args.indexOf("--assignee") + 1]).toBe(assignee);
+            if (name === "github") expect(args[args.indexOf("--head") + 1]).toBe(branch);
+            const noted = yield* shell(
+              "sh",
+              ["-c", commands.comment.replace("<file>", "body.txt")],
+              cwd,
+            );
+            expect(noted.code).toBe(0);
+            expect(noted.stdout.trimEnd().split("\n")[2]).toBe(existing);
+          } finally {
+            yield* bin.restore();
+          }
+        }),
+      ));
+
+    test("keeps shell characters in a review target literal", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "forge-review-" });
+          const bin = yield* FakeBin.make(`${cwd}/bin`);
+          try {
+            yield* bin.add(CLI[name], `printf '%s\\n' "$@"`);
+            const commands = forge.review({
+              project: `${PROJECT[name]}$(printf\${IFS}changed)`,
+              iid: "30",
+            });
+            for (const line of [commands.diff, commands.view, commands.checkout]) {
+              const result = yield* shell("sh", ["-c", line], cwd);
+              expect(result.code).toBe(0);
+              const args = result.stdout.trimEnd().split("\n");
+              expect(args[args.indexOf("--repo") + 1]).toBe(
+                name === "github"
+                  ? "owner/repo$(printf${IFS}changed)"
+                  : "gitlab.example.com/group/app$(printf${IFS}changed)",
+              );
+            }
+          } finally {
+            yield* bin.restore();
+          }
+        }),
+      ));
   });
 }
 
