@@ -2051,6 +2051,271 @@ scenario(
   120_000,
 );
 
+/**
+ * A real repository on `master` whose origin is a bare repository beside it, so the default
+ * branch can move under a Run as another clone pushes to it.
+ */
+const withOrigin = () =>
+  Effect.gen(function* () {
+    const git = (cwd: string, ...args: string[]) =>
+      exec(["git", ...args], { cwd }).pipe(Effect.map((done) => done.stdout.trim()));
+    const remote = `${rig.root}/origin.git`;
+    const upstream = `${rig.root}/upstream`;
+    yield* git(rig.root, "init", "-q", "--bare", "-b", "master", remote);
+    for (const args of [
+      ["init", "-q", "-b", "master"],
+      ["config", "user.email", "t@example.com"],
+      ["config", "user.name", "t"],
+      ["remote", "add", "origin", remote],
+    ])
+      yield* git(rig.projectDir, ...args);
+    const fs = yield* FileSystem.FileSystem;
+    const commit = (cwd: string, file: string, body: string) =>
+      Effect.gen(function* () {
+        yield* fs.writeFileString(`${cwd}/${file}`, body);
+        yield* git(cwd, "add", file);
+        yield* git(cwd, "commit", "-qm", `change ${file}`);
+        return yield* git(cwd, "rev-parse", "HEAD");
+      }).pipe(Effect.orDie);
+    yield* commit(rig.projectDir, "shared.txt", "one\n");
+    yield* git(rig.projectDir, "push", "-q", "origin", "master");
+    yield* git(rig.root, "clone", "-q", remote, upstream);
+    yield* git(upstream, "config", "user.email", "u@example.com");
+    yield* git(upstream, "config", "user.name", "u");
+    return {
+      git,
+      /** A commit on the Run's own checkout, as its builder would leave one. */
+      commitHere: (file: string, body: string) => commit(rig.projectDir, file, body),
+      /** Master moved by somebody else, answering with where it is now. */
+      moveMaster: (file: string, body: string) =>
+        commit(upstream, file, body).pipe(
+          Effect.tap(() => git(upstream, "push", "-q", "origin", "master")),
+        ),
+    };
+  });
+
+/** Until the file exists: a step whose prompt is written has been reached. */
+const reached = (file: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      until(
+        () => fs.exists(file).pipe(Effect.orElseSucceed(() => false)),
+        (there) => there,
+      ),
+    ),
+  );
+
+type Step = Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner>;
+
+/**
+ * Runs implement over the tickets until it ends or parks on its merge request (the origin is
+ * no forge). Each hand is a step done by hand, as its agent would, before its Output is
+ * written; `outputs` answers every step in order, with null for each one done by hand.
+ */
+const builtUntilParked = (
+  runId: string,
+  tickets: ReadonlyArray<string>,
+  outputs: ReadonlyArray<Schema.Json | null>,
+  hands: ReadonlyArray<{ readonly operation: string; readonly step: Step }>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const plan = yield* planOf(
+      tickets.map((file) => ({ file, title: file.replace(/\.md$/, ""), checks: "unit" })),
+    );
+    yield* approve(runId, ["unit"]);
+    yield* rig.queueOutputs(outputs);
+    const running = yield* Effect.forkChild(
+      ran({ entry: shipped("implement"), runId, input: { plan } }),
+    );
+    const agents = `${dir}/agents/${runId}`;
+    for (const { operation, step } of hands) {
+      yield* reached(`${agents}/${operation}.prompt.md`);
+      yield* step;
+      yield* fs.writeFileString(`${agents}/${operation}.json`, asJson(BUILT));
+    }
+    const logged = () =>
+      fs.readFileString(`${runDir(dir, runId)}/log.txt`).pipe(Effect.orElseSucceed(() => ""));
+    const result = yield* Effect.raceFirst(
+      Effect.map(Fiber.join(running), Option.some),
+      Effect.as(
+        until(logged, (said) => said.includes("Cannot open the merge request")),
+        Option.none(),
+      ),
+    );
+    yield* Fiber.interrupt(running);
+    return { result, log: yield* logged() };
+  });
+
+const TWO_TICKETS = ["01-first.md", "02-second.md"];
+
+scenario(
+  "implement merges a moved default branch at the next ticket, and reviews against it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { git, moveMaster } = yield* withOrigin();
+        let moved = "";
+        const { log } = yield* builtUntilParked(
+          "r-drift",
+          TWO_TICKETS,
+          [null, BUILT, CLEAN_SYNTHESIS],
+          [
+            {
+              operation: "01-first.md",
+              step: Effect.map(moveMaster("upstream.txt", "theirs\n"), (sha) => {
+                moved = sha;
+              }),
+            },
+          ],
+        );
+
+        expect(log).toContain(`integrated master@${moved}`);
+        // A merge commit on the branch, never a rebase: what was built is still its parent.
+        const parents = (yield* git(rig.projectDir, "rev-list", "--parents", "-n", "1", "HEAD"))
+          .split(" ")
+          .slice(1);
+        expect(parents).toHaveLength(2);
+        expect(parents[1]).toBe(moved);
+        expect(yield* asked("r-drift", "02-second.md")).not.toContain("conflicts in");
+        expect(yield* asked("r-drift", "review-1")).toContain(`${moved}...HEAD`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a conflict with the moved default branch is the builder's next work, before its ticket",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { git, commitHere, moveMaster } = yield* withOrigin();
+        let moved = "";
+        const { log } = yield* builtUntilParked(
+          "r-conflict",
+          TWO_TICKETS,
+          [null, null, CLEAN_SYNTHESIS],
+          [
+            {
+              operation: "01-first.md",
+              step: Effect.gen(function* () {
+                yield* commitHere("shared.txt", "ours\n");
+                moved = yield* moveMaster("shared.txt", "theirs\n");
+              }),
+            },
+            // The next ticket's builder finishes the merge first.
+            { operation: "02-second.md", step: Effect.asVoid(commitHere("shared.txt", "both\n")) },
+          ],
+        );
+
+        expect(log).toContain(
+          `integrated master@${moved}, conflicts left to the builder: shared.txt`,
+        );
+        const second = yield* asked("r-conflict", "02-second.md");
+        expect(second).toContain(
+          `Collie merged origin/master (${moved}) into this branch, and the merge stopped on conflicts in: shared.txt.`,
+        );
+        expect(second).toContain("Finish that merge before this ticket's work goes on");
+        const parents = (yield* git(rig.projectDir, "rev-list", "--parents", "-n", "1", "HEAD"))
+          .split(" ")
+          .slice(1);
+        expect(parents[1]).toBe(moved);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/r-conflict/merge-1.prompt.md`)).toBe(false);
+        expect(yield* asked("r-conflict", "review-1")).toContain(`${moved}...HEAD`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a conflict found before a review round goes to the builder before the reviewer",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { commitHere, moveMaster } = yield* withOrigin();
+        let moved = "";
+        yield* builtUntilParked(
+          "r-merge",
+          ["01-first.md"],
+          [null, null, CLEAN_SYNTHESIS],
+          [
+            {
+              operation: "build",
+              step: Effect.gen(function* () {
+                yield* commitHere("shared.txt", "ours\n");
+                moved = yield* moveMaster("shared.txt", "theirs\n");
+              }),
+            },
+            { operation: "merge-1", step: Effect.asVoid(commitHere("shared.txt", "both\n")) },
+          ],
+        );
+
+        const merge = yield* asked("r-merge", "merge-1");
+        expect(merge).toContain("conflicts in: shared.txt");
+        expect(merge).toContain("Finish that merge and nothing else");
+        const order = (yield* prompts()).flatMap((message) =>
+          ["merge-1", "review-1"].filter((operation) => message.includes(`${operation}.prompt.md`)),
+        );
+        expect(order).toEqual(["merge-1", "review-1"]);
+        expect(yield* asked("r-merge", "review-1")).toContain(`${moved}...HEAD`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a merge the builder leaves unfinished stops the Run before any review",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { commitHere, moveMaster } = yield* withOrigin();
+        const { result } = yield* builtUntilParked(
+          "r-unfinished",
+          ["01-first.md"],
+          [null, BUILT],
+          [
+            {
+              operation: "build",
+              step: Effect.gen(function* () {
+                yield* commitHere("shared.txt", "ours\n");
+                yield* moveMaster("shared.txt", "theirs\n");
+              }),
+            },
+          ],
+        );
+
+        expect(Option.isSome(result) ? reasonOf(result.value) : "").toContain(
+          "was not finished before review",
+        );
+        expect(yield* prompts()).not.toContainEqual(expect.stringContaining("review-1"));
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "an unchanged default branch is never merged, and the review is against it as it was",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { git } = yield* withOrigin();
+        const master = yield* git(rig.projectDir, "rev-parse", "origin/master");
+        const { log } = yield* builtUntilParked(
+          "r-still",
+          TWO_TICKETS,
+          [null, BUILT, CLEAN_SYNTHESIS],
+          [{ operation: "01-first.md", step: Effect.void }],
+        );
+
+        expect(log).not.toContain("integrated");
+        expect(yield* git(rig.projectDir, "rev-list", "--merges", "HEAD")).toBe("");
+        expect(yield* asked("r-still", "review-1")).toContain(`${master}...HEAD`);
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "the merge request says what was verified, and is assigned to whoever the config names",
   () =>

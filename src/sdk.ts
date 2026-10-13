@@ -38,6 +38,7 @@ import {
 } from "./outcome";
 import type { Source } from "./offers";
 import type { UsageReading } from "./usage-model";
+import type { Integration } from "./integrate";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -54,6 +55,8 @@ export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";
+/** What merging the default branch into a Run's branch did (`HostApi.integrate`). */
+export { IntegrationSchema, type Integration } from "./integrate";
 
 export {
   CheckSchema,
@@ -621,6 +624,14 @@ export interface HostApi {
    * its card links it, says it waits on it, and follows what the forge says of it.
    */
   readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
+  /**
+   * Fetches the default branch and, where it has moved, merges it into the branch checked
+   * out at `cwd`: a merge commit, never a rebase or a push. A checkout with uncommitted
+   * changes is left alone (`waiting`); a conflict leaves the merge in progress, naming its
+   * files, for the builder to finish. Each merge is recorded in the Run log as
+   * `integrated <branch>@<sha>`. Take it inside an Activity, so a replay does not merge again.
+   */
+  readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
   /**
    * Puts a note on the merge request a Run was pointed at, sent by Collie rather than
    * written out again by an agent — asking for a file to be repeated verbatim is how

@@ -14,9 +14,9 @@ Read the target first:
   for the change and `{{mr.view}}` for the description. An older target is a bare
   `mr:<iid>`, which means the merge request of the project you are standing in.
 - `branch:<base>...<head>` — `git diff <base>...<head>`.
-- `worktree` — the change in front of you: `git status` and `git diff HEAD` for
-  uncommitted work, and `git log --oneline <default-branch>..HEAD` plus `git diff
-  <default-branch>...HEAD` for commits this branch has that the default branch does not.
+- `worktree`, or no target — the change in front of you: `git status` and `git diff HEAD`
+  for uncommitted work, and `git log --oneline {{base}}..HEAD` plus `git diff
+  {{base}}...HEAD` for commits this branch has that the default branch does not.
 
 The spec above is a directory when this review has one: read `SPEC.md` and the tickets
 in `issues/` and hold the change to them. When it is empty there is no spec, and the

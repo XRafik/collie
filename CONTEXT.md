@@ -506,6 +506,8 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 
 **Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
 
+**Integration** — The default branch merged into a Run's branch where it has moved since, with a merge commit in the Run's own checkout: never a rebase and never a force push. It never touches uncommitted work, leaves a conflict for the builder to finish, and is recorded in the Run log as `integrated <branch>@<sha>`. A review is diffed against the merge-base it leaves.
+
 **Check pass** — One run of one of a Run's **Checks** by Collie, with why it runs: `gate` on the
 Run's branch, `baseline` where the branch left the default branch, `recheck` on the same
 tree to rule out a flake, `fix` after gate fix N, `finish` at the Run's end, or a plain

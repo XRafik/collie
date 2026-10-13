@@ -206,6 +206,26 @@ where you gave one, else the script it runs (`typecheck` for `bun run typecheck`
 the tool and its subcommand (`bun test`), else the tool (`tsc`). A check with no record
 on this tree is not a passing check, whatever the note says.
 
+## merge
+
+Collie merges the default branch into this branch before each review, so the reviewer
+sees what will actually merge. This time the merge stopped:
+
+{{conflict}}
+
+Finish that merge and nothing else: resolve each conflicted file so both sides' intent
+survives, `git add` them, and `git commit --no-edit`. Never rebase, reset or abort it, and
+never force-push: this branch's history only grows. Run the typecheck and the test files
+the conflicts touched, each through
+`collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
+
+Push the merge — `git push -u origin HEAD -o ci.skip` on GitLab, or
+`git push -u origin HEAD` on GitHub. A push that fails is reported as `"pushed": false`,
+not fatal.
+
+Then write your Output: `commits` names the merge commit, and `findings` anything the
+merge could not settle.
+
 ## mr
 
 The review loop and the gate are done. Push it and open the merge request.

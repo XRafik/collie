@@ -102,6 +102,7 @@ import {
   shell as runShell,
 } from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
+import { integrateDefault, integratedLine } from "./integrate";
 import { strategyNamed } from "./strategies";
 import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
 import {
@@ -298,6 +299,20 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly lineage: ReadonlyArray<string>;
   }
 
+  /**
+   * What merging the default branch did. \`ref\` and \`sha\` are what the branch is now
+   * measured against; \`conflicted\` leaves the merge for the builder, naming \`files\`.
+   */
+  export interface Integration {
+    readonly status: "unchanged" | "merged" | "conflicted" | "waiting" | "unavailable";
+    readonly branch: string;
+    readonly ref: string;
+    readonly sha: string;
+    readonly files: ReadonlyArray<string>;
+    readonly reason: string;
+  }
+  export const IntegrationSchema: Schema.Codec<Integration, unknown, never, never>;
+
   /** What became of a note: whether it landed, and the sentence a human reads either way. */
   export interface Posted {
     readonly ok: boolean;
@@ -415,6 +430,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly release: (runId: string) => Effect.Effect<void>;
     /** Records the merge request this Run opened, as a fact its card reads. */
     readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
+    /**
+     * Fetches the default branch and, where it has moved, merges it into the checkout at cwd:
+     * a merge commit, never a rebase or a push. Uncommitted changes are left alone (\`waiting\`);
+     * a conflict is left in progress for the builder. Each merge is recorded in the Run log as
+     * \`integrated <branch>@<sha>\`. Take it inside an Activity, so a replay does not merge again.
+     */
+    readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
   }
   export const Host: Context.Service<HostApi, HostApi>;
   export type Host = HostApi;
@@ -2543,6 +2565,16 @@ export const hostLayer = (options: {
             );
             yield* fs.remove(file, { force: true });
           }).pipe(Effect.provideContext(services), Effect.ignore),
+        integrate: (runId, cwd) =>
+          under(
+            integrateDefault(runShell, cwd).pipe(
+              Effect.tap((done) => {
+                const line = integratedLine(done);
+                return line === null ? Effect.void : appendLog(runDir(dir, runId), line);
+              }),
+              Effect.orDie,
+            ),
+          ),
         mergeRequest: (runId, url) =>
           fs.makeDirectory(runDir(dir, runId), { recursive: true }).pipe(
             Effect.andThen(fs.writeFileString(mergeRequestPath(dir, runId), `${url}\n`)),

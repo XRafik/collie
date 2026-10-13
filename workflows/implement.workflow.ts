@@ -17,6 +17,7 @@
 import {
   FindingSchema,
   FixOutputSchema,
+  IntegrationSchema,
   Agents,
   Children,
   Host,
@@ -45,6 +46,7 @@ import {
   type CheckEvidence,
   type Finding,
   type Handed,
+  type Integration,
   type Slice,
   type SynthesisReport,
   type Verification,
@@ -81,6 +83,7 @@ const prompts = {
     max_iterations: text,
     findings: text,
   }),
+  merge: content.template("merge", { ...Implementing.fields, conflict: text }),
   mr: content.template("mr", {
     ...Implementing.fields,
     evidence: text,
@@ -275,6 +278,32 @@ export default defineWorkflow({
       // is live, and otherwise the human's.
       const session = { ask: yield* agents.askRoute("planner", place.lineage) };
 
+      // The default branch merged in where it has moved, at each ticket boundary and before
+      // each review round, so drift is met while it is small and a reviewer sees what will
+      // merge. `base` is what a reviewer's diff is taken against.
+      let integrations = 0;
+      let base = "";
+      const integrateNow = Effect.gen(function* () {
+        integrations += 1;
+        const done = yield* Activity.make({
+          name: `integrate.${integrations}`,
+          success: IntegrationSchema,
+          execute: host.integrate(runId, cwd),
+        });
+        if (done.sha !== "") base = done.sha;
+        if (done.status === "waiting" || done.status === "unavailable")
+          yield* host.record(runId, `not integrated: ${done.reason}`);
+        else if (done.reason !== "") yield* host.record(runId, done.reason);
+        return done;
+      });
+      const rallyAsk = {
+        cwd,
+        plan: source.kind === "plan-dir" ? source.value : "",
+        proves: kind,
+        risks: place.options.risks ?? "",
+        integrate: Effect.map(integrateNow, (done) => ({ ...done, base })),
+      };
+
       // The tickets as they stand at each boundary: one added, removed or reordered while
       // another is being built is the plan from then on, and what is built stays built by
       // name. Each reading is recorded, so a replay is handed the list that was read.
@@ -307,6 +336,7 @@ export default defineWorkflow({
         if (ticket === undefined) break;
         const before = (yield* host.evidence(runId, cwd)).verifications.length;
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "started", []);
+        const merged = built.size > 0 ? yield* integrateNow : null;
         rallied = null;
         build = yield* agentWork({
           operation: ticket?.file ?? "build",
@@ -320,7 +350,10 @@ export default defineWorkflow({
             ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
             progress: renderProgress(handed),
             session,
-            obstacle: "",
+            obstacle:
+              merged?.status === "conflicted"
+                ? `${conflictOf(merged)}\n\nFinish that merge before this ticket's work goes on: resolve those files, \`git add\` them and \`git commit --no-edit\`. Never rebase, reset or abort it.`
+                : "",
           },
           output: Built,
         });
@@ -340,10 +373,7 @@ export default defineWorkflow({
         const blocking = (build.findings ?? []).filter(isBlocking);
         if (blocking.length > 0) {
           rallied = yield* rally({
-            cwd,
-            plan: source.kind === "plan-dir" ? source.value : "",
-            proves: kind,
-            risks: place.options.risks ?? "",
+            ...rallyAsk,
             input,
             build: {
               item: done.item,
@@ -361,13 +391,7 @@ export default defineWorkflow({
       input = { ...input, verify: yield* checksNow };
 
       if (rallied === null || rallied.unreviewed !== "") {
-        rallied = yield* rally({
-          cwd,
-          plan: source.kind === "plan-dir" ? source.value : "",
-          proves: kind,
-          risks: place.options.risks ?? "",
-          input,
-        });
+        rallied = yield* rally({ ...rallyAsk, input });
       }
       if (rallied.halted !== null) {
         yield* host.record(runId, rallied.halted);
@@ -542,6 +566,7 @@ export default defineWorkflow({
               previous: `${place.dir}/review.md`,
               answered: fixes === 0 ? "" : agents.outputFor(runId, `gate-fix-${fixes}`),
               risks: place.options.risks ?? "",
+              base,
               at: ROUNDS + 1,
               of: ROUNDS + 1,
               disputed: [],
@@ -761,6 +786,10 @@ const spawned = (
       : { name: spec.name, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };
   });
 
+/** A merge of the default branch that stopped on conflicts, as the builder is told it. */
+const conflictOf = (merged: Integration) =>
+  `Collie merged ${merged.ref} (${merged.sha}) into this branch, and the merge stopped on conflicts in: ${merged.files.join(", ")}.`;
+
 /** Each blocking dispute left standing, as the merge request lists it for the human. */
 const disputesOf = (findings: ReadonlyArray<Finding>): string[] =>
   findings
@@ -800,6 +829,12 @@ const rally = (ask: {
   readonly risks: string;
   readonly input: typeof Implementing.Type;
   readonly build?: PartialBuild;
+  /** Merges the default branch where it moved, answering with what a review is diffed against. */
+  readonly integrate: Effect.Effect<
+    Integration & { readonly base: string },
+    never,
+    WorkflowEngine | WorkflowInstance
+  >;
 }): Effect.Effect<
   Rallied,
   WorkflowError,
@@ -814,6 +849,27 @@ const rally = (ask: {
     let seen: { readonly at: number; readonly keys: ReadonlyArray<string> } | null = null;
 
     for (let at = 1; at <= ROUNDS; at++) {
+      let merged = yield* ask.integrate;
+      if (merged.status === "conflicted") {
+        yield* agentWork({
+          operation: `${prefix}merge-${at}`,
+          agent: BUILDER,
+          role: "implementer",
+          pushes: true,
+          instructions: prompts.merge,
+          input: {
+            ...ask.input,
+            verify: renderApproved(yield* host.approved(runId)),
+            conflict: conflictOf(merged),
+          },
+          output: Built,
+        });
+        merged = yield* ask.integrate;
+        if (merged.status === "conflicted")
+          return yield* new WorkflowError({
+            reason: `the merge of ${merged.ref} was not finished before review: ${conflictOf(merged)}`,
+          });
+      }
       const synthesis = yield* reviewPass({
         // The change is the work in this checkout: a Run that built it reviews what it
         // built, rather than a merge request somebody else has to be pointed at.
@@ -829,6 +885,7 @@ const rally = (ask: {
             ? ""
             : `Review the built part of this plan: ${ask.build.completed.join(", ")}. Later tickets have not started and are outside this review, including its scope judgement. Check these findings reported by the implementer:\n${formatFindings(ask.build.findings)}`,
         risks: ask.risks,
+        base: merged.base,
         at,
         of: ROUNDS,
         disputed,

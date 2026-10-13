@@ -628,6 +628,25 @@ because a step that cannot reach its forge has
 nothing to fill in — check it before you start an agent, and say the reason where it is no.
 Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Run: its card
 links it, waits on it, and follows what the forge says of it.
+
+`host.integrate(runId, cwd)` fetches the default branch and, where it has moved, merges it
+into the branch checked out at `cwd` with a merge commit: never a rebase, never a push.
+It answers with an `Integration` (`IntegrationSchema` journals it):
+
+- `unchanged`: the branch already contains the default branch.
+- `merged`: the default branch was merged in.
+- `conflicted`: the merge is left in progress, naming its `files`, for an agent to finish. A
+  merge still unfinished is answered the same way, however often it is asked about.
+- `waiting`: the checkout had uncommitted changes, untracked files among them, and was left
+  alone.
+- `unavailable`: nothing was merged, with the `reason`: no default branch, one that cannot be
+  read, or a merge git refused without a conflict.
+
+`ref` and `sha` are what the branch is measured against from then on, so a reviewer's diff
+is `<sha>...HEAD`. Where the fetch fails, `ref` is the default branch as last fetched, and
+`reason` says so. Each merge is recorded in the Run log as `integrated <branch>@<sha>`.
+Take it inside an `Activity`, so a replay does not merge again. Shipped `implement` calls it
+before every ticket after the first and before every review round.
 The shipped `renovate` workflow still requires GitLab for its merge and release commands.
 
 `host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on

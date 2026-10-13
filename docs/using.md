@@ -1901,6 +1901,17 @@ is not a pane: the picker hands it to the host, which outlives it, and the Contr
 renders what the host reports. A run therefore
 survives the picker closing, the Control Plane closing, and the terminal being detached.
 
+### Keeping up with the default branch
+
+Before every ticket after the first, and before every review round, `implement` fetches the
+default branch. Where it has moved, Collie merges it into the Run's branch with a merge
+commit and records `integrated <branch>@<sha>` in the Run's log. It never rebases and never
+force-pushes. A checkout with uncommitted changes is left alone until the builder commits,
+and an unchanged default branch is skipped. A conflict is the builder's next work: the next
+ticket's prompt names the conflicted files and has the merge finished first. Before a review,
+a merge step finishes it, and a merge still unfinished after that stops the Run. The reviewer diffs against the merge-base after the integration,
+so it sees what will actually merge.
+
 ### Why a run stopped
 
 `implement` sends a `blocker` or `major` reported by its builder to reviewers before

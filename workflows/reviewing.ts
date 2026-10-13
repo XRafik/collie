@@ -40,10 +40,14 @@ const change = {
   inputs: Schema.Struct({ target: text, target_kind: text, plan: text, outcome: text }),
   target_repo: text,
   mr: Schema.Struct({ forge: text, noun: text, diff: text, view: text, checkout: text }),
+  base: text,
 };
 
 /** What a prompt is told of a target that is not a merge request. */
 export const NO_MR = { forge: "", noun: "", diff: "", view: "", checkout: "" };
+
+/** What a worktree's change is measured against where nothing integrated the default branch. */
+export const DEFAULT_BASE = "<default-branch>";
 
 /** A reviewer's round: the one before it, what was disputed, and where this Run keeps its work. */
 const REVIEW = content.template("review", {
@@ -109,6 +113,8 @@ export interface ReviewAsk {
   readonly disputed: ReadonlyArray<Finding>;
   readonly prefix?: string;
   readonly obstacle?: string;
+  /** The commit a worktree's change is diffed against: the default branch as last integrated. */
+  readonly base?: string;
 }
 
 /** What the reviewers and the synthesis are both told, beside the section they are given. */
@@ -128,6 +134,7 @@ const told = (ask: ReviewAsk, run: { readonly dir: string; readonly id: string }
   risks: riskLine(ask.risks),
   target_repo: repoArgs(parseMrTarget(ask.target)?.project ?? null).join(" "),
   mr: mrForgeFacts(ask.target) ?? NO_MR,
+  base: ask.base || DEFAULT_BASE,
   obstacle: ask.obstacle ?? "",
 });
 
