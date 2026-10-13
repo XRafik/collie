@@ -190,7 +190,7 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
           stderr: `timed out after ${COMMAND_LIMIT}`,
         })),
       ),
-      Effect.catch(() => Effect.succeed({ code: 127, stdout: "", stderr: "" })),
+      Effect.catch((cause) => Effect.succeed({ code: 127, stdout: "", stderr: String(cause) })),
     );
   const exec = (cmd: string, args: ReadonlyArray<string>, cwd: string) => piped(cmd, args, cwd);
   const lastWords = (output: string) => output.trim().split("\n").slice(-3).join(" ");

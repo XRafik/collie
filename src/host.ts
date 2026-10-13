@@ -88,7 +88,7 @@ import {
 } from "./cleanup";
 import { once, recordAudit, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
-import { currentEnv } from "./env";
+import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
@@ -1566,10 +1566,17 @@ const installationOf = Effect.fn("Host.installationOf")(function* (dir: string) 
  * Losing the lock is not a failure. It means a host is already here, which is what the
  * caller wanted; the client that started this one connects to that host instead.
  */
-export const serve = (dir: string): Effect.Effect<void, never, BunServices | Scope.Scope> =>
+export const serve = (named: string): Effect.Effect<void, never, BunServices | Scope.Scope> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(dir, { recursive: true });
+    yield* fs.makeDirectory(named, { recursive: true });
+    // Resolved where it was named, before the chdir below moves where that is.
+    const dir = yield* fs.realPath(named);
+    // Whatever it was started in may be deleted under it, as a Desktop update does its app folder.
+    yield* Effect.sync(() => {
+      process.chdir(dir);
+      leaveLauncher();
+    });
     const lock = lockOf(dir);
     yield* ensureLockDir(lock);
     // `withLock` breaks a claim whose holder is gone before its last attempt, so a host
@@ -1947,19 +1954,26 @@ const diagnose = Effect.fn("Host.diagnose")(function* (dir: string) {
  * it belongs to.
  */
 const spawnHost = Effect.fn("Host.spawn")(function* (
-  dir: string,
+  named: string,
   hostEnv: Readonly<Record<string, string>>,
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fs = yield* FileSystem.FileSystem;
   const command = yield* hostCommand;
   // Which installation's workflows this host serves, decided by the client that needed
   // it rather than guessed from wherever the host process happens to start.
   const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
   return yield* Effect.gen(function* () {
+    yield* fs.makeDirectory(named, { recursive: true });
+    // The host starts in it, so a relative one would name somewhere else from there.
+    const dir = yield* fs.realPath(named);
     const handle = yield* spawner.spawn(
       ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
-        env: { ...hostEnv, HERDR_PLUGIN_ROOT: install },
-        extendEnv: true,
+        cwd: dir,
+        // A client started by Desktop may carry its launcher's LD_PRELOAD.
+        // oxlint-disable-next-line effecttsgo/process-env
+        env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+        extendEnv: false,
         detached: true,
         stdin: "ignore",
         stdout: "ignore",
@@ -1970,7 +1984,7 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
     // host it has just started: it leaves a child alone only once it is unreferenced.
     yield* Effect.asVoid(handle.unref);
     return handle;
-  }).pipe(Effect.catch((cause) => unavailable(dir, String(cause))));
+  }).pipe(Effect.catch((cause) => unavailable(named, String(cause))));
 });
 
 const CommandJson = Schema.fromJsonString(Schema.Array(Schema.String));

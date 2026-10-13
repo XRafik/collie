@@ -38,6 +38,21 @@ that does not say who it is within five seconds is replaced too when `host.build
 writes as it starts, names an older build of the same installation; otherwise the client
 reports it as `HostUnavailable` with its pid.
 
+Desktop starts a host the way any client does: it runs `collie bridge --as desktop` (or
+`--as chat`), and the bridge starts `collie host --dir <state>` where none answers. Desktop
+starts the bridge, and every other child, in `$HOME` (`CHILD_CWD` in
+`desktop/src/bun/login-env.ts`), because its own `app/bin` folder is deleted when an update
+replaces it. A client starts the host in its state directory, and the host `chdir`s there
+itself as it starts, so a host started from any directory outlives that directory: one
+left in a deleted directory could not start `claude`, `git` or Bun's shell. Neither can begin
+in a directory already deleted — a compiled Bun program refuses to start there — which is
+why each is started somewhere that lasts. Electrobun's
+launcher variables (`ELECTROBUN_*` and CEF's `LD_PRELOAD`) are stripped from what Desktop
+gives a child, again from what a client gives a host, and from the host's own environment
+as it starts (`withoutLauncher` and `leaveLauncher` in `src/env.ts`), so neither the host
+nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host keeps
+`LD_LIBRARY_PATH` and `ICU_DATA`.
+
 The host writes what it does to `host.log` in its state directory — its start, a stop and
 whether the grace ran out, every warning the engine and the registry log — since its own
 stdout and stderr go nowhere. Lines are flushed every 100 ms, so a host killed outright can

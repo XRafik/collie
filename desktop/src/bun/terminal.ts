@@ -7,7 +7,7 @@ import { Effect, Option, Schema, Stream } from "effect";
 import type { PaneAt } from "../../../src/board-model";
 import { ActionFailed, TerminalCommand, type TerminalEvent } from "../shared/flock";
 import { quoted, type ShellRoute, spawned, stderrTail } from "./machine";
-import { childEnv } from "./login-env";
+import { CHILD_CWD, childEnv } from "./login-env";
 
 /** herdr's controller for one pane, taking it over from any other direct attach. */
 export const controlCommand = (
@@ -65,7 +65,13 @@ export const control = Effect.fn("Desktop.control")(function* (
   machine: string,
 ) {
   const child = yield* spawned(() =>
-    Bun.spawn([...command], { env: childEnv(), stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
+    Bun.spawn([...command], {
+      env: childEnv(),
+      cwd: CHILD_CWD,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    }),
   );
   const said = yield* stderrTail(child.stderr);
   const send = (line: string) =>
@@ -191,6 +197,7 @@ export const launched = (command: ReadonlyArray<string>) =>
   Effect.try(() =>
     Bun.spawn([...command], {
       env: childEnv(),
+      cwd: CHILD_CWD,
       stdio: ["ignore", "ignore", "ignore"],
       detached: true,
     }),

@@ -1,5 +1,6 @@
 import { type Duration, Effect } from "effect";
 import { spawned } from "./machine";
+import { CHILD_CWD } from "./login-env";
 
 export const MARK = "__COLLIE_PATH__";
 
@@ -19,6 +20,7 @@ export const loginPath = Effect.fn("Desktop.loginPath")(function* (
   return yield* Effect.gen(function* () {
     const child = yield* spawned(() =>
       Bun.spawn([shell, "-ilc", `printf '${MARK}%s${MARK}' "$PATH"`], {
+        cwd: CHILD_CWD,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "ignore",

@@ -2,7 +2,7 @@
 // gets the user's environment instead, or every child writes ld.so errors.
 
 import { expect, test } from "bun:test";
-import { withoutLauncher } from "../desktop/src/bun/login-env";
+import { withoutLauncher } from "../src/env";
 
 const BIN = "/home/mk/.local/share/collie-desktop/app/bin";
 

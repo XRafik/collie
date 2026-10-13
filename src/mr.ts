@@ -177,9 +177,9 @@ export function projectFromRemote(url: string): string | null {
 }
 
 /**
- * Runs a command and reports what it said, never failing: a missing executable comes
- * back as exit 127 with no output, which is what lets callers treat "no glab here" as
- * an answer rather than an error.
+ * Runs a command and reports what it said, never failing: a command that could not start
+ * comes back as exit 127 with why on stderr, which is what lets callers treat "no glab
+ * here" as an answer rather than an error.
  */
 export function shell(
   cmd: string,
@@ -212,7 +212,7 @@ export function shell(
     return { code: Number(code), stdout, stderr };
   }).pipe(
     Effect.scoped,
-    Effect.catch(() => Effect.succeed({ code: 127, stdout: "", stderr: "" })),
+    Effect.catch((cause) => Effect.succeed({ code: 127, stdout: "", stderr: String(cause) })),
   );
 }
 
