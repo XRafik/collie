@@ -2,9 +2,14 @@
 // Data only: nothing here is a threshold, and nothing refuses anything.
 
 import { STOP, type RunView } from "./engine";
-import { resultText } from "./lifecycle";
+import { Schema } from "effect";
 import type { Metrics } from "./board-model";
 import { epochMs } from "./time";
+
+const asJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
+const isText = Schema.is(Schema.String);
+export const resultText = (value: Schema.Json): string =>
+  isText(value) ? value : asJsonText(value);
 
 export interface WorkflowTally {
   readonly workflow: string;
@@ -30,6 +35,13 @@ export interface WorkflowTally {
 export interface Report {
   readonly since: string | null;
   readonly total: number;
+  readonly runs: ReadonlyArray<{
+    readonly runId: string;
+    readonly workflow: string;
+    readonly parent: string | null;
+    readonly created: string;
+    readonly status: RunView["status"]["status"];
+  }>;
   readonly workflows: ReadonlyArray<WorkflowTally>;
   readonly failed: ReadonlyArray<{ runId: string; workflow: string; reason: string }>;
   readonly completed: ReadonlyArray<{
@@ -105,5 +117,12 @@ export function reportOf(
   const workflows = [...tallies.values()].toSorted(
     (a, b) => b.total - a.total || a.workflow.localeCompare(b.workflow),
   );
-  return { since, total: kept.length, workflows, failed, completed, stopped };
+  const runs = kept.map(({ runId, workflow, parent, created, status }) => ({
+    runId,
+    workflow,
+    parent,
+    created,
+    status: status.status,
+  }));
+  return { since, total: kept.length, runs, workflows, failed, completed, stopped };
 }

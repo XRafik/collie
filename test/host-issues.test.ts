@@ -1,0 +1,387 @@
+import { beforeEach, afterEach, expect, test } from "bun:test";
+import { Effect, FileSystem, Result, Schema } from "effect";
+import { Rig, FakeHerdr } from "./support/recorder";
+import { runEffect } from "./support/effect";
+import { exec } from "./support/command";
+import { FakeBin } from "./support/bin";
+import { forgeOnPath, PROJECT, FORGE_HOST } from "./support/forge";
+import { foundationLayer, registryLayer, Registry } from "../src/engine";
+import { until } from "./support/host";
+import { nowIso } from "../src/time";
+import { agentsLayer } from "../src/agents";
+import { WorkflowError } from "../src/sdk";
+
+let rig: Rig;
+beforeEach(() =>
+  runEffect(
+    Effect.gen(function* () {
+      rig = yield* Rig.make();
+    }),
+  ),
+);
+afterEach(() => runEffect(rig.close()));
+
+const json = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
+const fakeAgents = () =>
+  agentsLayer({
+    dir: rig.stateDir,
+    env: rig.pluginEnv(),
+    herdr: new FakeHerdr(rig.pluginEnv()),
+    harness: "claude",
+    model: "opus",
+    permissions: "auto",
+    compactAtTokens: 0,
+    help: () => Effect.succeed("--autocompact"),
+  });
+const withMachine = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.provide(
+      registryLayer(rig.stateDir, {
+        userDir: rig.userDir,
+        placing: { herdr: new FakeHerdr(rig.pluginEnv()), env: rig.pluginEnv() },
+      }),
+    ),
+    Effect.provide(fakeAgents()),
+    Effect.provide(
+      foundationLayer({
+        dir: rig.stateDir,
+        userDir: rig.userDir,
+        placing: { herdr: new FakeHerdr(rig.pluginEnv()), env: rig.pluginEnv() },
+      }),
+    ),
+    Effect.scoped,
+  );
+const repository = (cwd: string, remote: string) =>
+  Effect.gen(function* () {
+    expect((yield* exec(["git", "init", "--quiet", cwd])).exitCode).toBe(0);
+    expect((yield* exec(["git", "-C", cwd, "remote", "add", "origin", remote])).exitCode).toBe(0);
+  });
+
+test(
+  "a Workflow reads its Machine's report inclusively since a moment, with parent and status",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const registry = yield* Registry;
+        const generation = yield* registry.load(
+          new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+        );
+        const old = yield* registry.start({
+          generation,
+          runId: "old",
+          request: "old",
+          project: rig.projectDir,
+          input: { operation: "report", text: "2000-01-01T00:00:00Z" },
+          handsOver: true,
+        });
+        const before = yield* registry.view(old.runId);
+        if (before === null) throw new Error("old Run is missing");
+        yield* until(
+          () => nowIso(),
+          (now) => now > before.created,
+        );
+        const child = yield* registry.start({
+          generation,
+          runId: "child",
+          request: "child",
+          parent: old.runId,
+          project: rig.projectDir,
+          input: { operation: "report", text: "2000-01-01T00:00:00Z" },
+          handsOver: true,
+        });
+        const childView = yield* registry.view(child.runId);
+        if (childView === null) throw new Error("child Run is missing");
+        const since = childView.created;
+        const reading = yield* registry.start({
+          generation,
+          runId: "reader",
+          request: "reader",
+          project: rig.projectDir,
+          input: { operation: "report", text: since },
+          handsOver: true,
+        });
+        expect(yield* registry.result(reading.runId)).toMatchObject({
+          since,
+          total: 2,
+          runs: [
+            {
+              runId: "child",
+              workflow: "issues",
+              parent: "old",
+              status: "pending",
+              created: since,
+            },
+            { runId: "reader", workflow: "issues", parent: null, status: "pending" },
+          ],
+          workflows: [{ workflow: "issues", total: 2, pending: 2 }],
+        });
+      }).pipe(withMachine),
+    ),
+  30_000,
+);
+
+test(
+  "an unrelated source project is private when the Run works in another checkout",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
+        const source = `${rig.root}/source`;
+        yield* repository(source, "https://gitlab.example.com/private/source.git");
+        yield* fs.writeFileString(
+          `${rig.userDir}/config.json`,
+          json({ projects: { root: rig.root } }),
+        );
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        try {
+          const fake = yield* forgeOnPath(bin, "github", {
+            installed: true,
+            loggedIn: [FORGE_HOST.github],
+            login: "me",
+            mrs: [],
+          });
+          yield* Effect.gen(function* () {
+            const registry = yield* Registry;
+            const generation = yield* registry.load(
+              new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+            );
+            for (const text of [source, "private/source"]) {
+              const run = yield* registry.start({
+                generation,
+                request: text,
+                project: source,
+                options: { workspace: rig.projectDir },
+                input: { operation: "file", text },
+                handsOver: true,
+              });
+              expect((yield* registry.view(run.runId))?.cwd).toBe(rig.projectDir);
+              const answer = yield* registry.result(run.runId).pipe(Effect.result);
+              expect(Result.isFailure(answer)).toBe(true);
+              if (Result.isFailure(answer)) expect(answer.failure.reason).toContain(source);
+            }
+          }).pipe(withMachine);
+          expect((yield* fake.calls()).filter((line) => line.startsWith("gh issue"))).toEqual([]);
+        } finally {
+          yield* bin.restore();
+        }
+      }),
+    ),
+  30_000,
+);
+
+for (const failure of ["configuration", "inventory"] as const) {
+  test(
+    `the host refuses with a recordable error when its ${failure} cannot be inspected`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
+          const bin = yield* FakeBin.make(`${rig.root}/bin`);
+          try {
+            const fake = yield* forgeOnPath(bin, "github", {
+              installed: true,
+              loggedIn: [FORGE_HOST.github],
+              login: "me",
+              mrs: [],
+            });
+            yield* Effect.gen(function* () {
+              const registry = yield* Registry;
+              const generation = yield* registry.load(
+                new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+              );
+              const run = yield* registry.start({
+                generation,
+                request: "file",
+                project: rig.projectDir,
+                input: { operation: "file", text: "Evidence" },
+                handsOver: true,
+              });
+              yield* fs.writeFileString(
+                `${rig.userDir}/config.json`,
+                failure === "configuration"
+                  ? "invalid JSON"
+                  : json({ projects: { root: `${rig.root}/absent` } }),
+              );
+              const answer = yield* registry.result(run.runId).pipe(Effect.result);
+              expect(Result.isFailure(answer)).toBe(true);
+              if (Result.isFailure(answer)) {
+                expect(Schema.is(WorkflowError)(answer.failure)).toBe(true);
+                expect(answer.failure.reason).toContain(
+                  failure === "configuration" ? "configuration" : "privacy check failed",
+                );
+              }
+            }).pipe(withMachine);
+            expect((yield* fake.calls()).filter((line) => line.startsWith("gh issue"))).toEqual([]);
+          } finally {
+            yield* bin.restore();
+          }
+        }),
+      ),
+    30_000,
+  );
+}
+
+for (const forge of ["github", "gitlab"] as const) {
+  test(
+    `a Workflow files and comments on ${forge} issues with its host's redaction`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          yield* repository(rig.projectDir, `https://${PROJECT[forge]}.git`);
+          const bin = yield* FakeBin.make(`${rig.root}/bin`);
+          try {
+            const fake = yield* forgeOnPath(bin, forge, {
+              installed: true,
+              loggedIn: [FORGE_HOST[forge]],
+              login: "me",
+              mrs: [],
+              issues: [
+                {
+                  project: PROJECT[forge],
+                  number: 1,
+                  title: "Existing",
+                  body: "Earlier",
+                  state: "open",
+                },
+              ],
+            });
+            const answers = yield* Effect.gen(function* () {
+              const registry = yield* Registry;
+              const generation = yield* registry.load(
+                new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+              );
+              const results: unknown[] = [];
+              for (const operation of ["file", "comment", "list"]) {
+                const run = yield* registry.start({
+                  generation,
+                  request: operation,
+                  project: rig.projectDir,
+                  input: {
+                    operation,
+                    text: `Found ghp_abcdefghijklmnopqrstu in ${PROJECT[forge]}`,
+                  },
+                  handsOver: true,
+                });
+                results.push(yield* registry.result(run.runId));
+              }
+              return results;
+            }).pipe(withMachine);
+            expect(answers[0]).toMatchObject({ number: 2 });
+            expect((yield* fake.model()).issues?.at(-1)?.body).toBe(
+              `Found <github token> in ${PROJECT[forge]}`,
+            );
+            expect((yield* fake.model()).issueNotes).toEqual({
+              [`${PROJECT[forge]}#1`]: [`Found <github token> in ${PROJECT[forge]}`],
+            });
+            expect(answers[2]).toMatchObject([{ number: 1 }, { number: 2 }]);
+          } finally {
+            yield* bin.restore();
+          }
+        }),
+      ),
+    30_000,
+  );
+}
+
+test(
+  "the host refuses another checkout's path and remote before filing or commenting",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
+        const other = `${rig.root}/private`;
+        yield* repository(other, "https://gitlab.example.com/private/service.git");
+        const hidden = `${rig.root}/.private/service`;
+        yield* repository(hidden, "https://gitlab.example.com/private/hidden.git");
+        expect(
+          (yield* exec([
+            "git",
+            "-C",
+            hidden,
+            "remote",
+            "add",
+            "secondary",
+            "ssh://git@internal:2222/private/secondary.git",
+          ])).exitCode,
+        ).toBe(0);
+        const deep = `${rig.root}/a/b/c/d/e/service`;
+        yield* repository(deep, "https://internal:8443/private/deep.git");
+        const samePath = `${rig.root}/same-path`;
+        const ownPath = PROJECT.github.split("/").slice(1).join("/");
+        yield* repository(samePath, `git@internal:${ownPath}.git`);
+        const nested = `${rig.projectDir}/nested`;
+        yield* repository(nested, "https://gitlab.example.com/private/nested.git");
+        const alias = `${rig.root}/alias`;
+        yield* fs.symlink(`${rig.root}/.private`, alias);
+        yield* fs.writeFileString(
+          `${rig.userDir}/config.json`,
+          json({ projects: { root: rig.root } }),
+        );
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        try {
+          const fake = yield* forgeOnPath(bin, "github", {
+            installed: true,
+            loggedIn: [FORGE_HOST.github],
+            login: "me",
+            mrs: [],
+            issues: [
+              {
+                project: PROJECT.github,
+                number: 1,
+                title: "Existing",
+                body: "Earlier",
+                state: "open",
+              },
+            ],
+          });
+          yield* Effect.gen(function* () {
+            const registry = yield* Registry;
+            const generation = yield* registry.load(
+              new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+            );
+            for (const operation of ["file", "comment"]) {
+              yield* Effect.forEach(
+                [
+                  [other, other],
+                  ["private/service", other],
+                  [hidden, hidden],
+                  ["private/hidden", hidden],
+                  ["private/secondary", hidden],
+                  [deep, deep],
+                  ["private/deep", deep],
+                  [`internal/${ownPath}`, samePath],
+                  [`git@internal:${ownPath}.git`, samePath],
+                  [nested, nested],
+                  ["private/nested", nested],
+                  [`${alias}/service`, hidden],
+                ] as const,
+                ([text, checkout]) =>
+                  Effect.gen(function* () {
+                    const run = yield* registry.start({
+                      generation,
+                      request: `${operation}-${text}`,
+                      project: rig.projectDir,
+                      input: { operation, text },
+                      handsOver: true,
+                    });
+                    const answer = yield* registry.result(run.runId).pipe(Effect.result);
+                    expect(Result.isFailure(answer)).toBe(true);
+                    if (Result.isFailure(answer)) expect(answer.failure.reason).toContain(checkout);
+                  }),
+                { concurrency: 3 },
+              );
+            }
+          }).pipe(withMachine);
+          expect((yield* fake.calls()).filter((line) => line.startsWith("gh issue"))).toEqual([]);
+          expect((yield* fake.model()).issues).toHaveLength(1);
+          expect((yield* fake.model()).issueNotes).toBeUndefined();
+        } finally {
+          yield* bin.restore();
+        }
+      }),
+    ),
+  30_000,
+);

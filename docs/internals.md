@@ -539,6 +539,23 @@ gets answers rather than CLI calls: whether the CLI is ready for a host, who it 
 in as, one merge request as the panel, how far a merged commit is deployed, and a note.
 An operation is added to the interface when its first caller moves onto it.
 
+The interface also lists open issues, files issues, and comments on them. The adapters
+decode their own CLI answers into the shared issue shape. GitLab reads consecutive
+pages; GitHub requests all open issues through its list command. These flags follow the
+[GitLab issue list](https://docs.gitlab.com/cli/issue/list/) and
+[GitHub issue list](https://cli.github.com/manual/gh_issue_list) contracts.
+
+The Host service chooses the forge of the Run's recorded checkout. Before publishing,
+it applies Conversation redaction and checks text against other checkouts under the
+Projects root, including their remote paths. A refusal is a `WorkflowError`, with no
+issue call sent. This privacy inventory includes hidden, deep, nested and linked
+checkouts, and propagates inspection failures. Git's common directory decides which
+checkouts belong to the Run's own repository. Remote paths and host-qualified identities
+are checked, including URLs with ports and SCP syntax. The registry lends each workflow
+its Machine report using the same Run views and `reportOf` reading as the CLI, including
+Run identity, parent and status.
+Recovered workflows read reports after every saved generation has been registered.
+
 An adapter runs its commands through a `Runner` (`src/mr.ts`), the same seam the tests
 fake. `test/support/forge.ts` is a fake of each forge built on one model of a forge, with
 two faces: a Runner answering the argv its adapter uses, and a `FakeBin` executable on

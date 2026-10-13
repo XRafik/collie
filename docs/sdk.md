@@ -618,6 +618,28 @@ Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Ru
 links it, waits on it, and follows what the forge says of it.
 The shipped `renovate` workflow still requires GitLab for its merge and release commands.
 
+`host.report(since)` reads this Machine's Runs admitted at or after an ISO moment. It
+returns the same report as `collie --json run report --since`: workflow tallies, metrics,
+failed and completed results, stopped Runs, and a `runs` list. Each list entry has
+`runId`, `workflow`, `parent`, `created`, and `status`. An invalid date fails with
+`WorkflowError`. Read it inside an Activity when its answer decides subsequent work.
+
+`host.issues(runId)` lists the open issues of that Run's checkout, each with `number`,
+`title`, `body`, and `url`. The checkout's remote decides its forge.
+`host.fileIssue({ runId, title, body })` returns the filed issue's `number` and `url`.
+`host.commentIssue({ runId, number, body })` comments on one there.
+
+Before filing or commenting, the host redacts credential-shaped values with the
+Conversation's redaction. It refuses text naming another checkout under the Projects
+root, by absolute path or remote path, and names the checkout in `WorkflowError`.
+Both safeguards cover the title and body when filing. A refusal sends nothing to the
+forge. The Run's own checkout and repository remain valid references.
+
+These operations fail with `WorkflowError` when the forge refuses or returns an
+unreadable answer. If creation returns no issue URL, inspect the repository before
+retrying; the issue might already exist. Workflows call these methods directly and
+never construct forge CLI commands.
+
 `host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on
 the repository it works in, and answers `null` where that repository has none. Waiting here
 costs wall clock and no model tokens, which is the point of claiming before an agent starts

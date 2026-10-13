@@ -18,6 +18,10 @@
 import { Context, Effect, FileSystem, Layer, Path, Predicate, Schema } from "effect";
 import type { CheckEvidence } from "./output";
 import type { Verification } from "./verify";
+import type { Issue, IssueRef } from "./forge/issues";
+export type { Issue, IssueRef } from "./forge/issues";
+import type { Report } from "./report";
+export type { Report } from "./report";
 import type { VerifySpec } from "./verify-spec";
 import type { ChildProcessSpawner } from "effect/process";
 import { WorkflowInstance, type WorkflowEngine } from "effect/workflow/WorkflowEngine";
@@ -497,6 +501,22 @@ export const definitionOf = (written: WrittenDefinition): WorkflowDefinition => 
  */
 export interface HostApi {
   readonly dir: string;
+  /** This Machine's Run report, for admissions at or after the ISO moment. */
+  readonly report: (since: string) => Effect.Effect<Report, WorkflowError>;
+  /** Open issues on the forge of this Run's checkout. */
+  readonly issues: (runId: string) => Effect.Effect<ReadonlyArray<Issue>, WorkflowError>;
+  /** Files redacted text on this Run's forge; another checkout's identity is refused. */
+  readonly fileIssue: (options: {
+    readonly runId: string;
+    readonly title: string;
+    readonly body: string;
+  }) => Effect.Effect<IssueRef, WorkflowError>;
+  /** Comments with the same redaction and checkout safeguards as filing. */
+  readonly commentIssue: (options: {
+    readonly runId: string;
+    readonly number: number;
+    readonly body: string;
+  }) => Effect.Effect<void, WorkflowError>;
   /**
    * This Machine's Usage readings, one per Subscription (ADR-0049). Read it inside an
    * Activity of the workflow's own where the workflow branches on it, so a replay takes

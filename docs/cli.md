@@ -1136,6 +1136,9 @@ open, and the rework and verifications summed from each Run's metrics. Then each
 failed, with its reason, each that completed, with its result, and each that was stopped.
 `--since` keeps only Runs admitted at or after that date.
 
+The JSON report's `runs` list includes each Run's `runId`, `workflow`, `parent`,
+`created`, and `status`, in admission order.
+
 Like metrics, the report is data: no number in it is a threshold, and it refuses nothing.
 
 ## Verify

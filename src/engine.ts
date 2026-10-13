@@ -17,6 +17,7 @@ import {
   Context,
   Crypto,
   Data,
+  Deferred,
   DateTime,
   Duration,
   Effect,
@@ -79,7 +80,8 @@ import { FALLBACK_DEFAULTS, configValue, gitlabHostOf, loadDefaults, readConfig 
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
-import { PROJECTS_ROOT_OPTION } from "./projects";
+import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
+import { publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
 import {
   HelleClaimSchema,
   HelleError,
@@ -92,8 +94,11 @@ import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
 import type { CheckoutKind, InputStrategy } from "./definitions";
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
-import { noteVerification } from "./metrics";
-import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
+import { noteVerification, metricsOf, readMetrics } from "./metrics";
+import { prepareMergeRequest, postNote, projectHere, forgeHere, shell as runShell } from "./mr";
+import { redact } from "./conversation";
+import { reportOf } from "./report";
+import type { Metrics } from "./board-model";
 import { parseMrTarget, parseMrUrl } from "./board-model";
 import { strategyNamed } from "./strategies";
 import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
@@ -145,7 +150,7 @@ import { Herdr, herdrFailureReason } from "./herdr";
 import type { PluginEnv } from "./env";
 import { WorktreeRecordSchema } from "./run";
 import { listTasks, newTask, taskOfWorkspace, writeTask } from "./task";
-import { nowIso } from "./time";
+import { nowIso, epochMs } from "./time";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { approvedFrom, VerifySpecSchema, type VerifySpec } from "./verify-spec";
@@ -325,6 +330,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /** What the host lends a workflow. Hold and stop are read fresh on every replay. */
   export interface HostApi {
+    readonly report: (since: string) => Effect.Effect<Report, WorkflowError>;
+    readonly issues: (runId: string) => Effect.Effect<ReadonlyArray<Issue>, WorkflowError>;
+    readonly fileIssue: (options: { readonly runId: string; readonly title: string; readonly body: string }) => Effect.Effect<IssueRef, WorkflowError>;
+    readonly commentIssue: (options: { readonly runId: string; readonly number: number; readonly body: string }) => Effect.Effect<void, WorkflowError>;
     readonly dir: string;
     /**
      * This Machine's Usage readings, one per Subscription. Read it inside an Activity of
@@ -395,6 +404,50 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
   }
   export const Host: Context.Service<HostApi, HostApi>;
+  export interface IssueRef { readonly number: number; readonly url: string; }
+  export interface Issue extends IssueRef { readonly title: string; readonly body: string; }
+  export interface WorkflowTally {
+    readonly workflow: string;
+    readonly total: number;
+    readonly complete: number;
+    readonly failed: number;
+    readonly suspended: number;
+    readonly pending: number;
+    /** Carries a stop control: a human stopped it. */
+    readonly stopped: number;
+    /** Recorded a merge request (RunView.mr). */
+    readonly withMr: number;
+    readonly answered: number;
+    readonly open: number;
+    readonly rework: number;
+    readonly verifications: {
+      readonly pass: number;
+      readonly fail: number;
+      readonly unstable: number;
+    };
+  }
+
+  export interface Report {
+    readonly since: string | null;
+    readonly total: number;
+    readonly runs: ReadonlyArray<{
+      readonly runId: string;
+      readonly workflow: string;
+      readonly parent: string | null;
+      readonly created: string;
+      readonly status: "pending" | "suspended" | "complete" | "failed";
+    }>;
+    readonly workflows: ReadonlyArray<WorkflowTally>;
+    readonly failed: ReadonlyArray<{ runId: string; workflow: string; reason: string }>;
+    readonly completed: ReadonlyArray<{
+      runId: string;
+      workflow: string;
+      value: string;
+      mr: string | null;
+    }>;
+    readonly stopped: ReadonlyArray<{ runId: string; workflow: string }>;
+  }
+
   export type Host = HostApi;
 
   /** How every workflow reports a failure. */
@@ -2307,8 +2360,142 @@ export const hostLayer = (options: {
           });
           return { cwd: checkout.cwd, branch: checkout.branch ?? "" };
         }).pipe(Effect.provideContext(bun));
+      const issueCheckout = Effect.fn("Host.issueCheckout")(function* (runId: string) {
+        const row = yield* store.run(runId);
+        if (row === null) return yield* new WorkflowError({ reason: `there is no Run ${runId}` });
+        const launch = yield* decodeStrings(row.options ?? "{}").pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowError({ reason: `issue checkout could not be read: ${String(cause)}` }),
+          ),
+        );
+        const cwd = placedOf(row, launch).cwd;
+        const { env } = yield* placing;
+        const defaults = yield* loadDefaults(options.userDir ?? env.userDir).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowError({
+                reason: `issue configuration could not be read: ${String(cause)}`,
+              }),
+          ),
+        );
+        const here = yield* forgeHere(cwd, runShell, defaults.gitlabHost);
+        if (!here.ok) return yield* new WorkflowError({ reason: here.reason });
+        return { ...here, cwd, env };
+      });
+      const checkIssueText = Effect.fn("Host.checkIssueText")(
+        function* (here: Effect.Success<ReturnType<typeof issueCheckout>>, text: string) {
+          const root = yield* projectsRoot({
+            ...here.env,
+            userDir: options.userDir ?? here.env.userDir,
+          });
+          const inventory = yield* publicationCheckouts(root.path);
+          const expanded = yield* Effect.try(() => throughAliases(text, inventory.aliases));
+          const common = yield* runShell(
+            "git",
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            here.cwd,
+          );
+          if (common.code !== 0)
+            return yield* new WorkflowError({
+              reason: "issue checkout's Git identity could not be read",
+            });
+          const own = yield* fs.realPath(common.stdout.trim());
+          const ownRemote = here.project.split("/").slice(1).join("/");
+          for (const checkout of inventory.checkouts) {
+            const canonical = yield* fs.realPath(checkout);
+            const remotes = yield* runShell("git", ["remote", "-v"], checkout);
+            if (remotes.code !== 0)
+              return yield* new WorkflowError({
+                reason: `issue privacy check could not read remotes: ${checkout}`,
+              });
+            const names = remotes.stdout.split("\n").flatMap((line) => {
+              const name = remoteOf(
+                line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
+              );
+              return name === null ? [] : [name];
+            });
+            if (
+              !(
+                text.includes(checkout) ||
+                expanded.includes(canonical) ||
+                names.some(
+                  (name) =>
+                    (name.project !== here.project &&
+                      (text.includes(name.project) ||
+                        text.includes(name.project.replace("/", ":")))) ||
+                    (name.path !== ownRemote && text.includes(name.path)),
+                )
+              )
+            )
+              continue;
+            const shared = yield* runShell(
+              "git",
+              ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+              canonical,
+            );
+            if (shared.code !== 0)
+              return yield* new WorkflowError({
+                reason: `issue privacy check could not identify checkout: ${checkout}`,
+              });
+            if ((yield* fs.realPath(shared.stdout.trim())) === own) continue;
+            return yield* new WorkflowError({
+              reason: `issue text names another checkout: ${checkout}`,
+            });
+          }
+        },
+        Effect.mapError((cause) =>
+          isWorkflowError(cause)
+            ? cause
+            : new WorkflowError({ reason: `issue privacy check failed: ${String(cause)}` }),
+        ),
+      );
       const host = Host.of({
         dir,
+        report: () =>
+          Effect.fail(
+            new WorkflowError({ reason: "Run reporting requires the host's workflow registry" }),
+          ),
+        issues: (runId) =>
+          under(
+            Effect.gen(function* () {
+              const here = yield* issueCheckout(runId);
+              const listed = yield* here.forge.issues(here.project, here.cwd, runShell);
+              if (!listed.ok) return yield* new WorkflowError({ reason: listed.reason });
+              return listed.issues;
+            }),
+          ),
+        fileIssue: (asked) =>
+          under(
+            Effect.gen(function* () {
+              const here = yield* issueCheckout(asked.runId);
+              yield* checkIssueText(here, `${asked.title}\n${asked.body}`);
+              const filed = yield* here.forge.fileIssue(
+                here.project,
+                redact(asked.title),
+                redact(asked.body),
+                here.cwd,
+                runShell,
+              );
+              if (!filed.ok) return yield* new WorkflowError({ reason: filed.reason });
+              return { number: filed.number, url: filed.url };
+            }),
+          ),
+        commentIssue: (asked) =>
+          under(
+            Effect.gen(function* () {
+              const here = yield* issueCheckout(asked.runId);
+              yield* checkIssueText(here, asked.body);
+              const commented = yield* here.forge.commentIssue(
+                here.project,
+                asked.number,
+                redact(asked.body),
+                here.cwd,
+                runShell,
+              );
+              if (!commented.ok) return yield* new WorkflowError({ reason: commented.reason });
+            }),
+          ),
         usage: () => options.readings ?? Effect.succeed([]),
         place: (runId) =>
           under(
@@ -3774,7 +3961,13 @@ const makeRegistry: (
     yield* Layer.buildWithScope(
       registration.layer.pipe(
         Layer.provide(
-          Layer.mergeAll(Layer.succeed(Children)(children), Layer.succeed(Executions)(executions)),
+          Layer.mergeAll(
+            Layer.succeed(Children)(children),
+            Layer.succeed(Executions)(executions),
+            Layer.succeed(Host)(
+              Host.of({ ...Context.get(hostServices, Host), report: machineReport }),
+            ),
+          ),
         ),
       ),
       hostScope,
@@ -3822,6 +4015,25 @@ const makeRegistry: (
    * instance and scope in place — which is the whole linkage between the two.
    */
   const hostServices = yield* Effect.context<HostServices>();
+  const reportsReady = yield* Deferred.make<void>();
+  const machineReport = Effect.fn("Host.report")(function* (since: string) {
+    yield* Deferred.await(reportsReady);
+    const from = epochMs(since);
+    if (!Number.isFinite(from))
+      return yield* new WorkflowError({ reason: `since is not a date: ${since}` });
+    const rows = (yield* store.runs).filter((row) => epochMs(row.admitted) >= from);
+    const views = yield* Effect.forEach(rows, viewOf);
+    const metrics = new Map<string, Metrics>();
+    for (const view of views)
+      metrics.set(
+        view.runId,
+        metricsOf(
+          yield* readMetrics(evidenceDir(dir, view.runId)).pipe(Effect.provideContext(bun)),
+          view.created,
+        ),
+      );
+    return reportOf(views, metrics, since);
+  });
   const lending = <A, E>(effect: Effect.Effect<A, E, HostServices>): Effect.Effect<A, E> =>
     Effect.updateContext(effect, (caller: Context.Context<never>) =>
       Context.merge(hostServices, caller),
@@ -4319,17 +4531,6 @@ const makeRegistry: (
     );
   });
 
-  // What was registered before this host existed, rebuilt from the modules as they are
-  // now. A file that has gone leaves its generation unavailable and every other one
-  // registered, which is what keeps one broken module from stopping the rest.
-  for (const route of known) {
-    yield* register(route).pipe(
-      Effect.catchTag("EntryError", (failure) =>
-        Effect.sync(() => unavailable.set(route.name, `${failure.file}: ${failure.message}`)),
-      ),
-    );
-  }
-
   /** A host dying where the proof needs one to; nothing else ever sets this. */
   const crash = (point: CrashPoint) =>
     crashAt === point
@@ -4465,15 +4666,6 @@ const makeRegistry: (
     }
     return woken;
   }).pipe(waking.withPermits(1));
-
-  // What a host admitted and did not live to hand over. Every crash window ends here.
-  // Forked, so a hand-over that stalls does not keep the host from serving.
-  yield* Effect.forkScoped(
-    Effect.gen(function* () {
-      for (const row of yield* store.pending) yield* recoverAdmission(row);
-      yield* reconcileAnswers;
-    }),
-  );
 
   /** The file a generation was built from, which a row keeps naming after it has gone. */
   const entryOf = (name: string) => known.find((route) => route.name === name)?.entry ?? "";
@@ -5072,6 +5264,28 @@ const makeRegistry: (
       for (const one of yield* reconcileAnswers) recovered.add(one);
       return { registrations: yield* held, takenUp: recovered };
     });
+
+  // What was registered before this host existed, rebuilt from the modules as they are
+  // now. A file that has gone leaves its generation unavailable and every other one
+  // registered, which is what keeps one broken module from stopping the rest.
+  for (const route of known) {
+    yield* register(route).pipe(
+      Effect.catchTag("EntryError", (failure) =>
+        Effect.sync(() => unavailable.set(route.name, `${failure.file}: ${failure.message}`)),
+      ),
+    );
+  }
+
+  yield* Deferred.succeed(reportsReady, undefined);
+
+  // What a host admitted and did not live to hand over. Every crash window ends here.
+  // Forked, so a hand-over that stalls does not keep the host from serving.
+  yield* Effect.forkScoped(
+    Effect.gen(function* () {
+      for (const row of yield* store.pending) yield* recoverAdmission(row);
+      yield* reconcileAnswers;
+    }),
+  );
 
   return {
     load: (file: string) => registering.withPermits(1)(mint(file)),

@@ -43,6 +43,94 @@ for (const name of ["gitlab", "github"] as const) {
   const host = FORGE_HOST[name];
 
   describe(`the ${name} forge`, () => {
+    test("lists open issues, files one, and comments on it through its own CLI", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(
+            name,
+            model(name, {
+              issues: [
+                {
+                  project: PROJECT[name],
+                  number: 1,
+                  title: "Open",
+                  body: "Evidence",
+                  state: "open",
+                },
+                {
+                  project: PROJECT[name],
+                  number: 2,
+                  title: "Closed",
+                  body: "Old",
+                  state: "closed",
+                },
+              ],
+            }),
+          );
+          const first = yield* forge.issues(PROJECT[name], "/w", fake.run);
+          expect(first).toMatchObject({
+            ok: true,
+            issues: [{ number: 1, title: "Open", body: "Evidence" }],
+          });
+          const filed = yield* forge.fileIssue(PROJECT[name], "Problem", "Details", "/w", fake.run);
+          expect(filed).toMatchObject({ ok: true, number: 3 });
+          if (!filed.ok) throw new Error(filed.reason);
+          expect(filed.url).toBe(
+            `https://${PROJECT[name]}/${name === "gitlab" ? "-/issues" : "issues"}/3`,
+          );
+          expect(
+            yield* forge.commentIssue(PROJECT[name], 3, "More evidence", "/w", fake.run),
+          ).toEqual({ ok: true, reason: "" });
+          expect(fake.model().issueNotes).toEqual({ [`${PROJECT[name]}#3`]: ["More evidence"] });
+          expect(yield* forge.issues(PROJECT[name], "/w", fake.run)).toMatchObject({
+            ok: true,
+            issues: [{ number: 1 }, { number: 3, title: "Problem", body: "Details" }],
+          });
+        }),
+      ));
+
+    test("lists open issues beyond the first page", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(
+            name,
+            model(name, {
+              issues: Array.from({ length: 103 }, (_, index) => ({
+                project: PROJECT[name],
+                number: index + 1,
+                title: "Open",
+                body: "Evidence",
+                state: "open",
+              })),
+            }),
+          );
+          const listed = yield* forge.issues(PROJECT[name], "/w", fake.run);
+          expect(listed.ok).toBe(true);
+          if (!listed.ok) throw new Error(listed.reason);
+          expect(listed.issues).toHaveLength(103);
+          expect(listed.issues.at(-1)?.number).toBe(103);
+        }),
+      ));
+
+    test("refuses issue operations when the CLI fails or returns an unreadable answer", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(name, model(name, { installed: false }));
+          expect((yield* forge.issues(PROJECT[name], "/w", fake.run)).ok).toBe(false);
+          expect(
+            (yield* forge.fileIssue(PROJECT[name], "Problem", "Evidence", "/w", fake.run)).ok,
+          ).toBe(false);
+          expect((yield* forge.commentIssue(PROJECT[name], 1, "Evidence", "/w", fake.run)).ok).toBe(
+            false,
+          );
+          const broken = () => Effect.succeed({ code: 0, stdout: "unreadable" });
+          expect((yield* forge.issues(PROJECT[name], "/w", broken)).ok).toBe(false);
+          expect(
+            (yield* forge.fileIssue(PROJECT[name], "Problem", "Evidence", "/w", broken)).ok,
+          ).toBe(false);
+        }),
+      ));
+
     test("is ready only with its CLI installed and logged in to the host", () =>
       runEffect(
         Effect.gen(function* () {

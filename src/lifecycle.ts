@@ -9,6 +9,7 @@
 // Effect's. Nothing here copies the second into the first.
 
 import type { SettingValue } from "./settings";
+import { resultText } from "./report";
 import {
   Cause,
   Deferred,
@@ -871,13 +872,7 @@ export const statusOf = (view: RunView): string => {
   }
 };
 
-const asJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
-
-/** A result as a line of text: a string as it is, anything else as its JSON. */
-export const resultText = (value: Schema.Json): string =>
-  isText(value) ? value : asJsonText(value);
-
-const isText = Schema.is(Schema.String);
+export { resultText } from "./report";
 
 /** Whether the engine can still change this Run's state. */
 export const isSettled = (view: RunView): boolean =>
