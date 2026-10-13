@@ -162,6 +162,7 @@ import {
   fingerprint,
   insideRun,
   readVerifications,
+  reusableFor,
   runApproved,
   VERIFYING_FILE,
   type CheckPass,
@@ -252,6 +253,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /** A command Collie watched, bound to the tree it ran on. Never an Output's claim. */
   export interface Verification {
+    /** What a log line or a merge request names it by. */
+    readonly id: string;
     readonly name: string;
     /** As PATH resolved it when it ran, so the record says what ran. */
     readonly executable: string;
@@ -264,6 +267,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly result: "pass" | "fail" | "unstable";
     readonly at: string;
     readonly by: "agent" | "collie";
+    /** What it ran with outside the tree; absent on a record from before environments were. */
+    readonly environment?: string;
   }
 
   /** What the journal holds and the tree in front of you, for checks to be read against. */
@@ -360,6 +365,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       /** Why it is run: the gate on the branch, a recheck for a flake, or a fix after gate fix \`round\`. */
       readonly pass?: "gate" | "recheck" | "fix";
       readonly round?: number;
+      /** Answer with its latest pass on this tree in this environment, where nothing a human did since could change it. */
+      readonly reuse?: boolean;
     }) => Effect.Effect<Verification, WorkflowError>;
     /**
      * Puts a file on the merge request a Run was pointed at, as one note Collie sends.
@@ -2177,6 +2184,10 @@ export const hostLayer = (options: {
             const marker = `${runDir(dir, asked.runId)}/${VERIFYING_FILE}`;
             const away = `${runDir(dir, asked.runId)}/${AWAY_FILE}`;
             yield* restoreCheckout(asked.cwd, away);
+            if (asked.reuse === true && asked.at === undefined && asked.expect !== "fail") {
+              const kept = yield* reusableFor(journal, { ...own, cwd: asked.cwd }, spec);
+              if (kept !== null) return kept;
+            }
             // Written once the checkout is where the check runs, so it names that revision.
             const verified = (base: string | null) =>
               Effect.gen(function* () {

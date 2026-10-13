@@ -197,9 +197,10 @@ raises again. A push that fails is reported as `"pushed": false`, not fatal.
 
 Then write your Output. `file` and `title` in `fixed` and `disputed` are exactly as the
 finding above gives them, so Collie can match them; `checks` names every test and lint
-command you ran, one entry each, by the name `collie verify` recorded it under (the
-command's first word, unless you gave `--name`). A check with no record on this tree is
-not a passing check, whatever the note says.
+command you ran, one entry each, by the name `collie verify` recorded it under: `--name`
+where you gave one, else the script it runs (`typecheck` for `bun run typecheck`), else
+the tool and its subcommand (`bun test`), else the tool (`tsc`). A check with no record
+on this tree is not a passing check, whatever the note says.
 
 ## mr
 

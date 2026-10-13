@@ -133,3 +133,23 @@ export function renderApproved(approved: ReadonlyArray<VerifySpec>): string {
     .map((spec) => `- ${spec.name}: ${[spec.executable, ...spec.argv].join(" ")} (in ${spec.cwd})`)
     .join("\n");
 }
+
+const PACKAGE_MANAGERS = new Set(["bun", "npm", "pnpm", "yarn", "deno"]);
+
+/**
+ * What a check is called where nobody named it: the script a package manager runs, else
+ * the manager and its subcommand, else the tool.
+ */
+export function checkNameOf(executable: string, argv: ReadonlyArray<string>): string {
+  const tool = executable.split("/").at(-1) ?? executable;
+  const passed = argv.indexOf("--");
+  // A flag's value is a plain word too, so a script is the last one before `--`.
+  const words = (passed === -1 ? argv : argv.slice(0, passed)).filter(
+    (word) => !word.startsWith("-"),
+  );
+  const [first] = words;
+  if (!PACKAGE_MANAGERS.has(tool) || first === undefined) return tool;
+  const script = words.at(-1);
+  if (first === "run" && words.length > 1 && script !== undefined) return script;
+  return /^[\w:-]+$/.test(first) ? `${tool} ${first}` : tool;
+}

@@ -41,6 +41,8 @@ export const VerificationSchema = Schema.Struct({
   round: Schema.optionalKey(Schema.Int),
   /** Where both streams were written as they arrived, up to `LOG_BYTES`. */
   log: Schema.optionalKey(Schema.String),
+  /** What it ran with outside the tree; absent before environments were, and never reused. */
+  environment: Schema.optionalKey(Schema.String),
 });
 export type Verification = typeof VerificationSchema.Type;
 export const VerifyEvent = Schema.Union([

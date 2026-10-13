@@ -1099,7 +1099,11 @@ says what is missing. A check
 that failed runs once more; gaps a check could still close go to the implementer for up to
 four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
 Repair the checks and resume the Run: the pending proof reruns them even when the repair
-only changes the environment. A changed tree or set of checks also gets fresh proof while
+only changes the environment. Straight after the gate, with no resume between, the proof
+runs a check again only where the gate's own result no longer holds: it relies on the
+latest pass Collie collected for that check when that was the same command, on the same
+tree and in the same environment, and logs the verification it relied on by id. So a
+green Run runs each check once. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
@@ -1254,12 +1258,18 @@ What the command prints is shown as it runs — its stdout on stdout and its std
 stderr, or both on stderr under `--json`, where stdout is the one envelope — and the exit
 status is the command's own, so a failure says why the first time.
 
-| Flag       | What it does                                                                                                                                             |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                              |
-| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it. |
-| `--name`   | What to call it on a card. The executable by default.                                                                                                    |
-| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                  |
+| Flag       | What it does                                                                                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                                          |
+| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it.             |
+| `--name`   | What to call it on a card. By default the script it runs (`bun run typecheck` is `typecheck`), else the tool and its subcommand (`bun test`), else the tool (`tsc`). |
+| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                              |
+
+Every record carries the **environment** it ran in: a digest of the executable's real path
+and content, the `node` and `bun` that `PATH` resolves to, again by path and content, and
+`PATH`, `NODE_ENV` and `NODE_OPTIONS`. A gate relies on an earlier pass only where this
+matches, so an upgraded toolchain is a fresh run. A record from before environments were
+recorded has none, and is never relied on.
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command

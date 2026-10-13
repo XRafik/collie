@@ -50,7 +50,7 @@ import {
   type Verification,
   type VerifySpec,
 } from "collie";
-import { DateTime, Effect, FileSystem, Schema } from "effect";
+import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 import { WorkflowInstance, type WorkflowEngine } from "effect/workflow/WorkflowEngine";
 import * as Workflow from "effect/workflow/Workflow";
 import * as Activity from "effect/workflow/Activity";
@@ -379,9 +379,10 @@ export default defineWorkflow({
       // record in the journal, bound to this tree, is not. Each pass is journaled, so a
       // replay follows the results the merge request will cite rather than a fresh run of
       // checks that may come out differently. What passed is not run again until a gate fix
-      // changes the tree.
+      // changes the tree, nor by the proof that follows.
       let passes = 0;
       let passed: ReadonlyArray<string> = [];
+      let gateLoaded: string | undefined;
       let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
       const readGaps = Effect.fn("implement.readGaps")(function* (
         approved: ReadonlyArray<VerifySpec>,
@@ -411,6 +412,7 @@ export default defineWorkflow({
             // A pass journaled before gaps were told apart handed a fix every gap.
             fixable: Schema.optionalKey(Schema.Array(Schema.String)),
             passed: Schema.Array(Schema.String),
+            loaded: Schema.optionalKey(Schema.String),
           }),
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
@@ -420,10 +422,15 @@ export default defineWorkflow({
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
+            return {
+              ...(yield* readGaps(checks, rallied.reviewed)),
+              passed: now,
+              loaded: yield* thisProcess,
+            };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
+        gateLoaded = pass.loaded;
         return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps };
       });
       let gaps = yield* gapsNow({ pass: "gate" });
@@ -505,8 +512,20 @@ export default defineWorkflow({
           const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
           const reading = Effect.suspend(() => readGaps(approved, reviewed));
-          for (const spec of approved)
-            yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" });
+          // The gate's passes hold only straight after it: never after a resume or a restart.
+          const reuse =
+            gateLoaded === (yield* thisProcess) &&
+            (yield* firstAttempt(`${place.dir}/steering`, `proof-${proofKey}`));
+          for (const spec of approved) {
+            const relied = yield* host.verify({
+              runId,
+              name: spec.name,
+              cwd,
+              pass: "recheck",
+              reuse,
+            });
+            yield* host.record(runId, `proof: ${spec.name} relies on verification ${relied.id}`);
+          }
           let missing = yield* reading;
           if (missing.fixable.length > 0) {
             yield* host.parked(
@@ -678,6 +697,23 @@ const claimsOf = (built: typeof Built.Type, ticket: Slice): ReadonlyArray<string
   const named = built.tickets_done ?? [];
   return named.length > 0 ? named : [ticket.title];
 };
+
+/** Whether this mark is new, leaving it so a later execution is not. */
+const firstAttempt = (dir: string, mark: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    if (yield* fs.exists(`${dir}/${mark}`)) return false;
+    yield* fs.makeDirectory(dir, { recursive: true });
+    yield* fs.writeFileString(`${dir}/${mark}`, "");
+    return true;
+  }).pipe(Effect.orElseSucceed(() => false));
+
+/** First asked in this process: a gate pass journaled under another was before a restart. */
+let loaded: string | undefined;
+const thisProcess = Effect.gen(function* () {
+  loaded ??= String(yield* Clock.currentTimeNanos);
+  return loaded;
+});
 
 /**
  * The card a slice landing leaves, in the shape the agent writes its own and the cards

@@ -35,7 +35,7 @@ import {
   runDir,
 } from "../../src/engine";
 import { VerifySpecSchema } from "../../src/verify-spec";
-import { collect, readVerifications } from "../../src/verify";
+import { collect, fingerprint, readVerifications } from "../../src/verify";
 import { inputsFor, offersFrom } from "../../src/offers";
 import { Store } from "../../src/store";
 import { everyRegistered, registerAgent, registryPath, scopeFor } from "../../src/registry";
@@ -2688,6 +2688,269 @@ scenario(
   120_000,
 );
 
+/** A check that counts its runs in `counter`, `$n` being this one, and passes while `holds` does. */
+const counting = (name: string, counter: string, holds = "true") => ({
+  name,
+  executable: "sh",
+  argv: ["-c", `echo >> ${counter}; wc -l < ${counter} | { read n; ${holds}; }`],
+  cwd: rig.projectDir,
+});
+
+const runsOf = (counter: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(counter)),
+    Effect.map((text) => text.split("\n").length - 1),
+    Effect.orElseSucceed(() => 0),
+  );
+
+/** Each check the proof relied on, by name, and the verification it named. */
+const reliedOn = (runId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(`${runDir(dir, runId)}/log.txt`)),
+    Effect.map((log) =>
+      [...log.matchAll(/proof: (\S+) relies on verification (\S+)/g)].map(([, name, id]) => ({
+        name,
+        id,
+      })),
+    ),
+  );
+
+const GATE_FIX = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
+
+scenario(
+  "a green Run runs each check once: the proof relies on the gate's own pass",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const runId = "r-gate-once";
+        yield* approve(runId, ["unit", "lint"]);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, runId)}/approved.json`,
+          asApproved([
+            counting("unit", `${rig.root}/unit-runs`),
+            counting("lint", `${rig.root}/lint-runs`),
+          ]),
+        );
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(1);
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
+        const gate = (yield* readVerifications(evidenceDir(dir, runId))).filter(
+          (one) => one.by === "collie",
+        );
+        expect(gate.map((one) => [one.name, one.pass])).toEqual([
+          ["unit", "gate"],
+          ["lint", "gate"],
+        ]);
+        expect(gate.every((one) => one.environment !== undefined)).toBe(true);
+        expect(yield* reliedOn(runId)).toEqual(gate.map(({ name, id }) => ({ name, id })));
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a check that passed at the gate runs again after a gate fix, and not again for the proof",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const runId = "r-gate-fix-reruns";
+        yield* approve(runId, ["unit", "lint"]);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, runId)}/approved.json`,
+          asApproved([
+            // Red at the gate, green at the base, red on the recheck, green after the fix.
+            counting("unit", `${rig.root}/unit-runs`, `[ $n -eq 2 ] || [ $n -ge 4 ]`),
+            counting("lint", `${rig.root}/lint-runs`),
+          ]),
+        );
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        // At the gate, and after the fix: never for the proof.
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(2);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(4);
+        const fixed = (yield* readVerifications(evidenceDir(dir, runId))).filter(
+          (one) => one.pass === "fix",
+        );
+        expect(yield* reliedOn(runId)).toEqual(fixed.map(({ name, id }) => ({ name, id })));
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "after a resume the proof runs every check again, even one it could have reused",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const runId = "r-gate-resumed";
+        yield* approve(runId, ["unit", "lint"]);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, runId)}/approved.json`,
+          asApproved([
+            counting("unit", `${rig.root}/unit-runs`),
+            counting("lint", `${rig.root}/lint-runs`, `[ -f ${rig.root}/repaired ]`),
+          ]),
+        );
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          GATE_FIX,
+          OPENED,
+        ]);
+        const options = {
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        };
+        const result = yield* running(options, (status) =>
+          until(
+            () => status,
+            (got) => got !== "pending",
+          ),
+        );
+        expect(result).toBe("suspended");
+        const suspended = yield* runsOf(`${rig.root}/unit-runs`);
+        // The gate and each of the four fixes; the proof relied on the last of them.
+        expect(suspended).toBe(5);
+
+        yield* fs.writeFileString(`${rig.root}/repaired`, "");
+        expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
+        yield* bin.restore();
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(suspended + 1);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a pass collected before the toolchain changed is run again for the proof",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const runId = "r-gate-new-tool";
+        yield* approve(runId, ["unit", "lint"]);
+        const fs = yield* FileSystem.FileSystem;
+        const tool = `${rig.root}/tools/unit`;
+        yield* fs.makeDirectory(`${rig.root}/tools`, { recursive: true });
+        yield* fs.writeFileString(tool, `#!/bin/sh\necho >> ${rig.root}/unit-runs\n`);
+        yield* fs.chmod(tool, 0o755);
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, runId)}/approved.json`,
+          asApproved([
+            { name: "unit", executable: tool, argv: [], cwd: rig.projectDir },
+            // Upgrades unit's tool once, after unit has passed with the old one.
+            counting(
+              "lint",
+              `${rig.root}/lint-runs`,
+              `grep -q v2 ${tool} || echo '# v2' >> ${tool}`,
+            ),
+          ]),
+        );
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(2);
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a pass collected before the tree changed is never relied on: the check runs again on the new tree",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const runId = "r-gate-new-tree";
+        yield* approve(runId, ["unit", "lint"]);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, runId)}/approved.json`,
+          asApproved([
+            counting("unit", `${rig.root}/unit-runs`),
+            // Leaves a file in the tree the first time, after unit has passed on the tree before it.
+            counting("lint", `${rig.root}/lint-runs`, `[ -f generated ] || echo > generated`),
+          ]),
+        );
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const records = yield* readVerifications(evidenceDir(dir, runId));
+        const unit = records.filter((one) => one.name === "unit");
+        const final = (yield* fingerprint(rig.projectDir)).fingerprint;
+        // Passed at the gate on the tree before lint's file, so run again after the fix.
+        expect(unit.map((one) => [one.pass, one.result])).toEqual([
+          ["gate", "pass"],
+          ["fix", "pass"],
+        ]);
+        expect(unit[0]?.end.fingerprint).not.toBe(final);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(2);
+        const relied = (yield* reliedOn(runId)).find((one) => one.name === "unit");
+        expect(relied?.id).toBe(unit[1]?.id);
+        expect(unit[1]?.end.fingerprint).toBe(final);
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "a check red on the base still reaches the fix loop before the merge request",
   () =>
@@ -3537,8 +3800,6 @@ const naming = (runId: string, names: ReadonlyArray<string>) => ({
     names.map((name) => ({ name, executable: "true", argv: [], cwd: rig.projectDir })),
   ),
 });
-
-const GATE_FIX = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
 
 scenario(
   "a Run with no checks builds without waiting, is asked to name them, and is held until one is",

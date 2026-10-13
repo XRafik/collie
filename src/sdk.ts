@@ -562,6 +562,11 @@ export interface HostApi {
      */
     readonly pass?: "gate" | "recheck" | "fix";
     readonly round?: number;
+    /**
+     * Answer with its latest pass on this tree in this environment instead of running it.
+     * Only where nothing since, such as a resume, could change the answer.
+     */
+    readonly reuse?: boolean;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
    * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt

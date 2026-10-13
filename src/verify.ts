@@ -106,6 +106,45 @@ export function resultOf(
   return (exit === 0) === (expect === "pass") ? "pass" : "fail";
 }
 
+/** What outside the tree decides how a check behaves, beside the executable itself. */
+const TOOLCHAIN_VARIABLES = ["PATH", "NODE_ENV", "NODE_OPTIONS"] as const;
+const TOOLCHAIN_RUNTIMES = ["node", "bun"] as const;
+
+/** Content digests by file identity and change time, so a 100MB runtime is read once. */
+const digests = new Map<string, string>();
+
+const identityOf = (executable: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const real = yield* fs.realPath(executable);
+    // ctime, which no extractor can set back the way npm fixes an mtime.
+    const info = yield* Effect.tryPromise(() => Bun.file(real).stat());
+    const key = [real, info.dev, info.ino, info.size, info.ctimeMs, info.mtimeMs].join(":");
+    const known = digests.get(key);
+    if (known !== undefined) return `${real}@${known}`;
+    const digest = Bun.hash(yield* fs.readFile(real)).toString(16);
+    digests.set(key, digest);
+    return `${real}@${digest}`;
+  });
+
+/**
+ * The environment a check runs in: the executable's real path and content, the runtimes
+ * on PATH, and `TOOLCHAIN_VARIABLES`. Null where any of them cannot be read, which no
+ * record can be reused under.
+ */
+export const environmentOf = Effect.fn("Verify.environmentOf")(
+  function* (absolute: string) {
+    const parts = [yield* identityOf(absolute)];
+    for (const runtime of TOOLCHAIN_RUNTIMES) {
+      const found = Bun.which(runtime, { PATH: Bun.env.PATH ?? "" });
+      parts.push(`${runtime}=${found === null ? "" : yield* identityOf(found)}`);
+    }
+    for (const name of TOOLCHAIN_VARIABLES) parts.push(`${name}=${Bun.env[name] ?? ""}`);
+    return Bun.hash(parts.join("\n")).toString(16);
+  },
+  Effect.orElseSucceed(() => null),
+);
+
 /**
  * Whether this verification still says anything about the tree in front of us. A result
  * is bound to the tree it ran on, so a commit or an edit since makes it history — no time
@@ -257,6 +296,7 @@ export const collect = Effect.fn("Verify.collect")(function* (
   if (absolute === null)
     return yield* new VerifyRefused({ why: `nothing on PATH called "${what.executable}"` });
 
+  const environment = yield* environmentOf(absolute);
   const start = yield* fingerprint(what.cwd);
   const began = yield* nowIso();
   const fs = yield* FileSystem.FileSystem;
@@ -330,7 +370,8 @@ export const collect = Effect.fn("Verify.collect")(function* (
     by: what.by,
     ...passFields(what.pass),
   };
-  const kept: Verification = what.log === undefined ? record : { ...record, log: what.log };
+  const placed: Verification = environment === null ? record : { ...record, environment };
+  const kept: Verification = what.log === undefined ? placed : { ...placed, log: what.log };
   yield* appendVerification(runDir, kept).pipe(Effect.orDie);
   return kept;
 });
@@ -342,6 +383,8 @@ function passFields(given: CheckPass | undefined): Pick<Verification, "pass" | "
   return { pass: given.pass, round: given.round };
 }
 
+type CheckRun = { readonly id: string; readonly cwd: string; readonly worktree: string | null };
+
 /**
  * A verification Collie runs itself, which it does only for one of the Run's checks —
  * exactly, argument by argument. The wrapper is part of the check: `npm test` and
@@ -351,27 +394,19 @@ function passFields(given: CheckPass | undefined): Pick<Verification, "pass" | "
  */
 export const runApproved = Effect.fn("Verify.runApproved")(function* (
   runDir: string,
-  run: { readonly id: string; readonly cwd: string; readonly worktree: string | null },
+  run: CheckRun,
   approved: ReadonlyArray<VerifySpec>,
   spec: VerifySpec,
   expect: "pass" | "fail" = "pass",
   pass?: CheckPass,
   log?: string,
 ): Effect.fn.Return<Verification, VerifyRefused, Services> {
-  const match = approved.find(
-    (entry) =>
-      entry.name === spec.name &&
-      entry.executable === spec.executable &&
-      entry.cwd === spec.cwd &&
-      entry.argv.length === spec.argv.length &&
-      entry.argv.every((word, at) => word === spec.argv[at]),
-  );
+  const match = approved.find((entry) => entry.name === spec.name && sameCommand(entry, spec));
   if (!match)
     return yield* new VerifyRefused({
       why: `"${spec.name}" is not among this Run's checks, argument for argument`,
     });
-  const path = yield* Path.Path;
-  const cwd = spec.cwd === "worktree" ? (run.worktree ?? run.cwd) : path.resolve(run.cwd, spec.cwd);
+  const cwd = yield* checkCwd(run, spec);
   if (!(yield* insideRun(cwd, run)))
     return yield* new VerifyRefused({ why: `"${cwd}" is not inside run ${run.id}` });
   return yield* collect(runDir, {
@@ -385,4 +420,63 @@ export const runApproved = Effect.fn("Verify.runApproved")(function* (
     pass,
     log,
   });
+});
+
+const checkCwd = (run: CheckRun, spec: VerifySpec) =>
+  Path.Path.pipe(
+    Effect.map((path) =>
+      spec.cwd === "worktree" ? (run.worktree ?? run.cwd) : path.resolve(run.cwd, spec.cwd),
+    ),
+  );
+
+type Command = Pick<VerifySpec, "executable" | "argv" | "cwd">;
+
+const sameCommand = (one: Command, other: Command) =>
+  one.executable === other.executable &&
+  one.cwd === other.cwd &&
+  one.argv.length === other.argv.length &&
+  one.argv.every((word, at) => word === other.argv[at]);
+
+/**
+ * The latest result Collie collected for this check, where it passed for the same command
+ * on this tree in this environment. Whether nothing happened since is the caller's to know.
+ */
+export function reusablePass(
+  records: ReadonlyArray<Verification>,
+  wanted: Pick<Verification, "name" | "executable" | "argv" | "cwd"> & {
+    readonly environment: string | null;
+  },
+  now: Snapshot,
+): Verification | null {
+  const latest = records.findLast((one) => one.by === "collie" && one.name === wanted.name);
+  if (latest === undefined || wanted.environment === null) return null;
+  const holds =
+    latest.result === "pass" &&
+    latest.expect === "pass" &&
+    sameCommand(latest, wanted) &&
+    latest.environment === wanted.environment &&
+    !staleAgainst(latest, now);
+  return holds ? latest : null;
+}
+
+/** `reusablePass` for one of a Run's checks, read from its journal against its tree now. */
+export const reusableFor = Effect.fn("Verify.reusableFor")(function* (
+  runDir: string,
+  run: CheckRun,
+  spec: VerifySpec,
+) {
+  const cwd = yield* checkCwd(run, spec);
+  const executable = yield* resolveExecutable(spec.executable, cwd);
+  if (executable === null) return null;
+  return reusablePass(
+    yield* readVerifications(runDir).pipe(Effect.orElseSucceed(() => [])),
+    {
+      name: spec.name,
+      executable,
+      argv: spec.argv,
+      cwd,
+      environment: yield* environmentOf(executable),
+    },
+    yield* fingerprint(cwd),
+  );
 });

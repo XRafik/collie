@@ -989,6 +989,12 @@ Collie never works a pass out from your workflow's id.
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 ```
 
+`reuse: true` answers with the latest pass Collie collected for that check instead of
+running it, where it was the same command on this tree in this
+[environment](cli.md#verify); otherwise the check runs. Ask for it only where
+nothing a human did since could change the answer: `implement`'s proof asks on its first
+execution, straight after the gate, and never after a resume.
+
 `host.approved(runId)` is the Run's checks as they stand now, for a prompt to name what the
 work will be held to — `renderApproved` writes it out — and
 `renderEvidence(host.evidence(...))` is what was actually collected and by whom, for a
