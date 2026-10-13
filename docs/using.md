@@ -1002,12 +1002,15 @@ Machine only if you want agents to run there too: add it with `herdr machine add
 Desktop shows it beside Local. bodil's `--vm` backend is bodil's own business and not a
 Collie Machine, so a VM bodil uses needs no `herdr machine add` for that.
 
-On macOS, Desktop opened from Finder or the Dock starts with launchd's short PATH. So at
-start it takes your login shell's environment (`$SHELL -ilc`), including its PATH, finding
-`herdr`, `collie`, `claude`, `git` and `ssh` as your terminal does. If the shell does not
-answer within five seconds, Desktop keeps the environment it was given and logs why. On Linux it
-gives its children the environment its session gave it, leaving out what Electrobun's
-launcher sets for Desktop itself.
+Desktop opened from Finder, the Dock or an app launcher starts without what your shell's rc
+files set: launchd's short PATH on macOS, and on Linux none of what `~/.bashrc` adds once it
+is interactive, such as `mise activate`. So at start it takes your interactive login shell's
+environment (`$SHELL -ilc`), including its PATH, finding `herdr`, `collie`, `claude`, `git`,
+`ssh` and the tools your checks run, `bun` among them, as your terminal does. Having it,
+Desktop runs local scripts and `collie` in a plain `/bin/sh -c`, since a login shell's
+profile may reset PATH. If the shell fails or does not answer within five seconds, Desktop
+keeps the environment it was given, runs them in a login shell as before, and logs why.
+Children never get what Electrobun's launcher sets for Desktop itself.
 
 It shows up as **Collie**, with the Collie mark — the dog on the white tile the TUI board
 shows, which reads on a dark taskbar too — in your app launcher, on its window, in the
@@ -1469,9 +1472,9 @@ Edge and Vivaldi are started with `--app=<url>`, so the page gets a window of it
 any other browser, Firefox included, opens it as an ordinary tab.
 
 Every Machine's host is reached the same way: by running
-`collie bridge --as desktop --client <this computer>` in a login shell, here directly and
-elsewhere as a channel on that machine's master, so the host is started with the
-environment `collie` itself would use, and every operation Desktop makes is recorded as
+`collie bridge --as desktop --client <this computer>` in your shell's environment, here
+with the one Desktop took at start and elsewhere in a login shell, as a channel on that
+machine's master, so the host is started with the environment `collie` itself would use, and every operation Desktop makes is recorded as
 `desktop`. A second bridge on the same master, started `--as chat`, is the Flock chat's,
 so nothing its model does is ever recorded as yours. For a herdr machine on a session other than `default`, the host is handed that
 session's socket. Desktop never starts, signals or connects to a host by any other route.
