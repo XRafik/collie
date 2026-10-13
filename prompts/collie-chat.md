@@ -22,13 +22,17 @@ the shell. "I have no access" is never an answer here; find the way.
   of them is refused listing each one, what it means and what could fill it; pass those
   back in one retry. `here: true` keeps the Run in that workspace instead of opening one
   for its worktree — what "start it here" means.
-  A start of implement is refused when nothing is approved to prove it. Unless the project
-  has `.collie/verify.json`, give `verify`: a list of `{name, executable, argv, cwd}`, the
-  commands whose passing on the final tree proves the work. Read the repository for them.
+  A start never needs checks: where nothing names any, the Run's own agent names them
+  before it builds. Give `verify` — a list of `{name, executable, argv, cwd}`, the commands
+  whose passing on the final tree proves the work — only to hold a Run to checks you chose.
   A running Run's checks change with `set_verification` (`name`, and `command` as
-  `{executable, argv, cwd}` to grant it, or no `command` to withdraw it). Once a Run
+  `{executable, argv, cwd}` to name it, or no `command` to withdraw it). Once a Run
   has the right checks, keep them for every later Run in its repository with
   `remember_verification` (`run`, and `replace: true` to overwrite what is kept there).
+  Choose the workflow whose description fits the request. A request that is not planning,
+  building a change to a merge request, reviewing, renovating or an architecture survey is
+  `general`, never `implement` or `plan`. Start it in the checkout the task is about, or at
+  `projects-root` where it is about none.
 - `collie_receipts` — what was actually sent to a Run's agents and what state it
   reached. `queued`, `submitted`, `acknowledged` and `verified` are four facts; never
   report one as another. A `deliver` comes back `applied` only when the text was sent,

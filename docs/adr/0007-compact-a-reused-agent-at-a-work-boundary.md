@@ -66,12 +66,12 @@ Checked against the installed releases rather than upstream source, and three of
 checks changed the design. A version is the floor the gate enforces, not an equality:
 the OpenCode checks last ran on 1.18.29.
 
-| Harness     | Release | Endpoint and identity                                                                                   | Current context                                  | Request                                                 | Outcome                                                                       |
-| ----------- | ------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| Pi          | 0.85.1  | An extension passed with `-e`, writing its session file path                                            | `ctx.getContextUsage()`                          | a bundled command calling `ctx.compact`                 | its per-request `onComplete`/`onError`                                        |
-| Claude Code | 2.1.263 | A settings file passed with `--settings`; the payloads' `session_id`                                    | status line `context_window`                     | `/compact` with a correlation token in its instructions | a `PreCompact` carrying that token, then the next manual `PostCompact`        |
-| Codex       | 0.153.4 | One App Server per agent on a loopback port; exactly one non-`ephemeral` thread in `thread/loaded/list` | `thread/tokenUsage/updated`'s `last.totalTokens` | `thread/compact/start`                                  | a `contextCompaction` item that was not there before, and its turn's status   |
-| OpenCode    | 1.18.9+ | The TUI hosting its own loopback server, on a session Collie created and passed with `--session`        | the latest assistant message's tokens            | `POST /session/{id}/summarize`                          | a `mode: "compaction"` message that was not there before, and its error state |
+| Harness     | Release | Endpoint and identity                                                                                               | Current context                                  | Request                                                 | Outcome                                                                       |
+| ----------- | ------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Pi          | 0.85.1  | An extension passed with `-e`, writing its session file path                                                        | `ctx.getContextUsage()`                          | a bundled command calling `ctx.compact`                 | its per-request `onComplete`/`onError`                                        |
+| Claude Code | 2.1.263 | A settings file passed with `--settings`; the payloads' `session_id`                                                | status line `context_window`                     | `/compact` with a correlation token in its instructions | a `PreCompact` carrying that token, then the next manual `PostCompact`        |
+| Codex       | 0.153.4 | One App Server per agent on a loopback port; exactly one non-`ephemeral`, unparented thread in `thread/loaded/list` | `thread/tokenUsage/updated`'s `last.totalTokens` | `thread/compact/start`                                  | a `contextCompaction` item that was not there before, and its turn's status   |
+| OpenCode    | 1.18.9+ | The TUI hosting its own loopback server, on a session Collie created and passed with `--session`                    | the latest assistant message's tokens            | `POST /session/{id}/summarize`                          | a `mode: "compaction"` message that was not there before, and its error state |
 
 Three deviations from the plan, each forced by the installed release:
 
@@ -87,7 +87,9 @@ Three deviations from the plan, each forced by the installed release:
 - **Codex's ephemeral thread.** A TUI loads a cheap thread of its own — another model,
   no preview, `ephemeral: true` — beside the one it is working in, so an agent's own
   server answers `thread/loaded/list` with two. Identity reads each and ignores the
-  ephemeral one; the refusal is kept for two threads that are really the agent's.
+  ephemeral one; the refusal is kept for two threads that are really the agent's. A
+  sub-agent the agent spawned is loaded beside it too, with `parentThreadId` set, and is
+  ignored the same way.
 - **OpenCode's identity.** Its servers isolate nothing: every one answers `GET /session`
   with every session in the project, and `/session/status` and `/api/session/active` are
   empty unless a session is mid-turn. Two agents in one directory could not be told apart

@@ -62,22 +62,7 @@ export const Proposal = Schema.Struct({
 });
 export type Proposal = typeof Proposal.Type;
 
-/** The decision id a gate is answered by: `approve`, or `approve:<name>,<name>` for part of the list. */
-export const EVIDENCE_GATE = "evidence-gate";
-
-/** An evidence gate a Run is holding at until the verification list is approved. */
-export const Gate = Schema.Struct({
-  kind: Schema.Literal("gate"),
-  run: Schema.String,
-  id: Schema.String,
-  step: Schema.String,
-  verifications: Schema.Array(Schema.String),
-  /** The repository of the Repo run holding there, where it is one of a fan-out's. */
-  repo: Schema.optionalKey(Schema.String),
-});
-export type Gate = typeof Gate.Type;
-
-export const Decision = Schema.Union([Question, Proposal, Gate]);
+export const Decision = Schema.Union([Question, Proposal]);
 export type Decision = typeof Decision.Type;
 
 /** One live agent of the Task, as a card counts them and a search matches them. */
@@ -318,6 +303,7 @@ export const MrDetails = Schema.TaggedStruct("Details", {
    */
   assignees: Schema.Array(Schema.String),
   sourceBranch: Schema.String,
+  fork: Schema.optionalKey(Schema.Boolean),
   targetBranch: Schema.String,
   /** The head pipeline's status, or `""` when there is no pipeline to report. */
   pipeline: Schema.String,
@@ -590,7 +576,7 @@ export type Startable = typeof Startable.Type;
  * The board protocol's version. An optional field, a new operation or a new kind of
  * message keeps it; a removal or a change of meaning bumps it.
  */
-export const PROTOCOL = 2;
+export const PROTOCOL = 3;
 
 /** One herdr session whose Tasks are on this board. */
 export const Herd = Schema.Struct({

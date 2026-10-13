@@ -7,9 +7,7 @@ import { Effect, Fiber, FileSystem, Schema } from "effect";
 import { readAudit } from "../src/audit";
 import { readDispositions } from "../src/disposition";
 import { runDir } from "../src/engine";
-import { EVIDENCE_GATE } from "../src/board-model";
 import { connect } from "../src/host";
-import { nothingApproved } from "../src/outcome";
 import { proposalsPath, read as readProposals, record as recordProposal } from "../src/proposals";
 import { defaultsPath, readDefaults } from "../src/intent";
 import { scopeKey } from "../src/registry";
@@ -379,13 +377,12 @@ test(
 );
 
 test(
-  "a gate is answered through the host: the checks offered are granted and the Run carries on",
+  "a Run parked at the old evidence gate refuses that answer, and goes on once a check is named and it is resumed",
   () =>
     proves(
-      "collie-writer-gate-",
+      "collie-writer-old-gate-",
       (world) =>
         Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
           const client = yield* connect(world.state);
           const started = yield* client.start({
             project: world.project,
@@ -396,83 +393,42 @@ test(
           const runId = started.runId;
           yield* until(
             () => client.run({ runId }),
-            (view) => view?.parked === nothingApproved(runId),
+            (view) => (view?.parked ?? "") !== "" && view?.status.status === "suspended",
           );
-          const gate = { runId, decision: EVIDENCE_GATE, request: "g-1" };
-          const skipped = yield* client.answer({ ...gate, value: "skip" }).pipe(Effect.flip);
-          expect(skipped._tag).toBe("HostRefused");
-
+          const fs = yield* FileSystem.FileSystem;
           yield* fs.makeDirectory(`${world.project}/.collie`, { recursive: true });
           yield* fs.writeFileString(
             `${world.project}/.collie/verify.json`,
             '[{"name":"true","executable":"true","argv":[],"cwd":"worktree"}]',
           );
-          yield* client.answer({ ...gate, value: "approve", request: "g-2" });
+          const answered = yield* client
+            .answer({ runId, decision: "evidence-gate", value: "approve", request: "g-1" })
+            .pipe(Effect.flip);
+          expect(answered).toMatchObject({
+            _tag: "HostRefused",
+            reason: `run "${runId}" is not waiting on a decision called "evidence-gate"`,
+          });
+          expect((yield* client.run({ runId }))?.status.status).toBe("suspended");
+          expect(
+            (yield* readAudit(runDir(world.state, runId))).map((one) => one.operation),
+          ).not.toContain("grant");
+
+          yield* client.grant({
+            runId,
+            name: "true",
+            command: { executable: "true", argv: [], cwd: "worktree" },
+            request: "g-2",
+          });
+          yield* client.resume({ runId, request: "g-3" });
           const done = yield* until(
             () => client.run({ runId }),
             (view) => view?.status.status === "complete",
           );
           expect(done?.status).toMatchObject({ value: "true" });
+          expect(done?.parked ?? "").toBe("");
           yield* stopHost(world.state);
         }).pipe(Effect.orDie),
       ["gated.workflow.ts"],
-    ),
-  120_000,
-);
-
-test(
-  "a Repo run's gate is answered on that Repo run, which carries on, and its fan-out is left alone",
-  () =>
-    proves(
-      "collie-writer-repo-gate-",
-      (world) =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const client = yield* connect(world.state);
-          const parent = yield* client.start({
-            project: world.project,
-            id: "plain",
-            request: "p-0",
-            input: { note: "fan" },
-          });
-          const started = yield* client.start({
-            project: world.project,
-            id: "gated",
-            request: "g-0",
-            input: { note: "x" },
-            parent: parent.runId,
-            options: { repo: "api" },
-          });
-          const runId = started.runId;
-          yield* until(
-            () => client.run({ runId }),
-            (view) => view?.parked === nothingApproved(runId),
-          );
-          yield* fs.makeDirectory(`${world.project}/.collie`, { recursive: true });
-          yield* fs.writeFileString(
-            `${world.project}/.collie/verify.json`,
-            '[{"name":"true","executable":"true","argv":[],"cwd":"worktree"}]',
-          );
-          yield* client.answer({
-            runId,
-            decision: EVIDENCE_GATE,
-            value: "approve",
-            request: "g-1",
-          });
-          const done = yield* until(
-            () => client.run({ runId }),
-            (view) => view?.status.status === "complete",
-          );
-          expect(done?.status).toMatchObject({ value: "true" });
-          const operations = (id: string) =>
-            readAudit(runDir(world.state, id)).pipe(
-              Effect.map((lines) => lines.map((line) => line.operation)),
-            );
-          expect(yield* operations(runId)).toContain("answer");
-          expect(yield* operations(parent.runId)).not.toContain("answer");
-          yield* stopHost(world.state);
-        }).pipe(Effect.orDie),
-      ["gated.workflow.ts", "plain.workflow.ts"],
     ),
   120_000,
 );

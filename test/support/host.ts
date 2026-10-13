@@ -212,13 +212,16 @@ export const openHost = Effect.fn("HostTest.open")(function* (
     Effect.gen(function* () {
       controls += 1;
       const request = `${op}:${runId}:${controls}`;
-      const done = yield* client
-        .control({ runId: yield* resolve(runId), control: name, set, request })
-        .pipe(Effect.result);
+      const target = yield* resolve(runId);
+      const done = yield* (
+        op === "resume"
+          ? client.resume({ runId: target, request })
+          : client.control({ runId: target, control: name, set, request })
+      ).pipe(Effect.result);
       if (done._tag === "Failure") return { ok: false, op, detail: sentenceOf(done.failure) };
       // Recorded either way, and the reply says which: a control over work no host is
       // running is an intent, never a confirmation.
-      return { ok: true, op, detail: done.success.detail };
+      return { ok: op !== "resume" || done.success.applied, op, detail: done.success.detail };
     });
 
   const ask = (request: HostRequest): Effect.Effect<HostReply> =>
@@ -543,6 +546,8 @@ export const workspace = Effect.fn("HostTest.workspace")(function* (prefix: stri
     "renovate.workflow.ts",
     "renovate.gitlab.md",
     "renovate.github.md",
+    "general.workflow.ts",
+    "general.md",
     "reviewing.ts",
   ]) {
     yield* fs.copyFile(`${root}workflows/${name}`, `${world.user}/${name}`);

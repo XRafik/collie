@@ -12,6 +12,7 @@ import {
   RouteSchema,
   argvFor,
   flagsPresent,
+  helpOf,
   jsonSchemaFor,
   structuredFrom,
   validate,
@@ -86,6 +87,31 @@ test("a CLI missing any of those flags is not one Collie will call", () =>
         "--no-session-persistence",
         "--append-system-prompt-file",
       ]);
+    }),
+  ));
+
+test("a CLI whose --help fails is unavailable in its own words, not missing every flag", () =>
+  runEffect(
+    Effect.gen(function* () {
+      // What claude says when the directory it was started in has been deleted.
+      const deleted = yield* helpOf([
+        "/bin/sh",
+        "-c",
+        "echo 'Error: The current working directory was deleted' >&2; exit 1",
+      ]).pipe(Effect.flip);
+      expect(deleted.reason).toContain("exited 1");
+      expect(deleted.reason).toContain("The current working directory was deleted");
+
+      const silent = yield* helpOf(["/bin/sh", "-c", "exit 0"]).pipe(Effect.flip);
+      expect(silent.reason).toContain("printed nothing");
+
+      const absent = yield* helpOf(["collie-no-such-cli"]).pipe(Effect.flip);
+      expect(absent.reason).toContain("collie-no-such-cli");
+
+      const deps = { help: helpOf(["/bin/sh", "-c", "exit 1"]), systemPromptFile: "", limits };
+      expect((yield* flagsPresent(deps).pipe(Effect.flip)).reason).toContain("exited 1");
+
+      expect(yield* helpOf(["/bin/echo", ...REQUIRED_FLAGS])).toContain("--print");
     }),
   ));
 

@@ -50,6 +50,8 @@ const MrDetailsJson = Schema.fromJsonString(
       Schema.NullOr(Schema.Array(Schema.Struct({ username: optionalText }))),
     ),
     source_branch: optionalText,
+    source_project_id: optionalCount,
+    target_project_id: optionalCount,
     target_branch: optionalText,
     sha: optionalText,
     merge_commit_sha: optionalText,
@@ -117,6 +119,7 @@ export function mrDetails<R>(
         .map((one) => one.username ?? "")
         .filter((name) => name !== ""),
       sourceBranch: mr.source_branch ?? "",
+      fork: mr.source_project_id !== mr.target_project_id,
       targetBranch: mr.target_branch ?? "",
       pipeline,
       checks: pipelineChecks(pipeline),

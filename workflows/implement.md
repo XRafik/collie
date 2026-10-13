@@ -12,6 +12,13 @@ else it may be told to run, before it will open the merge request:
 
 ## build
 
+Where the list of verifications at the top says no check is named, name them before you
+change anything: the commands that prove work in this repository, from what it says
+proves its work — `package.json` scripts such as `check`, `test` and `typecheck`, a
+Makefile, the CI config — each in the directory it belongs to. Name each one with
+`collie run intent verification {{run.id}} --name <name> [--cwd <dir>] -- <command>`.
+Collie runs them itself at the gate, and the merge request lists each with its command.
+
 The work source above is one of five kinds. Do the one that matches
 `{{inputs.plan_kind}}` and ignore the others.
 
@@ -36,7 +43,7 @@ The work source above is one of five kinds. Do the one that matches
   `{{run.dir}}/plan/SPEC.md` and a short task list to `{{run.dir}}/plan/issues/NN-*.md`,
   one file per slice, so the run records what you decided to build. Every ticket you write
   carries a `**Checks:**` line naming the `collie verify` commands that will prove it —
-  from the approved list above. Clear work states its acceptance checks before it starts;
+  from the checks above or the ones you named. Clear work states its acceptance checks before it starts;
   deciding afterwards what would have counted is not a check.
 - **followup** — a finished run's outcome needs more work. `{{inputs.plan}}` names it as
   `followup:<run id>`; that run's `steering/drift.jsonl` open reports and the text in
@@ -108,7 +115,7 @@ claims, and Collie labels them as such.
 ### What this run has to prove
 
 `{{inputs.outcome}}` above decides what closes this run. Do the one that matches and
-ignore the others; an outcome not given means only the approved verifications have to pass.
+ignore the others; an outcome not given means only the checks have to pass.
 
 - **feature** — every ticket you were given is built and named in `tickets_done`, and the
   review has to be able to say the agreed scope was met.

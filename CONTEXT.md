@@ -275,11 +275,10 @@ host reports, the live agents and what each Run left in its directory, so the Ho
 to no Task is a TaskView of its own.
 
 **Decision** — What a Task is waiting on a human for, and one of the two things that put
-it in **Needs you**: a **question** a Run asked, a **Proposal** Collie made, or an evidence
-**gate** asking which verifications this Run is to be held to. Any of a Task's Runs can be
-waiting on one, a fan-out's Repo runs included, and each is answered on the Run that asked.
-All three are answered on the card, from the CLI or from chat, and survive the board
-closing.
+it in **Needs you**: a **question** a Run asked, or a **Proposal** Collie made. Any of a
+Task's Runs can be waiting on one, a fan-out's Repo runs included, and each is answered on
+the Run that asked. Both are answered on the card, from the CLI or from chat, and survive
+the board closing. A Run's **Checks** are never one: nobody approves them (ADR-0055).
 
 **Stalled** — The other way into **Needs you**, and the one with nothing on the card to
 answer: an agent is waiting for a human in its own pane — at its harness's own dialog,
@@ -351,9 +350,12 @@ its Task's workspace and are `cd`-ed into the checkout, because a Run belongs wh
 Task is (ADR-0006). A Workflow declares one — `checkout` in its metadata — and the host
 cuts it at admission, before the Run exists, from the checkout the Run starts from: a
 directory that is not a git checkout is refused, named. `implement` and `renovate` declare
-one; `plan`, `architecture` and `review` declare none, and the `implement` they chain into
-is placed by its own declaration, in the same Task. A Renovate Run's is the one that holds
-no branch — see Renovate Run.
+one; `plan`, `architecture`, `review` and `general` declare none, and the `implement` they chain into
+is placed by its own declaration, in the same Task. A `review` Run that fixes its own
+findings is given the reviewed branch's checkout when the fix starts, and from then on that
+checkout is the Run's: what it verifies is that tree
+([ADR-0054](docs/adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A
+Renovate Run's is the one that holds no branch — see Renovate Run.
 
 Two managers, and a Run records which: Collie makes the checkout with `git worktree add`
 by default, and `--input workspace=new` asks herdr for it instead, which opens it as a
@@ -444,16 +446,17 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 - `review` — standalone; you pick the target; one complete review, and a synthesis that reconciles the reviewers where more than one axis is asked for.
 - `architecture` — runs the architect over the project and reports into its Run's plan directory.
 - `renovate` — claims the repository in Helle, merges or accounts for every Renovate Bot merge request, tags and watches the release, and records the result on the team's Renovate issue.
+- `general` — one agent does one ad-hoc task in place, in the checkout it was started for or at the Projects root, and the Run ends with the agent's summary. It is for whatever is not planning, building to a merge request, reviewing, renovating or surveying architecture. Work that should land as a merge request is `implement`'s (ADR-0056).
 
-**Outcome** — The kind of result a Run has to prove, and the evidence that closes it: a feature names what it built, a bug reproduces before it is fixed, a refactor preserves behaviour, an investigation reaches a supported conclusion and may have no patch, docs run what they document, a migration proves it can go back. A Run nobody classified is `unspecified` and proves only its approved verifications — never a feature by default.
+**Outcome** — The kind of result a Run has to prove, and the evidence that closes it: a feature names what it built, a bug reproduces before it is fixed, a refactor preserves behaviour, an investigation reaches a supported conclusion and may have no patch, docs run what they document, a migration proves it can go back. A Run nobody classified is `unspecified` and proves only its **Checks** — never a feature by default.
 
-**Approved set** — The verifications Collie may run itself for one Run, each bound argument for argument: the ones given with the start (`run start --verify`, or chat's `start` with `verify`), else `.collie/verify.json` in the project, else the checks remembered for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, written by `run intent remember`, or chat's `remember_verification`), else `~/.collie/user/verify.json`, settled at start and kept with the Run as its grant — its Intent's `run_verification`, or the host's record for a workflow module's Run. A plan spanning repositories is held to each repository's own `.collie/verify.json` or remembered checks. A start of a workflow that declares `verifies`, whose outcome needs the set, is refused as `invalid_input` when nothing is approved, before any Run exists. From then on that grant is the set, amended only by `run intent verification` (chat's `set_verification`), and a Run whose grant is withdrawn to nothing stops where it asks for the set. An agent may `collie verify` anything; only the approved set is what Collie runs at the gate.
+**Checks** — The commands Collie runs itself to prove one Run. Each is an executable and its arguments, bound argument for argument and run in a tree the Run owns, and nobody approves them. They are the ones given with the start (`run start --verify`, or chat's `start` with `verify`), else `.collie/verify.json` in the project, else the checks remembered for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, written by `run intent remember` or chat's `remember_verification`), else `~/.collie/user/verify.json`. The first found is taken whole and kept with the Run: in its Intent's `run_verification`, or in the host's record for a workflow module's Run. Where none of those has any, the Run's own agent names them from what the repository says proves its work, before it builds, and Collie records and runs them without asking. Anyone (a human, chat, or the Run's agent) adds or withdraws a check on a live Run with `run intent verification` (chat's `set_verification`). The gate reads them at every pass. Nobody is asked to approve one, and no start is refused for want of one. A Run whose agent still names none after its gate fixes is held unproved, as a failing check is (ADR-0055). An agent may `collie verify` anything, but only a Run's Checks are what Collie runs at the gate. Formerly the "approved set"; code still calls them `approved`.
 
 **Evidence** — A Verification collected at a revision. An Output field saying the tests pass is a claim, and is shown as one. The gate before a merge request reads evidence, never claims.
 
 **Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
 
-**Check pass** — One run of an approved check by Collie, with why it runs: `gate` on the
+**Check pass** — One run of one of a Run's **Checks** by Collie, with why it runs: `gate` on the
 Run's branch, `baseline` where the branch left the default branch, `recheck` on the same
 tree to rule out a flake, `fix` after gate fix N, `finish` at the Run's end, or a plain
 `check`. The pass is the Workflow's declaration, never read off its id. While it runs, the

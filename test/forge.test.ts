@@ -136,6 +136,20 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
+    test("says whether the reviewed branch comes from a fork", () =>
+      runEffect(
+        Effect.gen(function* () {
+          for (const fork of [false, true])
+            expect(
+              yield* forge.details(
+                ref(name),
+                "/w",
+                fakeForge(name, model(name, { mrs: [mr(name, { fork })] })).run,
+              ),
+            ).toMatchObject({ fork });
+        }),
+      ));
+
     test("reads its checks passed, failed or running", () =>
       runEffect(
         Effect.gen(function* () {

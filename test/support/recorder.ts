@@ -373,8 +373,10 @@ export class Rig {
     workspaceId: string | null = null,
     foregroundCwd: string | null = null,
     agentStatus: string | null = null,
+    /** The socket of the only session that lists it. */
+    session?: string,
   ) {
-    return this.appendState("paneList", {
+    const pane: Schema.JsonObject = {
       pane_id: paneId,
       tab_id: tabId,
       label: null,
@@ -383,7 +385,9 @@ export class Rig {
       agent_status: agentStatus,
       workspace_id: workspaceId,
       foreground_cwd: foregroundCwd,
-    });
+    };
+    if (session !== undefined) Object.assign(pane, { session });
+    return this.appendState("paneList", pane);
   }
 
   /**

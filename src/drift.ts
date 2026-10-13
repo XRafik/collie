@@ -11,7 +11,7 @@
 // than an edit — the account of what Collie thought and when survives being wrong.
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { Effect, Path, Schema } from "effect";
+import { Data, Effect, Path, Schema } from "effect";
 import type { Constraint, Intent, RuleSpec } from "./intent";
 import { appendJournal, readJournal } from "./journal";
 import { shell } from "./mr";
@@ -254,6 +254,17 @@ export interface EvidenceBlock {
   readonly truncated: boolean;
 }
 
+export class TreeUnread extends Data.TaggedError("TreeUnread")<{ reason: string }> {}
+
+/** What git printed, or why it could not say: a failing `git diff` is not an unchanged tree. */
+export const gitOutput = Effect.fn("Drift.gitOutput")(function* (args: string[], cwd: string) {
+  const ran = yield* shell("git", args, cwd);
+  if (ran.code === 0) return ran.stdout;
+  return yield* new TreeUnread({
+    reason: `git ${args.join(" ")} exited ${ran.code}: ${(ran.stderr ?? "").trim().split("\n")[0]}`,
+  });
+});
+
 /**
  * The actual diff a judgement is made from, capped and redacted. Actual, because a
  * summary of a change is a second thing to be wrong about; capped, because a judgement
@@ -266,13 +277,9 @@ export const evidenceFor = Effect.fn("Drift.evidenceFor")(function* (
   base: string,
 ) {
   const scope = paths.length === 0 ? [] : ["--", ...paths];
-  const committed = yield* shell(
-    "git",
-    ["diff", `${base}..HEAD`, "--unified=3", ...scope],
-    worktree,
-  );
-  const dirty = yield* shell("git", ["diff", "HEAD", "--unified=3", ...scope], worktree);
-  const blocks = splitDiff(`${committed.stdout}\n${dirty.stdout}`);
+  const committed = yield* gitOutput(["diff", `${base}..HEAD`, "--unified=3", ...scope], worktree);
+  const dirty = yield* gitOutput(["diff", "HEAD", "--unified=3", ...scope], worktree);
+  const blocks = splitDiff(`${committed}\n${dirty}`);
   return {
     blocks: blocks.slice(0, MAX_FILES),
     truncated: blocks.length > MAX_FILES || blocks.some((block) => block.truncated),
@@ -488,7 +495,10 @@ export const askJudgement = Effect.fn("Drift.askJudgement")(function* (
   run: string,
   pack: string,
 ) {
-  const missing = yield* flagsPresent(deps.evaluator);
+  const checked = yield* flagsPresent(deps.evaluator).pipe(Effect.result);
+  if (checked._tag === "Failure")
+    return notAsked(`the evaluator is unavailable: ${checked.failure.reason}`);
+  const missing = checked.success;
   if (missing.length > 0) return notAsked(`the evaluator is missing ${missing.join(", ")}`);
 
   // Written down before and after, as usage: what was asked, how long it took and what
@@ -533,9 +543,18 @@ export const judge = Effect.fn("Drift.judge")(function* (
   // goal, `alignment` never asks, and paying for a call to hear so would be the only cost.
   if (semantic.length === 0 && intent.goal === null) return NOTHING;
 
-  const evidence = yield* evidenceFor(what.worktree, judgementPaths(intent), what.base).pipe(
-    Effect.catch(() => Effect.succeed({ blocks: [], truncated: false })),
+  const read = yield* evidenceFor(what.worktree, judgementPaths(intent), what.base).pipe(
+    Effect.result,
   );
+  if (read._tag === "Failure") {
+    yield* recordSkipped(
+      what.runDir,
+      intent.run,
+      `the diff could not be read: ${read.failure.reason}`,
+    );
+    return NOTHING;
+  }
+  const evidence = read.success;
 
   const asked = yield* askJudgement(deps, intent.run, judgementPack(intent, evidence));
   if (asked.refused !== null) {

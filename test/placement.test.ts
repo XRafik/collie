@@ -44,6 +44,7 @@ beforeEach(() =>
   runEffect(
     Effect.gen(function* () {
       rig = yield* Rig.make();
+      sessions = [rig.socketPath];
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(rig.projectDir, { recursive: true });
       yield* installFakeSkills(rig.root);
@@ -78,7 +79,17 @@ const gitRepo = Effect.fn("test.gitRepo")(function* (at: string) {
   yield* git("commit", "--quiet", "--allow-empty", "-m", "init");
 });
 
-const env = () => rig.pluginEnv({ HERDR_PLUGIN_ROOT: ROOT, GITLAB_USER_LOGIN: LOGIN });
+/** The sockets `session list` names, or null for a herdr that will not list them. */
+let sessions: ReadonlyArray<string> | null;
+const env = () =>
+  rig.pluginEnv({
+    HERDR_PLUGIN_ROOT: ROOT,
+    GITLAB_USER_LOGIN: LOGIN,
+    FAKE_HERDR_SESSIONS:
+      sessions === null
+        ? ""
+        : JSON.stringify(sessions.map((socket, at) => ({ name: `s${at}`, socket_path: socket }))),
+  });
 /** The state directory the host, its Tasks and its agents all share, as an install's do. */
 const dir = () => env().stateDir;
 
@@ -703,7 +714,7 @@ test(
 );
 
 test(
-  "implement on a plan spanning repositories is refused naming each one that approves nothing",
+  "implement on a plan spanning repositories is admitted where one names no checks, and refuses one --verify for all",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -719,15 +730,34 @@ test(
         );
         const outcome = yield* hosted(
           Effect.gen(function* () {
-            const [implement] = yield* loaded(yield* Registry, [shipped("implement")]);
+            const registry = yield* Registry;
+            const [implement] = yield* loaded(registry, [shipped("implement")]);
+            const verified = yield* registry
+              .start({
+                generation: implement!,
+                request: "r0",
+                project: rig.projectDir,
+                input: {},
+                text: { plan },
+                verify: [{ name: "unit", executable: "true", argv: [], cwd: "worktree" }],
+                task: null,
+              })
+              .pipe(Effect.result);
+            const started = yield* start(implement!, { request: "r1", text: { plan } });
+            const rows = yield* (yield* Store).runs;
+            yield* fs.writeFileString(`${rig.projectDir}/web/.collie/verify.json`, '[{"name":');
             return {
-              started: yield* start(implement!, { request: "r1", text: { plan } }),
-              rows: yield* (yield* Store).runs,
+              verified,
+              started,
+              rows,
+              unreadable: yield* start(implement!, { request: "r2", text: { plan } }),
             };
           }),
         );
-        expect(refusedWith(outcome.started)).toContain("nothing is approved in web");
-        expect(outcome.rows).toEqual([]);
+        expect(refusedWith(outcome.verified)).toContain("this plan spans repositories");
+        expect(refusedWith(outcome.started)).toBe("");
+        expect(outcome.rows.length).toBeGreaterThan(0);
+        expect(refusedWith(outcome.unreadable)).toContain("web/.collie/verify.json");
       }),
     ),
   120_000,
@@ -908,6 +938,347 @@ test(
         );
         expect(row?.run).toBe("run-cut");
         expect(row?.checkout).toBeNull();
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start takes over the checkout a failed Run of the repository left, and moves it to the default branch",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const views = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            const failed = yield* finished(first.success.runId);
+            // Where the failed Run left its checkout: somewhere other than the default branch.
+            yield* exec(["git", "checkout", "--quiet", "-b", "renovate/left", "master"], {
+              cwd: roaming,
+            });
+            const again = yield* start(roams!, { request: "r2", text: { work: "again" } });
+            if (again._tag === "Failure") return yield* Effect.die(again.failure);
+            return { failed, retried: yield* finished(again.success.runId) };
+          }),
+        );
+
+        expect(views.failed?.status.status).toBe("failed");
+        expect(views.retried?.status).toEqual({ status: "complete", value: roaming });
+        expect(views.retried?.worktree?.path).toBe(roaming);
+        const head = yield* exec(["git", "symbolic-ref", "-q", "HEAD"], { cwd: roaming });
+        expect(head.exitCode).not.toBe(0);
+        // The branch the failed Run left is still there, with whatever it held.
+        const left = yield* exec(["git", "rev-parse", "--verify", "renovate/left"], {
+          cwd: rig.projectDir,
+        });
+        expect(left.exitCode).toBe(0);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused the checkout of a Run that may still go on, stopped or waiting, and of one that left changes",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const refusals = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams, waits] = yield* loaded(registry, [
+              `${fixtures}/roams.workflow.ts`,
+              `${fixtures}/roams-and-waits.workflow.ts`,
+            ]);
+            const waiting = yield* start(waits!, { request: "r1", text: { work: "wait" } });
+            if (waiting._tag === "Failure") return yield* Effect.die(waiting.failure);
+            yield* until(
+              () => registry.view(waiting.success.runId),
+              (view) => view?.status.status === "suspended",
+            );
+            const whileWaiting = refusedWith(
+              yield* start(roams!, { request: "r2", text: { work: "next" } }),
+            );
+            // A stopped Run has not ended either: a resume picks it up again in its checkout.
+            const runId = waiting.success.runId;
+            yield* registry.control({ runId, control: "stop", set: true });
+            const whileStopped = refusedWith(
+              yield* start(roams!, { request: "r2-stopped", text: { work: "next" } }),
+            );
+            yield* registry.control({ runId, control: "stop", set: false });
+            yield* registry.answer({
+              runId: waiting.success.runId,
+              decision: "go",
+              value: "yes",
+              request: "answer-go",
+            });
+            yield* finished(waiting.success.runId);
+            yield* (yield* FileSystem.FileSystem).writeFileString(`${roaming}/left.txt`, "work");
+            const whileDirty = refusedWith(
+              yield* start(roams!, { request: "r3", text: { work: "next" } }),
+            );
+            return { whileWaiting, whileStopped, whileDirty };
+          }),
+        );
+
+        expect(refusals.whileWaiting).toContain(`${roaming} is a checkout of`);
+        expect(refusals.whileWaiting).toContain("has not ended");
+        expect(refusals.whileStopped).toContain("has not ended");
+        expect(refusals.whileDirty).toContain("uncommitted changes");
+        expect(yield* (yield* FileSystem.FileSystem).readFileString(`${roaming}/left.txt`)).toBe(
+          "work",
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while another Run works in it or is being placed in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const refusals = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const store = yield* Store;
+            const [roams, waits] = yield* loaded(registry, [
+              `${fixtures}/roams.workflow.ts`,
+              `${fixtures}/waits-here.workflow.ts`,
+            ]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+
+            // A Run that declares no checkout, started inside this one, records none.
+            const borrower = yield* start(waits!, {
+              request: "r2",
+              project: roaming,
+              text: { work: "wait" },
+            });
+            if (borrower._tag === "Failure") return yield* Effect.die(borrower.failure);
+            yield* until(
+              () => registry.view(borrower.success.runId),
+              (view) => view?.status.status === "suspended",
+            );
+            const whileBorrowed = refusedWith(
+              yield* start(roams!, { request: "r3", text: { work: "next" } }),
+            );
+            yield* registry.answer({
+              runId: borrower.success.runId,
+              decision: "go",
+              value: "yes",
+              request: "answer-go",
+            });
+            yield* finished(borrower.success.runId);
+
+            // A start that has taken the checkout over and not finished being placed.
+            const payload = { runId: "run-placing", input: { work: "next" } };
+            const placed = { cwd: roaming, branch: null, workspace: null };
+            yield* store.admit({
+              request: "r-placing",
+              run: "run-placing",
+              workflow: "roams",
+              project: rig.projectDir,
+              input: payload.input,
+              provenance: { work: "given" },
+              options: {},
+              placing: Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+                from: rig.projectDir,
+                taskLabel: null,
+                checkout: {
+                  placed: {
+                    ...placed,
+                    worktree: (yield* registry.view(first.success.runId))?.worktree,
+                  },
+                  opened: null,
+                },
+              }),
+              generation: roams!.name,
+              execution: yield* roams!.registration.workflow.executionId(payload),
+              task: null,
+              parent: null,
+            });
+            const whilePlacing = refusedWith(
+              yield* start(roams!, { request: "r4", text: { work: "next" } }),
+            );
+            return { whileBorrowed, whilePlacing };
+          }),
+        );
+
+        expect(refusals.whileBorrowed).toContain(`${roaming} is a checkout of`);
+        expect(refusals.whileBorrowed).toContain("has not ended");
+        expect(refusals.whilePlacing).toContain("recorded by Run run-placing");
+        expect(refusals.whilePlacing).toContain("run-placing has not ended");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while a Run works in it through a symlink",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const link = `${rig.root}/roaming-link`;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams, waits] = yield* loaded(registry, [
+              `${fixtures}/roams.workflow.ts`,
+              `${fixtures}/waits-here.workflow.ts`,
+            ]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            yield* (yield* FileSystem.FileSystem).symlink(roaming, link);
+            const borrower = yield* start(waits!, {
+              request: "r2",
+              options: { workspace: link },
+              text: { work: "wait" },
+            });
+            if (borrower._tag === "Failure") return yield* Effect.die(borrower.failure);
+            yield* until(
+              () => registry.view(borrower.success.runId),
+              (view) => view?.status.status === "suspended",
+            );
+            return refusedWith(yield* start(roams!, { request: "r3", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("has not ended");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout where moving it would overwrite an ignored file",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const fs = yield* FileSystem.FileSystem;
+        const git = (...args: string[]) =>
+          exec(["git", ...args], {
+            cwd: rig.projectDir,
+            env: {
+              PATH: "/usr/bin:/bin",
+              HOME: rig.root,
+              GIT_AUTHOR_NAME: "t",
+              GIT_AUTHOR_EMAIL: "t@example.com",
+              GIT_COMMITTER_NAME: "t",
+              GIT_COMMITTER_EMAIL: "t@example.com",
+            },
+          }).pipe(
+            Effect.flatMap((done) =>
+              done.exitCode === 0 ? Effect.void : Effect.die(new Error(done.stderr)),
+            ),
+          );
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            // The default branch now tracks a file the checkout holds, ignored, as its own.
+            yield* fs.writeFileString(`${rig.projectDir}/.git/info/exclude`, "generated.txt\n");
+            yield* fs.writeFileString(`${rig.projectDir}/generated.txt`, "tracked");
+            yield* git("add", "-f", "generated.txt");
+            yield* git("commit", "--quiet", "-m", "track generated.txt");
+            yield* fs.writeFileString(`${roaming}/generated.txt`, "local");
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("would be overwritten");
+        expect(yield* fs.readFileString(`${roaming}/generated.txt`)).toBe("local");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while another session's agent works in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const other = `${rig.root}/other.sock`;
+        sessions = [rig.socketPath, other];
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            yield* rig.addPane("p-far", "t-far", roaming, "claude", null, null, "working", other);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain("agent claude in pane p-far works in it");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while herdr will not list its sessions",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        sessions = null;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("herdr would not list its sessions");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while an agent no Run recorded works in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            // Started in the repository, and moved into the checkout since.
+            yield* rig.addPane("p-moved", "t-moved", rig.projectDir, "claude", null, roaming);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("agent claude in pane p-moved works in it");
       }),
     ),
   120_000,
