@@ -80,6 +80,7 @@ const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const FORGES = "GitHub and GitLab, equally well (this MR)";
 const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
@@ -409,6 +410,58 @@ const FRONT_DOOR: readonly Check[] = [
       name: "a Run whose work shipped by hand says so, without its status being edited",
     },
   },
+  {
+    id: "front-door/a-pull-requests-card-names-it-as-github-does-and-opens-it",
+    statement:
+      "A card's sentence names a GitHub pull request as pull request cego/collie#30 and its checks, and a GitLab merge request with its own noun and pipeline.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/board.test.ts",
+      name: "a (gitlab|github) card names its merge request as its forge does",
+    },
+  },
+  {
+    id: "front-door/a-pull-request-card-opens-and-disposes-of-its-own-reference",
+    statement:
+      "A card offers Open pull request for a GitHub pull request and records collie#30 when disposed of, as a GitLab card records its merge request reference.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/board-model.test.ts",
+      name: "a card offers to open .* and disposing of it records",
+    },
+  },
+  {
+    id: "front-door/desktop-names-a-pull-request-and-its-checks",
+    statement:
+      "Desktop's link card names a pull request #30, shows its checks, and names its record tab Pull request; a GitLab card keeps its own wording.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "desktop/test/links.test.ts",
+      name: "(a pull request's card is titled|a pull request's checks are|a Run's record calls its tab)",
+    },
+  },
+  {
+    id: "front-door/a-pull-request-url-from-the-home-is-placed-in-its-checkout",
+    statement:
+      "From the Home, a pull request URL typed as a review target starts in the checkout whose remote is that repository, with mr:github.com/<owner>/<repo>#<n> as its target, as a merge request URL does.",
+    owner: FORGES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/launch.test.ts",
+      name: "a pull request URL is placed in the checkout whose remote it names",
+    },
+  },
 ];
 
 /** Facts about the code beneath the front door. True, useful, and not front-door proof. */
@@ -727,6 +780,148 @@ const BACKEND: readonly Check[] = [
       layer: "backend",
       file: "test/attachments.test.ts",
       name: "an offer invoked from a Run with attachments gives the new Run copies of them beside its own",
+    },
+  },
+  {
+    id: "backend/a-merge-request-reference-is-read-in-one-place",
+    statement:
+      "A GitHub pull request URL or target reads as a merge request, and writes back its target, label, short label, URL, noun and checks word, as a GitLab one does.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/board-model.test.ts",
+      name: "a GitHub (target|URL) reads as one merge request and writes back",
+    },
+  },
+  {
+    id: "backend/one-forge-contract-holds-for-gitlab-and-github",
+    statement:
+      "The GitLab and GitHub adapters answer the same contract against a fake of each forge: readiness, login, a merge request's state and checks, a note, and how far a merge is deployed.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/forge.test.ts",
+      name: "the (gitlab|github) forge",
+    },
+  },
+  {
+    id: "backend/a-pull-requests-merge-is-learned-and-its-details-shown",
+    statement: "A pull request's merge is learned and its details shown as a merge request's are.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/merges.test.ts",
+      name: "(a merged GitHub pull request lands its card|a pull request's panel is read for the drawer)",
+    },
+  },
+  {
+    id: "backend/a-checkouts-forge-is-its-origins",
+    statement:
+      "A checkout's forge is its origin's host, else its upstream's: a GitHub origin beside a gitlab remote is GitHub, and a host on neither forge has none.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/mr.test.ts",
+      name: "(a host's forge is|a checkout's forge is)",
+    },
+  },
+  {
+    id: "backend/implement-delivers-on-the-checkouts-own-forge",
+    statement:
+      "implement opens or updates the merge request on the checkout's own forge, assigned to that forge's login, and does not push to one that merges itself once green.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "implement (opens a|updates a|does not push to a) .*(gitlab|github)",
+    },
+  },
+  {
+    id: "backend/a-pull-request-is-reviewed-and-a-clean-post-approves-it",
+    statement:
+      "A pull request is reviewed by URL or ref with gh's own commands, and Post posts the note and approves a clean one, as a merge request's does with glab.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "(a review of a|posting a review of a) (gitlab|github)",
+    },
+  },
+  {
+    id: "backend/the-doctor-checks-gh-where-a-checkout-is-on-github",
+    statement:
+      "The doctor checks gh where a checkout under the Projects root is on GitHub, fails with the command that fixes it, and asks a Machine with no GitHub checkout nothing about gh.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/doctor.test.ts",
+      name: "(GitHub checkout|gh logged out|gh that did not answer)",
+    },
+  },
+  {
+    id: "backend/a-merged-pull-request-is-followed-to-stage-and-production",
+    statement:
+      "A merged pull request is followed to stage and production through GitHub's deployments, as a merge request is through GitLab's, and a pipeline: reference to an Actions run says how it went.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/merges.test.ts",
+      name: "a merged pull request is followed to stage",
+    },
+  },
+  {
+    id: "backend/a-roaming-run-starts-from-a-github-repository-url",
+    statement:
+      "A roaming Run starts from a GitHub repository URL, cloned with gh, as from a GitLab one cloned with glab's token; a URL on neither forge is refused.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/worktree.test.ts",
+      name: "a roaming Run's repository is cloned through its URL's forge",
+    },
+  },
+  {
+    id: "backend/renovate-works-a-github-repository-with-its-github-content",
+    statement:
+      "renovate works a GitHub repository with its GitHub content and a GitLab one with its GitLab content, the same steps and the same Linear tracking in both, and refuses a checkout on neither forge.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "renovate on a (gitlab|github) checkout is given that forge's content",
+    },
+  },
+  {
+    id: "backend/glab-and-gh-are-run-only-by-their-adapters",
+    statement:
+      "No file in src/ or workflows/ runs glab or gh outside its forge's adapter, and no prompt names either, but for the allowlist.",
+    owner: FORGES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/forge-boundary.test.ts",
+      name: "glab and gh are run only by their adapters",
     },
   },
   {
@@ -1259,6 +1454,50 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "On a Mac with bodil installed and BODIL_REMOTE_VM set, save the module from docs/sdk.md as `~/.collie/user/workflows/bodil.workflow.ts` and record that `collie workflow show bodil` lists plan, brands and name. Run `collie run start bodil --input plan=<a small plan> --input brands=happytiger --input name=collie-try`; record that `bodil ls` shows collie-try, that the implementer's pane works in `~/work/gitte/worktrees/collie-try/monorepo` on `dabo/collie-try`, and the merge request's source branch. When the Run finishes, record that `bodil ls` no longer lists collie-try and the worktree is still there. Record the revision.",
+    },
+  },
+  {
+    id: "operator/implement-on-cego-collie-opens-a-pull-request",
+    statement:
+      "implement on cego/collie opens a pull request assigned to madskronborg, on a branch named madskronborg/<task>.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk, start implement on a small change in a cego/collie checkout with no GITHUB_ACTOR set. Record the branch it names, the pull request it opens on GitHub and its assignee, and that the card says pull request. Repeat the start on mk-laptop with no GITLAB_USER_LOGIN and record that it names its branch. Record the revision.",
+    },
+  },
+  {
+    id: "operator/a-review-posted-to-a-pull-request-approves-a-clean-one",
+    statement:
+      "A review of a colleague's cego/collie pull request posts as one GitHub review, which approves it where the review was clean.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Run `collie run start review --input target=https://github.com/cego/collie/pull/<n>` on a colleague's open pull request, and choose Post to pull request. Record the review GitHub shows, whether it approves, and the Run's last line. Repeat on a gitlab.cego.dk merge request and record its note. Record the revision.",
+    },
+  },
+  {
+    id: "operator/renovate-renovates-on-both-forges",
+    statement:
+      "renovate on a gitlab.cego.dk project still renovates as before, and on a GitHub repository with open Renovate pull requests it reaches its batch pull request with gh alone.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Run `collie run start renovate --input repository=https://gitlab.cego.dk/<a project>` and record that it renovates as before. Where a GitHub repository with open Renovate pull requests is at hand, start renovate on it and record the batch pull request it opens and that no glab call appears in its agent's pane. Record the revision.",
+    },
+  },
+  {
+    id: "operator/a-pull-request-url-starts-a-review-in-its-checkout",
+    statement:
+      "On a Machine with a cego/collie checkout under the Projects root, a review started from the Home with a cego/collie pull request URL starts in that checkout.",
+    owner: FORGES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "From the Home, start review and type `https://github.com/cego/collie/pull/<n>` as its target. Record the checkout it says it starts in and the Run's target from `collie run show`, which reads `mr:github.com/cego/collie#<n>`. Record the revision.",
     },
   },
 ];

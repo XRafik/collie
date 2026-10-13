@@ -225,8 +225,9 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
 - **Fix findings in a full implement run** — chains `implement` with this run as the work
   source. The build is placed on the branch this review was pointed at — a branch target's
   head, or a merge request's source branch — read from the review's own Run.
-- **Post to MR** — sends `review.md` to the merge request it reviewed, verbatim and as a
-  single note. Offered only where the target is a merge request and `glab` can reach it.
+- **Post to merge request** (or **Post to pull request**) — sends `review.md` to the merge
+  request it reviewed, verbatim and as a single note, and approves it where nothing live is
+  left to fix. Offered only where the target is a merge request, on either forge.
 - **Don't post** — ends the run.
 
 Module: [`workflows/review.workflow.ts`](../workflows/review.workflow.ts), with its prompts
@@ -238,8 +239,8 @@ in [`workflows/review.md`](../workflows/review.md).
 merge request merged or accounted for, a version tag whose pipeline published or deployed,
 and the repository checked off the team's shared Renovate issue.
 
-**Inputs:** `repository`, an existing local checkout — empty means the workspace the run
-was started from, and cloning from a URL is out of scope. `team`, the Linear team whose
+**Inputs:** `repository`, an existing local checkout or a GitLab or GitHub repository URL,
+which is cloned through its forge — empty means the workspace the run was started from. `team`, the Linear team whose
 Renovate issue this run records itself on — empty falls back to `linear.team` in your
 `config.json`, and the run asks once when neither is set.
 
@@ -279,6 +280,17 @@ A run that fails holding no claim offers **Renovate again** instead: the same re
 team and issue, in the checkout the failed run left, which the new run takes over while it
 holds nothing to lose ([A run that roams across branches](using.md#a-run-that-roams-across-branches)).
 
+**On GitHub** the procedure is GitHub's, from its own content file, and the agent never
+runs `glab` there. Renovate's pull requests are the ones Renovate Bot opened. A repository
+is an application where it has a deploy workflow or a `staging` or `production`
+environment, and a package where it publishes from a tag or release. The batch pull
+request is gated by its required checks; stage is deployed by dispatching the
+repository's own Actions deploy workflow on the batch branch, and rolled back by the same
+workflow to the ref production last deployed successfully. The approval is an approving
+review on the batch's current head by someone other than this Run's own `gh` login, a
+Renovate pull request is merged only at the head that was reviewed
+(`--match-head-commit`), and a package's release is a GitHub release.
+
 **It asks you** at the points where asking is the work: a breaking or substantial
 migration, an update that cannot be merged safely, a bounded retry that made no progress,
 several matching Linear issues, a failing tag pipeline. The Helle claim is held through
@@ -288,7 +300,9 @@ date, creates no tag, and still leaves the checklist correct.
 **Ends:** with the repository checked off, or with what stopped it. There is no menu.
 
 Module: [`workflows/renovate.workflow.ts`](../workflows/renovate.workflow.ts), with its
-content in [`workflows/renovate.md`](../workflows/renovate.md).
+content in [`workflows/renovate.gitlab.md`](../workflows/renovate.gitlab.md) for a GitLab
+repository and [`workflows/renovate.github.md`](../workflows/renovate.github.md) for a
+GitHub one.
 
 ## `architecture`
 

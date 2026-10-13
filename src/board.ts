@@ -27,12 +27,14 @@ import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
 import { shell } from "./mr";
-import type { OfferView } from "./board-model";
+import type { ForgeChecks, OfferView } from "./board-model";
 import { everyDelivery, SENT_STATES, toldIn, type Delivery } from "./steering";
 import { readCards } from "./cards";
 import {
   Answered,
   mrLabel,
+  mrWords,
+  readMrRef,
   SECTIONS,
   sectionOf,
   sortBoard,
@@ -139,10 +141,7 @@ const reopenedOf = Effect.fn("Board.reopenedOf")(function* (
   } satisfies Reopened;
 });
 
-/** What the forge said of a merge request's own checks: a pipeline or a check rollup. */
-export type ForgeChecks =
-  | { readonly state: "passed" | "running" | "unknown" }
-  | { readonly state: "failed"; readonly name: string };
+export type { ForgeChecks } from "./board-model";
 
 /** The forge's word on a merge request's checks, and the head revision it said it of. */
 export interface ForgeFacts {
@@ -333,6 +332,11 @@ const short = (sha: string) => sha.slice(0, 7);
 /** An open merge request: whether it is ready, and the human's next move. */
 function openSentence(mr: string, checks: Checks | null, agent: string | null): string {
   const label = mrLabel(mr);
+  const ref = readMrRef(mr);
+  const running =
+    ref !== null && mrWords(ref).checks === "checks"
+      ? "its checks are still running"
+      : "its pipeline is still running";
   const handed = agent === null ? "" : `, or tell ${agent} to`;
   const seen: Checks = checks ?? { state: "unchecked" };
   switch (seen.state) {
@@ -341,7 +345,7 @@ function openSentence(mr: string, checks: Checks | null, agent: string | null): 
     case "failed":
       return `${label} is open, but ${seen.name} failed at ${short(seen.at)}. Next: fix ${seen.name}${handed}.`;
     case "running":
-      return `${label} is open; its pipeline is still running.`;
+      return `${label} is open; ${running}.`;
     case "unchecked":
       return `${label} is open; nothing has checked it.`;
   }
@@ -362,7 +366,11 @@ function doneSentence(
       return summary === null || summary.trim() === ""
         ? "Finished; nothing merged yet."
         : `Finished; it says: “${summary.trim().replace(/\s+/g, " ")}”`;
-    if (mrState === "closed") return `Merge request ${mrLabel(mr)} closed without merging.`;
+    if (mrState === "closed") {
+      const ref = readMrRef(mr);
+      const noun = ref === null ? "merge request" : mrWords(ref).noun;
+      return `${noun[0]!.toUpperCase()}${noun.slice(1)} ${mrLabel(mr)} closed without merging.`;
+    }
     return openSentence(mr, checks, agent);
   }
   switch (disposition.kind) {

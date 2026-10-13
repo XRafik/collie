@@ -250,8 +250,11 @@ export default defineWorkflow({ ...renovation(landing), id: "landing" });
 
 Everything the fork did not write — what it assesses, what it batches, the claim it takes,
 the teammate's approval it waits for — is the shipped orchestration, and a baseline change
-to any of it reaches the fork. `RENOVATE` holds the shipped sections as templates, so a fork
-keeps a section's words by starting from its `text` and adds its own sentence; `asRenovator`
+to any of it reaches the fork. `RENOVATE_ON.gitlab` and `RENOVATE_ON.github` hold each
+forge's shipped sections as templates, and `Landed.forge` says which forge a landing step's
+repository is on, so a fork keeps a section's words for either by starting from
+`RENOVATE_ON[at.forge].merge.text` and adds its own sentence. `RENOVATE` is still the GitLab
+sections, so a fork written before there were two reads what it read; `asRenovator`
 is who does the work and the `input` every shipped section reads.
 
 Nothing was added to Collie to make that possible, and nothing needs to be. A workflow
@@ -582,9 +585,16 @@ host's, so they are never in your payload — a caller asking for extra review a
 an earlier Run to compare against is doing it there, and this is where you read it.
 
 `host.post` puts a file on the merge request a Run was pointed at, as one note Collie sends
-rather than an agent writes out again. Its refusal is its message: not a merge request, no
-`glab` for that project, or one assigned to whoever is running this — whose findings are
-theirs to fix rather than to post to themselves.
+rather than an agent writes out again, through the merge request's own forge. With
+`approve`, it approves it too — the shipped review passes it when nothing live is left to
+fix — and the message says whether the approval landed. Its refusal is its message: not a
+merge request, no CLI or login for its forge, or one assigned to whoever is running this —
+whose findings are theirs to fix rather than to post to themselves.
+
+`mrForgeFacts(target)` is pure: for an `mr:` target it gives the forge's name and noun and
+the `diff`, `view` and `checkout` command lines a prompt hands a reviewer, written by that
+forge's adapter, and null for any other target. `target_repo` is still filled in for a
+fork that reads it: `--repo <project>` is what both CLIs take.
 
 `host.config(dotted)` is one value from the operator's own configuration, and empty where
 they have set none. What a workflow must not hard-code — which team it files issues with,
@@ -592,12 +602,16 @@ where this installation keeps its logs — is asked for here rather than written
 prose, so the same workflow is usable by somebody else.
 
 `host.mr({ cwd, target?, source? })` is whether a merge request can be opened from here and
-what it would carry: the configured assignee, the repository's own template, the issues the
-branch answers. Its optional `provider` is `github` or `gitlab` (absent on a GitLab-only
-host), and `repository` names GitHub's owner/repository for explicit `gh --repo` commands.
-A GitHub origin uses `gh`, checks its github.com login and repository access, and reads
-the authenticated assignee and the checkout's pull request template. GitLab retains
-the configured assignee and merge request template. One question rather than two,
+what it would carry, on the checkout's own forge (or the target's, where it names one):
+the assignee — `<forge>.assignee` from the user's config, else that forge's login — the
+repository's own template, the issues the branch answers. `forge` is `GitLab` or `GitHub`
+and `noun` is `merge request` or `pull request`; `provider` is `gitlab` or `github`, and
+`repository` the repository's path for `--repo`. `existing` is the URL of this branch's
+open one, or empty, and `autoMerge` whether it merges itself once green — a step that
+pushes to it should not run. `commands.create` and `commands.comment` are the command
+lines an agent runs to open one (with `<title>` and `<file>` left to fill in) or to note on
+`existing`, written by the forge's adapter so a prompt names no CLI of its own.
+One question rather than two,
 because a step that cannot reach its forge has
 nothing to fill in — check it before you start an agent, and say the reason where it is no.
 Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Run: its card
@@ -1060,7 +1074,9 @@ export default defineWorkflow({
   prefers: [which agent does the work](#which-agent-does-the-work).
 
 - **`hints`** attach inference to a field. `goal`, `work-source`, `diff-target` and
-  `gitlab-repository` are the launch strategies, and a module with inputs hints exactly one
+  `repository` — a GitLab or GitHub repository URL, or a local checkout — are the launch
+  strategies (`gitlab-repository`, its old name, is still read as `repository`, in a hint
+  and in a recorded Run), and a module with inputs hints exactly one
   field with one of them ([one launch Input](authoring.md#writing-one)). They are exclusive: one field each, so renaming `plan` to `spec` changes
   nothing about how it is inferred, what it names a branch after, which label its Run is
   listed under, or which previous review it is given.

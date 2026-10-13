@@ -361,8 +361,10 @@ they came. Everything else is new work, and gets a new branch called
 6. A slug of the work itself — the description, or the issue id.
 7. Otherwise a slug of the run's own name.
 
-The login is `GITLAB_USER_LOGIN` where the environment sets it, and otherwise whoever
-`glab` is logged in as for this checkout's host. Neither is the merge request's assignee
+The login is the checkout's forge's (ADR-0050 D5). On GitLab it is `GITLAB_USER_LOGIN`
+where the environment sets it, and otherwise whoever `glab` is logged in as for this
+checkout's host; on GitHub it is `GITHUB_ACTOR`, and otherwise whoever `gh` is logged in
+as. Neither is the merge request's assignee
 and neither is your OS username. Where there is no login to be had the run does not start
 and says to log in — it is an authentication failure, not a question about branches.
 
@@ -410,6 +412,7 @@ Examples:
 
 ```sh
 collie run start review --input target=https://gitlab.example.com/acme/app/-/merge_requests/2 --input plan= --input proves=
+collie run start review --input target=https://github.com/acme/app/pull/30 --input plan= --input proves=
 collie run start review --input target=worktree --input plan= --input proves=
 collie run start implement --input plan=ENG-123
 collie run start plan --input goal="one registry" --input workspace=projects-root
@@ -432,7 +435,7 @@ root for `workspace`:
       "inputs": [
         {
           "name": "target",
-          "meaning": "The change to review: mr:<iid>, mr:<group/project>!<iid>, branch:<base>...<head>, or worktree",
+          "meaning": "The change to review: mr:<iid>, mr:<host>/<group/project>!<iid>, mr:github.com/<owner>/<repo>#<n>, a merge request or pull request URL, <owner>/<repo>#<n>, branch:<base>...<head>, or worktree",
           "facts": ["mr:acme/app!2 (open merge request !2)"],
           "question": "review — an MR, a branch diff, or the working tree — target?",
           "required": true,
@@ -1045,13 +1048,18 @@ read — and neither opens a merge request, so there is no gate to stop them. Th
 read once when the run finishes, and what is missing is recorded on the run and shown on
 the board and in `run show`.
 
-For an `implement` Run's final delivery, a GitHub origin uses `gh`; a GitLab checkout
-uses `glab`. Both front doors ask the same host service for readiness, assignee,
-repository template and Linear tickets. GitHub readiness requires `gh` installed,
-logged in to github.com and able to read the origin repository. An existing pull
-request on the branch is updated. Before every GitHub push, including build and fix
-steps, the implementer reads the origin repository's open pull requests for the branch
-and refuses a push if auto-merge is enabled or that reading fails.
+For an `implement` Run's final delivery, the checkout's forge — its `origin`'s host, else
+`upstream`'s — decides: GitHub's adapter writes `gh` commands and GitLab's `glab` ones,
+and the prompt names no other CLI. Both front doors ask the same host service for
+readiness, assignee, template, Linear tickets and this branch's open merge request.
+The commands quote repository, branch and assignee values so the shell passes them literally.
+Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
+to read the repository. An existing merge request on the branch is updated rather than
+given a second one. If any request returned for the branch merges itself once green,
+delivery does not push: the step records `not pushed: auto-merge is on for <url>` and
+starts no agent. Before every
+GitHub push in the build and fix steps, the implementer still reads the branch's open pull
+requests and refuses a push if auto-merge is enabled or that reading fails.
 An unavailable forge parks the Run with the repair it needs.
 A delivery agent that did not push, supplied no merge request URL or reported findings
 fails the Run with the reason and a follow-up repair; it cannot report successful delivery.
@@ -1577,7 +1585,12 @@ over SSH with its own key, or over HTTPS where glab configured git to use it. An
 forwarded into the session does not count, since it goes when the computer it came from
 sleeps. That host is `--gitlab-host`, else `GITLAB_HOST`, else the
 [`gitlab_host` setting](using.md#your-defaults). Any other host glab knows is named in one
-`other gitlabs` note, unchecked, and never fails the run.
+`other gitlabs` note, unchecked, and never fails the run. Where any checkout under the
+Projects root is on GitHub — its `origin`, else `upstream`, is on github.com — a `gh` check
+follows: `gh` on PATH, else a failure fixed by installing it from https://cli.github.com,
+and `gh auth status --hostname github.com`, whose failure's fix is `gh auth login
+--hostname github.com`. Its detail says how many checkouts use GitHub. A Machine with no
+GitHub checkout is not asked about `gh`.
 
 **herdr** names what upgrading does to the running panes. From a herdr before 0.9.0, the
 running server must stop once, which ends every program in its panes: `herdr update`, then
@@ -1749,7 +1762,7 @@ without being read. The review's findings come as
 a list. The merge request is what the merge watch last read, asked again after 5 minutes or
 when `refreshMr` is set. Large items are fetched by reference with `runFile`: `log`,
 `review`, `diff:<path>`, `evidence:<name>`, `verification:<id>`, `plan:<file>`, `attachment:<name>` (one of the Run's attachments), `file:<path>` (read
-only, from the Run's checkout) and `pipeline:<url>` (the status glab reads for that pipeline), text as it is and anything else as base64. Each answer is
+only, from the Run's checkout) and `pipeline:<url>` (the status glab reads for a GitLab pipeline, or gh for a GitHub Actions run), text as it is and anything else as base64. Each answer is
 at most 4 MiB from `offset` (or `length` bytes where asked) and says the item's whole
 `size`, so a long log or a video is read in parts. A part of an item is base64 whatever it
 is, so a character split across two parts is whole once they are joined. A reference is refused where it leaves

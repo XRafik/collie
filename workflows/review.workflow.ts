@@ -21,6 +21,7 @@ import {
   defineWorkflow,
   formatFindings,
   handOffWork,
+  mrForgeFacts,
   parseMrTarget,
   repoArgs,
   riskLine,
@@ -32,11 +33,10 @@ import {
 } from "collie";
 import { Effect, FileSystem, Schema } from "effect";
 import * as Activity from "effect/workflow/Activity";
-import { FIX_PROMPT, IMPLEMENTER, REVIEWER, reviewPass } from "./reviewing.ts";
+import { FIX_PROMPT, IMPLEMENTER, NO_MR, REVIEWER, reviewPass } from "./reviewing.ts";
 
 const FIX = "Fix findings";
 const IMPLEMENT = "Fix findings in a full implement run";
-const POST = "Post to MR";
 const DONE = "Don't post";
 const AGAIN = "Review again";
 
@@ -101,6 +101,8 @@ export default defineWorkflow({
       const run = yield* Run;
       const place = yield* host.place(run.id);
       const kind = targetKind(asked.target);
+      // The option's label is fixed for the Run, because its target is.
+      const POST = `Post to ${mrForgeFacts(asked.target)?.noun ?? "merge request"}`;
 
       // The extra axes and the earlier review are the host's own — a caller attaches them
       // to the work rather than declaring them here, and `previous` names the Run whose
@@ -140,6 +142,7 @@ export default defineWorkflow({
         disputed: formatFindings([]),
         risks: riskLine(place.options.risks ?? ""),
         target_repo: repoArgs(parseMrTarget(asked.target)?.project ?? null).join(" "),
+        mr: mrForgeFacts(asked.target) ?? NO_MR,
         obstacle: "",
       };
 
@@ -225,6 +228,8 @@ export default defineWorkflow({
             target: asked.target,
             cwd: place.cwd,
             file: `${place.dir}/${REVIEW_FILE}`,
+            // A review that found nothing still live to fix is one the forge should count.
+            approve: split.live.length === 0,
           });
           yield* host.record(run.id, posted.message);
           // A note that did not land is not an answer, so the menu comes back.

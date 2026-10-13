@@ -31,7 +31,7 @@ import {
 } from "./worktree";
 import { readForge, readMrStates } from "./merges";
 import { latest, readDispositions } from "./disposition";
-import { gitlabRepositoryOf } from "./strategies";
+import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
 import { CONTROL_DIR, putDownControl } from "./compaction";
@@ -781,7 +781,7 @@ export const renovateClonesSweeper = (stateDir: string, runs: ReadonlyArray<RunF
   const root = `${stateDir}/renovate-repositories`;
   const used = new Set(
     runs.flatMap((run) => {
-      const repository = gitlabRepositoryOf(run.settled)?.value ?? "";
+      const repository = repositoryOf(run.settled)?.value ?? "";
       return repository === "" ? [] : [Bun.hash(repository).toString(16)];
     }),
   );

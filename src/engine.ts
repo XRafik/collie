@@ -75,7 +75,7 @@ import {
   type WorkflowDefinition,
   type WorkflowEntry,
 } from "./sdk";
-import { FALLBACK_DEFAULTS, configValue, loadDefaults, readConfig } from "./config";
+import { FALLBACK_DEFAULTS, configValue, gitlabHostOf, loadDefaults, readConfig } from "./config";
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
@@ -94,7 +94,8 @@ import type { CheckoutKind, InputStrategy } from "./definitions";
 import { noteVerification } from "./metrics";
 import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
 import { parseMrTarget, parseMrUrl } from "./board-model";
-import { Notifier, SOUND, notificationTitle, wanted, type Sound } from "./notify";
+import { strategyNamed } from "./strategies";
+import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
 import {
   Oversight,
   cardCheckpoints,
@@ -301,11 +302,21 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly repository?: string;
     /** Why it cannot be done here. Empty where it can. */
     readonly reason: string;
-    /** The configured assignee, else whoever glab is logged in as; empty for neither. */
+    /** The configured assignee, else whoever the forge's CLI is logged in as; empty for neither. */
     readonly assignee: string;
     /** The repository's merge request template, relative to the checkout; empty for none. */
     readonly template: string;
     readonly issues: ReadonlyArray<string>;
+    /** "GitLab" or "GitHub". */
+    readonly forge?: string;
+    /** "merge request" or "pull request". */
+    readonly noun?: string;
+    /** The URL of this branch's open merge request, or empty for none. */
+    readonly existing?: string;
+    /** Whether \`existing\` merges itself once green, so a push to it is a merge. */
+    readonly autoMerge?: boolean;
+    /** The command lines an agent runs, written by the forge's adapter. */
+    readonly commands?: { readonly create: string; readonly comment: string };
   }
 
   /** What the host lends a workflow. Hold and stop are read fresh on every replay. */
@@ -350,6 +361,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly target: string;
       readonly cwd: string;
       readonly file: string;
+      /** Approve the merge request too: a review with nothing live left to fix. */
+      readonly approve?: boolean;
     }) => Effect.Effect<Posted>;
     /** This Run's checks as they stand now, which anyone may add to. */
     readonly approved: (runId: string) => Effect.Effect<ReadonlyArray<VerifySpec>>;
@@ -1019,6 +1032,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   /** The glab arguments that point a command at a project rather than at the cwd. */
   export function repoArgs(project: string | null): string[];
 
+  /**
+   * An \`mr:\` target's forge as a prompt says it — its name and noun, and the commands that
+   * read the change and its description and check it out — or null for any other target.
+   */
+  export function mrForgeFacts(target: string): {
+    readonly forge: string;
+    readonly noun: string;
+    readonly diff: string;
+    readonly view: string;
+    readonly checkout: string;
+  } | null;
+
   /** A decoded review: the lists are the decoder's, not the reader's to change. */
   export interface ReviewReport extends Judgement {
     readonly verdict: "clean" | "findings";
@@ -1366,7 +1391,13 @@ const isWritten = (exported: unknown): exported is WrittenDefinition =>
 
 /** A definition as the entry the rest of the host reads. */
 const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
-  const { hints, outcome, checkout, followUps, actions } = definition;
+  const { outcome, checkout, followUps, actions } = definition;
+  const hints =
+    definition.hints === undefined
+      ? undefined
+      : Object.fromEntries(
+          Object.entries(definition.hints).map(([name, hint]) => [name, strategyNamed(hint)]),
+        );
   const declared = Object.fromEntries(
     Object.entries({ hints, outcome, checkout, followUps, actions }).filter(
       ([, value]) => value !== undefined,
@@ -2350,10 +2381,17 @@ export const hostLayer = (options: {
               return yield* prepareMergeRequest(
                 {
                   ...asked,
-                  configuredAssignee: configValue(
-                    yield* readConfig(options.userDir ?? dir),
-                    "gitlab.assignee",
-                  ),
+                  assignees: {
+                    gitlab: configValue(
+                      yield* readConfig(options.userDir ?? dir),
+                      "gitlab.assignee",
+                    ),
+                    github: configValue(
+                      yield* readConfig(options.userDir ?? dir),
+                      "github.assignee",
+                    ),
+                  },
+                  gitlabHost: (yield* loadDefaults(options.userDir ?? dir)).gitlabHost,
                 },
                 runShell,
               );
@@ -2380,7 +2418,7 @@ export const hostLayer = (options: {
               home: env.home,
               envFile: env.raw.HELLE_ENV_FILE ?? null,
               url: helleUrlOf(env.raw),
-              gitlabPath: yield* projectHere(asked.cwd, runShell),
+              repositoryPath: yield* projectHere(asked.cwd, runShell),
               // git's repository, never the checkout's basename: a roaming Run's directory
               // is named after the workflow, and a Helle project under that name is a
               // project that does not exist for a repository that has one.
@@ -2460,10 +2498,7 @@ export const hostLayer = (options: {
             Effect.andThen(
               notify(runId, "mr-opened", url, {
                 key: url,
-                subject: Option.fromNullishOr(parseMrUrl(url)).pipe(
-                  Option.map((mr) => `!${mr.iid}`),
-                  Option.getOrUndefined,
-                ),
+                subject: openedSubject(url),
               }),
             ),
           ),
@@ -2471,7 +2506,18 @@ export const hostLayer = (options: {
           under(
             fs.readFileString(asked.file).pipe(
               Effect.flatMap((body) =>
-                postNote({ target: asked.target, cwd: asked.cwd, body }, runShell),
+                Effect.flatMap(loadDefaults(options.userDir ?? dir), (defaults) =>
+                  postNote(
+                    {
+                      target: asked.target,
+                      cwd: asked.cwd,
+                      body,
+                      approve: asked.approve === true,
+                      gitlabHost: defaults.gitlabHost,
+                    },
+                    runShell,
+                  ),
+                ),
               ),
               Effect.orElseSucceed(() => ({
                 ok: false,
@@ -3841,6 +3887,8 @@ const makeRegistry: (
         openLabel: ask.taskLabel ?? null,
         explicit: ask.options.branch ?? null,
         login: placing.env.gitlabLogin,
+        githubLogin: placing.env.githubLogin,
+        gitlabHost: yield* gitlabHostOf(placing.env).pipe(Effect.orElseSucceed(() => undefined)),
         recordedBy: (at) =>
           Effect.gen(function* () {
             const rows = yield* store.runs;

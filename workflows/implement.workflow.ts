@@ -86,7 +86,16 @@ const prompts = {
     evidence: text,
     unreviewed: text,
     unsettled: text,
-    mr: Schema.Struct({ provider: text, assignee: text, template: text, issues: text }),
+    mr: Schema.Struct({
+      forge: text,
+      noun: text,
+      assignee: text,
+      template: text,
+      issues: text,
+      existing: text,
+      create: text,
+      comment: text,
+    }),
     target_repo: text,
   }),
 };
@@ -549,6 +558,12 @@ export default defineWorkflow({
         yield* host.parked(runId, reason);
         return yield* Workflow.suspend(yield* WorkflowInstance);
       }
+      // A push that turns someone's auto-merging merge request green merges it (ADR-0050 D4).
+      if (ready.existing && ready.autoMerge) {
+        const why = `not pushed: auto-merge is on for ${ready.existing}`;
+        yield* host.record(runId, why);
+        return why;
+      }
 
       const settledEvidence = yield* host.evidence(runId, cwd);
       const opened = yield* agentWork({
@@ -564,11 +579,16 @@ export default defineWorkflow({
           unreviewed,
           unsettled: unsettled.map((line) => `- ${line}`).join("\n"),
           mr: {
-            provider: ready.provider ?? "gitlab",
+            forge: ready.forge ?? "GitLab",
+            noun: ready.noun ?? "merge request",
             assignee: ready.assignee,
             template: ready.template,
             issues: ready.issues.join(", "),
+            existing: ready.existing ?? "",
+            create: ready.commands?.create ?? "",
+            comment: ready.commands?.comment ?? "",
           },
+          // Not read by the shipped content; a fork's may, and `--repo` suits both CLIs.
           target_repo: ready.repository ? `--repo ${ready.repository}` : "",
         },
         output: Opened,

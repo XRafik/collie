@@ -603,6 +603,7 @@ export class Rig {
       HERDR_PANE_ID: "1-1",
       COLLIE_CWD: this.projectDir,
       GITLAB_USER_LOGIN: TEST_LOGIN,
+      GITHUB_ACTOR: TEST_LOGIN,
       FAKE_HERDR_LOG: this.logPath,
       FAKE_HERDR_OUTPUTS: this.path.join(this.root, "outputs.json"),
       // What `herdr status --json` answers with regardless of HERDR_SOCKET_PATH: the
