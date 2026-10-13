@@ -394,14 +394,20 @@ test(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const bin = yield* fs.makeTempDirectoryScoped({ prefix: "collie-bin-" });
-        yield* fs.writeFileString(
-          join(bin, "glab"),
-          `#!/bin/sh\necho '{"iid": 42, "state": "opened", "title": "t"}'\n`,
-          { mode: 0o755 },
-        );
+        const checkout = yield* fs.makeTempDirectoryScoped({ prefix: "collie-target-" });
+        const git = (...args: string[]) =>
+          exec(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], {
+            cwd: checkout,
+          });
+        yield* git("init", "-q", "-b", "topic");
+        yield* git("commit", "-q", "--allow-empty", "-m", "base");
+        yield* git("remote", "add", "origin", "git@gitlab.example.com:team/project.git");
+        yield* fs.writeFileString(join(bin, "glab"), `#!/bin/sh\necho '[{"iid": 42}]'\n`, {
+          mode: 0o755,
+        });
         const bare = yield* cli(
           ["--json", "run", "start", "review", "--input", "plan=", "--input", "proves="],
-          { PATH: `${bin}:/usr/bin:/bin` },
+          { COLLIE_CWD: checkout, PATH: `${bin}:/usr/bin:/bin` },
         );
         expect(yield* parseEnvelope(bare.stdout)).toMatchObject({
           ok: false,
@@ -498,6 +504,7 @@ test(
         );
         for (const args of [
           ["init", "-q", "-b", "main"],
+          ["remote", "add", "origin", "git@gitlab.example.com:team/project.git"],
           [
             "-c",
             "user.email=t@example.com",

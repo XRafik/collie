@@ -2976,7 +2976,7 @@ for (const name of ["gitlab", "github"] as const) {
           expect(said(result)).toBe(OPENED.mr_url);
           const prompt = yield* asked(runId, "mr");
           expect(prompt).toContain(`${CLI[name]} ${name === "gitlab" ? "mr" : "pr"} create`);
-          expect(prompt).toContain("--assignee tester");
+          expect(prompt).toContain("--assignee 'tester'");
           expect(prompt).not.toMatch(new RegExp(`\\b${DELIVERY[name].other}\\b`));
           // Branch naming and readiness asked this forge alone.
           expect(yield* other.calls()).toEqual([]);

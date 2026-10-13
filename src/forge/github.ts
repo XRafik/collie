@@ -10,7 +10,7 @@ import {
   type MrRef,
 } from "../board-model";
 import { whatItSaid, type Runner } from "../mr";
-import { shellQuote } from "../naming";
+import { shellQuote } from "../script";
 import { epochMs } from "../time";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
 

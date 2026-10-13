@@ -1396,6 +1396,9 @@ test("a Run with a branch and no merge request shows its branch", () =>
     Effect.gen(function* () {
       const git = ["git", "-c", "user.email=t@example.test", "-c", "user.name=t"];
       yield* exec([...git, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: project });
+      yield* exec([...git, "remote", "add", "origin", "git@gitlab.example.com:team/project.git"], {
+        cwd: project,
+      });
       yield* save(world.user, ["builds.workflow.ts"]);
       // The host this test starts names the branch under a login, as a desk's does.
       yield* connect(stateDir, { hostEnv: { GITLAB_USER_LOGIN: "tester" } }).pipe(Effect.orDie);

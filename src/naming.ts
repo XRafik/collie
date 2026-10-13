@@ -76,9 +76,7 @@ export function unsafePathComponent(value: string): string | null {
   return null;
 }
 
-export function shellQuote(text: string): string {
-  return `'${text.replace(/'/g, `'\\''`)}'`;
-}
+export { shellQuote } from "./script";
 
 /** ⚙ working, ⚠ your turn, ✓ finished, ✗ stopped. */
 /**
