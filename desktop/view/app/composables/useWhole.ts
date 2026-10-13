@@ -1,3 +1,4 @@
+import { computed, ref, watch } from "vue";
 import type { Panel } from "../../../../src/board-model";
 
 /**
@@ -8,16 +9,22 @@ export const useWhole = (
   where: () => { installation: string; runId: string },
   item: string,
   panel: () => Panel,
+  textOf: (installation: string, runId: string, item: string) => Promise<string | null>,
+  stamp: () => string | undefined = () => undefined,
 ) => {
-  const { textOf } = useActions();
   const whole = ref<{ text: string } | { failed: true } | null>(null);
   let asked = 0;
   watch(
-    () => {
-      const shown = panel();
-      return shown._tag === "Text" && shown.truncated ? shown.text : null;
-    },
-    (cut) => {
+    [
+      () => {
+        const shown = panel();
+        return shown._tag === "Text" && shown.truncated ? shown.text : null;
+      },
+      stamp,
+      () => where().installation,
+      () => where().runId,
+    ],
+    ([cut]) => {
       whole.value = null;
       const mine = ++asked;
       if (cut === null) return;

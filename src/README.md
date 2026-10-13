@@ -11,6 +11,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `envelope.ts`       | CLI envelopes, stdout, exit statuses, request receipts, and mutation locks                            |
 | `operations.ts`     | Workspace resolution and Run mutations shared by both front doors                                     |
 | `doctor.ts`         | Every prerequisite an installation needs, checked in one pass, each with its fix                      |
+| `doctor-check.ts`   | What a doctor check is, shared by the doctor and each forge's own checks                              |
 | `flows.ts`          | What each action and pane entrypoint does                                                             |
 | `env.ts`            | The plugin environment herdr provides                                                                 |
 | `herdr.ts`          | The only channel to herdr: CLI at `HERDR_BIN_PATH`, socket for the rest, and its config               |
@@ -25,7 +26,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `ui/`               | The Collie tab: the card board and its drawer, plain state and commands, and the bridge               |
 | `views.ts`          | History, Workflows, Settings and a Run's detail, as state the app renders                             |
 | `board.ts`          | Builds the board from the files: one TaskView per Task and a card's sentence                          |
-| `board-model.ts`    | The board's Schemas and `FrontDoorRpcs`, and the pure section and header rules                        |
+| `board-model.ts`    | The board's Schemas, `FrontDoorRpcs`, pure rules, and the one reading of a merge request reference    |
 | `audit.ts`          | A Run's audit trail: each operation, the Actor that asked for it, and what came of it                 |
 | `attachments.ts`    | Files a Run is given: refused or copied into `runs/<id>/attachments/`, and listed for its prompts     |
 | `bridge.ts`         | `collie bridge`: a front door's stdio piped to this Machine's host, declared as it                    |
@@ -98,7 +99,11 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `route.ts`          | Where a start from the Home goes: a URL's checkout by remote, else one routing call                   |
 | `worktree.ts`       | The checkout a mutating Run owns, keyed by its branch, and pruning the settled ones                   |
 | `helle.ts`          | Helle as a client, and the gate a Step blocks on until it holds the project                           |
-| `mr.ts`             | Whether GitLab is reachable, who to assign, and which Linear tickets a branch answers                 |
+| `mr.ts`             | What a merge request step needs: assignee, template, the Linear tickets a branch answers              |
+| `forge/forge.ts`    | The forge interface, and which adapter a merge request is on (ADR-0050)                               |
+| `forge/gitlab.ts`   | The GitLab adapter: everything Collie asks GitLab, through `glab`                                     |
+| `forge/github.ts`   | The GitHub adapter: everything Collie asks GitHub, through `gh`                                       |
+| `forge/*-checks.ts` | Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                 |
 | `template.ts`       | `{{a.b}}` prompt substitution                                                                         |
 | `config.ts`         | User defaults and remembered values in `config.json`                                                  |
 | `compaction.ts`     | One threshold, one work-boundary policy, and each agent's controls for its lifetime                   |

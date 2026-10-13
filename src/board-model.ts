@@ -216,11 +216,18 @@ export const PlanTicket = Schema.Struct({
   title: Schema.String,
   /** Whether every checkbox in it is checked. No boxes at all is not done. */
   done: Schema.Boolean,
+  /** Changes whenever its file does; an older host sends none. */
+  stamp: Schema.optional(Schema.String),
 });
 export type PlanTicket = typeof PlanTicket.Type;
 
 /** The plan a run is building from: its spec, and the tickets under it. */
-export const PlanPanel = Schema.Struct({ spec: Panel, tickets: Schema.Array(PlanTicket) });
+export const PlanPanel = Schema.Struct({
+  spec: Panel,
+  /** Changes whenever SPEC.md does; an older host sends none. */
+  specStamp: Schema.optional(Schema.String),
+  tickets: Schema.Array(PlanTicket),
+});
 export type PlanPanel = typeof PlanPanel.Type;
 
 /** One step's Output: what it was asked for, and what is actually there. */
@@ -278,6 +285,13 @@ export const Metrics = Schema.Struct({
 });
 export type Metrics = typeof Metrics.Type;
 
+/** What the forge said of a merge request's own checks: a pipeline or a check rollup. */
+export const ForgeChecks = Schema.Union([
+  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown"]) }),
+  Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
+]);
+export type ForgeChecks = typeof ForgeChecks.Type;
+
 /**
  * The merge request behind a review, as the app's panel shows it. Every field but the
  * iid is optional on the wire — glab's shape varies with the GitLab version and what
@@ -297,9 +311,12 @@ export const MrDetails = Schema.TaggedStruct("Details", {
    */
   assignees: Schema.Array(Schema.String),
   sourceBranch: Schema.String,
+  fork: Schema.optionalKey(Schema.Boolean),
   targetBranch: Schema.String,
   /** The head pipeline's status, or `""` when there is no pipeline to report. */
   pipeline: Schema.String,
+  /** The forge's checks as the card reads them, where the forge said. */
+  checks: Schema.optionalKey(ForgeChecks),
   /** Phrased, because "2" alone does not say whether that is good. */
   approvals: Schema.String,
   /** Whether a discussion is still blocking, which is the one a reviewer chases. */
@@ -311,9 +328,11 @@ export const MrDetails = Schema.TaggedStruct("Details", {
   head: Schema.optionalKey(Schema.String),
   /** The commit the merge put on the target branch, in full, or "" while it is not merged. */
   mergedSha: Schema.String,
-  /** When GitLab last saw it change, in epoch milliseconds, or 0 when it did not say. */
+  /** When the forge last saw it change, in epoch milliseconds, or 0 when it did not say. */
   updatedAt: Schema.Number,
   url: Schema.String,
+  /** Whether it merges itself once its checks are green. */
+  autoMerge: Schema.optionalKey(Schema.Boolean),
 });
 export type MrDetails = typeof MrDetails.Type;
 
@@ -1240,22 +1259,81 @@ export interface MrRef {
   iid: string;
 }
 
-/** `mr:gitlab.example.com/group/project!42`, or the bare `mr:42` that came before. */
-export function parseMrTarget(target: string): MrRef | null {
-  if (!target.startsWith("mr:")) return null;
-  const rest = target.slice(3);
-  const at = rest.lastIndexOf("!");
-  if (at < 0) return /^\d+$/.test(rest) ? { project: null, iid: rest } : null;
-  const iid = rest.slice(at + 1);
-  if (!/^\d+$/.test(iid)) return null;
-  const project = rest.slice(0, at);
-  return { project: project === "" ? null : project, iid };
+/** Which forge a merge request is on: GitHub on `github.com`, GitLab on any other host. */
+export type MrForge = "gitlab" | "github";
+
+export function forgeOfRef(ref: MrRef): MrForge {
+  return ref.project?.split("/")[0]?.toLowerCase() === "github.com" ? "github" : "gitlab";
 }
 
-/** `https://host/group/project/-/merge_requests/7`, the way glab reports what it opened. */
+const MR_TARGET = /^mr:(?:(.*)([!#]))?(\d+)$/;
+const MR_URL =
+  /^(?:https?:\/\/)?(?:(github\.com\/[^/\s]+\/[^/\s]+)\/pull|([^/\s]+\/.+?)\/-\/merge_requests)\/(\d+)(?:[/?#]|$)/i;
+
+/**
+ * The one reading of a merge request reference: an `mr:` target, a merge request or pull
+ * request URL, GitHub's `owner/repo#30`, and, where `typedIn` says which checkout it was typed in, `!42`, `#42` or
+ * `42`. Null for anything else.
+ */
+export function readMrRef(
+  text: string,
+  typedIn?: { readonly project: string | null },
+): MrRef | null {
+  const said = text.trim();
+  const target = MR_TARGET.exec(said);
+  if (target) {
+    const [, project = "", sign, iid] = target;
+    if (project === "") return { project: null, iid: iid! };
+    const ref = { project, iid: iid! };
+    return (sign === "#") === (forgeOfRef(ref) === "github") ? ref : null;
+  }
+  const url = MR_URL.exec(said);
+  if (url) return { project: (url[1] ?? url[2])!, iid: url[3]! };
+  // `owner/repo#30` is how GitHub names a pull request, wherever it is typed.
+  const short = /^([\w.-]+\/[\w.-]+)#(\d+)$/.exec(said);
+  if (short) return { project: `github.com/${short[1]}`, iid: short[2]! };
+  const typed = typedIn === undefined ? null : /^[!#]?(\d+)$/.exec(said);
+  return typed ? { project: typedIn!.project, iid: typed[1]! } : null;
+}
+
+/** `mr:gitlab.example.com/group/project!42`, `mr:github.com/owner/repo#30` or the bare `mr:42`. */
+export function parseMrTarget(target: string): MrRef | null {
+  return target.startsWith("mr:") ? readMrRef(target) : null;
+}
+
+/** A merge request or pull request URL, the way a forge reports what it opened. */
 export function parseMrUrl(url: string): MrRef | null {
-  const m = /^https?:\/\/([^/\s]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(url.trim());
-  return m ? { project: `${m[1]}/${m[2]}`, iid: m[3]! } : null;
+  return url.trim().startsWith("mr:") ? null : readMrRef(url);
+}
+
+/** `group/project` of `host/group/project`: the host is where, not what. */
+export function mrPath(ref: MrRef): string {
+  const project = ref.project ?? "";
+  return /^[^/]+\.[^/]+\/(.+)$/.exec(project)?.[1] ?? project;
+}
+
+/** The one writing of a merge request reference: each way Collie names one. */
+export function mrWords(ref: MrRef) {
+  const github = forgeOfRef(ref) === "github";
+  const sign = github ? "#" : "!";
+  const project = ref.project ?? "";
+  const path = mrPath(ref);
+  return {
+    target: ref.project === null ? `mr:${ref.iid}` : `mr:${project}${sign}${ref.iid}`,
+    label: ref.project === null ? ref.iid : `${path}${sign}${ref.iid}`,
+    short: `${project.split("/").pop()}${sign}${ref.iid}`,
+    url:
+      ref.project === null
+        ? null
+        : `https://${project}/${github ? "pull" : "-/merge_requests"}/${ref.iid}`,
+    noun: github ? "pull request" : "merge request",
+    checks: github ? "checks" : "pipeline",
+    sign,
+  };
+}
+
+export function mrTarget(project: string | null, iid: string): string {
+  return mrWords({ project: project || null, iid }).target;
 }
 
 /**
@@ -1307,12 +1385,12 @@ export function canResume(state: TaskState): boolean {
 
 /** However the Task names its merge request: the URL one opened, or the target one was pointed at. */
 export function mrRefOf(mr: string | null): MrRef | null {
-  return mr === null ? null : (parseMrUrl(mr) ?? parseMrTarget(mr));
+  return mr === null ? null : readMrRef(mr);
 }
 
 /** Where a merge request is read in a browser, where its target says which project. */
 export function mrUrlOf(ref: MrRef): string | null {
-  return ref.project === null ? null : `https://${ref.project}/-/merge_requests/${ref.iid}`;
+  return mrWords(ref).url;
 }
 
 type DispositionKind = "merged" | "abandoned" | "superseded";
@@ -1332,15 +1410,25 @@ export type CardAction =
   | { readonly kind: "stop" }
   | { readonly kind: "dispose"; readonly disposition: DispositionKind; readonly ref: string };
 
-/** `collie!151` rather than the whole URL: a disposition's ref ends up in the card's sentence. */
+/** `collie!151` or `collie#30` rather than the whole URL: a disposition's ref ends up in the card's sentence. */
 const dispose = (view: TaskView, disposition: DispositionKind): CardAction => {
   const mr = mrRefOf(view.mr);
-  const ref =
-    disposition === "abandoned" || mr === null
-      ? ""
-      : `${(mr.project ?? "").split("/").at(-1)}!${mr.iid}`;
+  const ref = disposition === "abandoned" || mr === null ? "" : mrWords(mr).short;
   return { kind: "dispose", disposition, ref };
 };
+
+/** "merge request", or "pull request" for one on GitHub, however it is named. */
+export function mrNounOf(mr: string): string {
+  const ref = readMrRef(mr);
+  return ref === null ? "merge request" : mrWords(ref).noun;
+}
+
+/** The Open action's label, in the merge request's own forge's words. */
+export function openMrLabel(mr: MrRef, primary: boolean): string {
+  const github = forgeOfRef(mr) === "github";
+  if (primary) return github ? "Open PR" : "Open MR";
+  return github ? "Open pull request" : "Open merge request";
+}
 
 /**
  * What this Task can be asked for, in the order a menu shows it. Only what would work: an
@@ -1517,23 +1605,14 @@ export function headerSentence(views: ReadonlyArray<TaskView>, now?: number): He
   return { text: `${opening}${inHand} ${working.length} working${gone}.`, urgent: needs > 0 };
 }
 
-/** `https://github.com/owner/repo/pull/30` as its repository and number. */
-export function pullOf(mr: string): { readonly repo: string; readonly number: string } | null {
-  const pull = /^https?:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/.exec(mr);
-  return pull ? { repo: pull[1]!, number: pull[2]! } : null;
-}
-
 /**
- * `group/project!42` from a GitLab URL or an `mr:` target, `owner/repo#30` from a GitHub
- * pull request URL; anything else as it is.
+ * `group/project!42` or `owner/repo#30` for a merge request, however it is named; anything
+ * else as it is.
  */
 export function mrLabel(mr: string): string {
-  const url = /^https?:\/\/[^/]+\/(.+?)\/-\/merge_requests\/(\d+)/.exec(mr);
-  if (url) return `${url[1]}!${url[2]}`;
-  const pull = pullOf(mr);
-  if (pull) return `${pull.repo}#${pull.number}`;
+  const ref = readMrRef(mr);
+  if (ref) return mrWords(ref).label;
   const bare = mr.startsWith("mr:") ? mr.slice(3) : mr;
-  // `host/group/project!42` reads as `group/project!42`: the host is where, not what.
   const host = /^[^/!]+\.[^/!]+\/(.+)$/.exec(bare);
   return host ? host[1]! : bare;
 }

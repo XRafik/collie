@@ -4,7 +4,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem, Layer, Path, type Schema } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
-import { NOTIFICATION_KINDS, notificationTitle, wanted } from "../src/notify";
+import { NOTIFICATION_KINDS, notificationTitle, openedSubject, wanted } from "../src/notify";
 import { Rig, FakeHerdr } from "./support/recorder";
 import { Agents, agentsLayer } from "../src/agents";
 import { runEffect } from "./support/effect";
@@ -168,3 +168,9 @@ test("a kind the operator turned off is not sent", () =>
       expect(toasts).toEqual([]);
     }),
   ));
+
+test("an opened merge request's notification names it as its forge does", () => {
+  expect(openedSubject("https://github.com/cego/collie/pull/30")).toBe("#30");
+  expect(openedSubject("https://gitlab.cego.dk/cego/collie/-/merge_requests/42")).toBe("!42");
+  expect(openedSubject("https://example.com/nothing")).toBeUndefined();
+});

@@ -51,6 +51,18 @@ export const agentTabs = (
   });
 };
 
+/** Only the Run's own live launches, newest last even when reused under another Run. */
+export const recipients = (
+  launches: ReadonlyArray<{ readonly agent: string }> | undefined,
+  live: ReadonlyArray<BoardAgent>,
+): AgentTab[] => {
+  const tabs = new Map(agentTabs(live, null).map((tab) => [tab.name, tab]));
+  const names = (launches ?? []).map((launch) => launch.agent);
+  return names
+    .filter((name, at) => names.lastIndexOf(name) === at)
+    .flatMap((name) => tabs.get(name) ?? []);
+};
+
 /**
  * The agent `focused` names, as the board lists it, or as it was last listed once the board
  * no longer does; null until the board has listed it at all.

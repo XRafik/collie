@@ -2,7 +2,7 @@
 // readable labels. Labels go on tabs and panes; these go on agents.
 
 import { DEFAULT_MODEL } from "./harness";
-import { parseMrTarget } from "./board-model";
+import { mrWords, parseMrTarget } from "./board-model";
 import { diffTargetOf, type Settled } from "./strategies";
 
 const MAX = 32;
@@ -127,7 +127,7 @@ export function runName(workflow: string, slug: string): string {
 }
 
 /**
- * What this run is pointed at, short enough for a tab: an MR as `!123`, a branch
+ * What this run is pointed at, short enough for a tab: an MR as `!123` (`#30` on GitHub), a branch
  * by name, the working tree, or — for the workflows that have no target — the
  * run's own slug without the workflow it already carries.
  */
@@ -135,7 +135,7 @@ export function targetLabel(workflow: string, slug: string, target: string): str
   if (target === "worktree") return "worktree";
   // An MR target carries its project; only the iid belongs on a label.
   const mr = parseMrTarget(target);
-  if (mr) return `!${mr.iid}`;
+  if (mr) return `${mrWords(mr).sign}${mr.iid}`;
   if (target.startsWith("branch:")) {
     const [base = "", head = ""] = target.slice(7).split("...");
     if (!opaque(head)) return head;

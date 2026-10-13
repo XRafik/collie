@@ -1,0 +1,165 @@
+// How Collie reaches a forge: one interface, a GitLab adapter and a GitHub adapter, and
+// the choice between them. `glab` is run only by the GitLab adapter (`gitlab.ts` and its
+// doctor checks) and `gh` only by the GitHub one (ADR-0050 D1); a caller asks the forge of
+// the reference or checkout in front of it.
+
+import type { Effect, FileSystem, Path } from "effect";
+import type { PlatformError } from "effect/PlatformError";
+import { forgeOfRef, parseMrTarget, type MrForge, type MrPanel, type MrRef } from "../board-model";
+import type { Ran, Runner } from "../mr";
+import type { Posted } from "../sdk";
+import { github } from "./github";
+import { gitlab } from "./gitlab";
+
+export interface Readiness {
+  readonly ok: boolean;
+  /** Why not, phrased for the runner's skip note. */
+  readonly reason: string;
+}
+
+export type DeployTier = "production" | "staging";
+
+/** A branch's open merge request, preferring auto-merge, none, or why the forge could not say. */
+export type ForBranch =
+  | {
+      readonly ok: true;
+      readonly open: {
+        readonly iid: string;
+        readonly url: string;
+        readonly autoMerge: boolean;
+      } | null;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+export interface ReviewCommands {
+  readonly diff: string;
+  readonly view: string;
+  readonly checkout: string;
+}
+
+/** The command lines an agent is told to run, written for the forge they run on. */
+export interface Commands {
+  /** Opens one, with `<title>` and `<file>` (the description) left for the agent. */
+  readonly create: string;
+  /** Posts `<file>` as a note on the existing one; empty where there is none. */
+  readonly comment: string;
+}
+
+/** What Collie asks a forge. Every answer is a value: a forge that cannot be asked says why. */
+export interface Forge {
+  readonly name: MrForge;
+  /** The CLI is installed and logged in to `project`'s host; a null project asks the checkout at `cwd`. */
+  readonly ready: <R>(
+    project: string | null,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
+  /** Who the CLI is logged in as, or null where it will not say. */
+  readonly login: <R>(
+    cwd: string,
+    run: Runner<R>,
+    project?: string | null,
+  ) => Effect.Effect<string | null, never, R>;
+  /** One merge request as the panel shows it. */
+  readonly details: <R>(
+    ref: MrRef,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<MrPanel, never, R>;
+  /** How far a merged commit has been deployed, or null where the forge does not say. */
+  readonly liveTier: <R>(
+    ref: MrRef,
+    mergedSha: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<DeployTier | null, never, R>;
+  /** The open merge request whose source branch is `branch`, if any. */
+  readonly forBranch: <R>(
+    project: string,
+    branch: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<ForBranch, never, R>;
+  /** The repository's merge request template, relative to the checkout, or null. */
+  readonly template: (
+    cwd: string,
+  ) => Effect.Effect<string | null, PlatformError, FileSystem.FileSystem | Path.Path>;
+  /** What an agent runs to open one, or to note on `existing`. */
+  readonly commands: (options: {
+    readonly project: string;
+    readonly branch: string;
+    readonly assignee: string;
+    readonly existing: string | null;
+  }) => Commands;
+  /** How a pipeline or Actions run at `url` went, or null where the forge does not say. */
+  readonly runStatus: <R>(
+    url: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<string | null, never, R>;
+  /** Clones `project` (`host/path`) into `into`, or says why it could not. */
+  readonly clone: <R>(
+    project: string,
+    into: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
+  /** "GitLab" or "GitHub". */
+  readonly display: string;
+  /** The CLI it is reached through, as a human is told to log in with it. */
+  readonly cli: string;
+  /** "merge request" or "pull request". */
+  readonly noun: string;
+  /** One note on the merge request, and its approval where `approve` asks for it. */
+  readonly post: <R>(
+    ref: MrRef,
+    body: string,
+    approve: boolean,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Posted, never, R>;
+  /** My open merge requests in `project`, as assignee or author, for a menu. */
+  readonly mine: <R>(
+    project: string | null,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<ReadonlyArray<{ readonly iid: string; readonly title: string }>, never, R>;
+  /** Opens the merge request in a browser. */
+  readonly open: <R>(ref: MrRef, cwd: string, run: Runner<R>) => Effect.Effect<Ran, never, R>;
+  /** What a reviewer runs to read the change and its description, and to check it out. */
+  readonly review: (ref: MrRef) => ReviewCommands;
+}
+
+export const FORGES: Readonly<Record<MrForge, Forge>> = { gitlab, github };
+
+/** The forge a pipeline or Actions run's URL is on: GitHub on github.com, GitLab elsewhere. */
+export function forgeOfUrl(url: string): Forge {
+  return /^https?:\/\/github\.com\//i.test(url.trim()) ? github : gitlab;
+}
+
+/** The forge a merge request is on. */
+export function forgeOf(ref: MrRef): Forge {
+  return FORGES[forgeOfRef(ref)];
+}
+
+/**
+ * The forge a host is on (ADR-0050 D2): GitHub on `github.com`, GitLab on the Flock's
+ * GitLab host or any host whose name says `gitlab`, and none anywhere else.
+ */
+export function forgeOfHost(host: string, gitlabHost?: string): MrForge | null {
+  const name = host.toLowerCase();
+  if (name === "github.com") return "github";
+  if (name === gitlabHost?.toLowerCase() || name.includes("gitlab")) return "gitlab";
+  return null;
+}
+
+/**
+ * What a prompt says of an `mr:` target's forge: its name and noun, and the commands that
+ * read the change, its description, and check it out. Null for any other target.
+ */
+export function mrForgeFacts(target: string) {
+  const ref = parseMrTarget(target);
+  if (ref === null) return null;
+  const forge = forgeOf(ref);
+  return { forge: forge.display, noun: forge.noun, ...forge.review(ref) };
+}

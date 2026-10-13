@@ -3,6 +3,7 @@
 // (ADR-0033). The Launch flow is the human's front door and does not come through here.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { gitlabHostOf } from "./config";
 import type { Found } from "./discovery";
 import type { Given } from "./engine";
 import type { PluginEnv } from "./env";
@@ -94,6 +95,7 @@ export const agentStartRefusal = Effect.fn("AgentStart.refusal")(function* (
     if (checkoutNamed && field.strategy === "diff-target") {
       const inferred = yield* inferInput(field.name, "diff-target", {
         cwd: checkout.named ?? env.cwd,
+        gitlabHost: yield* gitlabHostOf(env).pipe(Effect.orElseSucceed(() => undefined)),
       }).pipe(Effect.orElseSucceed(() => null));
       if (inferred !== null && !inferred.needsAsking && inferred.value !== "")
         facts.push(`${inferred.value} (${inferred.source})`);

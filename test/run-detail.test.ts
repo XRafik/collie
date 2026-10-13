@@ -12,10 +12,13 @@ import { frontDoor } from "../src/host";
 import { followRunDetail } from "../src/lifecycle";
 import { scopeFor } from "../src/registry";
 import { diffOf, fetchRef, keepDiffs, runDiff } from "../src/run-detail";
+import { buildRunDetail, type PlanCache } from "../src/views";
 import { madeRun } from "./support/records";
 import { runRowId } from "../src/ui/state";
 import { exec } from "./support/command";
 import { runEffect } from "./support/effect";
+import { FakeBin } from "./support/bin";
+import { forgeOnPath } from "./support/forge";
 import { focus } from "./support/focus";
 import { stopHost } from "./support/host";
 import { collie, proves } from "./support/world";
@@ -390,6 +393,96 @@ test("an attachment is fetched by name, and never from outside the Run's attachm
         });
         for (const ref of ["attachment:linked.png", "attachment:../log.txt"])
           expect((yield* fetchRef(run, ref).pipe(Effect.flip))._tag).toBe("HostRefused");
+      }),
+    ),
+  ));
+
+test("a pipeline: reference says how a GitLab pipeline or a GitHub Actions run went", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const state = yield* fs.makeTempDirectoryScoped({ prefix: "collie-pipeline-" });
+        const bin = yield* FakeBin.make(`${state}/bin`);
+        const runs = { "7": { status: "completed", conclusion: "failure" } };
+        yield* forgeOnPath(bin, "github", {
+          installed: true,
+          loggedIn: ["github.com"],
+          login: "me",
+          mrs: [],
+          runs,
+        });
+        yield* forgeOnPath(bin, "gitlab", {
+          installed: true,
+          loggedIn: ["gitlab.example.com"],
+          login: "me",
+          mrs: [],
+          runs: { "7": { status: "success" } },
+        });
+        const run = yield* madeRun(state, { state: "succeeded" });
+        const said = (ref: string) =>
+          fetchRef(run, ref).pipe(
+            Effect.map((file) => file.content),
+            Effect.catch((refused) => Effect.succeed(`refused: ${refused.reason}`)),
+          );
+        expect(yield* said("pipeline:https://github.com/cego/collie/actions/runs/7")).toBe(
+          "failure",
+        );
+        expect(yield* said("pipeline:https://gitlab.example.com/group/app/-/pipelines/7")).toBe(
+          "success",
+        );
+        expect(yield* said("pipeline:https://github.com/cego/collie/actions/runs/8")).toBe(
+          "refused: GitHub did not say how https://github.com/cego/collie/actions/runs/8 went",
+        );
+        yield* bin.restore();
+      }),
+    ),
+  ));
+
+test("a rewritten ticket, and a finished Run's rewritten plan, reach the record's details", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const state = yield* fs.makeTempDirectoryScoped({ prefix: "collie-plan-" });
+        const run = yield* madeRun(state, { state: "succeeded" });
+        const env = { ...(yield* currentEnv.pipe(Effect.orDie)), stateDir: state };
+        const plans: PlanCache = new Map();
+        const planOf = () =>
+          buildRunDetail({ env, runId: run.id, runs: [run], mr: null, plans }).pipe(
+            Effect.map((detail) => detail?.plan),
+          );
+        yield* fs.makeDirectory(`${run.dir}/plan/issues`, { recursive: true });
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, "# Spec\n");
+        yield* fs.writeFileString(`${run.dir}/plan/issues/01-a.md`, "# A\n- [ ] one\n");
+
+        const first = yield* planOf();
+        expect(first?.tickets[0]?.stamp).toBeString();
+        expect(yield* planOf()).toBe(first);
+
+        yield* fs.writeFileString(
+          `${run.dir}/plan/issues/01-a.md`,
+          "# A\n- [ ] one, said better\n",
+        );
+        const rewritten = yield* planOf();
+        expect(rewritten?.tickets[0]).toMatchObject({ file: "01-a.md", title: "A", done: false });
+        expect(rewritten?.tickets[0]?.stamp).not.toBe(first?.tickets[0]?.stamp);
+
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, "# Spec, rewritten\n");
+        const respecced = yield* planOf();
+        expect(respecced?.spec).toMatchObject({ _tag: "Text", text: "# Spec, rewritten\n" });
+        expect(yield* planOf()).toBe(respecced);
+
+        const prefix = "x".repeat(64 * 1024);
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, `${prefix}old tail`);
+        const long = yield* planOf();
+        expect(long?.spec).toEqual({ _tag: "Text", text: prefix, truncated: true });
+        expect(long?.specStamp).toBeString();
+        yield* fs.writeFileString(`${run.dir}/plan/SPEC.md`, `${prefix}rewritten tail`);
+        const tailOnly = yield* planOf();
+        expect(tailOnly?.spec).toEqual(long?.spec);
+        expect(tailOnly?.specStamp).not.toBe(long?.specStamp);
+        expect(yield* planOf()).toBe(tailOnly);
       }),
     ),
   ));

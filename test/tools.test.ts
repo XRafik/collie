@@ -1312,7 +1312,7 @@ test("a Run's own merge request is shown as recorded, with what the merge watch 
       const pull = "https://github.com/cego/collie/pull/61";
       yield* fs.writeFileString(`${run.dir}/merge-request`, `${pull}\n`);
       expect(yield* call("collie_run", { run: run.id })).toContain(
-        `Merge request: ${pull} — not watched`,
+        `Pull request: ${pull} — not watched`,
       );
 
       const label = mrLabel(pull);
@@ -1322,7 +1322,7 @@ test("a Run's own merge request is shown as recorded, with what the merge watch 
         new Map([[label, { checks: { state: "failed", name: "test" }, head: null }]]),
       );
       expect(yield* call("collie_run", { run: run.id })).toContain(
-        `Merge request: ${pull} — open, checks failed (test)`,
+        `Pull request: ${pull} — open, checks failed (test)`,
       );
     }),
   ));

@@ -5,9 +5,9 @@ Outcome the change has to prove (not given means unclassified): {{inputs.outcome
 
 Read the target first:
 
-- `mr:<project>!<iid>` — the project is part of the target, so name it and you do not
-  need a checkout of it: `glab mr diff <iid> {{target_repo}}` for the change and
-  `glab mr view <iid> {{target_repo}}` for the description. An older target is a bare
+- `mr:<project>!<iid>` or `mr:github.com/<owner>/<repo>#<n>` — a {{mr.forge}} {{mr.noun}}.
+  The project is part of the target, so you do not need a checkout of it: `{{mr.diff}}`
+  for the change and `{{mr.view}}` for the description. An older target is a bare
   `mr:<iid>`, which means the merge request of the project you are standing in.
 - `branch:<base>...<head>` — `git diff <base>...<head>`.
 - `worktree` — the change in front of you: `git status` and `git diff HEAD` for
