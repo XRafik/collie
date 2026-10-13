@@ -27,6 +27,7 @@ import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as Socket from "effect/socket/Socket";
 import {
   BRIDGE_READY,
+  controlFailure,
   type BoardMessage,
   type BoardSnapshot,
   PROTOCOL,
@@ -1102,7 +1103,14 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
         const verb = action.control === "stop" ? "Stopped" : action.set ? "Held" : "Released";
         return door
           .control({ runId: action.runId, control: action.control, set: action.set, request })
-          .pipe(Effect.map((done) => done.detail || `${verb} ${action.runId}`));
+          .pipe(
+            Effect.flatMap((done) => {
+              const failure = controlFailure(done);
+              return failure === null
+                ? Effect.succeed(done.detail || `${verb} ${action.runId}`)
+                : Effect.fail(new HostRefused({ reason: failure }));
+            }),
+          );
       }
       case "Resume":
         return door

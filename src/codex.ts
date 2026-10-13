@@ -1,8 +1,8 @@
 // The Codex App Server, as a client. Collie owns one server per agent and connects to
 // it as a second client; the ordinary interactive TUI in the agent's pane is the first.
 //
-// Everything here was checked against the installed 0.153.4 rather than taken from
-// upstream source, and two of the checks changed the design:
+// Everything here was checked against an installed release (0.153.4, and 0.162.0 for the
+// stop) rather than taken from upstream source, and two of the checks changed the design:
 //
 //   - `--listen unix://PATH` binds, but nothing Collie sends over that socket is ever
 //     answered. `ws://127.0.0.1:PORT` is answered, and is a documented `--remote` form,
@@ -168,6 +168,10 @@ const ThreadRead = Schema.Struct({
     ephemeral: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
     /** Set on a sub-agent the agent spawned, which is its work and not the agent. */
     parentThreadId: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    /** The rollout: the thread's transcript, where Codex wrote it. */
+    path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    /** `active` while a turn runs on it. */
+    status: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
   }),
 });
 const ItemsList = Schema.Struct({
@@ -342,3 +346,52 @@ export const turnOutcome = Effect.fn("Codex.turnOutcome")(function* (
 /** Asks the bound thread to compact. The empty reply acknowledges submission only. */
 export const startCompaction = (client: CodexClient, threadId: string) =>
   Effect.asVoid(client.call("thread/compact/start", { threadId }));
+
+/** A loaded thread, as the server describes it. */
+export interface LoadedThread {
+  readonly id: string;
+  readonly cwd: string | null;
+  /** The TUI's own cheap thread, or a sub-agent's: the agent's work, not another agent. */
+  readonly own: boolean;
+  readonly transcript: string | null;
+  readonly active: boolean;
+}
+
+/** Every thread loaded on this server. */
+export const loadedThreads = Effect.fn("Codex.loadedThreads")(function* (client: CodexClient) {
+  const loaded = yield* decoded(
+    "thread/loaded/list",
+    LoadedList,
+    yield* client.call("thread/loaded/list", {}),
+  );
+  return yield* Effect.forEach(loaded.data, (threadId) =>
+    client.call("thread/read", { threadId }).pipe(
+      Effect.flatMap((result) => decoded("thread/read", ThreadRead, result)),
+      Effect.map(({ thread }): LoadedThread => ({
+        id: thread.id,
+        cwd: thread.cwd ?? null,
+        own: thread.ephemeral === true || Boolean(thread.parentThreadId),
+        transcript: thread.path ?? null,
+        // A server that does not say is asked for its turns anyway.
+        active: thread.status === undefined || thread.status.type === "active",
+      })),
+    ),
+  );
+});
+
+/** The ids of this thread's turns that are still running. */
+export const runningTurns = Effect.fn("Codex.runningTurns")(function* (
+  client: CodexClient,
+  threadId: string,
+) {
+  const turns = yield* decoded(
+    "thread/turns/list",
+    TurnsList,
+    yield* client.call("thread/turns/list", { threadId, sortDirection: "desc", limit: 20 }),
+  );
+  return turns.data.filter((turn) => turn.status === "inProgress").map((turn) => turn.id);
+});
+
+/** Asks the server to end one running turn. The empty reply accepts cancellation only. */
+export const interruptTurn = (client: CodexClient, threadId: string, turnId: string) =>
+  Effect.asVoid(client.call("turn/interrupt", { threadId, turnId }));

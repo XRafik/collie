@@ -663,6 +663,18 @@ lock, and the existing PID-lock recovery handles a process that crashes. An endp
 stopped only while its recorded pid still runs the recorded command, read from
 `/proc/<pid>/cmdline`, or from `ps -ww -o command=` where there is no `/proc`, as on macOS.
 
+A Codex agent's work runs in its endpoint, so a Run's stop goes through `stopAgent` in
+`compaction.ts`, under the same lock: it reads the record, runs the port's `stop`, keeps
+the state reached on the record, and removes the record only once that state is `quiet`
+([ADR-0059](adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md)). The Codex port's
+stop proves the server first — pid, the start time recorded at launch (`processes.ts`
+reads it from `/proc/<pid>/stat`, or `ps -o lstart=`), command, and every loaded thread in
+the agent's directory or its own — then, on the one connection: one SIGTERM, which drains
+admission, `turn/interrupt` for each running turn, a bounded wait for the server to exit,
+and one SIGTERM for whatever of its session (or, without `/proc`, its descendants) is
+left. A record an older build wrote has no start time and is proven by its command and
+endpoint.
+
 ## The registry and sessions
 
 A **session** is one herdr session and one workspace, taken together; a Run's own worktree

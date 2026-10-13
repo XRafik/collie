@@ -106,9 +106,10 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `forge/*-checks.ts` | Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                 |
 | `template.ts`       | `{{a.b}}` prompt substitution                                                                         |
 | `config.ts`         | User defaults and remembered values in `config.json`                                                  |
-| `compaction.ts`     | One threshold, one work-boundary policy, and each agent's controls for its lifetime                   |
-| `compactors.ts`     | Each harness's official compaction interface, generated per agent and bundled in Collie               |
-| `codex.ts`          | Codex's App Server as a client: thread identity, its context, and its compactions                     |
+| `compaction.ts`     | One threshold, one boundary policy, each agent's controls, and the one stop of its server             |
+| `compactors.ts`     | Each harness's official compaction interface, bundled in Collie, and Codex's stop                     |
+| `codex.ts`          | Codex's App Server as a client: thread identity, context, compactions and running turns               |
+| `processes.ts`      | Who a pid is, when it started and its session, so a stop signals only what it proved                  |
 | `usage-model.ts`    | A Subscription's Usage reading: its Schemas, parsing, and Exhausted (pure)                            |
 | `usage.ts`          | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                    |
 | `run-record.ts`     | Run records served by their owning host, including Outputs confined to the Run directory              |

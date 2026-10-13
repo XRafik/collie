@@ -34,6 +34,9 @@
     // test inherits, and asks `ps` which hosts outlived their test.
     "test/support/hosts.ts",
     "test/support/sweep.ts",
+    // A stand-in `codex app-server`, run as its own process: signals, timers and a websocket
+    // server, as the real one has.
+    "test/support/codex-app-server.ts",
     // Desktop's Electrobun build hooks and what they share: plain scripts Electrobun's own
     // runtime runs while packing Desktop, before any Effect program does.
     "desktop/scripts/name-desktop-entry.ts",

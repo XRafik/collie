@@ -704,6 +704,14 @@ export const Controlled = Schema.Struct({
   closed: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+/** Why a control failed every door alike: something it could not stop. Null where nothing. */
+export const controlFailure = (done: typeof Controlled.Type): string | null => {
+  if (done.left.length === 0) return null;
+  if (done.closed !== undefined) return `${done.runId} has finished, but ${done.left.join("; ")}.`;
+  const what = `${done.set ? done.control : `un${done.control}`} ${done.runId}`;
+  return `Recorded ${what}, but ${done.left.join("; ")}.`;
+};
+
 /** What a start became: the run it is, and whether this call is what made it. */
 export const Started = Schema.Struct({
   runId: Schema.String,

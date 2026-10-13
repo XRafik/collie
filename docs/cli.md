@@ -318,8 +318,11 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
 - **A control reaches one Run.** Its siblings and the host carry on. A control over a Run
   whose module is not loaded here is recorded and says so, naming the file to repair,
   rather than reporting a success nothing can stand behind.
-- **`run stop` parks the Run and stops its agents.** Their panes are closed, and those of
-  the Runs it started; the workspace keeps its own tab. `run resume` clears the stop and
+- **`run stop` parks the Run and stops its agents**, and those of the Runs it started,
+  where their work runs. A Codex agent's work runs in the App Server Collie started for it,
+  so its pane is closed only once that server is Quiet; one that is not is named in the
+  failed stop and keeps its pane ([ADR-0059](adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md)).
+  The workspace keeps its own tab. `run resume` clears the stop and
   picks the Run up again, giving work whose agent has gone to a new one. On a Run that has
   already finished, a stop only closes its live agents' panes: no control is set, the
   status stays what it finished with, and with nothing alive it says nothing was running.
@@ -657,10 +660,21 @@ collie --json run resume <run-id> --request-id "$(uuidgen)"
 ```
 
 `stop` parks the run where it is — at its next boundary, or inside the wait it is in — and
-closes its agents' panes, and those of the Runs it started, which is what stops them; the
-workspace keeps its own tab. Only the process each launch recorded is closed, never another
-under the same name, and a pane that will not close fails the stop and names the agent
-still running. `resume`
+stops every agent it launched, and those of the Runs it started, where its work runs; the
+workspace keeps its own tab. Claude, Pi and OpenCode work in their panes, so closing the
+pane stops them. A Codex agent works in the App Server Collie started for it, so that
+server is stopped first, whether or not its pane is still there: one SIGTERM closes its
+admission, every running turn on every loaded thread (a sub-agent's included) is sent
+`turn/interrupt`, and the stop waits up to thirty seconds for the server to exit and then
+sends one SIGTERM to whatever of its session is left. Only a **Quiet** agent — every turn
+ended, the server gone, nothing of it running — counts as stopped and has its pane closed.
+Any other is named in the failed stop with how far it got (`submitted`, `acknowledged` or
+`failed`), its thread, turn, endpoint, pid and transcript, and its pane and control record
+are kept. Nothing is signalled that cannot be proven the agent's: its recorded pid, start
+time and command, and an endpoint whose threads are all in its directory. Only the process
+each launch recorded is closed, never another under the same name, and a pane that will
+not close fails the stop and names the agent still running. The agents log has one line
+per state reached. `resume`
 asks the host to pick a suspended run up again. It re-enters the workflow's current code
 and reuses every Activity already done, so completed work and its Outputs are kept and
 never redone, and an agent still live is reattached to rather than started a second

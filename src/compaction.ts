@@ -126,6 +126,8 @@ export interface Installed {
    * handed its number to something the human is using.
    */
   command?: string;
+  /** When that process started, as `processOf` says it: with the pid, its identity. */
+  started?: string | null;
 }
 
 /** What a port reads to say its harness is up: the controls a launch installed. */
@@ -160,11 +162,22 @@ export interface CompactionPort {
    * it cannot tell yet.
    */
   readonly ready?: (ctx: ReadyContext) => Effect.Effect<boolean, PortError, PortServices>;
+  /**
+   * Stops the work this agent's recorded server runs, for a harness whose work runs there
+   * rather than in its pane. Absent where closing the pane is the stop.
+   */
+  readonly stop?: (ctx: StopContext) => Effect.Effect<Stop, never, PortServices>;
   /** What this request has established, or `null` while it is still unresolved. */
   poll(
     ctx: AgentContext,
     requestId: string,
   ): Effect.Effect<CompactionOutcome | null, PortError, PortServices>;
+}
+
+/** The agent a stop is for, and where it says each state it reaches. */
+export interface StopContext {
+  readonly record: ControlRecord;
+  readonly say: (line: string) => Effect.Effect<void, never, PortServices>;
 }
 
 export interface CompactionPorts {
@@ -202,6 +215,25 @@ const AttemptSchema = Schema.Struct({
   /** When the five-minute budget runs out, in epoch ms, so a resumed Run inherits it. */
   deadline: Schema.Number,
 });
+/**
+ * `submitted`: an interrupt was written. `acknowledged`: the server accepted it, which
+ * ends nothing by itself. `quiet`: every turn has ended, the server is gone and nothing it
+ * started is running; the only state that is stopped. `failed`: short of all of these.
+ */
+const StopSchema = Schema.Struct({
+  state: Schema.Literals(["submitted", "acknowledged", "quiet", "failed"]),
+  at: Schema.Number,
+  turns: Schema.Array(
+    Schema.Struct({
+      thread: Schema.String,
+      turn: Schema.String,
+      transcript: Schema.NullOr(Schema.String),
+    }),
+  ),
+  reason: Schema.NullOr(Schema.String),
+});
+export interface Stop extends Schema.Schema.Type<typeof StopSchema> {}
+
 const ControlSchema = Schema.Struct({
   agent: Schema.String,
   harness: Schema.String,
@@ -217,6 +249,10 @@ const ControlSchema = Schema.Struct({
   pid: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** What `pid`'s command line has to contain before anything signals it. */
   command: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** When `pid` started; none on a record an older build wrote. */
+  started: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** How far the last stop of this agent's server got. */
+  stop: Schema.NullOr(StopSchema).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   attempt: Schema.NullOr(AttemptSchema),
 });
 export interface ControlRecord extends Schema.Schema.Type<typeof ControlSchema> {}
@@ -370,6 +406,8 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
     endpoint: installed.endpoint ?? null,
     pid: installed.pid ?? null,
     command: installed.command ?? null,
+    started: installed.started ?? null,
+    stop: null,
     attempt: null,
   });
   yield* deps.log(`${agent.agent}: compaction controls installed in ${dir}`);
@@ -465,6 +503,51 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
     }),
   );
 });
+
+/**
+ * Stops the server this agent's record names, under its control lock, and keeps the record
+ * until the server is Quiet: what Collie started is never forgotten while it may still
+ * write. Null where the agent's work runs in its pane, so closing the pane stops it.
+ */
+export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
+  agent: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* withControlLock(
+    deps.stateDir,
+    agent,
+    Effect.gen(function* () {
+      const record = yield* readControl(deps.stateDir, agent);
+      const stop = record?.pid == null ? undefined : deps.ports[record.harness]?.stop;
+      if (record === null || stop === undefined) return null;
+      const reached = yield* stop({
+        record,
+        say: (line) => Effect.ignore(deps.log(`${agent}: ${line}`)),
+      });
+      if (reached.state === "quiet") yield* fs.remove(record.dir, { recursive: true, force: true });
+      else yield* writeControl(deps.stateDir, { ...record, stop: reached });
+      const said = stopSaid(agent, record, reached);
+      yield* Effect.ignore(deps.log(said));
+      return { stop: reached, said };
+    }),
+  );
+});
+
+/** A stop's outcome as one line: the agent, how far it got, and every id a human needs. */
+const stopSaid = (agent: string, record: ControlRecord, stop: Stop) => {
+  const turns = stop.turns
+    .map(
+      (one) =>
+        `thread ${one.thread} turn ${one.turn}${one.transcript === null ? "" : ` (transcript ${one.transcript})`}`,
+    )
+    .join(", ");
+  const server = `${record.harness} server ${record.endpoint ?? "with no endpoint"} pid ${record.pid}`;
+  const what = turns === "" ? server : `${turns} on ${server}`;
+  return stop.state === "quiet"
+    ? `${agent} is quiet: ${what}`
+    : `${agent} is not stopped, only ${stop.state}: ${what}${stop.reason === null ? "" : ` (${stop.reason})`}; its pane is left open`;
+};
 
 /**
  * The pid to signal, where this record still describes a server of Collie's — and null

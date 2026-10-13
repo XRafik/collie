@@ -38,6 +38,7 @@ import {
   awaitReady,
   controlDir,
   installControls,
+  stopAgent,
   withControlLock,
   type CompactionDeps,
   type CompactionPorts,
@@ -249,7 +250,10 @@ export interface AgentsApi {
     readonly lineage: ReadonlyArray<string>;
     readonly text: string;
   }) => Effect.Effect<Steered | null, AgentParked>;
-  /** Closes the panes of this run's live agents, which stops them; `left` may still be running. */
+  /**
+   * Stops every agent this run launched where its work runs, then closes its pane; `left`
+   * is each one that cannot be shown Quiet, with its pane still open.
+   */
   readonly halt: (runId: string) => Effect.Effect<Halted>;
   /**
    * What the agent wrote, or null where it has written nothing in the time allowed.
@@ -1914,14 +1918,33 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const stopped: string[] = [];
         const left: string[] = [];
         let panes = yield* host.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
-        for (const one of listing.success) {
-          const ours = launches.findLast((launched) => launched.agent === one.name);
-          if (ours === undefined) continue;
-          if (ours.terminalId === undefined || one.terminalId === null) {
-            left.push(`${one.name} cannot be proven to be this Run's, so it was left running`);
+        // Every agent it launched, listed or not: a pane already gone may have left its
+        // work running in a server.
+        for (const name of new Set(launches.map((launched) => launched.agent))) {
+          const ours = launches.findLast((launched) => launched.agent === name)!;
+          const one = listing.success.find((agent) => agent.name === name);
+          if (one !== undefined) {
+            if (ours.terminalId === undefined || one.terminalId === null) {
+              left.push(`${one.name} cannot be proven to be this Run's, so it was left running`);
+              continue;
+            }
+            if (ours.terminalId !== one.terminalId) continue;
+          }
+          const server = yield* stopAgent(compactionDeps(host, runId), name).pipe(Effect.result);
+          if (server._tag === "Failure") {
+            left.push(
+              `${name} could not be stopped (${reason(server.failure)}); its pane is left open`,
+            );
             continue;
           }
-          if (ours.terminalId !== one.terminalId) continue;
+          if (server.success !== null && server.success.stop.state !== "quiet") {
+            left.push(server.success.said);
+            continue;
+          }
+          if (one === undefined) {
+            if (server.success !== null) stopped.push(name);
+            continue;
+          }
           yield* keepWorkspace(one.paneId, panes);
           const closed = yield* host.herdr.paneClose(one.paneId).pipe(Effect.result);
           panes = panes.filter((pane) => pane.paneId !== one.paneId);

@@ -13,10 +13,15 @@ import {
   boundThread,
   compactionItems,
   currentContext as codexContext,
+  interruptTurn,
+  loadedThreads,
+  runningTurns,
   startCompaction,
   turnOutcome,
   withCodex,
+  type CodexClient,
 } from "./codex";
+import { allProcesses, descendantsOf, processOf, type Process } from "./processes";
 import {
   compactionAfter,
   compactionIds,
@@ -43,6 +48,8 @@ import {
   type AgentContext,
   type LaunchContext,
   type ReadyContext,
+  type Stop,
+  type StopContext,
 } from "./compaction";
 import { withLock } from "./lock";
 import { carriedDelivery } from "./dispatcher";
@@ -86,7 +93,7 @@ import { reason, shellQuote } from "./naming";
  */
 export const VERIFIED_VERSIONS: ReadonlyMap<string, string> = new Map([
   ["claude", "2.1.263"],
-  ["codex", "0.153.4"],
+  ["codex", "0.162.0"],
   ["opencode", "1.18.9"],
   ["pi", "0.87.1"],
 ]);
@@ -968,18 +975,22 @@ const CODEX_LOG = "app-server.log";
 const CODEX_LISTENING = /ws:\/\/127\.0\.0\.1:(\d+)/;
 const CODEX_START_MS = 20_000;
 
-const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (ctx: LaunchContext) {
+const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (
+  server: string,
+  ctx: LaunchContext,
+) {
   const path = yield* Path.Path;
   // Through a shell, because the port it chose is only on its stdout.
   const served = yield* servedEndpoint({
     cwd: ctx.cwd,
     log: path.join(ctx.dir, CODEX_LOG),
-    command: `${CODEX_SERVER} --listen ws://127.0.0.1:0`,
+    command: `${server} --listen ws://127.0.0.1:0`,
     listening: CODEX_LISTENING,
     startMs: CODEX_START_MS,
     what: "codex app-server",
   });
-  return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: CODEX_SERVER };
+  const started = (yield* processOf(served.pid))?.started ?? null;
+  return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: server, started };
 });
 
 /** The endpoint this agent's controls talk to, or a failure naming what is missing. */
@@ -988,7 +999,14 @@ const codexAt = (ctx: AgentContext) =>
     ? Effect.fail(new Error(`${ctx.agent} has no Codex App Server endpoint recorded`))
     : Effect.succeed(ctx.endpoint);
 
-const codex: CompactionPort = {
+/** How long a stop waits for the turns it interrupted to end and the server to exit. */
+const CODEX_STOP_MS = 30_000;
+
+/** Codex's controls over `server`, the command that starts its App Server. */
+export const codexPort = (
+  server: string,
+  options: { readonly stopMs?: number } = {},
+): CompactionPort => ({
   gate: () => gateVersion("codex"),
   // The TUI binds a thread on the App Server as it starts, before any prompt.
   ready: (ctx) =>
@@ -998,14 +1016,16 @@ const codex: CompactionPort = {
           Effect.map((thread) => thread !== null),
         ),
   install: (ctx) =>
-    codexEndpoint(ctx).pipe(
-      Effect.map(({ endpoint, pid, command }) => ({
+    codexEndpoint(server, ctx).pipe(
+      Effect.map(({ endpoint, pid, command, started }) => ({
         args: ["--remote", endpoint],
         endpoint,
         pid,
         command,
+        started,
       })),
     ),
+  stop: (ctx) => codexStop(ctx, options.stopMs ?? CODEX_STOP_MS),
   usage: (ctx) =>
     Effect.gen(function* () {
       const url = yield* codexAt(ctx);
@@ -1074,7 +1094,182 @@ const codex: CompactionPort = {
         }),
       );
     }),
-};
+});
+
+type Covered = Stop["turns"][number];
+
+/** One SIGTERM, to a process that may already be gone. */
+const sigterm = (pid: number) => Effect.ignore(Effect.try(() => process.kill(pid, "SIGTERM")));
+
+/**
+ * Where the server's processes are found once it has exited: its own session, where it
+ * leads one and the platform can say, or else the descendants it had before the signal.
+ */
+type Noted =
+  | { readonly session: number; readonly since: string | null }
+  | { readonly descendants: ReadonlyArray<Process> };
+
+/**
+ * Stops a Codex agent where its turns run, in order, on one connection opened before any
+ * signal: prove the server is this agent's, list its running turns, SIGTERM it once so it
+ * drains (no new turn, steer or continuation), interrupt every running turn, wait for the
+ * server to exit, then SIGTERM once whatever of its session is left. Nothing gets a second
+ * signal, and nothing is signalled that is not proven the agent's.
+ */
+const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext, budgetMs: number) {
+  const { record, say } = ctx;
+  const pid = record.pid!;
+  const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
+  const covered: Covered[] = [];
+  let reached: Stop["state"] = "failed";
+  let signalled = false;
+  const ended = (state: Stop["state"], why: string | null) =>
+    Clock.currentTimeMillis.pipe(
+      Effect.map((at): Stop => ({ state, at, turns: covered, reason: why })),
+    );
+  const notQuiet = (why: string) => ended(reached, why);
+
+  const live = yield* processOf(pid);
+  if (live === null) {
+    // Nothing is left of the server itself; only what it started may be, and only a
+    // session and a recorded start time can prove that without the server.
+    const sessions = (yield* processOf(process.pid))?.session != null;
+    const noted: Noted | null =
+      sessions && record.started !== null ? { session: pid, since: record.started } : null;
+    const left = noted === null ? null : yield* survivors(noted, pid, deadline);
+    return yield* ended(left === null ? "quiet" : "failed", left);
+  }
+  if (record.command === null || !live.command.includes(record.command))
+    return yield* ended(
+      "failed",
+      `ambiguous identity: pid ${pid} is "${live.command}", not ${record.command ?? "a recorded command"}`,
+    );
+  if (record.started !== null && live.started !== record.started)
+    return yield* ended(
+      "failed",
+      `ambiguous identity: pid ${pid} started at ${live.started}, not ${record.started} as recorded`,
+    );
+  if (record.endpoint === null) return yield* ended("failed", "no endpoint is recorded");
+  const endpoint = record.endpoint;
+  const where = (one: Covered) =>
+    `thread ${one.thread} turn ${one.turn} on ${endpoint} pid ${pid}${one.transcript === null ? "" : `, transcript ${one.transcript}`}`;
+
+  const stopped = withCodex(endpoint, (client) =>
+    Effect.gen(function* () {
+      const threads = yield* loadedThreads(client);
+      const foreign = threads.filter(
+        (one) => !one.own && one.cwd !== null && one.cwd !== record.cwd,
+      );
+      if (foreign.length > 0)
+        return yield* ended(
+          "failed",
+          `ambiguous identity: ${endpoint} holds ${foreign.map((one) => `thread ${one.id} in ${one.cwd}`).join(", ")}, not ${record.cwd}`,
+        );
+      for (const thread of threads.filter((one) => one.active))
+        for (const turn of yield* runningTurns(client, thread.id))
+          covered.push({ thread: thread.id, turn, transcript: thread.transcript });
+      const noted: Noted =
+        live.session === pid
+          ? { session: pid, since: live.started }
+          : { descendants: descendantsOf(yield* allProcesses(), pid) };
+
+      const still = yield* processOf(pid);
+      if (still?.started !== live.started || still.command !== live.command)
+        return yield* ended("failed", `pid ${pid} changed before it was signalled`);
+      yield* sigterm(pid);
+      signalled = true;
+      for (const one of covered) {
+        yield* say(`interrupt submitted: ${where(one)}`);
+        if (reached === "failed") reached = "submitted";
+        const answered = yield* Effect.result(interruptTurn(client, one.thread, one.turn));
+        // A refusal (the turn is no longer active, say) is read back below, not believed.
+        if (answered._tag === "Success") {
+          yield* say(`interrupt acknowledged: ${where(one)}`);
+          reached = "acknowledged";
+        }
+      }
+
+      const running = yield* awaitExit(client, pid, live.started, covered, deadline);
+      if (running !== null)
+        return yield* notQuiet(
+          `the server was still up after ${Math.round(budgetMs / 1000)}s${running.length === 0 ? "" : `, with ${running.map((one) => `turn ${one.turn}`).join(", ")} still running`}`,
+        );
+      const left = yield* survivors(noted, pid, deadline);
+      return left === null ? yield* ended("quiet", null) : yield* notQuiet(left);
+    }),
+  );
+  return yield* stopped.pipe(
+    Effect.catch((cause) =>
+      notQuiet(
+        !signalled
+          ? `${endpoint} did not answer, so nothing was signalled (${reason(cause)})`
+          : `the connection to ${endpoint} was lost mid-stop (${reason(cause)})`,
+      ),
+    ),
+  );
+});
+
+/**
+ * Waits for the server to exit, reading back the turns it was running meanwhile. Null once
+ * it has; otherwise the turns not yet read back as ended. A server that is gone runs no
+ * turn, so a turn it ended in exiting needs no reading.
+ */
+const awaitExit = Effect.fn("Compactors.awaitExit")(function* (
+  client: CodexClient,
+  pid: number,
+  started: string,
+  covered: ReadonlyArray<Covered>,
+  deadline: number,
+) {
+  let running = [...covered];
+  for (;;) {
+    if ((yield* processOf(pid))?.started !== started) return null;
+    const still: Covered[] = [];
+    for (const one of running) {
+      const now = yield* Effect.result(runningTurns(client, one.thread));
+      if (now._tag === "Failure" || now.success.includes(one.turn)) still.push(one);
+    }
+    running = still;
+    if ((yield* Clock.currentTimeMillis) >= deadline) return running;
+    yield* Effect.sleep(100);
+  }
+});
+
+/**
+ * Whatever of the server's processes is still running once it has exited, each sent one
+ * SIGTERM and looked at again. Null where nothing is left; otherwise what is, by pid.
+ */
+const survivors = Effect.fn("Compactors.survivors")(function* (
+  noted: Noted,
+  pid: number,
+  deadline: number,
+) {
+  const alive = Effect.gen(function* () {
+    if ("descendants" in noted) {
+      const now = yield* Effect.forEach(noted.descendants, (one) => processOf(one.pid));
+      return now.filter(
+        (one, at): one is Process => one !== null && one.started === noted.descendants[at]!.started,
+      );
+    }
+    return (yield* allProcesses()).filter(
+      (one) =>
+        one.session === noted.session &&
+        one.pid !== pid &&
+        (noted.since === null || Number(one.started) >= Number(noted.since)),
+    );
+  });
+  const found = yield* alive;
+  if (found.length === 0) return null;
+  for (const one of found) yield* sigterm(one.pid);
+  const until = Math.max(deadline, (yield* Clock.currentTimeMillis) + 1_000);
+  for (;;) {
+    const left = yield* alive;
+    if (left.length === 0) return null;
+    if ((yield* Clock.currentTimeMillis) >= until)
+      return `left running after one SIGTERM: ${left.map((one) => `pid ${one.pid} (${one.command})`).join(", ")}`;
+    yield* Effect.sleep(100);
+  }
+});
 
 /**
  * The ordinary OpenCode TUI, hosting its own loopback server on a port Collie picked.
@@ -1229,7 +1424,12 @@ const opencode: CompactionPort = {
     }),
 };
 
-export const COMPACTION_PORTS: CompactionPorts = { claude, codex, opencode, pi };
+export const COMPACTION_PORTS: CompactionPorts = {
+  claude,
+  codex: codexPort(CODEX_SERVER),
+  opencode,
+  pi,
+};
 
 /**
  * Submissions this agent has taken that neither Collie nor Claude itself made. Claude's

@@ -47,6 +47,7 @@ import {
   type Controlled,
   FrontDoor,
   Declaration,
+  controlFailure,
   HostRefused,
   type Disposition,
   type ProposalCarried,
@@ -836,12 +837,10 @@ const controlled = (
 ): OpResult => {
   if (!answered.ok) return answered;
   const done = answered.value;
+  const failure = controlFailure(done);
+  if (failure !== null)
+    return err("operation_failed", failure, { run: done.runId, left: [...done.left] });
   if (done.closed !== undefined) {
-    if (done.left.length > 0)
-      return err("operation_failed", `${done.runId} has finished, but ${done.left.join("; ")}.`, {
-        run: done.runId,
-        left: [...done.left],
-      });
     return {
       ok: true as const,
       data: { run: done.runId, ...done },
@@ -852,12 +851,6 @@ const controlled = (
     };
   }
   const what = `${done.set ? done.control : `un${done.control}`} ${done.runId}`;
-  if (done.left.length > 0) {
-    return err("operation_failed", `Recorded ${what}, but ${done.left.join("; ")}.`, {
-      run: done.runId,
-      left: [...done.left],
-    });
-  }
   return {
     ok: true as const,
     data: { run: done.runId, ...done },

@@ -28,7 +28,7 @@
 
 **Fallback chain** — The human's `fallbacks` setting: an ordered list of `harness` or `harness/model` entries, shared across the Flock. It is tried after whatever the work itself prefers, including a Workflow's own `otherwise`. It is empty by default. The **Flock chat** has a chain of its own, `chatFallbacks` in Desktop's Settings, for this computer only. It is tried after the chat's own harness and model, judged by the same rules.
 
-**Fallback** — Work moved to the next agent with room because its agent's Subscription is Exhausted. If that is known before the agent starts, the recorded choice is simply another agent. Mid-work, Collie closes the agent and starts a new one on the same operation, with the same prompt and a hand-over. The hand-over says the checkout holds what was done and where the earlier transcript is. The new agent also takes the old one's place for later work. A Fallback is recorded with what it fell back from and why. In the **Flock chat** a Fallback keeps the conversation on another model of the same harness. On another harness it starts a new conversation, and Desktop's hand-over says where it came from and where the earlier transcript is.
+**Fallback** — Work moved to the next agent with room because its agent's Subscription is Exhausted. If that is known before the agent starts, the recorded choice is simply another agent. Mid-work, Collie stops the agent and, once it is **Quiet**, starts a new one on the same operation, with the same prompt and a hand-over. The hand-over says the checkout holds what was done and where the earlier transcript is. The new agent also takes the old one's place for later work. A Fallback is recorded with what it fell back from and why. In the **Flock chat** a Fallback keeps the conversation on another model of the same harness. On another harness it starts a new conversation, and Desktop's hand-over says where it came from and where the earlier transcript is.
 
 **Input** — A value a Workflow needs (plan directory, diff target, goal). Only the **Launch flow** infers one, for a human, from context (branch, cwd, earlier plan Runs, glab), and a Run records which of its Inputs were inferred and which were given. An agent's start — chat's Collie tools or `collie run start` — gives every Input explicitly, an optional one as an explicit empty, and a start missing one is refused with what would fill it.
 
@@ -221,7 +221,10 @@ across the compaction decision, the composition and the send.
 
 **Incarnation** — An agent as one live process, identified by herdr's own `terminal_id` and
 `agent_session`. A name and a pane are inherited by whatever takes the role next; neither
-names a process. A registry entry without one is never a delivery target.
+names a process. A registry entry without one is never a delivery target. Where a Harness's
+work runs outside its pane — Codex's, in the App Server Collie starts for that one agent —
+the incarnation is the pane's process and that server, with every thread loaded on it,
+until the server is **Quiet**.
 
 **Drift** — A recorded evidence–Intent mismatch. `rule` drift Collie establishes itself;
 `semantic` drift is judged against bounded actual evidence. Nothing passes on an absence.
@@ -250,7 +253,17 @@ what backs it, and what nobody checked. Its **readiness** — `claimed`, `inspec
 decided by rules over facts: `decision` > `consequential` > `try-it` > `routine`. A
 narrative never raises it.
 
-**Hold** — A Run under a hold starts no new work until a human releases it. It takes effect at the Run's next boundary, so what is already running finishes. Nothing lifts a hold at a time.
+**Hold** — A Run under a hold starts no new work until a human releases it. It takes effect at the Run's next boundary, so what is already running finishes. Nothing lifts a hold at a time. A hold never touches a running turn; **Stop** does.
+
+**Stop** — Ending a Run's work now, and its children's. Each live agent is stopped where
+its work runs, and only then is its pane closed. An agent that does not become **Quiet** is
+named in what the stop reports, its pane is left open, and nothing takes its work until it
+is (ADR-0059).
+
+**Quiet** — An incarnation that can no longer change anything. Every turn it was running
+has ended, as read back from the harness. The process that ran them is gone, and nothing it
+started is still running. `submitted` (an interrupt was sent) and `acknowledged` (the
+harness accepted it) are not Quiet. Only Quiet counts as stopped.
 
 **Conversation** — Scoped to one Herd (Native chat, in its Home) or to the Flock (the
 **Flock chat**, in Desktop). For a Herd, also the durable journal of human and Collie turns, plus the turns
