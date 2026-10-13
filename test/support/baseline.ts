@@ -2237,6 +2237,66 @@ scenario(
 );
 
 scenario(
+  "a Linear issue's criteria are read from the spec the builder copied, and no copy stops the work",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* noMergeRequests;
+        yield* repository();
+        const fs = yield* FileSystem.FileSystem;
+        const copied = "r-linear";
+        yield* approve(copied, ["unit"]);
+        yield* fs.makeDirectory(`${runDir(dir, copied)}/plan`, { recursive: true });
+        yield* fs.writeFileString(
+          `${runDir(dir, copied)}/plan/SPEC.md`,
+          "# ABC-123\n\n- [ ] **Counted.** Every registry is counted once.\n",
+        );
+        const answered = {
+          ...BUILT,
+          criteria: [
+            {
+              criterion: "**Counted.** Every registry is counted once.",
+              met: "test/count.test.ts",
+            },
+          ],
+        };
+        yield* rig.queueOutputs([BUILT, answered, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: copied,
+          input: { plan: "ABC-123" },
+        });
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(copied, "build.criteria-1")).toContain(
+          "acceptance criterion not answered: **Counted.** Every registry is counted once.",
+        );
+      }).pipe(Effect.orDie),
+    ),
+  120_000,
+);
+
+scenario(
+  "a Linear issue whose description the builder did not copy stops the work before any reviewer",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* noMergeRequests;
+        yield* repository();
+        yield* approve("r-linear-uncopied", ["unit"]);
+        yield* rig.queueOutputs([BUILT]);
+        const stopped = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-linear-uncopied",
+          input: { plan: "ABC-124" },
+        });
+        expect(said(stopped)).toContain("plan/SPEC.md cannot be read");
+        expect(yield* prompts()).not.toContainEqual(expect.stringContaining("review-1"));
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "the planner route is read again for each ticket, so a planner that has gone is not called live",
   () =>
     runEffect(
@@ -3782,7 +3842,14 @@ scenario(
         ];
         yield* rig.queueOutputs([
           BUILT,
-          ...round("one"),
+          // A dispute from an early round that nobody answers is still the human's to settle.
+          { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [found("one"), found("X")] },
+          {
+            verdict: "clean",
+            fixed: [{ title: "one", file: "src/a.ts" }],
+            disputed: [{ ...found("X"), reason: "X is by design" }],
+            checks: [{ name: "unit" }],
+          },
           ...round("two"),
           ...round("three"),
           {
@@ -3807,6 +3874,7 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         expect((yield* findingsIn(runDir(dir, "r-final-stands"))).map((one) => one.title)).toEqual([
           "a nit",
+          "X",
         ]);
         const fs = yield* FileSystem.FileSystem;
         expect(yield* fs.readFileString(`${runDir(dir, "r-final-stands")}/review.md`)).toContain(

@@ -383,7 +383,11 @@ function passFields(given: CheckPass | undefined): Pick<Verification, "pass" | "
   return { pass: given.pass, round: given.round };
 }
 
-type CheckRun = { readonly id: string; readonly cwd: string; readonly worktree: string | null };
+export type CheckRun = {
+  readonly id: string;
+  readonly cwd: string;
+  readonly worktree: string | null;
+};
 
 /**
  * A verification Collie runs itself, which it does only for one of the Run's checks —
@@ -431,7 +435,7 @@ const checkCwd = (run: CheckRun, spec: VerifySpec) =>
 
 type Command = Pick<VerifySpec, "executable" | "argv" | "cwd">;
 
-const sameCommand = (one: Command, other: Command) =>
+export const sameCommand = (one: Command, other: Command) =>
   one.executable === other.executable &&
   one.cwd === other.cwd &&
   one.argv.length === other.argv.length &&
@@ -458,6 +462,13 @@ export function reusablePass(
     !staleAgainst(latest, now);
   return holds ? latest : null;
 }
+
+/** A check's command as Collie runs it for this Run; its executable is null where none is found. */
+export const commandOf = Effect.fn("Verify.commandOf")(function* (run: CheckRun, spec: VerifySpec) {
+  const cwd = yield* checkCwd(run, spec);
+  const executable = yield* resolveExecutable(spec.executable, cwd);
+  return { name: spec.name, executable, argv: spec.argv, cwd };
+});
 
 /** `reusablePass` for one of a Run's checks, read from its journal against its tree now. */
 export const reusableFor = Effect.fn("Verify.reusableFor")(function* (

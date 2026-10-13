@@ -444,14 +444,19 @@ export default defineWorkflow({
           ticket === null && source.kind === "linear"
             ? yield* Activity.make({
                 name: "criteria.spec",
-                success: Schema.Array(Schema.String),
+                success: Schema.NullOr(Schema.Array(Schema.String)),
                 execute: FileSystem.FileSystem.pipe(
                   Effect.flatMap((fs) => fs.readFileString(`${place.dir}/plan/SPEC.md`)),
                   Effect.map(criteriaIn),
-                  Effect.orElseSucceed(() => []),
+                  Effect.orElseSucceed(() => null),
                 ),
               })
             : given;
+        if (criteria === null) {
+          const why = `${item}: ${place.dir}/plan/SPEC.md cannot be read, so the issue's acceptance criteria cannot be checked and no review starts`;
+          yield* host.record(runId, why);
+          return yield* unbuilt(why);
+        }
         // Each criterion answered before any reviewer is launched: one left unanswered or
         // unmet goes back to the builder, and the work stops if it still is.
         let answers: ReadonlyArray<Criterion> = build.criteria ?? [];
@@ -1123,7 +1128,11 @@ const rally = (ask: {
         // Every round's disputes, not only this fix's: earlier ones were split out of what
         // this fix was shown, and are still the human's to settle.
         if (settled.ok || settled.halt === "dispute_unresolved") {
-          yield* leaveOutstanding((yield* host.place(runId)).dir, settled.outstanding);
+          const left = new Set(settled.outstanding.map(findingKey));
+          yield* leaveOutstanding((yield* host.place(runId)).dir, [
+            ...settled.outstanding,
+            ...disputed.filter((one) => isBlocking(one) && !left.has(findingKey(one))),
+          ]);
           return {
             halted: null,
             unreviewed: settled.attestation,

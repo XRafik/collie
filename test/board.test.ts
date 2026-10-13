@@ -9,6 +9,7 @@ import {
   boardLines,
   buildBoard,
   checksAt,
+  withForge,
   finishedLabel,
   heldLine,
   sentenceFor,
@@ -1962,6 +1963,7 @@ const reopened = Effect.fn("board.reopened")(function* (
   status: AgentInfo["status"],
   steeredAt = "2026-09-14T10:02:00Z",
   over: Partial<Parameters<typeof buildBoard>[0]> = {},
+  passedAt?: string,
 ) {
   const { dir, env } = yield* scratch();
   const run = yield* madeRun(dir, {
@@ -1970,6 +1972,7 @@ const reopened = Effect.fn("board.reopened")(function* (
     mr: "https://github.com/cego/collie/pull/30",
     finished: "2026-09-14T10:00:00Z",
   });
+  if (passedAt !== undefined) yield* appendVerification(run.evidence, checked("test", passedAt));
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(`${dir}/agents/${run.id}`, { recursive: true });
   yield* fs.writeFileString(
@@ -2013,19 +2016,24 @@ test("a Reopened Run whose agent is blocked needs you, in that agent's pane", ()
 test("a Reopened Run whose agent is idle again stands on its own facts", () =>
   runEffect(
     Effect.gen(function* () {
-      const card = yield* reopened("idle", "2026-09-14T10:02:00Z", {
-        mrStates: new Map([["cego/collie#30", "open"]]),
-        forge: new Map([
-          [
-            "cego/collie#30",
-            {
-              checks: { state: "passed" },
-              head: "abc1234def",
-              mergeable: { state: "mergeable", said: "mergeable" },
-            },
-          ],
-        ]),
-      });
+      const card = yield* reopened(
+        "idle",
+        "2026-09-14T10:02:00Z",
+        {
+          mrStates: new Map([["cego/collie#30", "open"]]),
+          forge: new Map([
+            [
+              "cego/collie#30",
+              {
+                checks: { state: "passed" },
+                head: "abc1234def",
+                mergeable: { state: "mergeable", said: "mergeable" },
+              },
+            ],
+          ]),
+        },
+        "abc1234def",
+      );
       expect(sectionOf(card)).toBe("waiting");
       expect(card.ready).toBe(true);
       expect(card.sentence).toStartWith("Ready to release: cego/collie#30");
@@ -2142,6 +2150,12 @@ test("only a steer herdr took, dated after the Run ended, reopens it", () =>
     }),
   ));
 
+test("the forge's pass never stands in for a check of Collie's that has not run", () => {
+  const forge = { checks: { state: "passed" as const }, head: "abc" };
+  expect(withForge({ state: "unchecked" }, forge)).toEqual({ state: "unchecked" });
+  expect(withForge({ state: "passed", at: "abc" }, forge)).toEqual({ state: "passed", at: "abc" });
+});
+
 test("an agent's own record of a check never counts toward ready", () => {
   const claimed = { ...checked("test", "abc"), by: "agent" as const };
   expect(checksAt([claimed], "abc")).toEqual({ state: "unchecked" });
@@ -2164,15 +2178,22 @@ test("a Run's checks are its Intent's as they stand, each passed as the command 
         mr: PR,
         finished: "2026-09-14T09:30:00Z",
       });
-      const spec = (name: string, executable = "true") => ({
+      const spec = (name: string, executable = "true", cwd = "worktree") => ({
         name,
         executable,
         argv: [],
-        cwd: "worktree",
+        cwd,
       });
       const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${repo}/packages/b`, { recursive: true });
       yield* fs.writeFileString(approvedFile(run.evidence), encodeApproved([spec("test")]));
-      yield* appendVerification(run.evidence, checked("test", head));
+      // As Collie records it: the executable resolved, in the directory the check names.
+      const ran = (name: string, result: "pass" | "fail" = "pass") => ({
+        ...checked(name, head, result),
+        executable: Bun.which("true")!,
+        cwd: repo,
+      });
+      yield* appendVerification(run.evidence, ran("test"));
       const checks = Effect.map(board(env, [run]), (views) => views[0]!.checks);
       expect(yield* checks).toEqual({ state: "passed", at: head });
 
@@ -2188,8 +2209,12 @@ test("a Run's checks are its Intent's as they stand, each passed as the command 
       // A pass of the command a check named before is not a pass of the one it names now.
       yield* amended([spec("test", "false")]);
       expect(yield* checks).toEqual({ state: "unchecked" });
+      yield* amended([spec("test", "/opt/new/true")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      yield* amended([spec("test", "true", "packages/b")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
       // A check withdrawn after it failed no longer holds the Run back.
-      yield* appendVerification(run.evidence, checked("lint", head, "fail"));
+      yield* appendVerification(run.evidence, ran("lint", "fail"));
       yield* amended([spec("test")]);
       expect(yield* checks).toEqual({ state: "passed", at: head });
     }),

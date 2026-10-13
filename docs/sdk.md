@@ -1192,7 +1192,9 @@ into a blocking finding against the ticket. `answerFor(criterion, answers, among
 answer a criterion has; a copy that dropped the criterion's formatting still counts, and so
 does its bold lead alone where no other criterion `among` the ticket's shares it. Shipped
 `implement` hands what is unmet back to the builder before any reviewer is launched, twice at
-most, and stops the work if any is still unmet, so no reviewer starts on it. The reviewer's prompt
+most, and stops the work if any is still unmet, so no reviewer starts on it. A text work
+source's criteria are its own checkboxes; a Linear issue's are read from `plan/SPEC.md`, the
+copy of its description the builder makes, and a copy that cannot be read stops the work. The reviewer's prompt
 shows every criterion, its answer and the builder's assumptions. A workflow that never reads
 the field is unaffected.
 

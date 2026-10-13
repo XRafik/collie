@@ -21,8 +21,8 @@ import { listRuns, newestFirst, settled as ended, type RunFacts, type RunState }
 import type { PluginEnv } from "./env";
 import { listTasks, type TaskRecord } from "./task";
 import { ago, agoMs, agoShort, spanned, epochMs } from "./time";
-import { readVerifications, type Verification } from "./verify";
-import { approvedFor, approvedIn, type VerifySpec } from "./verify-spec";
+import { commandOf, readVerifications, sameCommand, type Verification } from "./verify";
+import { approvedFor, approvedIn } from "./verify-spec";
 import { readIntent } from "./intent";
 import { findingsIn, isBlocking } from "./output";
 import { markersOf, runningCheck } from "./checks";
@@ -166,7 +166,7 @@ export function withForge(collie: Checks, forge: ForgeFacts | null): Checks {
   if (said.state === "failed") return { state: "failed", name: said.name, at };
   if (collie.state === "failed") return collie;
   if (said.state === "running" || collie.state === "running") return { state: "running" };
-  if (said.state === "passed") return { state: "passed", at };
+  if (said.state === "passed" && collie.state === "passed") return { state: "passed", at };
   return collie;
 }
 
@@ -569,12 +569,12 @@ export function checksAt(
    * The Run's checks as they stand: each must have passed at that revision, as the command
    * it names now. With none, something Collie ran must have.
    */
-  approved: ReadonlyArray<Pick<VerifySpec, "name" | "executable" | "argv">> = [],
+  approved: ReadonlyArray<CheckCommand> = [],
 ): Checks {
   const wanted = (record: Verification) => {
     if (approved.length === 0) return true;
     const spec = approved.find((one) => one.name === record.name);
-    return spec !== undefined && sameCommand(record, spec);
+    return spec !== undefined && ranCommand(record, spec);
   };
   const collie = records.filter((record) => record.by === "collie");
   const at = head ?? collie.at(-1)?.end.head_sha ?? "";
@@ -588,11 +588,13 @@ export function checksAt(
   return unrun ? { state: "unchecked" } : { state: "passed", at };
 }
 
-/** A record ran a spec's command: its arguments, and its executable however it was resolved. */
-const sameCommand = (record: Verification, spec: Pick<VerifySpec, "executable" | "argv">) =>
-  record.executable.split("/").at(-1) === spec.executable.split("/").at(-1) &&
-  record.argv.length === spec.argv.length &&
-  record.argv.every((word, at) => word === spec.argv[at]);
+/** A check's command resolved for its Run; one whose executable is not found matches no record. */
+export type CheckCommand = Pick<Verification, "name" | "argv" | "cwd"> & {
+  readonly executable: string | null;
+};
+
+const ranCommand = (record: Verification, spec: CheckCommand) =>
+  spec.executable !== null && sameCommand(record, { ...spec, executable: spec.executable });
 
 /** The commit the Run's branch is at now in its checkout, or null where that cannot be read. */
 const branchHead = Effect.fn("Board.branchHead")(function* (run: RunFacts, now: number) {
@@ -1017,9 +1019,16 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             Effect.catch(() => Effect.succeed([])),
           ),
           head: forged?.head ?? (yield* branchHead(leader, now)),
-          approved: approvedFor(
-            yield* approvedIn(leader.evidence),
-            yield* readIntent(leader.dir).pipe(Effect.orElseSucceed(() => null)),
+          approved: yield* Effect.forEach(
+            approvedFor(
+              yield* approvedIn(leader.evidence),
+              yield* readIntent(leader.dir).pipe(Effect.orElseSucceed(() => null)),
+            ),
+            (spec) =>
+              commandOf(
+                { id: leader.id, cwd: leader.cwd, worktree: leader.worktree?.path ?? null },
+                spec,
+              ),
           ),
         }
       : null;
