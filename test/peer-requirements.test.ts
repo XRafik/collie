@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { createServer } from "node:net";
 import { Clock, Effect, Fiber, FileSystem, Schema } from "effect";
 import { TestClock } from "effect/testing";
-import { pairWith } from "../src/peers";
+import { pairWith, peersOf, relayOf } from "../src/peers";
+import { connect, ownerOf } from "../src/host";
 import { runEffect } from "./support/effect";
 import { FakeBin } from "./support/bin";
 import { twoMachines } from "./support/peers";
@@ -85,6 +86,7 @@ test(
                 one.failure?.includes(`could not listen on port ${second.env.COLLIE_PEER_PORT}`),
               ),
             ).toBe(true);
+            const owner = yield* ownerOf(second.world.state);
             const checked = yield* second.cli(["doctor"]);
             const checks = Schema.decodeUnknownSync(
               Schema.Struct({
@@ -99,6 +101,119 @@ test(
                 `could not listen on port ${second.env.COLLIE_PEER_PORT}`,
               ),
             });
+            yield* Effect.callback<void>((resume) => {
+              server.close(() => resume(Effect.void));
+            });
+            const recovered = yield* second.cli(["machine", "list"]);
+            expect(recovered.envelope.data).toMatchObject({
+              machines: [{ failure: "no control link from it yet" }],
+            });
+            expect((yield* ownerOf(second.world.state))?.pid).toBe(owner?.pid);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "replacing a pairing changes its relay name and credentials without restarting either host",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-replace-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const renamed = { ...second, name: "second-renamed" };
+            yield* first.lists([second, renamed]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const local = yield* connect(first.world.state);
+            const remote = yield* connect(second.world.state);
+            const owner = yield* ownerOf(first.world.state);
+            const farOwner = yield* ownerOf(second.world.state);
+            const peer = (yield* peersOf(first.world.state))[0]!;
+            const changed = { ...peer, name: renamed.name };
+            yield* local.pair({ peer: changed });
+            expect((yield* first.cli(["--machine", renamed.name, "board"])).envelope.ok).toBe(true);
+            yield* until(
+              () => fs.exists(relayOf(first.world.state, peer.name)),
+              (exists) => !exists,
+            );
+            const inward = (yield* peersOf(second.world.state))[0]!;
+            const invited = yield* remote.invite({
+              for: inward.installation,
+              name: inward.name,
+              address: "127.0.0.1",
+            });
+            expect(invited.secret).not.toBe(changed.secret);
+            yield* local.pair({
+              peer: { ...changed, secret: invited.secret, certificate: invited.certificate },
+            });
+            expect((yield* first.cli(["--machine", renamed.name, "board"])).envelope.ok).toBe(true);
+            yield* until(
+              () => remote.peers(),
+              (peers) => peers.some((one) => one.state === "live"),
+            );
+            expect((yield* second.cli(["--machine", inward.name, "board"])).envelope.ok).toBe(true);
+            expect((yield* ownerOf(first.world.state))?.pid).toBe(owner?.pid);
+            expect((yield* ownerOf(second.world.state))?.pid).toBe(farOwner?.pid);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "concurrent invitations and additions keep every pairing and one serving listener",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-concurrent-pairs-",
+        (first, second) =>
+          Effect.gen(function* () {
+            expect((yield* first.cli(["machine", "list"])).envelope.ok).toBe(true);
+            expect((yield* second.cli(["machine", "list"])).envelope.ok).toBe(true);
+            const caller = yield* connect(first.world.state);
+            const receiver = yield* connect(second.world.state);
+            const names = Array.from({ length: 8 }, (_, i) => `inviter-${i}`);
+            const invited = yield* Effect.forEach(
+              names,
+              (name) =>
+                receiver.invite({ for: name, name, address: "127.0.0.1" }).pipe(Effect.result),
+              { concurrency: "unbounded" },
+            );
+            expect(invited.map((result) => result._tag)).toEqual(names.map(() => "Success"));
+            expect((yield* receiver.peers()).map((peer) => peer.installation).sort()).toEqual(
+              [...names].sort(),
+            );
+            expect(
+              (yield* peersOf(second.world.state)).map((peer) => peer.installation).sort(),
+            ).toEqual([...names].sort());
+            const additions = yield* Effect.forEach(
+              names,
+              (installation) =>
+                caller
+                  .pair({
+                    peer: {
+                      installation,
+                      name: installation,
+                      dials: "in",
+                      secret: `test-secret-${installation}`,
+                    },
+                  })
+                  .pipe(Effect.result),
+              { concurrency: "unbounded" },
+            );
+            expect(additions.map((result) => result._tag)).toEqual(names.map(() => "Success"));
+            expect((yield* caller.peers()).map((peer) => peer.installation).sort()).toEqual(
+              [...names].sort(),
+            );
+            expect(
+              (yield* peersOf(first.world.state)).map((peer) => peer.installation).sort(),
+            ).toEqual([...names].sort());
           }),
         [],
       ),

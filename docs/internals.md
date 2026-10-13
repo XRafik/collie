@@ -278,6 +278,10 @@ longer than a unix socket takes (104 bytes on macOS) is refused rather than trun
 Only a front door that can show the login pairs (`pairs` on its env): a host's own jobs
 are refused with "not paired yet".
 
+Pairing updates are serialized, including the certificate and listener. Changing a
+Machine's saved name or connection details replaces its relay and control link.
+After freeing an occupied listening port, `collie machine list` retries the listener.
+
 **Forgetting.** When the host that dials a peer starts and herdr no longer lists it, it
 tells the peer over the relay as `host` (`forget`, which the peer applies to the
 installation the link authenticated) and drops the pairing; a peer with nobody left

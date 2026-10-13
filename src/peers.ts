@@ -46,7 +46,7 @@ import {
   AgentAddress,
   AgentAddressJson,
   type HerdrMachine,
-  type Peer,
+  Peer,
   type PeerView,
 } from "./peers-model";
 import { reason } from "./naming";
@@ -134,6 +134,8 @@ const writePeers = Effect.fn("Peers.write")(function* (
   yield* fs.chmod(tmp, 0o600);
   yield* fs.rename(tmp, fileOf(stateDir));
 });
+
+const samePeer = Schema.toEquivalence(Peer);
 
 const port = Config.Int("COLLIE_PEER_PORT").pipe(Config.withDefault(PEER_PORT), Effect.orDie);
 const bindHost = Config.String("COLLIE_PEER_HOST").pipe(
@@ -458,7 +460,8 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const standings = new Map<string, Standing>();
   const builds = new Map<string, string>();
   const syncing = yield* Semaphore.make(1);
-  const connections = new Set<Socket>();
+  const pairing = yield* Semaphore.make(1);
+  const connections = new Map<Socket, string>();
   let listener: ReturnType<typeof Bun.serve> | null = null;
   let listening: string | null = null;
   /** The certificate the listener was started with. */
@@ -536,8 +539,11 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
 
   const keep = (next: ReadonlyArray<Peer>) =>
     Effect.gen(function* () {
+      const previous = peers;
+      yield* writePeers(link.dir, next);
       peers = [...next];
-      yield* writePeers(link.dir, peers);
+      for (const prior of previous)
+        if (!peers.some((peer) => samePeer(peer, prior))) yield* drop(prior.installation);
       yield* settle;
     }).pipe(
       Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
@@ -545,7 +551,10 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     );
 
   const forget = (installation: string) =>
-    keep(peers.filter((peer) => peer.installation !== installation)).pipe(Effect.ignore);
+    Effect.suspend(() => keep(peers.filter((peer) => peer.installation !== installation))).pipe(
+      pairing.withPermits(1),
+      Effect.ignore,
+    );
   const reconcileMachines = Effect.gen(function* () {
     const listed = yield* link.machines;
     if (listed !== null) {
@@ -792,7 +801,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       yield* fs.remove(path, { force: true });
       const server = createServer(relayTo(peer));
       server.on("connection", (conn) => {
-        connections.add(conn);
+        connections.set(conn, peer.installation);
         conn.once("close", () => connections.delete(conn));
       });
       yield* Effect.callback<void>((resume) => {
@@ -805,8 +814,13 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   /** Everything kept for a peer this Machine no longer has. */
   const drop = (installation: string) =>
     Effect.gen(function* () {
-      relays.get(installation)?.close();
+      for (const [conn, owner] of connections) if (owner === installation) conn.destroy();
+      const relay = relays.get(installation);
       relays.delete(installation);
+      if (relay !== undefined)
+        yield* Effect.callback<void>((resume) => {
+          relay.close(() => resume(Effect.void));
+        });
       const dialler = diallers.get(installation);
       diallers.delete(installation);
       if (dialler !== undefined) yield* Fiber.interrupt(dialler);
@@ -998,7 +1012,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       void listener?.stop(true);
-      for (const conn of connections) conn.destroy();
+      for (const conn of connections.keys()) conn.destroy();
       for (const server of relays.values()) server.close();
     }),
   );
@@ -1008,7 +1022,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     }).pipe(Effect.repeat(Schedule.spaced(BEAT))),
     scope,
   );
-  yield* settle;
+  yield* pairing.withPermits(1)(settle);
   yield* fs.makeDirectory(link.userDir, { recursive: true });
   yield* Effect.forkIn(
     fs.watch(link.userDir).pipe(
@@ -1055,7 +1069,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         if (listener === null)
           return yield* new HostRefused({ reason: listening ?? "the listener did not start" });
         return { installation: link.installation, port: listenPort, certificate, secret };
-      }).pipe(Effect.provideContext(services)),
+      }).pipe(pairing.withPermits(1), Effect.provideContext(services)),
     add: (peer) =>
       Effect.gen(function* () {
         yield* validateName(peer.name);
@@ -1065,9 +1079,10 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
           ),
           peer,
         ]);
-      }),
+      }).pipe(pairing.withPermits(1)),
     forget,
     list: reconcileMachines.pipe(
+      Effect.andThen(pairing.withPermits(1)(settle)),
       Effect.andThen(
         Effect.sync(() =>
           peers.map((peer): PeerView => {
