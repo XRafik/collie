@@ -12,6 +12,7 @@
 
 import { Data, DateTime, Effect, FileSystem, Path, Schema } from "effect";
 import { readJournal } from "./journal";
+import { redact } from "./redact";
 import { ensureLockDir, withLock } from "./lock";
 import { herdDir } from "./steering";
 import { nowIso, epochMs } from "./time";
@@ -41,38 +42,6 @@ export type Turn = Schema.Schema.Type<typeof TurnSchema>;
 type Draft = { -readonly [K in keyof Turn]: Turn[K] };
 const TurnJson = Schema.fromJsonString(TurnSchema);
 const encodeTurn = Schema.encodeSync(TurnJson);
-
-/**
- * Shapes that are almost certainly a secret, and what to say instead. The type is kept
- * because it is the useful half — "a GitLab token was in here" is worth reading, and the
- * token itself is worth nothing to anyone who should be reading this.
- *
- * Deliberately over-eager. A conversation is a place people paste things, and a false
- * positive costs a human retyping a word; a false negative writes a live credential into
- * a file that outlives the session.
- */
-const SECRETS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/\bglpat-[A-Za-z0-9_-]{16,}/g, "<gitlab token>"],
-  [/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "<github token>"],
-  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, "<github token>"],
-  [/\bsk-[A-Za-z0-9_-]{16,}/g, "<api key>"],
-  [/\bAKIA[0-9A-Z]{16}\b/g, "<aws key id>"],
-  [/\bxox[abposr]-[A-Za-z0-9-]{10,}/g, "<slack token>"],
-  [/\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, "<jwt>"],
-  [/\b[Bb]earer\s+[A-Za-z0-9._~+/-]{20,}=*/g, "Bearer <token>"],
-  // A named assignment whose value looks like a secret rather than like prose.
-  [
-    /\b([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|APIKEY|API_KEY))\s*[=:]\s*\S+/g,
-    "$1=<redacted>",
-  ],
-];
-
-/** The text as it will be written: same words, minus anything that looked like a key. */
-export function redact(text: string): string {
-  let out = text;
-  for (const [looksLike, replacement] of SECRETS) out = out.replace(looksLike, replacement);
-  return out;
-}
 
 /**
  * A reference the board may later render and offer to open, or `<external>`. Anything

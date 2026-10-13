@@ -8,6 +8,7 @@
 // What a Run is and what became of it stays Collie's; what a workflow has done stays
 // Effect's. Nothing here copies the second into the first.
 
+import { redactedField, withNotice } from "./redact";
 import type { SettingValue } from "./settings";
 import {
   Cause,
@@ -429,6 +430,7 @@ export const startRun = Effect.fn("Lifecycle.startRun")(function* (
             runId: answered.value.runId,
             registration: answered.value.registration,
             fresh: answered.value.fresh,
+            redacted: answered.value.redacted ?? [],
           }
         : answered,
     ),
@@ -794,9 +796,12 @@ export const answerRun = (
         ? {
             ok: true as const,
             data: { run: options.runId, ...answered.value },
-            human: answered.value.fresh
-              ? `Answered ${options.runId}: ${answered.value.decision} = ${answered.value.value}.`
-              : `${options.runId} already had that answer to ${answered.value.decision}.`,
+            human: withNotice(
+              answered.value.fresh
+                ? `Answered ${options.runId}: ${answered.value.decision} = ${answered.value.value}.`
+                : `${options.runId} already had that answer to ${answered.value.decision}.`,
+              answered.value.redacted,
+            ),
           }
         : answered,
     ),
@@ -1001,10 +1006,15 @@ export const steerRun = (
       if (!answered.ok) return answered;
       const { sent, route } = answered.value;
       const data = { run: options.runId, ...sent };
-      if (sent.delivered) return { ok: true as const, data, human: `Told ${sent.agent}.` };
+      if (sent.delivered)
+        return { ok: true as const, data, human: withNotice(`Told ${sent.agent}.`, sent.redacted) };
       // A receipt that read as delivered when nothing was sent is the failure ADR-0041 ends.
       const why = `Nothing was delivered: ${sent.detail || "no agent to tell"}.`;
-      return err("operation_failed", route === null ? why : `${why} ${route}`, data);
+      return err(
+        "operation_failed",
+        withNotice(route === null ? why : `${why} ${route}`, sent.redacted, " "),
+        data,
+      );
     }),
   );
 
@@ -1155,8 +1165,16 @@ export const invokeOffer = (
       answered.ok
         ? {
             ok: true as const,
-            data: { run: answered.value.runId, from: options.runId, offer: options.offer },
-            human: `Started run ${answered.value.runId} from ${options.runId}'s "${options.offer}".`,
+            data: {
+              run: answered.value.runId,
+              from: options.runId,
+              offer: options.offer,
+              ...redactedField(answered.value.redacted),
+            },
+            human: withNotice(
+              `Started run ${answered.value.runId} from ${options.runId}'s "${options.offer}".`,
+              answered.value.redacted,
+            ),
           }
         : answered,
     ),
@@ -1495,8 +1513,15 @@ export const followUpRun = (
       answered.ok
         ? {
             ok: true as const,
-            data: { run: answered.value.runId, from: options.runId },
-            human: `Started run ${answered.value.runId} to follow up ${options.runId}.`,
+            data: {
+              run: answered.value.runId,
+              from: options.runId,
+              ...redactedField(answered.value.redacted),
+            },
+            human: withNotice(
+              `Started run ${answered.value.runId} to follow up ${options.runId}.`,
+              answered.value.redacted,
+            ),
           }
         : answered,
     ),

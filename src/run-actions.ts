@@ -10,6 +10,7 @@
 // from `operations.ts`. One direction each way is a cycle; one module downstream of both
 // is not.
 
+import { withNotice } from "./redact";
 import { Effect, Option, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import { reason } from "./naming";
@@ -372,7 +373,10 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         attachments: action.attachments,
       });
       return started.ok
-        ? { state: "applied" as const, note: `started ${started.runId}` }
+        ? {
+            state: "applied" as const,
+            note: withNotice(`started ${started.runId}`, started.redacted, "; "),
+          }
         : failed(started.error.message);
     }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
   );

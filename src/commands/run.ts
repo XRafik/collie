@@ -1,4 +1,5 @@
 import { Cause, Duration, Effect, Exit, Option, Path, Ref, Schema, Stdio, Stream } from "effect";
+import { redactedField, withNotice } from "../redact";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { Argument, Command, Flag } from "effect/cli";
 import { err, type Failure } from "../operations";
@@ -361,8 +362,9 @@ const runStart = Command.make(
                     workflow,
                     registration: started.registration,
                     fresh: started.fresh,
+                    ...redactedField(started.redacted),
                   },
-                  human: `Started run ${started.runId}.`,
+                  human: withNotice(`Started run ${started.runId}.`, started.redacted),
                 };
               }
               // Nothing else runs work. An id with no module is a workflow this
@@ -1404,12 +1406,15 @@ function intentChange(
               yield* cliDoor(resolved.env),
             );
             if (!result.ok) return result;
-            const { version, propagated, approved, warning } = result.value;
+            const { version, propagated, approved, warning, redacted } = result.value;
             return approved === undefined
               ? {
                   ok: true as const,
-                  data: { runId, version, propagated },
-                  human: [`${runId}: intent v${version}`, ...propagated].join("\n"),
+                  data: { runId, version, propagated, ...redactedField(redacted) },
+                  human: withNotice(
+                    [`${runId}: intent v${version}`, ...propagated].join("\n"),
+                    redacted,
+                  ),
                 }
               : {
                   ok: true as const,

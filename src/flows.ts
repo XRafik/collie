@@ -2,6 +2,7 @@
 // interactive work happens in the pane entrypoints. Every question a human answers goes
 // through `InputPrompts`, so the same flow draws in a popup pane and inline in the tab.
 
+import { withNotice } from "./redact";
 import {
   Cause,
   Clock,
@@ -508,7 +509,13 @@ const startModule = Effect.fn("Flows.startModule")(function* (
   }
   if (opts.placement === "popup") yield* Effect.ignore(herdr.popupClose());
   const given = Object.entries(text).map(([name, value]) => `${name}=${value}`);
-  return { line: `${module.id}: ${given.join("  ")} → ${started.runId}` };
+  return {
+    line: withNotice(
+      `${module.id}: ${given.join("  ")} → ${started.runId}`,
+      started.redacted,
+      " — ",
+    ),
+  };
 });
 
 /** The one question a start asks: what the human wants, in their own words. */

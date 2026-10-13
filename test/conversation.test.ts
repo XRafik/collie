@@ -4,6 +4,7 @@
 // is on disk at all.
 
 import { DateTime, Effect, FileSystem } from "effect";
+import { redact } from "../src/redact";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   MAX_TURNS,
@@ -13,7 +14,6 @@ import {
   keep,
   pendingProposals,
   read,
-  redact,
   tail,
   type Turn,
 } from "../src/conversation";

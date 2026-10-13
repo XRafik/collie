@@ -59,6 +59,7 @@ import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
 import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
+import { removedIn, withNotice } from "../../../src/redact";
 
 const children = new Set<Bun.Subprocess>();
 export const endChildren = () => {
@@ -1098,7 +1099,7 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
       case "Answer":
         return door
           .answer({ runId: action.runId, decision: action.decision, value: action.value, request })
-          .pipe(Effect.as(`Answered ${action.runId}`));
+          .pipe(Effect.map((done) => withNotice(`Answered ${action.runId}`, done.redacted, ". ")));
       case "Control": {
         const verb = action.control === "stop" ? "Stopped" : action.set ? "Held" : "Released";
         return door
@@ -1161,7 +1162,9 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
           .pipe(
             Effect.flatMap(([done]) =>
               done?.state === "applied"
-                ? Effect.succeed(`Sent to ${action.agent}`)
+                ? Effect.succeed(
+                    [`Sent to ${action.agent}`, removedIn(done.note)].filter(Boolean).join(". "),
+                  )
                 : Effect.fail<Unsteered>({
                     _tag: "Unsteered",
                     message: done?.note || "the host said nothing about it",
@@ -1171,15 +1174,21 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
       case "FollowUp":
         return door
           .followUp({ runId: action.runId, text: action.text, request })
-          .pipe(Effect.map((started) => `Started ${started.runId}`));
+          .pipe(
+            Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
+          );
       case "Invoke":
         return door
           .invoke({ runId: action.runId, offer: action.offer, input: action.input, request })
-          .pipe(Effect.map((started) => `Started ${started.runId}`));
+          .pipe(
+            Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
+          );
       case "Start":
         return door
           .start({ project: action.project, id: action.id, input: {}, text: action.text, request })
-          .pipe(Effect.map((started) => `Started ${started.runId}`));
+          .pipe(
+            Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
+          );
     }
   })();
   return over(reached, said, request);

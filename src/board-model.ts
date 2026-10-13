@@ -685,6 +685,8 @@ export const Answered = Schema.Struct({
   decision: Schema.String,
   value: Schema.String,
   fresh: Schema.Boolean,
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 /**
@@ -721,6 +723,8 @@ export const Started = Schema.Struct({
   registration: Schema.String,
   execution: Schema.String,
   fresh: Schema.Boolean,
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 /**
@@ -766,6 +770,8 @@ export const SteerOutcome = Schema.Struct({
   code: Schema.NullOr(Schema.String),
   human: Schema.String,
   data: Schema.Json,
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type SteerOutcome = typeof SteerOutcome.Type;
 

@@ -258,6 +258,21 @@ runs from a shell inside herdr: `herdr plugin action invoke cego.collie.pick`.
 The same operations are available without opening UI, which is how an agent drives Collie:
 see [CLI](cli.md).
 
+### Credentials never go in a goal or a steer
+
+An agent reaches GitLab or GitHub through the forge login its Machine already has: `glab
+auth login` or `gh auth login` in a terminal, or Desktop's credentials when it onboards a
+Machine. A token pasted into a goal, an Input, a constraint, a steer, a follow-up, an answer
+or a review comment is never needed, and it would outlive the Run in every file Collie keeps.
+
+So Collie takes it out before it writes or forwards anything. A value shaped like a GitLab,
+GitHub, AWS, Slack or API token, a JWT, a bearer token or a `NAME_TOKEN=…` assignment is
+replaced by its kind, such as `<gitlab token>`, and the operation goes ahead with that in its
+place. Whichever door it came in by — the CLI, chat, the board or Desktop — says what it
+removed: "removed 1 credential-shaped value(s): <gitlab token>". The same list redacts chat
+and cards (`src/redact.ts`). An agent's own harness transcript is not Collie's to
+write, so a value an agent prints there stays in it.
+
 ### Agents talking to each other
 
 Every Run's agent has Collie's tools and knows its own Run, agent name and Machine.

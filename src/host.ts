@@ -77,6 +77,7 @@ import {
   outputsOf,
 } from "./run-record";
 import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
+import { removedNotice, scrub, scrubJson } from "./redact";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
 import { readDrift } from "./drift";
@@ -294,6 +295,20 @@ const Loaded = Schema.Struct({
   registration: Schema.String,
   title: Schema.String,
 });
+
+/** A result that says what kind of credential-shaped value was taken out of its asking. */
+const saying =
+  (removed: ReadonlyArray<string>) =>
+  <A extends object>(result: A): A & { readonly redacted?: ReadonlyArray<string> } =>
+    removed.length === 0 ? result : { ...result, redacted: [...removed] };
+
+/** A steer's outcome, telling its asker what kind of credential-shaped value was taken out. */
+const outcomeSaying = (removed: ReadonlyArray<string>, outcome: SteerOutcome): SteerOutcome => {
+  const notice = removedNotice(removed);
+  return notice === null
+    ? outcome
+    : { ...outcome, human: `${outcome.human}\n${notice}`, redacted: [...removed] };
+};
 
 /**
  * What a client may ask of a host. Both ends read these declarations, so a request is a
@@ -619,7 +634,11 @@ const handlers = (
             },
             registry.grant({ runId, name, command }),
           ).pipe(Effect.provideContext(bun)),
-        steer: ({ runId, text, request, operation, agent, mode, attachments }, { client }) => {
+        steer: (
+          { runId, text: given, request, operation, agent, mode, attachments },
+          { client },
+        ) => {
+          const { text, removed } = scrub(given);
           const into = attachmentsDir(runDir(dir, runId));
           const actor = stampIn(declared, client);
           // Files go only into a Run this host has.
@@ -680,6 +699,7 @@ const handlers = (
                       actor,
                     }),
                   ),
+                  Effect.map(saying(removed)),
                 ),
               );
             }),
@@ -1146,21 +1166,20 @@ const frontDoorHandlers = (
             project,
             id,
             request,
-            input,
-            text,
             inferred,
             root,
             options,
             task,
-            taskLabel,
             parent,
-            intent,
             verify,
             attachments,
+            ...given
           },
           { client },
-        ) =>
-          attachedFor(attachments, (asked) =>
+        ) => {
+          const scrubbed = scrubJson(given);
+          const { input, text, taskLabel, intent } = scrubbed.value;
+          return attachedFor(attachments, (asked) =>
             fresh(
               (started) => started.runId,
               { operation: "start", request, ...whoOf(client), asked, result: Started },
@@ -1201,17 +1220,21 @@ const frontDoorHandlers = (
                             attachments,
                           }),
                         ),
+                        Effect.map(saying(scrubbed.removed)),
                       ),
                 ),
               ),
             ),
-          ),
-        answer: ({ runId, decision, value, request }, { client }) =>
-          fresh(
+          );
+        },
+        answer: ({ runId, decision, value: given, request }, { client }) => {
+          const { text: value, removed } = scrub(given);
+          return fresh(
             () => runId,
             { operation: "answer", request, ...whoOf(client), result: Answered },
-            registry.answer({ runId, decision, value, request }),
-          ),
+            registry.answer({ runId, decision, value, request }).pipe(Effect.map(saying(removed))),
+          );
+        },
         control: ({ runId, control, set, request, reason }, { client }) =>
           auditedControl(
             runId,
@@ -1367,14 +1390,18 @@ const frontDoorHandlers = (
               return swept;
             }),
           ),
-        invoke: ({ runId, offer, input, request, attachments }, { client }) =>
-          attachedFor(attachments, (asked) =>
+        invoke: ({ runId, offer, input: given, request, attachments }, { client }) => {
+          const { value: input, removed } = scrubJson(given);
+          return attachedFor(attachments, (asked) =>
             fresh(
               () => runId,
               { operation: "invoke", request, ...whoOf(client), asked, result: Started },
-              registry.invoke({ runId, offer, input, request, attachments }),
+              registry
+                .invoke({ runId, offer, input, request, attachments })
+                .pipe(Effect.map(saying(removed))),
             ),
-          ),
+          );
+        },
         upload: (part, { client }) =>
           refusedPlainly(
             Effect.gen(function* () {
@@ -1472,8 +1499,11 @@ const frontDoorHandlers = (
                 )
               : Effect.succeed({ proposal }),
           ),
-        propose: ({ herd, interpretation, actions, request: requestId }, { client }) =>
-          Effect.gen(function* () {
+        propose: ({ herd, request: requestId, ...given }, { client }) => {
+          const scrubbed = scrubJson(given);
+          const { interpretation, actions } = scrubbed.value;
+          const removed = scrubbed.removed;
+          return Effect.gen(function* () {
             const asker = askerEnv(client);
             const decoded = Schema.decodeUnknownOption(Schema.Array(ActionSchema))(actions);
             if (Option.isNone(decoded))
@@ -1500,7 +1530,7 @@ const frontDoorHandlers = (
                 Effect.flatMap((result) =>
                   !result.ok && REJECTED.includes(result.error.code)
                     ? Effect.fail(new SteerUnanswered({ outcome: outcomeOf(result) }))
-                    : Effect.succeed(outcomeOf(result)),
+                    : Effect.succeed(outcomeSaying(removed, outcomeOf(result))),
                 ),
               ),
             );
@@ -1508,7 +1538,7 @@ const frontDoorHandlers = (
             Effect.catch((cause) =>
               Effect.succeed(
                 Schema.is(SteerUnanswered)(cause)
-                  ? cause.outcome
+                  ? outcomeSaying(removed, cause.outcome)
                   : Schema.is(RequestConflict)(cause)
                     ? outcomeOf(err("invalid_input", cause.reason))
                     : outcomeOf(
@@ -1518,9 +1548,12 @@ const frontDoorHandlers = (
             ),
             Effect.provideContext(bun),
             Effect.provideContext(hosted),
-          ),
-        act: ({ actions, request }, { client }) =>
-          plainly(
+          );
+        },
+        act: ({ actions: given, request }, { client }) => {
+          const scrubbed = given.map((one) => scrubJson(one));
+          const actions = scrubbed.map((one) => one.value);
+          return plainly(
             Schema.decodeUnknownEffect(Schema.Array(ActionSchema))(actions).pipe(
               Effect.mapError(
                 () =>
@@ -1539,10 +1572,20 @@ const frontDoorHandlers = (
                   : carryOutAsked(askerEnv(client), decoded, {
                       ...whoOf(client),
                       requestId: request,
-                    });
+                    }).pipe(
+                      Effect.map((results) =>
+                        results.map((result, index) => {
+                          const notice = removedNotice(scrubbed[index]?.removed ?? []);
+                          return notice === null
+                            ? result
+                            : { ...result, note: [result.note, notice].filter(Boolean).join("; ") };
+                        }),
+                      ),
+                    );
               }),
             ),
-          ),
+          );
+        },
         reconcile: ({ proposal, index, as, request }, { client }) =>
           plainly(
             Effect.gen(function* () {
@@ -1675,8 +1718,13 @@ const frontDoorHandlers = (
               ),
             ),
           ),
-        changeIntent: ({ runId, change, propagate: spread, request }, { client }) =>
-          plainly(
+        changeIntent: ({ runId, change: given, propagate: spread, request }, { client }) => {
+          const scrubbed =
+            given.kind === "set-goal" || given.kind === "add-constraint"
+              ? scrubJson(given)
+              : { value: given, removed: [] };
+          const change = scrubbed.value;
+          return plainly(
             Effect.gen(function* () {
               const edit = Effect.gen(function* () {
                 if ((yield* registry.view(runId)) === null)
@@ -1766,7 +1814,7 @@ const frontDoorHandlers = (
                   }
                 const answer = { version: next?.version ?? null, propagated };
                 return approved === undefined ? answer : { ...answer, approved };
-              });
+              }).pipe(Effect.map(saying(scrubbed.removed)));
               return yield* change.kind === "verification"
                 ? edit
                 : once(
@@ -1781,7 +1829,8 @@ const frontDoorHandlers = (
                     edit,
                   );
             }),
-          ),
+          );
+        },
         settleDelivery: ({ runId, delivery, as, request }, { client }) =>
           plainly(
             once(
@@ -1925,8 +1974,9 @@ const frontDoorHandlers = (
               );
             }),
           ),
-        steerAbout: ({ runId, text, from, dryRun, request }, { client }) =>
-          Effect.gen(function* () {
+        steerAbout: ({ runId, text: given, from, dryRun, request }, { client }) => {
+          const { text, removed } = scrub(given);
+          return Effect.gen(function* () {
             const view = yield* registry.view(runId);
             if (view === null)
               return { ok: false, code: "run_not_found", human: `No Run "${runId}".`, data: {} };
@@ -1962,19 +2012,19 @@ const frontDoorHandlers = (
                       data: fromText(toText(said.error.details)),
                     },
                   });
-                return {
+                return outcomeSaying(removed, {
                   ok: true,
                   code: null,
                   human: said.human,
                   data: fromText(toText(said.data)),
-                };
+                });
               }),
             );
           }).pipe(
             Effect.catch((cause) =>
               Effect.succeed(
                 Schema.is(SteerUnanswered)(cause)
-                  ? cause.outcome
+                  ? outcomeSaying(removed, cause.outcome)
                   : Schema.is(RequestConflict)(cause)
                     ? { ok: false, code: "invalid_input", human: cause.reason, data: {} }
                     : {
@@ -1986,9 +2036,11 @@ const frontDoorHandlers = (
               ),
             ),
             Effect.provideContext(bun),
-          ),
-        followUp: ({ runId, text, request, attachments }, { client }) =>
-          attachedFor(attachments, (asked) =>
+          );
+        },
+        followUp: ({ runId, text: given, request, attachments }, { client }) => {
+          const { text, removed } = scrub(given);
+          return attachedFor(attachments, (asked) =>
             fresh(
               () => runId,
               { operation: "followup", request, ...whoOf(client), asked, result: Started },
@@ -2017,9 +2069,10 @@ const frontDoorHandlers = (
                   request,
                   attachments,
                 });
-              }),
+              }).pipe(Effect.map(saying(removed))),
             ),
-          ),
+          );
+        },
         read: ({ tool, input }, { client }) =>
           Effect.promise(() => import("./tools")).pipe(
             Effect.flatMap(({ answerRead }) => answerRead(askerEnv(client), tool, input)),

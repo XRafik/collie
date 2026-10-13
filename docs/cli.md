@@ -644,6 +644,16 @@ A fan-out finds its plan from its work source even where the kind was never reco
 its input, as for an implement Run started from a plan's end menu: a plan directory is the
 plan, so `children` lists every repository it names, those not started as `todo`.
 
+## Credentials never go in a goal or a steer
+
+Every operation that carries words to a Run — `run start` (its goal, Inputs and
+constraints), `run intent set-goal` and `add-constraint`, `run steer`, `steer`, a follow-up,
+`run answer`, and the same actions through chat and the board — has any credential-shaped
+value replaced by its kind before the host records or forwards it. It is never refused for
+one. The result says so in its text, and in `--json` as `redacted`: the kind of each value
+taken out, `[]` or absent where there was none. Give an agent a credential through its
+forge login instead ([Using Collie](using.md#credentials-never-go-in-a-goal-or-a-steer)).
+
 ## Answer a question
 
 A run waiting on a question reports `status: "suspended"` and lists it in `waiting` with

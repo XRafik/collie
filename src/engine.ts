@@ -3287,6 +3287,8 @@ export const Steered = Schema.Struct({
   gone: Schema.optionalKey(Schema.Boolean),
   /** The Run's Workflow has ended, so a gone agent's request is carried on by a new Run. */
   finished: Schema.optionalKey(Schema.Boolean),
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export const RunView = Schema.Struct({
