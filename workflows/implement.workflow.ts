@@ -819,6 +819,7 @@ const rally = (ask: {
         instructions: prompts.fix,
         input: {
           ...ask.input,
+          verify: renderApproved(yield* host.approved(runId)),
           iteration: String(at),
           max_iterations: String(ROUNDS),
           findings: formatFindings(round.live),

@@ -1777,7 +1777,7 @@ scenario(
           { file: "01-first.md", title: "the first one", checks: "unit" },
           { file: "02-second.md", title: "the second one", checks: "unit" },
         ]);
-        yield* approve("r-impl-build-findings", ["unit"]);
+        yield* approve("r-impl-build-findings", []);
         const finding = {
           severity: "major",
           title: "the agent reported a missing guard",
@@ -1785,7 +1785,10 @@ scenario(
           detail: "an empty list goes through it",
         };
         yield* rig.queueOutputs([
-          { ...BUILT, verdict: "findings", findings: [finding] },
+          {
+            writes: [naming("r-impl-build-findings", ["unit"])],
+            output: { ...BUILT, verdict: "findings", findings: [finding] },
+          },
           { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [finding] },
           { verdict: "clean", fixed: [{ title: finding.title, file: finding.file }], checks: [] },
           CLEAN_SYNTHESIS,
@@ -1806,7 +1809,9 @@ scenario(
         expect(review).toContain(finding.title);
         expect(review).toContain("01-first.md");
         expect(review).toContain("Later tickets have not started");
-        expect(yield* asked("r-impl-build-findings", "01-first.md.fix-1")).toContain(finding.title);
+        const fix = yield* asked("r-impl-build-findings", "01-first.md.fix-1");
+        expect(fix).toContain(finding.title);
+        expect(fix).toContain(`- unit: true (in ${rig.projectDir})`);
         expect(yield* asked("r-impl-build-findings", "01-first.md.review-2-1")).toContain(
           `${dir}/agents/r-impl-build-findings/01-first.md.fix-1.json`,
         );

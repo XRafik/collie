@@ -1464,7 +1464,7 @@ function intentChange(
                   if (failed === "") return result;
                   return {
                     ...result,
-                    human: `${result.human}\nThe grant holds, but intent show will not list it: ${failed}`,
+                    human: `${result.human}\nThe check change stands, but intent show will not reflect it: ${failed}`,
                   };
                 }),
               ),
