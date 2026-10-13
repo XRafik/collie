@@ -263,6 +263,9 @@ stable release. The run says `claim retained; recovery required` beside where it
 claim over, first stopping the failed run and every child it started as `run stop` does,
 waiting for them to stop, and closing their agents again. An agent that will not close, or
 a run still in the middle of a step, stops the takeover rather than being left to work on.
+A run that fails holding no claim offers **Renovate again** instead: the same repository,
+team and issue, in the checkout the failed run left, which the new run takes over while it
+holds nothing to lose ([A run that roams across branches](using.md#a-run-that-roams-across-branches)).
 
 **It asks you** at the points where asking is the work: a breaking or substantial
 migration, an update that cannot be merged safely, a bounded retry that made no progress,

@@ -2228,10 +2228,17 @@ export const hostLayer = (options: {
               login: env.gitlabLogin,
               recordedBy: (at) =>
                 store.runs.pipe(
-                  Effect.map(
-                    (rows) =>
-                      rows.find((one) => placedOf(one, {}).worktree?.path === at)?.run ?? null,
-                  ),
+                  Effect.map((rows) => {
+                    const one = rows.find((row) => placedOf(row, {}).worktree?.path === at);
+                    // A review's fix round never takes over another Run's checkout.
+                    return one === undefined
+                      ? null
+                      : {
+                          run: one.run,
+                          worktree: placedOf(one, {}).worktree ?? null,
+                          release: Effect.succeed("a review's fix round takes over nothing"),
+                        };
+                  }),
                 ),
             }),
           );
@@ -3025,6 +3032,13 @@ const encodePlacing = Schema.encodeSync(PlacingJson);
 
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
+
+/** Where a row works: as placed, or, while it is being placed, as its receipt says so far. */
+const workingPlace = (row: RunRow): Placed => {
+  if (!unplaced(row)) return placedOf(row, {});
+  const receipt = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
+  return receipt?.checkout?.placed ?? { ...placedOf(row, {}), cwd: receipt?.from ?? row.project };
+};
 
 /** Where a Run works: as the host placed it, or for a row from before that, as it started. */
 const placedOf = (row: RunRow, options: Readonly<Record<string, string>>): Placed =>
@@ -3846,11 +3860,40 @@ const makeRegistry: (
         explicit: ask.options.branch ?? null,
         login: placing.env.gitlabLogin,
         recordedBy: (at) =>
-          store.runs.pipe(
-            Effect.map(
-              (rows) => rows.find((row) => placedOf(row, {}).worktree?.path === at)?.run ?? null,
-            ),
-          ),
+          Effect.gen(function* () {
+            const rows = yield* store.runs;
+            const others = rows.filter((row) => row.run !== ask.runId);
+            const recorders = others
+              .filter((row) => workingPlace(row).worktree?.path === at)
+              .map((row) => row.run);
+            const latest = others.findLast((row) => workingPlace(row).worktree?.path === at);
+            if (latest === undefined) return null;
+            // Whoever works in it, recorded or not and by whatever path, gives it up too.
+            const real = (dir: string) => fs.realPath(dir).pipe(Effect.orElseSucceed(() => dir));
+            const here = yield* real(at);
+            const users: string[] = [];
+            for (const row of others) {
+              const cwd = yield* real(workingPlace(row).cwd);
+              if (cwd === here || cwd.startsWith(`${here}/`)) users.push(row.run);
+            }
+            const runs = new Set(
+              [...recorders, ...users].flatMap((run) => [run, ...descendantsOf(rows, run)]),
+            );
+            return {
+              run: latest.run,
+              worktree: workingPlace(latest).worktree ?? null,
+              release: releaseRuns([...runs]).pipe(
+                Effect.flatMap((why) => (why === null ? agentIn(here) : Effect.succeed(why))),
+              ),
+            };
+          }),
+        claimed: (worktree) =>
+          ask.record({
+            checkout: {
+              placed: { cwd: worktree.path, branch: null, workspace: null, worktree },
+              opened: null,
+            },
+          }),
       }).pipe(
         Effect.mapError(
           (cause) =>
@@ -4569,6 +4612,45 @@ const makeRegistry: (
     ).status;
     return status === "complete" || status === "failed";
   });
+
+  /** Why a live agent in any session works inside `dir`, or null when none does. */
+  const agentIn = Effect.fn("Engine.agentIn")(function* (dir: string) {
+    const real = (at: string) => fs.realPath(at).pipe(Effect.orElseSucceed(() => at));
+    // Unlike liveHerds, an unlisted session is a refusal: its agents may work in it.
+    const listed = yield* Effect.result(placing.herdr.sessionList());
+    if (listed._tag === "Failure")
+      return "herdr would not list its sessions, whose agents may work in it";
+    const sessions =
+      listed.success.length === 0
+        ? [placing.herdr]
+        : listed.success.map((one) => placing.herdr.inSession(one.socketPath));
+    for (const herdr of sessions) {
+      const panes = yield* Effect.result(herdr.paneList());
+      if (panes._tag === "Failure") return "herdr would not say which agents work in it";
+      for (const pane of panes.success) {
+        if (!pane.agent) continue;
+        for (const at of [pane.cwd, pane.foregroundCwd]) {
+          if (at === null) continue;
+          const there = yield* real(at);
+          if (there === dir || there.startsWith(`${dir}/`)) {
+            return `agent ${pane.agent} in pane ${pane.paneId} works in it`;
+          }
+        }
+      }
+    }
+    return null;
+  }, Effect.provideContext(bun));
+
+  /** Closes ended Runs' agents; null once closed, or why not. A stopped Run may resume. */
+  const releaseRuns = Effect.fn("Engine.releaseRuns")(function* (runs: ReadonlyArray<string>) {
+    for (const runId of runs) {
+      if (!(yield* workflowEnded(runId))) return `${runId} has not ended and may still go on in it`;
+    }
+    const agents = yield* Agents;
+    const left: string[] = [];
+    for (const runId of runs) left.push(...(yield* agents.halt(runId)).left);
+    return left.length === 0 ? null : `its agents did not all close (${left.join("; ")})`;
+  }, Effect.provideContext(hostServices));
 
   /** Sets a control, and a stop over every child the Run started, then wakes what must look again. */
   const applyControl = Effect.fn("Engine.applyControl")(function* (

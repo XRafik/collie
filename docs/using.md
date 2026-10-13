@@ -358,7 +358,7 @@ stash stack — looks like, which is the thing this exists to prevent.
 `renovate` changes the repository too, but it does not build one branch — it moves across
 every Renovate Bot branch it merges. So it gets a checkout of its own that is **detached**
 at the repository's default branch as the remote has it, at
-`~/.herdr/worktrees/<repo>/renovate`, and no branch is created or claimed for the run.
+`~/.herdr/worktrees/<repo>/roaming`, and no branch is created or claimed for the run.
 There is no `--input branch=` for it, and nothing it does binds a branch to its worktree:
 it fetches and checks out each Renovate branch inside that one checkout and pushes with an
 explicit refspec, so a Renovate branch that already has a checkout of yours is left where
@@ -368,16 +368,33 @@ it is and reported, never taken over.
 one the run was started in. The repository has to be checked out locally already — cloning
 from a URL is not something a run does. Two renovate runs on two repositories get two
 checkouts, one per repository. A second one on the _same_ repository is refused rather
-than handed the first's working tree. So are two repositories that share a name — the
-path is `<repo>` as the directory is called, so two `api`s want the same one — and so is
-anything else in the way, rather than being built over.
+than handed the first's working tree while the first may still go on — running, waiting,
+or stopped, since a resume picks a stopped run up again. So are two repositories that
+share a name — the path is `<repo>` as the directory is called, so two `api`s want the
+same one — and so is anything else in the way, rather than being built over.
 
-A refusal says only what is known: which repository git says owns the path, and which
-run recorded it where a run record proves one did. Nothing is guessed, and neither the
-checkout nor either repository is touched. Looking and creating happen under one lock
-keyed by that path, so two runs starting at the same moment cannot both find it free.
-The path is yours again once that run's checkout is removed or pruned; a resumed run
-reuses only the checkout it recorded itself, and never claims a new one.
+A run whose workflow has ended — failed or finished — does not keep the path from the next
+renovation of its repository. The new run takes the checkout over when git still lists it
+as one of that repository's, it is the very checkout the ended run made — not one made at
+the same path since, which is someone else's — no other run that may go on works in it —
+recorded it or not, a run started inside it, or through a link to it, counts — no agent in
+any herdr session is working inside it, wherever its pane was opened (a herdr that will
+not list its sessions cannot say, so that is a refusal too), and it holds nothing
+to lose: no uncommitted or untracked change, no ignored file the default branch would
+overwrite, and no commit that only its detached `HEAD` reaches once the fetch is done (a
+branch checked out in it keeps its commits as a branch). The ended runs' agents are closed
+first, as a stop closes them, and the tree is checked again after; then it is moved,
+detached, to the default branch as just fetched, and the log says whose it was. It is
+recorded as the new run's before the lock on its path is let go, so a start right behind
+it finds it taken. Anything less is a refusal naming what keeps it, and nothing is removed
+or forced.
+
+A refusal says only what is known: which repository git says owns the path, which run
+recorded it where a run record proves one did, and why that run keeps it. Nothing is
+guessed, and neither the checkout nor either repository is touched. Looking and creating
+happen under one lock keyed by that path, so two runs starting at the same moment cannot
+both find it free. A resumed run reuses only the checkout it recorded itself, and never
+claims a new one.
 
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds

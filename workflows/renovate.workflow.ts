@@ -284,6 +284,14 @@ export const renovation = (landing: Landing = shippedLanding) =>
         inputs: { repository: "started-with", team: "started-with", issue: "started-with" },
         eligible: (facts) => facts.claim !== null,
       },
+      {
+        id: "renovate-again",
+        title: "Renovate again",
+        workflow: "self",
+        when: "failed",
+        inputs: { repository: "started-with", team: "started-with", issue: "started-with" },
+        eligible: (facts) => facts.claim === null,
+      },
     ],
     run: ({ input: asked }) =>
       Effect.gen(function* () {
