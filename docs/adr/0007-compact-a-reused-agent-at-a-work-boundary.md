@@ -2,7 +2,7 @@
 
 Collie asks a harness to compact its own context at one place: immediately before a
 reused agent that has finished its previous work is given the next piece. One user-wide
-absolute threshold decides — 372,000 current-context tokens, `0` to turn it off — and one
+absolute threshold decides — 150,000 current-context tokens since the amendment below, `0` to turn it off — and one
 policy in `src/compaction.ts` owns the threshold, the fixed five-minute budget and what
 counts as an outcome. The four harness adapters in `src/compactors.ts` supply only four
 things each: a compatibility gate, the launch arguments that install the controls, the
@@ -186,3 +186,12 @@ after launch is lost — the TUI is registered before it will take typed input, 
 session stays empty. It happens with `compact_at_tokens` set to `0` as well, so it is not
 this feature's, and OpenCode's live proof above needed that first prompt sent again by
 hand. Worth its own fix.
+
+## Amended 2026-10-13: 150,000 tokens by default
+
+The default threshold is 150,000 current-context tokens, not 372,000. 372,000 sat just under
+Claude Code's own 400,000 auto-compact window, so an agent working through a plan's tickets
+carried most of a window from one ticket into the next and was rarely compacted by Collie
+at all. At 150,000 each ticket starts well short of the window, and the boundary is still
+the only place Collie compacts. `0` still turns it off, the auto-compact window setting is
+unchanged, and nothing else here changes.

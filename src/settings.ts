@@ -5,6 +5,7 @@
 import { Option, Schema } from "effect";
 import { GITLAB_HOST, isHostName } from "./gitlab-token";
 import { NOTIFICATION_KINDS } from "./notify";
+import { parseProfile } from "./profile";
 import { isString } from "./schema";
 
 /**
@@ -55,7 +56,7 @@ export const HARNESS_NAMES = ["claude", "codex", "opencode", "pi"] as const;
  * feature off. Absolute rather than a percentage of a window: the four harnesses
  * measure different windows, and one number is what a human can reason about.
  */
-export const COMPACT_AT_TOKENS = 372_000;
+export const COMPACT_AT_TOKENS = 150_000;
 export const COMPACTION_OFF = 0;
 
 /** Claude Code's own auto-compact window, as its `--autocompact` takes it. */
@@ -127,6 +128,8 @@ export interface Defaults {
   proactive: boolean;
   /** The one GitLab doctor and onboard check a Machine against. */
   gitlabHost: string;
+  /** The operator's overlay for the agents Collie launches, as the JSON text written. */
+  agentProfile: string;
 }
 
 export const FALLBACK_DEFAULTS: Defaults = {
@@ -148,13 +151,14 @@ export const FALLBACK_DEFAULTS: Defaults = {
   questions: "focus",
   proactive: true,
   gitlabHost: GITLAB_HOST,
+  agentProfile: "",
 };
 
 /**
- * How a setting is typed: one of `choices`, a whole number, free text, on or off, or a
- * comma-separated list.
+ * How a setting is typed: one of `choices`, a whole number, free text, on or off, a
+ * comma-separated list, or a JSON document kept as its text.
  */
-export type SettingKind = "choice" | "number" | "text" | "boolean" | "list";
+export type SettingKind = "choice" | "number" | "text" | "boolean" | "list" | "json";
 
 /** Where a setting is shown, in the order it is shown. */
 export const SETTING_GROUPS = [
@@ -300,6 +304,12 @@ export const SETTINGS: ReadonlyArray<Setting> = [
       "An agent that produces nothing this long is nudged, nudged again at double and given up on at triple. 0 waits as long as it takes.",
     unit: "minutes",
   }),
+  of("agent_profile", "json", D.agentProfile, {
+    group: "Agents",
+    label: "Agent profile",
+    description:
+      'Per role, or "*" for any role without its own: env for every harness, a value or {"file": "<0600 path>"}, and claude settings merged into Collie\'s own. Empty launches agents as Collie always has.',
+  }),
   of("max_iterations", "number", String(D.maxIterations), {
     group: "Runs",
     label: "Rounds of review",
@@ -417,6 +427,10 @@ export function parseSetting(
         key === "fallbacks" ? items.map(fallbackProblem).find((one) => one !== null) : null;
       if (bad !== undefined && bad !== null) return { refused: `fallbacks: ${bad}` };
       return { value: items.length === 0 ? null : items };
+    }
+    case "json": {
+      const profile = parseProfile(said);
+      return "refused" in profile ? profile : { value: said };
     }
     case "text": {
       if (key === "claude_auto_compact_window") {

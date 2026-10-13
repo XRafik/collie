@@ -54,6 +54,8 @@ import { agentName, shellQuote } from "../src/naming";
 import { controlDir, withControlLock, type CompactionPorts } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
+import { FALLBACK_DEFAULTS } from "../src/settings";
+import type { AgentProfile } from "../src/profile";
 
 let rig: Rig;
 let dir: string;
@@ -2426,6 +2428,41 @@ test("a reused agent is compacted before its next piece of work, and a new one i
     }),
   ));
 
+/** How many times a reused agent at `tokens` is asked to compact, at the default threshold. */
+const compactionsAtDefault = (tokens: number) =>
+  Effect.gen(function* () {
+    yield* rig.queueOutputs([
+      { verdict: "clean", note: "first" },
+      { verdict: "clean", note: "second" },
+    ]);
+    const asked: string[] = [];
+    yield* listing.execute({ runId: "r1", input: ITEMS }).pipe(
+      Effect.provide(listingBody),
+      Effect.provide(
+        agentsLayer({
+          ...hostOf(),
+          compactAtTokens: FALLBACK_DEFAULTS.compactAtTokens,
+          ports: fullContext(asked, tokens),
+        }),
+      ),
+      Effect.provide(foundationLayer({ dir })),
+      Effect.scoped,
+      Effect.orDie,
+    );
+    return asked.length;
+  });
+
+test("by default a reused agent past 150,000 tokens compacts between tickets", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(FALLBACK_DEFAULTS.compactAtTokens).toBe(150_000);
+      expect(yield* compactionsAtDefault(160_000)).toBe(1);
+    }),
+  ));
+
+test("by default a reused agent under 150,000 tokens is not compacted", () =>
+  runEffect(compactionsAtDefault(140_000).pipe(Effect.map((asked) => expect(asked).toBe(0)))));
+
 test("a boundary whose context cannot be sampled records no context line, never a zero", () =>
   runEffect(
     Effect.gen(function* () {
@@ -3031,5 +3068,189 @@ test("a stop closes a Claude agent's pane even while its controls are locked, ha
         session(halted("r1"), controls),
       );
       expect(halt).toEqual({ stopped: [agentFor("r1")], left: [] });
+    }),
+  ));
+
+/** What was typed into the agent's pane, in order, as herdr was asked to run it. */
+const paneLines = (calls: ReadonlyArray<Call>) =>
+  calls.flatMap((call) =>
+    call.argv?.[0] === "pane" && call.argv[1] === "run" ? [call.argv[3] ?? ""] : [],
+  );
+
+const withProfile = (profile: AgentProfile) =>
+  configured(encodeJson({ agent_profile: encodeJson(profile) }));
+
+/** Claude's compaction controls as shipped, with nothing to wait on before the first prompt. */
+const claudeSettingsControls = (): CompactionPorts => ({
+  claude: { ...COMPACTION_PORTS.claude!, gate: () => Effect.void, ready: undefined },
+});
+
+test("with no agent profile a launch types and passes what it always has", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      const before = yield* session(
+        Effect.gen(function* () {
+          yield* started("r1");
+          const first = yield* rig.calls();
+          yield* withProfile({});
+          yield* started("r2");
+          return first;
+        }),
+      );
+      const after = (yield* rig.calls()).slice(before.length);
+
+      const same = (calls: ReadonlyArray<Call>, runId: string) =>
+        [...paneLines(calls), ...launchArgs(calls)].map((said) => said.replaceAll(runId, "<run>"));
+      expect(same(after, "r2")).toEqual(same(before, "r1"));
+      expect(launchArgs(after)).not.toContain("--settings");
+    }),
+  ));
+
+test("with no agent profile Claude's settings file is what Collie always wrote", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      const settingsOf = (runId: string) =>
+        Effect.gen(function* () {
+          const from = (yield* rig.calls()).length;
+          yield* started(runId);
+          const args = launchArgs((yield* rig.calls()).slice(from));
+          return yield* read(args[args.indexOf("--settings") + 1] ?? "");
+        });
+      const [before, after] = yield* session(
+        Effect.gen(function* () {
+          const first = yield* settingsOf("r1");
+          yield* withProfile({ implementer: { env: { ONLY: "theirs" } } });
+          return [first, yield* settingsOf("r2")] as const;
+        }),
+        { compactAtTokens: 1000, ports: claudeSettingsControls() },
+      );
+
+      const runless = (text: string) => text.replaceAll(/\br[12]\b/g, "<run>");
+      expect(runless(after)).toEqual(runless(before));
+      expect(before).toContain("hooks");
+    }),
+  ));
+
+test("a profile's environment is set in the pane before the harness starts, and a file-held value is written nowhere", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const secret = ["glpat", "synthetic0000000000test"].join("-");
+      yield* fs.makeDirectory(`${rig.root}/secrets`, { recursive: true });
+      yield* fs.writeFileString(`${rig.root}/secrets/token`, `${secret}\n`);
+      yield* fs.chmod(`${rig.root}/secrets/token`, 0o600);
+      yield* withProfile({
+        reviewer: {
+          env: { PONYTAIL_DEFAULT_MODE: "off", DEPLOY_TOKEN: { file: "~/secrets/token" } },
+        },
+      });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      const calls = yield* rig.calls();
+      const typed = paneLines(calls);
+      expect(typed).toContain("export PONYTAIL_DEFAULT_MODE='off'");
+      expect(typed).toContain(
+        `IFS= read -r DEPLOY_TOKEN < '${rig.root}/secrets/token'; export DEPLOY_TOKEN`,
+      );
+      const startAt = calls.findIndex((call) => call.argv?.[1] === "start");
+      const lastTyped = calls.findLastIndex(
+        (call) => call.argv?.[0] === "pane" && call.argv[1] === "run",
+      );
+      expect(lastTyped).toBeLessThan(startAt);
+
+      const leaked: string[] = [];
+      for (const path of yield* fs.readDirectory(rig.root, { recursive: true })) {
+        const at = `${rig.root}/${path}`;
+        if (at === `${rig.root}/secrets/token`) continue;
+        if ((yield* fs.stat(at)).type !== "File") continue;
+        if ((yield* fs.readFileString(at).pipe(Effect.orElseSucceed(() => ""))).includes(secret))
+          leaked.push(path);
+      }
+      expect(leaked).toEqual([]);
+      expect(calls.filter((call) => JSON.stringify(call).includes(secret))).toEqual([]);
+    }),
+  ));
+
+test("a file-held value that is not 0600 parks the launch by its path, and opens no tab", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(`${rig.root}/token`, "hunter2\n");
+      yield* fs.chmod(`${rig.root}/token`, 0o644);
+      yield* withProfile({ "*": { env: { DEPLOY_TOKEN: { file: "~/token" } } } });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* interrupted("r1", suspended("r1"));
+
+      expect(yield* statusNow("r1")).toBe("suspended");
+      const why = yield* read(controlPath(dir, PARKED, "r1"));
+      expect(why).toContain(`${rig.root}/token is mode 0644, not 0600`);
+      expect(why).not.toContain("hunter2");
+      const cmds = yield* rig.cmds();
+      expect(cmds).not.toContain("tab create");
+      expect(cmds).not.toContain("agent start");
+    }),
+  ));
+
+test("a Claude overlay is merged into Collie's settings file, and Collie's hooks stay first", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const guard = { matcher: "Bash", hooks: [{ type: "command", command: "guard" }] };
+      yield* withProfile({
+        "*": {
+          claude: {
+            enabledPlugins: { "ponytail@market": false },
+            disableClaudeAiConnectors: true,
+            hooks: { PreToolUse: [guard], UserPromptSubmit: [guard] },
+          },
+        },
+      });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"), { compactAtTokens: 1000, ports: claudeSettingsControls() });
+
+      const args = launchArgs(yield* rig.calls());
+      expect(args.filter((arg) => arg === "--settings")).toHaveLength(1);
+      const settings = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            statusLine: Schema.Unknown,
+            enabledPlugins: Schema.Unknown,
+            disableClaudeAiConnectors: Schema.Boolean,
+            hooks: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)),
+          }),
+        ),
+      )(yield* read(args[args.indexOf("--settings") + 1] ?? ""));
+      expect(settings.enabledPlugins).toEqual({ "ponytail@market": false });
+      expect(settings.disableClaudeAiConnectors).toBe(true);
+      expect(settings.hooks.PreToolUse).toEqual([guard]);
+      expect(settings.hooks.UserPromptSubmit).toHaveLength(2);
+      expect(settings.hooks.UserPromptSubmit?.[1]).toEqual(guard);
+      expect(Object.keys(settings.hooks)).toEqual(
+        expect.arrayContaining(["PreCompact", "PostCompact", "UserPromptSubmit"]),
+      );
+    }),
+  ));
+
+test("without Collie's controls, a Claude overlay is a settings file of its own", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* withProfile({
+        reviewer: { claude: { claudeMdExcludes: ["/home/me/.claude/CLAUDE.md"] } },
+      });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      const args = launchArgs(yield* rig.calls());
+      const path = args[args.indexOf("--settings") + 1] ?? "";
+      expect(path).toBe(`${dir}/agents/r1/review.settings.json`);
+      expect(yield* read(path)).toContain("/home/me/.claude/CLAUDE.md");
     }),
   ));

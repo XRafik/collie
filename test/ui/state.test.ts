@@ -548,7 +548,7 @@ test("a setting a Desktop shares with the Flock says so, and a remembered one do
     definitions: null,
     settings: {
       configPath: "/u/config.json",
-      defaults: [{ key: "model", value: "opus" }],
+      defaults: [{ key: "model", value: "opus", multiline: false }],
       remembered: [{ key: "linear.team", value: "CEG" }],
       trust: { cwd: "/w", state: "trusted" },
       flock: "laptop",

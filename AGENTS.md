@@ -121,6 +121,12 @@ herdr actions, and the `collie` CLI.
   `test/flock-chat-turns.test.ts`, `test/desktop-settings.test.ts` and
   `test/flock-tools.test.ts`. A model change waits for the current turn and keeps the
   conversation.
+- **Changing what a managed agent is launched with beyond Collie's own setup** →
+  [ADR-draft-a-managed-agent-runs-with-the-operators-profile](docs/adr/draft-a-managed-agent-runs-with-the-operators-profile.md)
+  and [`docs/using.md`](docs/using.md#what-collies-agents-get), alongside `src/profile.ts`
+  (what `agent_profile` may say, its env lines and the Claude merge) and the launch in
+  `src/agents.ts`, with `test/profile.test.ts` and `test/agents.test.ts`. A secret is a 0600
+  file on each Machine, read by the pane's shell; only its path is shared.
 - **Changing what files a Run, or the Flock chat, is given** →
   [ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md), alongside
   `src/attachments.ts` (a Run's copies and its prompts' list), `src/uploads.ts` and

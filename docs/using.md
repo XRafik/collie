@@ -2024,7 +2024,7 @@ working tree to review, so the target menu is one entry — **Type it…**.
   "handoff_timeout_ms": 7200000,
   "quiet_ms": 600000,
   "board_quiet_ms": 300000,
-  "compact_at_tokens": 372000,
+  "compact_at_tokens": 150000,
   "claude_auto_compact_window": 400000,
   "notifications": { "run-done": false },
   "proactive": true,
@@ -2120,11 +2120,76 @@ set, `auto` for the model's own window, or a whole number from 100000 to 1000000
 Claude Code's alone; Codex, OpenCode and Pi are passed nothing. See
 [Compaction between pieces of work](#compaction-between-pieces-of-work).
 
+`agent_profile` is what the agents Collie launches get beyond Collie's own setup, per role.
+See [What Collie's agents get](#what-collies-agents-get).
+
 `gitlab_host` is the one GitLab this Machine works against, `gitlab.cego.dk` unless you
 change it under Settings, which refuses anything that is not a host name. `collie doctor`
 checks glab's login, the token and `git push` for that host alone, and `collie onboard` logs
 in and pushes to it; another host glab knows is named in a note and never counts against
 the Machine. `GITLAB_HOST`, or `--gitlab-host` on either command, overrides it for one run.
+
+## What Collie's agents get
+
+An agent Collie launches is a fresh harness in a pane, so it would otherwise pick up
+everything your own sessions do: every plugin and persona, every connector, your global
+`CLAUDE.md`. `agent_profile` says what a managed agent gets instead, per role, without
+touching your own sessions or config files. It is one shared setting, edited as JSON under
+Settings in the TUI (Alt+Enter for a new line) and in Desktop, or with
+`collie settings set agent_profile '<json>'`, and the latest edit reaches every Machine.
+Empty, which is the default, launches agents exactly as before.
+
+```json
+{
+  "*": {
+    "env": { "PONYTAIL_DEFAULT_MODE": "off" },
+    "claude": {
+      "enabledPlugins": { "ponytail@your-marketplace": false },
+      "claudeMdExcludes": ["/home/you/.claude/CLAUDE.md"],
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [{ "type": "command", "command": "~/bin/no-substitution" }]
+          }
+        ]
+      }
+    }
+  },
+  "implementer": {
+    "env": {
+      "PONYTAIL_DEFAULT_MODE": "off",
+      "DEPLOY_TOKEN": { "file": "~/.secrets/deploy-token" }
+    },
+    "claude": { "disableClaudeAiConnectors": true }
+  }
+}
+```
+
+These are one operator's choices, shown as examples rather than defaults: the persona
+plugin's mode off for managed agents, the persona plugin itself off, claude.ai connectors
+off for roles that need none, `~/.claude/CLAUDE.md` excluded, a `PreToolUse` guard that
+refuses command substitution because CrowdStrike flags it, and — should the security
+runbook find tools printing tokens — a second guard against the commands that print them.
+
+- **A role's own entry, else `*`.** A role with its own entry gets only that one; the two
+  are not merged.
+- **`env`, for every harness.** Each name is a value, or `{"file": "<path>"}` for a value
+  held in a file. Collie types `export NAME='value'` into the agent's pane before the
+  harness starts; for a file it types `IFS= read -r NAME < '<path>'`, so the shell reads
+  the value and Collie never sees or types it. The value is the file's first line. `~` is
+  that Machine's home, and each Machine keeps its own file at that path. The server Collie
+  starts for a Codex or OpenCode agent runs the same lines first, so its tools see the same
+  environment.
+- **A secret is never a literal.** The setting is shared with every Machine, so a value
+  that looks like a credential is refused with the reason, and is held in a file instead.
+  A file that is missing, or not mode `0600`, stops that agent's launch with its path and
+  the problem, never its contents; fix it and resume the Run.
+- **`claude`, for Claude Code only.** `enabledPlugins`, `skillOverrides`,
+  `claudeMdExcludes`, `disableClaudeAiConnectors` and `hooks` are merged into the settings
+  file Collie passes with `--settings`, Collie's own hooks first. `disableAllHooks`, which
+  would switch Collie's hooks off, and any other key are refused with the reason. Codex, Pi
+  and OpenCode take `env` only.
 
 ## Compaction between pieces of work
 
@@ -2135,7 +2200,8 @@ piece of work, Collie reads that harness's own current-context measure and, at o
 anything.
 
 One absolute number rather than a percentage: the four harnesses measure different
-windows, and one number is what you can reason about. **372,000 tokens** by default.
+windows, and one number is what you can reason about. **150,000 tokens** by default, so an
+agent working through a plan's tickets starts each one well short of its window.
 `"compact_at_tokens": 0` turns the feature off; anything else has to be a whole number of
 tokens above zero, and a value that is not is refused where it is written and fails a step
 that would launch an agent rather than falling back to the default. There are no workflow,

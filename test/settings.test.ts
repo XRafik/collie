@@ -119,6 +119,7 @@ describe("Each setting explains itself", () => {
       "compact_at_tokens",
       "claude_auto_compact_window",
       "quiet_ms",
+      "agent_profile",
     ],
     Runs: ["max_iterations", "handoff_timeout_ms"],
     Board: ["scope", "density", "board_quiet_ms"],

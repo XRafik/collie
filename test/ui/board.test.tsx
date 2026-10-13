@@ -857,8 +857,9 @@ test("Steer… opens the record with the keyboard in the steer field, and Enter 
 const SETTINGS = {
   configPath: "/home/mk/.collie/config.json",
   defaults: [
-    { key: "harness", value: "claude" },
-    { key: "density", value: "comfortable" },
+    { key: "harness", value: "claude", multiline: false },
+    { key: "density", value: "comfortable", multiline: false },
+    { key: "agent_profile", value: "", multiline: true },
   ],
   remembered: [{ key: "linear.team", value: "Collie" }],
   trust: { cwd: "/w/collie", state: "trusted" },
@@ -1013,6 +1014,24 @@ test("density is a setting, and the board is drawn at the one that is set", () =
       expect(wide.lineOf("Ccc")).toBe(wide.lineOf("Aaa"));
       const comfortable = yield* mount(appState({ tasks: three }), 120);
       expect(comfortable.lineOf("Ccc")).not.toBe(comfortable.lineOf("Aaa"));
+    }),
+  ));
+
+test("the agent profile is typed over several lines, and Enter sets it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const app = yield* mount(appState({ tasks: HERD, view: "settings", settings: SETTINGS }));
+
+      yield* app.clickOn("agent_profile");
+      void app.mockInput.typeText("{");
+      yield* app.flush;
+      app.mockInput.pressEnter({ meta: true });
+      yield* app.flush;
+      void app.mockInput.typeText("}");
+      yield* app.flush;
+      app.mockInput.pressEnter();
+      yield* app.flush;
+      expect(app.acted()).toEqual([{ _tag: "SetDefault", key: "agent_profile", value: "{\n}" }]);
     }),
   ));
 

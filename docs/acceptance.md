@@ -205,3 +205,9 @@ among it. It stays pending until someone records the result at a revision.
 Remote Run records, Intent mutations, remembered checks, override clearing, verification
 and live check output have backend rows proved by `test/remote-cli.test.ts`. The caller
 has no local Runs; both inferred and explicit Machine selection read the owner's record.
+
+A managed agent's profile has a backend row proved by `test/agents.test.ts`: the role's env
+is typed into its pane before the harness starts, and a file-held value appears in nothing
+Collie wrote. Whether Claude honours the merged settings only a live agent can show, so the
+operator row asks for one Claude agent's `/status`, `/context` and `/hooks` with the overlay
+in effect, recorded at a revision.

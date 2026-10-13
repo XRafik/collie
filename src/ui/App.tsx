@@ -72,7 +72,11 @@ export function App(props: AppProps) {
   /** How many pages of this checkout's earlier finished runs someone has asked for. */
   const [olderPages, setOlderPages] = createSignal(0);
   /** The setting being typed into, and what has been typed at it. */
-  const [editing, setEditing] = createSignal<{ key: string; typed: string } | null>(null);
+  const [editing, setEditing] = createSignal<{
+    key: string;
+    typed: string;
+    multiline: boolean;
+  } | null>(null);
   /** The cards picked with shift, by Task: what the bar at the foot acts on. */
   const [picked, setPicked] = createSignal<ReadonlySet<string>>(new Set());
   /** What is being steered, and what has been typed at it so far. */
@@ -164,7 +168,8 @@ export function App(props: AppProps) {
   const act = (command: Command) => {
     closeMenu();
     setToast(null);
-    if (command._tag === "EditSetting") return setEditing({ key: command.key, typed: "" });
+    if (command._tag === "EditSetting")
+      return setEditing({ key: command.key, typed: "", multiline: command.multiline });
     if (command._tag === "OpenRecord") return setOpenId(command.id);
     if (command._tag === "OpenSteer") {
       setOpenId(command.id);
@@ -429,6 +434,8 @@ export function App(props: AppProps) {
     const at = editing();
     if (at === null) return key.name === "escape" ? toBoard() : undefined;
     if (key.name === "escape") return setEditing(null);
+    if (key.name === "return" && key.meta === true && at.multiline)
+      return setEditing({ ...at, typed: `${at.typed}\n` });
     if (key.name === "return") {
       setEditing(null);
       return props.dispatch({ _tag: "SetDefault", key: at.key, value: at.typed });

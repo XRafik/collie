@@ -1459,7 +1459,9 @@ collie settings set <key> <value> [--request-id <id>]
 unsets it. It is an edit made now, so a Desktop that shares settings with its Flock gives it
 to every Machine: the latest edit of a key wins
 ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)). Remembered answers and
-anything else in `config.json` are not settings and are refused.
+anything else in `config.json` are not settings and are refused. `agent_profile` takes its
+JSON as one quoted argument and is refused as a whole where any part of it is
+([What Collie's agents get](using.md#what-collies-agents-get)).
 
 ## Cleaning up
 

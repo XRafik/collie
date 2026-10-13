@@ -108,6 +108,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `forge/*-checks.ts` | Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                     |
 | `template.ts`       | `{{a.b}}` prompt substitution                                                                             |
 | `config.ts`         | User defaults and remembered values in `config.json`                                                      |
+| `profile.ts`        | The operator's `agent_profile`: per role, an agent's env and the Claude settings merged into Collie's     |
 | `compaction.ts`     | One threshold, one work-boundary policy, each agent's controls for its lifetime, and its one stop         |
 | `compactors.ts`     | Each harness's official compaction interface, generated per agent and bundled in Collie                   |
 | `codex.ts`          | Codex's App Server as a client: thread identity, its context, its compactions and its turns               |
