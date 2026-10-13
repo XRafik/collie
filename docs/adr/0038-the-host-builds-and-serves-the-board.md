@@ -66,7 +66,7 @@ D2's "another computer reaches it through a bridge on the Machine itself" is now
 ways. A paired Machine reaches the host through the relay socket its own host keeps for
 this one, piped to a TLS WebSocket and declared here by the listener, and it is served the
 whole host protocol as a bridge is
-([ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md)). `Where.machine` is
+([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)). `Where.machine` is
 additive, so `PROTOCOL` stays at 2.
 
 ## Amended 2026-10-07: one build, shared by every client

@@ -80,7 +80,7 @@ D3's "nothing listening off this machine" holds for every Machine that has not p
 Machine another one dials also listens on a TLS WebSocket, port 47217, and serves only the
 installations it is paired with; each channel it takes is declared on a fresh `host.sock`
 connection by this host, then piped. Removing the last peer that dials it closes the port
-([ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md)).
+([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)).
 
 ## Consequences
 

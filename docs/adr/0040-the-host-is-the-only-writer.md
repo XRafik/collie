@@ -44,4 +44,4 @@ own. A front door names no Herd.
   `collie run clear-override` also execute on the Run's host, under the caller's Actor
   and request id. `collie verify` runs its command there and streams its output; each
   invocation collects fresh evidence and records who asked. Run records and live check
-  logs are read from that same host ([ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md)).
+  logs are read from that same host ([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)).

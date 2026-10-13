@@ -761,11 +761,13 @@ export const entryFromLive = Effect.fn("Dispatcher.entryFromLive")(function* (
   },
 ) {
   const live = (yield* agentsNow(deps)).find((a) => a.name === about.agent);
-  if (!live) return { entry: null, reason: `${about.agent} is gone — herdr no longer has it` };
+  if (!live)
+    return { entry: null, reason: `${about.agent} is gone — herdr no longer has it`, gone: true };
   if (!live.terminalId)
     return {
       entry: null,
       reason: `${about.agent} cannot be addressed: herdr does not name its process`,
+      gone: false,
     };
   const entry: AgentEntry = {
     role: about.role,
@@ -777,7 +779,7 @@ export const entryFromLive = Effect.fn("Dispatcher.entryFromLive")(function* (
     at: yield* nowIso(),
     incarnation: { terminalId: live.terminalId, agentSession: live.agentSession },
   };
-  return { entry, reason: null };
+  return { entry, reason: null, gone: false };
 });
 
 /**

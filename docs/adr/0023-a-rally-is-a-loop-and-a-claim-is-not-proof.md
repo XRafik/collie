@@ -61,7 +61,10 @@ the revision it bound the result to, not where the line was written.
 **D6. The approved set is frozen when the Run starts.** `host.verify` will run only a
 command named in the list the Run was admitted under, argument for argument. Editing
 `.collie/verify.json` changes the next Run and never a live one, and a workflow cannot add
-to its own authority.
+to its own authority. _(Superseded by
+[ADR-0055](0055-a-run-never-asks-to-run-its-checks.md): a Run's checks are not an
+authority. The gate reads them at each pass, and the Run's own agent names them where
+nothing written down does.)_
 
 **D7. The outcome is a fact on the Run, never a reading of its name.** What a Run has to
 prove is the kind its module fixed or the caller selected, recorded at admission and shown

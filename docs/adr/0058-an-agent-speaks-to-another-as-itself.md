@@ -2,7 +2,7 @@
 
 **Status: accepted.** D1–D8 implemented 2026-10-12.
 
-It builds on [ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md), which lets
+It builds on [ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md), which lets
 a Machine reach its peer. It amends [ADR-0039](0039-every-operation-records-who-asked.md)
 with an `agent` front door, and replaces `src/handoff.ts`'s advice to message a planner
 with `herdr agent prompt`.

@@ -214,3 +214,45 @@ export const currentEnv = Effect.gen(function* () {
   }
   return readEnv(env);
 });
+
+const LAUNCHER_PRELOADS = new Set(["./libcef.so", "./libvk_swiftshader.so"]);
+
+/**
+ * Removes Electrobun's launcher variables, preserving the user's surviving entries. Its
+ * library paths are known only by Desktop's `bin`; without one they are kept.
+ */
+export const withoutLauncher = (
+  env: Readonly<Record<string, string | undefined>>,
+  bin?: string,
+) => {
+  const {
+    ELECTROBUN_LAUNCHER_PID: _pid,
+    ELECTROBUN_INSTALL_ROOT_NAME: _root,
+    LD_PRELOAD,
+    LD_LIBRARY_PATH,
+    ICU_DATA,
+    ...inherited
+  } = env;
+  const kept = { ...inherited };
+  const without = (list: string | undefined, launcher: (entry: string) => boolean) =>
+    (list ?? "")
+      .split(":")
+      .filter((entry) => !launcher(entry))
+      .join(":");
+  const preload = without(LD_PRELOAD, (entry) => LAUNCHER_PRELOADS.has(entry));
+  const libraries = without(LD_LIBRARY_PATH, (entry) => entry === bin);
+  if (preload !== "") kept.LD_PRELOAD = preload;
+  if (libraries !== "") kept.LD_LIBRARY_PATH = libraries;
+  if (ICU_DATA !== undefined && ICU_DATA !== "" && ICU_DATA !== bin) kept.ICU_DATA = ICU_DATA;
+  return kept;
+};
+
+/** Removes the launcher's variables from this process, so nothing it starts later is given them. */
+export const leaveLauncher = () => {
+  // Children are given the process environment, not an Effect Config.
+  // oxlint-disable-next-line effecttsgo/process-env
+  const env = process.env;
+  const kept = withoutLauncher(env);
+  for (const name of Object.keys(env)) if (!(name in kept)) delete env[name];
+  Object.assign(env, kept);
+};

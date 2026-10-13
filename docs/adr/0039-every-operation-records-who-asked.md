@@ -65,7 +65,7 @@ host that authenticated the link stamps: a `declare` that sets it is refused. A 
 call to a peer, such as telling it that it was forgotten, is the `host` front door, which
 is never a human. A command in a terminal that reaches another Machine names its door in
 the relay's header rather than declaring it
-([ADR-0054](0054-a-machine-reaches-another-over-a-paired-link.md) D4, D8).
+([ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md) D4, D8).
 
 ## Consequences
 
@@ -81,5 +81,5 @@ the relay's header rather than declaring it
 names its Run through the host's ledger. An unknown pane stays `cli`. Collie's MCP
 and Pi extension read `COLLIE_RUN` and `COLLIE_AGENT` from the launch environment.
 The host records these as `from.run` and `from.agent`, beside the Machine. Tool arguments
-cannot name a sender. [ADR-0055](0055-an-agent-speaks-to-another-as-itself.md) records
+cannot name a sender. [ADR-0058](0058-an-agent-speaks-to-another-as-itself.md) records
 launch wiring, lookup by Run, and the sender line every agent Delivery carries.

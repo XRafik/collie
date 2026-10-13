@@ -39,7 +39,6 @@ import {
   renderApproved,
   renderEvidence,
   renderProgress,
-  requireApproved,
   settleFinalFix,
   settleRound,
   splitDisputed,
@@ -168,7 +167,7 @@ export default defineWorkflow({
   id: "implement",
   title: "implement — build the plan, review it, fix until nothing blocks",
   description:
-    "Builds from a plan dir, a Linear issue or a description, gets one complete review, fixes what blocks until a review finds nothing blocking, then opens the merge request.",
+    "Builds a change on a branch of its own and ends in a merge request: from a plan dir, a Linear issue or a description, it gets one complete review and fixes what blocks until a review finds nothing blocking.",
   input: Schema.Struct({
     plan: Schema.String.annotate({
       description:
@@ -181,11 +180,10 @@ export default defineWorkflow({
   // The branch it builds, on a worktree of its own, so two Runs never share an index.
   checkout: "branch",
   // What kind of result this Run has to prove is the human's to say, and an unclassified
-  // Run is held to its approved commands rather than made a feature by default.
+  // Run is held to its checks rather than made a feature by default.
   outcome: {
     selectable: ["feature", "bug", "refactor", "investigation", "docs", "migration"],
   },
-  verifies: true,
   // A follow-up builds on the same branch, so it is this workflow again rather than
   // another one — and there is nothing to carry on from without a branch to carry it on.
   followUps: [
@@ -251,9 +249,9 @@ export default defineWorkflow({
       // A repository's share that did not build fails, so no wave waits on work that is not there.
       const unbuilt = (reason: string) =>
         share === "" ? Effect.succeed(reason) : Effect.fail(new WorkflowError({ reason }));
-      const approved = yield* requireApproved(kind);
+      const checksNow = Effect.map(host.approved(runId), renderApproved);
 
-      const input: typeof Implementing.Type = {
+      let input: typeof Implementing.Type = {
         inputs: {
           plan: source.value,
           plan_kind: source.kind,
@@ -262,7 +260,7 @@ export default defineWorkflow({
           outcome: kind,
         },
         run: { dir: place.dir, id: runId },
-        verify: renderApproved(approved),
+        verify: yield* checksNow,
       };
       // Where a question the plan does not cover goes: the planner's own pane while one
       // is live, and otherwise the human's.
@@ -309,6 +307,7 @@ export default defineWorkflow({
           instructions: prompts.build,
           input: {
             ...input,
+            verify: yield* checksNow,
             ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
             progress: renderProgress(handed),
             session,
@@ -349,6 +348,8 @@ export default defineWorkflow({
         tickets = yield* ticketsNow;
       }
       if (build === null) return yield* new WorkflowError({ reason: "nothing was built" });
+      // The builder may have named the checks, and every prompt from here shows them.
+      input = { ...input, verify: yield* checksNow };
 
       if (rallied === null || rallied.unreviewed !== "") {
         rallied = yield* rally({
@@ -364,13 +365,12 @@ export default defineWorkflow({
         return yield* unbuilt(rallied.halted);
       }
 
-      // The gate: Collie's own run of every approved command, on this tree, and then what
-      // this kind of result still has no evidence for. An Output saying the tests pass is
-      // a claim; a record in the journal, bound to this tree, is not.
-      const granted = yield* requireApproved(kind);
-      // Each pass is journaled, so a replay follows the results the merge request will
-      // cite rather than a fresh run of checks that may come out differently. What passed
-      // is not run again until a gate fix changes the tree.
+      // The gate: Collie's own run of every check, on this tree, and then what this kind of
+      // result still has no evidence for. An Output saying the tests pass is a claim; a
+      // record in the journal, bound to this tree, is not. Each pass is journaled, so a
+      // replay follows the results the merge request will cite rather than a fresh run of
+      // checks that may come out differently. What passed is not run again until a gate fix
+      // changes the tree.
       let passes = 0;
       let passed: ReadonlyArray<string> = [];
       let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
@@ -404,13 +404,14 @@ export default defineWorkflow({
             passed: Schema.Array(Schema.String),
           }),
           execute: Effect.gen(function* () {
+            const checks = yield* host.approved(runId);
             const now = [...passed];
-            for (const spec of granted) {
+            for (const spec of checks) {
               if (now.includes(spec.name)) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(granted, rallied.reviewed)), passed: now };
+            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
@@ -425,7 +426,7 @@ export default defineWorkflow({
           execute: Effect.gen(function* () {
             const failing = failingNow(
               yield* host.evidence(runId, cwd),
-              granted.map((spec) => spec.name),
+              (yield* host.approved(runId)).map((spec) => spec.name),
             );
             const failed: Array<{ name: string; at: string }> = [];
             for (const name of failing) {
@@ -452,8 +453,7 @@ export default defineWorkflow({
         const findings = gaps.fixable.map((gap) => ({
           severity: "blocker",
           title: gap,
-          detail:
-            "Collie ran the approved checks on this tree, and this is what they did not prove.",
+          detail: "Collie read this Run's checks on this tree, and this is what is still unproved.",
         }));
         const fixed = yield* agentWork({
           operation: `gate-fix-${at}`,
@@ -462,6 +462,7 @@ export default defineWorkflow({
           instructions: prompts.fix,
           input: {
             ...input,
+            verify: yield* checksNow,
             iteration: String(at),
             max_iterations: String(ROUNDS),
             findings: formatFindings(findings),
@@ -491,7 +492,7 @@ export default defineWorkflow({
         success: Schema.Void,
         error: WorkflowError,
         execute: Effect.gen(function* () {
-          const approved = yield* requireApproved(kind);
+          const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
           const reading = Effect.suspend(() => readGaps(approved, reviewed));
           for (const spec of approved)
@@ -525,10 +526,11 @@ export default defineWorkflow({
           yield* host.parked(runId, null);
         }),
       });
+      const checks = yield* host.approved(runId);
       // Failed before this Run changed anything, and still fails: reported, never passed.
       const failing = failingNow(
         yield* host.evidence(runId, cwd),
-        granted.map((spec) => spec.name),
+        checks.map((spec) => spec.name),
       );
       const preexisting = baseline.filter((one) => failing.includes(one.name));
       const unsettled = [
@@ -556,7 +558,7 @@ export default defineWorkflow({
         instructions: prompts.mr,
         input: {
           ...input,
-          verify: renderApproved(spawned(granted, settledEvidence.verifications)),
+          verify: renderApproved(spawned(checks, settledEvidence.verifications)),
           // Read after the gate settled, so the merge request cites the passing runs.
           evidence: renderEvidence(settledEvidence),
           unreviewed,
@@ -817,6 +819,7 @@ const rally = (ask: {
         instructions: prompts.fix,
         input: {
           ...ask.input,
+          verify: renderApproved(yield* host.approved(runId)),
           iteration: String(at),
           max_iterations: String(ROUNDS),
           findings: formatFindings(round.live),

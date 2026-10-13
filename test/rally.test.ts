@@ -296,7 +296,7 @@ test("a command nobody approved is refused, whatever a workflow asks the host fo
         `${rig.projectDir}/sub`,
       );
       expect(asked.refused._tag === "Failure" && asked.refused.failure.reason).toContain(
-        "is not among this Run's approved verifications",
+        "is not among this Run's checks",
       );
       expect(asked.elsewhere._tag === "Failure" && asked.elsewhere.failure.reason).toContain(
         "is not inside run r-perm",

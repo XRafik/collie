@@ -6,7 +6,7 @@
 // snapshots differ is `unstable` — never `pass`, and never quietly re-run.
 //
 // Nothing here goes through a shell. The command is an executable and an argument list,
-// resolved once and recorded as an absolute path, so what was approved is what ran.
+// resolved once and recorded as an absolute path, so the check named is what ran.
 
 import { Data, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -343,12 +343,11 @@ function passFields(given: CheckPass | undefined): Pick<Verification, "pass" | "
 }
 
 /**
- * A verification Collie runs itself, which it may do only for a command in the Run's
- * approved set — exactly, argument by argument. The wrapper is part of what was approved:
- * `npm test` and `npm test -- --bail` are not the same permission. A human writes that set
- * (verify.json, `--verify`, `run intent verification`), or chat does: a start's `verify`,
- * or `set_verification`, which `collie_propose` carries out with no yes (ADR-0011,
- * 2026-09-29). It runs here, outside any agent's permission rules.
+ * A verification Collie runs itself, which it does only for one of the Run's checks —
+ * exactly, argument by argument. The wrapper is part of the check: `npm test` and
+ * `npm test -- --bail` are not the same one. Anyone names them (verify.json, `--verify`,
+ * `run intent verification`, chat's `set_verification`), with no yes (ADR-0055). It runs
+ * here, outside any agent's permission rules.
  */
 export const runApproved = Effect.fn("Verify.runApproved")(function* (
   runDir: string,
@@ -369,7 +368,7 @@ export const runApproved = Effect.fn("Verify.runApproved")(function* (
   );
   if (!match)
     return yield* new VerifyRefused({
-      why: `"${spec.name}" is not among this Run's approved verifications, argument for argument`,
+      why: `"${spec.name}" is not among this Run's checks, argument for argument`,
     });
   const path = yield* Path.Path;
   const cwd = spec.cwd === "worktree" ? (run.worktree ?? run.cwd) : path.resolve(run.cwd, spec.cwd);

@@ -81,7 +81,7 @@ const stateOf = (view: RunView): RunState => {
       return view.parked !== null || view.waiting.some((one) => one.answer === null)
         ? "waiting"
         : "running";
-    // A wait that parked suspends its own instance, not the Run's, so it is still pending.
+    // Concurrent work can keep the Run pending while one Activity is parked.
     case "pending":
       if (stopped) return "stopped";
       return view.parked !== null ? "waiting" : "running";

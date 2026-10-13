@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate`, `investigate` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `general`, `investigate` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -66,12 +66,12 @@ herdr actions, and the `collie` CLI.
   ([ADR-0013](docs/adr/0013-the-board-is-cards-of-tasks.md), which supersedes what
   [ADR-0005](docs/adr/0005-collie-tab-is-an-application.md) says the tab draws).
 - **Changing how an agent reaches another** →
-  [ADR-0055](docs/adr/0055-an-agent-speaks-to-another-as-itself.md), alongside
+  [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md), alongside
   `src/harness.ts` (tool wiring), `src/tools.ts` and `asksRun` in `src/lifecycle.ts`
   (lookup), `src/dispatcher.ts` (sender line) and `src/handoff.ts` (planner address),
   with `test/agent-origin.test.ts` and `test/mcp.test.ts`.
 - **Changing how a Machine reaches another** →
-  [ADR-0054](docs/adr/0054-a-machine-reaches-another-over-a-paired-link.md) and
+  [ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md) and
   [`docs/internals.md`](docs/internals.md#reaching-another-machine), alongside `src/peers.ts`
   (the pairing, the listener and the relay sockets), `src/peers-model.ts` (what Desktop
   shares of it), `src/channel.ts` (the one declare-then-pipe the bridge and the link use),
@@ -80,7 +80,7 @@ herdr actions, and the `collie` CLI.
   hosts, a fake herdr each and a fake `ssh`). Adding a Machine to herdr pairs it; there is
   no command to.
 - **Changing how work an agent starts reports back or closes** →
-  [ADR-0055](docs/adr/0055-an-agent-speaks-to-another-as-itself.md), alongside
+  [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md), alongside
   `src/reports.ts` (report delivery and closure), `requestedBy` in `src/engine.ts`,
   `src/agent-start.ts` (repository and branch fetch) and `workflows/investigate.workflow.ts`,
   with `test/reports.test.ts`. Another Run's live agent or a human pane keeps the workspace.
@@ -176,7 +176,7 @@ herdr actions, and the `collie` CLI.
   assume about suspension and recovery** →
   [ADR-0014](docs/adr/0014-native-workflows-run-on-effects-own-engine.md), alongside
   `src/engine.ts` and `test/engine.test.ts`. The two non-default cluster settings
-  and the five upstream behaviours the proof measured are recorded there; an Effect
+  and the six upstream behaviours the proof measured are recorded there; an Effect
   upgrade rechecks them rather than assuming them.
 - **Naming something, or writing a test that needs a real host** →
   [ADR-0028](docs/adr/0028-names-are-the-domains-and-the-proof-drives-the-shipped-host.md),
@@ -251,9 +251,9 @@ herdr actions, and the `collie` CLI.
   [`docs/sdk.md`](docs/sdk.md#reviewing-and-fixing-until-it-converges), alongside
   `src/output.ts`, `src/outcome.ts`, `src/verify.ts` and `test/rally.test.ts`. The engine
   and a module make the same decision through `settleRound`; a check is a claim until the
-  verification journal has it on this revision. The approved set is the human's or chat's:
-  chat's `set_verification` is carried out with no yes, and Collie spawns what it names
-  ([ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-09-29-chat-may-choose-what-proves-a-run)).
+  verification journal has it on this revision. Nobody approves a Run's checks: a human,
+  chat or the Run's own agent names them, and Collie spawns what they name
+  ([ADR-0055](docs/adr/0055-a-run-never-asks-to-run-its-checks.md)).
 - **Changing how a list of work, a ticket slice or a repository fan-out recovers** →
   [ADR-0024](docs/adr/0024-a-list-of-work-is-known-by-its-names.md) and
   [`docs/sdk.md`](docs/sdk.md#a-list-of-work-one-item-at-a-time), alongside `src/slices.ts`,

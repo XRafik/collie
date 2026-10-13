@@ -38,6 +38,8 @@ interface FakePane {
   /** What a plugin attached, which is what the Home's ownership proof reads back. */
   tokens?: Record<string, string>;
   terminal_id?: string | null;
+  /** The socket of the one session that lists it; unset, every session does. */
+  session?: string;
 }
 
 interface FakeAgent {
@@ -113,6 +115,8 @@ const FakePaneSchema = Schema.Struct({
   agent_status: Schema.optionalKey(Schema.NullOr(Schema.String)),
   workspace_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
   foreground_cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** The socket of the one session that lists it; unset, every session does. */
+  session: Schema.optionalKey(Schema.String),
 });
 const FakeAgentSchema = Schema.Struct({
   name: Schema.String,
@@ -169,6 +173,11 @@ const SessionsJson = Schema.fromJsonString(
 const FailuresJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 const QueuedOutputJson = Schema.Union([Schema.String, Schema.Null, Schema.JsonObject]);
 const QueueJson = Schema.fromJsonString(Schema.Array(QueuedOutputJson));
+/** A queued entry for an agent that writes files before its Output, as a grant would. */
+const Scripted = Schema.Struct({
+  writes: Schema.Array(Schema.Struct({ path: Schema.String, text: Schema.String })),
+  output: QueuedOutputJson,
+});
 const JsonRecord = Schema.fromJsonString(Schema.Any);
 const encodeJson = Schema.encodeSync(JsonRecord);
 const emptyFailures: Record<string, string> = {};
@@ -396,13 +405,20 @@ function handle(
         const queue = yield* readQueue(queuePath);
         const next = queue[state.outputs];
         state.outputs += 1;
-        if (next !== undefined && next !== null) {
+        // An agent that acts before it answers: what it writes, then its Output.
+        const scripted = Option.getOrNull(Schema.decodeUnknownOption(Scripted)(next));
+        for (const one of scripted?.writes ?? []) {
+          yield* fs.makeDirectory(path.dirname(one.path), { recursive: true });
+          yield* fs.writeFileString(one.path, one.text);
+        }
+        const output = scripted === null ? next : scripted.output;
+        if (output !== undefined && output !== null) {
           const outputPath = match[1]!.trim();
           yield* fs.makeDirectory(path.dirname(outputPath), { recursive: true });
-          const plain = Schema.decodeUnknownOption(Schema.String)(next);
+          const plain = Schema.decodeUnknownOption(Schema.String)(output);
           yield* fs.writeFileString(
             outputPath,
-            Option.isSome(plain) ? plain.value : encodeJson(next),
+            Option.isSome(plain) ? plain.value : encodeJson(output),
           );
         }
       }
@@ -561,7 +577,11 @@ function handle(
       if (code !== "" && code !== "timeout") return answered;
       // The text reached the pane and the harness never took it: `enter` leaves it in the
       // prompt box for an Enter to send, `text` loses it outright.
-      const lost = yield* envString("FAKE_HERDR_PROMPT_LOST");
+      const lostTimes = Number.parseInt(yield* envString("FAKE_HERDR_PROMPT_LOST_TIMES", "0"), 10);
+      const lost =
+        lostTimes > 0 && state.prompts > lostTimes
+          ? ""
+          : yield* envString("FAKE_HERDR_PROMPT_LOST");
       if (lost !== "") {
         if (lost === "enter") state.typed = argv[3] ?? "";
         yield* writeJson(statePath, state);
@@ -686,18 +706,21 @@ function handle(
       }
       case "pane list": {
         const held = yield* tokensFor("panes");
+        const socket = yield* envString("HERDR_SOCKET_PATH");
         result = {
           type: "pane_list",
           // A pane herdr made carries the workspace it was made in; one a test placed
           // may name its own.
-          panes: state.paneList.map((p) => ({
-            ...p,
-            workspace_id: p.workspace_id ?? "1",
-            tokens: { ...p.tokens, ...held[p.pane_id] },
-            // A pane herdr made has a terminal behind it; its id is the other half of
-            // the Home's ownership proof, so it is as stable as the pane's own id.
-            terminal_id: p.terminal_id ?? `t-${p.pane_id}`,
-          })),
+          panes: state.paneList
+            .filter((p) => p.session === undefined || p.session === socket)
+            .map((p) => ({
+              ...p,
+              workspace_id: p.workspace_id ?? "1",
+              tokens: { ...p.tokens, ...held[p.pane_id] },
+              // A pane herdr made has a terminal behind it; its id is the other half of
+              // the Home's ownership proof, so it is as stable as the pane's own id.
+              terminal_id: p.terminal_id ?? `t-${p.pane_id}`,
+            })),
         };
         break;
       }

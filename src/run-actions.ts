@@ -283,17 +283,17 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         Effect.as(""),
         Effect.catch((cause) => Effect.succeed(String(cause))),
       );
-      const done = command === null ? `${action.name} withdrawn` : `${action.name} granted`;
+      const done = command === null ? `${action.name} withdrawn` : `${action.name} named`;
       return {
         state: "applied" as const,
         note:
           unlisted === ""
             ? done
-            : `${done}; the grant holds, but intent show will not list it: ${unlisted}`,
+            : `${done}; the check change stands, but intent show will not reflect it: ${unlisted}`,
       };
     }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
   );
-  // A finished Run is the usual one: its checks were granted while it ran.
+  // A finished Run is the usual one: its checks were named while it ran.
   registerExecutor("remember_verification", (action, _by, env) =>
     Effect.gen(function* () {
       const run = yield* findRun(env, action.run);

@@ -166,6 +166,8 @@ const ThreadRead = Schema.Struct({
     cwd: Schema.optionalKey(Schema.String),
     /** True for the cheap thread a TUI keeps for itself, which is not the agent. */
     ephemeral: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    /** Set on a sub-agent the agent spawned, which is its work and not the agent. */
+    parentThreadId: Schema.optionalKey(Schema.NullOr(Schema.String)),
   }),
 });
 const ItemsList = Schema.Struct({
@@ -221,7 +223,8 @@ const decoded = <S extends Schema.Top>(what: string, schema: S, value: Reply["re
  * An `ephemeral` thread is not one of them. A 0.153.4 TUI loads a cheap thread of its
  * own — a different model, no preview — beside the one it is working in, so every Codex
  * agent's own endpoint answers `thread/loaded/list` with two, and reading the agent's
- * context would have been refused for the rest of its life.
+ * context would have been refused for the rest of its life. Nor is a sub-agent the agent
+ * spawned, which is loaded beside it in the same directory.
  */
 export const boundThread = Effect.fn("Codex.boundThread")(function* (
   client: CodexClient,
@@ -241,7 +244,7 @@ export const boundThread = Effect.fn("Codex.boundThread")(function* (
       ThreadRead,
       yield* client.call("thread/read", { threadId }),
     );
-    if (read.thread.ephemeral === true) continue;
+    if (read.thread.ephemeral === true || read.thread.parentThreadId) continue;
     if (read.thread.cwd !== undefined && read.thread.cwd !== cwd) {
       elsewhere.push(`${threadId} in ${read.thread.cwd}`);
       continue;

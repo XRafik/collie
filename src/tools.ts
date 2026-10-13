@@ -25,14 +25,12 @@ import { Clock, Crypto, Effect, Result, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 import type { PluginEnv } from "./env";
 import {
-  answerAction,
   choiceLines,
   inCollieState,
   newRequestId,
   runFacts,
   workspaceCwdFromPanes,
 } from "./operations";
-import { gateOf } from "./board";
 import { projectsRoot } from "./projects";
 import type { Action } from "./actions";
 import {
@@ -57,7 +55,7 @@ import { taskOfWorkspace } from "./task";
 import { pendingFor, proposalsPath, read as readProposals } from "./proposals";
 import { statusLine } from "./disposition";
 import { Herdr } from "./herdr";
-import { ASKED_KINDS, EVIDENCE_GATE, type FLOCK_READS } from "./board-model";
+import { ASKED_KINDS, type FLOCK_READS } from "./board-model";
 import { asText as newsText, NATIVE } from "./news";
 import { findRun, listRuns, type RunFacts } from "./runs";
 import { donePasses, markersOf, runningCheck } from "./checks";
@@ -498,12 +496,12 @@ const workspaceFacts = Effect.fn("Tools.workspaces")(function* (env: PluginEnv) 
       ? "Projects root: none"
       : `Projects root: ${root.path} — a checkout under it is named by its directory name`,
     "",
-    "workflows, with the Inputs each takes (? is optional):",
+    "workflows, with the Inputs each takes (? is optional) and what it is for:",
     ...[...saved]
       .sort((a, b) => a.id.localeCompare(b.id))
       .map(
         (one) =>
-          `- ${one.id} (${one.inputs.map((input) => `${input.name}${input.required ? "" : "?"}`).join(", ")})`,
+          `- ${one.id} (${one.inputs.map((input) => `${input.name}${input.required ? "" : "?"}`).join(", ")})${one.description === "" ? "" : ` — ${one.description}`}`,
       ),
     ...(saved.length === 0 ? ["- none"] : []),
     "",
@@ -548,21 +546,10 @@ const receiptFacts = Effect.fn("Tools.receipts")(function* (env: PluginEnv, run:
   // Every delivery is on the ledger now: the one sender writes there before it sends,
   // so there is no second place a steer can be sitting unrecorded.
   const unread: string[] = [];
-  const gate = yield* gateOf(found, env.userDir);
   const waiting = [
     ...found.asking.flatMap((asked) =>
       choiceLines(run, asked).map((line, n) => (n === 0 ? `- ${line}` : `  ${line}`)),
     ),
-    ...(gate === null
-      ? []
-      : gate.verifications.length === 0
-        ? [
-            `- the evidence gate, with no checks configured to approve: grant one with set_verification, or collie run intent verification ${run} --name <name> -- <command>`,
-          ]
-        : [
-            `- the evidence gate, offering the checks ${gate.verifications.join(", ")}`,
-            `  Approve them all with the collie_do action ${answerAction(run, EVIDENCE_GATE, "approve")}, or some with "approve:<name>,<name>"`,
-          ]),
     ...proposals.map(
       (p) => `- ${p.id} (${p.content_hash}): ${p.interpretation} — expires ${p.expires_at}`,
     ),

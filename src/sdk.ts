@@ -33,8 +33,6 @@ import {
   checkGaps,
   evidenceGaps,
   isOutcome,
-  needsApproved,
-  nothingApproved,
   refInside,
   type Outcome,
 } from "./outcome";
@@ -106,7 +104,7 @@ export { FINDINGS_FILE, REVIEW_FILE, leaveReview, openFindingsIn, riskLine } fro
 export type { Snapshot, Verification } from "./verify";
 export type { VerifySpec } from "./verify-spec";
 
-/** The approved commands as a human would type them, for a prompt to name what it faces. */
+/** This Run's checks as a human would type them, for a prompt to name what it faces. */
 export { renderApproved } from "./verify-spec";
 
 /**
@@ -415,8 +413,6 @@ export interface Declarations {
    * in the checkout the Run was started for.
    */
   readonly checkout?: "branch" | "roaming";
-  /** Its gate runs the approved set, so a start with nothing approved is refused. */
-  readonly verifies?: boolean;
   readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
@@ -513,6 +509,13 @@ export interface HostApi {
    * host itself was given beside the author's input.
    */
   readonly place: (runId: string) => Effect.Effect<Place>;
+  /**
+   * The checkout of the branch this Run's diff target names, recorded as the Run's own:
+   * `place` answers with it from then on, and every verification is bound to it
+   * (ADR-0054). The one git already has, else one cut from the branch; asking again
+   * answers from the record. Take it inside an Activity, so a replay does not cut again.
+   */
+  readonly checkoutReviewed: (runId: string) => Effect.Effect<ReviewedCheckout>;
   readonly held: (runId: string) => Effect.Effect<boolean>;
   readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
   readonly record: (runId: string, event: string) => Effect.Effect<void>;
@@ -530,9 +533,8 @@ export interface HostApi {
    */
   readonly evidence: (runId: string, cwd: string) => Effect.Effect<CheckEvidence>;
   /**
-   * Runs one of the commands this Run was started under the authority of, and records
-   * what it did against the tree it ran on. A name nobody approved is refused: the list
-   * is a human's, read when the Run started, and a workflow cannot add to it.
+   * Runs one of this Run's checks, and records what it did against the tree it ran on. A
+   * name that is not among them is refused.
    */
   readonly verify: (options: {
     readonly runId: string;
@@ -555,9 +557,9 @@ export interface HostApi {
     readonly round?: number;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
-   * What this Run may have Collie run for it. A prompt names them so an agent knows what
-   * its work is going to be held to, and the gate before a merge request reads the same
-   * list. A workflow cannot add to it: it is a human's, read when the Run started.
+   * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt
+   * names them so an agent knows what its work is held to, and the gate reads them again
+   * at every pass, since anyone may name another with `collie run intent verification`.
    */
   readonly approved: (runId: string) => Effect.Effect<ReadonlyArray<VerifySpec>>;
   /**
@@ -635,6 +637,11 @@ export interface Place {
   readonly lineage: ReadonlyArray<string>;
 }
 
+/** The reviewed branch's checkout, or why there is none, in the resolver's own words. */
+export type ReviewedCheckout =
+  | { readonly cwd: string; readonly branch: string }
+  | { readonly refused: string };
+
 /** What opening a merge request from here needs, and what it would be filled in with. */
 export interface MrReady {
   readonly ok: boolean;
@@ -694,26 +701,6 @@ export const ask = (question: {
     return yield* DurableDeferred.await(
       DurableDeferred.make(question.name, { success: Schema.String }),
     );
-  });
-
-/**
- * What this Run may have Collie run to prove its kind of result. Where that kind needs
- * the approved set and nothing is approved, the Run parks with the repair instead of
- * spending work no gate could accept; a resume asks again.
- */
-export const requireApproved = (
-  kind: string,
-): Effect.Effect<ReadonlyArray<VerifySpec>, never, Run | Host | WorkflowInstance> =>
-  Effect.gen(function* () {
-    const runId = (yield* Run).id;
-    const host = yield* Host;
-    const approved = yield* host.approved(runId);
-    if (approved.length > 0 || !needsApproved(isOutcome(kind) ? kind : "unspecified")) {
-      yield* host.parked(runId, null);
-      return approved;
-    }
-    yield* host.parked(runId, nothingApproved(runId));
-    return yield* Workflow.suspend(yield* WorkflowInstance);
   });
 
 /**
@@ -842,8 +829,6 @@ export interface WorkflowMetadata {
    * in the checkout the Run was started for.
    */
   readonly checkout?: typeof DeclaredCheckout.Type;
-  /** Its gate runs the approved set, so a start with nothing approved is refused. */
-  readonly verifies?: boolean;
   readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
@@ -945,7 +930,6 @@ const OfferFields = {
 /** What metadata has to be before any of it can be read: a module is JavaScript by now. */
 const DeclaredMetadata = Schema.Struct({
   hints: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-  verifies: Schema.optionalKey(Schema.Boolean),
   closes: Schema.optionalKey(Schema.Literal("reported")),
   outcome: Schema.optionalKey(
     Schema.Struct({

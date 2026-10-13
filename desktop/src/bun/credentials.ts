@@ -12,7 +12,7 @@ import { inTerminal } from "../../../src/in-terminal";
 import { scriptLine } from "../../../src/script";
 import type { OnboardRun } from "../shared/flock";
 import { quoted, type ShellRoute, spawned } from "./machine";
-import { childEnv, which } from "./login-env";
+import { CHILD_CWD, childEnv, which } from "./login-env";
 import { ranWith, shOn, tracked } from "./onboarding";
 
 export const GITLAB = `https://${GITLAB_HOST}`;
@@ -266,7 +266,7 @@ export const claudeLoginThrough = Effect.fn("Desktop.claudeLoginThrough")(functi
   const command = yield* route.sh(
     `export BROWSER=${SHIM}; if [ -t 0 ]; then exec claude auth login; else ${scriptLine("claude auth login")}; fi`,
   );
-  const child = yield* inTerminal(command, { env: childEnv() }, spawned);
+  const child = yield* inTerminal(command, { env: childEnv(), cwd: CHILD_CWD }, spawned);
   const printed = child.output.pipe(
     Stream.decodeText(),
     Stream.splitLines,

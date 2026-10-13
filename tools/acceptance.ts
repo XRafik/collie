@@ -81,6 +81,8 @@ const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
 const MACHINES = "machines reach each other (this MR)";
+const CHECKS_UNASKED = "checks run without asking (this MR)";
+const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
@@ -869,9 +871,22 @@ const WORKFLOWS: readonly Check[] = [
     },
   },
   {
+    id: "workflows/a-general-run-does-one-task-in-place",
+    statement:
+      "A general Run does one task in place with one agent and ends with its summary: it cuts no checkout, offers nothing, fails with the agent's reason where it was blocked, and at the Projects root its agent is told to find the repository.",
+    owner: GENERAL,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "a general Run",
+    },
+  },
+  {
     id: "workflows/generic-code-decides-nothing-by-a-workflow-name",
     statement:
-      "Nothing in the runtime or the board chooses a checkout, a card, a tab or an offer because a Run's workflow is called plan, implement, review, architecture or renovate. Workflows compose by id; Collie does not dispatch on one.",
+      "Nothing in the runtime or the board chooses a checkout, a card, a tab or an offer because a Run's workflow is called plan, implement, review, architecture, renovate or general. Workflows compose by id; Collie does not dispatch on one.",
     owner: MODULES,
     needs: "backend",
     proof: {
@@ -1016,6 +1031,16 @@ const WORKFLOWS: readonly Check[] = [
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
   {
+    id: "chat/an-ad-hoc-request-starts-general",
+    statement: "An ad-hoc request in chat starts `general`, not `implement` or `plan`.",
+    owner: GENERAL,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In Desktop, ask the Flock chat for a chore like upgrading a Machine's install to the latest release; record which workflow it started, with the Run's id and the revision.",
+    },
+  },
+  {
     id: "agents/claude-code-runs-with-the-configured-auto-compact-window",
     statement:
       "Every Claude Code agent Collie starts, the Home's native chat among them, runs with the configured auto-compact window: 400000 until set, and a Desktop edit reaches the next agent without its host being restarted.",
@@ -1157,6 +1182,19 @@ const OPERATOR_CHECKS: readonly Check[] = [
     },
   },
   {
+    id: "checks/a-run-names-its-own-checks-and-collie-runs-them-unasked",
+    statement:
+      "A Run in a repository with no checks file names its own checks, and Collie runs them at the gate with no approval asked.",
+    owner: CHECKS_UNASKED,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "a check the builder names is run by Collie at the gate and listed in the merge request, with nothing asked",
+    },
+  },
+  {
     id: "checks/a-running-checks-output-opens-live-from-the-board",
     statement:
       "While Collie runs a check for a Run, the drawer shows its last lines, and Open check output opens a pane in the Task's workspace that prints the output as it is written and says how the check ended.",
@@ -1164,7 +1202,7 @@ const OPERATOR_CHECKS: readonly Check[] = [
     needs: "operator",
     proof: {
       kind: "operator",
-      how: "With HERDR_PLUGIN_STATE_DIR pointed at a scratch directory and herdr on a disposable Herd, never the live one: start one Run whose one approved check prints for a few seconds, open its card's drawer while the check runs, choose Open check output, and record the pane's workspace, the lines it printed as they came, its closing line, and the revision.",
+      how: "With HERDR_PLUGIN_STATE_DIR pointed at a scratch directory and herdr on a disposable Herd, never the live one: start one Run whose one check prints for a few seconds, open its card's drawer while the check runs, choose Open check output, and record the pane's workspace, the lines it printed as they came, its closing line, and the revision.",
     },
   },
   {
