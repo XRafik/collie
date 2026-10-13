@@ -2,10 +2,11 @@
 // a FakeBin executable answering from the same model for host-driven tests. Both log
 // every call they get.
 
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Effect, FileSystem, Path, Schema } from "effect";
 import type { MrForge } from "../../src/board-model";
 import type { Ran, Runner } from "../../src/mr";
 import type { FakeBin } from "./bin";
+import { shellQuote } from "../../src/script";
 
 export const Check = Schema.Struct({
   name: Schema.String,
@@ -444,7 +445,7 @@ export function fakeForge(forge: MrForge, start: ForgeModel) {
   return { run, calls, model: () => model };
 }
 
-/** The FakeBin face, run as `bun forge-bin.ts <forge> <model file> <args…>`. */
+/** The FakeBin face: the compiled fake or `bun forge-bin.ts`, with the same arguments. */
 export const forgeBin = Effect.fn("forge.bin")(function* (
   forge: MrForge,
   file: string,
@@ -472,7 +473,9 @@ export const forgeOnPath = Effect.fn("forge.onPath")(function* (
   const file = path.join(bin.dir, `${forge}.model.json`);
   yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(model));
   const script = yield* path.fromFileUrl(new URL("./forge-bin.ts", import.meta.url));
-  yield* bin.add(CLI[forge], `exec bun '${script}' ${forge} '${file}' "$@"`);
+  const binary = yield* Config.String("COLLIE_TEST_FAKE_FORGE").pipe(Config.withDefault(""));
+  const command = binary === "" ? [process.execPath, script] : [binary];
+  yield* bin.add(CLI[forge], `exec ${[...command, forge, file].map(shellQuote).join(" ")} "$@"`);
   return {
     model: () => Effect.map(fs.readFileString(file), Schema.decodeSync(ModelJson)),
     calls: () =>

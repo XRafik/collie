@@ -13,7 +13,7 @@ test("an isolated world runs the suite's executable and carries its process life
       yield* fs.writeFileString(
         binary,
         `#!/bin/sh
-printf '{"ok":true,"data":{"root":"%s","pid":"%s","grace":"%s"}}\\n' "$COLLIE_TEST_ROOT" "$COLLIE_HOST_WATCH_PID" "$COLLIE_HOST_STOP_GRACE"
+printf '{"ok":true,"data":{"root":"%s","pid":"%s","grace":"%s","forge":"%s"}}\\n' "$COLLIE_TEST_ROOT" "$COLLIE_HOST_WATCH_PID" "$COLLIE_HOST_STOP_GRACE" "$COLLIE_TEST_FAKE_FORGE"
 `,
         { mode: 0o755 },
       );
@@ -33,6 +33,7 @@ printf '{"ok":true,"data":{"root":"%s","pid":"%s","grace":"%s"}}\\n' "$COLLIE_TE
                     root: Bun.env.COLLIE_TEST_ROOT,
                     pid: Bun.env.COLLIE_HOST_WATCH_PID,
                     grace: Bun.env.COLLIE_HOST_STOP_GRACE,
+                    forge: Bun.env.COLLIE_TEST_FAKE_FORGE ?? "",
                   },
                 });
               }),

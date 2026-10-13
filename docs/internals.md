@@ -1028,6 +1028,11 @@ its time.
   A nonzero exit remains visible; an interrupted fixture cannot leave its child running.
   The fake herdr CLI provides only its filesystem and path services, while using the
   same core as the in-process fake.
+  The forge CLI fake is compiled once too, as `COLLIE_TEST_FAKE_FORGE`; it provides only
+  its filesystem service and keeps the same model, call log and exit codes. An isolated
+  world's environment carries that executable through its Config provider. A focused
+  `bun test` still runs its sources with this process's Bun executable, without needing
+  `bun` on the fixture's PATH.
 - **A test can go red.** Break `src/` the way its name says and watch it fail before relying
   on it. A test that cannot fail, or whose every failure another test already has, is
   deleted.
@@ -1122,3 +1127,17 @@ larger than the I/O-thread experiment's apparent gain, so no gain is established
 | ------------------------------ | ----------------------------------- | ----------------------------------------------------------- |
 | 10 workers                     | 124.25 s; all 2,642 passed          | Keep 20 workers                                             |
 | Two Bun I/O threads per worker | 106.06 s; one peer-settings failure | No default change; exposed the incomplete settings snapshot |
+
+The forge fake's original source wrapper took 3.174 s for 30 sequential, validated
+`--version` calls (103.76 ms median). Its minimal source runtime took 2.751 s
+(87.27 ms median); the compiled fake took 0.380 s (12.68 ms median). Each call's output
+and exit were checked. The same fake still answers both forges, records notes and exposes
+nonzero exits; new regressions cover executable selection, literal arguments and the
+source fallback with no Bun command on PATH.
+
+With that compiled fake, two full runs passed all 2,644 tests in 96.46 s and 94.78 s
+as reported by Bun. The latter took 97.28 s including builds. The first queued behind
+another suite, so its external wall time is not a useful execution comparison. The
+runner now prints its time including builds after it takes the suite lock, excluding
+queuing. Startup improved, but the overall gain is within the full suite's observed
+variation. Reporting and resume are now the longest files, each about 94–95 s.

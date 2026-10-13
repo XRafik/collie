@@ -3,9 +3,9 @@
 // A test that starts a host, runs a command or answers as herdr starts a process, and the
 // suite starts well over a thousand. From the sources each one spends most of a second
 // loading modules; compiled to bytecode it is a fraction of that. So this builds `collie`
-// the way a release does and the fake herdr the same way, then runs the suite with
-// `COLLIE_TEST_BINARY` and `COLLIE_TEST_FAKE_HERDR` naming them. `bun test <file>` on its
-// own still runs the sources, which is the quicker loop for one file.
+// the way a release does and both CLI fakes the same way, then runs the suite with
+// `COLLIE_TEST_BINARY`, `COLLIE_TEST_FAKE_HERDR` and `COLLIE_TEST_FAKE_FORGE` naming them.
+// `bun test <file>` on its own still runs the sources, which is the quicker loop for one file.
 //
 // A suite that was killed left its files' roots, and maybe processes carrying their marker:
 // those whose pid is dead are removed before this one starts.
@@ -29,8 +29,10 @@ import { sweepDeadRoots } from "../test/support/sweep";
 const out = resolve(".scratch/test-bin");
 const collie = `${out}/collie`;
 const herdr = `${out}/fake-herdr`;
+const forge = `${out}/fake-forge`;
 
 const suite = Effect.promise(async () => {
+  const started = performance.now();
   sweepDeadRoots(tmpdir());
   const built = await Promise.all([
     Bun.spawn(["bun", "run", "tools/build.ts", `${process.platform}-${process.arch}`, collie], {
@@ -45,6 +47,13 @@ const suite = Effect.promise(async () => {
       format: "esm",
       compile: { outfile: herdr },
     }).then((result) => (result.success ? 0 : 1)),
+    Bun.build({
+      entrypoints: ["test/support/forge-bin.ts"],
+      target: "bun",
+      bytecode: true,
+      format: "esm",
+      compile: { outfile: forge },
+    }).then((result) => (result.success ? 0 : 1)),
   ]);
   if (built.some((code) => code !== 0)) {
     console.error("test: could not build the executables the suite runs");
@@ -57,7 +66,7 @@ const suite = Effect.promise(async () => {
     await Bun.write(timings, Bun.file(new URL("./test-timings.json", import.meta.url)));
   }
   const workers = availableParallelism();
-  return Bun.spawn(
+  const exit = await Bun.spawn(
     [
       "bun",
       "test",
@@ -68,10 +77,17 @@ const suite = Effect.promise(async () => {
       ...Bun.argv.slice(2),
     ],
     {
-      env: { ...process.env, COLLIE_TEST_BINARY: collie, COLLIE_TEST_FAKE_HERDR: herdr },
+      env: {
+        ...process.env,
+        COLLIE_TEST_BINARY: collie,
+        COLLIE_TEST_FAKE_HERDR: herdr,
+        COLLIE_TEST_FAKE_FORGE: forge,
+      },
       stdio: ["inherit", "inherit", "inherit"],
     },
   ).exited;
+  console.error(`test: ${((performance.now() - started) / 1_000).toFixed(2)} s including builds`);
+  return exit;
 });
 
 // Per user, so one user's suite never waits on a lock it cannot break.

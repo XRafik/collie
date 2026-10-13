@@ -23,6 +23,7 @@ export const suiteEnv = Config.all({
     Config.withDefault("500 millis"),
   ),
   BUN_INSTALL_CACHE_DIR: Config.String("BUN_INSTALL_CACHE_DIR").pipe(Config.withDefault("")),
+  COLLIE_TEST_FAKE_FORGE: Config.String("COLLIE_TEST_FAKE_FORGE").pipe(Config.withDefault("")),
 });
 
 /**
