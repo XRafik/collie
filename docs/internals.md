@@ -244,6 +244,8 @@ verification runs in that host's checkout and streams its output. `verify-model.
 keeps the shared Schemas separate from the collector.
 Once the owning host is found, its operation refusal is returned to the caller; it
 does not become a search for the Run on another Machine.
+Message file fallback and Dispatcher use the same rendered sender line when measuring
+the delivery cap, so a full agent message is kept whole rather than refused after attribution.
 
 Each host keeps its peers in `src/peers.ts`, started in the host's scope
 ([ADR-0057](adr/0057-a-machine-reaches-another-over-a-paired-link.md)):

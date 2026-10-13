@@ -70,6 +70,52 @@ test(
             expect(yield* fs.readFileString(first.herdrLog)).toContain(
               `From ${agent.agent} of ${runId} on `,
             );
+            const atCap = "x".repeat(8 * 1024);
+            expect(
+              (yield* first.cli(
+                [
+                  "run",
+                  "steer",
+                  runId,
+                  atCap,
+                  "--operation",
+                  "build",
+                  "--request-id",
+                  "agent-at-cap",
+                ],
+                { HERDR_PANE_ID: agent.paneId },
+              )).envelope.ok,
+            ).toBe(true);
+            const message = `${runDir(first.world.state, runId)}/attachments/message-${new Bun.CryptoHasher("sha256").update(atCap).digest("hex").slice(0, 8)}.md`;
+            expect(yield* fs.readFileString(message)).toBe(atCap);
+            const said = (yield* fs.readFileString(first.herdrLog))
+              .split("\n")
+              .filter((line) => line !== "")
+              .map((line) =>
+                Schema.decodeUnknownSync(Schema.Struct({ argv: Schema.Array(Schema.String) }))(
+                  JSON.parse(line),
+                ),
+              )
+              .flatMap((call) => call.argv)
+              .find((words) => words.includes(`Attached: ${message}`));
+            expect(said).toContain(`From ${agent.agent} of ${runId} on `);
+            const humanAtCap = "y".repeat(8 * 1024);
+            expect(
+              (yield* first.cli(
+                [
+                  "run",
+                  "steer",
+                  runId,
+                  humanAtCap,
+                  "--operation",
+                  "build",
+                  "--request-id",
+                  "human-at-cap",
+                ],
+                { HERDR_PANE_ID: "not-an-agent" },
+              )).envelope.ok,
+            ).toBe(true);
+            expect(yield* fs.readFileString(first.herdrLog)).toContain(humanAtCap);
           }),
         ["attended.workflow.ts"],
       ),

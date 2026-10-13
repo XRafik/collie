@@ -111,6 +111,15 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `codex.ts`          | Codex's App Server as a client: thread identity, its context, and its compactions                     |
 | `usage-model.ts`    | A Subscription's Usage reading: its Schemas, parsing, and Exhausted (pure)                            |
 | `usage.ts`          | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                    |
-| ------------------  | ----------------------------------------------------------------------------------------------------- |
 | `run-record.ts`     | Run records served by their owning host, including Outputs confined to the Run directory              |
 | `verify-model.ts`   | Verification and stream Schemas shared with front doors without loading the collector                 |
+
+The Machine link is `peers.ts`: pairing, TLS channels, relay sockets, dial-back and
+keeping paired Machines level. `peers-model.ts` holds the peer records and states
+Desktop shares. `flock-settings.ts` holds the latest-edit merge both hosts and Desktop
+use. `channel.ts` declares and pipes the channel the bridge and peer link share.
+
+`reports.ts` sends a settled Run's result to its recorded requester once, through the
+Dispatcher, and closes a `closes: "reported"` Run's own agents and eligible Task workspace.
+Repository placement is resolved by `projects.ts` and fetched by `agent-start.ts`; the
+engine carries the fetched revision through admission and placement.

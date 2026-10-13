@@ -160,7 +160,7 @@ import {
 } from "./attachments";
 import { boardMessages, shareBoard } from "./board-stream";
 import { recordDisposition } from "./disposition";
-import { MAX_DELIVERY_BYTES } from "./dispatcher";
+import { deliveryText, MAX_DELIVERY_BYTES } from "./dispatcher";
 import {
   NEWS_TRAIL,
   newsPath,
@@ -614,10 +614,11 @@ const handlers = (
           ).pipe(Effect.provideContext(bun)),
         steer: ({ runId, text, request, operation, agent, mode, attachments }, { client }) => {
           const into = attachmentsDir(runDir(dir, runId));
+          const actor = stampIn(declared, client);
           // Files go only into a Run this host has.
           const known =
             (attachments ?? []).length === 0 &&
-            Buffer.byteLength(text, "utf8") <= MAX_DELIVERY_BYTES
+            Buffer.byteLength(deliveryText(text, actor), "utf8") <= MAX_DELIVERY_BYTES
               ? Effect.void
               : Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(runDir(dir, runId))).pipe(
                   Effect.orElseSucceed(() => false),
@@ -651,7 +652,8 @@ const handlers = (
                   Effect.flatMap((copied) => {
                     const lines = copied.map((one) => attachedLine(`${into}/${one.name}`));
                     const whole = [text, ...lines].filter((line) => line !== "").join("\n");
-                    return Buffer.byteLength(whole, "utf8") <= MAX_DELIVERY_BYTES
+                    return Buffer.byteLength(deliveryText(whole, actor), "utf8") <=
+                      MAX_DELIVERY_BYTES
                       ? Effect.succeed(whole)
                       : keepMessage(into, text).pipe(
                           Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
@@ -668,7 +670,7 @@ const handlers = (
                       operation,
                       agent,
                       mode,
-                      actor: stampIn(declared, client),
+                      actor,
                     }),
                   ),
                 ),

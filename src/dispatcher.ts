@@ -45,6 +45,14 @@ const LISTING_MAX_AGE_MS = 5_000;
 /** A resource limit, not a style rule: one send is one message, not a transcript. */
 export const MAX_DELIVERY_BYTES = 8 * 1024;
 
+/** The exact message whose size is bounded and which reaches the agent. */
+export const deliveryText = (words: string, actor?: Asker): string => {
+  const sender = actor?.origin === "agent" || actor?.origin === "host" ? actor.from : undefined;
+  return sender?.run !== undefined && sender.agent !== undefined
+    ? `From ${sender.agent} of ${sender.run} on ${sender.machine?.name ?? sender.client ?? "this Machine"}. Answer with collie_do deliver to ${sender.run} (or collie run steer ${sender.run} --operation ${sender.agent} "…").\n${words}`
+    : words;
+};
+
 export interface DeliveryDraft {
   readonly run: string;
   /** Which harness is in that pane, so `now` and `interrupt` can be gated on it. */
@@ -216,14 +224,7 @@ export const transaction = Effect.fn("Dispatcher.transaction")(function* <A, E, 
         agent: entry.agent,
         submit: (words, draft) =>
           Effect.gen(function* () {
-            const sender =
-              draft.actor?.origin === "agent" || draft.actor?.origin === "host"
-                ? draft.actor.from
-                : undefined;
-            const text =
-              sender?.run !== undefined && sender.agent !== undefined
-                ? `From ${sender.agent} of ${sender.run} on ${sender.machine?.name ?? sender.client ?? "this Machine"}. Answer with collie_do deliver to ${sender.run} (or collie run steer ${sender.run} --operation ${sender.agent} "…").\n${words}`
-                : words;
+            const text = deliveryText(words, draft.actor);
             if (closed)
               return yield* new DispatcherDefect({
                 why: `${entry.agent}'s channel was used after its transaction closed`,
