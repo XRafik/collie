@@ -1143,6 +1143,8 @@ interface InUse {
   workspaces: ReadonlyMap<string, string>;
   /** Every pane herdr has, so a removal can tell which tabs went with the checkout. */
   panes: ReadonlyArray<PaneInfo>;
+  /** Why every checkout is held, where something holds one nobody can name. */
+  all: string | null;
 }
 
 /**
@@ -1178,8 +1180,10 @@ const inUse = Effect.fn("worktree.inUse")(function* (
     elsewhere.push(...theirs.success);
   }
   const paths = new Map(opts.paths);
+  let all: string | null = null;
   for (const server of yield* unlistedServers(opts.stateDir, listed))
-    paths.set(server.cwd, server.why);
+    if (server.cwd === null) all = server.why;
+    else paths.set(server.cwd, server.why);
   const workspaces = new Map<string, string>();
   for (const pane of [...panes.success, ...elsewhere]) {
     if (!pane.agent) continue;
@@ -1196,7 +1200,7 @@ const inUse = Effect.fn("worktree.inUse")(function* (
     if (pane.workspaceId) workspaces.set(pane.workspaceId, "an agent is working in it");
   }
   if (opts.keep && !paths.has(opts.keep)) paths.set(opts.keep, "a run is starting in it");
-  return { paths, workspaces, panes: panes.success } satisfies InUse;
+  return { paths, workspaces, panes: panes.success, all } satisfies InUse;
 });
 
 /** Whether this directory is the checkout at `at`, or somewhere inside it. */
@@ -1237,6 +1241,7 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
 
 /** Why this checkout is in use, or null when nothing holds it. */
 function heldBy(use: InUse, worktree: { path: string; workspaceId: string | null }): string | null {
+  if (use.all !== null) return use.all;
   for (const [dir, why] of use.paths) {
     if (inside(worktree.path, dir)) return why;
   }

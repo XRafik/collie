@@ -4694,6 +4694,7 @@ const makeRegistry: (
       for (const agent of agents.success) named.add(agent.name);
     }
     for (const server of yield* unlistedServers(placing.env.stateDir, named)) {
+      if (server.cwd === null) return server.why;
       const there = yield* real(server.cwd);
       if (there === dir || there.startsWith(`${dir}/`)) return server.why;
     }

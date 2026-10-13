@@ -34,7 +34,13 @@ import { latest, readDispositions } from "./disposition";
 import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
-import { CONTROL_DIR, putDownControl, readControl, stopSaid } from "./compaction";
+import {
+  CONTROL_DIR,
+  putDownControl,
+  readControl,
+  stopSaid,
+  unreadableControl,
+} from "./compaction";
 import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
@@ -569,7 +575,13 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
         else if (!live.has(name)) {
           const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
-          if (record?.stop == null)
+          const unread =
+            record === null
+              ? yield* unreadableControl(stateDir, name).pipe(Effect.orElseSucceed(() => null))
+              : null;
+          if (unread !== null)
+            keep.push({ kind, target, reason: `its control record cannot be read (${unread})` });
+          else if (record?.stop == null)
             remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
           else
             keep.push({

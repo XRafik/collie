@@ -884,17 +884,57 @@ test(
       Effect.gen(function* () {
         const host = yield* writing({ child: "stubborn" });
         process.kill((yield* control()).pid!, "SIGKILL");
-        const file = yield* controlFile();
-        yield* fs.chmod(file, 0o444);
+        const record = path.dirname(yield* controlFile());
+        yield* fs.chmod(record, 0o555);
 
         yield* session(halted, host);
         expect(yield* childTerms()).toBe(0);
 
-        yield* fs.chmod(file, 0o644);
+        yield* fs.chmod(record, 0o755);
         yield* session(halted, host);
         yield* until(childTerms, (terms) => terms === 1);
         yield* session(halted, host);
         expect(yield* childTerms()).toBe(1);
+      }),
+    ),
+  30_000,
+);
+
+/** The record as a write cut short after `keep` characters would leave it. */
+const torn = (keep: number) =>
+  Effect.gen(function* () {
+    const file = yield* controlFile();
+    yield* fs.writeFileString(file, (yield* fs.readFileString(file)).slice(0, keep));
+  });
+
+test(
+  "a torn control record is never read as no record: the stop fails, the restart parks and the checkout stays held",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null, { verdict: "done" }]);
+        const host = yield* hostWith({});
+        yield* midWork(host);
+        yield* closedByHand;
+        const whole = yield* fs.readFileString(yield* controlFile());
+        yield* torn(whole.indexOf('"dir"'));
+
+        const halt = yield* session(halted, host);
+        expect(halt.left.join("\n")).toContain("control record cannot be read");
+
+        const held = yield* unlistedServers(rig.pluginEnv().stateDir, new Set());
+        expect(held.map((one) => one.cwd)).toEqual([rig.projectDir]);
+
+        expect(yield* resumed(host)).toBe(true);
+        expect(yield* fs.readFileString(controlPath(dir, PARKED, "r1"))).toContain(
+          "control record cannot be read",
+        );
+        expect(yield* starts()).toBe(1);
+        expect(yield* stillWriting()).toBe(true);
+
+        yield* torn(10);
+        const blind = yield* unlistedServers(rig.pluginEnv().stateDir, new Set());
+        expect(blind.map((one) => one.cwd)).toEqual([null]);
       }),
     ),
   30_000,

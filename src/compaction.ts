@@ -337,8 +337,45 @@ const writeControl = Effect.fn("Compaction.writeControl")(function* (
   const path = yield* Path.Path;
   const dir = yield* controlDir(stateDir, record.agent);
   yield* fs.makeDirectory(dir, { recursive: true });
-  yield* fs.writeFileString(path.join(dir, CONTROL_FILE), `${encodeControl(record)}\n`);
+  // Replaced whole: a write cut short must leave the previous record, never a torn one.
+  const file = path.join(dir, CONTROL_FILE);
+  const tmp = `${file}.${process.pid}.tmp`;
+  yield* fs.writeFileString(tmp, `${encodeControl(record)}\n`);
+  yield* fs.rename(tmp, file);
 });
+
+/** Why this agent's control record is there but cannot be read, or null. */
+export const unreadableControl = Effect.fn("Compaction.unreadableControl")(function* (
+  stateDir: string,
+  agent: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const file = path.join(yield* controlDir(stateDir, agent), CONTROL_FILE);
+  if (!(yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))) return null;
+  return yield* fs.readFileString(file).pipe(
+    Effect.flatMap(decodeControl),
+    Effect.as(null),
+    Effect.catch((cause) => Effect.succeed(reason(cause))),
+  );
+});
+
+/** The directory a torn record still names, from what was written before it broke off. */
+const tornCwd = (stateDir: string, agent: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const text = yield* fs.readFileString(
+      path.join(yield* controlDir(stateDir, agent), CONTROL_FILE),
+    );
+    const found = /"cwd":("(?:[^"\\]|\\.)*")/.exec(text)?.[1];
+    return found === undefined ? null : decodeCwd(found);
+  }).pipe(Effect.orElseSucceed(() => null));
+const decodeCwd = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.String));
+
+/** A stop refused because the record that would prove the server is unreadable. */
+const unreadableSaid = (agent: string, dir: string, why: string) =>
+  `${agent}'s control record cannot be read (${why}), so nothing proves its server stopped; check it and remove ${dir}`;
 
 export interface CompactionDeps {
   ports: CompactionPorts;
@@ -548,12 +585,21 @@ export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function*
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root = path.join(stateDir, CONTROL_DIR);
-  const held: Array<{ readonly cwd: string; readonly why: string }> = [];
+  // A null cwd is a record too torn to say where: it holds every checkout.
+  const held: Array<{ readonly cwd: string | null; readonly why: string }> = [];
   for (const name of yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []))) {
     if (listed.has(name)) continue;
     const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
     const pid = yield* endpointPid(record).pipe(Effect.orElseSucceed(() => null));
-    if (record === null) continue;
+    if (record === null) {
+      const why = yield* unreadableControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+      if (why !== null)
+        held.push({
+          cwd: yield* tornCwd(stateDir, name),
+          why: unreadableSaid(name, path.join(root, name), why),
+        });
+      continue;
+    }
     // A stop short of Quiet may have left what the server started running after it.
     if (pid !== null || record.stop !== null)
       held.push({
@@ -584,8 +630,25 @@ const stopServer = Effect.fn("Compaction.stopServer")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const record = yield* readControl(deps.stateDir, agent);
-  const stop = record?.pid == null ? undefined : deps.ports[record.harness]?.stop;
-  if (record === null || stop === undefined) return null;
+  if (record === null) {
+    const why = yield* unreadableControl(deps.stateDir, agent);
+    if (why === null) return null;
+    const unread: Stop = {
+      state: "failed",
+      at: yield* Clock.currentTimeMillis,
+      turns: [],
+      reason: why,
+      signalled: false,
+      noted: false,
+      session: null,
+      processes: [],
+    };
+    const said = unreadableSaid(agent, yield* controlDir(deps.stateDir, agent), why);
+    yield* Effect.ignore(deps.log(said));
+    return { stop: unread, said };
+  }
+  const stop = record.pid == null ? undefined : deps.ports[record.harness]?.stop;
+  if (stop === undefined) return null;
   const reached = yield* stop({
     record,
     say: (line) => Effect.ignore(deps.log(`${agent}: ${line}`)),
