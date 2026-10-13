@@ -48,7 +48,7 @@ with `herdr agent prompt`.
   (invariant 1).
 
 **D3. A Run is found on the Machine that has it.** A tool or a command that names a Run
-goes to the Machine whose host has it, as the CLI does under ADR-0054. A board or a list
+goes to the Machine whose host has it, as the CLI does under ADR-0057. A board or a list
 may name a Machine, and `collie_herd` takes one.
 
 **D4. A message from an agent says who sent it and how to answer.**

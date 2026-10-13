@@ -1,6 +1,6 @@
 // A channel into a host: a fresh connection to its socket, declared, then piped to a byte
 // stream at the far end. `collie bridge` hands over its stdio this way, and a paired
-// Machine's link its WebSocket (ADR-0054 D4). The declaration is made here, from what this
+// Machine's link its WebSocket (ADR-0057 D4). The declaration is made here, from what this
 // end knows, so nothing at the far end can change it.
 
 import { createConnection, type Socket } from "node:net";

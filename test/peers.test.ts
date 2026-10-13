@@ -1,4 +1,4 @@
-// Two Machines reach each other over a paired link (ADR-0054): adding a Machine to herdr
+// Two Machines reach each other over a paired link (ADR-0057): adding a Machine to herdr
 // is all it takes, a command about a Run goes to the Machine that has it, and the host
 // there records who asked and from where. Two real hosts, each with its own state
 // directory and fake herdr, paired on 127.0.0.1.

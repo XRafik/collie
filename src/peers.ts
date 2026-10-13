@@ -1,4 +1,4 @@
-// This Machine's peers (ADR-0054): the pairing each side keeps, the listener a peer that
+// This Machine's peers (ADR-0057): the pairing each side keeps, the listener a peer that
 // dials in reaches, and one relay socket per peer that speaks what `host.sock` speaks.
 // Every client reaches another Machine by opening `relayOf(stateDir, name)`, and nothing
 // above that path knows there is a WebSocket behind it.

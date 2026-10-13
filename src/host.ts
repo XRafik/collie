@@ -2454,7 +2454,7 @@ const encodeHeader = Schema.encodeSync(RelayHeaderJson);
 
 /**
  * A client of a peer's host, over this Machine's relay to it. It is asked who it is and
- * never started or stopped from here (ADR-0054 D6): another build is refused, naming both.
+ * never started or stopped from here (ADR-0057 D6): another build is refused, naming both.
  */
 export const connectPeer = (
   stateDir: string,

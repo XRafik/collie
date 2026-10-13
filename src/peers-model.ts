@@ -1,4 +1,4 @@
-// What two Machines and their front doors agree on about a pairing (ADR-0054): herdr's list
+// What two Machines and their front doors agree on about a pairing (ADR-0057): herdr's list
 // of machines, the pairing each side keeps, and the line that opens a relay. Effect alone,
 // so Desktop decodes the same schemas.
 

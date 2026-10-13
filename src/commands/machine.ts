@@ -1,4 +1,4 @@
-// `collie machine`: the Machines this one is paired with (ADR-0054). Pairing happens by
+// `collie machine`: the Machines this one is paired with (ADR-0057). Pairing happens by
 // itself on first reach and forgetting follows herdr's list, so `list` is the only one a
 // human has a use for; `invite` is what pairing runs on the other Machine over SSH.
 
