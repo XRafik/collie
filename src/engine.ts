@@ -2228,10 +2228,17 @@ export const hostLayer = (options: {
               login: env.gitlabLogin,
               recordedBy: (at) =>
                 store.runs.pipe(
-                  Effect.map(
-                    (rows) =>
-                      rows.find((one) => placedOf(one, {}).worktree?.path === at)?.run ?? null,
-                  ),
+                  Effect.map((rows) => {
+                    const one = rows.find((row) => placedOf(row, {}).worktree?.path === at);
+                    // A review's fix round never takes over another Run's checkout.
+                    return one === undefined
+                      ? null
+                      : {
+                          run: one.run,
+                          worktree: placedOf(one, {}).worktree ?? null,
+                          release: Effect.succeed("a review's fix round takes over nothing"),
+                        };
+                  }),
                 ),
             }),
           );
