@@ -23,6 +23,7 @@ import type { Herdr, Submission } from "./herdr";
 import { ensureLockDir, withLock } from "./lock";
 import { reason } from "./naming";
 import { COMPACTION_OFF } from "./settings";
+import { processOf } from "./processes";
 
 /**
  * How long Collie waits for a compaction request to resolve before it pauses the Run.
@@ -30,6 +31,12 @@ import { COMPACTION_OFF } from "./settings";
  * the next piece of work into a context whose size nobody has established.
  */
 export const COMPACTION_WAIT_MS = 5 * 60 * 1000;
+
+/**
+ * How long a stop waits for an agent to be Quiet: sized like upstream's own drain tests.
+ * Fixed, so a stop never hangs a door.
+ */
+export const STOP_WAIT_MS = 30_000;
 
 /** Where an agent's controls live, for as long as the agent does. */
 export const CONTROL_DIR = "compaction";
@@ -133,6 +140,34 @@ export interface ReadyContext extends LaunchContext {
   endpoint: string | null;
 }
 
+/** How far a stop got. Only `quiet` is stopped. */
+export const StopStates = ["submitted", "acknowledged", "quiet", "failed"] as const;
+export type StopStateName = (typeof StopStates)[number];
+
+const StoppedTurn = Schema.Struct({
+  thread: Schema.String,
+  turn: Schema.String,
+  transcript: Schema.NullOr(Schema.String),
+});
+
+/** What a stop reached, and why it got no further where it is not `quiet`. */
+export interface Stopped {
+  readonly state: StopStateName;
+  readonly turns: ReadonlyArray<typeof StoppedTurn.Type>;
+  readonly reason: string | null;
+}
+
+/** The server a stop acts on, as its control record names it. */
+export interface StopTarget {
+  readonly agent: string;
+  readonly cwd: string;
+  readonly endpoint: string;
+  readonly pid: number;
+  readonly command: string;
+  /** Null on a record from a build that did not keep it. */
+  readonly started: string | null;
+}
+
 export interface CompactionPort {
   /**
    * Refuses when the installed harness cannot be managed through the interface Collie
@@ -160,6 +195,16 @@ export interface CompactionPort {
    * it cannot tell yet.
    */
   readonly ready?: (ctx: ReadyContext) => Effect.Effect<boolean, PortError, PortServices>;
+  /**
+   * Stops the work this agent runs outside its pane, for a harness that runs it there.
+   * `note` records each step as it is taken. Never fails: what it could not do is the
+   * state it reached and the reason.
+   */
+  readonly stop?: (
+    target: StopTarget,
+    note: (line: string) => Effect.Effect<void>,
+    budgetMs: number,
+  ) => Effect.Effect<Stopped, never, PortServices>;
   /** What this request has established, or `null` while it is still unresolved. */
   poll(
     ctx: AgentContext,
@@ -217,7 +262,18 @@ const ControlSchema = Schema.Struct({
   pid: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** What `pid`'s command line has to contain before anything signals it. */
   command: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** When `pid` started, so a number that came round again is not taken for it. */
+  started: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   attempt: Schema.NullOr(AttemptSchema),
+  /** The furthest a stop that did not reach Quiet got. */
+  stop: Schema.NullOr(
+    Schema.Struct({
+      state: Schema.Literals(StopStates),
+      at: Schema.Number,
+      turns: Schema.Array(StoppedTurn),
+      reason: Schema.NullOr(Schema.String),
+    }),
+  ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 export interface ControlRecord extends Schema.Schema.Type<typeof ControlSchema> {}
 const ControlJson = Schema.fromJsonString(ControlSchema);
@@ -364,16 +420,72 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
   yield* Effect.ignore(putDownStaleControls(deps, agent.agent));
   yield* fs.makeDirectory(dir, { recursive: true });
   const installed = yield* port.install({ ...agent, dir });
+  const started =
+    installed.pid === undefined ? null : ((yield* processOf(installed.pid))?.started ?? null);
   yield* writeControl(deps.stateDir, {
     ...agent,
     dir,
     endpoint: installed.endpoint ?? null,
     pid: installed.pid ?? null,
     command: installed.command ?? null,
+    started,
     attempt: null,
+    stop: null,
   });
   yield* deps.log(`${agent.agent}: compaction controls installed in ${dir}`);
   return installed.args;
+});
+
+/** Each turn a stop covered, by its full ids, with the server and where the transcript is. */
+const stopFacts = (target: StopTarget, turns: Stopped["turns"]) => {
+  const covered = turns.map(
+    (one) =>
+      `thread ${one.thread} turn ${one.turn}${one.transcript === null ? "" : ` (transcript ${one.transcript})`}`,
+  );
+  return `${covered.length === 0 ? "no turn running" : covered.join(", ")}; server ${target.endpoint} pid ${target.pid}`;
+};
+
+/** What a stop that did not reach Quiet says, in the agents log and in what the stop reports. */
+export const notStopped = (agent: string, reached: Stopped, target: StopTarget) =>
+  `${agent} is not stopped: ${reached.state}, ${reached.reason ?? "no reason given"} — ${stopFacts(target, reached.turns)}`;
+
+/**
+ * Stops the work an agent runs outside its pane, under its control lock: the record is
+ * read, its port's stop run, and the state reached logged and written back — the record
+ * removed only once the agent is Quiet. Null where nothing of Collie's runs outside the
+ * pane: no record, a harness whose work is in its pane, or no server recorded. A failure
+ * is the lock being held.
+ */
+export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
+  agent: string,
+  budgetMs: number = STOP_WAIT_MS,
+) {
+  return yield* withControlLock(
+    deps.stateDir,
+    agent,
+    Effect.gen(function* () {
+      const record = yield* readControl(deps.stateDir, agent);
+      const stop = record === null ? undefined : deps.ports[record.harness]?.stop;
+      if (record === null || stop === undefined) return null;
+      const { endpoint, pid, command } = record;
+      if (endpoint === null || pid === null || command === null) return null;
+      const target: StopTarget = { ...record, endpoint, pid, command };
+      const services = yield* Effect.context<PortServices>();
+      const note = (line: string) => Effect.ignore(Effect.provideContext(deps.log(line), services));
+      const reached = yield* stop(target, note, budgetMs);
+      if (reached.state === "quiet") {
+        yield* deps.log(`${agent}: quiet — ${stopFacts(target, reached.turns)}`);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(record.dir, { recursive: true, force: true });
+      } else {
+        yield* deps.log(notStopped(agent, reached, target));
+        const at = yield* Clock.currentTimeMillis;
+        yield* writeControl(deps.stateDir, { ...record, stop: { ...reached, at } });
+      }
+      return { ...reached, target };
+    }),
+  );
 });
 
 /**

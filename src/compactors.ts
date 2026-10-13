@@ -10,8 +10,11 @@
 import { Clock, Data, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
+  agentThreads,
   boundThread,
   compactionItems,
+  interruptTurn,
+  runningTurns,
   currentContext as codexContext,
   startCompaction,
   turnOutcome,
@@ -43,7 +46,10 @@ import {
   type AgentContext,
   type LaunchContext,
   type ReadyContext,
+  type StopTarget,
+  type Stopped,
 } from "./compaction";
+import { processOf, sessionOf, stillRunning, terminate, type ProcessInfo } from "./processes";
 import { withLock } from "./lock";
 import { carriedDelivery } from "./dispatcher";
 
@@ -86,7 +92,7 @@ import { reason, shellQuote } from "./naming";
  */
 export const VERIFIED_VERSIONS: ReadonlyMap<string, string> = new Map([
   ["claude", "2.1.263"],
-  ["codex", "0.153.4"],
+  ["codex", "0.162.0"],
   ["opencode", "1.18.9"],
   ["pi", "0.87.1"],
 ]);
@@ -968,18 +974,21 @@ const CODEX_LOG = "app-server.log";
 const CODEX_LISTENING = /ws:\/\/127\.0\.0\.1:(\d+)/;
 const CODEX_START_MS = 20_000;
 
-const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (ctx: LaunchContext) {
+const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (
+  ctx: LaunchContext,
+  server: string,
+) {
   const path = yield* Path.Path;
   // Through a shell, because the port it chose is only on its stdout.
   const served = yield* servedEndpoint({
     cwd: ctx.cwd,
     log: path.join(ctx.dir, CODEX_LOG),
-    command: `${CODEX_SERVER} --listen ws://127.0.0.1:0`,
+    command: `${server} --listen ws://127.0.0.1:0`,
     listening: CODEX_LISTENING,
     startMs: CODEX_START_MS,
     what: "codex app-server",
   });
-  return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: CODEX_SERVER };
+  return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: server };
 });
 
 /** The endpoint this agent's controls talk to, or a failure naming what is missing. */
@@ -988,7 +997,126 @@ const codexAt = (ctx: AgentContext) =>
     ? Effect.fail(new Error(`${ctx.agent} has no Codex App Server endpoint recorded`))
     : Effect.succeed(ctx.endpoint);
 
-const codex: CompactionPort = {
+/**
+ * Stops a Codex agent where its turns run, on one connection opened before any signal:
+ * prove the server is the agent's, note its turns and its session, drain it with one
+ * SIGTERM — admission closes and no queued or goal continuation starts — interrupt every
+ * running turn, sub-agents' included, wait for the server to exit, then give each proven
+ * process left of its session one SIGTERM. Nothing gets a second, and nothing SIGKILL.
+ */
+const stopCodex = (
+  target: StopTarget,
+  note: (line: string) => Effect.Effect<void>,
+  budgetMs: number,
+) =>
+  Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
+    const failed = (why: string): Stopped => ({ state: "failed", turns: [], reason: why });
+    const server = yield* processOf(target.pid);
+    if (server === null) return yield* survivors(target.pid, [], [], deadline, "failed");
+    if (!server.command.includes(target.command))
+      return failed(`pid ${target.pid} is \`${server.command}\`, not \`${target.command}\``);
+    if (target.started !== null && server.started !== target.started)
+      return failed(`pid ${target.pid} started at ${server.started}, not ${target.started}`);
+
+    let turns: Stopped["turns"] = [];
+    let acknowledged = 0;
+    const short = (): Stopped["state"] =>
+      acknowledged > 0 ? "acknowledged" : turns.length > 0 ? "submitted" : "failed";
+    return yield* withCodex(target.endpoint, (client) =>
+      Effect.gen(function* () {
+        const threads = yield* agentThreads(client, target.cwd);
+        turns = threads.flatMap((thread) =>
+          thread.running.map((turn) => ({
+            thread: thread.id,
+            turn,
+            transcript: thread.transcript,
+          })),
+        );
+        const session = yield* sessionOf(target.pid);
+        yield* terminate(target.pid);
+        for (const one of turns) {
+          // Its turns have all ended and it has gone: nothing is left to answer.
+          if (!(yield* stillRunning(server))) break;
+          const about = `thread ${one.thread} turn ${one.turn}, server ${target.endpoint} pid ${target.pid}${one.transcript === null ? "" : `, transcript ${one.transcript}`}`;
+          yield* note(`${target.agent}: interrupt submitted — ${about}`);
+          // A refusal is read back below rather than believed: the turn may have ended.
+          const answered = yield* interruptTurn(client, one.thread, one.turn).pipe(Effect.result);
+          if (answered._tag === "Success") {
+            acknowledged++;
+            yield* note(`${target.agent}: interrupt acknowledged — ${about}`);
+          } else {
+            yield* note(
+              `${target.agent}: interrupt refused (${reason(answered.failure)}) — ${about}`,
+            );
+          }
+        }
+        for (;;) {
+          if (!(yield* stillRunning(server)))
+            return yield* survivors(target.pid, session, turns, deadline, short());
+          const unended = yield* Effect.forEach(turns, (one) =>
+            runningTurns(client, one.thread).pipe(
+              Effect.map((running) => (running.includes(one.turn) ? [one] : [])),
+              Effect.orElseSucceed(() => []),
+            ),
+          ).pipe(Effect.map((all) => all.flat()));
+          if ((yield* Clock.currentTimeMillis) >= deadline) {
+            const seconds = Math.round(budgetMs / 1000);
+            return {
+              state: short(),
+              turns,
+              reason:
+                unended.length > 0
+                  ? `${unended.map((one) => `turn ${one.turn}`).join(", ")} still running after ${seconds}s`
+                  : `its server is still up after ${seconds}s`,
+            } satisfies Stopped;
+          }
+          yield* Effect.sleep(50);
+        }
+      }),
+    ).pipe(
+      // Anything here is the connection: unanswered, refused or lost before the stop was done.
+      Effect.catch((cause) =>
+        Effect.succeed<Stopped>({ state: short(), turns, reason: reason(cause) }),
+      ),
+    );
+  });
+
+/**
+ * What is left of an exited server's session: each process noted before the drain that is
+ * still the same process gets one SIGTERM and is looked at again; one nobody noted is
+ * named and left alone. Quiet only when none is left.
+ */
+const survivors = (
+  root: number,
+  noted: ReadonlyArray<ProcessInfo>,
+  turns: Stopped["turns"],
+  deadline: number,
+  short: Stopped["state"],
+) =>
+  Effect.gen(function* () {
+    const proven = (one: ProcessInfo) =>
+      noted.some((seen) => seen.pid === one.pid && seen.started === one.started);
+    for (const one of yield* sessionOf(root)) if (proven(one)) yield* terminate(one.pid);
+    for (;;) {
+      const left = yield* sessionOf(root);
+      if (left.length === 0) return { state: "quiet", turns, reason: null } satisfies Stopped;
+      if ((yield* Clock.currentTimeMillis) >= deadline) {
+        const named = left.map(
+          (one) => `pid ${one.pid}${proven(one) ? "" : " (not signalled: not proven its)"}`,
+        );
+        return {
+          state: short,
+          turns,
+          reason: `its server exited, but ${named.join(", ")} of its session is still running`,
+        } satisfies Stopped;
+      }
+      yield* Effect.sleep(50);
+    }
+  });
+
+/** Codex's port, over the App Server `server` starts: `codex app-server`, or a test's stand-in. */
+export const codexPort = (server: string): CompactionPort => ({
   gate: () => gateVersion("codex"),
   // The TUI binds a thread on the App Server as it starts, before any prompt.
   ready: (ctx) =>
@@ -998,7 +1126,7 @@ const codex: CompactionPort = {
           Effect.map((thread) => thread !== null),
         ),
   install: (ctx) =>
-    codexEndpoint(ctx).pipe(
+    codexEndpoint(ctx, server).pipe(
       Effect.map(({ endpoint, pid, command }) => ({
         args: ["--remote", endpoint],
         endpoint,
@@ -1006,6 +1134,7 @@ const codex: CompactionPort = {
         command,
       })),
     ),
+  stop: stopCodex,
   usage: (ctx) =>
     Effect.gen(function* () {
       const url = yield* codexAt(ctx);
@@ -1074,7 +1203,7 @@ const codex: CompactionPort = {
         }),
       );
     }),
-};
+});
 
 /**
  * The ordinary OpenCode TUI, hosting its own loopback server on a port Collie picked.
@@ -1229,7 +1358,12 @@ const opencode: CompactionPort = {
     }),
 };
 
-export const COMPACTION_PORTS: CompactionPorts = { claude, codex, opencode, pi };
+export const COMPACTION_PORTS: CompactionPorts = {
+  claude,
+  codex: codexPort(CODEX_SERVER),
+  opencode,
+  pi,
+};
 
 /**
  * Submissions this agent has taken that neither Collie nor Claude itself made. Claude's

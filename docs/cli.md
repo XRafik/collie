@@ -318,11 +318,20 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
 - **A control reaches one Run.** Its siblings and the host carry on. A control over a Run
   whose module is not loaded here is recorded and says so, naming the file to repair,
   rather than reporting a success nothing can stand behind.
-- **`run stop` parks the Run and stops its agents.** Their panes are closed, and those of
-  the Runs it started; the workspace keeps its own tab. `run resume` clears the stop and
-  picks the Run up again, giving work whose agent has gone to a new one. On a Run that has
-  already finished, a stop only closes its live agents' panes: no control is set, the
-  status stays what it finished with, and with nothing alive it says nothing was running.
+- **`run stop` parks the Run and stops its agents where their work runs.** A Codex
+  agent's turns run in the App Server Collie started for it, so its stop drains that
+  server, interrupts every running turn on it, a sub-agent's included, and waits — at most
+  thirty seconds — for the server and what it started to be gone. Only an agent that is
+  then **Quiet** has its pane closed and is reported as stopped; Claude, Pi and OpenCode
+  run in their panes, and closing the pane is their stop. An agent that is not Quiet makes
+  the stop fail, naming the agent, its thread and turn ids, its server's endpoint and pid,
+  and how far it got (`submitted`, `acknowledged` or `failed`); its pane stays open and
+  its record is kept ([ADR-0059](adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md)).
+  The Runs it started are stopped the same way; the workspace keeps its own tab.
+  `run resume` clears the stop and picks the Run up again, giving work whose agent has
+  gone to a new one. On a Run that has already finished, a stop only stops its live
+  agents: no control is set, the status stays what it finished with, and with nothing
+  alive it says nothing was running.
 - **A Run parks itself when its agent's pane will not take a prompt.** herdr answering
   `agent_blocked` for ten minutes leaves the Run `suspended`, with `parked` in its view —
   and in `run show` — saying what held, for how long, and where the prompt is. `run resume`

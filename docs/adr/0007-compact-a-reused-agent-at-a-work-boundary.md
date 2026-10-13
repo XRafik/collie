@@ -70,8 +70,14 @@ the OpenCode checks last ran on 1.18.29.
 | ----------- | ------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------- |
 | Pi          | 0.85.1  | An extension passed with `-e`, writing its session file path                                                        | `ctx.getContextUsage()`                          | a bundled command calling `ctx.compact`                 | its per-request `onComplete`/`onError`                                        |
 | Claude Code | 2.1.263 | A settings file passed with `--settings`; the payloads' `session_id`                                                | status line `context_window`                     | `/compact` with a correlation token in its instructions | a `PreCompact` carrying that token, then the next manual `PostCompact`        |
-| Codex       | 0.153.4 | One App Server per agent on a loopback port; exactly one non-`ephemeral`, unparented thread in `thread/loaded/list` | `thread/tokenUsage/updated`'s `last.totalTokens` | `thread/compact/start`                                  | a `contextCompaction` item that was not there before, and its turn's status   |
+| Codex       | 0.162.0 | One App Server per agent on a loopback port; exactly one non-`ephemeral`, unparented thread in `thread/loaded/list` | `thread/tokenUsage/updated`'s `last.totalTokens` | `thread/compact/start`                                  | a `contextCompaction` item that was not there before, and its turn's status   |
 | OpenCode    | 1.18.9+ | The TUI hosting its own loopback server, on a session Collie created and passed with `--session`                    | the latest assistant message's tokens            | `POST /session/{id}/summarize`                          | a `mode: "compaction"` message that was not there before, and its error state |
+
+Codex moved from 0.153.4 to 0.162.0 with
+[ADR-0059](0059-a-stopped-agent-is-stopped-where-its-turn-runs.md): it is the first release
+whose drain is tested to take `turn/interrupt` and start no automatic turn, which is what
+stopping a Codex agent relies on. The App Server Collie starts lives until that stop
+reaches Quiet, not until a later launch signals it.
 
 Three deviations from the plan, each forced by the installed release:
 

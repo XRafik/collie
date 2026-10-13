@@ -319,8 +319,11 @@ before this existed stay exactly where they are and belong to no task.
 A task workspace groups work. It gives no file or branch isolation — that is what the
 worktree below is for, and it is unchanged.
 
-Stopping a run closes its agents' panes, which is what stops them, and nothing else in the
-workspace. The workspace's own shell tab is never given to an agent, so closing an agent's
+Stopping a run stops its agents where their work runs, and nothing else in the workspace.
+A Codex agent works in the App Server Collie started for it, so its running turns are
+interrupted there and its pane is closed only once nothing of it is left running; one
+that will not stop is named in the failed stop, with its pane left open. Claude, Pi and
+OpenCode agents work in their panes, and closing the pane stops them. The workspace's own shell tab is never given to an agent, so closing an agent's
 pane never leaves it empty, and `run resume` starts the work again there. If herdr closes it anyway, the next agent the task starts reopens it on
 that run's checkout, and every run of the task uses the new one from then on; a checkout
 that has gone as well leaves the run parked, saying so, until you restore it or start
@@ -2157,7 +2160,7 @@ into your `~/.pi` or `~/.claude`:
 | ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pi          | 0.87.1           | An extension passed with `-e`. `ctx.getContextUsage()` is the estimate Pi's own compaction and footer use, and `ctx.compact`'s per-request callbacks are the outcome.                                                                                                                                                                              |
 | Claude Code | 2.1.263          | A settings file passed with `--settings`, which is _additional_ settings. Its status line reports `context_window` — input plus output, cache folded into the input total exactly once — and its `PreCompact`/`PostCompact` hooks are the lifecycle — the request's token reaches `PreCompact` only, so the completion is the one that follows it. |
-| Codex       | 0.153.4          | An App Server of its own on a loopback port, with the ordinary TUI pointed at it by `--remote`. `thread/tokenUsage/updated`'s `last.totalTokens` is the context its own indicator shows, `thread/compact/start` is the request, and the compaction's own turn is the outcome.                                                                      |
+| Codex       | 0.162.0          | An App Server of its own on a loopback port, with the ordinary TUI pointed at it by `--remote`. `thread/tokenUsage/updated`'s `last.totalTokens` is the context its own indicator shows, `thread/compact/start` is the request, and the compaction's own turn is the outcome.                                                                      |
 | OpenCode    | 1.18.9+          | The ordinary TUI hosting its own loopback server, on a session Collie created for it. The latest assistant message's tokens are the accounting OpenCode's own overflow predicate reads, `POST /session/{id}/summarize` is the request, and the compaction's own message is the outcome.                                                            |
 
 Two things to know about the Claude one. It borrows your status line, so it prints the

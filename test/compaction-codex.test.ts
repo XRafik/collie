@@ -413,7 +413,7 @@ onMachineWith("codex")(
           new URL("../src/codex.ts", import.meta.url).pathname,
         );
         const names = new Set(
-          Array.from(adapter.matchAll(/"(initialize|thread\/[\w/]+)"/g), (m) => m[1]),
+          Array.from(adapter.matchAll(/"(initialize|(?:thread|turn)\/[\w/]+)"/g), (m) => m[1]),
         );
         expect(names.size).toBeGreaterThan(5);
         for (const name of names) {
@@ -426,6 +426,14 @@ onMachineWith("codex")(
         expect(notifications).toContain(`"totalTokens"`);
         // What tells a sub-agent's thread from the agent's own.
         expect(yield* read("v2/ThreadReadResponse.json")).toContain(`"parentThreadId"`);
+        // What a stop reads: the transcript's path, the thread's runtime status, and the
+        // full ids an interrupt is sent with.
+        const thread = yield* read("v2/ThreadReadResponse.json");
+        expect(thread).toContain(`"path"`);
+        expect(thread).toContain(`"status"`);
+        const interrupt = yield* read("v2/TurnInterruptParams.json");
+        for (const field of ["threadId", "turnId"]) expect(interrupt).toContain(`"${field}"`);
+        expect(yield* read("v2/ThreadTurnsListResponse.json")).toContain(`"status"`);
         // The item type the compaction lifecycle is read from.
         expect(notifications).toContain(`"contextCompaction"`);
         // The terminal turn statuses the failure mapping relies on.

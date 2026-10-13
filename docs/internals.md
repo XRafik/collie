@@ -663,6 +663,18 @@ lock, and the existing PID-lock recovery handles a process that crashes. An endp
 stopped only while its recorded pid still runs the recorded command, read from
 `/proc/<pid>/cmdline`, or from `ps -ww -o command=` where there is no `/proc`, as on macOS.
 
+A Codex agent's work runs in its App Server, not its pane, so a Run's stop goes through
+`stopAgent` in `src/compaction.ts`, under the agent's control lock, before its pane is
+closed: the port's `stop` (`src/compactors.ts`) proves the server by its recorded pid,
+start time (`/proc/<pid>/stat`, or `ps -o lstart=`) and command, and by its threads being
+in the agent's directory; notes its running turns and its session (or, without `/proc`,
+its descendants); sends it one SIGTERM, which drains it; sends `turn/interrupt` for each
+turn; waits for it to exit; and gives each noted process of its session still running one
+SIGTERM. Nothing gets a second signal. The record is removed only once the agent is
+Quiet; otherwise it keeps the state reached, and every step is a line in the Run's
+`agents.log` with the full thread and turn ids, the endpoint, the pid and the transcript.
+The stand-in server the tests run in its place is `test/support/codex-server.ts`.
+
 ## The registry and sessions
 
 A **session** is one herdr session and one workspace, taken together; a Run's own worktree
