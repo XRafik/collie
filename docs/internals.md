@@ -960,25 +960,42 @@ resolves the default state directory under the real home. A host a test starts i
 that environment. A test that needs herdr sets up the fake under `test/support/`;
 `test/isolation.test.ts` fails if the live socket or home gets through.
 
-`bun run test` (`tools/test.ts`) first compiles `collie` the way a release does, and the
-fake herdr the same way, into `.scratch/test-bin/`, and runs the suite with
+`bun run test` (`tools/test.ts`) takes the per-user suite lock, then compiles `collie` the
+way a release does, and the fake herdr the same way, into `.scratch/test-bin/`, and runs the suite with
 `COLLIE_TEST_BINARY` and `COLLIE_TEST_FAKE_HERDR` naming them: the suite starts well over a
 thousand hosts, commands and herdr calls, and a bytecode build starts in a fraction of the
-time the sources take to load. It uses [Bun's process-parallel
-runner](https://bun.com/docs/test/parallel) with a worker for each idle core, never fewer
-than four, and a fresh global per file. Tests within each file stay sequential: fixtures
+time the sources take to load. A fixture's own Config provider carries that binary choice,
+the process marker, the watched pid and the test's stop grace into its commands too;
+isolating its installation must not lose the suite's process settings. It uses [Bun's process-parallel
+runner](https://bun.com/docs/test/parallel) with a worker for each available logical CPU
+and a fresh global per file. It does not subtract the load average: the preceding suite's
+work and IO waits remain in that average after the CPU is free. The lock also covers
+builds so a queued suite cannot replace the executables an active suite runs. Tests within
+each file stay sequential: fixtures
 change environment variables and prototypes, so `--concurrent` is not safe here. A test's
 default timeout is 30 seconds rather than Bun's five: a test that starts processes is
 slower on a busy machine, and that is not a hang. For debugging, `bun test
 ./test/engine.test.ts` runs one file against the sources, without workers.
 
 Bun records file durations in `.scratch/test-timings.json` and uses them to schedule slow
-files first next time. CI caches only that scheduling data, never test results. Missing or
-stale timings cannot skip a test; delete the file to reset the schedule. Quiet-agent tests
+files first next time. When that file is absent, the runner seeds it from the measured
+durations in `tools/test-timings.json`, so a fresh checkout starts its longest files first
+too. Refresh that seed from a successful complete run when the suite changes substantially.
+CI caches only scheduling data, never test results. Missing or stale entries cannot skip
+a test; deleting the scratch file restores the seed. Quiet-agent tests
 use a controlled Effect clock so machine load cannot consume their nudge windows. A test
 whose work waits out timers runs under `fastForward` (`test/support/effect.ts`): a test
 clock a fiber of its own keeps moving many times faster than the wall's, from the wall's
 now.
+
+Workflow-authoring tests still install real packages and run the real compiler. Their
+isolated homes use [Bun's cache preference](https://bun.com/docs/runtime/bunfig#installprefer)
+against `.scratch/test-packages/`, so each fixture does not refresh registry metadata.
+An uncached package is fetched normally. Bun may hardlink an installed package to the
+cache, so a fixture removes the file's directory entry before writing altered bytes. A
+regression keeps a hardlinked copy and checks that it stays unchanged. `XDG_CONFIG_HOME` is removed before
+tests load so the operator's Bun configuration cannot replace these settings. Neither
+package caching nor scheduling data caches test results.
 
 Documentation changes in the same merge request as the behavior it describes. There is no
 docs lint to catch a page that fell behind — a stale page is a defect like any other.
@@ -993,12 +1010,30 @@ its time.
   and a fixed sleep is too long on an idle machine and too short on a busy one. Work that
   waits out its own timers runs under `fastForward`, test by test: a file whose time goes
   to real IO runs slower under a fast clock, because its polling keeps firing.
+  Before adjusting `TestClock`, wait for the actual sleep to be registered. A lock
+  release can precede that registration; the Home proof observes the Clock service's
+  sleep rather than assuming a filesystem event means the timer is ready.
 - **A test starts the build.** A helper that starts `collie` or its host runs
   `COLLIE_TEST_BINARY` when it is set, as `test/support/host.ts` does, and the sources only
   without it. A start from source is most of a second of CPU, and the suite makes over a
   thousand.
-- **A host is stopped while its run waits.** Stopped mid-step, it waits out its five-second
-  stop grace before it exits.
+- **A host is stopped while its run waits.** Production has a five-second stop grace;
+  fixture hosts use 500 ms. Cleanup waits for process exit as well as lock release: a
+  host can give back its lock before its final write finishes.
+  On Linux, a world's cleanup also waits for processes carrying its exact fake-herdr log
+  binding: a notification can outlive its host and recreate a removed log directory. This
+  uses the preload's existing `/proc` process markers; its marker-specific regression runs
+  on Linux.
+- **A fixture runs a command.** `test/support/command.ts` uses asynchronous `Bun.spawn`,
+  drains stdout and stderr together, and closes the process group when its scope ends.
+  A nonzero exit remains visible; an interrupted fixture cannot leave its child running.
+  The fake herdr CLI provides only its filesystem and path services, while using the
+  same core as the in-process fake.
+  The forge CLI fake is compiled once too, as `COLLIE_TEST_FAKE_FORGE`; it provides only
+  its filesystem service and keeps the same model, call log and exit codes. An isolated
+  world's environment carries that executable through its Config provider. A focused
+  `bun test` still runs its sources with this process's Bun executable, without needing
+  `bun` on the fixture's PATH.
 - **A test can go red.** Break `src/` the way its name says and watch it fail before relying
   on it. A test that cannot fail, or whose every failure another test already has, is
   deleted.
@@ -1010,3 +1045,130 @@ its time.
   `effect/http` by module rather than through their index. `test/startup.test.ts`
   holds the first and keeps the engine and the board out of the compaction helper; lint
   holds the second.
+
+### Test-suite measurements, 12 October 2026
+
+Measured with `/usr/bin/time bun run test`, Bun 1.4.3, Linux and 20 available logical CPUs.
+Wall time includes both executable builds. The package cache is warm unless stated; no
+suite results are reused. Queuing behind another suite adds waiting time.
+
+| Change                                                                   | Wall time | Result                                        |
+| ------------------------------------------------------------------------ | --------: | --------------------------------------------- |
+| Initial tree                                                             |  110.65 s | 2,369 passed; four fixture-isolation failures |
+| Compiled binary retained by isolated worlds; harness cleanup fixed       |  100.43 s | 2,374 passed                                  |
+| Controlled client timeout clocks and package metadata reuse              |   65.35 s | 2,375 passed                                  |
+| All available CPUs, smaller fake CLI runtime and native fixture commands |   56.17 s | 2,379 passed                                  |
+| Command lifecycle regressions and complete group cleanup                 |   56.63 s | 2,381 passed                                  |
+| Same suite with no scheduling estimates                                  |   70.85 s | 2,381 passed; slow files started later        |
+| Seeded scheduling estimates, no saved timings                            |   54.15 s | 2,381 passed                                  |
+| Seeded estimates, empty fixture package cache and no saved timings       |   56.08 s | 2,381 passed                                  |
+| World command cleanup, empty fixture package cache and no saved timings  |   58.10 s | 2,382 passed                                  |
+| Final world cleanup and exact binding matching, warm cache               |   55.53 s | 2,382 passed                                  |
+
+Every original test title is still present. Nine regressions were added for binary and
+lifetime settings, toolchain validity, installer environment and temporary files, host
+exit and surviving commands before fixture removal, command output and environment, and process-group cleanup.
+The workflows still use the real engine and SQLite; host proofs still drive the shipped
+executable. Installed harness checks and real compiler checks still run.
+
+Experiments discarded after measurement:
+
+| Experiment                                      | Measurement                                     | Decision                                                                            |
+| ----------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Shared package cache without offline preference | 7.51 s fresh versus 7.45 s shared for authoring | Metadata refresh still dominated; use offline preference with normal fetch fallback |
+| Split the four longest files into eight         | 67.26 s and 73.55 s                             | More simultaneous engine work increased CPU cost                                    |
+| CPU affinity for long files                     | 59.26 s best, excluding builds                  | Little margin and machine-specific allocation                                       |
+| Lower priority for the other files              | 56.86 s, excluding builds                       | No useful gain over the simpler final runner                                        |
+| Fixture stop grace reduced from 500 ms to 1 ms  | 70.33 s after fixing an exposed exit race       | No overall speed gain; keep 500 ms and wait for process exit                        |
+
+The fake CLI's minimal runtime reduced 50 isolated starts from 1.724 s to 1.318 s. Native
+fixture command execution reduced 100 `/bin/true` calls from 131 ms to 110 ms; full-suite
+measurements, rather than those microbenchmarks, decide whether the changes stay.
+
+### Follow-up measurements, 13 October 2026
+
+The same runner remains at 20 workers. A fresh green baseline took 55.25 s with 2,382
+tests passing. Two fixture races were repaired: a world's cleanup awaits the child's
+exit promise, and the Home proof waits for each real sleep registration before moving
+its test clock. The Home proof still covers seven restatements over 24 hours and now
+also checks each four-hour sleep. Delaying the filesystem operation by 100 ms reproduced
+the old failure and passed with that synchronization.
+
+The final complete verification passed all 2,382 tests in 60.98 s including builds
+(57.98 s reported by the test runner). This follow-up improves reliability; the timing
+variation does not establish a further speed gain.
+
+| Experiment                         | Measurement                              | Decision                                                     |
+| ---------------------------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| 12 workers                         | 58.83 s; all passed                      | Keep 20 workers                                              |
+| 28 workers                         | 63.06 s; all passed                      | More workers did not help                                    |
+| Elapsed-time clock pacing          | 53.96 s; two failures                    | Reject IO-sensitive stop/resume regressions                  |
+| Append Git fixture config directly | 71.13 s; a Home timeout                  | No gain established; restore real Git configuration commands |
+| Larger SQLite statement cache      | Focused suite 21.28 s versus 21.11 s     | Too little gain to justify a production change               |
+| Precompiled Solid compiler preload | 68.28 s; all passed                      | Faster isolated starts did not improve the suite             |
+| Lazy Solid compiler preload        | 56.63 s; all passed                      | No useful gain over the existing preload                     |
+| Minified compiled CLI              | Help-start median 50.0 ms versus 54.4 ms | Smaller binary started more slowly                           |
+
+### Measurements with the peer and forge coverage, 13 October 2026
+
+After merging the latest master, the suite has 2,642 tests. On the local Linux machine
+with Bun 1.4.3 and 20 available logical CPUs, the first complete green baseline took
+113.05 s including builds. These measurements cover more tests than the earlier table.
+
+The peer-settings proof now waits for both the model's timestamp and the Flock sender,
+then asserts that snapshot. The timestamp and sender are written separately; observing
+the first write is not evidence the whole update finished. A temporary 100 ms delay
+between those writes reproduced the old failure and passed with that synchronization.
+The delay was removed from production code.
+The synchronized suite passed all 2,642 tests in 101.05 s including builds; lint,
+formatting and type checking also passed. The variation from the first baseline is
+larger than the I/O-thread experiment's apparent gain, so no gain is established there.
+
+| Experiment                     | Measurement                         | Decision                                                    |
+| ------------------------------ | ----------------------------------- | ----------------------------------------------------------- |
+| 10 workers                     | 124.25 s; all 2,642 passed          | Keep 20 workers                                             |
+| Two Bun I/O threads per worker | 106.06 s; one peer-settings failure | No default change; exposed the incomplete settings snapshot |
+
+The forge fake's original source wrapper took 3.174 s for 30 sequential, validated
+`--version` calls (103.76 ms median). Its minimal source runtime took 2.751 s
+(87.27 ms median); the compiled fake took 0.380 s (12.68 ms median). Each call's output
+and exit were checked. The same fake still answers both forges, records notes and exposes
+nonzero exits; new regressions cover executable selection, literal arguments and the
+source fallback with no Bun command on PATH.
+
+With that compiled fake, two full runs passed all 2,644 tests in 96.46 s and 94.78 s
+as reported by Bun. The latter took 97.28 s including builds. The first queued behind
+another suite, so its external wall time is not a useful execution comparison. The
+runner now prints its time including builds after it takes the suite lock, excluding
+queuing. Startup improved, but the overall gain is within the full suite's observed
+variation. Reporting and resume are now the longest files, each about 94–95 s.
+
+A further split moved the three reporting harness cases and the first resume collection
+case into two more files, with shared fixtures and every assertion and timer retained.
+All 2,644 tests passed, but the suite took 105.34 s including builds (102.57 s in Bun).
+The workflow files and remaining reporting file slowed under that distribution of work.
+The split was reverted.
+
+The old checked-in scheduling seed covered 183 files and omitted both reporting and
+resume. Starting with that seed and no saved timings passed all 2,644 tests in 143.36 s
+including builds (140.82 s in Bun). Refreshing the seed from measured durations for all
+196 current files, again with no saved timings, passed in 97.79 s including builds
+(95.32 s in Bun). This improves a fresh checkout by 32%; durations only are saved, and
+every test still runs. Later runs continue replacing those estimates with local timings.
+
+The remaining executor fixture now uses `fakeHerdrCommand` too. Its ten unchanged tests
+passed in 0.680 s versus 2.04 s with the source-only shim (3.23 s versus 4.49 s including
+builds). Final verification from the committed scheduling seed passed all 2,644 root
+tests in 100.11 s including builds (97.41 s in Bun), with every original test title still
+present. Formatting, lint, type checking and the compiled CLI smoke check passed.
+Desktop's separate suite passed all 122 tests in 0.723 s after its frozen dependencies
+were installed; its initial errors were missing local packages.
+
+Release CI exposed a cache-isolation bug masked locally by `/tmp` being on a different
+filesystem from `.scratch/test-packages`. The `backend = "copyfile"` Bun configuration
+did not prevent hardlinks on CI. Changing the stale-Effect fixture's installed manifest
+therefore changed the cached manifest too, breaking the later real authoring proofs.
+Running that file with `TMPDIR` under `.scratch/` reproduced both failures. The fixture
+now detaches the manifest before editing it and asserts a hardlinked copy stays unchanged;
+the unsupported backend configuration was removed. All 15 authoring tests passed with a
+fresh cache and the fixture directories on the cache's filesystem after that correction.

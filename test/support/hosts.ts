@@ -14,10 +14,11 @@
 // run from a herdr pane cannot reach the live herd.
 
 import { afterAll, afterEach, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { alive, kill, MARKER, marked } from "./sweep";
+import { testBunfig } from "./packages";
 
 const root = mkdtempSync(join(tmpdir(), `collie-test-${process.pid}-`));
 process.env.TMPDIR = root;
@@ -30,8 +31,14 @@ for (const key of Object.keys(process.env))
   if (key.startsWith("HERDR_") && key !== "HERDR_API_SCHEMA") delete process.env[key];
 delete process.env.COLLIE_USER_DIR;
 delete process.env.COLLIE_CWD;
+delete process.env.XDG_CONFIG_HOME;
 process.env.HOME = join(root, "home");
 mkdirSync(process.env.HOME);
+process.env.BUN_INSTALL_CACHE_DIR = new URL(
+  "../../.scratch/test-packages",
+  import.meta.url,
+).pathname;
+writeFileSync(join(process.env.HOME, ".bunfig.toml"), testBunfig);
 
 // Bun.spawn's default environment is the one this process started with, not process.env.
 type Spawn = (first: unknown, options?: { env?: unknown }) => unknown;

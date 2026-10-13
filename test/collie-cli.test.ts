@@ -4,6 +4,7 @@ import { exec } from "./support/command";
 import { runEffect, suiteEnv } from "./support/effect";
 import { stopHost } from "./support/host";
 import { installFakeSkills } from "./support/defs";
+import { testBunfig } from "./support/packages";
 import { readIntent, seedIntent, writeIntent } from "../src/intent";
 import { appendMetric } from "../src/metrics";
 import { hosted, settledRun } from "./support/hosted";
@@ -39,6 +40,7 @@ const cli = Effect.fn("test.cli")(function* (
   // Before the directory goes, or a host the command started can write it back.
   yield* Effect.addFinalizer(() => Effect.ignore(stopHost(join(dir, "state"))));
   yield* fs.makeDirectory(join(dir, "config"), { recursive: true });
+  yield* fs.writeFileString(join(dir, ".bunfig.toml"), testBunfig);
   yield* installFakeSkills(dir);
   const binary = yield* Config.option(Config.String("COLLIE_TEST_BINARY"));
   const command = Option.isSome(binary)

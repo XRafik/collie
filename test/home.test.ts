@@ -2,7 +2,7 @@
 // somebody else's workspace adopted because it looks like one. Everything here is a way
 // of arriving at one of those, and the answer being `ownership_unknown` instead.
 
-import { Clock, DateTime, Effect, FileSystem } from "effect";
+import { Clock, DateTime, Duration, Effect, Fiber, FileSystem, Queue } from "effect";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   HOME_TOKEN,
@@ -484,29 +484,33 @@ test("an expired token on a Home whose pane is still there refreshes it, and cre
     }),
   ));
 
-/** Waits until `rounds` restatements are done and their lock given back, so a round's sleep is registered. */
-const restatedRounds = (calls: ReadonlyArray<string>, perRound: number, rounds: number) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const lock = `${yield* homePath(stateDir, KEY)}.lock`;
-    yield* TestClock.withLive(
-      until(
-        () => fs.exists(lock),
-        (held) => !held && calls.length >= rounds * perRound,
-      ),
-    );
-  });
-
 test("while the Home is proven the host restates its tokens every few hours, so a long-open board never lapses", () =>
   runEffect(
     Effect.gen(function* () {
       yield* writeHome(yield* homePath(stateDir, KEY), record());
       const h = fake({ workspaces: [workspace("w1", { [HOME_TOKEN]: KEY })], panes: panes() });
+      const clock = yield* Clock.Clock;
+      const sleeps = yield* Queue.unbounded<Duration.Duration>();
+      const observed: Clock.Clock = {
+        ...clock,
+        sleep: (duration) =>
+          Effect.gen(function* () {
+            // Lock removal can finish before the job registers its next timer. Start
+            // the actual test-clock sleep before acknowledging it to the driver.
+            const waiting = yield* Effect.forkChild(clock.sleep(duration), {
+              startImmediately: true,
+            });
+            yield* Queue.offer(sleeps, duration);
+            yield* Fiber.join(waiting);
+          }),
+      };
 
       yield* Effect.forkScoped(
-        keepHomesTokened(stateDir, Effect.succeed([{ key: KEY, deps: h.deps }])),
+        keepHomesTokened(stateDir, Effect.succeed([{ key: KEY, deps: h.deps }])).pipe(
+          Effect.provideService(Clock.Clock, observed),
+        ),
       );
-      yield* restatedRounds(h.calls, 3, 1);
+      expect(Duration.toMillis(yield* Queue.take(sleeps))).toBe(4 * 60 * 60 * 1000);
       expect(h.calls).toEqual([
         `markWorkspace w1 ${HOME_TOKEN}=${KEY}`,
         "markPane 1-1",
@@ -516,7 +520,7 @@ test("while the Home is proven the host restates its tokens every few hours, so 
       // A day of an open board: the token is restated long before its 24 hours run out.
       for (let round = 2; round <= 7; round++) {
         yield* TestClock.adjust("4 hours");
-        yield* restatedRounds(h.calls, 3, round);
+        expect(Duration.toMillis(yield* Queue.take(sleeps))).toBe(4 * 60 * 60 * 1000);
       }
       expect(h.calls.filter((call) => call.startsWith("markWorkspace"))).toHaveLength(7);
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, FileSystem } from "effect";
+import { ConfigProvider, Effect, FileSystem } from "effect";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
@@ -7,6 +7,7 @@ import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
 import { epochMs } from "../src/time";
 import { runEffect } from "./support/effect";
+import { exec } from "./support/command";
 import {
   FORGE_HOST,
   PROJECT,
@@ -436,7 +437,65 @@ test("each fake answers the same on PATH, logs what it got, and keeps what was p
           expect((yield* FORGES[name].post(ref(name), "LGTM", false, "/", shell)).ok).toBe(true);
           expect(Object.values((yield* onPath.model()).notes ?? {})).toEqual([["LGTM"]]);
           expect((yield* onPath.calls()).length).toBeGreaterThan(0);
+          yield* forgeOnPath(bin, name, model(name, { installed: false }));
+          expect(yield* exec([CLI[name], "--version"])).toMatchObject({
+            exitCode: 127,
+            stdout: "",
+          });
         }
+      } finally {
+        yield* bin.restore();
+      }
+    }),
+  ));
+
+test("the suite's compiled forge fake receives its model and arguments literally", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const bin = yield* FakeBin.make(yield* fs.makeTempDirectoryScoped({ prefix: "forge-bin-" }));
+      try {
+        const binary = `${bin.dir}/compiled forge's reply`;
+        yield* fs.writeFileString(binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n", { mode: 0o755 });
+        yield* forgeOnPath(bin, "github", model("github")).pipe(
+          Effect.provide(
+            ConfigProvider.layerAdd(
+              ConfigProvider.fromUnknown({ COLLIE_TEST_FAKE_FORGE: binary }),
+              { asPrimary: true },
+            ),
+          ),
+        );
+        const args = ["--version", "words with spaces", "a'b", "line one\nline two", "$literal"];
+        expect(yield* exec([CLI.github, ...args])).toEqual({
+          exitCode: 0,
+          stdout: ["github", `${bin.dir}/github.model.json`, ...args].join("\n") + "\n",
+          stderr: "",
+        });
+      } finally {
+        yield* bin.restore();
+      }
+    }),
+  ));
+
+test("the source forge fake works with no Bun command on PATH", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const bin = yield* FakeBin.make(yield* fs.makeTempDirectoryScoped({ prefix: "forge-bin-" }));
+      try {
+        const onPath = yield* forgeOnPath(bin, "github", model("github")).pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+        );
+        expect(
+          yield* exec([CLI.github, "--version"], {
+            env: { ...Bun.env, PATH: `${bin.dir}:/usr/bin:/bin` },
+          }),
+        ).toEqual({
+          exitCode: 0,
+          stdout: "gh version 2.0.0",
+          stderr: "",
+        });
+        expect(yield* onPath.calls()).toEqual(["gh --version"]);
       } finally {
         yield* bin.restore();
       }

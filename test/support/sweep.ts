@@ -25,20 +25,29 @@ export const kill = (pid: number) => {
   }
 };
 
-/** Every live process, other than this one, whose environment names `root` as its marker. */
-export const marked = (root: string): ReadonlyArray<{ pid: number; command: string }> => {
+/** Every live process whose marker is `root` and whose environment has the given bindings. */
+export const marked = (
+  root: string,
+  bindings: Readonly<Record<string, string>> = {},
+): ReadonlyArray<{ pid: number; command: string }> => {
   let pids: Array<string>;
   try {
     pids = readdirSync("/proc").filter((name) => /^\d+$/.test(name));
   } catch {
     return [];
   }
-  const want = `${MARKER}=${root}`;
+  // Match whole NUL-delimited bindings without allocating every unrelated process's
+  // environment fields on every fixture cleanup.
+  const want = [
+    `\0${MARKER}=${root}\0`,
+    ...Object.entries(bindings).map(([key, value]) => `\0${key}=${value}\0`),
+  ];
   return pids.flatMap((name) => {
     const pid = Number(name);
     if (pid === process.pid) return [];
     try {
-      if (!readFileSync(`/proc/${name}/environ`, "utf8").split("\0").includes(want)) return [];
+      const env = `\0${readFileSync(`/proc/${name}/environ`, "utf8")}\0`;
+      if (!want.every((binding) => env.includes(binding))) return [];
       const command = readFileSync(`/proc/${name}/cmdline`, "utf8").split("\0").join(" ").trim();
       return [{ pid, command }];
     } catch {

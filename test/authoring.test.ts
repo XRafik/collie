@@ -26,6 +26,90 @@ import { collie, proves as provesWith } from "./support/world";
 
 const fixtures = new URL("./fixtures/workflows/", import.meta.url).pathname;
 
+test(
+  "provisioning inherits the author's environment and removes the installer's temporary files",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-authoring-env-" });
+        const pkg = Schema.encodeSync(Schema.fromJsonString(Schema.JsonObject))({
+          scripts: { postinstall: `${process.execPath} record.ts` },
+        });
+        yield* fs.writeFileString(`${dir}/package.json`, pkg);
+        yield* fs.writeFileString(
+          `${dir}/record.ts`,
+          `await Bun.write("environment.json", JSON.stringify({
+  home: process.env.HOME ?? null,
+  marker: process.env.COLLIE_TEST_ROOT ?? null,
+  tmp: process.env.TMPDIR ?? null
+}));
+await Bun.write(process.env.TMPDIR + "/installer-temporary-file", "temporary");
+`,
+        );
+        yield* provisionToolchain(dir);
+        const recorded = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Struct({
+              home: Schema.NullOr(Schema.String),
+              marker: Schema.NullOr(Schema.String),
+              tmp: Schema.NullOr(Schema.String),
+            }),
+          ),
+        )(yield* fs.readFileString(`${dir}/environment.json`));
+        expect(recorded.home).toBe(Bun.env.HOME ?? null);
+        expect(recorded.marker).toBe(Bun.env.COLLIE_TEST_ROOT ?? null);
+        expect(recorded.tmp).not.toBeNull();
+        expect(yield* fs.exists(`${recorded.tmp}/installer-temporary-file`)).toBe(false);
+      }).pipe(Effect.scoped),
+    ),
+  30_000,
+);
+
+test(
+  "an install that omits the compiler or keeps an older Effect is an unavailable toolchain",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-authoring-restricted-" });
+        yield* fs.writeFileString(`${dir}/bunfig.toml`, "[install]\ndev = false\n");
+        const omitted = yield* provisionToolchain(dir).pipe(Effect.result);
+        expect(omitted._tag).toBe("Failure");
+
+        yield* fs.writeFileString(`${dir}/bunfig.toml`, "[install]\ndev = true\n");
+        yield* provisionToolchain(dir);
+        const installed = `${dir}/node_modules/effect/package.json`;
+        const pkg = yield* fs.readFileString(installed);
+        const shared = `${dir}/shared-package.json`;
+        yield* fs.link(installed, shared);
+        // Bun can hardlink this file to its package cache. Replace the directory entry
+        // before changing its bytes, so this fixture cannot corrupt another install.
+        yield* fs.remove(installed);
+        yield* fs.writeFileString(
+          installed,
+          pkg.replace(/"version"\s*:\s*"[^"]+"/, '"version": "0.0.0"'),
+        );
+        expect(yield* fs.readFileString(shared)).toBe(pkg);
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const before = Bun.env.BUN_CONFIG_SKIP_INSTALL_PACKAGES;
+            Bun.env.BUN_CONFIG_SKIP_INSTALL_PACKAGES = "1";
+            return before;
+          }),
+          (before) =>
+            Effect.sync(() => {
+              if (before === undefined) delete Bun.env.BUN_CONFIG_SKIP_INSTALL_PACKAGES;
+              else Bun.env.BUN_CONFIG_SKIP_INSTALL_PACKAGES = before;
+            }),
+        );
+        const stale = yield* provisionToolchain(dir).pipe(Effect.result);
+        expect(stale._tag).toBe("Failure");
+      }).pipe(Effect.scoped),
+    ),
+  30_000,
+);
+
 /** The three layers, empty, with the fixtures on hand to copy into them. */
 const layers = Effect.fn("AuthoringTest.layers")(function* (prefix: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -163,7 +247,14 @@ test(
           `${dir}/package.json`,
           pkg.replace(`"effect": "${TOOLCHAIN.effect}"`, '"effect": "4.0.0-rc.117"'),
         );
-        expect((yield* exec([process.execPath, "install"], { cwd: dir })).exitCode).toBe(0);
+        const tmp = `${dir}/tmp`;
+        yield* fs.makeDirectory(tmp);
+        expect(
+          (yield* exec([process.execPath, "install"], {
+            cwd: dir,
+            env: { ...process.env, TMPDIR: tmp },
+          })).exitCode,
+        ).toBe(0);
         yield* fs.copyFile(`${fixtures}paths.workflow.ts`, `${dir}/paths.workflow.ts`);
 
         const checked = yield* checkModule({ path: `${dir}/paths.workflow.ts`, layer: "user" });
