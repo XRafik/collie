@@ -344,6 +344,67 @@ test("an agent that is already there is reattached to rather than started a seco
     }),
   ));
 
+/** herdr closing an agent's pane once Collie has decided to reuse it, as a stop does. */
+class ClosesOnceReused extends FakeHerdr {
+  closed = false;
+  constructor(
+    env: ConstructorParameters<typeof FakeHerdr>[0],
+    readonly pane: string,
+    readonly prompt: string,
+  ) {
+    super(env);
+  }
+  override agentList() {
+    if (this.closed || Bun.file(this.prompt).size === 0) return super.agentList();
+    this.closed = true;
+    return this.paneClose(this.pane).pipe(Effect.andThen(super.agentList()));
+  }
+}
+
+/** herdr failing one listing as Collie hands a reused agent, which it still has, its work. */
+class FailsOnceReused extends FakeHerdr {
+  failed = false;
+  constructor(
+    env: ConstructorParameters<typeof FakeHerdr>[0],
+    readonly pointer: string,
+  ) {
+    super(env);
+  }
+  override agentList() {
+    if (this.failed || Bun.file(this.pointer).size === 0) return super.agentList();
+    this.failed = true;
+    return Effect.fail(
+      new HerdrError({ message: "herdr agent list failed", detail: "socket closed" }),
+    );
+  }
+}
+
+test("a listing that failed is not taken as a reused agent gone, and starts no second one", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addAgent(agentFor("r1"), "1-9");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "still the same agent" }]);
+      const herdr = new FailsOnceReused(rig.pluginEnv(), `${dir}/agents/r1/review.step.md`);
+      const result = yield* session(started("r1"), { herdr });
+      expect(result._tag === "Success" && result.success.note).toBe("still the same agent");
+      expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(0);
+      expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
+    }),
+  ));
+
+test("a reused agent that is gone before it was given its work is started again", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addAgent(agentFor("r1"), "1-9");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "started again" }]);
+      const herdr = new ClosesOnceReused(rig.pluginEnv(), "1-9", promptPath("r1"));
+      const result = yield* session(started("r1"), { herdr });
+      expect(result._tag === "Success" && result.success.note).toBe("started again");
+      expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
+    }),
+  ));
+
 const cardsOf = (runId: string) =>
   readCards(runDir(dir, runId)).pipe(
     Effect.orDie,
@@ -2649,6 +2710,32 @@ test(
         const why = yield* read(controlPath(dir, PARKED, "r1"));
         expect(why).toContain(agentFor("r1"));
         expect(why).toMatch(/pane 1-\d+/);
+        expect(sent(yield* rig.calls(), "Your task for this step")).toBe(0);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a harness whose readiness check fails parks the step saying why",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ verdict: "clean", note: "never" }]);
+        yield* interrupted("r1", suspended("r1"), {
+          compactAtTokens: 1000,
+          ports: {
+            claude: {
+              ...claudeControls().claude!,
+              ready: () => Effect.fail(new Error("its endpoint has 3 threads on it")),
+            },
+          },
+          herdr: new FakeHerdr(rig.pluginEnv({ FAKE_HERDR_HARNESS_SILENT: "1" })),
+          readyMs: 300,
+        });
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
+          "its endpoint has 3 threads on it",
+        );
         expect(sent(yield* rig.calls(), "Your task for this step")).toBe(0);
       }),
     ),
