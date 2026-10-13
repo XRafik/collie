@@ -1203,16 +1203,22 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
       const still = yield* processOf(pid);
       if (still?.started !== live.started || still.command !== live.command)
         return yield* ended("failed", `pid ${pid} changed before it was signalled`);
-      yield* Effect.uninterruptible(
-        (signalled ? Effect.void : sigterm(pid)).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              signalled = pastSignal = true;
-            }),
-          ),
-          Effect.andThen(kept),
-        ),
+      // Recorded before it is sent: a SIGTERM the record lost could be sent again.
+      const sent = yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          if (signalled) return true;
+          signalled = true;
+          if (!(yield* kept)) return (signalled = false);
+          yield* sigterm(pid);
+          return true;
+        }),
       );
+      if (!sent)
+        return yield* ended(
+          "failed",
+          `the record could not be written, so pid ${pid} was not signalled`,
+        );
+      pastSignal = true;
       for (const one of covered) {
         yield* say(`interrupt submitted: ${where(one)}`);
         if (reached === "failed") reached = "submitted";
@@ -1289,7 +1295,7 @@ const survivors = Effect.fn("Compactors.survivors")(function* (
   seen: Seen[],
   pid: number,
   deadline: number,
-  /** Writes the stop so far once a survivor is marked signalled. */
+  /** Writes the stop so far; false where it could not. */
   kept: ReturnType<StopContext["keep"]>,
 ) {
   const alive = Effect.gen(function* () {
@@ -1312,23 +1318,18 @@ const survivors = Effect.fn("Compactors.survivors")(function* (
     for (const one of left) {
       const at = seen.findIndex((other) => sameProcess(one, other));
       if (at >= 0 && seen[at]!.termed) continue;
-      yield* Effect.uninterruptible(
-        sigterm(one.pid).pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              if (at >= 0) seen[at] = { ...seen[at]!, termed: true };
-              else
-                seen.push({
-                  pid: one.pid,
-                  started: one.started,
-                  command: one.command,
-                  termed: true,
-                });
-            }),
-          ),
-          Effect.andThen(kept),
-        ),
+      const sent = yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const marked = { pid: one.pid, started: one.started, command: one.command, termed: true };
+          const index = at >= 0 ? at : seen.push(marked) - 1;
+          seen[index] = marked;
+          if (yield* kept) return yield* Effect.as(sigterm(one.pid), true);
+          seen[index] = { ...marked, termed: false };
+          return false;
+        }),
       );
+      if (!sent)
+        return `the record could not be written, so pid ${one.pid} (${one.command}) was not signalled`;
     }
     if ((yield* Clock.currentTimeMillis) >= deadline)
       return `left running after one SIGTERM: ${left.map((one) => `pid ${one.pid} (${one.command})`).join(", ")}`;

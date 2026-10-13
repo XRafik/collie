@@ -182,8 +182,8 @@ export interface CompactionPort {
 export interface StopContext {
   readonly record: ControlRecord;
   readonly say: (line: string) => Effect.Effect<void, never, PortServices>;
-  /** Writes the stop so far, so a stop cut short leaves what it signalled on the record. */
-  readonly keep: (stop: Stop) => Effect.Effect<void, never, PortServices>;
+  /** Writes the stop so far, before a signal goes out; false where it could not. */
+  readonly keep: (stop: Stop) => Effect.Effect<boolean, never, PortServices>;
 }
 
 export interface CompactionPorts {
@@ -589,7 +589,11 @@ const stopServer = Effect.fn("Compaction.stopServer")(function* (
   const reached = yield* stop({
     record,
     say: (line) => Effect.ignore(deps.log(`${agent}: ${line}`)),
-    keep: (progress) => Effect.ignore(writeControl(deps.stateDir, { ...record, stop: progress })),
+    keep: (progress) =>
+      writeControl(deps.stateDir, { ...record, stop: progress }).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      ),
   });
   if (reached.state === "quiet") yield* fs.remove(record.dir, { recursive: true, force: true });
   else yield* writeControl(deps.stateDir, { ...record, stop: reached });

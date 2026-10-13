@@ -876,3 +876,26 @@ test(
     ),
   30_000,
 );
+
+test(
+  "a SIGTERM the record cannot be written for is not sent, and is sent once when it can",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* writing({ child: "stubborn" });
+        process.kill((yield* control()).pid!, "SIGKILL");
+        const file = yield* controlFile();
+        yield* fs.chmod(file, 0o444);
+
+        yield* session(halted, host);
+        expect(yield* childTerms()).toBe(0);
+
+        yield* fs.chmod(file, 0o644);
+        yield* session(halted, host);
+        yield* until(childTerms, (terms) => terms === 1);
+        yield* session(halted, host);
+        expect(yield* childTerms()).toBe(1);
+      }),
+    ),
+  30_000,
+);
