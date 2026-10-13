@@ -62,7 +62,7 @@ const set = Command.make(
             return {
               ok: true,
               data: done.value,
-              human: `${key} is now ${value.trim() || "unset"}; a Desktop gives it to every Machine`,
+              human: `${key} is now ${value.trim() || "unset"}; paired hosts share it with their peers`,
             };
           }),
         );
@@ -71,6 +71,6 @@ const set = Command.make(
 ).pipe(Command.withDescription("Set one setting; the latest edit of it wins across the Flock"));
 
 export const settings = Command.make("settings").pipe(
-  Command.withDescription("Collie's settings, which a Desktop shares with every Machine"),
+  Command.withDescription("Collie's settings, shared between paired Machines"),
   Command.withSubcommands([list, set]),
 );

@@ -4,7 +4,7 @@
 // saved, a Run belongs to a project, and the host that serves both owns a directory of
 // its own. Building that is the same work for every one of them, so it is here.
 
-import { Config, ConfigProvider, Effect, FileSystem, Option, Schema, Scope } from "effect";
+import { Config, ConfigProvider, Effect, FileSystem, Option, Schema, Scope, Stream } from "effect";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { exec } from "./command";
 import { runEffect, suiteEnv } from "./effect";
@@ -53,6 +53,7 @@ export const collie = Effect.fn("World.collie")(function* (
   args: ReadonlyArray<string>,
   /** More of the operator's environment, over this world's own. */
   extra: Readonly<Record<string, string>> = {},
+  onStderr: (text: string) => Effect.Effect<void> = () => Effect.void,
 ) {
   const command = yield* collieCommand;
   const suite = yield* suiteEnv;
@@ -76,14 +77,35 @@ export const collie = Effect.fn("World.collie")(function* (
     stdout: "pipe",
     stderr: "pipe",
   });
-  const [stdout, stderr, exit] = yield* Effect.promise(() =>
-    Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]),
+  const [stdout, stderr, exit] = yield* Effect.all(
+    [
+      Effect.promise(() => new Response(child.stdout).text()),
+      Stream.fromReadableStream({ evaluate: () => child.stderr, onError: (cause) => cause }).pipe(
+        Stream.orDie,
+        Stream.decodeText(),
+        Stream.tap(onStderr),
+        Stream.runFold(
+          () => "",
+          (out, chunk) => out + chunk,
+        ),
+      ),
+      Effect.promise(() => child.exited),
+    ],
+    { concurrency: "unbounded" },
   );
-  return { exit, stderr, envelope: yield* asEnvelope(stdout).pipe(Effect.orDie) };
+  return {
+    exit,
+    stderr,
+    envelope: yield* asEnvelope(stdout).pipe(
+      Effect.mapError(
+        (cause) =>
+          new Error(
+            `collie ${args.join(" ")} exited ${exit}: ${String(cause)}; stdout=${stdout}; stderr=${stderr}`,
+          ),
+      ),
+      Effect.orDie,
+    ),
+  };
 });
 
 /** Fixture files, saved where an author saves them. */

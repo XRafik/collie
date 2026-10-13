@@ -582,3 +582,22 @@ test(
     ),
   300_000,
 );
+
+test("reported is the one workflow declaration that closes after its report", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const where = yield* layers("collie-authoring-report-");
+      const path = yield* where.copy("user", "reported.workflow.ts");
+      expect(
+        describeModule(yield* loadEntry(path), { layer: "user", path }).metadata,
+      ).toMatchObject({ closes: "reported" });
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(
+        path,
+        (yield* fs.readFileString(path)).replace('closes: "reported"', 'closes: "always"'),
+      );
+      const bad = yield* loadEntry(path).pipe(Effect.result);
+      expect(bad._tag).toBe("Failure");
+      if (bad._tag === "Failure") expect(bad.failure.message).toContain("closes");
+    }).pipe(Effect.scoped),
+  ));

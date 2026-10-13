@@ -2,7 +2,7 @@
 
 ## Glossary
 
-**Workflow** — A TypeScript module saved as `<id>.workflow.ts` whose default export is its definition: its public id, what it takes and gives back, what it declares — hints, outcome, checkout, offers and the agents it prefers — and `run`, ordinary Effect code the host executes as a Run. It asks an agent with `agentWork`, a human with `ask` and another Workflow with `child`, each when the work reaches it, and composes everything else as ordinary TypeScript. Found where it was saved (see **Layer**); a shipped Workflow is one more module and gets nothing a user's does not.
+**Workflow** — A TypeScript module saved as `<id>.workflow.ts` whose default export is its definition: its public id, what it takes and gives back, what it declares — hints, outcome, checkout, whether it closes after reporting, offers and the agents it prefers — and `run`, ordinary Effect code the host executes as a Run. It asks an agent with `agentWork`, a human with `ask` and another Workflow with `child`, each when the work reaches it, and composes everything else as ordinary TypeScript. Found where it was saved (see **Layer**); a shipped Workflow is one more module and gets nothing a user's does not.
 
 **Operation** — One piece of agent work inside a Run, named by the Workflow that asks for it. The name is its identity: the agent's name, its prompt and Output files and the Activities that make it durable come from it, so it is stable within a Run and differs from every other. It has a role, injected as a Persona, a Harness, a Model, optionally the Skill it starts, and the schema its Output must decode against. An agent it starts gets a Tab of its own in its Task's workspace, labelled with its role; an operation that reuses an agent opens nothing.
 
@@ -61,9 +61,22 @@ are one Machine. Desktop names it by the label of the first enabled herdr machin
 reaches it, or by the hostname for Local, and adds its SSH target where two share a name.
 A computer Desktop reaches that has no Collie yet is known by its herdr profile id until a
 host there reports an installation id. Not the plugin installation a host serves, which
-`identity` calls `root`.
+`identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
+Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
 
-**Flock** — Every Herd on every Machine **Desktop** reaches.
+**Flock** — Every Herd on every Machine paired with this one, or reached by **Desktop**.
+
+**Peer** — A Machine paired with this one, known by its installation id and named by
+herdr's label for it. A peer this one can open a connection to listens and is dialled; one
+it cannot, such as a laptop, keeps a link open to it and is reached back over that link.
+Each host keeps a relay socket for each peer, `peers/<name>.sock`, that speaks what
+`host.sock` speaks ([ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md)).
+
+**Pairing** — The record each side of two **Peers** keeps in `peers.json`: who the other
+is, which side dials, and the secret and certificate the link is authenticated with. Made
+by itself the first time Collie reaches a herdr machine it has none for, over that
+machine's SSH login, and removed when herdr no longer lists the Machine. There is no
+command to pair or to forget.
 
 **Local** — The Machine Desktop runs on, reached through a bridge it starts without SSH and
 named by its hostname. Otherwise no different from any other Machine.
@@ -78,8 +91,9 @@ setting, it was given the credentials Desktop holds now but those its onboarding
 development checkout, which nothing upgrades, is never behind on its version. Each part is
 read from what the Machine's host and doctor last told Desktop, and from what Desktop last
 gave it. A Machine that is not in sync is **behind** on each part it lacks, and each has its
-own fix. Desktop brings a Machine level as it connects — upgrading it, syncing its settings,
-giving it credentials — so one that stays behind is one where that failed. Not "up to date",
+own fix. Paired hosts keep settings and release versions level without Desktop.
+Desktop also brings a Machine level as it connects and gives it credentials, so one that
+stays behind is one where that failed. Not "up to date",
 which is Desktop's own check for a newer release of itself.
 
 **Machine rule** — The human's own words, kept in Desktop's settings, about which Machine
@@ -161,16 +175,27 @@ next launch: one line and "Open Collie". No board, no chat.
 questions receive explanations without changes, and a dry run previews actions. A target
 is required. Questions about a Herd are Native chat's, and about the whole Flock, Desktop's Flock chat's.
 
+**Review comment** — A human's words about a quoted span of a Run's plan, or a line
+range of one file in its diff, written where Desktop's record shows it. A draft held by
+Desktop until it is sent, never a Collie record. Sent together, a Run's comments are one
+**Delivery**, word for word, to one of that Run's live agents: not a Steer, because no
+model reads them first, and not a merge request note (ADR-0051). Not a finding, which is
+an agent's.
+
 **Proposal** — A durable, hash-bound set of actions. Explicit requests execute through
 this record immediately. Unsolicited background suggestions remain pending.
 
 **Actor** — Who asked for an operation: the front door its channel declared (`board`,
-`desktop`, `cli-tty`, `cli`, `chat`, …) and the request id. The host records it in the Run's audit
+`desktop`, `cli-tty`, `cli`, `chat`, `agent`, …) and the request id. The host records it in the Run's audit
 trail with every start, answer, hold, stop, resume, offer invoked, grant, steer,
 disposition and follow-up. `board`, `desktop` and
 `cli-tty` are a human; `cli-tty` needs a terminal outside any agent's pane. A channel
 reached through `collie bridge` is the front door it was started as, and `desktop` adds
-where it came from: the computer it named and the SSH client the bridge saw. A chat's
+where it came from: the computer it named and the SSH client the bridge saw. Every front
+door's Actor names `from.machine` where the channel came from a **Peer**, stamped by the
+host that authenticated the link and never by a caller, and a host's own call to a peer is
+the `host` front door, which is never a human. An `agent` is never a human either;
+its `from.run` and `from.agent` name the launch or the registered pane. A chat's
 `collie_do` also names its conversation and carries the human's message from that turn,
 with the names of the **Attachments** it carried, attached by the tool host and never by
 the model.
@@ -188,6 +213,8 @@ delivery an older Collie held for the agent's next prompt), `reserved`, `deferre
 pane cannot take it yet, so it is tried again under the same id), `submitted`,
 `acknowledged`, `verified` and the terminal `failed`, `unknown`, `superseded`, `expired`.
 They are separate because they are separate facts. A `deliver` with no mode is `now`.
+A Delivery from an agent carries its sender line before the unchanged words: its agent,
+Run and Machine, and the tool and CLI address to answer.
 
 **Dispatcher** — The only code that sends text to an agent. Holds that agent's ledger lock
 across the compaction decision, the composition and the send.
@@ -204,6 +231,10 @@ on send, never `corrected`: sending text is not the work changing.
 
 **Manual override** — An incarnation that received input Collie did not send. Automatic
 corrections to it stop until an explicit `run clear-override`; nothing times it back on.
+
+**Forge** — The service that hosts a repository and its **Merge requests**: GitLab or GitHub. A checkout's forge comes from the host of its `origin` remote, or of `upstream` where `origin` names none. `github.com` is GitHub. The Flock's `gitlab_host`, or any host whose name contains `gitlab`, is GitLab. Any other host has no forge, and a step that needs one says so. Collie reaches a forge only through that forge's adapter: `glab` for GitLab, `gh` for GitHub. The adapter also writes the commands an agent is told to run, so no prompt names a CLI of its own ([ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md)).
+
+**Merge request** — A proposed change to a repository's default branch, on its **Forge**. Collie's word covers a GitHub pull request too. A human is shown the forge's own word and name: merge request `group/app!42` on GitLab, pull request `owner/repo#30` on GitHub. A Run reviews one as the target `mr:<host>/<group>/<project>!<iid>` or `mr:github.com/<owner>/<repo>#<number>`. Collie reads for itself whether a merge request merged, closed, deployed or merges itself once green; none of these is taken from an agent's Output.
 
 **Disposition** — What became of a Run's work, which is not how its execution ended. Recorded by a human beside the Run's status and never over it — `merged`, `abandoned` or `superseded`, with the merge request, commit or Run that backs it up. A Run that failed still failed; its disposition says whether the work landed anyway. Append-only, so a correction keeps what was believed before. Nothing to do with **Delivery**, which is one message to one agent.
 
@@ -271,11 +302,10 @@ host reports, the live agents and what each Run left in its directory, so the Ho
 to no Task is a TaskView of its own.
 
 **Decision** — What a Task is waiting on a human for, and one of the two things that put
-it in **Needs you**: a **question** a Run asked, a **Proposal** Collie made, or an evidence
-**gate** asking which verifications this Run is to be held to. Any of a Task's Runs can be
-waiting on one, a fan-out's Repo runs included, and each is answered on the Run that asked.
-All three are answered on the card, from the CLI or from chat, and survive the board
-closing.
+it in **Needs you**: a **question** a Run asked, or a **Proposal** Collie made. Any of a
+Task's Runs can be waiting on one, a fan-out's Repo runs included, and each is answered on
+the Run that asked. Both are answered on the card, from the CLI or from chat, and survive
+the board closing. A Run's **Checks** are never one: nobody approves them (ADR-0055).
 
 **Stalled** — The other way into **Needs you**, and the one with nothing on the card to
 answer: an agent is waiting for a human in its own pane — at its harness's own dialog,
@@ -340,16 +370,19 @@ into another Run's pane on its behalf.
 
 **Worktree** — The checkout a mutating Run owns: one per branch, because git allows
 exactly one worktree per checked-out branch. The branch names the work rather than the path
-to it, and new work is generated as `<GitLab login>/<task>` rather than asked for, so two
+to it, and new work is generated as `<login>/<task>` — the login of the checkout's **Forge** — rather than asked for, so two
 Runs on different work can never key the same checkout
 ([the order it is resolved in](docs/cli.md#start-a-run)). Only the Run's cwd moves; its tabs stay in
 its Task's workspace and are `cd`-ed into the checkout, because a Run belongs where its
 Task is (ADR-0006). A Workflow declares one — `checkout` in its metadata — and the host
 cuts it at admission, before the Run exists, from the checkout the Run starts from: a
 directory that is not a git checkout is refused, named. `implement` and `renovate` declare
-one; `plan`, `architecture` and `review` declare none, and the `implement` they chain into
-is placed by its own declaration, in the same Task. A Renovate Run's is the one that holds
-no branch — see Renovate Run.
+one; `plan`, `architecture`, `review` and `general` declare none, and the `implement` they chain into
+is placed by its own declaration, in the same Task. A `review` Run that fixes its own
+findings is given the reviewed branch's checkout when the fix starts, and from then on that
+checkout is the Run's: what it verifies is that tree
+([ADR-0054](docs/adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A
+Renovate Run's is the one that holds no branch — see Renovate Run.
 
 Two managers, and a Run records which: Collie makes the checkout with `git worktree add`
 by default, and `--input workspace=new` asks herdr for it instead, which opens it as a
@@ -440,16 +473,21 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 - `review` — standalone; you pick the target; one complete review, and a synthesis that reconciles the reviewers where more than one axis is asked for.
 - `architecture` — runs the architect over the project and reports into its Run's plan directory.
 - `renovate` — claims the repository in Helle, merges or accounts for every Renovate Bot merge request, tags and watches the release, and records the result on the team's Renovate issue.
+- `general` — one agent does one ad-hoc task in place, in the checkout it was started for or at the Projects root, and the Run ends with the agent's summary. It is for whatever is not planning, building to a merge request, reviewing, renovating or surveying architecture. Work that should land as a merge request is `implement`'s (ADR-0056).
 
-**Outcome** — The kind of result a Run has to prove, and the evidence that closes it: a feature names what it built, a bug reproduces before it is fixed, a refactor preserves behaviour, an investigation reaches a supported conclusion and may have no patch, docs run what they document, a migration proves it can go back. A Run nobody classified is `unspecified` and proves only its approved verifications — never a feature by default.
+- `investigate` — one investigator reproduces a goal on its Machine, returns findings and closes after its host reports to the requester.
 
-**Approved set** — The verifications Collie may run itself for one Run, each bound argument for argument: the ones given with the start (`run start --verify`, or chat's `start` with `verify`), else `.collie/verify.json` in the project, else the checks remembered for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, written by `run intent remember`, or chat's `remember_verification`), else `~/.collie/user/verify.json`, settled at start and kept with the Run as its grant — its Intent's `run_verification`, or the host's record for a workflow module's Run. A plan spanning repositories is held to each repository's own `.collie/verify.json` or remembered checks. A start of a workflow that declares `verifies`, whose outcome needs the set, is refused as `invalid_input` when nothing is approved, before any Run exists. From then on that grant is the set, amended only by `run intent verification` (chat's `set_verification`), and a Run whose grant is withdrawn to nothing stops where it asks for the set. An agent may `collie verify` anything; only the approved set is what Collie runs at the gate.
+**Requester** — The agent Actor that started a Run, recorded as `requestedBy`: its Run, agent and Machine. Once the started Run settles, its host reports its status, summary or failure and where its full Output is to that address. The report records delivery or why it could not be delivered, without queuing later delivery. A Workflow declaring `closes: "reported"` then closes its own agents and its Task workspace when nothing else needs it.
+
+**Outcome** — The kind of result a Run has to prove, and the evidence that closes it: a feature names what it built, a bug reproduces before it is fixed, a refactor preserves behaviour, an investigation reaches a supported conclusion and may have no patch, docs run what they document, a migration proves it can go back. A Run nobody classified is `unspecified` and proves only its **Checks** — never a feature by default.
+
+**Checks** — The commands Collie runs itself to prove one Run. Each is an executable and its arguments, bound argument for argument and run in a tree the Run owns, and nobody approves them. They are the ones given with the start (`run start --verify`, or chat's `start` with `verify`), else `.collie/verify.json` in the project, else the checks remembered for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, written by `run intent remember` or chat's `remember_verification`), else `~/.collie/user/verify.json`. The first found is taken whole and kept with the Run: in its Intent's `run_verification`, or in the host's record for a workflow module's Run. Where none of those has any, the Run's own agent names them from what the repository says proves its work, before it builds, and Collie records and runs them without asking. Anyone (a human, chat, or the Run's agent) adds or withdraws a check on a live Run with `run intent verification` (chat's `set_verification`). The gate reads them at every pass. Nobody is asked to approve one, and no start is refused for want of one. A Run whose agent still names none after its gate fixes is held unproved, as a failing check is (ADR-0055). An agent may `collie verify` anything, but only a Run's Checks are what Collie runs at the gate. Formerly the "approved set"; code still calls them `approved`.
 
 **Evidence** — A Verification collected at a revision. An Output field saying the tests pass is a claim, and is shown as one. The gate before a merge request reads evidence, never claims.
 
 **Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
 
-**Check pass** — One run of an approved check by Collie, with why it runs: `gate` on the
+**Check pass** — One run of one of a Run's **Checks** by Collie, with why it runs: `gate` on the
 Run's branch, `baseline` where the branch left the default branch, `recheck` on the same
 tree to rule out a flake, `fix` after gate fix N, `finish` at the Run's end, or a plain
 `check`. The pass is the Workflow's declaration, never read off its id. While it runs, the
@@ -488,7 +526,7 @@ defaults and remembered values in `config.json`, and whether the harness is trus
 
 **Launch flow** — The two questions between "run a workflow" and a Run: which Workflow, and
 what the human wants, in their own words. The words fill the Workflow's launch Input — the
-one field it hints with `goal`, `work-source`, `diff-target` or `gitlab-repository` — where
+one field it hints with `goal`, `work-source`, `diff-target` or `repository` — where
 they are a value of its kind, and otherwise say where the work is; every other Input is
 inferred or left empty, and a start that still lacks one is
 refused with the reason rather than asked again. Where the work happens is never asked:

@@ -2,6 +2,7 @@
 // as `desktop`, never through Collie's own host client.
 
 import { expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { Config, Deferred, Effect, Option, Queue, Schedule, Schema, Stream } from "effect";
 import { type BoardMessage, type BoardSnapshot, PROTOCOL } from "../src/board-model";
 import { readAudit } from "../src/audit";
@@ -94,6 +95,26 @@ test(
           }).pipe(Effect.flip);
           expect(refused.reason).toBe("no Run r-nobody");
 
+          const ended = yield* door.start({
+            project: world.project,
+            id: "plain",
+            request: "start-finished",
+            input: { note: "done" },
+          });
+          yield* door
+            .runDetail({ runId: ended.runId, tail: false, pages: 0, refreshMr: false })
+            .pipe(
+              Stream.filter((one) => one?.status === "succeeded"),
+              Stream.runHead,
+              Effect.orDie,
+            );
+          const noWork = yield* act(reached, "resume-finished", {
+            _tag: "Resume",
+            runId: ended.runId,
+          }).pipe(Effect.flip);
+          expect(noWork.reason).toContain("finished");
+          expect(noWork.reason).not.toContain("Resumed");
+
           const trail = yield* readAudit(runDir(world.state, runId));
           expect(trail.map((line) => line.actor)).toEqual([
             { origin: "desktop", requestId: "start-1", from: { client: "mk-pc" } },
@@ -101,7 +122,7 @@ test(
           ]);
           yield* stopHost(world.state);
         }).pipe(Effect.orDie),
-      ["proof.workflow.ts", "helper.ts", "notes.md"],
+      ["proof.workflow.ts", "helper.ts", "notes.md", "plain.workflow.ts"],
     ),
   120_000,
 );
@@ -168,6 +189,148 @@ const toldOf = (item: FlockItem) =>
   "machine" in item
     ? `${item.machine.name} ${"_tag" in item ? item._tag : item.message._tag}`
     : item._tag;
+
+test("a later paired link takes an installation already shown through SSH", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const closed: string[] = [];
+      const told: string[] = [];
+      const doors = new Map<string, Fake>();
+      const later = yield* Deferred.make<void>();
+      const ssh = fakeRoute(
+        "ssh",
+        Stream.make(snapshot("vm")).pipe(Stream.concat(Stream.never)),
+        closed,
+      );
+      const link = fakeRoute(
+        "link",
+        Stream.fromEffect(Deferred.await(later).pipe(Effect.as(snapshot("vm")))).pipe(
+          Stream.concat(Stream.never),
+        ),
+        closed,
+      );
+      yield* flockStream(
+        [
+          { ...ssh, machine: { ...ssh.machine, route: "ssh" } },
+          { ...link, machine: { ...link.machine, route: "link" } },
+        ],
+        doors,
+        "0.31.0",
+      ).pipe(
+        Stream.runForEach((item) => Effect.sync(() => told.push(toldOf(item)))),
+        Effect.forkScoped,
+      );
+      yield* until(() => told.length === 1);
+      yield* Deferred.succeed(later, undefined);
+      yield* until(() => told.length === 2 && closed.includes("ssh"));
+      expect(told).toEqual(["ssh Snapshot", "link Snapshot"]);
+      expect(doors.get("vm")?.name).toBe("link");
+    }).pipe(Effect.scoped),
+  ));
+
+test("a working link displaces a configured link that fell back to SSH", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const closed: string[] = [];
+      const told: string[] = [];
+      const doors = new Map<string, Fake>();
+      const later = yield* Deferred.make<void>();
+      const first = fakeRoute(
+        "fallback",
+        Stream.make(snapshot("vm")).pipe(Stream.concat(Stream.never)),
+        closed,
+      );
+      const link = fakeRoute(
+        "link",
+        Stream.fromEffect(Deferred.await(later).pipe(Effect.as(snapshot("vm")))).pipe(
+          Stream.concat(Stream.never),
+        ),
+        closed,
+      );
+      const fallback: Route<Fake> = {
+        ...first,
+        machine: { ...first.machine, route: "link" },
+        open: () =>
+          Effect.acquireRelease(
+            Effect.succeed({
+              name: "fallback",
+              machine: { ...first.machine, route: "ssh" as const },
+              board: () => Stream.make(snapshot("vm")).pipe(Stream.concat(Stream.never)),
+            }),
+            () => Effect.sync(() => closed.push("fallback")),
+          ),
+      };
+      yield* flockStream(
+        [fallback, { ...link, machine: { ...link.machine, route: "link" } }],
+        doors,
+        "0.31.0",
+      ).pipe(
+        Stream.runForEach((item) => Effect.sync(() => told.push(toldOf(item)))),
+        Effect.forkScoped,
+      );
+      yield* until(() => told.length === 1);
+      yield* Deferred.succeed(later, undefined);
+      yield* until(() => told.length === 2 && closed.includes("fallback"));
+      expect(told).toEqual(["fallback Snapshot", "link Snapshot"]);
+      expect(doors.get("vm")?.name).toBe("link");
+    }).pipe(Effect.scoped),
+  ));
+
+test("a link owner that reconnects through SSH yields to another working link", () =>
+  Effect.runPromise(
+    fastForward(
+      Effect.gen(function* () {
+        const dropped = yield* Deferred.make<void>();
+        const arrived = yield* Deferred.make<void>();
+        const told: string[] = [];
+        const doors = new Map<string, Fake>();
+        let opens = 0;
+        const primary: Route<Fake> = {
+          machine: { profile: "primary", name: "primary", route: "link" },
+          collie: () => Effect.die("not asked"),
+          open: () =>
+            Effect.sync(() => {
+              const first = opens++ === 0;
+              return {
+                name: "primary",
+                machine: {
+                  profile: "primary",
+                  name: "primary",
+                  route: first ? ("link" as const) : ("ssh" as const),
+                },
+                board: () =>
+                  Stream.make(snapshot("vm")).pipe(
+                    Stream.concat(
+                      first ? Stream.fromEffectDrain(Deferred.await(dropped)) : Stream.never,
+                    ),
+                  ),
+              };
+            }),
+        };
+        const other = fakeRoute(
+          "other",
+          Stream.fromEffect(Deferred.await(arrived).pipe(Effect.as(snapshot("vm")))).pipe(
+            Stream.concat(Stream.never),
+          ),
+        );
+        yield* flockStream(
+          [primary, { ...other, machine: { ...other.machine, route: "link" } }],
+          doors,
+          "0.31.0",
+        ).pipe(
+          Stream.runForEach((item) => Effect.sync(() => told.push(toldOf(item)))),
+          Effect.forkScoped,
+        );
+        yield* until(() => told.length === 1);
+        yield* Deferred.succeed(dropped, undefined);
+        yield* until(() => told.length === 3);
+        yield* Deferred.succeed(arrived, undefined);
+        yield* until(() => told.length === 4);
+        expect(told.at(-1)).toBe("other Snapshot");
+        expect(doors.get("vm")?.name).toBe("other");
+      }),
+    ),
+  ));
 const until = (what: () => boolean) =>
   Effect.suspend(() => (what() ? Effect.void : Effect.fail("not yet"))).pipe(
     Effect.retry(Schedule.spaced("5 millis")),
@@ -189,7 +352,14 @@ test("a Machine reached by two routes is shown through the first, and the other'
             after(preferredAnswers, snapshot("vm")).pipe(Stream.concat(Stream.never)),
             closed,
           ),
-          fakeRoute("other", Stream.make(snapshot("vm")).pipe(Stream.concat(Stream.never)), closed),
+          {
+            ...fakeRoute(
+              "other",
+              Stream.make(snapshot("vm")).pipe(Stream.concat(Stream.never)),
+              closed,
+            ),
+            machine: { profile: "p-other", name: "other", route: "ssh" },
+          },
         ],
         doors,
         "0.31.0",
@@ -278,6 +448,14 @@ test("a bridge whose shell finds no collie is a Machine without Collie, in the s
         "echo 'Permission denied' >&2; exit 1",
       ]).pipe(Effect.flip);
       expect(other).toEqual({ state: "unreachable", reason: "Permission denied" });
+    }).pipe(Effect.scoped),
+  ));
+
+test("a bridge starts in the home directory, never Desktop's app folder an update deletes", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const failed = yield* openBridge(["/bin/sh", "-c", "pwd >&2; exit 1"]).pipe(Effect.flip);
+      expect(failed).toEqual({ state: "unreachable", reason: homedir() });
     }).pipe(Effect.scoped),
   ));
 

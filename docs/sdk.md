@@ -50,7 +50,7 @@ human, start a child or branch again: there is no step graph to keep in step wit
 
 The host executes `run` as a Run, and the Run is supplied rather than passed:
 `yield* Run` is its `id` and the public id of the workflow it is a Run of, and `agentWork`,
-`ask`, `child` and `requireApproved` read it themselves. Each Run is one execution keyed on
+`ask` and `child` read it themselves. Each Run is one execution keyed on
 its id, so a retried request is the same execution and a new start is a new one.
 
 A failure is a `WorkflowError`, which carries a `reason`. A workflow with failures of its
@@ -250,8 +250,11 @@ export default defineWorkflow({ ...renovation(landing), id: "landing" });
 
 Everything the fork did not write — what it assesses, what it batches, the claim it takes,
 the teammate's approval it waits for — is the shipped orchestration, and a baseline change
-to any of it reaches the fork. `RENOVATE` holds the shipped sections as templates, so a fork
-keeps a section's words by starting from its `text` and adds its own sentence; `asRenovator`
+to any of it reaches the fork. `RENOVATE_ON.gitlab` and `RENOVATE_ON.github` hold each
+forge's shipped sections as templates, and `Landed.forge` says which forge a landing step's
+repository is on, so a fork keeps a section's words for either by starting from
+`RENOVATE_ON[at.forge].merge.text` and adds its own sentence. `RENOVATE` is still the GitLab
+sections, so a fork written before there were two reads what it read; `asRenovator`
 is who does the work and the `input` every shipped section reads.
 
 Nothing was added to Collie to make that possible, and nothing needs to be. A workflow
@@ -263,6 +266,12 @@ different Layer for it. There is no step to patch and no engine to copy.
 `agentWork` is one call for one piece of agent work: it builds the prompt, launches the
 agent, collects what it wrote, decodes it against your schema, and hands you a value of
 your own type.
+
+Every agent gets Native chat's whole Toolkit through its harness's MCP wiring, or Pi's
+extension. Its prompt names its Run, agent and Machine, with the tool and CLI reply
+address. `collie_installation` and `collie_definitions` read its own Machine. Tools naming
+a Run find the host that has it; agents push their branch before starting work elsewhere.
+See [agents talking to each other](using.md#agents-talking-to-each-other).
 
 ```ts
 const Verdict = Schema.Struct({
@@ -561,9 +570,16 @@ const place = yield * host.place((yield * Run).id);
 //                   so on: whose agents `askRoute` and `handOffWork` may reach
 ```
 
-`place.cwd` is decided before your body runs, and your body never makes a checkout. A
-workflow that [declares](#what-a-definition-declares) `checkout` is given a worktree of its
-own there; every other one works where it was started, and a child where its parent works.
+`place.cwd` is decided before your body runs. A workflow that
+[declares](#what-a-definition-declares) `checkout` is given a worktree of its own there;
+every other one works where it was started, and a child where its parent works. One call
+moves it: `host.checkoutReviewed(runId)` asks for the checkout of the branch the Run's
+diff target names — the one git already has, or one cut from that branch — and records it
+as the Run's own, so read `place` again after it rather than keeping `place.cwd`
+([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). It answers
+`{ cwd, branch }`, or `{ refused }` in the resolver's own words where the target has no
+branch to work on; asking again answers from the record. Take it inside an `Activity`, so a
+replay does not cut a second checkout. Shipped `review` takes it before its own fixer starts.
 
 `place.dir` is where what a Run produces belongs, and where the things that read a Run look:
 a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its findings in
@@ -575,9 +591,16 @@ host's, so they are never in your payload — a caller asking for extra review a
 an earlier Run to compare against is doing it there, and this is where you read it.
 
 `host.post` puts a file on the merge request a Run was pointed at, as one note Collie sends
-rather than an agent writes out again. Its refusal is its message: not a merge request, no
-`glab` for that project, or one assigned to whoever is running this — whose findings are
-theirs to fix rather than to post to themselves.
+rather than an agent writes out again, through the merge request's own forge. With
+`approve`, it approves it too — the shipped review passes it when nothing live is left to
+fix — and the message says whether the approval landed. Its refusal is its message: not a
+merge request, no CLI or login for its forge, or one assigned to whoever is running this —
+whose findings are theirs to fix rather than to post to themselves.
+
+`mrForgeFacts(target)` is pure: for an `mr:` target it gives the forge's name and noun and
+the `diff`, `view` and `checkout` command lines a prompt hands a reviewer, written by that
+forge's adapter, and null for any other target. `target_repo` is still filled in for a
+fork that reads it: `--repo <project>` is what both CLIs take.
 
 `host.config(dotted)` is one value from the operator's own configuration, and empty where
 they have set none. What a workflow must not hard-code — which team it files issues with,
@@ -585,12 +608,16 @@ where this installation keeps its logs — is asked for here rather than written
 prose, so the same workflow is usable by somebody else.
 
 `host.mr({ cwd, target?, source? })` is whether a merge request can be opened from here and
-what it would carry: the configured assignee, the repository's own template, the issues the
-branch answers. Its optional `provider` is `github` or `gitlab` (absent on a GitLab-only
-host), and `repository` names GitHub's owner/repository for explicit `gh --repo` commands.
-A GitHub origin uses `gh`, checks its github.com login and repository access, and reads
-the authenticated assignee and the checkout's pull request template. GitLab retains
-the configured assignee and merge request template. One question rather than two,
+what it would carry, on the checkout's own forge (or the target's, where it names one):
+the assignee — `<forge>.assignee` from the user's config, else that forge's login — the
+repository's own template, the issues the branch answers. `forge` is `GitLab` or `GitHub`
+and `noun` is `merge request` or `pull request`; `provider` is `gitlab` or `github`, and
+`repository` the repository's path for `--repo`. `existing` is the URL of this branch's
+open one, or empty, and `autoMerge` whether it merges itself once green — a step that
+pushes to it should not run. `commands.create` and `commands.comment` are the command
+lines an agent runs to open one (with `<title>` and `<file>` left to fill in) or to note on
+`existing`, written by the forge's adapter so a prompt names no CLI of its own.
+One question rather than two,
 because a step that cannot reach its forge has
 nothing to fill in — check it before you start an agent, and say the reason where it is no.
 Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Run: its card
@@ -929,13 +956,16 @@ passing record of it, collected on this exact revision. A commit or an edit sinc
 earlier pass history — it is not that the result went off, it is that it is about another
 tree.
 
-`host.verify({ runId, name, cwd })` runs one of the commands your Run was started under the
-authority of, in the directory the grant names, resolved from `cwd` — which has to be the
-Run's own checkout — and records what it did. The list is `.collie/verify.json`, read when the Run
-started, plus whatever has been granted it since: by a human with `collie run intent
-verification`, or by chat with `set_verification`, which `collie_propose` carries out with no
-yes. A name not on it is refused, and a workflow cannot add to it. Anyone else
-collects the same way from outside: `collie verify --run <your run id> -- <command>`.
+`host.verify({ runId, name, cwd })` runs one of your Run's checks, in the directory the
+check names, resolved from `cwd` — which has to be the Run's own checkout — and records
+what it did. The checks are what the Run started with (`--verify`, else
+`.collie/verify.json`, else the checks remembered for its remote, else the user's
+`verify.json`; a follow-up started from a card starts with its parent's), plus whatever
+anyone has named since with `collie run intent verification`
+or chat's `set_verification`, the Run's own agent included. Nobody approves them
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). A name not among them is
+refused. Anyone else collects the same way from outside:
+`collie verify --run <your run id> -- <command>`.
 With `at: "default-base"` it runs at the merge-base of the checkout and its default branch,
 in that same checkout so what the build installed is there, and then puts the checkout back;
 a checkout with changes of its own, or no default branch to compare with, is refused.
@@ -953,31 +983,29 @@ Collie never works a pass out from your workflow's id.
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 ```
 
-`host.approved(runId)` is that list, for a prompt to name what the work will be held to
-before it starts — `renderApproved` writes it out — and `renderEvidence(host.evidence(...))`
-is what was actually collected and by whom, for a merge request to say what it proved.
-
-`requireApproved(kind)` is the same list where your Run's kind of result needs it.
-A workflow that [declares](#what-a-definition-declares) `verifies` is never started with
-nothing approved, so this is the backstop: with nothing approved it parks the Run with the repair — a grant through `collie run intent
-verification`, then `collie run resume` — instead of paying agents for work no gate could
-accept, and a resume asks again. Call it before your first agent and again at your gate, so
-a grant withdrawn meanwhile parks the Run there rather than failing it.
+`host.approved(runId)` is the Run's checks as they stand now, for a prompt to name what the
+work will be held to — `renderApproved` writes it out — and
+`renderEvidence(host.evidence(...))` is what was actually collected and by whom, for a
+merge request to say what it proved. The list can grow while the Run works, since an
+agent may name a check, so read it again where you need it — at each gate pass, inside the
+Activity that runs it, so a replay sees what that pass saw — rather than once at the start.
+An empty list stops nothing: where your Run's kind of result needs checks,
+`evidenceGapsOf` reports a gap that tells the implementer how to name them.
 
 `evidenceGapsOf` is the gate itself: what a Run of this kind still has no evidence for, one
-sentence each, and empty where the evidence is there. It reads the journal, the approved
-list, the Outputs you hold and the tickets you built — and it will not take a reviewer's
+sentence each, and empty where the evidence is there. It reads the journal, the Run's
+checks, the Outputs you hold and the tickets you built — and it will not take a reviewer's
 judgement from an implementer's Output, because the agent that wrote the change cannot
 vouch for its own scope. Only the latest result for a check on the tree in front of it
 counts, so a pass a later fail on the same tree contradicts is not one. Baseline failures
-are diagnostic context: `preexisting` does not remove gaps. Each approved check and each
+are diagnostic context: `preexisting` does not remove gaps. Each of the Run's checks and each
 ticket's promised check still needs a passing verification on the current tree.
 
 ```ts
 const gaps = evidenceGapsOf({
   kind: isOutcome(place.options.outcome ?? "") ? place.options.outcome : "unspecified",
   evidence: yield * host.evidence(runId, cwd),
-  approved: yield * requireApproved(place.options.outcome ?? ""),
+  approved: yield * host.approved(runId),
   outputs: { build, synthesize },
   reviewed: ["synthesize"],
   roots: [place.dir, cwd],
@@ -1005,7 +1033,9 @@ None of it is yours to implement, but it decides where your workflow can be inte
   and suspend _that_ Activity's own instance, never the workflow's — suspending the run from
   inside an Activity abandons the wait rather than parking it. `agentWork` does this while it
   is collecting, so a stop lands even mid-collection and what resumes reattaches to the
-  launch already recorded.
+  launch already recorded. Suspension interrupts the current fiber. A race waiting for
+  success can swallow that interruption while its other side keeps waiting. Use
+  `Effect.raceFirst` at such a boundary so suspension reaches the enclosing Run.
 - **Halting the agent is the host's half of a stop.** `run stop` also closes the panes of
   the Run's agents, and of the Runs it started, which is what stops them; the workspace
   keeps its own tab. When the Run resumes, work whose agent has gone and whose Output never
@@ -1050,7 +1080,9 @@ export default defineWorkflow({
   prefers: [which agent does the work](#which-agent-does-the-work).
 
 - **`hints`** attach inference to a field. `goal`, `work-source`, `diff-target` and
-  `gitlab-repository` are the launch strategies, and a module with inputs hints exactly one
+  `repository` — a GitLab or GitHub repository URL, or a local checkout — are the launch
+  strategies (`gitlab-repository`, its old name, is still read as `repository`, in a hint
+  and in a recorded Run), and a module with inputs hints exactly one
   field with one of them ([one launch Input](authoring.md#writing-one)). They are exclusive: one field each, so renaming `plan` to `spec` changes
   nothing about how it is inferred, what it names a branch after, which label its Run is
   listed under, or which previous review it is given.
@@ -1062,14 +1094,7 @@ export default defineWorkflow({
   from a directory that is not a git checkout is refused naming that directory, and no
   Run, worktree, workspace or agent is left behind. Absent, the Run works where it was
   started.
-- **`verifies: true`** says the workflow's gate runs the approved set. A start of it whose
-  outcome needs that set (anything but `investigation`, `plan` and `review`) and has nothing
-  approved is refused as `invalid_input`, with the repair, before any Run, worktree or Task
-  exists. The set comes from `--verify`, else the project's `.collie/verify.json`, else the
-  checks remembered for its repository's remote, else the user's `verify.json`. A follow-up
-  started from a card is held to its parent's set. A plan spanning repositories is checked
-  in each repository it names, against that one's own `.collie/verify.json` or remembered
-  checks, and `--verify` is refused for it.
+- **`closes: "reported"`** asks the host to close this Run's agents once its report is delivered or recorded as undelivered. It closes the Task workspace only when no other Run needs it and every remaining pane belongs to this Run or is the Task's shell. A human pane or another Run's live agent keeps the workspace. Without the declaration, reporting leaves the agents open.
 - **`followUps` and `actions`** carry an `id` that is stable and a `title` a human reads.
   Two fields, because a retitled action is the same action and a card matching on the
   title would start a different one. `workflow` is a public id or `"self"` for the one
@@ -1179,3 +1204,38 @@ Collie makes the common cases convenient; it does not stand between you and Effe
   in `layer`, wrapped in an Activity so replay hands back what it answered. Collie has no
   classifier API of its own, and preferring a harness or model never overrides a provider
   you supplied; `agentWork` is the way to reach the harness the operator configured.
+
+### Starting work on another Machine
+
+A `collie_do` `start` action may name `machine`, `workspace` and `inputs`, for example:
+
+```json
+{
+  "actions": [
+    {
+      "kind": "start",
+      "workflow": "investigate",
+      "machine": "mk-laptop",
+      "workspace": "cego/collie",
+      "inputs": { "goal": "Why is the Machines page behind?", "branch": "mk/desktop-fix" }
+    }
+  ]
+}
+```
+
+`workspace` also takes a remote URL, such as `https://github.com/cego/collie` or
+`git@github.com:cego/collie.git`. The receiving host finds a matching `origin` or `upstream`
+under its Projects root. Push the branch before starting work elsewhere. The host fetches
+it and cuts the worktree from that commit; a conflicting local branch or a checkout with
+local changes is refused. Missing or ambiguous checkouts are refused with where it looked.
+
+`workspace` and `branch` are host launch options, separate from a module's Input schema.
+`investigate` declares only `goal`; it returns `{ summary, findings: [{ what, evidence }] }`.
+
+A start by an agent records `requestedBy`: its Run, agent and Machine. When it settles,
+the host sends the requester the status, summary or failure reason and
+`collie run show <id>` for the full Output. The Delivery uses the agent's sender line and
+a request id derived from the started Run. A restart reuses that Delivery. Delivery uses
+`boundary`, supported by all harnesses. A gone agent, an unpaired Machine or a Machine
+that does not answer within fifteen seconds leaves an undelivered report with its reason;
+there is no retry queue. `run show` and the drawer show the requester and report.

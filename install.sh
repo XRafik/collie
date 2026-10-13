@@ -7,7 +7,11 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT"
 
-VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml)
+VERSION=${COLLIE_VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' herdr-plugin.toml)}
+if [ -n "${COLLIE_VERSION:-}" ] && ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "not a Collie release version: $VERSION" >&2
+  exit 1
+fi
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -191,7 +195,14 @@ if [ -d .git ] && command -v bun >/dev/null 2>&1; then
     echo "bin/collie is newer than everything it is built from; nothing to build"
   fi
 elif fetch_release; then
+  if [ -n "${COLLIE_VERSION:-}" ]; then
+    sed "s/^version = \".*\"/version = \"$VERSION\"/" herdr-plugin.toml > herdr-plugin.toml.new
+    mv herdr-plugin.toml.new herdr-plugin.toml
+  fi
   echo "installed ${ASSET} from ${BASE}"
+elif [ -n "${COLLIE_VERSION:-}" ]; then
+  echo "cannot install exact release $VERSION: ${unavailable}" >&2
+  exit 1
 elif command -v bun >/dev/null 2>&1; then
   echo "${unavailable}; building from source with bun"
   build_from_source

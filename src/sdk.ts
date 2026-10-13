@@ -33,8 +33,6 @@ import {
   checkGaps,
   evidenceGaps,
   isOutcome,
-  needsApproved,
-  nothingApproved,
   refInside,
   type Outcome,
 } from "./outcome";
@@ -50,7 +48,9 @@ export { SOURCES, SOURCE_NAMES, isSource, type Source } from "./offers";
  * What a review is about its target: which kind of change it names, and the glab
  * arguments that point a command at its project from anywhere.
  */
-export { repoArgs, targetKind } from "./mr";
+export { targetKind } from "./mr";
+export { repoArgs } from "./forge/gitlab";
+export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";
@@ -106,7 +106,7 @@ export { FINDINGS_FILE, REVIEW_FILE, leaveReview, openFindingsIn, riskLine } fro
 export type { Snapshot, Verification } from "./verify";
 export type { VerifySpec } from "./verify-spec";
 
-/** The approved commands as a human would type them, for a prompt to name what it faces. */
+/** This Run's checks as a human would type them, for a prompt to name what it faces. */
 export { renderApproved } from "./verify-spec";
 
 /**
@@ -415,8 +415,7 @@ export interface Declarations {
    * in the checkout the Run was started for.
    */
   readonly checkout?: "branch" | "roaming";
-  /** Its gate runs the approved set, so a start with nothing approved is refused. */
-  readonly verifies?: boolean;
+  readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
 }
@@ -512,6 +511,13 @@ export interface HostApi {
    * host itself was given beside the author's input.
    */
   readonly place: (runId: string) => Effect.Effect<Place>;
+  /**
+   * The checkout of the branch this Run's diff target names, recorded as the Run's own:
+   * `place` answers with it from then on, and every verification is bound to it
+   * (ADR-0054). The one git already has, else one cut from the branch; asking again
+   * answers from the record. Take it inside an Activity, so a replay does not cut again.
+   */
+  readonly checkoutReviewed: (runId: string) => Effect.Effect<ReviewedCheckout>;
   readonly held: (runId: string) => Effect.Effect<boolean>;
   readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
   readonly record: (runId: string, event: string) => Effect.Effect<void>;
@@ -529,9 +535,8 @@ export interface HostApi {
    */
   readonly evidence: (runId: string, cwd: string) => Effect.Effect<CheckEvidence>;
   /**
-   * Runs one of the commands this Run was started under the authority of, and records
-   * what it did against the tree it ran on. A name nobody approved is refused: the list
-   * is a human's, read when the Run started, and a workflow cannot add to it.
+   * Runs one of this Run's checks, and records what it did against the tree it ran on. A
+   * name that is not among them is refused.
    */
   readonly verify: (options: {
     readonly runId: string;
@@ -554,9 +559,9 @@ export interface HostApi {
     readonly round?: number;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
-   * What this Run may have Collie run for it. A prompt names them so an agent knows what
-   * its work is going to be held to, and the gate before a merge request reads the same
-   * list. A workflow cannot add to it: it is a human's, read when the Run started.
+   * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt
+   * names them so an agent knows what its work is held to, and the gate reads them again
+   * at every pass, since anyone may name another with `collie run intent verification`.
    */
   readonly approved: (runId: string) => Effect.Effect<ReadonlyArray<VerifySpec>>;
   /**
@@ -605,7 +610,8 @@ export interface HostApi {
    * Puts a note on the merge request a Run was pointed at, sent by Collie rather than
    * written out again by an agent — asking for a file to be repeated verbatim is how
    * verbatim stops being true. The refusal is the message: a target that is not a merge
-   * request, no `glab` for that project, or one assigned to whoever is running this.
+   * request, no CLI or login for its forge, or one assigned to whoever is running this.
+   * With `approve`, the merge request is approved too, and the message says whether it was.
    */
   readonly post: (options: {
     readonly runId: string;
@@ -613,6 +619,8 @@ export interface HostApi {
     readonly cwd: string;
     /** The file to send, as the Run wrote it. */
     readonly file: string;
+    /** Approve the merge request too: a review with nothing live left to fix. */
+    readonly approve?: boolean;
   }) => Effect.Effect<Posted>;
 }
 
@@ -634,12 +642,17 @@ export interface Place {
   readonly lineage: ReadonlyArray<string>;
 }
 
+/** The reviewed branch's checkout, or why there is none, in the resolver's own words. */
+export type ReviewedCheckout =
+  | { readonly cwd: string; readonly branch: string }
+  | { readonly refused: string };
+
 /** What opening a merge request from here needs, and what it would be filled in with. */
 export interface MrReady {
   readonly ok: boolean;
   /** The checkout's forge; absent on a host that only supports GitLab. */
   readonly provider?: "gitlab" | "github";
-  /** The GitHub owner/repository, so gh addresses the checkout's origin explicitly. */
+  /** The repository's path on its forge — `owner/repo` or `group/project` — for `--repo`. */
   readonly repository?: string;
   /** Why it cannot be done here. Empty where it can. */
   readonly reason: string;
@@ -649,6 +662,21 @@ export interface MrReady {
   readonly template: string;
   /** The Linear issues this branch answers. */
   readonly issues: ReadonlyArray<string>;
+  /** "GitLab" or "GitHub"; absent where the checkout's forge could not be read. */
+  readonly forge?: string;
+  /** "merge request" or "pull request", as the forge says it. */
+  readonly noun?: string;
+  /** The URL of this branch's open merge request, or empty for none. */
+  readonly existing?: string;
+  /** Whether `existing` merges itself once green, so a push to it is a merge. */
+  readonly autoMerge?: boolean;
+  /** The command lines an agent runs, written by the forge's adapter. */
+  readonly commands?: {
+    /** Opens one, with `<title>` and `<file>` (the description file) left to fill in. */
+    readonly create: string;
+    /** Posts `<file>` as a note on `existing`; empty where there is none. */
+    readonly comment: string;
+  };
 }
 
 /** What became of a note: whether it landed, and the sentence a human reads either way. */
@@ -693,26 +721,6 @@ export const ask = (question: {
     return yield* DurableDeferred.await(
       DurableDeferred.make(question.name, { success: Schema.String }),
     );
-  });
-
-/**
- * What this Run may have Collie run to prove its kind of result. Where that kind needs
- * the approved set and nothing is approved, the Run parks with the repair instead of
- * spending work no gate could accept; a resume asks again.
- */
-export const requireApproved = (
-  kind: string,
-): Effect.Effect<ReadonlyArray<VerifySpec>, never, Run | Host | WorkflowInstance> =>
-  Effect.gen(function* () {
-    const runId = (yield* Run).id;
-    const host = yield* Host;
-    const approved = yield* host.approved(runId);
-    if (approved.length > 0 || !needsApproved(isOutcome(kind) ? kind : "unspecified")) {
-      yield* host.parked(runId, null);
-      return approved;
-    }
-    yield* host.parked(runId, nothingApproved(runId));
-    return yield* Workflow.suspend(yield* WorkflowInstance);
   });
 
 /**
@@ -841,8 +849,7 @@ export interface WorkflowMetadata {
    * in the checkout the Run was started for.
    */
   readonly checkout?: typeof DeclaredCheckout.Type;
-  /** Its gate runs the approved set, so a start with nothing approved is refused. */
-  readonly verifies?: boolean;
+  readonly closes?: "reported";
   readonly followUps?: ReadonlyArray<FollowUp>;
   readonly actions?: ReadonlyArray<ActionProvider>;
 }
@@ -943,7 +950,7 @@ const OfferFields = {
 /** What metadata has to be before any of it can be read: a module is JavaScript by now. */
 const DeclaredMetadata = Schema.Struct({
   hints: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
-  verifies: Schema.optionalKey(Schema.Boolean),
+  closes: Schema.optionalKey(Schema.Literal("reported")),
   outcome: Schema.optionalKey(
     Schema.Struct({
       fixed: Schema.optionalKey(Schema.String),
@@ -1067,6 +1074,7 @@ export function describeMetadata(metadata: WorkflowMetadata | undefined): Schema
     outcome: metadata?.outcome?.fixed ?? null,
     selectable: [...(metadata?.outcome?.selectable ?? [])],
     checkout: metadata?.checkout ?? null,
+    closes: metadata?.closes ?? null,
     followUps: (metadata?.followUps ?? []).map((offer) => ({
       id: offer.id,
       title: offer.title,

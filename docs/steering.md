@@ -10,6 +10,16 @@ One message to one live agent is a **delivery**. Every one of them goes through 
 Dispatcher ([internals](internals.md#the-dispatcher)) — nothing else sends text to an
 agent — and every one is journalled before it is sent.
 
+A Delivery whose [Actor](../CONTEXT.md) is `agent` starts with:
+
+```text
+From <agent> of <run> on <machine>. Answer with collie_do deliver to <run> (or collie run steer <run> --operation <agent> "…").
+```
+
+The Dispatcher writes it from the stamped Actor in every mode. The text follows word
+for word. The receiving Run's operations record the sender's Run, agent and authenticated
+Machine. The answer follows the same route, found by Run id.
+
 Three modes:
 
 | Mode        | What it does                                        | Needs                                  |
@@ -25,6 +35,13 @@ mode goes out from the host, through the Dispatcher, under the agent's ledger lo
 and `interrupt` are gated on a **recorded live result** per harness; where that harness
 has none the delivery is refused, with `capability_unproven:<harness>:<mode>` on the
 ledger, so a steer that did not go out as asked has an answer rather than a silence.
+
+One delivery is at most 8 KiB. A steer whose words, with their `Attached:` lines, are over
+that is never split: the host keeps the words as `message-<digest>.md` in the Run's
+`attachments/` and tells the agent the message is in that file, followed by its
+`Attached:` line and any other attachment's. This holds for every door that steers, and
+the audit line records the words as asked
+([ADR-0051](adr/0051-a-review-comment-is-written-on-desktops-own-views.md)).
 
 ## The states, and why they are kept apart
 
@@ -159,14 +176,14 @@ content of every untracked file git is not ignoring — and a result whose two s
 differ is `unstable`, never `pass`. So is one where either snapshot says the tree was too
 large to look at: two unmeasured trees are not one tree.
 
-Collie will also run a verification itself, but only one in the run's approved set,
-matched argument for argument. A human grants one with `run intent verification`; so does
-chat, with `set_verification`, which `collie_propose` carries out in the same call with no
-yes ([ADR-0011](adr/0011-the-conversation-is-a-native-harness.md#amended-2026-09-29-chat-may-choose-what-proves-a-run)).
-Collie spawns it itself, outside any agent's permission rules.
-The wrapper is part of what was approved — `bun test` and `bun test --bail` are not the
-same permission. It runs at the run's finish, and only where a `command_exit` rule names
-it and nothing has verified that name yet.
+Collie will also run a verification itself, but only one of the run's checks, matched
+argument for argument. Anyone names one with `run intent verification` — a human, the
+run's own agent, or chat with `set_verification`, which `collie_propose` carries out in
+the same call — and nobody approves it
+([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). Collie spawns it itself,
+outside any agent's permission rules. The wrapper is part of the check — `bun test` and
+`bun test --bail` are not the same one. It runs at the run's finish, and only where a
+`command_exit` rule names it and nothing has verified that name yet.
 
 The baseline workflows and personas route their test, lint and typecheck runs through the
 collector, so a card can say `verified` rather than `claimed`. The implementer also writes
@@ -226,9 +243,13 @@ with `token` or `secret` in it — are listed by name with `<redacted>` rather t
 The rule that keeps this honest: **nothing passes on an absence**. A verification nobody
 ran is a breach, not a pass. A judgement Collie could not make — no evaluator, a call that
 timed out or answered outside its schema — is recorded as `skipped` with the reason, so a
-card can say why it says nothing rather than reading as clean. What every call cost is
-written to the Herd's `budget.jsonl` as usage; no count of them is ever a reason to skip
-the next.
+card can say why it says nothing rather than reading as clean. A `claude --help` that
+fails or prints nothing is such a reason, said with its exit code and stderr, never read as
+a CLI missing every flag, and a `git diff` that fails is a reason too, never an empty
+change: a judgement is skipped in git's words, and a rule check is recorded as skipped and
+clears no open report: a tree git could not read is not one the work came back from. What
+every call cost is written to the Herd's `budget.jsonl` as usage; no count of them is ever
+a reason to skip the next.
 
 The journal is append-only. A resolution is a new line, not an edit, so what Collie
 thought and when survives being wrong. Two reports of the same constraint in the same
@@ -316,7 +337,7 @@ a re-check of an unchanged tree clears nothing.
 
 A finished run's status is history, so `finish` settles rather than acts:
 
-- A verification the run was granted, that a `command_exit` rule names and nobody ran, is
+- One of the run's checks that a `command_exit` rule names and nobody ran is
   run by Collie first — bounded at ten minutes, so a command that hangs cannot hold the
   ending for ever.
 - The run gets an **alignment** verdict. `true` is the strong claim and needs everything

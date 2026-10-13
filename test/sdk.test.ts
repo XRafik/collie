@@ -82,7 +82,7 @@ test("only one input may claim each strategy inference reads", () => {
 
 test("a module with inputs names exactly one launch Input, and one with none names none", () => {
   expect(checkEntry(entry({ input: { text: Schema.String }, metadata: { hints: {} } }))).toEqual([
-    'no input is the launch Input: hint one of "text" as goal, work-source, diff-target or gitlab-repository',
+    'no input is the launch Input: hint one of "text" as goal, work-source, diff-target or repository',
   ]);
   expect(
     checkEntry(
@@ -263,6 +263,7 @@ test("what a card is given is ids, titles and projections — never the closures
     outcome: null,
     selectable: ["feature"],
     checkout: null,
+    closes: null,
     followUps: [{ id: "again", title: "Run again", workflow: "echo", when: "succeeded" }],
     actions: [
       {

@@ -21,6 +21,7 @@ import {
   defineWorkflow,
   formatFindings,
   handOffWork,
+  mrForgeFacts,
   parseMrTarget,
   repoArgs,
   riskLine,
@@ -31,22 +32,27 @@ import {
   type Finding,
 } from "collie";
 import { Effect, FileSystem, Schema } from "effect";
-import { FIX_PROMPT, IMPLEMENTER, REVIEWER, reviewPass } from "./reviewing.ts";
+import * as Activity from "effect/workflow/Activity";
+import { FIX_PROMPT, IMPLEMENTER, NO_MR, REVIEWER, reviewPass } from "./reviewing.ts";
 
 const FIX = "Fix findings";
 const IMPLEMENT = "Fix findings in a full implement run";
-const POST = "Post to MR";
 const DONE = "Don't post";
 const AGAIN = "Review again";
 
 /** How many fix rounds one "Fix findings" may run before the human is asked again. */
 const ROUNDS = 4;
 
+const ReviewedCheckout = Schema.Union([
+  Schema.Struct({ cwd: Schema.String, branch: Schema.String }),
+  Schema.Struct({ refused: Schema.String }),
+]);
+
 export default defineWorkflow({
   id: "review",
   title: "review — an MR, a branch diff, or the working tree",
   description:
-    "You pick the target — an MR, a branch diff or the working tree — one complete review comes out, and what happens next is your call: fix the findings here, hand them to a live implementer, run a full implement, or post the review to somebody else's merge request.",
+    "Reviews a change — an MR, a branch diff or the working tree — in one complete review, and what happens next is your call: fix the findings here, hand them to a live implementer, run a full implement, or post the review to somebody else's merge request.",
   input: Schema.Struct({
     target: Schema.String,
     plan: Schema.optionalKey(
@@ -95,6 +101,8 @@ export default defineWorkflow({
       const run = yield* Run;
       const place = yield* host.place(run.id);
       const kind = targetKind(asked.target);
+      // The option's label is fixed for the Run, because its target is.
+      const POST = `Post to ${mrForgeFacts(asked.target)?.noun ?? "merge request"}`;
 
       // The extra axes and the earlier review are the host's own — a caller attaches them
       // to the work rather than declaring them here, and `previous` names the Run whose
@@ -134,6 +142,7 @@ export default defineWorkflow({
         disputed: formatFindings([]),
         risks: riskLine(place.options.risks ?? ""),
         target_repo: repoArgs(parseMrTarget(asked.target)?.project ?? null).join(" "),
+        mr: mrForgeFacts(asked.target) ?? NO_MR,
         obstacle: "",
       };
 
@@ -219,6 +228,8 @@ export default defineWorkflow({
             target: asked.target,
             cwd: place.cwd,
             file: `${place.dir}/${REVIEW_FILE}`,
+            // A review that found nothing still live to fix is one the forge should count.
+            approve: split.live.length === 0,
           });
           yield* host.record(run.id, posted.message);
           // A note that did not land is not an answer, so the menu comes back.
@@ -261,6 +272,18 @@ export default defineWorkflow({
           fixing = false;
           continue;
         }
+        // The fixer works in the reviewed branch's checkout, which is the Run's from now on.
+        const reviewed = yield* Activity.make({
+          name: `${operation}-checkout`,
+          success: ReviewedCheckout,
+          execute: host.checkoutReviewed(run.id),
+        });
+        if ("refused" in reviewed) {
+          yield* host.record(run.id, `${operation}: nothing fixed, ${reviewed.refused}`);
+          fixing = false;
+          settled = reviewed.refused;
+          continue;
+        }
         const fixed = yield* agentWork({
           operation,
           role: "implementer",
@@ -268,6 +291,7 @@ export default defineWorkflow({
           input: {
             inputs,
             ...input,
+            branch: reviewed.branch,
             iteration: String(rallied),
             max_iterations: String(ROUNDS),
             // What the rally is fixing: a dispute raised again with no rebuttal is not work.

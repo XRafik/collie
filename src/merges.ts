@@ -4,12 +4,19 @@
 // forge's own checks are kept beside the state, for the card to say whether it is ready.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
-import { type ForgeChecks, type ForgeFacts } from "./board";
-import { mrLabel } from "./board-model";
-import { pullOf, sectionOf, type MrPanel, type MrState, type TaskView } from "./board-model";
+import { type ForgeFacts } from "./board";
+import {
+  ForgeChecks,
+  mrLabel,
+  mrRefOf,
+  sectionOf,
+  type MrPanel,
+  type MrState,
+  type TaskView,
+} from "./board-model";
 import { latest, readDispositions, recordDisposition } from "./disposition";
-import { liveTier, mrDetails, type Runner } from "./mr";
-import { parseMrTarget, type MrRef } from "./board-model";
+import { forgeOf } from "./forge/forge";
+import type { Runner } from "./mr";
 import { runDir } from "./engine";
 import { nowIso } from "./time";
 
@@ -36,7 +43,7 @@ export const watchedMr = Effect.fn("Merges.watchedMr")(function* <R>(opts: {
   const label = mrLabel(opts.target);
   const known = opts.panels.get(label);
   if (known !== undefined && !opts.fresh && known.at + MERGE_POLL_MS > opts.now) return known.panel;
-  const panel = yield* mrDetails(ref, opts.cwd, opts.run);
+  const panel = yield* forgeOf(ref).details(ref, opts.cwd, opts.run);
   opts.panels.set(label, { at: opts.now, panel });
   return panel;
 });
@@ -45,111 +52,15 @@ export const watchedMr = Effect.fn("Merges.watchedMr")(function* <R>(opts: {
 export const MR_STATES_FILE = "board/mr-states.json";
 
 const StateSchema = Schema.Literals(["open", "merged", "closed", "on-stage", "in-prod"]);
-const ForgeChecksSchema = Schema.Union([
-  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown"]) }),
-  Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
-]);
 const EntrySchema = Schema.Struct({
   state: StateSchema,
-  checks: Schema.optionalKey(ForgeChecksSchema),
+  checks: Schema.optionalKey(ForgeChecks),
   head: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 const StatesJson = Schema.fromJsonString(Schema.Record(Schema.String, EntrySchema));
 /** The shape written before checks were kept: a bare state per merge request. */
 const OldStatesJson = Schema.fromJsonString(Schema.Record(Schema.String, StateSchema));
 type Entry = typeof EntrySchema.Type;
-
-/** GitLab's head pipeline status, as the card reads it. */
-export function pipelineChecks(status: string): ForgeChecks {
-  if (status === "success" || status === "passed") return { state: "passed" };
-  if (status === "failed") return { state: "failed", name: "pipeline" };
-  if (
-    ["running", "pending", "created", "preparing", "waiting_for_resource", "scheduled"].includes(
-      status,
-    )
-  )
-    return { state: "running" };
-  return { state: "unknown" };
-}
-
-const PullJson = Schema.fromJsonString(
-  Schema.Struct({
-    state: Schema.String,
-    headRefOid: Schema.optionalKey(Schema.NullOr(Schema.String)),
-    mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
-    statusCheckRollup: Schema.optionalKey(
-      Schema.NullOr(
-        Schema.Array(
-          Schema.Struct({
-            name: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            context: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            status: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            conclusion: Schema.optionalKey(Schema.NullOr(Schema.String)),
-            state: Schema.optionalKey(Schema.NullOr(Schema.String)),
-          }),
-        ),
-      ),
-    ),
-  }),
-);
-type Pull = typeof PullJson.Type;
-
-const RED = new Set([
-  "FAILURE",
-  "ERROR",
-  "TIMED_OUT",
-  "CANCELLED",
-  "ACTION_REQUIRED",
-  "STARTUP_FAILURE",
-]);
-const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
-
-/** A pull request's check rollup: a check run's conclusion, or a status context's state. */
-export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
-  const checks = rollup ?? [];
-  if (checks.length === 0) return { state: "unknown" };
-  const verdicts = checks.map((one) => ({
-    name: one.name ?? one.context ?? "a check",
-    // A check run has a conclusion once it completes; a status context has only a state.
-    said:
-      one.conclusion ??
-      (one.status != null && one.status !== "COMPLETED" ? "PENDING" : (one.state ?? "PENDING")),
-  }));
-  const red = verdicts.find((one) => RED.has(one.said));
-  if (red !== undefined) return { state: "failed", name: red.name };
-  if (verdicts.some((one) => !GREEN.has(one.said))) return { state: "running" };
-  return { state: "passed" };
-}
-
-/** What `gh` says about one pull request, or null where it cannot be asked: no gh, no login. */
-const pullFacts = Effect.fn("Merges.pullFacts")(function* <R>(
-  pull: { readonly repo: string; readonly number: string },
-  cwd: string,
-  run: Runner<R>,
-) {
-  const view = yield* run(
-    "gh",
-    [
-      "pr",
-      "view",
-      pull.number,
-      "--repo",
-      pull.repo,
-      "--json",
-      "state,mergeCommit,headRefOid,statusCheckRollup",
-    ],
-    cwd,
-  );
-  if (view.code !== 0) return null;
-  return Option.getOrNull(Schema.decodeUnknownOption(PullJson)(view.stdout));
-});
-
-/** `https://host/group/project/-/merge_requests/42` or `mr:host/group/project!42` as one ref. */
-export function mrRefOf(mr: string): MrRef | null {
-  const url = /^https?:\/\/([^/]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(mr);
-  if (url) return { project: `${url[1]}/${url[2]}`, iid: url[3]! };
-  return parseMrTarget(mr.startsWith("mr:") ? mr : `mr:${mr}`);
-}
 
 function stateOf(state: string): MrState {
   const said = state.toLowerCase();
@@ -191,7 +102,7 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     const label = mrLabel(view.mr);
     if (opts.states.get(label) === "in-prod") continue;
     if ((opts.checked.get(label) ?? 0) + MERGE_POLL_MS > opts.now) continue;
-    if (pullOf(view.mr) === null && mrRefOf(view.mr) === null) continue;
+    if (mrRefOf(view.mr) === null) continue;
     // Stamped before asking: a forge that cannot be asked is not asked again every tick.
     opts.checked.set(label, opts.now);
     const answered = yield* forgeAnswer(view.mr, opts.cwd, opts.run, (panel) =>
@@ -234,36 +145,27 @@ const forgeAnswer = Effect.fn("Merges.forgeAnswer")(function* <R>(
   mr: string,
   cwd: string,
   run: Runner<R>,
-  /** Keeps a GitLab panel read, for the drawer of the Run it belongs to. */
+  /** Keeps a panel read, for the drawer of the Run it belongs to. */
   remember: (panel: MrPanel) => void,
 ) {
-  const pull = pullOf(mr);
-  if (pull !== null) {
-    const said = yield* pullFacts(pull, cwd, run);
-    if (said === null) return null;
-    return {
-      state: stateOf(said.state),
-      facts: { checks: rollupChecks(said.statusCheckRollup), head: said.headRefOid ?? null },
-      by: "github",
-    };
-  }
   const ref = mrRefOf(mr);
   if (ref === null) return null;
-  const panel = yield* mrDetails(ref, cwd, run);
+  const forge = forgeOf(ref);
+  const panel = yield* forge.details(ref, cwd, run);
   remember(panel);
   if (panel._tag !== "Details") return null;
   let state = stateOf(panel.state);
   if (state === "merged") {
-    const tier = yield* liveTier(ref, panel.mergedSha, cwd, run);
+    const tier = yield* forge.liveTier(ref, panel.mergedSha, cwd, run);
     state = tier === "production" ? "in-prod" : tier === "staging" ? "on-stage" : "merged";
   }
   return {
     state,
     facts: {
-      checks: pipelineChecks(panel.pipeline),
+      checks: panel.checks ?? { state: "unknown" as const },
       head: (panel.head ?? "") === "" ? null : panel.head!,
     },
-    by: "gitlab",
+    by: forge.name,
   };
 });
 

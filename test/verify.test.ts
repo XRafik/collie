@@ -224,7 +224,31 @@ test("Collie runs only the command the human approved, argument for argument", (
         ...approved,
         executable: "false",
       }).pipe(Effect.flip);
-      expect(renamed.why).toContain("approved verifications");
+      expect(renamed.why).toContain("not among this Run's checks");
+    }),
+  ));
+
+test("a check granted with a cwd relative to a Run at the Projects root runs in that repository", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "hw-verify-root-" });
+      const app = path.join(root, "app");
+      yield* fs.makeDirectory(app);
+      yield* git(["init", "-q"], app);
+      yield* git(["config", "user.email", "t@example.com"], app);
+      yield* git(["config", "user.name", "t"], app);
+      yield* fs.writeFileString(path.join(app, "app.txt"), "app\n");
+      yield* git(["add", "-A"], app);
+      yield* git(["commit", "-qm", "app"], app);
+      const run = { id: "r1", cwd: root, worktree: null };
+      const spec: VerifySpec = { name: "tests", executable: "true", argv: [], cwd: "app" };
+
+      const ran = yield* runApproved(path.join(root, ".run"), run, [spec], spec);
+
+      expect(ran.cwd).toBe(app);
+      expect(ran.end).toEqual(yield* fingerprint(app));
     }),
   ));
 

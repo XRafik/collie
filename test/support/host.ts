@@ -214,13 +214,16 @@ export const openHost = Effect.fn("HostTest.open")(function* (
     Effect.gen(function* () {
       controls += 1;
       const request = `${op}:${runId}:${controls}`;
-      const done = yield* client
-        .control({ runId: yield* resolve(runId), control: name, set, request })
-        .pipe(Effect.result);
+      const target = yield* resolve(runId);
+      const done = yield* (
+        op === "resume"
+          ? client.resume({ runId: target, request })
+          : client.control({ runId: target, control: name, set, request })
+      ).pipe(Effect.result);
       if (done._tag === "Failure") return { ok: false, op, detail: sentenceOf(done.failure) };
       // Recorded either way, and the reply says which: a control over work no host is
       // running is an intent, never a confirmation.
-      return { ok: true, op, detail: done.success.detail };
+      return { ok: op !== "resume" || done.success.applied, op, detail: done.success.detail };
     });
 
   const ask = (request: HostRequest): Effect.Effect<HostReply> =>
@@ -466,22 +469,25 @@ export const stopHost = Effect.fn("HostTest.stopHost")(function* (dir: string) {
   const stopped = new Map<number, LockHolder>();
   yield* until(
     () =>
-      Effect.gen(function* () {
-        const owner = yield* ownerOf(dir);
-        if (owner !== null && !stopped.has(owner.pid)) {
-          stopped.set(owner.pid, owner);
-          try {
-            process.kill(owner.pid, "SIGTERM");
-          } catch {
-            // Already gone, which is the state this is trying to reach.
-          }
-        }
-        // Giving back the lock can precede the last write. The directory cannot go until
-        // every process we stopped has exited, or that write can recreate the fixture.
-        const live = yield* Effect.forEach(stopped.values(), holderLives);
-        return owner === null && live.every((alive) => !alive);
-      }),
-    Boolean,
+      ownerOf(dir).pipe(
+        Effect.tap((owner) =>
+          Effect.sync(() => {
+            if (owner === null || stopped.has(owner.pid)) return;
+            stopped.set(owner.pid, owner);
+            try {
+              process.kill(owner.pid, "SIGTERM");
+            } catch {
+              // Already gone, which is the state this is trying to reach.
+            }
+          }),
+        ),
+        Effect.flatMap((owner) =>
+          Effect.forEach([...stopped.values()], holderLives).pipe(
+            Effect.map((lives) => owner === null && lives.every((live) => !live)),
+          ),
+        ),
+      ),
+    (gone) => gone,
   );
 });
 
@@ -548,7 +554,10 @@ export const workspace = Effect.fn("HostTest.workspace")(function* (prefix: stri
     "implement.workflow.ts",
     "implement.md",
     "renovate.workflow.ts",
-    "renovate.md",
+    "renovate.gitlab.md",
+    "renovate.github.md",
+    "general.workflow.ts",
+    "general.md",
     "reviewing.ts",
   ]) {
     yield* fs.copyFile(`${root}workflows/${name}`, `${world.user}/${name}`);

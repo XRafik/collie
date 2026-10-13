@@ -19,12 +19,15 @@ import {
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import {
   ranOn,
+  requestedByLine,
   type MrDetails,
   type MrPanel,
   type Panel,
   type PlanPanel,
   type RunDetail,
   type TaskView,
+  mrWords,
+  readMrRef,
 } from "../board-model";
 import { truncated } from "../views";
 import type { Live } from "../live";
@@ -58,18 +61,6 @@ export const TABS: ReadonlyArray<{ tab: Tab; label: string }> = [
 const SHARE = 0.6;
 const MAX = 72;
 
-/**
- * A gate's list, being cut down. Here rather than on the card because a card is one
- * sentence and its answers: the list is the record's, and this is where it is read.
- */
-export interface GateCut {
-  verifications: ReadonlyArray<string>;
-  kept: ReadonlyArray<string>;
-  toggle: (name: string) => void;
-  approve: () => void;
-  cancel: () => void;
-}
-
 export interface DrawerProps {
   view: TaskView;
   /** The Run's own record, once it has been read; null while it is being. */
@@ -84,8 +75,6 @@ export interface DrawerProps {
     onTypeHere: () => void;
     onSend: () => void;
   };
-  /** The gate's list being edited, where someone asked to edit it. */
-  cut: GateCut | null;
   ref?: (box: ScrollBoxRenderable) => void;
   onAct: (command: Command) => void;
   onClose: () => void;
@@ -124,6 +113,17 @@ export function Drawer(props: DrawerProps) {
       right: took().get(step.name) ?? "",
       fg: step.state === "todo" ? C.dim : C.text,
     }));
+
+  const requester = (): Line[] => {
+    const who = props.detail?.requestedBy;
+    return who === undefined ? [] : [{ text: requestedByLine(who) }];
+  };
+  const report = (): Line[] => {
+    const report = props.detail?.report;
+    return report === undefined
+      ? []
+      : [{ text: `${report.state}: ${report.note}` }, { text: report.closure ?? "" }];
+  };
 
   const agents = (): Line[] =>
     props.view.agents.length === 0
@@ -281,32 +281,6 @@ export function Drawer(props: DrawerProps) {
         </For>
       </box>
 
-      <Show when={props.cut}>
-        <box style={{ flexDirection: "column", flexShrink: 0 }}>
-          <text fg={C.dim}>What proves this run</text>
-          <For each={props.cut!.verifications}>
-            {(name) => (
-              <text
-                fg={props.cut!.kept.includes(name) ? C.text : C.dim}
-                onMouseDown={(event: MouseEvent) => {
-                  event.stopPropagation();
-                  props.cut!.toggle(name);
-                }}
-              >
-                {`${props.cut!.kept.includes(name) ? "✓" : "○"} ${name}`}
-              </text>
-            )}
-          </For>
-          <box style={{ flexDirection: "row" }}>
-            {/* Nothing kept is Skip by another name, and the gate refuses it. */}
-            <Show when={props.cut!.kept.length > 0}>
-              <Button label="Approve the list" onPress={() => props.cut!.approve()} />
-            </Show>
-            <Button label="Cancel" onPress={() => props.cut!.cancel()} />
-          </box>
-        </box>
-      </Show>
-
       <box style={{ flexDirection: "row", flexShrink: 0, marginTop: 1 }}>
         <For each={TABS}>
           {(entry) => (
@@ -336,6 +310,12 @@ export function Drawer(props: DrawerProps) {
           </Show>
           <Show when={proposed().length > 0}>
             <Section title="proposal" lines={proposed()} />
+          </Show>
+          <Show when={requester().length > 0}>
+            <Section title="requester" lines={requester()} />
+          </Show>
+          <Show when={report().length > 0}>
+            <Section title="report" lines={report()} />
           </Show>
           <Section title="intent" lines={intent()} />
           <Show when={attached().length > 0}>
@@ -619,8 +599,9 @@ function MergeRequest(props: { url: string | null; panel: MrPanel | null; review
     if (props.url !== null) return props.url;
     return "no merge request yet — opened by the mr step";
   };
+  const ref = () => (props.url === null ? null : readMrRef(props.url));
   return (
-    <Titled title="merge request">
+    <Titled title={ref() === null ? "merge request" : mrWords(ref()!).noun}>
       <Show when={details() !== null} fallback={<text fg={C.dim}>{instead()}</text>}>
         <MergeRequestDetails mr={details()!} reviewedAt={props.reviewedAt} />
       </Show>
@@ -631,13 +612,14 @@ function MergeRequest(props: { url: string | null; panel: MrPanel | null; review
 function MergeRequestDetails(props: { mr: MrDetails; reviewedAt: number }) {
   const renderer = useRenderer();
   const moved = () => sinceReview(props.mr, props.reviewedAt);
+  const words = () => mrWords(props.mr);
   return (
     <box style={{ flexDirection: "column" }}>
-      <text fg={C.text}>{`!${props.mr.iid} · ${props.mr.title}`}</text>
+      <text fg={C.text}>{`${words().sign}${props.mr.iid} · ${props.mr.title}`}</text>
       <text fg={C.dim}>{`${props.mr.state}${props.mr.author ? ` · ${props.mr.author}` : ""}`}</text>
       <text fg={C.dim}>
         {[
-          props.mr.pipeline ? `pipeline ${props.mr.pipeline}` : "",
+          props.mr.pipeline ? `${words().checks} ${props.mr.pipeline}` : "",
           props.mr.approvals,
           props.mr.unresolved ? "unresolved discussion(s)" : "",
           props.mr.notes > 0 ? `${props.mr.notes} note(s)` : "",

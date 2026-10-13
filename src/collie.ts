@@ -21,6 +21,7 @@ import { home } from "./commands/home";
 import { workflow } from "./commands/workflow";
 import { host } from "./commands/host";
 import { bridge } from "./commands/bridge";
+import { machine } from "./commands/machine";
 import { printResult } from "./envelope";
 import { err } from "./operations";
 
@@ -48,6 +49,7 @@ export const app = root.pipe(
     usage,
     host,
     bridge,
+    machine,
   ]),
 );
 

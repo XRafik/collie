@@ -29,6 +29,42 @@ import {
 } from "../src/steering";
 import type { AgentEntry } from "../src/registry";
 import { runEffect } from "./support/effect";
+import { FakeBin } from "./support/bin";
+
+test("every delivery mode carries the agent Actor's sender line before its unchanged words", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const bin = yield* FakeBin.make(`${stateDir}/bin`);
+      yield* Effect.addFinalizer(() => bin.restore());
+      yield* bin.add("claude", "echo 2.1.300");
+      for (const mode of ["now", "boundary", "interrupt"] as const) {
+        const source = {
+          origin: "agent" as const,
+          from: {
+            run: "r-source",
+            agent: "source-agent",
+            machine: { installation: "source-id", name: "laptop" },
+          },
+        };
+        const text = "the question\n  exactly as written";
+        const sent = fake();
+        const result = yield* transaction(sent.deps, entry, (channel) =>
+          channel.submit(text, {
+            ...draft,
+            cause: { kind: "steer", ref: `source-${mode}` },
+            requestId: `source-${mode}`,
+            harness: "claude",
+            mode,
+            actor: source,
+          }),
+        );
+        expect(result.ok).toBe(true);
+        expect(sent.calls.find((line) => line.startsWith("agentPrompt"))).toContain(
+          `From source-agent of r-source on laptop. Answer with collie_do deliver to r-source (or collie run steer r-source --operation source-agent "…").\n${text}`,
+        );
+      }
+    }),
+  ));
 
 let stateDir: string;
 

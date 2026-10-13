@@ -4,6 +4,7 @@ import {
   cardActions,
   dispositionActions,
   mrUrlOf,
+  openMrLabel,
   type Proposal,
   primaryAction,
   type TaskView,
@@ -67,21 +68,6 @@ const offering = ref<{ offer: string | null } | null>(null);
 const reviewing = ref(false);
 
 const typed = ref("");
-const kept = ref<ReadonlyArray<string>>([]);
-watch(
-  () => props.task.decision,
-  (decision) => {
-    kept.value = decision?.kind === "gate" ? decision.verifications : [];
-  },
-  { immediate: true },
-);
-const toggle = (name: string, on: boolean | "indeterminate") => {
-  const gate = props.task.decision;
-  if (gate?.kind !== "gate") return;
-  kept.value = gate.verifications.filter((one) =>
-    one === name ? on === true : kept.value.includes(one),
-  );
-};
 
 const panes = usePanes();
 const pane = computed(() => panes.shownFor(props.cardKey));
@@ -123,7 +109,7 @@ const doing = (action: CardAction, primary: boolean) => {
       const url = mrUrlOf(action.mr);
       return url === null
         ? null
-        : { label: primary ? "Open MR" : "Open merge request", press: () => openLink(url) };
+        : { label: openMrLabel(action.mr, primary), press: () => openLink(url) };
     }
     case "offer": {
       const offer = action.offer.id;
@@ -258,40 +244,6 @@ const menu = computed(() =>
           <UInput v-model="typed" class="flex-1" size="sm" data-testid="answer" />
           <UButton type="submit" size="sm" label="Send" data-testid="send-answer" />
         </form>
-      </div>
-
-      <div
-        v-else-if="task.decision?.kind === 'gate' && task.decision.verifications.length > 0"
-        class="mt-3 flex flex-col gap-2"
-        data-testid="gate"
-      >
-        <p class="text-sm font-medium">Approve these checks before it carries on:</p>
-        <UCheckbox
-          v-for="name in task.decision.verifications"
-          :key="name"
-          :data-testid="`check-${name}`"
-          :label="name"
-          :model-value="kept.includes(name)"
-          @update:model-value="toggle(name, $event)"
-        />
-        <UButton
-          class="self-start"
-          size="sm"
-          label="Approve"
-          data-testid="approve"
-          :disabled="kept.length === 0"
-          @click="
-            act({
-              _tag: 'Answer',
-              runId: task.decision.run,
-              decision: task.decision.id,
-              value:
-                kept.length === task.decision.verifications.length
-                  ? 'approve'
-                  : `approve:${kept.join(',')}`,
-            })
-          "
-        />
       </div>
 
       <div

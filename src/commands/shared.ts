@@ -8,8 +8,10 @@ import { Herdr, type WorkspaceInfo } from "../herdr";
 import { unsafePathComponent } from "../naming";
 import { err, resolveWorkspace, type Failure } from "../operations";
 import { evidenceDir, runDir, type Given, type RunView } from "../engine";
-import { runView } from "../lifecycle";
-import { actorName, type Actor } from "../proposals";
+import { asksRun } from "../lifecycle";
+import { FrontDoor } from "../board-model";
+import { connect } from "../host";
+import { actorName } from "../proposals";
 import { taskOfWorkspace } from "../task";
 import { attempt, mutation, type CollieError, type Result } from "../envelope";
 import type { YamlMap } from "../yaml";
@@ -31,7 +33,11 @@ export const stdinText = Effect.gen(function* () {
 export const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 export const PrettyUnknownJson = Schema.fromJsonString(Schema.Unknown, { space: 2 });
 
-export type Global = { readonly workspace: Option.Option<string>; readonly json: boolean };
+export type Global = {
+  readonly workspace: Option.Option<string>;
+  readonly machine: Option.Option<string>;
+  readonly json: boolean;
+};
 export const selected = Effect.fn("collie.selected")(function* (global: Global) {
   if (Option.isSome(global.workspace)) return global.workspace.value;
   return (yield* currentEnv).workspaceId;
@@ -88,7 +94,11 @@ export const context = Effect.fn("collie.context")(function* (
 ) {
   const id = yield* selected(global);
   const baseEnv = yield* currentEnv;
-  const base = { ...baseEnv, workspaceId: id };
+  // A terminal's command can show the SSH login that pairs a Machine on first reach.
+  const reach = Option.isSome(global.machine)
+    ? { pairs: true, machine: global.machine.value }
+    : { pairs: true };
+  const base = { ...baseEnv, workspaceId: id, ...reach };
   if (!id)
     return requireScope
       ? contextFailure(err("workspace_required", "This operation requires a workspace."))
@@ -176,7 +186,7 @@ export const locateRun = Effect.fn("collie.locateRun")(function* (
 ): Effect.fn.Return<
   Located,
   never,
-  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner
+  FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | BunServices
 > {
   const missing: Located = {
     _tag: "RunFailure",
@@ -184,13 +194,15 @@ export const locateRun = Effect.fn("collie.locateRun")(function* (
   };
   if (unsafePathComponent(id)) return missing;
   const dir = runDir(env.stateDir, id);
-  const view = yield* runView(env, id);
-  if (view === null || !("runId" in view)) return missing;
-  if (task !== null && view.task !== task) return outsideTask(id, task);
+  const found = yield* asksRun(env, id, (client) => client.run({ runId: id }));
+  if (!found.ok) return { _tag: "RunFailure" as const, result: found };
+  const view = found.value;
+  if (view === null) return missing;
+  if (found.machine === null && task !== null && view.task !== task) return outsideTask(id, task);
   return { _tag: "Hosted", view, dir, evidence: evidenceDir(env.stateDir, id) };
 });
 
-const outsideTask = (id: string, task: string): Located => ({
+export const outsideTask = (id: string, task: string): Located & { _tag: "RunFailure" } => ({
   _tag: "RunFailure",
   result: err("run_not_found", `Run "${id}" is not part of task "${task}".`, { run: id, task }),
 });
@@ -269,6 +281,12 @@ export const root = Command.make("collie").pipe(
       ),
       Flag.optional,
     ),
+    machine: Flag.String("machine").pipe(
+      Flag.withDescription(
+        "Reach this paired Machine, by herdr's name for it, for a command that names no Run",
+      ),
+      Flag.optional,
+    ),
     json: Flag.Boolean("json").pipe(
       Flag.withDescription("Emit one machine-readable envelope instead of text"),
       Flag.withDefault(false),
@@ -333,19 +351,30 @@ export function cliOrigin(at: {
  */
 export const cliDoor = Effect.fn("Shared.cliDoor")(function* (env: PluginEnv) {
   const terminal = Boolean(process.stdin.isTTY || process.stdout.isTTY || process.stderr.isTTY);
-  const agentPanes =
-    !terminal || env.paneId === null
+  const agents =
+    env.paneId === null
       ? []
-      : yield* new Herdr(env).agentList().pipe(
-          Effect.map((agents) => agents.map((agent) => agent.paneId)),
-          Effect.orElseSucceed(() => null),
-        );
-  return cliOrigin({ terminal, pane: env.paneId, agentPanes });
+      : yield* new Herdr(env).agentList().pipe(Effect.orElseSucceed(() => null));
+  const agent = agents?.find((one) => one.paneId === env.paneId);
+  if (agent !== undefined) {
+    const run = yield* Effect.scoped(
+      connect(env.stateDir).pipe(
+        Effect.flatMap((client) => client.agentRun({ agent: agent.name })),
+      ),
+    ).pipe(Effect.orElseSucceed(() => null));
+    if (run !== null) return { origin: "agent" as const, from: { run, agent: agent.name } };
+  }
+  return cliOrigin({
+    terminal,
+    pane: env.paneId,
+    agentPanes: agents?.map((one) => one.paneId) ?? null,
+  });
 });
 
 /** Who is asking, for an operation of this command's own. */
 export const actorNow = Effect.fn("Shared.actorNow")(function* (env: PluginEnv, requestId: string) {
-  return { origin: yield* cliDoor(env), requestId } satisfies Actor;
+  const door = yield* cliDoor(env);
+  return Schema.is(FrontDoor)(door) ? { origin: door, requestId } : { ...door, requestId };
 });
 
 export { actorName };

@@ -95,6 +95,92 @@ test(
 );
 
 test(
+  "a host started in a directory an update then deletes keeps answering from its state directory, without the launcher's LD_PRELOAD",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { state } = yield* workspace("collie-host-cwd-");
+        const gone = `${state}/../bin`;
+        const binary = yield* Config.option(Config.String("COLLIE_TEST_BINARY"));
+        const host = Option.isSome(binary)
+          ? [binary.value]
+          : [process.execPath, `${root}src/main.ts`];
+        // Started in Desktop's app folder, as a bridge Desktop started there did.
+        const launcher = [
+          "/bin/sh",
+          "-c",
+          'env > "$GONE.env" && mkdir -p "$GONE" && cd "$GONE" && exec "$@"',
+          "sh",
+          ...host,
+        ];
+        // Desktop's launcher sets it, and an older Desktop passed it on.
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const was = Bun.env.LD_PRELOAD;
+            Bun.env.LD_PRELOAD = "./libcef.so:./libvk_swiftshader.so";
+            return was;
+          }),
+          (was) =>
+            Effect.sync(() => {
+              if (was === undefined) delete Bun.env.LD_PRELOAD;
+              else Bun.env.LD_PRELOAD = was;
+            }),
+        );
+        const who = yield* Effect.scoped(
+          connect(state, { hostEnv: { GONE: gone } }).pipe(
+            Effect.flatMap((client) => client.identity()),
+          ),
+        ).pipe(Effect.provide(starts(launcher)), Effect.orDie);
+        yield* fs.remove(gone, { recursive: true });
+        const after = yield* Effect.scoped(
+          connect(state).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.provide(starts(launcher)), Effect.orDie);
+        expect(after.pid).toBe(who.pid);
+        const given = yield* fs.readFileString(`${gone}.env`);
+        expect(given).toContain(`GONE=${gone}`);
+        expect(given).not.toContain("LD_PRELOAD");
+        if (process.platform === "linux") {
+          expect(yield* fs.readLink(`/proc/${who.pid}/cwd`)).toBe(yield* fs.realPath(state));
+        }
+        yield* stopHost(state);
+      }).pipe(Effect.scoped),
+    ),
+  120_000,
+);
+
+test(
+  "a host given its state directory relatively owns it where it was named",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const { state } = yield* workspace("collie-host-relative-");
+        const binary = yield* Config.option(Config.String("COLLIE_TEST_BINARY"));
+        const [executable = "bun", ...prefix] = Option.isSome(binary)
+          ? [binary.value]
+          : [process.execPath, `${root}src/main.ts`];
+        const host = yield* spawner.spawn(
+          ChildProcess.make(executable, [...prefix, "host", "--dir", "state"], {
+            cwd: `${state}/..`,
+            env: { HERDR_PLUGIN_ROOT: root, COLLIE_TEST_ROOT: (yield* suiteEnv).COLLIE_TEST_ROOT },
+            extendEnv: true,
+            stdout: "ignore",
+            stderr: "ignore",
+          }),
+        );
+        const owner = yield* until(
+          () => ownerOf(state),
+          (owner) => owner !== null,
+        );
+        expect(owner?.pid).toBe(host.pid);
+        yield* stopHost(state);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a client that hangs up leaves its work, its registrations and the client watching it",
   () =>
     proves(

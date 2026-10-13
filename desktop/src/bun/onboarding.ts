@@ -9,7 +9,7 @@ import { inTerminal } from "../../../src/in-terminal";
 import { RELEASE_PUBLIC_KEY, SIGNATURE_SUFFIX, verifyRelease } from "../../../src/signing";
 import { type OnboardRun, type OnboardStep, SETTLED, type Skippable } from "../shared/flock";
 import { quoted, type Route, type ShellRoute, spawned } from "./machine";
-import { childEnv } from "./login-env";
+import { CHILD_CWD, childEnv } from "./login-env";
 
 export const RELEASES = "https://github.com/cego/collie/releases/download";
 
@@ -96,6 +96,7 @@ export const ranWith = (command: ReadonlyArray<string>, stdin?: Uint8Array) =>
       const child = yield* spawned(() =>
         Bun.spawn([...command], {
           env: childEnv(),
+          cwd: CHILD_CWD,
           stdin: stdin ?? "ignore",
           stdout: "pipe",
           stderr: "pipe",
@@ -113,6 +114,7 @@ export const ranWith = (command: ReadonlyArray<string>, stdin?: Uint8Array) =>
   );
 
 export const shOn = (route: ShellRoute, script: string, stdin?: Uint8Array) =>
+  route.execute?.(script, stdin) ??
   Effect.flatMap(route.sh(script), (command) => ranWith(command, stdin));
 
 /** SHA-256 of stdin, as Linux and macOS each have it. */
@@ -278,6 +280,7 @@ export const onboardThrough = Effect.fn("Desktop.onboardThrough")(function* (
     const child = yield* spawned(() =>
       Bun.spawn([...command], {
         env: childEnv(),
+        cwd: CHILD_CWD,
         stdin: secrets === "" ? "ignore" : new TextEncoder().encode(secrets),
         stdout: "pipe",
         stderr: "pipe",
@@ -430,7 +433,7 @@ export const addToHerdr = Effect.fn("Desktop.addToHerdr")(function* (
 ) {
   const herdrAdd = yield* inTerminal(
     [herdr, "machine", "add", "--label", label, "--remote-session", session, target],
-    { env: childEnv() },
+    { env: childEnv(), cwd: CHILD_CWD },
     spawned,
   );
   let said = "";

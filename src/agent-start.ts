@@ -3,12 +3,13 @@
 // (ADR-0033). The Launch flow is the human's front door and does not come through here.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { gitlabHostOf } from "./config";
 import type { Found } from "./discovery";
 import type { Given } from "./engine";
 import type { PluginEnv } from "./env";
 import { inferInput, shell } from "./inputs";
 import { err, type Failure } from "./operations";
-import { checkoutsUnder, PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
+import { checkoutsUnder, PROJECTS_ROOT_OPTION, projectsRoot, repositoryCheckout } from "./projects";
 import { listRuns } from "./runs";
 import { strategyMeaning } from "./strategies";
 import { repositoryName } from "./worktree";
@@ -66,6 +67,7 @@ export const agentStartRefusal = Effect.fn("AgentStart.refusal")(function* (
     if (checkoutNamed && field.strategy === "diff-target") {
       const inferred = yield* inferInput(field.name, "diff-target", {
         cwd: checkout.named ?? env.cwd,
+        gitlabHost: yield* gitlabHostOf(env).pipe(Effect.orElseSucceed(() => undefined)),
       }).pipe(Effect.orElseSucceed(() => null));
       if (inferred !== null && !inferred.needsAsking && inferred.value !== "")
         facts.push(`${inferred.value} (${inferred.source})`);
@@ -120,3 +122,71 @@ function meaningOf(field: Found["inputs"][number]): string {
 }
 
 const describedIn = Schema.decodeUnknownOption(Schema.Struct({ description: Schema.String }));
+
+export const startCheckout = Effect.fn("AgentStart.checkout")(function* (
+  env: PluginEnv,
+  project: string,
+  options: Readonly<Record<string, string>> | undefined,
+  remote: boolean,
+) {
+  const named = options?.workspace ?? project;
+  const repository = yield* repositoryCheckout(env, named);
+  if (repository !== null && "error" in repository) return repository;
+  let cwd = repository?.path ?? project;
+  if (
+    repository === null &&
+    options?.workspace &&
+    options.workspace !== PROJECTS_ROOT_OPTION &&
+    options.workspace !== "new"
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const namedPath = options.workspace.startsWith("~/")
+      ? path.join(env.home, options.workspace.slice(2))
+      : options.workspace;
+    const at = path.resolve(env.cwd, namedPath);
+    const found = yield* fs.stat(at).pipe(Effect.option);
+    if (Option.isNone(found) || found.value.type !== "Directory")
+      return { error: `workspace: ${at} is not a directory` };
+    cwd = at;
+  }
+  const launch = { ...options };
+  if (
+    repository !== null ||
+    (remote &&
+      launch.branch &&
+      options?.workspace !== undefined &&
+      options.workspace !== "new" &&
+      options.workspace !== PROJECTS_ROOT_OPTION)
+  )
+    delete launch.workspace;
+  let branchBase: string | undefined;
+  if (remote && launch.branch) {
+    const valid = yield* shell("git", ["check-ref-format", "--branch", launch.branch], cwd);
+    if (valid.code !== 0) return { error: `"${launch.branch}" is not a branch name.` };
+    const from = repository?.remote ?? "origin";
+    const ref = `refs/remotes/${from}/${launch.branch}`;
+    const fetched = yield* shell(
+      "git",
+      ["fetch", from, `+refs/heads/${launch.branch}:${ref}`],
+      cwd,
+    );
+    if (fetched.code !== 0)
+      return {
+        error: `Could not fetch branch "${launch.branch}" from ${from} in ${cwd}: ${(fetched.stderr ?? "").trim()}`,
+      };
+    const head = yield* shell("git", ["rev-parse", "--verify", `${ref}^{commit}`], cwd);
+    if (head.code !== 0) return { error: `Could not read the fetched branch in ${cwd}.` };
+    branchBase = head.stdout.trim();
+  }
+  const root =
+    remote && options?.workspace === PROJECTS_ROOT_OPTION
+      ? (yield* projectsRoot(env)).path
+      : undefined;
+  return {
+    project: root ?? (remote ? cwd : (repository?.path ?? project)),
+    options: launch,
+    branchBase,
+    root,
+  };
+});

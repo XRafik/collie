@@ -263,3 +263,29 @@ test("the user's workflows are not something the installation's own checkout can
       expect(tracked.trim()).toBe("");
     }),
   ));
+
+test("a module still hinting gitlab-repository loads, its Input read as repository", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const where = yield* layers("collie-discovery-old-strategy-");
+      yield* where.save(
+        "project",
+        "roams-old.workflow.ts",
+        entry(
+          "roams-old",
+          "Roams by the old name",
+          `
+  input: Schema.Struct({ repository: Schema.String }),
+  hints: { repository: "gitlab-repository" },
+  checkout: "roaming",`,
+        ),
+      );
+      const found = yield* discover(where.roots);
+      expect(found.problems).toEqual([]);
+      const [loaded] = found.entries;
+      expect(loaded?.id).toBe("roams-old");
+      expect(loaded?.inputs.map((one) => [one.name, one.strategy])).toEqual([
+        ["repository", "repository"],
+      ]);
+    }).pipe(Effect.scoped),
+  ));

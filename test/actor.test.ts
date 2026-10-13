@@ -7,7 +7,7 @@ import { readAudit } from "../src/audit";
 import { cliOrigin } from "../src/commands/shared";
 import { currentEnv } from "../src/env";
 import { stopRun } from "../src/flows";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { runDir } from "../src/engine";
 import { stopHost, until } from "./support/host";
 import { collie, proves } from "./support/world";
@@ -29,7 +29,7 @@ test(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const host = yield* connect(world.state);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           yield* door.declare({ frontDoor: "board" });
           // A channel is the front door it first said it was.
           expect((yield* door.declare({ frontDoor: "cli-tty" }).pipe(Effect.flip)).reason).toBe(
@@ -204,7 +204,7 @@ test(
       (world) =>
         Effect.gen(function* () {
           const host = yield* connect(world.state);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           yield* door.declare({ frontDoor: "desktop", from: { client: "mk-pc" } });
           const startable = yield* door.workflows({ project: world.project });
           expect(startable.find((one) => one.id === "offered")?.inputs).toEqual([
@@ -240,7 +240,7 @@ test(
       (world) =>
         Effect.gen(function* () {
           const host = yield* connect(world.state);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           const conversation = "flock@mk-pc";
           yield* door.declare({ frontDoor: "chat", conversation, said: "start the proof" });
           const { runId } = yield* door.start({
@@ -276,7 +276,7 @@ test(
       (world) =>
         Effect.gen(function* () {
           const host = yield* connect(world.state);
-          const door = yield* frontDoor(world.state);
+          const door = yield* frontDoor(socketOf(world.state));
           yield* door.declare({
             frontDoor: "chat",
             conversation: "flock@mk-pc",

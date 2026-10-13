@@ -102,44 +102,21 @@ function lastAtFinal(
     .at(-1)?.result;
 }
 
-/** Whether this kind of result is proved by Collie's own run of the approved set. */
-export function needsApproved(kind: Outcome): boolean {
+/** Whether this kind of result is proved by Collie's own run of the Run's checks. */
+export function needsChecks(kind: Outcome): boolean {
   return kind !== "investigation" && kind !== "plan" && kind !== "review";
 }
 
-const REMEMBER_REPAIR =
-  "or `collie run intent remember <run>` once a Run has them, for that repository's later Runs, ";
-
-/** Why a Run that needs the approved set cannot be proved, and both ways to repair it. */
-export function nothingApproved(run = "<run>"): string {
-  return (
-    "nothing is approved for Collie to run, so no command can prove this Run. " +
-    `Grant it one with \`collie run intent verification ${run} --name <name> -- <command>\` ` +
-    `and \`collie run resume ${run}\`; for Runs started later, add .collie/verify.json, ` +
-    REMEMBER_REPAIR +
-    "or verify.json in your Collie config — a Run reads that file only when it starts"
-  );
-}
-
-/** Why a start was refused because nothing it could run would prove it. */
-export function nothingApprovedToStart(): string {
-  return (
-    "nothing is approved for Collie to run, so no command could prove this Run and it was not started. " +
-    'Give the checks with `--verify \'{"name":…,"executable":…,"argv":[…],"cwd":"worktree"}\'` ' +
-    "(repeatable), or add .collie/verify.json to the project, " +
-    REMEMBER_REPAIR +
-    "or verify.json in your Collie config, " +
-    "and start it again"
-  );
-}
+/** The gap a Run with no checks has, and how its implementer closes it. */
+export const noCheckNamed =
+  "no check is named for Collie to run, so nothing proves this Run: name the commands that prove work in this repository, each with `collie run intent verification <run> --name <name> [--cwd <dir>] -- <command>`";
 
 /**
- * Every approved command, passing, on this exact tree. A Run with nothing approved is
- * reported rather than passed: an empty set would make this gate say yes to anything, and
- * "nobody wrote down what proves this" is the useful thing to tell a human.
+ * Every check, passing, on this exact tree. An empty set is a gap rather than a pass: it
+ * would make this gate say yes to anything.
  */
 function approvedSetGaps(got: Collected): string[] {
-  if (got.approved.length === 0) return [nothingApproved()];
+  if (got.approved.length === 0) return [noCheckNamed];
   const gaps: string[] = [];
   for (const spec of got.approved) {
     if (lastPassedAtFinal(got, spec.name, "collie")) continue;
@@ -218,9 +195,7 @@ function gapsOf(kind: Outcome, got: Collected): Array<{ text: string; check: boo
   const gaps: Array<{ text: string; check: boolean }> = [];
   const check = (text: string) => gaps.push({ text, check: true });
   const claim = (text: string) => gaps.push({ text, check: false });
-  // Nothing approved is a grant to make, not a check to run.
-  if (needsApproved(kind))
-    for (const gap of approvedSetGaps(got)) (got.approved.length === 0 ? claim : check)(gap);
+  if (needsChecks(kind)) for (const gap of approvedSetGaps(got)) check(gap);
 
   switch (kind) {
     case "unspecified":

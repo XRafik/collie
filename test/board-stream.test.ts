@@ -8,7 +8,7 @@ import { boardMessages, shareBoard } from "../src/board-stream";
 import { recordDisposition } from "../src/disposition";
 import { currentEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
-import { BUILD, frontDoor } from "../src/host";
+import { BUILD, frontDoor, socketOf } from "../src/host";
 import { readTask, writeTask } from "../src/task";
 import { runEffect } from "./support/effect";
 import { stopHost } from "./support/host";
@@ -24,7 +24,7 @@ const asSessions = Schema.encodeSync(
 const firstSnapshot = (state: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(state);
+      const door = yield* frontDoor(socketOf(state));
       const first = yield* Stream.runHead(door.board());
       return first._tag === "Some" && first.value._tag === "Snapshot" ? first.value : null;
     }),
@@ -57,7 +57,7 @@ test(
 
           const renamed = (message: BoardMessage) =>
             message._tag === "Upsert" && message.task.name === "Renamed";
-          const door = yield* frontDoor(world.state).pipe(Effect.orDie);
+          const door = yield* frontDoor(socketOf(world.state)).pipe(Effect.orDie);
           const opened = yield* Deferred.make<BoardSnapshot>();
           const reading = yield* door.board().pipe(
             Stream.tap((message) =>
@@ -68,7 +68,7 @@ test(
             Effect.forkScoped,
           );
           // A second subscriber rides the same change stream and is told too.
-          const alongside = yield* (yield* frontDoor(world.state).pipe(Effect.orDie))
+          const alongside = yield* (yield* frontDoor(socketOf(world.state)).pipe(Effect.orDie))
             .board()
             .pipe(Stream.filter(renamed), Stream.runHead, Effect.forkScoped);
           const snapshot = yield* Deferred.await(opened);
@@ -120,18 +120,20 @@ test(
           // Every subscriber has left; one that reconnects is still told what changes.
           const retitled = (message: BoardMessage) =>
             message._tag === "Upsert" && message.task.name === "Retitled";
-          const back = yield* (yield* frontDoor(world.state).pipe(Effect.orDie)).board().pipe(
-            Stream.tap((message) =>
-              message._tag === "Snapshot"
-                ? writeTask(world.state, { ...record!, label: "project | Retitled" }).pipe(
-                    Effect.orDie,
-                  )
-                : Effect.void,
-            ),
-            Stream.filter(retitled),
-            Stream.runHead,
-            Effect.forkScoped,
-          );
+          const back = yield* (yield* frontDoor(socketOf(world.state)).pipe(Effect.orDie))
+            .board()
+            .pipe(
+              Stream.tap((message) =>
+                message._tag === "Snapshot"
+                  ? writeTask(world.state, { ...record!, label: "project | Retitled" }).pipe(
+                      Effect.orDie,
+                    )
+                  : Effect.void,
+              ),
+              Stream.filter(retitled),
+              Stream.runHead,
+              Effect.forkScoped,
+            );
           expect((yield* Fiber.join(back).pipe(Effect.timeout("20 seconds")))._tag).toBe("Some");
           yield* stopHost(world.state);
         }),

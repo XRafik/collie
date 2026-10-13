@@ -1,9 +1,16 @@
 <script setup lang="ts">
+import {
+  FileDiff,
+  type FileDiffMetadata,
+  type FileDiffOptions,
+  processFile,
+  type SelectionSide,
+} from "@pierre/diffs";
 import type { Semaphore } from "effect";
 import type { DiffFile } from "../../../../src/board-model";
-import { type PatchLine, parsePatch, sideBySide, sides } from "../../../src/shared/patch";
-import type { Token } from "../composables/useHighlight";
+import { type Draft, inHunks, locationOf } from "../../../src/shared/review-comments";
 import type { DiffTarget } from "./DiffTab.vue";
+import { useDiffComments, WRITING } from "../composables/useDiffComments";
 
 const props = defineProps<{
   file: DiffFile;
@@ -19,30 +26,19 @@ const open = defineModel<boolean>("open", { required: true });
 const emit = defineEmits<{ missing: [target: DiffTarget] }>();
 const { textOf } = useActions();
 const within = inject<Semaphore.Semaphore>("diffReads");
+const colorMode = useColorMode();
+const { drafts, add, edit, remove } = useReviewDrafts(() => props);
 
-// Shallow: its lines are the token map's keys, which a reactive proxy would not match.
-const hunks = shallowRef<ReturnType<typeof parsePatch> | null>(null);
+const parsed = shallowRef<FileDiffMetadata | null>(null);
 const failed = ref(false);
-const tokens = shallowRef(new Map<PatchLine, ReadonlyArray<Token>>());
+const unparsed = ref(false);
 
-/** Each hunk's sides highlighted on their own, since what lies between hunks is not here. */
-const highlighted = async (parsed: ReturnType<typeof parsePatch>) => {
-  const coloured = new Map<PatchLine, ReadonlyArray<Token>>();
-  const colour = (lines: ReadonlyArray<PatchLine>) =>
-    highlightLines(
-      lines.map((line) => line.text),
-      props.file.path,
-    );
-  await Promise.all(
-    parsed.map(async (hunk) => {
-      const { old, new: current } = sides([hunk]);
-      const [was, is] = await Promise.all([colour(old), colour(current)]);
-      // A context line is on both sides; it is coloured as the file is now.
-      old.forEach((line, at) => line.kind === "del" && coloured.set(line, was[at] ?? []));
-      current.forEach((line, at) => coloured.set(line, is[at] ?? []));
-    }),
-  );
-  return coloured;
+const parse = (patch: string) => {
+  try {
+    return processFile(patch, { isGitDiff: true, throwOnError: true }) ?? null;
+  } catch {
+    return null;
+  }
 };
 
 // ponytail: refetched when its counts, status or base change; an edit keeping all of them
@@ -64,42 +60,103 @@ watch(
     if (stale) return;
     failed.value = patch === null;
     if (patch === null) return;
-    const parsed = parsePatch(patch);
-    const coloured = await highlighted(parsed);
-    if (stale) return;
-    tokens.value = coloured;
-    hunks.value = parsed;
+    const diff = parse(patch);
+    unparsed.value = diff === null;
+    parsed.value = diff;
   },
   { immediate: true },
 );
 
-/** The row a finding points at: its line as the file is now, or as it was for a deleted file. */
-const targetLine = computed(() => {
-  const line = props.target?.line ?? null;
-  if (line === null || hunks.value === null) return undefined;
-  const side = props.file.status === "deleted" ? "old" : "new";
-  return hunks.value.flatMap((hunk) => hunk.lines).find((one) => one[side] === line);
+const comments = useDiffComments(
+  () => props.file.path,
+  () => parsed.value,
+  () => drafts.value,
+  add,
+  () => view?.setSelectedLines(null),
+);
+const { pending, annotations, settle } = comments;
+
+/** Each annotation's element, by draft id, which the template teleports its comment into. */
+const slots = shallowReactive(new Map<string, HTMLElement>());
+const slotFor = (id: string) => {
+  const made = slots.get(id) ?? document.createElement("div");
+  slots.set(id, made);
+  return made;
+};
+const draftOf = (id: string): Draft | undefined => drafts.value.find((draft) => draft.id === id);
+
+/** The finding's row, once drawn: shown and marked, then let go. */
+let wanted: { readonly line: number; readonly side: SelectionSide } | null = null;
+const showWanted = () => {
+  if (wanted === null || view === null) return;
+  const { line, side } = wanted;
+  // ponytail: rows found by the library's own data attributes; recheck on an upgrade.
+  const row =
+    side === "deletions"
+      ? `[data-deletions] [data-line="${line}"], [data-unified] [data-line="${line}"][data-line-type="change-deletion"]`
+      : `[data-additions] [data-line="${line}"], [data-unified] [data-line="${line}"]:not([data-line-type="change-deletion"])`;
+  const found = host.value?.querySelector("diffs-container")?.shadowRoot?.querySelector(row);
+  if (found === null || found === undefined) return;
+  wanted = null;
+  view.setSelectedLines({ start: line, end: line, side }, { notify: false });
+  found.scrollIntoView({ block: "center" });
+};
+
+const options = (): FileDiffOptions<string, undefined> => ({
+  theme: { light: "github-light", dark: "github-dark" },
+  themeType: colorMode.value === "dark" ? "dark" : "light",
+  diffStyle: props.split ? "split" : "unified",
+  disableFileHeader: true,
+  enableLineSelection: true,
+  enableGutterUtility: true,
+  ...comments.handlers,
+  renderAnnotation: (annotation) => slotFor(annotation.metadata),
+  onPostRender: showWanted,
 });
 
-const shown = ref<HTMLElement | null>(null);
+const host = ref<HTMLElement | null>(null);
+let view: FileDiff<string> | null = null;
+watch(
+  [parsed, host],
+  ([diff, wrapper], _, onCleanup) => {
+    if (diff === null || wrapper === null || diff.hunks.length === 0) return;
+    const made = new FileDiff<string>(options());
+    made.render({ fileDiff: diff, containerWrapper: wrapper, lineAnnotations: annotations.value });
+    view = made;
+    onCleanup(() => {
+      made.cleanUp();
+      view = null;
+    });
+  },
+  { immediate: true, flush: "post" },
+);
+watch([() => props.split, () => colorMode.value], () => {
+  view?.setOptions(options());
+  view?.render({ forceRender: true });
+});
+watch(annotations, (now) => {
+  view?.render({ lineAnnotations: now });
+  const kept = new Set(now.map((annotation) => annotation.metadata));
+  for (const id of slots.keys()) if (!kept.has(id)) slots.delete(id);
+});
+
+/** A finding's line as the file is now, or as it was for a deleted file. */
+const targetSide = computed(() => (props.file.status === "deleted" ? "deletions" : "additions"));
 let scrolledTo: DiffTarget | null = null;
 watch(
-  () => [hunks.value, props.target] as const,
-  async ([loaded, target]) => {
-    if (target === null || loaded === null || target === scrolledTo) return;
+  () => [parsed.value, props.target] as const,
+  ([diff, target]) => {
+    if (target === null || diff === null || target === scrolledTo) return;
     scrolledTo = target;
-    if (target.line === null) return;
-    if (targetLine.value === undefined) return emit("missing", target);
-    await nextTick();
-    shown.value?.querySelector("[data-target]")?.scrollIntoView({ block: "center" });
+    const line = target.line;
+    if (line === null) return;
+    const side = targetSide.value;
+    if (!inHunks(diff, line, side)) return emit("missing", target);
+    wanted = { line, side };
+    showWanted();
   },
-  { immediate: true },
+  { immediate: true, flush: "post" },
 );
-
-const SIGNS = { context: " ", add: "+", del: "-" } as const;
-const BACKGROUNDS = { context: "", add: "bg-success/10", del: "bg-error/10" } as const;
-const NUMBER = "w-10 select-none px-2 text-right text-muted";
-const TARGET = "ring-1 ring-warning ring-inset";
 </script>
 
 <template>
@@ -119,65 +176,31 @@ const TARGET = "ring-1 ring-warning ring-inset";
       </template>
       <small v-else class="text-muted">binary</small>
     </button>
-    <div v-if="open" ref="shown" class="overflow-x-auto border-t border-default" data-highlighted>
+    <div v-if="open" class="border-t border-default">
       <p v-if="failed" class="p-3 text-sm text-muted">This file's diff could not be read.</p>
-      <p v-else-if="hunks === null" class="p-3 text-sm text-muted">Reading…</p>
-      <p v-else-if="hunks.length === 0" class="p-3 text-sm text-muted">No text to show.</p>
-      <table v-else class="w-full font-mono text-xs" data-testid="diff-lines">
-        <tbody v-for="(hunk, at) in hunks" :key="at">
-          <tr>
-            <td colspan="4" class="bg-elevated px-2 py-1 text-muted">{{ hunk.header }}</td>
-          </tr>
-          <template v-if="split">
-            <tr
-              v-for="(row, index) in sideBySide(hunk)"
-              :key="index"
-              :data-old-line="row.left?.old ?? undefined"
-              :data-new-line="row.right?.new ?? undefined"
-              :data-target="
-                (targetLine && (row.left === targetLine || row.right === targetLine)) || undefined
-              "
-              :class="
-                targetLine && (row.left === targetLine || row.right === targetLine) ? TARGET : ''
-              "
-            >
-              <td :class="NUMBER">{{ row.left?.old }}</td>
-              <td
-                class="w-1/2 whitespace-pre px-2"
-                :class="row.left ? BACKGROUNDS[row.left.kind] : ''"
-                data-side="old"
-              >
-                <TokenSpans v-if="row.left" :tokens="tokens.get(row.left)" />
-              </td>
-              <td :class="NUMBER">{{ row.right?.new }}</td>
-              <td
-                class="w-1/2 whitespace-pre px-2"
-                :class="row.right ? BACKGROUNDS[row.right.kind] : ''"
-                data-side="new"
-              >
-                <TokenSpans v-if="row.right" :tokens="tokens.get(row.right)" />
-              </td>
-            </tr>
-          </template>
-          <template v-else>
-            <tr
-              v-for="(line, index) in hunk.lines"
-              :key="index"
-              :class="[BACKGROUNDS[line.kind], line === targetLine ? TARGET : '']"
-              :data-old-line="line.old ?? undefined"
-              :data-new-line="line.new ?? undefined"
-              :data-target="line === targetLine || undefined"
-            >
-              <td :class="NUMBER">{{ line.old }}</td>
-              <td :class="NUMBER">{{ line.new }}</td>
-              <td class="w-4 select-none text-muted">{{ SIGNS[line.kind] }}</td>
-              <td class="whitespace-pre px-2" data-side="unified">
-                <TokenSpans :tokens="tokens.get(line)" />
-              </td>
-            </tr>
-          </template>
-        </tbody>
-      </table>
+      <p v-else-if="unparsed" class="p-3 text-sm text-muted" data-testid="diff-unparsed">
+        This file's diff could not be drawn.
+      </p>
+      <p v-else-if="parsed === null" class="p-3 text-sm text-muted">Reading…</p>
+      <p v-else-if="parsed.hunks.length === 0" class="p-3 text-sm text-muted">No text to show.</p>
+      <div v-else ref="host" data-testid="diff-lines" />
     </div>
+    <Teleport v-for="[id, slot] in slots" :key="id" :to="slot">
+      <CommentComposer
+        v-if="id === WRITING && pending !== null"
+        class="rounded-none border-x-0"
+        data-testid="diff-comment"
+        :location="locationOf(pending)"
+        @add="settle"
+        @cancel="settle(null)"
+      />
+      <DraftEdit
+        v-else-if="draftOf(id) !== undefined"
+        class="border-y border-default bg-default p-2"
+        :text="draftOf(id)!.text"
+        @edit="(text) => edit(id, text)"
+        @remove="remove(id)"
+      />
+    </Teleport>
   </section>
 </template>

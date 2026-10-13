@@ -3,6 +3,7 @@
 import { Effect, Schema } from "effect";
 import type { FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
+import type { RequestedBy, RunReport } from "./board-model";
 import type { PluginEnv } from "./env";
 import { resultText, runViews } from "./lifecycle";
 import { HOLD, STOP, evidenceDir, runDir, type RunView } from "./engine";
@@ -20,6 +21,8 @@ export interface Asked {
 }
 
 export interface RunFacts {
+  readonly requestedBy?: RequestedBy;
+  readonly report?: RunReport;
   readonly id: string;
   readonly workflow: string;
   /** The checkout it was started for, which is what "done here before" asks about. */
@@ -78,7 +81,7 @@ const stateOf = (view: RunView): RunState => {
       return view.parked !== null || view.waiting.some((one) => one.answer === null)
         ? "waiting"
         : "running";
-    // A wait that parked suspends its own instance, not the Run's, so it is still pending.
+    // Concurrent work can keep the Run pending while one Activity is parked.
     case "pending":
       if (stopped) return "stopped";
       return view.parked !== null ? "waiting" : "running";
@@ -87,6 +90,8 @@ const stateOf = (view: RunView): RunState => {
 
 export const factsOfView = (stateDir: string, view: RunView): RunFacts => ({
   id: view.runId,
+  requestedBy: view.requestedBy,
+  report: view.report,
   workflow: view.workflow,
   project: view.project,
   cwd: view.cwd,

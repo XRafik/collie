@@ -26,7 +26,7 @@ import { truncated } from "../views";
 import { columnsFor, C } from "./sections";
 import { Board, Button, CardMenu, KeyHelp, type Batch, type Decide, type Where } from "./Board";
 import { Pane } from "./Pane";
-import { Drawer, type GateCut, type Tab } from "./Drawer";
+import { Drawer, type Tab } from "./Drawer";
 import { ProposalPreview } from "./live";
 import { usePasteInto } from "./paste";
 import { Flow } from "./Flow";
@@ -75,11 +75,6 @@ export function App(props: AppProps) {
   const [editing, setEditing] = createSignal<{ key: string; typed: string } | null>(null);
   /** The cards picked with shift, by Task: what the bar at the foot acts on. */
   const [picked, setPicked] = createSignal<ReadonlySet<string>>(new Set());
-  /** A gate's list being cut down, by the gate's own id: the tab's, until it is sent. */
-  const [cutting, setCutting] = createSignal<{
-    id: string;
-    kept: ReadonlyArray<string>;
-  } | null>(null);
   /** What is being steered, and what has been typed at it so far. */
   const [steering, setSteering] = createSignal(false);
   const [steers, setSteers] = createSignal<Readonly<Record<string, string>>>({});
@@ -276,22 +271,6 @@ export function App(props: AppProps) {
       props.dispatch({ _tag: "ConfirmProposal", id: proposal.id, hash: proposal.hash }),
     decline: (proposal) =>
       props.dispatch({ _tag: "DeclineProposal", id: proposal.id, hash: proposal.hash }),
-    approve: (gate, verifications) => {
-      setCutting(null);
-      props.dispatch({
-        _tag: "Answer",
-        runId: gate.run,
-        choiceId: gate.id,
-        value: verifications === null ? "approve" : `approve:${verifications.join(",")}`,
-      });
-    },
-    edit: (gate) => {
-      const holding = tasks().find(
-        (view) => view.decision?.kind === "gate" && view.decision.id === gate.id,
-      );
-      if (holding !== undefined) setOpenId(holding.id);
-      setCutting({ id: gate.id, kept: gate.verifications });
-    },
     draft: (question) => drafts()[draftKey(question)] ?? "",
     typing: (question) => typingTo() === draftKey(question),
     typeHere: focusAnswer,
@@ -328,31 +307,6 @@ export function App(props: AppProps) {
     for (const view of pickedViews())
       if (stoppable(view)) props.dispatch({ _tag: "StopRun", runId: view.run });
     setPicked(new Set<string>());
-  };
-
-  /** The list the open record's gate is having cut down, where that is what is going on. */
-  const cut = (): GateCut | null => {
-    const gate = open()?.decision;
-    const on = cutting();
-    if (gate?.kind !== "gate" || on === null || on.id !== gate.id) return null;
-    return {
-      verifications: gate.verifications,
-      kept: on.kept,
-      // Rebuilt from the gate's own order, so the list reads as the gate wrote it.
-      toggle: (name) =>
-        setCutting((was) =>
-          was === null
-            ? was
-            : {
-                id: was.id,
-                kept: was.kept.includes(name)
-                  ? was.kept.filter((kept) => kept !== name)
-                  : gate.verifications.filter((one) => was.kept.includes(one) || one === name),
-              },
-        ),
-      approve: () => decide.approve(gate, on.kept),
-      cancel: () => setCutting(null),
-    };
   };
 
   /** The question the keyboard is in, while the board is still asking it. */
@@ -574,7 +528,6 @@ export function App(props: AppProps) {
               live={props.state().live}
               tab={tab()}
               onTab={setTab}
-              cut={cut()}
               onAct={act}
               steer={{
                 text: steerDraft(),

@@ -63,7 +63,7 @@ import { claudeCode } from "./claude";
 import { claudeDriver } from "./claude-driver";
 import { loopbackTools } from "./chat-endpoint";
 import { piDriver } from "./pi-driver";
-import { childEnv, takeLoginEnv, which } from "./login-env";
+import { CHILD_CWD, childEnv, takeLoginEnv, which } from "./login-env";
 import { type ChatMachine, chatDoor } from "./flock-tools";
 import { changeSettings, chatChoice, readSettings, writeSettings } from "./settings";
 import { followWindow, zoomWindow } from "./scale";
@@ -89,6 +89,8 @@ import {
   type HerdrMachine,
   herdrMachines,
   localRoute,
+  linkRoute,
+  pairedMachines,
   type ShellRoute,
   remoteRoute,
   removeFromHerdr,
@@ -179,6 +181,7 @@ const openUrl = (url: string) =>
     if (which(OPENER) === null) return void Utils.openExternal(url);
     Bun.spawn([OPENER, url], {
       env: childEnv(),
+      cwd: CHILD_CWD,
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -191,6 +194,7 @@ const openSlack = Effect.gen(function* () {
   // Never killed: still running is the app taking it.
   const child = Bun.spawn([OPENER, SLACK_APP], {
     env: childEnv(),
+    cwd: CHILD_CWD,
     stdio: ["ignore", "ignore", "ignore"],
   });
   const code = yield* Effect.promise(() => child.exited).pipe(Effect.timeoutOption("5 seconds"));
@@ -316,8 +320,22 @@ const main = Effect.gen(function* () {
   const open = (machine: HerdrMachine) =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
-      const route = yield* remoteRoute("ssh", `${controls}/${opened++}`, machine, local).pipe(
-        Scope.provide(scope),
+      const peer = (yield* pairedMachines(collie)).find((one) => one.name === machine.label);
+      const ssh = yield* remoteRoute(
+        "ssh",
+        `${controls}/${opened++}`,
+        machine,
+        local,
+        peer !== undefined,
+        peer === undefined ? collie : undefined,
+      ).pipe(Scope.provide(scope));
+      const route = linkRoute(
+        collie,
+        { name: machine.label },
+        ssh,
+        local,
+        childEnv(),
+        peer !== undefined,
       );
       routes.set(route.machine.profile, { route, scope });
       return route;
@@ -744,6 +762,15 @@ const main = Effect.gen(function* () {
               [
                 door === undefined ? Effect.void : syncOn(settingsOf(door)),
                 route === undefined ? Effect.void : given.giveLacking(route),
+                route?.pair === undefined
+                  ? Effect.void
+                  : route.pair.pipe(
+                      Effect.flatMap((text) =>
+                        text === null
+                          ? Effect.void
+                          : PubSub.publish(news, { _tag: "Notice", machine: route.machine, text }),
+                      ),
+                    ),
               ],
               { concurrency: "unbounded", discard: true },
             ).pipe(Effect.forkIn(scope));
@@ -909,7 +936,7 @@ const main = Effect.gen(function* () {
           return yield* new ActionFailed({
             reason: "only a machine in herdr's list can be removed",
           });
-        yield* removeFromHerdr("herdr", profile).pipe(
+        yield* removeFromHerdr("herdr", profile, collie).pipe(
           Effect.mapError((reason) => new ActionFailed({ reason })),
         );
         const done = yield* Deferred.make<void>();
@@ -980,6 +1007,7 @@ const main = Effect.gen(function* () {
           Effect.try(() =>
             Bun.spawn(command, {
               env: childEnv(),
+              cwd: CHILD_CWD,
               stdio: ["ignore", "ignore", "ignore"],
               detached: true,
             }).unref(),

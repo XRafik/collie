@@ -1,6 +1,6 @@
 ---
 name: collie
-description: Operate Collie runs through its CLI. Use when the user wants to start a workflow (plan, implement, review, architecture), check or watch a run, answer a run's question, resume or stop a run, or write, check or fork a workflow or persona.
+description: Operate Collie runs through its CLI. Use when the user wants to start a workflow (plan, implement, review, renovate, architecture, general), check or watch a run, answer a run's question, resume or stop a run, or write, check or fork a workflow or persona.
 ---
 
 # Operating Collie
@@ -35,6 +35,10 @@ A workflow is a TypeScript module, and `workflow show` prints what a Run actuall
 `limits` list is a place the drawn schema says less than the real one — not a fault. The
 same reading answers `collie_definitions` and fills a `needs_input` refusal, so ask it once.
 
+Choose the workflow whose description fits the request: one that is not planning, building a
+change to a merge request, reviewing, renovating or an architecture survey is `general`,
+never `implement` or `plan`.
+
 Done when you can name the workflow and every input it declares.
 
 ## Start a Run
@@ -64,11 +68,12 @@ Projects root for the checkout, the target inference would pick in the named che
 plan directories of finished Runs. Pick from those or ask the user what they meant, then
 retry with the same `--request-id`.
 
-A workflow that verifies (implement does) is refused as `invalid_input` when nothing is
-approved to prove it, and nothing is started. Unless the project has `.collie/verify.json`,
-give the checks with the start: `--verify '{"name":"unit","executable":"bun","argv":["test"],"cwd":"worktree"}'`,
-once per command whose passing on the final tree proves the work. Read the repository for
-them, then retry with the same `--request-id`.
+A start never needs checks. Where nothing written down names any, the Run's own agent
+names them before it builds, and Collie runs them at the gate without asking. To hold a
+Run to checks you chose, give them with the start:
+`--verify '{"name":"unit","executable":"bun","argv":["test"],"cwd":"worktree"}'`, once per
+command whose passing on the final tree proves the work, or name one on a live Run with
+`collie run intent verification <run> --name <name> -- <command>`.
 
 `branch` is one of the names the host settles rather than one a workflow declares —
 `workflow show` lists them under `options`, with what each means. It names the branch the
@@ -99,7 +104,7 @@ should be relaying. Read `data.run`:
   [Answer a question](#answer-a-question).
 - `controls` names a `hold` or a `stop` someone set over it.
 - `parked` is why the Run parked its own work and what picks it up again — a pane that
-  would not take a prompt, nothing approved to prove it, a workspace that closed with its
+  would not take a prompt, a check that still fails, or none named, after its gate fixes, a workspace that closed with its
   checkout gone. Relay it as written; it names the repair.
 - `diagnostic` is why the engine could not be asked, such as a module that is missing,
   with the file named.

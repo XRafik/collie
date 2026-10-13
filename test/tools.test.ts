@@ -41,14 +41,13 @@ import { save, type World } from "./support/world";
 import { Herdr } from "../src/herdr";
 import { until } from "./support/host";
 import { exec } from "./support/command";
-import { connect, frontDoor } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { runDir, type RunView } from "../src/engine";
 import { isSettled } from "../src/lifecycle";
 import { appendLog } from "../src/oversight";
 import { readAudit, trimAudit } from "../src/audit";
 import { writeMrStates } from "../src/merges";
 import { FrontDoorRpcs, mrLabel, type Declaration, type FLOCK_READS } from "../src/board-model";
-import { nothingApproved } from "../src/outcome";
 
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Any));
 
@@ -895,7 +894,7 @@ test("a key an action does not take is refused by name, never dropped", () =>
       });
       expect(said).toContain("collie_do refused the request (InvalidInput)");
       expect(said).toContain('actions[0] (kind "start") does not take goal, constraints');
-      expect(said).toContain("a start takes kind, workflow, inputs, decisions, workspace");
+      expect(said).toContain("a start takes kind, machine, workflow, inputs, decisions, workspace");
       expect(said).toContain('put it in "inputs"');
       expect(said).toContain("update_intent");
       expect(said).toContain("Nothing was done");
@@ -1198,7 +1197,7 @@ const asking = (name: string) => (view: RunView) =>
 const answerAs = (as: typeof Declaration.Type, runId: string, decision: string, value: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(stateDir);
+      const door = yield* frontDoor(socketOf(stateDir));
       yield* door.declare(as);
       yield* door.answer({
         runId,
@@ -1314,7 +1313,7 @@ test("a Run's own merge request is shown as recorded, with what the merge watch 
       const pull = "https://github.com/cego/collie/pull/61";
       yield* fs.writeFileString(`${run.dir}/merge-request`, `${pull}\n`);
       expect(yield* call("collie_run", { run: run.id })).toContain(
-        `Merge request: ${pull} — not watched`,
+        `Pull request: ${pull} — not watched`,
       );
 
       const label = mrLabel(pull);
@@ -1324,7 +1323,7 @@ test("a Run's own merge request is shown as recorded, with what the merge watch 
         new Map([[label, { checks: { state: "failed", name: "test" }, head: null }]]),
       );
       expect(yield* call("collie_run", { run: run.id })).toContain(
-        `Merge request: ${pull} — open, checks failed (test)`,
+        `Pull request: ${pull} — open, checks failed (test)`,
       );
     }),
   ));
@@ -1375,16 +1374,12 @@ test("a Run shows its plan, findings, disposition, outcome and the last lines it
     }),
   ));
 
-test("an evidence gate waits on the human with the checks it offers and how to approve them", () =>
+test("a Run parked at the old evidence gate is waiting on the human for nothing", () =>
   inWorld(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       yield* save(world.user, ["gated.workflow.ts"]);
-      const run = yield* startedRun(
-        "gated",
-        { note: "x" },
-        (view) => view.parked === nothingApproved(view.runId),
-      );
+      const run = yield* startedRun("gated", { note: "x" }, (view) => (view.parked ?? "") !== "");
       yield* fs.makeDirectory(`${project}/.collie`, { recursive: true });
       yield* fs.writeFileString(
         `${project}/.collie/verify.json`,
@@ -1392,12 +1387,8 @@ test("an evidence gate waits on the human with the checks it offers and how to a
       );
 
       const waiting = waitingOnTheHuman(yield* call("collie_receipts", { run: run.id }));
-      expect(waiting).toContain("evidence gate");
-      expect(waiting).toContain("unit");
-      expect(waiting).toContain(
-        `{"kind":"answer","run":"${run.id}","choiceId":"evidence-gate","answer":"approve"}`,
-      );
-      expect(waiting).toContain("approve:<name>,<name>");
+      expect(waiting).toContain("- nothing");
+      expect(waiting).not.toContain("evidence gate");
     }),
   ));
 
@@ -1406,6 +1397,9 @@ test("a Run with a branch and no merge request shows its branch", () =>
     Effect.gen(function* () {
       const git = ["git", "-c", "user.email=t@example.test", "-c", "user.name=t"];
       yield* exec([...git, "commit", "-q", "--allow-empty", "-m", "init"], { cwd: project });
+      yield* exec(["git", "remote", "add", "origin", "git@gitlab.example.com:group/app.git"], {
+        cwd: project,
+      });
       yield* save(world.user, ["builds.workflow.ts"]);
       // The host this test starts names the branch under a login, as a desk's does.
       yield* connect(stateDir, { hostEnv: { GITLAB_USER_LOGIN: "tester" } }).pipe(Effect.orDie);
@@ -1446,7 +1440,7 @@ const rootAtWorldHome = () => {
   env = { ...env, raw: { ...env.raw, GITTE_CWD: world.home } };
 };
 
-test("where work can start lists the workspaces, the Home as no checkout, open Tasks, the Projects root and each workflow's Inputs", () =>
+test("where work can start lists the workspaces, the Home as no checkout, open Tasks, the Projects root and each workflow's Inputs and description", () =>
   inWorld(
     Effect.gen(function* () {
       yield* save(world.user, ["branches.workflow.ts"]);
@@ -1476,9 +1470,9 @@ test("where work can start lists the workspaces, the Home as no checkout, open T
       expect(said).not.toContain(gone.id);
       expect(said).toContain(`Projects root: ${world.home}`);
       expect(said).toContain("a checkout under it is named by its directory name");
-      expect(said).toContain("- proof (note)");
-      expect(said).toContain("- hello (name)");
-      expect(said).toContain("- branches (goal?, size)");
+      expect(said).toContain("- proof (note) — Records one launch, then waits to be answered.");
+      expect(said.split("\n")).toContain("- hello (name)");
+      expect(said.split("\n")).toContain("- branches (goal?, size)");
     }),
   ));
 
@@ -1486,7 +1480,7 @@ test("a start naming a path this Machine does not have is refused as no director
   inWorld(
     Effect.gen(function* () {
       rootAtWorldHome();
-      for (const named of ["/nowhere/monorepo", "~/nowhere", "src/nowhere"]) {
+      for (const named of ["/nowhere/monorepo", "~/nowhere", "./src/nowhere"]) {
         const refused = yield* workspaceNamed(env, named);
         const error = refused !== null && "error" in refused ? refused.error : "";
         expect(error).toContain(`no directory "${named}" on this Machine`);
@@ -1546,7 +1540,7 @@ test("a start rooted in Collie's own state is refused, whether named by the Home
 const readThroughHost = (tool: (typeof FLOCK_READS)[number], input: JsonObject) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const door = yield* frontDoor(stateDir);
+      const door = yield* frontDoor(socketOf(stateDir));
       return yield* door.read({ tool, input });
     }),
   ).pipe(Effect.orDie);

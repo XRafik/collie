@@ -4,6 +4,13 @@
 // interrupting for must not be sent, or the ones that matter get muted.
 
 import { Context, type Effect } from "effect";
+import { mrWords, parseMrUrl } from "./board-model";
+
+/** What an opened merge request's notification names it by: `!42`, or `#30` for a pull request. */
+export function openedSubject(url: string): string | undefined {
+  const mr = parseMrUrl(url);
+  return mr === null ? undefined : `${mrWords(mr).sign}${mr.iid}`;
+}
 
 /**
  * The taxonomy is the contract: a new notification means a new entry here with a

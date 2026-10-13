@@ -4,7 +4,7 @@
 // View is first shown, because loading every run's outputs at startup is what would make
 // the tab slow the day it became useful.
 
-import { Effect, FileSystem, Path, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Stream } from "effect";
 import { attachmentsDir, listAttachments } from "./attachments";
 import { attentionFor } from "./attention";
 import { configValue, readConfig, readSettingsSet } from "./config";
@@ -233,26 +233,56 @@ const buildPlan = Effect.fn("Views.buildPlan")(function* (run: RunFacts, cap: nu
   for (const file of files) {
     // Capped like everything else the panel reads: a ticket is prose an agent wrote.
     const text = yield* capped(path.join(issues, file), OUTPUT_CAP);
-    tickets.push(planTicket(file, text?.text ?? ""));
+    tickets.push({
+      ...planTicket(file, text?.text ?? ""),
+      stamp: yield* stampOf(path.join(issues, file)),
+    });
   }
-  return { spec, tickets };
+  return { spec, specStamp: yield* stampOf(path.join(dir, "SPEC.md")), tickets };
 });
 
+/** A file's size and modification time, read without reading the file; empty where it is gone. */
+const stampOf = (file: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(file)).pipe(
+    Effect.map((info) => `${info.size}:${Option.getOrUndefined(info.mtime)?.getTime() ?? ""}`),
+    Effect.orElseSucceed(() => ""),
+  );
+
+/** Every plan file's stamp, which changes whenever one of them is written. */
+const planStamps = Effect.fn("Views.planStamps")(function* (run: RunFacts) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const dir = yield* planDirOf(run);
+  if (dir === null) return "";
+  const issues = path.join(dir, "issues");
+  const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => [])))
+    .filter((name) => name.endsWith(".md"))
+    .sort();
+  const stamps = [`SPEC.md=${yield* stampOf(path.join(dir, "SPEC.md"))}`];
+  for (const file of files) stamps.push(`${file}=${yield* stampOf(path.join(issues, file))}`);
+  return stamps.join("\n");
+});
+
+/** A finished Run's plan, by Run and cap, with the stamps it was read at. */
+export type PlanCache = Map<string, { readonly stamps: string; readonly plan: PlanPanel | null }>;
+
 /**
- * The plan behind a Run, from the caller's cache where it can be. Keyed by the cap as
- * well as the Run, because `m` asking for another page has to read further into a spec
- * that was cut short.
+ * The plan behind a Run, from the caller's cache while none of its files has changed.
+ * Keyed by the cap as well as the Run, because `m` asking for another page has to read
+ * further into a spec that was cut short.
  */
 const plannedFor = Effect.fn("Views.plannedFor")(function* (
   run: RunFacts,
   cap: number,
-  plans: Map<string, PlanPanel | null> | undefined,
+  plans: PlanCache | undefined,
 ) {
   if (!plans || !settled(run)) return yield* buildPlan(run, cap);
   const key = `${run.id}:${cap}`;
-  if (plans.has(key)) return plans.get(key) ?? null;
+  const stamps = yield* planStamps(run);
+  const kept = plans.get(key);
+  if (kept?.stamps === stamps) return kept.plan;
   const plan = yield* buildPlan(run, cap);
-  plans.set(key, plan);
+  plans.set(key, { stamps, plan });
   return plan;
 });
 
@@ -308,11 +338,11 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
   pages?: number;
   /**
    * Where a finished Run's plan is kept between reads, owned by the caller the way the
-   * merge request is. A Run's plan is fixed input once it has stopped, and the panel is
-   * re-produced on every board tick. A Run still going is never cached: it may be
-   * writing that plan as we read it.
+   * merge request is, because the panel is re-produced on every board tick. A finished
+   * Run's agent can still rewrite it, so it is kept only while its files are unchanged. A
+   * Run still going is never cached: it may be writing that plan as we read it.
    */
-  plans?: Map<string, PlanPanel | null>;
+  plans?: PlanCache;
 }) {
   const path = yield* Path.Path;
   const run =
@@ -328,6 +358,8 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
   const attention = yield* attentionFor(run);
   return {
     id: run.id,
+    requestedBy: run.requestedBy,
+    report: run.report,
     dir: run.dir,
     title: runTitle(run),
     status: run.state,

@@ -212,7 +212,7 @@ test("a rejected token is a refusal", () =>
 /** The gate as a Step declares it, with everything the runner would supply scripted. */
 function gate(opts: {
   file: string;
-  gitlabPath?: string | null;
+  repositoryPath?: string | null;
   repoName?: string;
   claimed?: HelleClaim | null;
   answer?: string | null;
@@ -223,8 +223,10 @@ function gate(opts: {
     home: "/nowhere",
     envFile: opts.file,
     url: server.base,
-    gitlabPath:
-      opts.gitlabPath === undefined ? "gitlab.cego.dk/spilnu/frontend/spilnu" : opts.gitlabPath,
+    repositoryPath:
+      opts.repositoryPath === undefined
+        ? "gitlab.cego.dk/spilnu/frontend/spilnu"
+        : opts.repositoryPath,
     repoName: opts.repoName ?? "spilnu",
     claimed: opts.claimed ?? null,
     record: (claim) => Effect.sync(() => void opts.recorded.push(claim)),
@@ -242,7 +244,7 @@ test("a repository with no Helle project carries straight on", () =>
       const recorded: (HelleClaim | null)[] = [];
       const held = yield* gate({
         file: yield* envFile(),
-        gitlabPath: "gitlab.cego.dk/cego/collie",
+        repositoryPath: "gitlab.cego.dk/cego/collie",
         repoName: "collie",
         lines,
         recorded,
@@ -264,7 +266,7 @@ test("several matching projects stop the Run rather than being guessed between",
       ];
       const result = yield* gate({
         file: yield* envFile(),
-        gitlabPath: null,
+        repositoryPath: null,
         lines: [],
         recorded: [],
       }).pipe(Effect.result);
@@ -379,7 +381,7 @@ test("a resumed Run does not ask again, and waits rather than assuming it holds 
             home: "/nowhere",
             envFile: yield* envFile(),
             url: server.base,
-            gitlabPath: "gitlab.cego.dk/spilnu/frontend/spilnu",
+            repositoryPath: "gitlab.cego.dk/spilnu/frontend/spilnu",
             repoName: "spilnu",
             claimed: { slug: "spilnu", claim: "mine" },
             record: (claim) => Effect.sync(() => void recorded.push(claim)),

@@ -74,7 +74,7 @@ const TERMINAL_STATES: ReadonlySet<string> = new Set([
   "expired",
 ]);
 
-const DeliverySchema = Schema.Struct({
+export const DeliverySchema = Schema.Struct({
   id: Schema.String,
   at: Schema.String,
   run: Schema.String,

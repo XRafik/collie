@@ -5,32 +5,16 @@ import { Clock, Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import type { ChildProcessSpawner } from "effect/process";
 import type { InputStrategy } from "./definitions";
-import { diffTargetOf, targetKind, type TargetKind } from "./strategies";
+import { diffTargetOf, strategyNamed, targetKind, type TargetKind } from "./strategies";
 import type { RunFacts } from "./runs";
 import { openFindingsIn } from "./output";
 import { targetLabel } from "./naming";
 import { FINDINGS_FILE, REVIEW_FILE } from "./output";
 import { ago } from "./time";
-import { type Runner, mrTarget, projectHere, shell as shellRun } from "./mr";
-import { parseMrTarget } from "./board-model";
+import { type Runner, forgeHere, projectHere, shell as shellRun } from "./mr";
+import type { Forge } from "./forge/forge";
+import { mrWords, readMrRef } from "./board-model";
 
-const JsonId = Schema.Union([Schema.String, Schema.Number]);
-const MrViewJson = Schema.fromJsonString(
-  Schema.Struct({
-    state: Schema.optionalKey(Schema.String),
-    iid: Schema.optionalKey(JsonId),
-    id: Schema.optionalKey(JsonId),
-  }),
-);
-const MrRowsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      iid: Schema.optionalKey(JsonId),
-      id: Schema.optionalKey(JsonId),
-      title: Schema.optionalKey(Schema.String),
-    }),
-  ),
-);
 /**
  * One thing a human may pick, whoever is drawing the list: a workflow, a candidate for
  * an Input, an option in a Choice. Here rather than with a renderer because both
@@ -113,6 +97,8 @@ export interface InferContext<R = ChildProcessSpawner.ChildProcessSpawner> {
    */
   task?: string | null;
   run?: Runner<R>;
+  /** The Flock's GitLab, which a checkout's remote is on whatever its name. */
+  gitlabHost?: string | undefined;
 }
 
 /** The one place a subprocess is started for inference; the MR step borrows it too. */
@@ -131,7 +117,7 @@ export function inferInput(
     const run = ctx.run ?? shell;
     const base = { name, strategy, needsAsking: false, question: `${name}?` };
 
-    switch (strategy) {
+    switch (strategyNamed(strategy)) {
       case "goal":
         return {
           ...base,
@@ -199,13 +185,13 @@ export function inferInput(
       // one passes a value of its own. Never asked for.
       case "optional":
         return { ...base, value: "", source: "default" };
-      case "gitlab-repository":
+      case "repository":
         return {
           ...base,
           value: "",
           source: "ask",
           needsAsking: true,
-          question: "GitLab repository URL or local checkout",
+          question: "GitLab or GitHub repository URL, or a local checkout",
         };
       default:
         return { ...base, value: "", source: "ask", needsAsking: true };
@@ -239,18 +225,6 @@ export function inferInputs(
   return Effect.forEach(Object.entries(inputs), ([name, strategy]) =>
     inferInput(name, strategy, ctx),
   );
-}
-
-function mrIid(stdout: string): string | null {
-  return Option.match(Schema.decodeUnknownOption(MrViewJson)(stdout), {
-    onNone: () => null,
-    onSome: (data) => {
-      if (data.state !== undefined && !["opened", "open"].includes(data.state.toLowerCase()))
-        return null;
-      const iid = data.iid ?? data.id;
-      return iid === undefined ? null : String(iid);
-    },
-  });
 }
 
 export function defaultBase(
@@ -386,21 +360,24 @@ export function targetCandidates(
     const branch = inRepo
       ? (yield* run("git", ["rev-parse", "--abbrev-ref", "HEAD"], ctx.cwd)).stdout.trim()
       : "";
-    const view = yield* run("glab", ["mr", "view", "--output", "json"], ctx.cwd);
-    const iid = view.code === 0 ? mrIid(view.stdout) : null;
-    if (iid) {
+    const here = inRepo ? yield* forgeHere(ctx.cwd, run, ctx.gitlabHost) : null;
+    const forge = here?.ok === true ? here.forge : null;
+    const found =
+      forge !== null && project !== null && branch !== ""
+        ? yield* forge.forBranch(project, branch, ctx.cwd, run)
+        : null;
+    const open = found?.ok === true ? found.open : null;
+    if (forge !== null && open !== null) {
+      const words = mrWords({ project, iid: open.iid });
       out.push({
         kind: "mr",
-        value: mrTarget(project, iid),
-        source:
-          branch === ""
-            ? `open merge request !${iid}`
-            : `branch ${branch}'s open merge request !${iid}`,
-        label: `!${iid}`,
+        value: words.target,
+        source: `branch ${branch}'s open ${forge.noun} ${words.sign}${open.iid}`,
+        label: `${words.sign}${open.iid}`,
       });
-    } else {
-      // This branch has no MR, so offer the ones I would otherwise go looking for.
-      for (const mine of yield* myOpenMrs(run, ctx.cwd, project)) out.push(mine);
+    } else if (forge !== null) {
+      // This branch has none, so offer the ones I would otherwise go looking for.
+      for (const mine of yield* myOpenMrs(forge, run, ctx.cwd, project)) out.push(mine);
     }
 
     if (inRepo) {
@@ -444,38 +421,30 @@ export function targetCandidates(
   });
 }
 
-/** Open MRs I am on either side of, deduplicated by iid. */
+/** Open merge requests I am on either side of, in iid order. */
 function myOpenMrs(
+  forge: Forge,
   run: NonNullable<InferContext["run"]>,
   cwd: string,
   project: string | null,
 ): Effect.Effect<Candidate[], never, ChildProcessSpawner.ChildProcessSpawner> {
-  return Effect.gen(function* () {
-    const seen = new Map<string, Candidate>();
-    for (const who of ["--assignee", "--author"]) {
-      const res = yield* run("glab", ["mr", "list", who, "@me", "--output", "json"], cwd);
-      if (res.code !== 0) continue;
-      const parsedRows = Schema.decodeUnknownOption(MrRowsJson)(res.stdout);
-      if (Option.isNone(parsedRows)) continue;
-      for (const row of parsedRows.value) {
-        const id = row.iid ?? row.id;
-        if (id === undefined) continue;
-        const key = String(id);
-        if (seen.has(key)) continue;
-        const title = row.title ?? "";
-        seen.set(key, {
+  return Effect.map(forge.mine(project, cwd, run), (mine) =>
+    [...mine]
+      .sort((a, b) => Number(a.iid) - Number(b.iid))
+      .map(({ iid, title }) => {
+        const words = mrWords({ project, iid });
+        const short = forge.name === "github" ? "PR" : "MR";
+        return {
           kind: "mr",
-          value: mrTarget(project, key),
-          source: title ? `open MR !${key} — ${title}` : `open MR !${key}`,
-          label: `!${key}`,
+          value: words.target,
+          source: title
+            ? `open ${short} ${words.sign}${iid} — ${title}`
+            : `open ${short} ${words.sign}${iid}`,
+          label: `${words.sign}${iid}`,
           menuOnly: true,
-        });
-      }
-    }
-    return [...seen.values()].sort(
-      (a, b) => Number(parseMrTarget(a.value)?.iid ?? 0) - Number(parseMrTarget(b.value)?.iid ?? 0),
-    );
-  });
+        } satisfies Candidate;
+      }),
+  );
 }
 
 /**
@@ -491,20 +460,13 @@ export function classifyTarget(
   if (text === "") return null;
   const source = "typed";
 
-  // A URL names its own project, which is the whole point of pasting one.
-  const url = /^(?:https?:\/\/)?([^/\s]+)\/(.+?)\/-\/merge_requests\/(\d+)/.exec(text);
-  if (url) {
-    return {
-      kind: "mr",
-      value: mrTarget(`${url[1]}/${url[2]}`, url[3]!),
-      source,
-      label: `!${url[3]}`,
-    };
+  // A URL names its own project, which is the whole point of pasting one; a bare iid means
+  // one in the project this directory belongs to.
+  const mr = readMrRef(text, { project });
+  if (mr) {
+    const words = mrWords(mr);
+    return { kind: "mr", value: words.target, source, label: `${words.sign}${mr.iid}` };
   }
-
-  // A bare iid means one in the project this directory belongs to.
-  const iid = /^!?(\d+)$/.exec(text);
-  if (iid) return { kind: "mr", value: mrTarget(project, iid[1]!), source, label: `!${iid[1]}` };
 
   if (/^worktree$/i.test(text))
     return { kind: "worktree", value: "worktree", source, label: "working tree" };
@@ -612,7 +574,7 @@ const WORK_SOURCE_MENU: MenuSpec = {
 
 const TARGET_MENU: MenuSpec = {
   header: TARGET_QUESTION,
-  hint: "an MR iid or URL, or a base...head range",
+  hint: "!42, #30, owner/repo#30 or a merge or pull request URL, or a base...head range",
   question: "MR iid or URL, or a base...head range",
   classify: (typed, r) => Effect.succeed(classifyTarget(typed, r.base ?? "", r.project ?? null)),
 };
