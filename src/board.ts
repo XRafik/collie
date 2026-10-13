@@ -201,6 +201,8 @@ export interface Sentence {
   disposition: { kind: string; ref: string; ago: string; by: string } | null;
   /** The merge request the work opened or was pointed at, where there is one. */
   mr: string | null;
+  /** What the finished Run returned: its own account, never evidence. */
+  summary: string | null;
   /** What checked that merge request, where it is open; null reads as unchecked. */
   checks: Checks | null;
   /** A live agent of the Run's, which the next move can be handed to. */
@@ -352,10 +354,14 @@ function doneSentence(
   planReady = false,
   checks: Checks | null = null,
   agent: string | null = null,
+  summary: string | null = null,
 ): string {
   if (disposition === null) {
     if (planReady) return "Plan ready to implement.";
-    if (mr === null) return "Finished; nothing merged yet.";
+    if (mr === null)
+      return summary === null || summary.trim() === ""
+        ? "Finished; nothing merged yet."
+        : `Finished; it says: “${summary.trim().replace(/\s+/g, " ")}”`;
     if (mrState === "closed") return `Merge request ${mrLabel(mr)} closed without merging.`;
     return openSentence(mr, checks, agent);
   }
@@ -423,6 +429,7 @@ export function sentenceFor(facts: Sentence): string {
         facts.planReady,
         facts.checks,
         facts.agent,
+        facts.summary,
       );
     case "failed":
       return alsoBecame(failedSentence(facts), facts.disposition);
@@ -975,6 +982,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         mr,
         mrState,
         checks,
+        summary: leader.summary,
         agent: agents.find((one) => one.run === leader.id)?.name ?? null,
         planReady,
         abandoned: abandoned && at > 0 ? agoMs(at, now) : null,

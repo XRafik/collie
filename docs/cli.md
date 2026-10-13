@@ -602,10 +602,18 @@ still running. `resume`
 asks the host to pick a suspended run up again. It re-enters the workflow's current code
 and reuses every Activity already done, so completed work and its Outputs are kept and
 never redone, and an agent still live is reattached to rather than started a second
-time; one a stop closed is started again with the prompt it had. It clears a stop first, hands a run parked on a pane the same prompt, and registers
-the modules as they are now — so a run whose module was missing and has been put back is
-carried on without restarting the host. On a run the engine is already working it changes
-nothing.
+time; one a stop closed is started again with the prompt it had. The host registers the
+modules as they are now, then clears the stop before waking work. A restored module is
+picked up without restarting the host.
+
+Resume succeeds only when the host wakes suspended work or recovers this Run's unfinished
+admission or unavailable module into the engine. It clears the old park note before work
+starts; if work parks again, the new reason is shown. Take-up does not promise completion.
+A Run already running, finished, failed, or still missing its module returns
+`operation_failed` and a nonzero exit. A missing module's file is named.
+Repeating the same request returns its recorded result; a fresh request judges the Run again.
+Delivery reconciliation remains explicit: `not-sent` permits one resend, while `sent` waits
+for Output. An unresolved delivery stays uncertain.
 
 A finished execution keeps its recorded result; `resume` does not reopen its steps. Use
 the Run's follow-up action to continue unfinished work on the same Task and branch.
@@ -1133,12 +1141,12 @@ What the command prints is shown as it runs — its stdout on stdout and its std
 stderr, or both on stderr under `--json`, where stdout is the one envelope — and the exit
 status is the command's own, so a failure says why the first time.
 
-| Flag       | What it does                                                                |
-| ---------- | --------------------------------------------------------------------------- |
-| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted. |
-| `--cwd`    | Where to run it. Must be inside that run's own checkout; defaults to it.    |
-| `--name`   | What to call it on a card. The executable by default.                       |
-| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.     |
+| Flag       | What it does                                                                                                                                             |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                              |
+| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it. |
+| `--name`   | What to call it on a card. The executable by default.                                                                                                    |
+| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                  |
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command
@@ -1280,20 +1288,20 @@ human line and a failure prints `error.message`.
 
 ### Error codes
 
-| Code                  | When                                                                                                                                                       |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspace_required`  | The command needs a workspace and none could be determined.                                                                                                |
-| `workspace_not_found` | The `--workspace` id is not a workspace herdr has.                                                                                                         |
-| `workflow_not_found`  | No layer defines that workflow.                                                                                                                            |
-| `persona_not_found`   | No layer defines that persona.                                                                                                                             |
-| `run_not_found`       | No run with that id, or none by that id in the Task this command is scoped to.                                                                             |
-| `task_not_found`      | `--task` named a Task that does not exist.                                                                                                                 |
-| `target_exists`       | A fork would overwrite a file that is already there.                                                                                                       |
-| `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                                                                     |
-| `timeout`             | `run wait --timeout` gave up.                                                                                                                              |
-| `invalid_state`       | The run, or the installation, is not in a state where that makes sense — resuming one that already succeeded, or `upgrade --to` on a development checkout. |
-| `invalid_input`       | A flag or argument was wrong.                                                                                                                              |
-| `operation_failed`    | Anything else, including a caught defect.                                                                                                                  |
+| Code                  | When                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `workspace_required`  | The command needs a workspace and none could be determined.                                                        |
+| `workspace_not_found` | The `--workspace` id is not a workspace herdr has.                                                                 |
+| `workflow_not_found`  | No layer defines that workflow.                                                                                    |
+| `persona_not_found`   | No layer defines that persona.                                                                                     |
+| `run_not_found`       | No run with that id, or none by that id in the Task this command is scoped to.                                     |
+| `task_not_found`      | `--task` named a Task that does not exist.                                                                         |
+| `target_exists`       | A fork would overwrite a file that is already there.                                                               |
+| `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                             |
+| `timeout`             | `run wait --timeout` gave up.                                                                                      |
+| `invalid_state`       | The run, or the installation, is not in a state where that makes sense — `upgrade --to` on a development checkout. |
+| `invalid_input`       | A flag or argument was wrong.                                                                                      |
+| `operation_failed`    | Anything else, including a caught defect.                                                                          |
 
 ## Retrying safely
 

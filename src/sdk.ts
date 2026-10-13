@@ -508,6 +508,13 @@ export interface HostApi {
    * host itself was given beside the author's input.
    */
   readonly place: (runId: string) => Effect.Effect<Place>;
+  /**
+   * The checkout of the branch this Run's diff target names, recorded as the Run's own:
+   * `place` answers with it from then on, and every verification is bound to it
+   * (ADR-0054). The one git already has, else one cut from the branch; asking again
+   * answers from the record. Take it inside an Activity, so a replay does not cut again.
+   */
+  readonly checkoutReviewed: (runId: string) => Effect.Effect<ReviewedCheckout>;
   readonly held: (runId: string) => Effect.Effect<boolean>;
   readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
   readonly record: (runId: string, event: string) => Effect.Effect<void>;
@@ -628,6 +635,11 @@ export interface Place {
   /** This Run, then the Runs it was started from or builds a plan of, and so on: whose agents it may ask. */
   readonly lineage: ReadonlyArray<string>;
 }
+
+/** The reviewed branch's checkout, or why there is none, in the resolver's own words. */
+export type ReviewedCheckout =
+  | { readonly cwd: string; readonly branch: string }
+  | { readonly refused: string };
 
 /** What opening a merge request from here needs, and what it would be filled in with. */
 export interface MrReady {

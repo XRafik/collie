@@ -358,7 +358,7 @@ stash stack — looks like, which is the thing this exists to prevent.
 `renovate` changes the repository too, but it does not build one branch — it moves across
 every Renovate Bot branch it merges. So it gets a checkout of its own that is **detached**
 at the repository's default branch as the remote has it, at
-`~/.herdr/worktrees/<repo>/renovate`, and no branch is created or claimed for the run.
+`~/.herdr/worktrees/<repo>/roaming`, and no branch is created or claimed for the run.
 There is no `--input branch=` for it, and nothing it does binds a branch to its worktree:
 it fetches and checks out each Renovate branch inside that one checkout and pushes with an
 explicit refspec, so a Renovate branch that already has a checkout of yours is left where
@@ -368,16 +368,33 @@ it is and reported, never taken over.
 one the run was started in. The repository has to be checked out locally already — cloning
 from a URL is not something a run does. Two renovate runs on two repositories get two
 checkouts, one per repository. A second one on the _same_ repository is refused rather
-than handed the first's working tree. So are two repositories that share a name — the
-path is `<repo>` as the directory is called, so two `api`s want the same one — and so is
-anything else in the way, rather than being built over.
+than handed the first's working tree while the first may still go on — running, waiting,
+or stopped, since a resume picks a stopped run up again. So are two repositories that
+share a name — the path is `<repo>` as the directory is called, so two `api`s want the
+same one — and so is anything else in the way, rather than being built over.
 
-A refusal says only what is known: which repository git says owns the path, and which
-run recorded it where a run record proves one did. Nothing is guessed, and neither the
-checkout nor either repository is touched. Looking and creating happen under one lock
-keyed by that path, so two runs starting at the same moment cannot both find it free.
-The path is yours again once that run's checkout is removed or pruned; a resumed run
-reuses only the checkout it recorded itself, and never claims a new one.
+A run whose workflow has ended — failed or finished — does not keep the path from the next
+renovation of its repository. The new run takes the checkout over when git still lists it
+as one of that repository's, it is the very checkout the ended run made — not one made at
+the same path since, which is someone else's — no other run that may go on works in it —
+recorded it or not, a run started inside it, or through a link to it, counts — no agent in
+any herdr session is working inside it, wherever its pane was opened (a herdr that will
+not list its sessions cannot say, so that is a refusal too), and it holds nothing
+to lose: no uncommitted or untracked change, no ignored file the default branch would
+overwrite, and no commit that only its detached `HEAD` reaches once the fetch is done (a
+branch checked out in it keeps its commits as a branch). The ended runs' agents are closed
+first, as a stop closes them, and the tree is checked again after; then it is moved,
+detached, to the default branch as just fetched, and the log says whose it was. It is
+recorded as the new run's before the lock on its path is let go, so a start right behind
+it finds it taken. Anything less is a refusal naming what keeps it, and nothing is removed
+or forced.
+
+A refusal says only what is known: which repository git says owns the path, which run
+recorded it where a run record proves one did, and why that run keeps it. Nothing is
+guessed, and neither the checkout nor either repository is touched. Looking and creating
+happen under one lock keyed by that path, so two runs starting at the same moment cannot
+both find it free. A resumed run reuses only the checkout it recorded itself, and never
+claims a new one.
 
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
@@ -657,6 +674,12 @@ Only what that Task can be asked for is listed: an item that would come back "th
 already finished" is not offered at all. Nothing is offered on one board and withheld on
 another — there is one board and one set of actions on a card — and no herdr id is on
 screen anywhere: a Task is its name, a workspace is its project, an agent is its role.
+
+**Resume** succeeds when the host takes up suspended work or recovers the Run into the
+engine. The old park note clears before Output arrives; a new park shows its current
+reason. If the Run is already running, finished, failed, or still missing its module,
+Collie shows the refusal. Desktop does not announce “Resumed” for that refusal.
+See [Stop and resume](cli.md#stop-and-resume) for recovery and delivery reconciliation.
 
 The drawer's header carries the same as buttons, without the one that opens what is already
 open, and adds **Mark merged** and **Mark abandoned** once the work is over — recorded
@@ -1554,6 +1577,9 @@ would carry that whole history into every turn. Claude's runs on the latest Opus
 medium effort, with the auto-compact window a Run's agents get (see
 [Compaction between pieces of work](#compaction-between-pieces-of-work)).
 
+**Chat chooses a workflow by its description**, which `collie_workspaces` lists beside each
+one; an ad-hoc request that is none of the others is `general`, in either chat.
+
 **Chat knows which card you have open.** Every message you send carries one line naming
 the open card, attached as you send it and never when you click — so opening ten cards and
 asking about none costs the conversation nothing, and closing the record ends it. "How is
@@ -1776,7 +1802,14 @@ is never the one asked or handed work.
 
 - **Fix findings** — the live implementer of a Run this review was started from is handed
   them, where there is one; otherwise an implementer on this review's own run applies them
-  as a fix round, `disputed` and all, and the fix is reviewed again at once. The rally goes on by
+  as a fix round, `disputed` and all, and the fix is reviewed again at once. It works in the
+  reviewed branch's checkout — the one that branch already has, or a new one cut from it —
+  which becomes the review Run's own: your checkout is never switched under you, and
+  `collie verify --run <id> --cwd <that checkout>` is recorded rather than refused. Where
+  that branch has an open merge request, each round's commits are pushed to it, never
+  forced, so its pipeline and the next review see them; not where it merges itself once
+  green, and nothing is pushed where there is no merge request. A target with no branch to
+  fix starts no fixer, and the Run's log says why. The rally goes on by
   itself until nothing blocking is left, it stops making progress, or four rounds have run,
   and then asks again. A hand-off offers **Review again** for when the implementer is done.
 - **Fix findings in a full implement run** — starts `implement` with the review itself as
@@ -1814,8 +1847,9 @@ Fixing one is a different matter. A fix round is an `implement` run, and a mutat
 works in a checkout of its own branch — which `herdr worktree` can only cut from the
 repository it is asked in. So a review of a merge request in another project, or from a
 directory that is not a checkout of it, will review and comment fine, but chaining into
-`implement` from there stops and says so instead of building in the wrong repository.
-Clone that project and start the fix round from there.
+`implement` from there stops and says so instead of building in the wrong repository, and
+**Fix findings** is refused the same way, with the menu back. Clone that project and start
+the fix round from there.
 
 A step pointed at a merge request needs `glab` and `glab auth status --hostname <host>` for
 that host. The "does this directory have a GitLab remote" check stays where it belongs, on

@@ -19,7 +19,7 @@ aliases": it spares an author's saved module, not a name of Collie's. The upgrad
 A workflow will be a TypeScript file an author writes, outside this repository, and Collie
 will run it. That means Collie either builds durability, replay, suspension and recovery,
 or it uses Effect's. This says it uses Effect's, records exactly which settings that takes,
-and records the five upstream behaviours the proof found rather than assumed.
+and records the six upstream behaviours the proof found rather than assumed.
 
 ## Decision
 
@@ -81,7 +81,7 @@ yet is `toolchain_unavailable`, said out loud — never a module reported as fin
 
 ## What upstream actually does
 
-Five things the proof measured rather than assumed. Each is a test.
+Six things the proof measured rather than assumed. Each is a test.
 
 1. **Registering a name twice keeps the first.** It does not fail and it does not replace:
    the second registration is silently ignored. So duplicate registration is not a reload
@@ -103,6 +103,12 @@ Five things the proof measured rather than assumed. Each is a test.
    SQL tables are identical between rc.117 and 4.0.1, so a database an rc.117 host wrote is
    read as it is: every `CREATE` and `ALTER` statement in `cluster/SqlMessageStorage.js` and
    `cluster/SqlRunnerStorage.js` was compared between the two packages.
+
+6. **Suspension interrupts the current fiber.** An Activity suspends its own instance.
+   `Effect.race` waits for success and can swallow that interruption while the stop side
+   keeps waiting. `Effect.raceFirst` lets it reach the enclosing Run. The same-host
+   collection regression in `test/agents.test.ts` proves suspension, reconciliation,
+   attempt two, and reuse of the original launch without restarting the engine.
 
 ## What this does not decide
 

@@ -1,12 +1,17 @@
 # Workflows
 
-Collie ships five workflows. This page is the "which one do I want" level: what each is
+Collie ships six workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
 away from being yours; see [Authoring](authoring.md).
 
 For what a Workflow, an operation, a Choice or a Run _is_, see [`CONTEXT.md`](../CONTEXT.md).
+
+## Choosing one
+
+A task that is not planning, building a change to a merge request, reviewing, renovating
+or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
 
 ## How inputs reach a run
 
@@ -203,8 +208,16 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
 
 - **Fix findings** — handed, through the one sender, to the implementer already live in
   this workspace where there is one, so no second agent works the same checkout; otherwise
-  an implementer of this run's own, given the findings and the target, which fixes them
-  where the review was pointed. A fix Collie ran is reviewed again at once, and the rally
+  an implementer of this run's own, given the findings, which fixes them in the reviewed
+  branch's checkout — the one git already has for it, or one cut from the branch. That
+  checkout is recorded as this Run's own, so the fixer, every later reviewer and every
+  verification of the Run work there
+  ([ADR-0054](adr/0054-a-reviews-fix-works-in-the-reviewed-branchs-checkout.md)). A target
+  with no branch to fix — another project's merge request, `HEAD`, a sha range — starts no
+  fixer: the Run's log says why and the menu comes back. Where the branch has an open merge
+  request, the fixer pushes each round's commits to it — plainly, never forced, and not where
+  the merge request merges itself once green; it never opens or edits one, or comments. A
+  fix Collie ran is reviewed again at once, and the rally
   goes on by itself, through the same `settleRound` as implement's, until nothing blocking
   is left, a round raises the same blockers, a dispute stands unanswered, or four rounds
   have run. Then the menu comes back. A hand-off to a live implementer offers **Review
@@ -262,6 +275,9 @@ stable release. The run says `claim retained; recovery required` beside where it
 claim over, first stopping the failed run and every child it started as `run stop` does,
 waiting for them to stop, and closing their agents again. An agent that will not close, or
 a run still in the middle of a step, stops the takeover rather than being left to work on.
+A run that fails holding no claim offers **Renovate again** instead: the same repository,
+team and issue, in the checkout the failed run left, which the new run takes over while it
+holds nothing to lose ([A run that roams across branches](using.md#a-run-that-roams-across-branches)).
 
 **It asks you** at the points where asking is the work: a breaking or substantial
 migration, an update that cannot be merged safely, a bounded retry that made no progress,
@@ -295,6 +311,35 @@ every architecture run in a repo would be handed the same branch
 Module: [`workflows/architecture.workflow.ts`](../workflows/architecture.workflow.ts), with
 its prompts in [`workflows/architecture.md`](../workflows/architecture.md).
 
+## `general`
+
+**For:** one ad-hoc task that is none of the others — upgrade an install, find out why a
+job failed, bump one version and commit it. Not planning, not building a change to a merge
+request, not reviewing, renovating or an architecture survey: a change that should land as
+a merge request is `implement`'s.
+
+**Inputs:** `goal`, the task in your words.
+
+**Checkout:** none of its own. It works in place, in the checkout the run was started for;
+started from the Home, it works at the Projects root and its agent finds the repository the
+task is about. No branch is cut, so a run that changed no repository has nothing to file
+and lands in Finished by itself
+([ADR-0056](adr/0056-ad-hoc-work-is-a-general-run-in-place.md)).
+
+**What happens:** one agent does the task. It can ask you in its pane where a decision
+changes the result, and it does not push, open a merge request, merge, deploy to production
+or do anything irreversible unless the task or your own message in its session says so.
+Where it changed code and nothing names the run's checks, it names them with
+`collie run intent verification` — with `--cwd` naming the repository, at the Projects
+root — and Collie runs the granted checks there when the run ends.
+
+**Ends:** when the agent writes its Output. Its `summary` is the run's result and what the
+card says, as `Finished; it says: “…”` — a claim, shown as one. A `blocked` reason fails the run with that reason. There
+is no menu, and the agent takes steering after the run has ended.
+
+Module: [`workflows/general.workflow.ts`](../workflows/general.workflow.ts), with its
+prompt in [`workflows/general.md`](../workflows/general.md).
+
 ## How they chain
 
 - `plan` → `implement`, with the plan directory forwarded as the work source.
@@ -307,6 +352,7 @@ its prompts in [`workflows/architecture.md`](../workflows/architecture.md).
   with the plan's own goal. It is a Choice a human takes, not a pass every build makes.
 - `review` → `implement`, from **Fix findings in a full implement run**. See
   [Hand-offs](using.md#hand-offs-between-runs).
+- `general` chains into nothing.
 
 A chained run is a child of the one that started it, its input decoded against the child's
 own schema before it is admitted. It has a card of its own, the parent waits for it and

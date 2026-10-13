@@ -46,6 +46,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  general: "odd-job",
 } as const;
 type Shipped = keyof typeof UNRELATED;
 
@@ -116,6 +117,13 @@ const children = Layer.succeed(Children)(
 /** A host layer a test may wrap, for the one capability it has no service to answer with. */
 type HostOverride = Layer.Layer<Host, never, Host>;
 
+/** The host's own layers, placing checkouts through the rig's herdr. */
+const foundation = () => ({
+  dir,
+  userDir: rig.userDir,
+  placing: { herdr: hostOf().herdr, env: hostOf().env },
+});
+
 const session = <A, E>(
   run: Effect.Effect<
     A,
@@ -136,8 +144,8 @@ const session = <A, E>(
     Effect.provide(children),
     Effect.provide(
       override === undefined
-        ? foundationLayer({ dir, userDir: rig.userDir })
-        : override.pipe(Layer.provideMerge(foundationLayer({ dir, userDir: rig.userDir }))),
+        ? foundationLayer(foundation())
+        : override.pipe(Layer.provideMerge(foundationLayer(foundation()))),
     ),
     Effect.scoped,
     Effect.orDie,
@@ -1127,6 +1135,13 @@ scenario(
           fixed: [{ title: "the guard is on the wrong side", file: "src/a.ts" }],
         };
         yield* rig.queueOutputs([SYNTHESIS, fixed, settled]);
+        yield* repository();
+        yield* exec(["git", "branch", "fix-the-guard"], { cwd: rig.projectDir });
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add(
+          "glab",
+          `[ "$1 $2" = "mr view" ] && echo '{"source_branch": "fix-the-guard"}'; exit 0`,
+        );
         const target = "mr:gitlab.example.com/group/project!42";
         const rows = yield* parked({
           entry: shipped("review"),
@@ -1148,9 +1163,10 @@ scenario(
         // The fix is reviewed again at once: a round of the rally, not a fix taken on its word.
         expect(yield* prompts()).toHaveLength(3);
         expect(yield* asked("r-review-mr", "review-2-1")).toContain("Iteration 2");
-        expect(yield* asked("r-review-mr", "fix")).toContain(
-          "glab mr checkout <iid> --repo gitlab.example.com/group/project",
-        );
+        const fix = yield* asked("r-review-mr", "fix");
+        expect(fix).toContain(`Project root: ${rig.root}/.herdr/worktrees/project/fix-the-guard`);
+        expect(fix).toContain("the checkout of `fix-the-guard`");
+        expect(fix).not.toContain("glab mr checkout");
         expect(yield* persona("r-review-mr", "fix")).toContain("You are an implementer");
         // Nothing is left to fix after a clean review, so fixing is not offered again.
         const rows2 = yield* parked({
@@ -1179,7 +1195,8 @@ scenario(
         };
         const clean = { ...SYNTHESIS, verdict: "clean", findings: [] };
         yield* rig.queueOutputs([SYNTHESIS, fixed, other, fixed, clean]);
-        const target = "branch:main...HEAD";
+        const reviewed = yield* reviewedBranch();
+        const target = "branch:main...feature";
         yield* parked({
           entry: shipped("review"),
           runId: "r-rally",
@@ -1198,8 +1215,128 @@ scenario(
         expect(yield* prompts()).toHaveLength(5);
         // Pointed at the review it follows, which is where the second round's finding is.
         expect(yield* asked("r-rally", "fix-2")).toContain(`${runDir(dir, "r-rally")}/review.md`);
+        expect(yield* asked("r-rally", "fix")).toContain(`Project root: ${reviewed}`);
+        expect(yield* asked("r-rally", "fix-2")).toContain(`Project root: ${reviewed}`);
+        const listed = yield* exec(["git", "worktree", "list", "--porcelain"], {
+          cwd: rig.projectDir,
+        });
+        expect(listed.stdout.match(/^branch refs\/heads\/feature$/gm)).toHaveLength(1);
         // A clean review still asks, so a merge request review can still be posted.
         expect(optionsOf(rows, "post-2")).not.toContain("Fix findings");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a review's fix works in the reviewed branch's own checkout, and is verified there",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const reviewed = yield* reviewedBranch();
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(evidenceDir(dir, "r-fix-tree"), { recursive: true });
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, "r-fix-tree")}/approved.json`,
+          asApproved([{ name: "unit", executable: "true", argv: [], cwd: "worktree" }]),
+        );
+        const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
+        yield* rig.queueOutputs([
+          SYNTHESIS,
+          fixed,
+          { ...SYNTHESIS, verdict: "clean", findings: [] },
+        ]);
+        const target = "branch:main...feature";
+        yield* parked({
+          entry: shipped("review"),
+          runId: "r-fix-tree",
+          input: { target },
+          decision: "post-1",
+        });
+        yield* answeredThen({
+          entry: shipped("review"),
+          runId: "r-fix-tree",
+          input: { target },
+          decision: "post-1",
+          value: "Fix findings",
+          until: "post-2",
+        });
+
+        const verified = (cwd: string) =>
+          session(
+            Host.pipe(
+              Effect.flatMap((host) => host.verify({ runId: "r-fix-tree", name: "unit", cwd })),
+              Effect.result,
+            ),
+          );
+        const there = yield* verified(reviewed);
+        expect(there._tag === "Failure" ? there.failure.reason : "").toBe("");
+        expect(
+          (yield* readVerifications(evidenceDir(dir, "r-fix-tree"))).map((one) => one.cwd),
+        ).toEqual([reviewed]);
+        const started = yield* verified(rig.projectDir);
+        expect(started._tag === "Failure" ? started.failure.reason : "").toContain(
+          "is not inside run r-fix-tree",
+        );
+
+        const fix = yield* asked("r-fix-tree", "fix");
+        expect(fix).toContain(`Project root: ${reviewed}`);
+        expect(fix).toContain(`collie verify --run r-fix-tree --cwd ${reviewed} -- <command>`);
+        expect(fix).not.toContain("Do not push");
+        expect(fix).toContain("has an open merge request");
+        expect(fix).toContain("never force");
+        expect(fix).toContain("merges itself once green");
+        expect(fix).toContain("has no open merge request, do not push");
+        expect(fix).toContain("Never open or edit a merge request, and never comment");
+        const section = fix.slice(fix.indexOf("The review is written"), fix.indexOf("OUTPUT_PATH"));
+        expect(section).not.toMatch(/\b(glab|gh) /);
+        expect(yield* asked("r-fix-tree", "review-2-1")).toContain(`Project root: ${reviewed}`);
+
+        const row = yield* session(Store.pipe(Effect.flatMap((store) => store.run("r-fix-tree"))));
+        const placed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Any))(
+          row?.checkout ?? "null",
+        );
+        expect(placed).toMatchObject({
+          cwd: reviewed,
+          branch: "feature",
+          workspace: null,
+          worktree: { path: reviewed, managed_by: "git", created_by_collie: false },
+        });
+        expect(row?.task).toBeNull();
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a review with no branch to fix starts no fixer, says why, and asks again",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* repository();
+        yield* rig.queueOutputs([SYNTHESIS]);
+        const target = "branch:main...HEAD";
+        yield* parked({
+          entry: shipped("review"),
+          runId: "r-fix-none",
+          input: { target },
+          decision: "post-1",
+        });
+        const rows = yield* answeredThen({
+          entry: shipped("review"),
+          runId: "r-fix-none",
+          input: { target },
+          decision: "post-1",
+          value: "Fix findings",
+          until: "post-2",
+        });
+
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(`${runDir(dir, "r-fix-none")}/log.txt`)).toContain(
+          "HEAD is not a branch, so there is nothing to fix on it",
+        );
+        expect(optionsOf(rows, "post-2")).toContain("Fix findings");
       }),
     ),
   120_000,
@@ -1215,7 +1352,8 @@ scenario(
           ...SYNTHESIS,
           findings: [{ severity: "major", title, file: "src/a.ts" }],
         });
-        const target = "branch:main...HEAD";
+        yield* reviewedBranch();
+        const target = "branch:main...feature";
         yield* rig.queueOutputs([
           SYNTHESIS,
           ...["a", "b", "c", "d"].flatMap((title) => [fixed, raising(title)]),
@@ -1249,7 +1387,8 @@ scenario(
     runEffect(
       Effect.gen(function* () {
         const fixed = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
-        const target = "branch:main...HEAD";
+        yield* reviewedBranch();
+        const target = "branch:main...feature";
         // The same finding back after a fix is a round that changed nothing: the human decides.
         yield* rig.queueOutputs([SYNTHESIS, fixed, SYNTHESIS]);
         yield* parked({
@@ -1404,17 +1543,25 @@ scenario("what a finished Run of each shipped module offers is the module's own 
       expect(yield* declaredIn(shipped("architecture"))).toEqual([]);
 
       // A renovation that failed holding the claim offers to recover it, on the repository
-      // it was started on; one that failed holding nothing has nothing to recover.
+      // it was started on; one that failed holding nothing offers to renovate it again.
       const renovate = yield* declaredIn(shipped("renovate"));
       const failed = facts({ succeeded: false, claim: "project" });
       const recovery = offersFrom(renovate, failed, { self: idOf("renovate") });
       expect(recovery.map((offer) => [offer.id, offer.workflow])).toEqual([
         ["recover", idOf("renovate")],
       ]);
-      expect(offersFrom(renovate, facts({ succeeded: false }))).toEqual([]);
+      const unclaimed = facts({ succeeded: false });
+      const again = offersFrom(renovate, unclaimed, { self: idOf("renovate") });
+      expect(again.map((offer) => [offer.id, offer.workflow])).toEqual([
+        ["renovate-again", idOf("renovate")],
+      ]);
+      expect(offersFrom(renovate, facts({ succeeded: true }))).toEqual([]);
       const repository = "https://gitlab.example.com/team/project";
       expect(
         inputsFor(recovery[0]!, { runDir: "/r", facts: failed, input: { repository } }),
+      ).toEqual({ repository });
+      expect(
+        inputsFor(again[0]!, { runDir: "/r", facts: unclaimed, input: { repository } }),
       ).toEqual({ repository });
     }),
   ),
@@ -1522,6 +1669,17 @@ const repository = () =>
       yield* exec(["git", ...args], { cwd: rig.projectDir });
     }
     yield* exec(["git", "commit", "-qm", "first", "--allow-empty"], { cwd: rig.projectDir });
+  });
+
+/** A real repository whose `feature` branch has a checkout of its own, as a reviewed branch does. */
+const reviewedBranch = () =>
+  Effect.gen(function* () {
+    yield* repository();
+    const checkout = `${rig.root}/reviewed`;
+    yield* exec(["git", "worktree", "add", "-q", "-b", "feature", checkout], {
+      cwd: rig.projectDir,
+    });
+    return checkout;
   });
 
 /** A plan of tickets on disk, which is the only thing that makes a build a list. */
@@ -3396,6 +3554,92 @@ scenario(
 
 /** A prompt with the Run it is about taken out, so two Runs' prompts can be compared. */
 const byRun = (prompt: string) => prompt.replaceAll(/r-(fork|shipped)/g, "<run>");
+
+const CHORE = "upgrade the VM's install to 0.45.1";
+const DONE = { summary: "Upgraded the VM's install to 0.45.1 and restarted the host." };
+
+scenario(
+  "a general Run launches one generalist on the goal and ends with its summary",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([DONE]);
+        const result = yield* ran({
+          entry: shipped("general"),
+          runId: "r-general",
+          input: { goal: CHORE },
+        });
+
+        expect(said(result)).toBe(DONE.summary);
+        const agents = yield* launched();
+        expect(agents).toHaveLength(1);
+        expect(agents[0]?.args).toContain("--model opus --effort medium");
+        const work = yield* asked("r-general", "task");
+        expect(work).toContain(CHORE);
+        expect(work).toContain(`Project root: ${rig.projectDir}`);
+        expect(work).toContain("collie run intent verification r-general --name");
+        expect(yield* persona("r-general", "task")).toContain("You are a generalist");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a general Run whose agent was blocked fails with the agent's reason",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ summary: "Nothing upgraded.", blocked: "the VM is down" }]);
+        const result = yield* ran({
+          entry: shipped("general"),
+          runId: "r-general-blocked",
+          input: { goal: CHORE },
+        });
+
+        expect(result._tag === "Failure" && result.failure).toBeInstanceOf(WorkflowError);
+        expect(reasonOf(result)).toBe("the VM is down");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a general Run at the Projects root is told the root is not a repository, and elsewhere is not",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([DONE, DONE]);
+        yield* ran({
+          entry: shipped("general"),
+          runId: "r-general-root",
+          input: { goal: CHORE },
+          options: { workspace: "projects-root" },
+        });
+        yield* ran({ entry: shipped("general"), runId: "r-general-here", input: { goal: CHORE } });
+
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "it is not a repository: find the\nrepository",
+        );
+        expect(yield* asked("r-general-root", "task")).toContain(
+          "--cwd <its directory, relative to the project root>",
+        );
+        expect(yield* asked("r-general-here", "task")).not.toContain("it is not a repository");
+      }),
+    ),
+  120_000,
+);
+
+scenario("a general Run declares no checkout, no gate, no outcome and offers nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const described = yield* loadEntry(shipped("general")).pipe(Effect.orDie);
+      expect(described.metadata?.checkout).toBeUndefined();
+      expect(described.metadata?.outcome).toBeUndefined();
+      expect(described.metadata?.hints).toEqual({ goal: "goal" });
+      expect(declaredByModule(described.metadata)).toEqual([]);
+    }),
+  ),
+);
 
 /**
  * Registers one pass in the test file that calls it: every scenario as shipped, with the

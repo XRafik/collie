@@ -336,6 +336,11 @@ test(
         expect(orphaned.exit).toBe(0);
         expect(orphaned.envelope.ok).toBe(true);
 
+        const unavailable = yield* collie(world, ["run", "resume", runId]);
+        expect(unavailable.exit).not.toBe(0);
+        expect(unavailable.envelope.error?.code).toBe("operation_failed");
+        expect(unavailable.envelope.error?.message).toContain("proof.workflow.ts");
+
         yield* save(world.user, MODULE);
         const resumed = yield* collie(world, ["run", "resume", runId]);
         expect(resumed.exit).toBe(0);

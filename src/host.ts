@@ -842,10 +842,7 @@ const frontDoorHandlers = (
           return yield* act(file, lines);
         }).pipe(plainly);
       /** A Run picked up again: what current files allow is registered, then its stop cleared. */
-      const takeUp = (runId: string) =>
-        registry.recover.pipe(
-          Effect.andThen(registry.control({ runId, control: "stop", set: false })),
-        );
+      const takeUp = (runId: string) => registry.resume(runId);
       // Debounced apart from the tick, so a burst of writes cannot hold the tick back.
       // Shared, so every subscriber rides one recursive watch: setting one up walks the tree.
       const changed = yield* Stream.mergeAll(

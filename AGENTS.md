@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `general` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -157,7 +157,7 @@ herdr actions, and the `collie` CLI.
   assume about suspension and recovery** →
   [ADR-0014](docs/adr/0014-native-workflows-run-on-effects-own-engine.md), alongside
   `src/engine.ts` and `test/engine.test.ts`. The two non-default cluster settings
-  and the five upstream behaviours the proof measured are recorded there; an Effect
+  and the six upstream behaviours the proof measured are recorded there; an Effect
   upgrade rechecks them rather than assuming them.
 - **Naming something, or writing a test that needs a real host** →
   [ADR-0028](docs/adr/0028-names-are-the-domains-and-the-proof-drives-the-shipped-host.md),
@@ -251,7 +251,7 @@ herdr actions, and the `collie` CLI.
 - **Changing what a shipped workflow does** →
   [ADR-0026](docs/adr/0026-a-shipped-workflow-is-a-module-like-any-other.md) and
   [`docs/sdk.md`](docs/sdk.md), alongside `workflows/*.workflow.ts`, their Markdown beside
-  them and the scenarios in `test/support/baseline.ts`. All five are modules loaded through the public
+  them and the scenarios in `test/support/baseline.ts`. All six are modules loaded through the public
   contract: the Markdown is content, what happens is TypeScript, and what each one proves
   and offers is its own declaration rather than its name. One that expects to be varied —
   `renovate` — takes the varying steps as ordinary functions, so a fork supplies three and

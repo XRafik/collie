@@ -9,9 +9,10 @@
 // map can have.
 
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, FileSystem } from "effect";
+import { connect } from "../src/host";
 import { runEffect } from "./support/effect";
-import { events, openHost, until, workspace, type Host } from "./support/host";
+import { events, fixtures, openHost, until, workspace, type Host } from "./support/host";
 
 const suspended = (reply: { readonly status?: string }) => reply.status === "suspended";
 const complete = (reply: { readonly status?: string }) => reply.status === "complete";
@@ -212,3 +213,85 @@ test(
     ),
   180_000,
 );
+
+for (const { target, stopped } of [
+  { target: true, stopped: false },
+  { target: false, stopped: false },
+  { target: true, stopped: true },
+]) {
+  test(
+    stopped
+      ? "resume clears a stop over a restored admission and takes up the work beyond it"
+      : target
+        ? "resume takes up its interrupted admission after its module is restored"
+        : "recovering another admission cannot make a finished Run's resume applied",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { wf, state } = yield* workspace("collie-admission-resume-");
+          const first = yield* openHost(state);
+          yield* first.ask({ op: "load", entry: `${wf}/proof.workflow.ts` });
+          yield* first.ask({ op: "load", entry: `${wf}/plain.workflow.ts` });
+          yield* first.ask({
+            op: "start",
+            id: "plain",
+            runId: "done",
+            input: { note: "finished" },
+          });
+          yield* first.until({ op: "poll", id: "plain", runId: "done" }, complete);
+          yield* first.stop;
+          const crashing = yield* openHost(state, { crashAt: "admitted" });
+          yield* crashing.tell({
+            op: "start",
+            id: "proof",
+            runId: "unfinished",
+            input: { note: "gap" },
+          });
+          yield* crashing.child.exitCode.pipe(Effect.ignore);
+          yield* fs.remove(`${wf}/proof.workflow.ts`).pipe(Effect.orDie);
+          const next = yield* openHost(state);
+          const client = yield* connect(state).pipe(Effect.orDie);
+          const rows = yield* client.runs({ task: null }).pipe(Effect.orDie);
+          const pending = rows.find((one) => one.workflow === "proof")!;
+          const done = rows.find((one) => one.workflow === "plain")!;
+          const missing = yield* client
+            .resume({ runId: pending.runId, request: "missing" })
+            .pipe(Effect.orDie);
+          expect(missing.applied).toBe(false);
+          expect(missing.detail).toContain("proof.workflow.ts");
+          if (stopped) {
+            const recorded = yield* client
+              .control({
+                runId: pending.runId,
+                control: "stop",
+                set: true,
+                request: "stop-missing",
+              })
+              .pipe(Effect.orDie);
+            expect(recorded.applied).toBe(false);
+          }
+          yield* fs
+            .copyFile(`${fixtures}/proof.workflow.ts`, `${wf}/proof.workflow.ts`)
+            .pipe(Effect.orDie);
+          const resumed = yield* client
+            .resume({ runId: target ? pending.runId : done.runId, request: "restored" })
+            .pipe(Effect.orDie);
+          expect(resumed.applied).toBe(target);
+          if (!target) expect(resumed.detail).toContain("finished");
+          yield* until(
+            () => client.run({ runId: pending.runId }).pipe(Effect.orDie),
+            (one) => one?.status.status === "suspended",
+          );
+          const current = yield* client.run({ runId: pending.runId }).pipe(Effect.orDie);
+          expect(current?.controls).not.toContain("stop");
+          expect(
+            current?.waiting.some((one) => one.name === "decision" && one.answer === null),
+          ).toBe(true);
+          expect(launches(yield* events(state, pending.runId))).toBe(1);
+          yield* next.stop;
+        }).pipe(Effect.scoped),
+      ),
+    180_000,
+  );
+}

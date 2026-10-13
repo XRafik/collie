@@ -94,6 +94,26 @@ test(
           }).pipe(Effect.flip);
           expect(refused.reason).toBe("no Run r-nobody");
 
+          const ended = yield* door.start({
+            project: world.project,
+            id: "plain",
+            request: "start-finished",
+            input: { note: "done" },
+          });
+          yield* door
+            .runDetail({ runId: ended.runId, tail: false, pages: 0, refreshMr: false })
+            .pipe(
+              Stream.filter((one) => one?.status === "succeeded"),
+              Stream.runHead,
+              Effect.orDie,
+            );
+          const noWork = yield* act(reached, "resume-finished", {
+            _tag: "Resume",
+            runId: ended.runId,
+          }).pipe(Effect.flip);
+          expect(noWork.reason).toContain("finished");
+          expect(noWork.reason).not.toContain("Resumed");
+
           const trail = yield* readAudit(runDir(world.state, runId));
           expect(trail.map((line) => line.actor)).toEqual([
             { origin: "desktop", requestId: "start-1", from: { client: "mk-pc" } },
@@ -101,7 +121,7 @@ test(
           ]);
           yield* stopHost(world.state);
         }).pipe(Effect.orDie),
-      ["proof.workflow.ts", "helper.ts", "notes.md"],
+      ["proof.workflow.ts", "helper.ts", "notes.md", "plain.workflow.ts"],
     ),
   120_000,
 );

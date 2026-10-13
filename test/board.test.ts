@@ -68,6 +68,7 @@ function facts(over: Partial<Sentence> = {}): Sentence {
     resumed: null,
     disposition: null,
     mr: null,
+    summary: null,
     abandoned: null,
     planReady: false,
     mrState: null,
@@ -539,6 +540,24 @@ test("a Task's Runs are one card, and a Run with no Task is its own", () =>
       const own = views.find((view) => view.id === "r-alone")!;
       expect(own.name).toBe("Review");
       expect(own.project).toBe("spilnu");
+    }),
+  ));
+
+test("a finished Run that left nothing to file says what it reported, as its own claim", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const chore = yield* madeRun(dir, {
+        id: "r-chore",
+        workflow: "odd-job",
+        task: "task-1",
+        state: "succeeded",
+        summary: "Upgraded vm-mk's install to 0.45.1.",
+      });
+
+      const [view] = yield* board(env, [chore]);
+
+      expect(view!.sentence).toBe("Finished; it says: “Upgraded vm-mk's install to 0.45.1.”");
     }),
   ));
 
