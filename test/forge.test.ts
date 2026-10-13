@@ -266,9 +266,9 @@ for (const name of ["gitlab", "github"] as const) {
           try {
             yield* bin.add(CLI[name], `printf '%s\\n' "$@"`);
             yield* fs.writeFileString(`${cwd}/body.txt`, "description");
-            const branch = "feature/$(printf${IFS}changed)";
-            const assignee = "account$(printf${IFS}changed)";
-            const existing = `https://${PROJECT[name]}/30?query=$(printf\${IFS}changed)`;
+            const branch = `feature/${SHELL_WORD}`;
+            const assignee = `account${SHELL_WORD}`;
+            const existing = `https://${PROJECT[name]}/30?query=${SHELL_WORD}`;
             const commands = forge.commands({ project: PROJECT[name], branch, assignee, existing });
             const created = yield* shell(
               "sh",
@@ -301,7 +301,7 @@ for (const name of ["gitlab", "github"] as const) {
           try {
             yield* bin.add(CLI[name], `printf '%s\\n' "$@"`);
             const commands = forge.review({
-              project: `${PROJECT[name]}$(printf\${IFS}changed)`,
+              project: `${PROJECT[name]}${SHELL_WORD}`,
               iid: "30",
             });
             for (const line of [commands.diff, commands.view, commands.checkout]) {
@@ -310,8 +310,8 @@ for (const name of ["gitlab", "github"] as const) {
               const args = result.stdout.trimEnd().split("\n");
               expect(args[args.indexOf("--repo") + 1]).toBe(
                 name === "github"
-                  ? "owner/repo$(printf${IFS}changed)"
-                  : "gitlab.example.com/group/app$(printf${IFS}changed)",
+                  ? `owner/repo${SHELL_WORD}`
+                  : `gitlab.example.com/group/app${SHELL_WORD}`,
               );
             }
           } finally {
@@ -321,6 +321,9 @@ for (const name of ["gitlab", "github"] as const) {
       ));
   });
 }
+
+// Shell metacharacters without the injection shapes endpoint security flags (SEC-148).
+const SHELL_WORD = `'x;y $HOME *`;
 
 const URLS = {
   gitlab: {
