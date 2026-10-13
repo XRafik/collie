@@ -215,11 +215,18 @@ export const PlanTicket = Schema.Struct({
   title: Schema.String,
   /** Whether every checkbox in it is checked. No boxes at all is not done. */
   done: Schema.Boolean,
+  /** Changes whenever its file does; an older host sends none. */
+  stamp: Schema.optional(Schema.String),
 });
 export type PlanTicket = typeof PlanTicket.Type;
 
 /** The plan a run is building from: its spec, and the tickets under it. */
-export const PlanPanel = Schema.Struct({ spec: Panel, tickets: Schema.Array(PlanTicket) });
+export const PlanPanel = Schema.Struct({
+  spec: Panel,
+  /** Changes whenever SPEC.md does; an older host sends none. */
+  specStamp: Schema.optional(Schema.String),
+  tickets: Schema.Array(PlanTicket),
+});
 export type PlanPanel = typeof PlanPanel.Type;
 
 /** One step's Output: what it was asked for, and what is actually there. */

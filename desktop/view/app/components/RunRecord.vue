@@ -72,6 +72,7 @@ const review = useWhole(
   () => ({ installation: props.placed.installation, runId: props.placed.task.run }),
   "review",
   () => detail.value?.review ?? { _tag: "None", reason: "" },
+  useActions().textOf,
 );
 const locationOf = (file: string, line: number | null) =>
   line === null ? file : `${file}:${line}`;
@@ -114,6 +115,13 @@ const locationOf = (file: string, line: number | null) =>
         :class="[columnClass(tab ?? ''), { 'min-h-0 flex-1': tab === 'terminal' }]"
       >
         <template v-if="detail !== null">
+          <ReviewComments
+            v-if="tab === 'plan' || tab === 'diff'"
+            :installation="placed.installation"
+            :run-id="detail.id"
+            :launches="detail.agents"
+            :live="placed.task.agents"
+          />
           <PlanTab
             v-if="tab === 'plan' && detail.plan"
             :plan="detail.plan"
