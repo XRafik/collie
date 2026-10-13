@@ -675,6 +675,16 @@ and one SIGTERM for whatever of its session (or, without `/proc`, its descendant
 left. A record an older build wrote has no start time and is proven by its command and
 endpoint.
 
+Every path that puts down a recorded endpoint runs the same stop, under the lock it
+already holds: `installControls` before a new agent of the
+same name (failing with `NotQuiet`, which `start` parks on), `retire` before a Fallback's
+successor, a launch's put-down of stale controls and the cleanup sweep (both keeping the
+record). A record's `stop.signalled` keeps a later stop from sending a second SIGTERM. A
+control record whose agent herdr does not list and whose server still runs holds its
+checkout: worktree pruning and a takeover read it through `unlistedServers`. A launch
+writes its launch file as soon as its agent exists, so a concurrent `halt` finds it, and
+`agentWork` starts no agent once a stop is asked for and halts one that landed as it came.
+
 ## The registry and sessions
 
 A **session** is one herdr session and one workspace, taken together; a Run's own worktree

@@ -17,6 +17,7 @@ import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
 import { fastForward, runEffect as runLive } from "./support/effect";
 import { onMachineWith } from "./support/live";
+import { until } from "./support/host";
 import {
   Agents,
   agentWork,
@@ -510,6 +511,15 @@ const prompted = (about: string, times = 1): Reached =>
     Effect.map((calls) => sent(calls, about) >= times),
     Effect.orElseSucceed(() => false),
   );
+
+/** The step's collection is out: it lists herdr's agents once the launch has returned. */
+const collecting: Reached = Effect.suspend(() => rig.cmds()).pipe(
+  Effect.map((cmds) => {
+    const prompt = cmds.indexOf("agent prompt");
+    return prompt >= 0 && cmds.lastIndexOf("agent list") > prompt;
+  }),
+  Effect.orElseSucceed(() => false),
+);
 
 /** The agent's Output says this. */
 const wrote = (runId: string, about: string): Reached =>
@@ -2071,8 +2081,14 @@ test(
         const fs = yield* FileSystem.FileSystem;
         // Nothing written, so the collection is still out when the stop arrives.
         yield* rig.queueOutputs([null]);
-        yield* control("stop", "r1", true);
-        yield* interrupted("r1", suspended("r1"));
+        yield* interrupted(
+          "r1",
+          Effect.gen(function* () {
+            if (!(yield* collecting)) return false;
+            yield* control("stop", "r1", true);
+            return yield* suspended("r1");
+          }),
+        );
         // The agent was launched and is still holding the work: stopping a Run is not
         // halting its agent, which is its own action.
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
@@ -2446,14 +2462,16 @@ const inTask = (runId: string) =>
 
 /** Started and left, stopped while the first item's Output is still out. */
 const stoppedAtFirst = (runId: string) =>
-  Effect.gen(function* () {
-    yield* control("stop", runId, true);
-    yield* listingSession(
-      listing
-        .execute({ runId, input: ITEMS }, { discard: true })
-        .pipe(Effect.andThen(Effect.sleep(Duration.millis(900)))),
-    );
-  });
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    listingSession(
+      Effect.gen(function* () {
+        yield* listing.execute({ runId, input: ITEMS }, { discard: true });
+        yield* until(() => collecting, Boolean);
+        yield* control("stop", runId, true);
+        yield* Effect.sleep(Duration.millis(900));
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
+    ),
+  );
 
 /** What `run resume` does: the stop cleared, the execution woken, and waited on. */
 const resumedList = (runId: string) =>

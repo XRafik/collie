@@ -68,11 +68,15 @@ export class Unsubmitted extends Data.TaggedError("Unsubmitted")<{
   readonly message: string;
 }> {}
 
+/** A launch refused because the server a stop left behind has not been shown Quiet. */
+export class NotQuiet extends Data.TaggedError("NotQuiet")<{ readonly message: string }> {}
+
 /**
  * What a harness's official interface establishes about one request. There is no
  * third member on purpose: an absent completion is not a failure, so an unresolved
  * request is `null` from `poll` and stays unresolved until the budget runs out.
  */
+
 export type CompactionOutcome =
   | { readonly kind: "success" }
   | { readonly kind: "failure"; readonly reason: string };
@@ -231,6 +235,8 @@ const StopSchema = Schema.Struct({
     }),
   ),
   reason: Schema.NullOr(Schema.String),
+  /** Whether the server has had its one SIGTERM, from this stop or an earlier one. */
+  signalled: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
 });
 export interface Stop extends Schema.Schema.Type<typeof StopSchema> {}
 
@@ -376,7 +382,10 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
   const fs = yield* FileSystem.FileSystem;
   const dir = yield* controlDir(deps.stateDir, agent.agent);
   // This is a new process, not a reused agent. Even a native-compaction fallback
-  // must discard its predecessor's controls and unresolved attempt.
+  // must discard its predecessor's controls and unresolved attempt, once it is Quiet.
+  const before = yield* stopServer(deps, agent.agent);
+  if (before !== null && before.stop.state !== "quiet")
+    return yield* Effect.fail(new NotQuiet({ message: before.said }));
   const pid = yield* endpointPid(yield* readControl(deps.stateDir, agent.agent));
   if (pid !== null) yield* Effect.ignore(Effect.sync(() => process.kill(pid, "SIGTERM")));
   yield* fs.remove(dir, { recursive: true, force: true });
@@ -452,10 +461,10 @@ export const awaitReady = Effect.fn("Compaction.awaitReady")(function* (
  * Removes the controls of every agent herdr no longer has, and stops the endpoint each
  * was holding open. Best-effort by design: a tidy-up that failed must never stop a
  * launch, and an agent this Session cannot see is not necessarily gone — so only the
- * ones herdr does not list at all are put down.
+ * ones herdr does not list at all are put down, and one whose server is not Quiet is kept.
  */
 const putDownStaleControls = Effect.fn("Compaction.putDownStaleControls")(function* (
-  deps: Pick<CompactionDeps, "stateDir" | "herdr" | "log">,
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "herdr" | "log">,
   /** The agent being launched, which herdr does not have yet. */
   launching: string,
 ) {
@@ -476,10 +485,11 @@ const putDownStaleControls = Effect.fn("Compaction.putDownStaleControls")(functi
 
 /**
  * Stops the endpoint of one agent herdr does not list and removes its controls, under
- * its control lock. False where herdr lists it after all, or the lock is taken.
+ * its control lock. False where herdr lists it after all, or the lock is taken; why it
+ * was kept where its server is not Quiet.
  */
 export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <R>(
-  deps: Pick<CompactionDeps, "stateDir" | "log">,
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
   name: string,
   /** Whether herdr lists this agent now; true where it cannot tell. */
   listed: Effect.Effect<boolean, never, R>,
@@ -493,6 +503,9 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
       // A launch may have finished while we waited for its lock. The earlier list
       // cannot prove this agent is still absent.
       if (yield* listed) return false;
+      const stopped = yield* stopServer(deps, name);
+      if (stopped !== null && stopped.stop.state !== "quiet")
+        return { kept: `its Codex turn has not stopped: ${stopped.said}` };
       const pid = yield* endpointPid(yield* readControl(deps.stateDir, name));
       if (pid !== null) {
         yield* Effect.ignore(Effect.sync(() => process.kill(pid, "SIGTERM")));
@@ -505,37 +518,62 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
 });
 
 /**
+ * Why each checkout an unlisted agent's server is still running in is held: its pane is
+ * gone, but what it was running may still write there.
+ */
+export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function* (
+  stateDir: string,
+  listed: ReadonlySet<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = path.join(stateDir, CONTROL_DIR);
+  const held: Array<{ readonly cwd: string; readonly why: string }> = [];
+  for (const name of yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []))) {
+    if (listed.has(name)) continue;
+    const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+    const pid = yield* endpointPid(record).pipe(Effect.orElseSucceed(() => null));
+    if (record !== null && pid !== null)
+      held.push({
+        cwd: record.cwd,
+        why: `${name}'s ${record.harness} server (pid ${pid}) may still be working in it`,
+      });
+  }
+  return held;
+});
+
+/**
  * Stops the server this agent's record names, under its control lock, and keeps the record
  * until the server is Quiet: what Collie started is never forgotten while it may still
  * write. Null where the agent's work runs in its pane, so closing the pane stops it.
  */
-export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
+export const stopAgent = (
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
+  agent: string,
+) => withControlLock(deps.stateDir, agent, stopServer(deps, agent));
+
+/** `stopAgent` for a caller already holding the agent's control lock. */
+const stopServer = Effect.fn("Compaction.stopServer")(function* (
   deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
   agent: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
-  return yield* withControlLock(
-    deps.stateDir,
-    agent,
-    Effect.gen(function* () {
-      const record = yield* readControl(deps.stateDir, agent);
-      const stop = record?.pid == null ? undefined : deps.ports[record.harness]?.stop;
-      if (record === null || stop === undefined) return null;
-      const reached = yield* stop({
-        record,
-        say: (line) => Effect.ignore(deps.log(`${agent}: ${line}`)),
-      });
-      if (reached.state === "quiet") yield* fs.remove(record.dir, { recursive: true, force: true });
-      else yield* writeControl(deps.stateDir, { ...record, stop: reached });
-      const said = stopSaid(agent, record, reached);
-      yield* Effect.ignore(deps.log(said));
-      return { stop: reached, said };
-    }),
-  );
+  const record = yield* readControl(deps.stateDir, agent);
+  const stop = record?.pid == null ? undefined : deps.ports[record.harness]?.stop;
+  if (record === null || stop === undefined) return null;
+  const reached = yield* stop({
+    record,
+    say: (line) => Effect.ignore(deps.log(`${agent}: ${line}`)),
+  });
+  if (reached.state === "quiet") yield* fs.remove(record.dir, { recursive: true, force: true });
+  else yield* writeControl(deps.stateDir, { ...record, stop: reached });
+  const said = stopSaid(agent, record, reached);
+  yield* Effect.ignore(deps.log(said));
+  return { stop: reached, said };
 });
 
 /** A stop's outcome as one line: the agent, how far it got, and every id a human needs. */
-const stopSaid = (agent: string, record: ControlRecord, stop: Stop) => {
+export const stopSaid = (agent: string, record: ControlRecord, stop: Stop) => {
   const turns = stop.turns
     .map(
       (one) =>
@@ -546,7 +584,7 @@ const stopSaid = (agent: string, record: ControlRecord, stop: Stop) => {
   const what = turns === "" ? server : `${turns} on ${server}`;
   return stop.state === "quiet"
     ? `${agent} is quiet: ${what}`
-    : `${agent} is not stopped, only ${stop.state}: ${what}${stop.reason === null ? "" : ` (${stop.reason})`}; its pane is left open`;
+    : `${agent} is not stopped, only ${stop.state}: ${what}${stop.reason === null ? "" : ` (${stop.reason})`}`;
 };
 
 /**

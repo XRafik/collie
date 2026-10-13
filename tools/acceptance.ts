@@ -76,6 +76,7 @@ const LAUNCH = "launch flow places human starts (this MR)";
 const RELEASE = "ready to release and checks you can see (this MR)";
 const ATTACHMENTS = "files in the Flock chat and its Runs (this MR)";
 const IN_APP_TERMINAL = "go to pane opens the pane in Desktop (this MR)";
+const CODEX_STOP = "stop Codex turns, not panes (this MR)";
 const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work (this MR)";
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
@@ -1096,6 +1097,29 @@ const WORKFLOWS: readonly Check[] = [
       layer: "backend",
       file: "test/engine.test.ts",
       name: "two stop and resume cycles keep the run's work and it still completes",
+    },
+  },
+  {
+    id: "workflows/a-stopped-codex-agent-is-quiet-before-it-is-replaced",
+    statement: "A stopped Codex agent's turn ends, and nothing replaces it until it is Quiet.",
+    owner: CODEX_STOP,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/codex-stop.test.ts",
+      name: "a restart waits for the stopped Codex agent to be quiet, and then starts in its place",
+    },
+  },
+  {
+    id: "workflows/a-codex-stop-ends-the-turn-on-the-machine",
+    statement:
+      "On vm-mk with Codex 0.162.0, `collie run stop` ends a Codex agent's turn and its server before saying it stopped, the resume's replacement starts after that, and a turn that will not end fails the stop, keeps the pane, parks the restart and keeps its record in cleanup.",
+    owner: CODEX_STOP,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In a scratch checkout, start a throwaway Codex Run whose turn appends to a file in a loop and spawns a sub-agent, and run `collie run stop`. From a separate shell record: the agents log's `submitted`, `acknowledged` and `quiet` lines with full thread and turn ids; the rollout's last turn event, `turn_aborted` with reason `interrupted`; that the recorded server pid is gone and no process carries its session; that the file stops growing; and that the stop's receipt lists the agent as stopped. Resume and record that the replacement started after the `quiet` line. Repeat with the server made to ignore the interrupt and record that the stop fails naming the agent, the pane stays open, the restart parks and `collie cleanup` keeps the record with its reason. Record the Codex version and the revision.",
     },
   },
   {

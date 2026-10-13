@@ -6,7 +6,7 @@
 //
 // Everything it is sent, and every signal, is appended to `record`, one JSON line each.
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 
 /** One line of `record`: a request it was sent, a signal, a turn or child it started, its exit. */
 interface Entry {
@@ -32,14 +32,16 @@ export interface StandInConfig {
   readonly queued?: boolean;
   /** A child process in its session; `stubborn` ignores SIGTERM. */
   readonly child?: "plain" | "stubborn";
-  /** Answers an interrupt and carries on with the turn. */
-  readonly ignoreInterrupt?: boolean;
+  /** While this file exists, an interrupt is answered and the turn carries on. */
+  readonly holdWhile?: string;
   /** Never exits, drained or not. */
   readonly neverExit?: boolean;
   /** Drops the connection when it is asked for a thread's turns. */
   readonly dropConnection?: boolean;
   /** A thread of another directory loaded beside the agent's own. */
   readonly foreignThread?: boolean;
+  /** A file it creates once it is up. */
+  readonly touch?: string;
 }
 
 const config: StandInConfig = JSON.parse(readFileSync(process.argv[2]!, "utf8"));
@@ -157,7 +159,7 @@ const server = Bun.serve({
           if (!thread || turn?.status !== "inProgress")
             return refuse("no active turn to interrupt");
           reply({});
-          if (config.ignoreInterrupt) return;
+          if (config.holdWhile !== undefined && existsSync(config.holdWhile)) return;
           clearInterval(turn.timer);
           turn.status = "interrupted";
           if (config.queued && !draining) run(thread, "019a0002-0000-7000-8000-0000000000ff");
@@ -170,4 +172,5 @@ const server = Bun.serve({
   },
 });
 
+if (config.touch !== undefined) writeFileSync(config.touch, "");
 console.log(`listening on: ws://127.0.0.1:${server.port}`);

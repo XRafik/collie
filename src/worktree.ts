@@ -34,6 +34,7 @@ import {
 import { mrWords, parseMrTarget } from "./board-model";
 import { FORGES, forgeOf, forgeOfHost } from "./forge/forge";
 import { withLock } from "./lock";
+import { unlistedServers } from "./compaction";
 import type { AgentEntry } from "./registry";
 import type { WorktreeRecord } from "./run";
 // Type-only: the host imports this module, and `runs.ts` reads through the host.
@@ -1159,17 +1160,26 @@ const inUse = Effect.fn("worktree.inUse")(function* (
     keep?: string | undefined;
     /** The panes finished Runs' agents were left in, which hold nothing unless still working. */
     leftovers: ReadonlySet<string>;
+    stateDir: string;
   },
 ) {
   const panes = yield* Effect.result(herdr.paneList());
   if (panes._tag === "Failure") return null;
   const elsewhere: PaneInfo[] = [];
+  const listed = new Set<string>();
+  for (const session of [herdr, ...sessions]) {
+    const agents = yield* Effect.result(session.agentList());
+    if (agents._tag === "Failure") return null;
+    for (const agent of agents.success) listed.add(agent.name);
+  }
   for (const session of sessions) {
     const theirs = yield* Effect.result(session.paneList());
     if (theirs._tag === "Failure") return null;
     elsewhere.push(...theirs.success);
   }
   const paths = new Map(opts.paths);
+  for (const server of yield* unlistedServers(opts.stateDir, listed))
+    paths.set(server.cwd, server.why);
   const workspaces = new Map<string, string>();
   for (const pane of [...panes.success, ...elsewhere]) {
     if (!pane.agent) continue;
@@ -1516,6 +1526,7 @@ const prune = Effect.fn("worktree.prune")(function* (
     paths,
     keep: opts.keep,
     leftovers,
+    stateDir: opts.stateDir,
   });
   if (!use) {
     const standing = yield* conclude(round);

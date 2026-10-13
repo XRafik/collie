@@ -1114,7 +1114,8 @@ type Noted =
  * signal: prove the server is this agent's, list its running turns, SIGTERM it once so it
  * drains (no new turn, steer or continuation), interrupt every running turn, wait for the
  * server to exit, then SIGTERM once whatever of its session is left. Nothing gets a second
- * signal, and nothing is signalled that is not proven the agent's.
+ * signal, a server an earlier stop signalled included, and nothing is signalled that is
+ * not proven the agent's.
  */
 const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext, budgetMs: number) {
   const { record, say } = ctx;
@@ -1122,10 +1123,11 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
   const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
   const covered: Covered[] = [];
   let reached: Stop["state"] = "failed";
-  let signalled = false;
+  let signalled = record.stop?.signalled === true;
+  let pastSignal = false;
   const ended = (state: Stop["state"], why: string | null) =>
     Clock.currentTimeMillis.pipe(
-      Effect.map((at): Stop => ({ state, at, turns: covered, reason: why })),
+      Effect.map((at): Stop => ({ state, at, turns: covered, reason: why, signalled })),
     );
   const notQuiet = (why: string) => ended(reached, why);
 
@@ -1176,8 +1178,8 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
       const still = yield* processOf(pid);
       if (still?.started !== live.started || still.command !== live.command)
         return yield* ended("failed", `pid ${pid} changed before it was signalled`);
-      yield* sigterm(pid);
-      signalled = true;
+      if (!signalled) yield* sigterm(pid);
+      signalled = pastSignal = true;
       for (const one of covered) {
         yield* say(`interrupt submitted: ${where(one)}`);
         if (reached === "failed") reached = "submitted";
@@ -1201,7 +1203,7 @@ const codexStop = Effect.fn("Compactors.codexStop")(function* (ctx: StopContext,
   return yield* stopped.pipe(
     Effect.catch((cause) =>
       notQuiet(
-        !signalled
+        !pastSignal
           ? `${endpoint} did not answer, so nothing was signalled (${reason(cause)})`
           : `the connection to ${endpoint} was lost mid-stop (${reason(cause)})`,
       ),

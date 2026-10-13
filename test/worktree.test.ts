@@ -24,6 +24,7 @@ import { renovateClonesSweeper, settlingOf, sweep, worktreesSweeper } from "../s
 import { NOTHING_SETTLING, onBranch, type Settling } from "../src/worktree";
 import { shell } from "../src/mr";
 import { Herdr } from "../src/herdr";
+import { stoppedServer } from "./support/stopped-server";
 
 let rig: Rig;
 let bin: FakeBin;
@@ -1119,6 +1120,20 @@ test("a run starting in a checkout keeps it; its own board may still remove it",
         }),
       ).toEqual(["♻ removed wt · merged in !14"]);
     }),
+  ));
+
+test("a worktree a stopped agent's server still runs in keeps it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const worktreePath = yield* collieWorktree("wt");
+      yield* settledGit();
+      yield* mergedMr();
+      const pid = yield* stoppedServer(rig.stateDir, "r1-build-r1", worktreePath);
+
+      expect(yield* prune()).toEqual([
+        `kept wt · r1-build-r1's codex server (pid ${pid}) may still be working in it`,
+      ]);
+    }).pipe(Effect.scoped),
   ));
 
 test("a checkout an agent in another herdr session works in is kept", () =>

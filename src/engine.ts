@@ -91,6 +91,7 @@ import {
 } from "./helle";
 import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
+import { unlistedServers } from "./compaction";
 import type { CheckoutKind, InputStrategy } from "./definitions";
 import { noteVerification } from "./metrics";
 import { prepareMergeRequest, postNote, projectHere, shell as runShell } from "./mr";
@@ -4686,6 +4687,16 @@ const makeRegistry: (
       listed.success.length === 0
         ? [placing.herdr]
         : listed.success.map((one) => placing.herdr.inSession(one.socketPath));
+    const named = new Set<string>();
+    for (const herdr of sessions) {
+      const agents = yield* Effect.result(herdr.agentList());
+      if (agents._tag === "Failure") return "herdr would not say which agents work in it";
+      for (const agent of agents.success) named.add(agent.name);
+    }
+    for (const server of yield* unlistedServers(placing.env.stateDir, named)) {
+      const there = yield* real(server.cwd);
+      if (there === dir || there.startsWith(`${dir}/`)) return server.why;
+    }
     for (const herdr of sessions) {
       const panes = yield* Effect.result(herdr.paneList());
       if (panes._tag === "Failure") return "herdr would not say which agents work in it";

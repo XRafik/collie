@@ -678,7 +678,12 @@ per state reached. `resume`
 asks the host to pick a suspended run up again. It re-enters the workflow's current code
 and reuses every Activity already done, so completed work and its Outputs are kept and
 never redone, and an agent still live is reattached to rather than started a second
-time; one a stop closed is started again with the prompt it had. The host registers the
+time; one a stop closed is started again with the prompt it had. An agent whose Codex
+server is not yet Quiet is not replaced: its restart stops that server again (no second
+SIGTERM, only the interrupts) and, if it is still not Quiet, parks the Run with `parked`
+naming the thread, turn, endpoint and pid and saying `collie run resume` tries again;
+nothing is started beside it. No agent starts once a stop is asked for, and one whose
+launch was under way when the stop came is stopped as it lands. The host registers the
 modules as they are now, then clears the stop before waking work. A restored module is
 picked up without restarting the host.
 

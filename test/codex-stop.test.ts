@@ -4,14 +4,16 @@
 // `codex app-server`, behind the real Codex port; herdr is the fake one.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Duration, Effect, FileSystem, Path, Schema } from "effect";
+import { Duration, Effect, FileSystem, Option, Path, Schema } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./support/recorder";
 import { runEffect } from "./support/effect";
 import { until } from "./support/host";
-import { Agents, agentWork, agentsLayer, type AgentHost } from "../src/agents";
+import { Agents, agentWork, agentsLayer, type AgentAsk, type AgentHost } from "../src/agents";
 import { asRun, enveloped } from "./support/enveloped";
-import { foundationLayer } from "../src/engine";
+import { PARKED, STOP, controlPath, foundationLayer } from "../src/engine";
+import { readLaunches } from "../src/launches";
+import { stoppedServer } from "./support/stopped-server";
 import { agentName } from "../src/naming";
 import { controlDir, readControl, type ControlRecord } from "../src/compaction";
 import { codexPort } from "../src/compactors";
@@ -72,9 +74,10 @@ const recordFile = () => path.join(rig.root, "stand-in.jsonl");
 /** The host, with Codex's controls over the stand-in started with `config`. */
 const hostWith = (
   config: Partial<StandInConfig>,
+  name = "stand-in",
 ): Effect.Effect<AgentHost, unknown, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    const file = path.join(rig.root, "stand-in.json");
+    const file = path.join(rig.root, `${name}.json`);
     const full: StandInConfig = {
       cwd: rig.projectDir,
       record: recordFile(),
@@ -487,3 +490,254 @@ function alive(pid: number | undefined): boolean {
     return false;
   }
 }
+
+const payload = { runId: "r1", input: {} };
+
+const parkedNow = () => fs.exists(controlPath(dir, PARKED, "r1"));
+
+/** A Codex agent that wrote nothing in its budget, parked, its turn still writing. */
+const midWork = (host: AgentHost) =>
+  session(
+    Effect.gen(function* () {
+      yield* work.execute(payload, { discard: true });
+      yield* until(parkedNow, (parked) => parked);
+    }),
+    host,
+  );
+
+/** The work picked up again, as a host's resume does it: whether it parked again. */
+const resumed = (host: AgentHost) =>
+  session(
+    Effect.gen(function* () {
+      const engine = yield* WorkflowEngine.WorkflowEngine;
+      yield* fs.remove(controlPath(dir, PARKED, "r1"), { force: true });
+      yield* engine.resume(work, yield* work.executionId(payload));
+      yield* work.execute(payload, { discard: true });
+      const done = Effect.map(
+        work.poll(yield* work.executionId(payload)),
+        (one) => Option.isSome(one) && one.value._tag === "Complete",
+      );
+      return yield* until(
+        () => Effect.all([parkedNow(), done]),
+        ([parked, finished]) => parked || finished,
+      ).pipe(Effect.map(([parked]) => parked));
+    }),
+    host,
+  );
+
+/** The agent's pane closed by a human, as herdr then has it. */
+const closedByHand = Effect.gen(function* () {
+  const herdr = new FakeHerdr(rig.pluginEnv());
+  for (const one of yield* herdr.agentList()) yield* herdr.paneClose(one.paneId);
+});
+
+const starts = () =>
+  rig.cmds().pipe(Effect.map((cmds) => cmds.filter((cmd) => cmd === "agent start").length));
+
+test(
+  "a restart waits for the stopped Codex agent to be quiet, and then starts in its place",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const hold = path.join(rig.root, "hold");
+        yield* fs.writeFileString(hold, "");
+        yield* rig.queueOutputs([null, { verdict: "done" }]);
+        const host = yield* hostWith({ holdWhile: hold });
+        yield* midWork(host);
+
+        // The turn will not end, so the stop cannot show it quiet; a human closes the pane.
+        expect((yield* session(halted, host)).stopped).toEqual([]);
+        yield* closedByHand;
+
+        expect(yield* resumed(host)).toBe(true);
+        const parked = yield* fs.readFileString(controlPath(dir, PARKED, "r1"));
+        const { endpoint, pid } = yield* control();
+        for (const id of [MAIN.thread, MAIN.turn, `${endpoint} pid ${pid}`])
+          expect(parked).toContain(id);
+        expect(yield* starts()).toBe(1);
+        expect(yield* stillWriting()).toBe(true);
+        // Its record stays for the next try, naming the same server.
+        expect((yield* control()).pid).toBe(pid);
+        expect((yield* control()).stop?.state).toBe("acknowledged");
+
+        // The turn ends, the server drains out, and the same name starts again.
+        yield* fs.remove(hold);
+        const replacement = yield* hostWith(
+          {
+            writes: path.join(rig.projectDir, "replacement.txt"),
+            record: path.join(rig.root, "replacement.jsonl"),
+          },
+          "replacement",
+        );
+        expect(yield* resumed(replacement)).toBe(false);
+        expect(yield* starts()).toBe(2);
+        expect(yield* stillWriting()).toBe(false);
+        // Its server had exited, so nothing of the old turn could write after the start.
+        expect((yield* recorded()).some((entry) => entry.exit)).toBe(true);
+        const lines = (yield* log()).split("\n");
+        const quiet = lines.findIndex((line) => line.startsWith(`${agent} is quiet:`));
+        const restarted = lines.findLastIndex((line) => line.startsWith(`${agent}: codex in `));
+        expect(quiet).toBeGreaterThan(-1);
+        expect(restarted).toBeGreaterThan(quiet);
+        // The server was signalled once, by the first stop; the second only interrupted.
+        expect(yield* signals()).toHaveLength(1);
+      }),
+    ),
+  60_000,
+);
+
+const retired = (host: AgentHost) =>
+  session(
+    Effect.gen(function* () {
+      const [launched] = yield* readLaunches(dir, "r1");
+      const agents = yield* Agents;
+      return yield* agents.retire(launched!, "build: codex ran out").pipe(Effect.result);
+    }),
+    host,
+  );
+
+const successor: AgentAsk = {
+  runId: "r1",
+  operation: "build",
+  role: "implementer",
+  agent: null,
+  workflow: "codex-work",
+  task: null,
+  cwd: "",
+  prompt: "Build it.",
+  output: "",
+  skill: null,
+  harness: "claude",
+  model: null,
+  effort: null,
+  permissions: null,
+  sequence: 2,
+};
+
+test(
+  "an agent that ran out is quiet before the agent taking its work starts",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* writing();
+
+        expect((yield* retired(host))._tag).toBe("Success");
+        yield* session(
+          Agents.pipe(
+            Effect.flatMap((agents) =>
+              agents.launch({
+                ...successor,
+                cwd: rig.projectDir,
+                output: `${dir}/agents/r1/build.json`,
+              }),
+            ),
+          ),
+          host,
+        );
+
+        const lines = (yield* log()).split("\n");
+        const quiet = lines.findIndex((line) => line.startsWith(`${agent} is quiet:`));
+        const next = lines.findIndex((line) => line.startsWith("r1-build-r2: claude in "));
+        expect(quiet).toBeGreaterThan(-1);
+        expect(next).toBeGreaterThan(quiet);
+        expect(yield* stillWriting()).toBe(false);
+      }),
+    ),
+  30_000,
+);
+
+test(
+  "an agent that ran out and is not quiet parks the work, and nothing takes it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const hold = path.join(rig.root, "hold");
+        yield* fs.writeFileString(hold, "");
+        const host = yield* writing({ holdWhile: hold });
+
+        const result = yield* retired(host);
+
+        if (result._tag === "Success") return yield* Effect.die(new Error("retired"));
+        expect(result.failure.reason).toContain(`thread ${MAIN.thread} turn ${MAIN.turn}`);
+        expect(result.failure.reason).toContain("Nothing takes its work until it is quiet");
+        expect(yield* paneClosed()).toBe(false);
+        expect(yield* stillWriting()).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+const suspended = Effect.gen(function* () {
+  const id = yield* work.executionId(payload);
+  yield* until(
+    () => work.poll(id),
+    (one) => Option.isSome(one) && one.value._tag === "Suspended",
+  );
+});
+
+test(
+  "no agent starts once a stop is asked for",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const host = yield* hostWith({});
+        yield* fs.writeFileString(controlPath(dir, STOP, "r1"), "");
+
+        yield* session(Effect.andThen(work.execute(payload, { discard: true }), suspended), host);
+
+        expect(yield* starts()).toBe(0);
+        expect(yield* recorded()).toEqual([]);
+      }),
+    ),
+  30_000,
+);
+
+test(
+  "an agent started as a stop lands is stopped, and a resume goes on with one agent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        // The stop lands while its launch is starting the agent.
+        const host = yield* hostWith({ touch: controlPath(dir, STOP, "r1") });
+        yield* rig.queueOutputs([null, { verdict: "done" }]);
+
+        yield* session(Effect.andThen(work.execute(payload, { discard: true }), suspended), host);
+
+        expect(yield* paneClosed()).toBe(true);
+        expect((yield* recorded()).some((entry) => entry.exit)).toBe(true);
+        expect(yield* stillWriting()).toBe(false);
+
+        yield* fs.remove(controlPath(dir, STOP, "r1"));
+        const again = yield* hostWith(
+          {
+            writes: path.join(rig.projectDir, "replacement.txt"),
+            record: path.join(rig.root, "replacement.jsonl"),
+          },
+          "replacement",
+        );
+        expect(yield* resumed(again)).toBe(false);
+        const listed = yield* new FakeHerdr(rig.pluginEnv()).agentList();
+        expect(listed.map((one) => one.name)).toEqual([agent]);
+        expect(yield* starts()).toBe(2);
+      }),
+    ),
+  30_000,
+);
+
+test(
+  "a launch keeps another agent's record whose server is not quiet, and starts anyway",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const other = "r0-build-r1";
+        yield* stoppedServer(rig.pluginEnv().stateDir, other, rig.projectDir);
+
+        yield* writing();
+
+        const kept = yield* readControl(rig.pluginEnv().stateDir, other);
+        expect(kept?.stop?.state).toBe("failed");
+        expect(kept?.stop?.reason).toContain("did not answer, so nothing was signalled");
+      }).pipe(Effect.scoped),
+    ),
+  30_000,
+);

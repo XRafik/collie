@@ -9,6 +9,8 @@ import { Herdr } from "../src/herdr";
 import { runEffect } from "./support/effect";
 import { hosted, settledRun } from "./support/hosted";
 import { Rig } from "./support/recorder";
+import { until } from "./support/host";
+import { stoppedServer } from "./support/stopped-server";
 import { collie } from "./support/world";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -127,7 +129,7 @@ const control = (agent: string, pid: number | null, command: string | null) =>
     `${rig.stateDir}/compaction/${agent}/control.json`,
     JSON.stringify({
       agent,
-      harness: "codex",
+      harness: "opencode",
       cwd: rig.projectDir,
       dir: `${rig.stateDir}/compaction/${agent}`,
       endpoint: null,
@@ -179,6 +181,37 @@ test("a gone agent's recorded pid now running something else is not signalled", 
       other.kill("SIGKILL");
       yield* Effect.promise(() => other.exited);
       expect(other.signalCode).toBe("SIGKILL");
+    }),
+  ));
+
+test("a gone agent's controls stay while the server a stop left is running, and go once it has exited", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const target = `${rig.stateDir}/compaction/gone`;
+      const pid = yield* stoppedServer(rig.stateDir, "gone", rig.projectDir);
+      const sweeper = compactionSweeper(rig.stateDir, [new Herdr(rig.pluginEnv())]);
+
+      expect(yield* sweeper.judge).toEqual({
+        remove: [],
+        keep: [
+          {
+            kind: "compaction",
+            target,
+            reason:
+              "its Codex turn has not stopped: gone is not stopped, only acknowledged: codex server ws://127.0.0.1:1 pid " +
+              `${pid} (the server was still up after 30s)`,
+          },
+        ],
+      });
+
+      process.kill(pid, "SIGKILL");
+      yield* until(
+        () => sweeper.judge,
+        (judged) => judged.remove.length === 1,
+      );
+      yield* sweep([sweeper], rig.stateDir, "host");
+      expect(yield* fs.exists(target)).toBe(false);
     }),
   ));
 

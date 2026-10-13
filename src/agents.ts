@@ -38,6 +38,7 @@ import {
   awaitReady,
   controlDir,
   installControls,
+  NotQuiet,
   stopAgent,
   withControlLock,
   type CompactionDeps,
@@ -574,11 +575,22 @@ export const agentWork = <
         agents.pollMs,
       );
     };
+    // No agent starts once a stop is asked for, and one that started meanwhile is stopped.
+    const launching = (asked: AgentAsk) =>
+      Effect.gen(function* () {
+        const suspend = WorkflowEngine.WorkflowInstance.pipe(Effect.flatMap(Workflow.suspend));
+        if (yield* host.stopRequested(work.runId)) return yield* suspend;
+        const launched = yield* parkedWhenStuck(agents.launch(asked), host, work.runId);
+        if (!(yield* host.stopRequested(work.runId))) return launched;
+        const { left } = yield* agents.halt(work.runId);
+        if (left.length > 0) yield* host.parked(work.runId, left.join("; "));
+        return yield* suspend;
+      });
     let current = yield* Activity.make({
       name: `${work.operation}.launch`,
       success: Launched,
       error: AgentUncertain,
-      execute: parkedWhenStuck(agents.launch(ask), host, work.runId),
+      execute: launching(ask),
     });
     let currentAsk: AgentAsk = ask;
     let collected = yield* Activity.make({
@@ -660,7 +672,7 @@ export const agentWork = <
         name: `${work.operation}.fallback-${n}.launch`,
         success: Launched,
         error: AgentUncertain,
-        execute: parkedWhenStuck(agents.launch(nextAsk), host, work.runId),
+        execute: launching(nextAsk),
       });
       currentAsk = nextAsk;
       collected = yield* Activity.make({
@@ -1421,7 +1433,12 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           agent,
           harness: adapter.id,
           cwd: ask.cwd,
-        });
+        }).pipe(
+          Effect.catchIf(
+            (cause) => cause instanceof NotQuiet,
+            (cause) => Effect.fail(notQuietParked(ask.operation, ask.runId, cause.message)),
+          ),
+        );
         const workspace = ask.workspace ?? (yield* taskWorkspace(ask));
         const reused = ask.workspace ? null : yield* rootPane(ask);
         const label = agentTabLabel(ask);
@@ -1495,13 +1512,8 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const live = listing.success.find((one) => one.name === agent);
         const alive = live !== undefined && !fresh;
         const fs = yield* FileSystem.FileSystem;
-        // A launch file already here is this same work replayed, not new work for the agent.
-        const replayed = yield* fs
-          .exists(launchPath(ask.runId, stemOf(ask)))
-          .pipe(Effect.orElseSucceed(() => false));
-        const terminalId = alive
-          ? (live.terminalId ?? undefined)
-          : yield* start(ask, agent, { agents: listing.success, listedAt });
+        const exists = (file: string) => fs.exists(file).pipe(Effect.orElseSucceed(() => false));
+        const recorded = yield* exists(launchPath(ask.runId, stemOf(ask)));
         const landed: Types.Mutable<Launched> = {
           agent,
           output: ask.output,
@@ -1515,9 +1527,25 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           effort: ask.effort,
         };
         if ((ask.sequence ?? 1) > 1) landed.sequence = ask.sequence;
-        landed.at = yield* Clock.currentTimeMillis;
         fellBack(landed, ask.from, ask.why);
-        const launched = terminalId === undefined ? landed : { ...landed, terminalId };
+        // A step already sent is this same work replayed, not new work for the agent.
+        const replayed = yield* exists(sentPath(landed, "step"));
+        // Recorded as soon as its agent exists, so a stop made meanwhile finds it to stop.
+        const launched = yield* Effect.uninterruptibleMask((restore) =>
+          Effect.gen(function* () {
+            const terminalId = alive
+              ? (live.terminalId ?? undefined)
+              : yield* restore(start(ask, agent, { agents: listing.success, listedAt }));
+            landed.at = yield* Clock.currentTimeMillis;
+            const launched: Launched =
+              terminalId === undefined ? landed : { ...landed, terminalId };
+            // Beside it, the agent this work landed on, so a human steering this run later
+            // reaches the agent that has it rather than one derived from a name again.
+            yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(launched));
+            if (!recorded) yield* append(launchOrder(ask.runId), stemOf(ask));
+            return launched;
+          }),
+        );
         const adapter = adapterFor(launched.harness);
         const prefix = personaPrefix(adapter, yield* personaOf(ask.persona ?? ask.role));
         const file = `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
@@ -1548,10 +1576,6 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             return yield* new AgentParked({ operation: ask.operation, reason: due.reason });
           }
         }
-        // Beside it, the agent this work landed on, so a human steering this run later
-        // reaches the agent that has it rather than one derived from a name again.
-        yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(launched));
-        if (!replayed) yield* append(launchOrder(ask.runId), stemOf(ask));
         // The work is the file, and the message says where it is: one send is one
         // message and not a transcript, and a step's prompt carries a whole contract.
         // A skill marked `disable-model-invocation` refuses an agent that invokes it
@@ -1888,6 +1912,15 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           (launched.terminalId === undefined ||
             one.terminalId === null ||
             one.terminalId === launched.terminalId);
+        // Its server first, listed or not: a closed pane may have left its turn running.
+        if (one === undefined || running) {
+          const server = yield* stopAgent(
+            compactionDeps(host, launched.runId),
+            launched.agent,
+          ).pipe(Effect.mapError((cause) => parked(`it could not be stopped (${reason(cause)})`)));
+          if (server !== null && server.stop.state !== "quiet")
+            return yield* notQuietParked(launched.operation, launched.runId, server.said);
+        }
         if (running) {
           const panes = yield* host.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
           yield* keepWorkspace(one.paneId, panes);
@@ -1938,7 +1971,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             continue;
           }
           if (server.success !== null && server.success.stop.state !== "quiet") {
-            left.push(server.success.said);
+            left.push(`${server.success.said}; its pane is left open`);
             continue;
           }
           if (one === undefined) {
@@ -2177,6 +2210,13 @@ const roleBody = (role: string) => `You are the ${role}.`;
  */
 export const repairText = (output: string, problem: string): string =>
   `Your Output file is not usable: ${problem}\n\nWrite ${output} again — the JSON the contract described, nothing else. Do not redo the work, do not explain, do not write anything outside that file. It is the only thing missing.\nOUTPUT_PATH: ${output}`;
+
+/** Work parked behind an agent whose server a stop has not shown Quiet. */
+const notQuietParked = (operation: string, runId: string, said: string) =>
+  new AgentParked({
+    operation,
+    reason: `${said}. Nothing takes its work until it is quiet; \`collie run resume ${runId}\` tries again.`,
+  });
 
 const compactionDeps = (host: AgentHost, runId: string): CompactionDeps => ({
   ports: host.ports ?? COMPACTION_PORTS,

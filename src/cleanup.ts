@@ -34,7 +34,8 @@ import { latest, readDispositions } from "./disposition";
 import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
-import { CONTROL_DIR, putDownControl } from "./compaction";
+import { CONTROL_DIR, endpointPid, putDownControl, readControl, stopSaid } from "./compaction";
+import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
 /** One kind of thing Collie cleans. */
@@ -534,7 +535,8 @@ const removeIf = (
 
 /**
  * Compaction controls of agents no herdr session lists: their endpoint stopped and their
- * state removed. Nothing is judged where herdr will not list its agents.
+ * state removed. Nothing is judged where herdr will not list its agents, and a record whose
+ * server a stop left running is kept until that server has gone.
  */
 export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herdr>): Sweeper => {
   const kind = "compaction";
@@ -559,8 +561,17 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
       for (const name of names) {
         const target = `${root}/${name}`;
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
-        else if (!live.has(name))
-          remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+        else if (!live.has(name)) {
+          const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+          const running = yield* endpointPid(record).pipe(Effect.orElseSucceed(() => null));
+          if (record?.stop != null && running !== null)
+            keep.push({
+              kind,
+              target,
+              reason: `its Codex turn has not stopped: ${stopSaid(name, record, record.stop)}`,
+            });
+          else remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+        }
       }
       const sizes = yield* sizesOf(remove.map((item) => item.target));
       return { remove: remove.map((item, at) => ({ ...item, bytes: sizes[at] ?? 0 })), keep };
@@ -573,11 +584,12 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (live.has(name)) return { kept: "herdr lists its agent again" };
         const bytes = yield* sizeOf(item.target);
         const done = yield* putDownControl(
-          { stateDir, log: () => Effect.void },
+          { ports: COMPACTION_PORTS, stateDir, log: () => Effect.void },
           name,
           Effect.map(listed, (now) => now === null || now.has(name)),
         ).pipe(Effect.orElseSucceed(() => false));
-        return done ? { freed: bytes } : { kept: "its controls are in use" };
+        if (done === true) return { freed: bytes };
+        return done === false ? { kept: "its controls are in use" } : done;
       }),
   };
 };

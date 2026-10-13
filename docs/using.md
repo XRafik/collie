@@ -455,7 +455,8 @@ claims a new one.
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
 no commit that is not on the remote already, nothing is working in it or could be resumed
-in it while its work has not landed, its merge request is merged or closed on GitHub or
+in it while its work has not landed (a stopped agent's Codex server still running there
+counts, its pane gone or not), its merge request is merged or closed on GitHub or
 GitLab (or a Disposition says what became of it, or its remote branch is gone), and its
 Task's workspace has closed. A squash merge counts: the head that merged is on the remote. A
 `renovate` checkout has no branch to ask either question about, so a clean one nothing is
@@ -2069,7 +2070,10 @@ it. Empty, the default, keeps today's behaviour: the work starts on its preferre
 the Run's record says when its Subscription resets. It is shared across the Flock like every
 setting, and read at every choice, so an edit reaches the next agent. If an agent has run
 out and no fallback has room, Collie checks again each minute while waiting for its Output.
-Adding a usable fallback then moves the unfinished work to it automatically. The Run's record and
+Adding a usable fallback then moves the unfinished work to it automatically. The agent that
+ran out is stopped first, and the next one starts only once it is Quiet: a Codex agent whose
+turn will not end parks the Run, naming the thread, turn and server, and `collie run resume`
+tries again. The Run's record and
 `collie run show` say which agent each step landed on, as in
 `codex/default (fell back from claude/opus: session 100%, resets 15:45)`, and the Run's log
 gets a line when it happens. Usage never refuses, holds or delays work.
@@ -2331,7 +2335,8 @@ every ten minutes, whether or not a pane is open. A sweep removes:
 - **Uploads** under `uploads/`, a week after a front door last asked for them; a Run given
   one holds its own copy.
 - **Compaction controls** of an agent no herdr session lists any more, with the endpoint it
-  held open.
+  held open. One whose server a stop left running is kept, listed with "its Codex turn has
+  not stopped" and the reason, until that server has exited.
 - **Runner copies** under `~/.cache/collie/runners`, but the running version's and the
   newest.
 - **Desktop's own files**, on a computer with Desktop: staged updates, runner copies, usage

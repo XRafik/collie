@@ -8,6 +8,7 @@
 // The host here is the real registry, engine and agents over a stand-in herdr, and the
 // repository is a real git one, so the worktree is one git actually made.
 
+import { stoppedServer } from "./support/stopped-server";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
 import { Clock, Effect, FileSystem, Layer, Result, Schema } from "effect";
@@ -1255,6 +1256,33 @@ test(
         expect(refused).toContain(`${roaming} is a checkout of`);
         expect(refused).toContain("herdr would not list its sessions");
       }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while a stopped agent's server still runs in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const pid = yield* stoppedServer(rig.stateDir, "r0-build-r1", roaming);
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain(
+          `r0-build-r1's codex server (pid ${pid}) may still be working in it`,
+        );
+      }).pipe(Effect.scoped),
     ),
   120_000,
 );
