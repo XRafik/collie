@@ -378,7 +378,8 @@ renovation of its repository. The new run takes the checkout over when git still
 as one of that repository's, it is the very checkout the ended run made — not one made at
 the same path since, which is someone else's — no other run that may go on works in it —
 recorded it or not, a run started inside it, or through a link to it, counts — no agent in
-any herdr session is working inside it, wherever its pane was opened, and it holds nothing
+any herdr session is working inside it, wherever its pane was opened (a herdr that will
+not list its sessions cannot say, so that is a refusal too), and it holds nothing
 to lose: no uncommitted or untracked change, no ignored file the default branch would
 overwrite, and no commit that only its detached `HEAD` reaches once the fetch is done (a
 branch checked out in it keeps its commits as a branch). The ended runs' agents are closed

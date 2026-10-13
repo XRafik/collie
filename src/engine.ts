@@ -138,7 +138,6 @@ import {
 } from "./board-model";
 import { TASK_INPUT, checkoutFor, repositoryName, workOf } from "./worktree";
 import { Herdr, herdrFailureReason } from "./herdr";
-import { liveHerds } from "./herds";
 
 import type { PluginEnv } from "./env";
 import { WorktreeRecordSchema } from "./run";
@@ -4416,7 +4415,15 @@ const makeRegistry: (
   /** Why a live agent in any session works inside `dir`, or null when none does. */
   const agentIn = Effect.fn("Engine.agentIn")(function* (dir: string) {
     const real = (at: string) => fs.realPath(at).pipe(Effect.orElseSucceed(() => at));
-    for (const { herdr } of yield* liveHerds(placing.herdr, placing.env)) {
+    // Unlike liveHerds, an unlisted session is a refusal: its agents may work in it.
+    const listed = yield* Effect.result(placing.herdr.sessionList());
+    if (listed._tag === "Failure")
+      return "herdr would not list its sessions, whose agents may work in it";
+    const sessions =
+      listed.success.length === 0
+        ? [placing.herdr]
+        : listed.success.map((one) => placing.herdr.inSession(one.socketPath));
+    for (const herdr of sessions) {
       const panes = yield* Effect.result(herdr.paneList());
       if (panes._tag === "Failure") return "herdr would not say which agents work in it";
       for (const pane of panes.success) {

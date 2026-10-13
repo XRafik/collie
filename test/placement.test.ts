@@ -44,6 +44,7 @@ beforeEach(() =>
   runEffect(
     Effect.gen(function* () {
       rig = yield* Rig.make();
+      sessions = [rig.socketPath];
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(rig.projectDir, { recursive: true });
       yield* installFakeSkills(rig.root);
@@ -78,7 +79,17 @@ const gitRepo = Effect.fn("test.gitRepo")(function* (at: string) {
   yield* git("commit", "--quiet", "--allow-empty", "-m", "init");
 });
 
-const env = () => rig.pluginEnv({ HERDR_PLUGIN_ROOT: ROOT, GITLAB_USER_LOGIN: LOGIN });
+/** The sockets `session list` names, or null for a herdr that will not list them. */
+let sessions: ReadonlyArray<string> | null;
+const env = () =>
+  rig.pluginEnv({
+    HERDR_PLUGIN_ROOT: ROOT,
+    GITLAB_USER_LOGIN: LOGIN,
+    FAKE_HERDR_SESSIONS:
+      sessions === null
+        ? ""
+        : JSON.stringify(sessions.map((socket, at) => ({ name: `s${at}`, socket_path: socket }))),
+  });
 /** The state directory the host, its Tasks and its agents all share, as an install's do. */
 const dir = () => env().stateDir;
 
@@ -1172,6 +1183,57 @@ test(
         expect(refused).toContain(`${roaming} is a checkout of`);
         expect(refused).toContain("would be overwritten");
         expect(yield* fs.readFileString(`${roaming}/generated.txt`)).toBe("local");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while another session's agent works in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const other = `${rig.root}/other.sock`;
+        sessions = [rig.socketPath, other];
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            yield* rig.addPane("p-far", "t-far", roaming, "claude", null, null, "working", other);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain("agent claude in pane p-far works in it");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while herdr will not list its sessions",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        sessions = null;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("herdr would not list its sessions");
       }),
     ),
   120_000,
