@@ -10,10 +10,13 @@ import { Cause, Effect, Fiber, Result, Stream } from "effect";
 import * as Base64 from "effect/encoding/Base64";
 import type { BoardAgent } from "../../../../src/board-model";
 import type { PlacedTask, TerminalCommand, TerminalEvent } from "../../../src/shared/flock";
+import { inField } from "../../../src/shared/board-clicks";
 import { saidOf } from "../../../src/shared/said";
 import {
   type AgentTab,
   agentTabs,
+  askedFor,
+  opensHerdrForNoPane,
   shownAgent,
   switches,
 } from "../../../src/shared/record-terminal";
@@ -37,7 +40,7 @@ const host = ref<HTMLElement>();
 const ended = ref<string | null>(null);
 /** Go to pane found no live agent's pane, so herdr's own client was opened instead. */
 const noPane = ref(false);
-/** The agent the human picked, which Reattach opens again; none means the Run's newest. */
+/** The agent the human picked, which Reattach opens again; none means the agent at work. */
 const chosen = ref<AgentTab | null>(null);
 /** The herdr name of the agent whose pane the host says it focused. */
 const focused = ref<string>();
@@ -48,6 +51,13 @@ const switcher = computed(() =>
     (lastShown = shownAgent(props.placed.task.agents, focused.value, lastShown)),
   ),
 );
+
+/** Ghostty's 12pt at 96 dpi; the single-width Nerd Font keeps symbols in their cell. */
+const TYPE = {
+  fontFamily:
+    '"CaskaydiaMono Nerd Font Mono", "CaskaydiaMono Nerd Font", "Cascadia Mono", "JetBrains Mono", ui-monospace, Menlo, "DejaVu Sans Mono", monospace',
+  fontSize: 16,
+};
 
 let term: Terminal | undefined;
 let fiber: Fiber.Fiber<void> | undefined;
@@ -95,18 +105,27 @@ const shown = (event: TerminalEvent) => {
       return;
     case "NoPane":
       noPane.value = true;
-      return props.wentToPane && chosen.value === null
+      return opensHerdrForNoPane(props.wentToPane, chosen.value)
         ? panes.openInHerdr(props.placed)
         : undefined;
   }
 };
+
+const typingElsewhere = () => {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && inField(active) && !host.value?.contains(active);
+};
+
+/** After the gesture, whose own mousedown would otherwise take focus back. */
+const takeKeys = () => requestAnimationFrame(() => typingElsewhere() || term?.focus());
+const pressed = () => requestAnimationFrame(() => term?.focus());
 
 const attach = () => {
   if (term === undefined) return;
   ended.value = null;
   noPane.value = false;
   term.reset();
-  const agent = chosen.value;
+  const agent = askedFor(props.placed.task.agents, props.placed.task.run, chosen.value);
   fiber = Effect.runFork(
     terminal(
       props.placed.installation,
@@ -124,6 +143,7 @@ const attach = () => {
       ),
     ),
   );
+  takeKeys();
 };
 
 const switching = switches(() => {
@@ -152,6 +172,7 @@ const dotOf = (state: string) =>
 
 let listening: ReadonlyArray<IDisposable> = [];
 let resized: ResizeObserver | undefined;
+let rescaled: (() => void) | undefined;
 /** The mouse button down, while one is, and the cell it was last dragged to. */
 let held: number | null = null;
 let dragAt: { column: number; row: number } | null = null;
@@ -167,7 +188,7 @@ onMounted(() => {
   term = new Terminal({
     scrollback: 0,
     cursorBlink: true,
-    fontFamily: "ui-monospace, monospace",
+    ...TYPE,
     linkHandler: { activate: (_event, url) => void openLink(url) },
   });
   const fit = new FitAddon();
@@ -190,7 +211,8 @@ onMounted(() => {
     if (action === "copy" && term!.hasSelection()) void copy(term!.getSelection());
     return action === "pane";
   });
-  element.addEventListener("mousedown", (event) => {
+  // Only on the grid: a press beside it, in the box, just takes the keys.
+  element.querySelector<HTMLElement>(".xterm-screen")!.addEventListener("mousedown", (event) => {
     held = event.button;
     sendIf(mouseOf("down", event.button, event, screen()));
   });
@@ -205,7 +227,17 @@ onMounted(() => {
   window.addEventListener("mouseup", released);
   resized = new ResizeObserver(() => fit.fit());
   resized.observe(element);
-  term.focus();
+  // A zoom changes the cell size too; refit once xterm has measured it again.
+  const ratioChanged = () => {
+    requestAnimationFrame(() => term && fit.fit());
+    watchRatio();
+  };
+  const watchRatio = () => {
+    const query = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+    query.addEventListener("change", ratioChanged, { once: true });
+    rescaled = () => query.removeEventListener("change", ratioChanged);
+  };
+  watchRatio();
   attach();
 });
 
@@ -213,6 +245,7 @@ onBeforeUnmount(() => {
   void switching.stop();
   window.removeEventListener("mouseup", released);
   resized?.disconnect();
+  rescaled?.();
   for (const one of listening) one.dispose();
   term?.dispose();
   term = undefined;
@@ -220,7 +253,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex flex-col gap-2" data-testid="terminal-tab">
+  <div class="flex min-h-0 flex-1 flex-col gap-2" data-testid="terminal-tab">
     <div class="flex items-center justify-between gap-2 text-sm">
       <span class="text-muted min-w-0 truncate" data-testid="terminal-where">{{
         panes.shownFor(placed.key)?.where ?? ""
@@ -266,12 +299,15 @@ onBeforeUnmount(() => {
     <!-- Esc and Ctrl+C are the pane's while it has focus, not the record's. -->
     <div
       v-show="!noPane"
-      ref="host"
-      class="h-[70vh] min-h-64 overflow-hidden rounded bg-black p-1"
+      class="min-h-64 flex-1 overflow-hidden rounded bg-black p-1"
       :class="{ 'opacity-50': ended !== null }"
       data-testid="terminal"
       @keydown.stop
-    />
+      @pointerdown="pressed"
+    >
+      <!-- Unpadded, since the fit counts its parent's padding as room for cells. -->
+      <div ref="host" class="size-full" />
+    </div>
     <div v-if="ended !== null" class="flex items-center gap-2 text-sm" data-testid="terminal-ended">
       <span data-testid="terminal-reason">Ended: {{ ended }}</span>
       <UButton size="xs" label="Reattach" data-testid="reattach" @click="reattach" />

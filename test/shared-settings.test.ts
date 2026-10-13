@@ -3,8 +3,15 @@
 // key wins wherever it was made.
 
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
-import { loadDefaults, readSettingsSet, setSetting, writeConfigValue } from "../src/config";
+import { Effect, FileSystem } from "effect";
+import {
+  loadDefaults,
+  readSettingsSet,
+  setSetting,
+  takeShared,
+  writeConfigValue,
+} from "../src/config";
+import { runEffect } from "./support/effect";
 import { connect } from "../src/host";
 import { stopHost } from "./support/host";
 import { collie, proves } from "./support/world";
@@ -91,3 +98,33 @@ test(
     ),
   120_000,
 );
+
+test("a Flock's auto-compact window is taken when it is the latest edit, and refused whole when Claude Code would not take it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const userDir = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped();
+      const now = "2026-10-12T12:00:00.000Z";
+      const refused = yield* takeShared(
+        userDir,
+        [
+          { key: "model", value: "sonnet", at: "2026-10-12T10:00:00.000Z" },
+          { key: "claude_auto_compact_window", value: "500k", at: "2026-10-12T10:00:00.000Z" },
+        ],
+        "desktop",
+        now,
+      ).pipe(Effect.flip);
+      expect(refused).toMatchObject({
+        _tag: "SettingRefused",
+        reason: expect.stringContaining("from 100000 to 1000000, or auto"),
+      });
+      expect((yield* loadDefaults(userDir)).model).toBe("opus");
+
+      yield* takeShared(
+        userDir,
+        [{ key: "claude_auto_compact_window", value: 500000, at: "2026-10-12T10:00:00.000Z" }],
+        "desktop",
+        now,
+      );
+      expect((yield* loadDefaults(userDir)).claudeAutoCompactWindow).toBe(500000);
+    }).pipe(Effect.scoped),
+  ));

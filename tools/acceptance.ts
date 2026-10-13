@@ -76,9 +76,11 @@ const LAUNCH = "launch flow places human starts (this MR)";
 const RELEASE = "ready to release and checks you can see (this MR)";
 const ATTACHMENTS = "files in the Flock chat and its Runs (this MR)";
 const IN_APP_TERMINAL = "go to pane opens the pane in Desktop (this MR)";
+const TERMINAL_TAB = "terminal tab fills, focuses and opens on the agent at work (this MR)";
 const MACHINE_RULE = "the Machine rule (this MR)";
 const USAGE = "usage readings on every Machine (this MR)";
 const ON_A_MAC = "Collie on macOS (this MR)";
+const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -865,6 +867,28 @@ const WORKFLOWS: readonly Check[] = [
 /** What only a person at a terminal can settle. */
 const OPERATOR_CHECKS: readonly Check[] = [
   {
+    id: "agents/claude-code-runs-with-the-configured-auto-compact-window",
+    statement:
+      "Every Claude Code agent Collie starts, the Home's native chat among them, runs with the configured auto-compact window: 400000 until set, and a Desktop edit reaches the next agent without its host being restarted.",
+    owner: AUTO_COMPACT,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk and mk-laptop, against the built Collie, remove `autoCompactWindow` from `~/.claude/settings.json`. Start a Run whose step runs on Claude Code and record that its `claude` process's command line carries `--autocompact 400000`, that the pane's `/autocompact` reports a 400K window and that the Run's log line for that agent names 400000. Set the window to 500000 in Desktop's Settings, record that both Machines show it after a sync, and that the next Claude Code agent either starts carries `--autocompact 500000` with no host restarted. Set it to `auto` and record `--autocompact auto` on the next agent. Open the Home's native chat on Claude Code and record that its `claude` process carries the same flag. Record the Claude Code version and the revision.",
+    },
+  },
+  {
+    id: "flock-chat/pi-window-turn-and-restart",
+    statement:
+      "On Pi, the Flock chat answers through collie_herd, continues after a question click, describes a pasted screenshot and survives Desktop restarting.",
+    owner: "Flock chat on Pi (this MR)",
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On a disposable Desktop profile, choose pi and openai-codex/gpt-6.1-sol. Ask for collie_herd and a choice, click its button, paste a screenshot and ask about it, quit and reopen Desktop, and record the restored conversation in both windows with the Pi version and revision. Main-process probes do not settle this row.",
+    },
+  },
+  {
     id: "flock-chat/a-machine-on-an-older-collie-is-told-to-upgrade",
     statement:
       "A Machine whose Collie predates files is told to upgrade when the Flock chat reads a file there or starts work carrying one, and nothing starts there.",
@@ -927,6 +951,49 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "Against vm-mk: connect Desktop (one SSO approval), Go to pane on a working Run, type to the agent, press Esc (the agent gets it and the drawer stays open) and paste two lines (they arrive as one paste), close the drawer, Go to pane again. Record that sso.cego.dk asked nothing after the first approval, that an open herdr window showed the pane at its own size again once the drawer closed, and the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-opens-on-the-agent-at-work",
+    statement:
+      "The Terminal tab opens on the Task's agent that is blocked, else working, keeps a pick until the tab is left, never switches by itself, and opens herdr's own client where Go to pane finds no pane before a pick.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: with an idle planner and a working implementer, Go to pane shows the implementer; pick the planner and Reattach — the planner again; leave the tab and come back — the implementer; a reviewer starting work switches nothing; a blocked agent wins; a Run with no live agent, and a Machine whose Collie's focus names no pane, still open herdr's client. Record each with the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-fills-the-record",
+    statement:
+      "The Terminal tab fills the record with no scrollbar and equal margins, and herdr's pane follows the cells drawn through window, Flock chat and Zoom changes.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: Go to pane on a working Run — the box reaches the record's bottom margin, equal side margins, no scrollbar, no cut-off row, and on vm-mk `herdr pane get <pane>`'s `scroll.viewport_rows` equals the rows drawn; collapse, expand and pop out the Flock chat, resize the window, set Zoom 125% and back, and move between monitors — it re-fills each time. Record each with the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-takes-the-keys",
+    statement:
+      "The Terminal tab takes the keyboard on every way in and on any click in its box, unless a field outside it is being typed in.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: click Terminal from Plan or Log, Go to pane, click the box's edge, pick an agent and Reattach, and type straight after each — it reaches the agent; Esc reaches the agent and the record stays open; typing in the Flock chat while the agent prints, and during Reattach, is never interrupted. Record each with the revision.",
+    },
+  },
+  {
+    id: "desktop/terminal-tab-draws-in-a-terminals-font",
+    statement: "The Terminal tab draws in CaskaydiaMono at Ghostty's size.",
+    owner: TERMINAL_TAB,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On mk-laptop with Desktop built from the branch, Local and vm-mk connected: beside Ghostty the glyphs match in face and size, and Settings' Drawn at line does not say the zoom has not taken. Record each with the revision.",
     },
   },
   {
