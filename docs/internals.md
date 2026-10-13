@@ -675,6 +675,17 @@ Quiet; otherwise it keeps the state reached, and every step is a line in the Run
 `agents.log` with the full thread and turn ids, the endpoint, the pid and the transcript.
 The stand-in server the tests run in its place is `test/support/codex-server.ts`.
 
+Every path that replaces an agent or releases what it worked in goes through the same stop
+first. `installControls` stops a record left under the name it installs and fails
+`NotQuiet` rather than delete it; the Agents service turns that into a parked launch. A
+Fallback's retirement stops the agent that ran out whether or not herdr lists it. A launch
+checks for a stop before it starts an agent and again after, and starts it and writes its
+launch record as one uninterruptible step, so a stop that lands in between finds the agent
+and stops it. The stale-controls put-down at launch and the Cleanup sweep run the stop for
+an agent herdr no longer lists and keep a record that is not Quiet, with its reason; until
+then `unlistedServers` makes that record's directory in use, for a takeover and for
+Settled.
+
 ## The registry and sessions
 
 A **session** is one herdr session and one workspace, taken together; a Run's own worktree

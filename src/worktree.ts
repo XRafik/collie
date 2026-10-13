@@ -39,6 +39,7 @@ import type { WorktreeRecord } from "./run";
 // Type-only: the host imports this module, and `runs.ts` reads through the host.
 import type { RunFacts } from "./runs";
 import { slugify } from "./template";
+import { unlistedServers } from "./compaction";
 
 /**
  * Whether a Workflow changes the repository, and so needs a checkout of its own. It
@@ -1155,6 +1156,8 @@ const inUse = Effect.fn("worktree.inUse")(function* (
   /** The Machine's other sessions, whose agents may work in a checkout too. */
   sessions: ReadonlyArray<Herdr>,
   opts: {
+    /** Where agents' control records are, whose servers may outlive their panes. */
+    stateDir: string;
     paths: ReadonlyMap<string, string>;
     keep?: string | undefined;
     /** The panes finished Runs' agents were left in, which hold nothing unless still working. */
@@ -1185,6 +1188,14 @@ const inUse = Effect.fn("worktree.inUse")(function* (
     // and a worktree's workspace is its own.
     if (pane.workspaceId) workspaces.set(pane.workspaceId, "an agent is working in it");
   }
+  const listed = new Set<string>();
+  for (const session of [herdr, ...sessions]) {
+    const agents = yield* Effect.result(session.agentList());
+    if (agents._tag === "Failure") return null;
+    for (const agent of agents.success) listed.add(agent.name);
+  }
+  for (const record of yield* unlistedServers(opts.stateDir, listed))
+    paths.set(record.cwd, `${record.agent}'s server may still be writing in it`);
   if (opts.keep && !paths.has(opts.keep)) paths.set(opts.keep, "a run is starting in it");
   return { paths, workspaces, panes: panes.success } satisfies InUse;
 });
@@ -1513,6 +1524,7 @@ const prune = Effect.fn("worktree.prune")(function* (
   // verdict, so the next refresh asks again rather than waiting out the debounce.
   const leftovers = new Set([...panes.values()].flatMap((left) => [...left]));
   const use = yield* inUse(opts.herdr, opts.sessions ?? [], {
+    stateDir: opts.stateDir,
     paths,
     keep: opts.keep,
     leftovers,

@@ -455,7 +455,8 @@ claims a new one.
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
 no commit that is not on the remote already, nothing is working in it or could be resumed
-in it while its work has not landed, its merge request is merged or closed on GitHub or
+in it while its work has not landed — a Codex agent's server herdr no longer lists, whose
+control record is still kept, counts as working in it — its merge request is merged or closed on GitHub or
 GitLab (or a Disposition says what became of it, or its remote branch is gone), and its
 Task's workspace has closed. A squash merge counts: the head that merged is on the remote. A
 `renovate` checkout has no branch to ask either question about, so a clean one nothing is
@@ -2072,7 +2073,10 @@ out and no fallback has room, Collie checks again each minute while waiting for 
 Adding a usable fallback then moves the unfinished work to it automatically. The Run's record and
 `collie run show` say which agent each step landed on, as in
 `codex/default (fell back from claude/opus: session 100%, resets 15:45)`, and the Run's log
-gets a line when it happens. Usage never refuses, holds or delays work.
+gets a line when it happens. The agent that ran out is stopped first, listed by herdr or
+not, and its successor starts only once it is **Quiet**; one that will not stop parks the
+work, naming its thread, turn and server, and a resume tries again. Usage never refuses,
+holds or delays work: only an agent that may still be writing does.
 
 `notifications` turns a kind of toast off: `{"run-done": false}`, and a kind left out is on.
 The host raises one when a run finishes (`run-done`), fails (`run-failed`, or
@@ -2331,7 +2335,10 @@ every ten minutes, whether or not a pane is open. A sweep removes:
 - **Uploads** under `uploads/`, a week after a front door last asked for them; a Run given
   one holds its own copy.
 - **Compaction controls** of an agent no herdr session lists any more, with the endpoint it
-  held open.
+  held open. A Codex agent's server is stopped first; if it does not reach **Quiet** the
+  record is kept, and listed with the reason ("its Codex turn has not stopped: …"), until a
+  later sweep finds it stopped. A launch puts down such records the same way, and never
+  fails over one it keeps.
 - **Runner copies** under `~/.cache/collie/runners`, but the running version's and the
   newest.
 - **Desktop's own files**, on a computer with Desktop: staged updates, runner copies, usage

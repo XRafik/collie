@@ -4,7 +4,7 @@
 // first SIGTERM the way 0.162.0 does on a websocket, and records every request and signal
 // it receives as a JSON line in `config.events`.
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
 export interface StandIn {
   /** Where every request and signal is recorded, one JSON object per line. */
@@ -59,6 +59,16 @@ const exitWhenIdle = () => {
   if (draining && running().length === 0 && !config.neverExit)
     setTimeout(() => process.exit(0), 50);
 };
+
+// A test lets every running turn end by creating `<events>.release`.
+setInterval(() => {
+  if (!existsSync(`${config.events}.release`)) return;
+  for (const turn of running()) {
+    clearInterval(turn.timer);
+    turn.status = "completed";
+  }
+  exitWhenIdle();
+}, 50);
 
 process.on("SIGTERM", () => {
   record({ signal: "SIGTERM" });

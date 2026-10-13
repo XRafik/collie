@@ -329,7 +329,10 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
   its record is kept ([ADR-0059](adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md)).
   The Runs it started are stopped the same way; the workspace keeps its own tab.
   `run resume` clears the stop and picks the Run up again, giving work whose agent has
-  gone to a new one. On a Run that has already finished, a stop only stops its live
+  gone to a new one — once the agent it replaces is Quiet. A restart beside a Codex turn
+  that has not stopped parks instead, with `parked` naming the agent's thread, turn and
+  server, and starts nothing; resume again once that server has stopped. A stop that lands
+  while an agent is being started stops that agent too, so the stop leaves none running. On a Run that has already finished, a stop only stops its live
   agents: no control is set, the status stays what it finished with, and with nothing
   alive it says nothing was running.
 - **A Run parks itself when its agent's pane will not take a prompt.** herdr answering
@@ -673,7 +676,8 @@ still running. `resume`
 asks the host to pick a suspended run up again. It re-enters the workflow's current code
 and reuses every Activity already done, so completed work and its Outputs are kept and
 never redone, and an agent still live is reattached to rather than started a second
-time; one a stop closed is started again with the prompt it had. The host registers the
+time; one a stop closed is started again with the prompt it had, once its predecessor is
+Quiet — otherwise the run parks again, saying which server may still be writing. The host registers the
 modules as they are now, then clears the stop before waking work. A restored module is
 picked up without restarting the host.
 

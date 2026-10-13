@@ -37,6 +37,8 @@ export const COMPACTION_WAIT_MS = 5 * 60 * 1000;
  * Fixed, so a stop never hangs a door.
  */
 export const STOP_WAIT_MS = 30_000;
+/** The lock module's spacing between claims. */
+const LOCK_CLAIM_SPACING_MS = 25;
 
 /** Where an agent's controls live, for as long as the agent does. */
 export const CONTROL_DIR = "compaction";
@@ -293,6 +295,8 @@ export const withControlLock = <A, E, R>(
   stateDir: string,
   agent: string,
   effect: Effect.Effect<A, E, R>,
+  /** How long to wait for the lock, for a caller that can; a moment where left out. */
+  waitMs?: number,
 ) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
@@ -303,6 +307,7 @@ export const withControlLock = <A, E, R>(
       lock,
       Effect.fail(new Error(`${agent}: compaction controls are in use`)),
       effect,
+      waitMs === undefined ? undefined : Math.ceil(waitMs / LOCK_CLAIM_SPACING_MS),
     );
   });
 
@@ -358,6 +363,8 @@ export interface CompactionDeps {
   ) => Effect.Effect<void, PortError, PortServices>;
   waitMs: number;
   pollMs: number;
+  /** How long a stop may wait for Quiet; the fixed budget where left out. */
+  stopMs?: number;
 }
 
 /**
@@ -389,16 +396,21 @@ const enabled = Effect.fn("Compaction.enabled")(function* (configured: number) {
  * remains available; missing Collie controls do not block the work.
  */
 export const installControls = Effect.fn("Compaction.installControls")(function* (
-  deps: Pick<CompactionDeps, "ports" | "stateDir" | "configured" | "log" | "herdr">,
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "configured" | "log" | "herdr" | "stopMs">,
   agent: { agent: string; harness: string; cwd: string },
 ) {
   const limit = yield* enabled(deps.configured);
   const fs = yield* FileSystem.FileSystem;
   const dir = yield* controlDir(deps.stateDir, agent.agent);
   // This is a new process, not a reused agent. Even a native-compaction fallback
-  // must discard its predecessor's controls and unresolved attempt.
-  const pid = yield* endpointPid(yield* readControl(deps.stateDir, agent.agent));
-  if (pid !== null) yield* Effect.ignore(Effect.sync(() => process.kill(pid, "SIGTERM")));
+  // must discard its predecessor's controls and unresolved attempt — once that
+  // predecessor is Quiet, and never while it may still write.
+  const prior = yield* readControl(deps.stateDir, agent.agent);
+  const reached =
+    prior === null ? null : yield* stopRecord(deps, prior, deps.stopMs ?? STOP_WAIT_MS);
+  if (reached !== null && reached.state !== "quiet")
+    return yield* new NotQuiet({ message: notStopped(agent.agent, reached, reached.target) });
+  if (reached === null) yield* putDownServer(deps, prior);
   yield* fs.remove(dir, { recursive: true, force: true });
   if (!limit) return [];
   const port = deps.ports[agent.harness];
@@ -449,47 +461,89 @@ const stopFacts = (target: StopTarget, turns: Stopped["turns"]) => {
 export const notStopped = (agent: string, reached: Stopped, target: StopTarget) =>
   `${agent} is not stopped: ${reached.state}, ${reached.reason ?? "no reason given"} — ${stopFacts(target, reached.turns)}`;
 
+/** What a stop reached, with the server it acted on. */
+export interface StopReached extends Stopped {
+  readonly target: StopTarget;
+}
+
 /**
- * Stops the work an agent runs outside its pane, under its control lock: the record is
- * read, its port's stop run, and the state reached logged and written back — the record
- * removed only once the agent is Quiet. Null where nothing of Collie's runs outside the
- * pane: no record, a harness whose work is in its pane, or no server recorded. A failure
- * is the lock being held.
+ * A predecessor that is not Quiet, refusing whatever would take its work or its record:
+ * a second writer in its checkout is the thing a stop exists to prevent.
+ */
+export class NotQuiet extends Data.TaggedError("NotQuiet")<{ readonly message: string }> {}
+
+/**
+ * Stops the server this record names, for a harness whose work runs there, and records
+ * the state reached: the record is removed only once its agent is Quiet. Null where
+ * nothing of Collie's runs outside the pane. The caller holds the agent's control lock.
+ */
+const stopRecord = Effect.fn("Compaction.stopRecord")(function* (
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
+  record: ControlRecord,
+  budgetMs: number,
+) {
+  const stop = deps.ports[record.harness]?.stop;
+  const { endpoint, pid, command } = record;
+  if (stop === undefined || endpoint === null || pid === null || command === null) return null;
+  const target: StopTarget = { ...record, endpoint, pid, command };
+  const services = yield* Effect.context<PortServices>();
+  const note = (line: string) => Effect.ignore(Effect.provideContext(deps.log(line), services));
+  const reached = yield* stop(target, note, budgetMs);
+  if (reached.state === "quiet") {
+    yield* deps.log(`${record.agent}: quiet — ${stopFacts(target, reached.turns)}`);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.remove(record.dir, { recursive: true, force: true });
+  } else {
+    yield* deps.log(notStopped(record.agent, reached, target));
+    const at = yield* Clock.currentTimeMillis;
+    yield* writeControl(deps.stateDir, { ...record, stop: { ...reached, at } });
+  }
+  return { ...reached, target } satisfies StopReached;
+});
+
+/**
+ * Stops the work an agent runs outside its pane, under its control lock. Null where
+ * nothing of Collie's runs there: no record, a harness whose work is in its pane, or no
+ * server recorded. A failure is the lock being held.
  */
 export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
   deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
   agent: string,
   budgetMs: number = STOP_WAIT_MS,
 ) {
-  const stops = (record: ControlRecord | null) =>
-    record === null ? undefined : deps.ports[record.harness]?.stop;
+  const first = yield* readControl(deps.stateDir, agent);
   // A harness whose work is in its pane has nothing to stop here, and does not wait on the lock.
-  if (stops(yield* readControl(deps.stateDir, agent)) === undefined) return null;
+  if (first === null || deps.ports[first.harness]?.stop === undefined) return null;
   return yield* withControlLock(
     deps.stateDir,
     agent,
     Effect.gen(function* () {
       const record = yield* readControl(deps.stateDir, agent);
-      const stop = stops(record);
-      if (record === null || stop === undefined) return null;
-      const { endpoint, pid, command } = record;
-      if (endpoint === null || pid === null || command === null) return null;
-      const target: StopTarget = { ...record, endpoint, pid, command };
-      const services = yield* Effect.context<PortServices>();
-      const note = (line: string) => Effect.ignore(Effect.provideContext(deps.log(line), services));
-      const reached = yield* stop(target, note, budgetMs);
-      if (reached.state === "quiet") {
-        yield* deps.log(`${agent}: quiet — ${stopFacts(target, reached.turns)}`);
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.remove(record.dir, { recursive: true, force: true });
-      } else {
-        yield* deps.log(notStopped(agent, reached, target));
-        const at = yield* Clock.currentTimeMillis;
-        yield* writeControl(deps.stateDir, { ...record, stop: { ...reached, at } });
-      }
-      return { ...reached, target };
+      return record === null ? null : yield* stopRecord(deps, record, budgetMs);
     }),
+    // Another stop of the same agent may hold it for its whole budget.
+    budgetMs + STOP_WAIT_MS,
   );
+});
+
+/**
+ * The directories of agents herdr does not list whose record still names a server: an
+ * agent is working in each until its server is Quiet, whatever its pane did.
+ */
+export const unlistedServers = Effect.fn("Compaction.unlistedServers")(function* (
+  stateDir: string,
+  listed: ReadonlySet<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = path.join(stateDir, CONTROL_DIR);
+  const found: ControlRecord[] = [];
+  for (const name of yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []))) {
+    if (listed.has(name)) continue;
+    const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+    if (record !== null && record.pid !== null) found.push(record);
+  }
+  return found;
 });
 
 /**
@@ -533,7 +587,7 @@ export const awaitReady = Effect.fn("Compaction.awaitReady")(function* (
  * ones herdr does not list at all are put down.
  */
 const putDownStaleControls = Effect.fn("Compaction.putDownStaleControls")(function* (
-  deps: Pick<CompactionDeps, "stateDir" | "herdr" | "log">,
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "herdr" | "log" | "stopMs">,
   /** The agent being launched, which herdr does not have yet. */
   launching: string,
 ) {
@@ -553,11 +607,12 @@ const putDownStaleControls = Effect.fn("Compaction.putDownStaleControls")(functi
 });
 
 /**
- * Stops the endpoint of one agent herdr does not list and removes its controls, under
- * its control lock. False where herdr lists it after all, or the lock is taken.
+ * Stops the server of one agent herdr does not list and removes its controls, under its
+ * control lock: null once they are gone, otherwise why they stay — herdr lists it after
+ * all, or its server is not Quiet. A failure is the lock being held.
  */
 export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <R>(
-  deps: Pick<CompactionDeps, "stateDir" | "log">,
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log" | "stopMs">,
   name: string,
   /** Whether herdr lists this agent now; true where it cannot tell. */
   listed: Effect.Effect<boolean, never, R>,
@@ -570,16 +625,31 @@ export const putDownControl = Effect.fn("Compaction.putDownControl")(function* <
     Effect.gen(function* () {
       // A launch may have finished while we waited for its lock. The earlier list
       // cannot prove this agent is still absent.
-      if (yield* listed) return false;
-      const pid = yield* endpointPid(yield* readControl(deps.stateDir, name));
-      if (pid !== null) {
-        yield* Effect.ignore(Effect.sync(() => process.kill(pid, "SIGTERM")));
-        yield* deps.log(`${name}: stopped its compaction endpoint (pid ${pid})`);
-      }
-      yield* fs.remove(path.join(deps.stateDir, CONTROL_DIR, name), { recursive: true });
-      return true;
+      if (yield* listed) return "herdr lists its agent again";
+      const record = yield* readControl(deps.stateDir, name);
+      const reached =
+        record === null ? null : yield* stopRecord(deps, record, deps.stopMs ?? STOP_WAIT_MS);
+      if (reached !== null && reached.state !== "quiet")
+        return `its Codex turn has not stopped: ${reached.state}, ${reached.reason ?? "no reason given"}`;
+      if (reached === null) yield* putDownServer(deps, record);
+      yield* fs.remove(path.join(deps.stateDir, CONTROL_DIR, name), {
+        recursive: true,
+        force: true,
+      });
+      return null;
     }),
   );
+});
+
+/** Signals the endpoint of a record no stop applies to, where it still runs the recorded command. */
+const putDownServer = Effect.fn("Compaction.putDownServer")(function* (
+  deps: Pick<CompactionDeps, "log">,
+  record: ControlRecord | null,
+) {
+  const pid = yield* endpointPid(record);
+  if (record === null || pid === null) return;
+  yield* Effect.ignore(Effect.try(() => process.kill(pid, "SIGTERM")));
+  yield* deps.log(`${record.agent}: stopped its compaction endpoint (pid ${pid})`);
 });
 
 /**

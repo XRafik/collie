@@ -86,6 +86,7 @@ const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
+const QUIET = "a stopped Codex agent is Quiet before anything replaces it (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -951,6 +952,19 @@ const BACKEND: readonly Check[] = [
       name: "a rewritten ticket, and a finished Run's rewritten plan, reach the record's details",
     },
   },
+  {
+    id: "backend/a-stopped-codex-agent-is-quiet-before-it-is-replaced",
+    statement:
+      "A stopped Codex agent's turn ends, and nothing starts in its place until it is Quiet: a restart beside a turn that has not stopped parks, naming the thread, turn and server.",
+    owner: QUIET,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/codex-stop.test.ts",
+      name: "a restart beside a Codex turn that has not stopped parks, and starts its successor only once it has",
+    },
+  },
 ];
 
 /** What a workflow module is promised, whoever wrote it and whatever it is called. */
@@ -1680,6 +1694,17 @@ const OPERATOR_CHECKS: readonly Check[] = [
     proof: {
       kind: "operator",
       how: "Change model in vm-mk's TUI Settings and read it on the laptop within a minute. Upgrade only the laptop; record both Machines on the same release within a minute, and the revision.",
+    },
+  },
+  {
+    id: "quiet/a-live-codex-stop-on-vm-mk",
+    statement:
+      "On vm-mk, a stopped Codex Run's turn is interrupted and its server and session end before anything replaces it; with an ignored interrupt the stop fails, the pane stays, the restart parks and the cleanup listing keeps the record with its reason.",
+    owner: QUIET,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "On vm-mk, stop a throwaway Codex Run whose turn writes a file and spawns a sub-agent. From a separate shell, record the agents log's `submitted`, `acknowledged` and `quiet` lines, a `turn_aborted` with reason `interrupted`, no server or session process left, and the file no longer growing. Resume and record the replacement's start after the `quiet` line. Repeat with an interrupt the server ignores: record the failed stop, the open pane, the parked restart and the cleanup listing keeping the record with its reason. Record the revision.",
     },
   },
 ];

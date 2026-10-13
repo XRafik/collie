@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import { Clock, DateTime, Effect, FileSystem, Option } from "effect";
+import { Clock, DateTime, Effect, FileSystem, Option, Schema } from "effect";
 import { runEffect } from "./support/effect";
 import { forgeOnPath } from "./support/forge";
 import { Rig, TEST_LOGIN as LOGIN } from "./support/recorder";
@@ -24,6 +24,8 @@ import { renovateClonesSweeper, settlingOf, sweep, worktreesSweeper } from "../s
 import { NOTHING_SETTLING, onBranch, type Settling } from "../src/worktree";
 import { shell } from "../src/mr";
 import { Herdr } from "../src/herdr";
+
+const asJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 let rig: Rig;
 let bin: FakeBin;
@@ -866,6 +868,35 @@ test("a worktree an agent is working in keeps it", () =>
       yield* rig.addPane("1-9", "1:9", worktreePath, "claude");
 
       expect(yield* prune()).toEqual(["kept wt · an agent is working in it"]);
+    }),
+  ));
+
+test("a worktree a server of an agent herdr no longer lists may write in keeps it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const worktreePath = yield* collieWorktree("wt");
+      yield* settledGit();
+      yield* mergedMr();
+      const fs = yield* FileSystem.FileSystem;
+      const dir = `${rig.stateDir}/compaction/r1-implementer`;
+      yield* fs.makeDirectory(dir, { recursive: true });
+      const record = {
+        agent: "r1-implementer",
+        harness: "codex",
+        cwd: worktreePath,
+        dir,
+        endpoint: "ws://127.0.0.1:1",
+        pid: 1,
+        command: "codex app-server",
+        started: "0",
+        attempt: null,
+        stop: null,
+      };
+      yield* fs.writeFileString(`${dir}/control.json`, asJson(record));
+
+      expect(yield* prune()).toEqual([
+        "kept wt · r1-implementer's server may still be writing in it",
+      ]);
     }),
   ));
 

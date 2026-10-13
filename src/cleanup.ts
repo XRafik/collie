@@ -34,7 +34,8 @@ import { latest, readDispositions } from "./disposition";
 import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
-import { CONTROL_DIR, putDownControl } from "./compaction";
+import { CONTROL_DIR, putDownControl, type CompactionPorts } from "./compaction";
+import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
 /** One kind of thing Collie cleans. */
@@ -533,10 +534,16 @@ const removeIf = (
   });
 
 /**
- * Compaction controls of agents no herdr session lists: their endpoint stopped and their
- * state removed. Nothing is judged where herdr will not list its agents.
+ * Compaction controls of agents no herdr session lists: their server stopped and their
+ * state removed, or kept with why while it is not Quiet, to be stopped again next sweep.
+ * Nothing is judged where herdr will not list its agents.
  */
-export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herdr>): Sweeper => {
+export const compactionSweeper = (
+  stateDir: string,
+  sessions: ReadonlyArray<Herdr>,
+  ports: CompactionPorts = COMPACTION_PORTS,
+  stopMs?: number,
+): Sweeper => {
   const kind = "compaction";
   const root = `${stateDir}/${CONTROL_DIR}`;
   /** Every agent any session lists, or null where one would not say. */
@@ -572,12 +579,12 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (live === null) return { kept: "could not ask herdr what is live" };
         if (live.has(name)) return { kept: "herdr lists its agent again" };
         const bytes = yield* sizeOf(item.target);
-        const done = yield* putDownControl(
-          { stateDir, log: () => Effect.void },
+        const kept = yield* putDownControl(
+          { stateDir, ports, stopMs, log: () => Effect.void },
           name,
           Effect.map(listed, (now) => now === null || now.has(name)),
-        ).pipe(Effect.orElseSucceed(() => false));
-        return done ? { freed: bytes } : { kept: "its controls are in use" };
+        ).pipe(Effect.orElseSucceed(() => "its controls are in use"));
+        return kept === null ? { freed: bytes } : { kept };
       }),
   };
 };

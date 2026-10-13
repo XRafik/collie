@@ -77,6 +77,7 @@ import {
   type WorkflowEntry,
 } from "./sdk";
 import { FALLBACK_DEFAULTS, configValue, gitlabHostOf, loadDefaults, readConfig } from "./config";
+import { unlistedServers } from "./compaction";
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
@@ -4699,6 +4700,17 @@ const makeRegistry: (
           }
         }
       }
+    }
+    const names = new Set<string>();
+    for (const herdr of sessions) {
+      const agents = yield* Effect.result(herdr.agentList());
+      if (agents._tag === "Failure") return "herdr would not say which agents it has";
+      for (const agent of agents.success) names.add(agent.name);
+    }
+    for (const record of yield* unlistedServers(placing.env.stateDir, names)) {
+      const there = yield* real(record.cwd);
+      if (there === dir || there.startsWith(`${dir}/`))
+        return `${record.agent}'s server may still be writing in it`;
     }
     return null;
   }, Effect.provideContext(bun));

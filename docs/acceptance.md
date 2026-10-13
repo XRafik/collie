@@ -197,6 +197,11 @@ A remotely started investigation reporting back and closing is a backend row pro
 to investigate a Desktop Machines page state on its branch, receive its findings and
 observe the laptop workspace close. It remains pending until recorded at a revision.
 
+A stopped Codex agent being Quiet before anything replaces it is a backend row proved by
+the restart regression in `test/codex-stop.test.ts`, run against the stand-in App Server.
+Its operator row is the live check on vm-mk with a real Codex turn, an ignored interrupt
+among it. It stays pending until someone records the result at a revision.
+
 Remote Run records, Intent mutations, remembered checks, override clearing, verification
 and live check output have backend rows proved by `test/remote-cli.test.ts`. The caller
 has no local Runs; both inferred and explicit Machine selection read the owner's record.
