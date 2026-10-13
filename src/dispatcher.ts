@@ -5,7 +5,7 @@
 // already in the air about this work".
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { Clock, Data, Duration, Effect, FileSystem, Path, Result, Schema } from "effect";
+import { Clock, Data, Duration, Effect, FileSystem, Path, Result } from "effect";
 import { ensureLockDir } from "./lock";
 import {
   herdrFailureReason,
@@ -21,7 +21,6 @@ import {
   causalKey,
   deferralsOf,
   isUnobserved,
-  ledgerFiles,
   ledgerPath,
   newestById,
   readLedger,
@@ -373,6 +372,8 @@ const send = Effect.fn("Dispatcher.send")(function* (
     // vouch for is kept as the note, never rounded up to a delivery it saw taken.
     const line = { ...reserved, at: settledAt, state: "submitted" as const };
     yield* appendLine(file, sent.success === "unobserved" ? { ...line, note: UNOBSERVED } : line);
+    if (sent.success === "observed")
+      yield* appendLine(file, { ...line, state: "acknowledged", note: TURN_STARTED });
     return { ok: true as const, id, submission: sent.success };
   }
   // A refusal herdr answered with is a fact; a transport that never answered is not.
@@ -435,44 +436,9 @@ export const submitPatiently = Effect.fn("Dispatcher.submitPatiently")(function*
   }
 });
 
-/**
- * The step prompt's work has been collected — the agent went quiet and its Output was
- * read — so the delivery that carried it is over. Settled `superseded` with that as the
- * note, because nothing in it is left to acknowledge or verify: what the agent did is now
- * in the Run, and a later prompt about the same step — a human's `run resume` re-running
- * a disputed fix at the same iteration, to the same live implementer — is a new attempt
- * at that work, not a second copy of this one. Without this line the causal key would
- * read it as exactly that and refuse it.
- *
- * Only a delivery whose arrival is known: one herdr saw a turn start from, or one the
- * agent acknowledged. A `submitted` line noted `unobserved` stays in flight — an Output
- * turning up beside it does not say the prompt was read, and making that work retryable
- * is how it runs twice. It is settled by an ack, or by a human's `reconcile`.
- */
-export const settleCollected = Effect.fn("Dispatcher.settleCollected")(function* (
-  stateDir: string,
-  terminalId: string,
-  causal_key: string,
-) {
-  const file = yield* ledgerPath(stateDir, terminalId);
-  yield* withLedgerLock(
-    file,
-    Effect.gen(function* () {
-      const at = yield* nowIso();
-      for (const delivery of newestById(yield* readLedger(file)).values()) {
-        if (delivery.causal_key !== causal_key) continue;
-        const known =
-          delivery.state === "acknowledged" ||
-          (delivery.state === "submitted" && !isUnobserved(delivery));
-        if (!known) continue;
-        yield* appendLine(file, { ...delivery, at, state: "superseded", note: "work_collected" });
-      }
-    }),
-  );
-});
-
 const UNOBSERVED = "unobserved";
 const ENTER_PRESSED = "unobserved; enter pressed";
+export const TURN_STARTED = "a turn started";
 
 /** A submission nothing confirmed: neither taken nor still waiting to be sent. */
 export class Unconfirmed extends Data.TaggedError("Unconfirmed")<{
@@ -496,10 +462,11 @@ export interface ConfirmDeps<R> {
 /**
  * A `submitted (unobserved)` delivery about one of these causal keys, checked until it is
  * known either way. Taken is a turn herdr saw start from a settled agent, or whatever
- * `taken` finds. A settled agent whose prompt box still holds the delivery's token gets
- * one Enter — never the text again, which would be the work twice. A settled agent that
- * shows neither, for the whole grace, fails `Unconfirmed`: nothing can prove sending it
- * again is safe, so a human is asked. Returns once nothing is left unobserved.
+ * `taken` finds, and is recorded `acknowledged`. A settled agent whose prompt box still
+ * holds the delivery's token gets one Enter — never the text again, which would be the work
+ * twice. A settled agent that shows neither, for the whole grace, fails `Unconfirmed`:
+ * nothing can prove sending it again is safe, so a human is asked. Returns how it was taken,
+ * or null where nothing was left unobserved.
  */
 export const confirmSubmitted = Effect.fn("Dispatcher.confirmSubmitted")(function* <R>(
   deps: ConfirmDeps<R>,
@@ -507,7 +474,7 @@ export const confirmSubmitted = Effect.fn("Dispatcher.confirmSubmitted")(functio
   keys: ReadonlyArray<string>,
 ) {
   const terminalId = entry.incarnation?.terminalId;
-  if (terminalId === undefined) return;
+  if (terminalId === undefined) return null;
   const file = yield* ledgerPath(deps.stateDir, terminalId);
   const pending = Effect.map(readLedger(file), (lines) =>
     [...newestById(lines).values()]
@@ -515,30 +482,37 @@ export const confirmSubmitted = Effect.fn("Dispatcher.confirmSubmitted")(functio
       .at(-1),
   );
   /** Re-read under the lock, so a settlement never lands on a delivery another writer moved. */
-  const settle = (id: string, act: Effect.Effect<void, never, BunServices>, note: string) =>
+  const settle = (
+    id: string,
+    act: Effect.Effect<void, never, BunServices>,
+    note: string,
+    state?: "acknowledged",
+  ) =>
     withLedgerLock(
       file,
       Effect.gen(function* () {
         const now = newestById(yield* readLedger(file)).get(id);
         if (now === undefined || !isUnobserved(now)) return;
         yield* act;
-        yield* appendLine(file, { ...now, at: yield* nowIso(), note });
+        yield* appendLine(file, { ...now, at: yield* nowIso(), state: state ?? now.state, note });
       }),
     );
   let sawSettled = false;
   let quietSince: number | null = null;
+  let pressed = false;
   for (;;) {
     const open = yield* pending;
-    if (open === undefined) return;
+    if (open === undefined) return null;
     const status = yield* deps.herdr
       .agentStatus(entry.agent)
       .pipe(Effect.orElseSucceed(() => "unknown" as const));
     const turn = sawSettled && (status === "working" || status === "blocked");
-    const taken = turn ? "a turn started" : yield* deps.taken(open);
-    if (taken !== null) {
-      yield* settle(open.id, Effect.void, `taken: ${taken}`);
+    const found = turn ? TURN_STARTED : yield* deps.taken(open);
+    if (found !== null) {
+      const taken = pressed ? `${found} after Enter was pressed` : found;
+      yield* settle(open.id, Effect.void, `taken: ${taken}`, "acknowledged");
       yield* deps.log(`${entry.agent} took ${open.id}: ${taken}`);
-      return;
+      return taken;
     }
     if (!isSettled(status)) {
       quietSince = null;
@@ -550,6 +524,7 @@ export const confirmSubmitted = Effect.fn("Dispatcher.confirmSubmitted")(functio
         const press = deps.herdr.agentPressEnter(entry.agent).pipe(Effect.ignore);
         yield* settle(open.id, press, ENTER_PRESSED);
         yield* deps.log(`${entry.agent}: ${open.id} was still in its prompt box; pressed Enter`);
+        pressed = true;
         quietSince = null;
       } else {
         const now = yield* Clock.currentTimeMillis;
@@ -585,28 +560,6 @@ const settlePending = Effect.fn("Dispatcher.settlePending")(function* (file: str
   }
 });
 
-/** Where an agent writes what it understood, for one delivery. */
-export function ackPath(runDir: string, deliveryId: string): string {
-  return `${runDir}/steering/acks/${deliveryId}.json`;
-}
-
-/**
- * The ack the agent is asked for, in the words every delivery uses, and the token that
- * marks the text as Collie's. The token is on its own first line so a harness hook that
- * only sees the submitted prompt can tell a Collie delivery from a human typing.
- */
-export function ackInstruction(
-  runDir: string,
-  delivery: { readonly id: string; readonly intentVersion: number; readonly attempt: number },
-): string {
-  return [
-    `${DELIVERY_TOKEN}${delivery.id}`,
-    `When you have read this, write \`${ackPath(runDir, delivery.id)}\` containing`,
-    `{"delivery":"${delivery.id}","intent_version":${delivery.intentVersion},"attempt":${delivery.attempt},"understood":"<one sentence>"}`,
-    "before continuing.",
-  ].join("\n");
-}
-
 /** What marks a prompt as Collie's own. Its absence is what attribution is looking for. */
 export const DELIVERY_TOKEN = "collie-delivery:";
 
@@ -626,117 +579,6 @@ export function marked(text: string, id: string): string {
 /** The delivery a submitted prompt carried: its first token, which is the one `marked` adds. */
 export function carriedDelivery(prompt: string): string | null {
   return new RegExp(`${DELIVERY_TOKEN}(\\S+)`).exec(prompt)?.[1] ?? null;
-}
-
-const AckSchema = Schema.Struct({
-  delivery: Schema.String,
-  intent_version: Schema.Int,
-  attempt: Schema.Int,
-  understood: Schema.String,
-});
-const AckJson = Schema.fromJsonString(AckSchema);
-
-/**
- * Acknowledgements the agents have written since anyone last looked, turned into ledger
- * lines. An ack for a version or an attempt other than the one that was sent is recorded
- * as a mismatch and changes nothing: it is the agent answering a different question.
- *
- * The file is removed only once its line is written, so a crash in between leaves the
- * ack to be read again rather than lost.
- */
-export const readAcks = Effect.fn("Dispatcher.readAcks")(function* (
-  stateDir: string,
-  runDir: string,
-  log: (
-    line: string,
-  ) => Effect.Effect<void, never, FileSystem.FileSystem | Path.Path | BunServices>,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const dir = path.join(runDir, "steering", "acks");
-  const names = yield* fs.readDirectory(dir).pipe(Effect.catch(() => Effect.succeed([])));
-  for (const name of names) {
-    if (!name.endsWith(".json")) continue;
-    const file = path.join(dir, name);
-    const raw = yield* fs.readFileString(file).pipe(Effect.catch(() => Effect.succeed("")));
-    const decoded = Schema.decodeUnknownOption(AckJson)(raw);
-    if (decoded._tag === "None") {
-      yield* log(`ack ${name} could not be read`);
-      continue;
-    }
-    const ack = decoded.value;
-    // Removed only once the ledger has taken it; null says it has not, so the ack stays
-    // to be read again — which is why an agent writes a file rather than a message.
-    const settled = yield* settleAck(stateDir, ack, file);
-    if (settled === null) continue;
-    yield* log(settled);
-    yield* fs.remove(file, { force: true }).pipe(Effect.ignore);
-  }
-});
-
-/** What an ack may advance. Everything else is settled, and settled is somebody's answer. */
-const AWAITING_ACK: ReadonlySet<string> = new Set(["reserved", "submitted"]);
-
-const settleAck = Effect.fn("Dispatcher.settleAck")(function* (
-  stateDir: string,
-  ack: Schema.Schema.Type<typeof AckSchema>,
-  file: string,
-): Effect.fn.Return<string | null, never, FileSystem.FileSystem | Path.Path | BunServices> {
-  // The ledger is per incarnation and an ack names only its delivery, so the delivery is
-  // found by looking for it: an ack is rare and the ledgers are small.
-  for (const ledger of yield* ledgerFiles(stateDir)) {
-    if (!newestById(yield* readLedger(ledger)).has(ack.delivery)) continue;
-    return yield* withLedgerLock(
-      ledger,
-      Effect.gen(function* () {
-        // Read again under the lock: between finding the delivery and writing about it, a
-        // Dispatcher transaction can have settled the very state this ack is about.
-        const delivery = newestById(yield* readLedger(ledger)).get(ack.delivery);
-        if (!delivery) return `ack for ${ack.delivery}, which no ledger has`;
-        const at = yield* nowIso();
-        if (!AWAITING_ACK.has(delivery.state)) {
-          yield* appendLine(ledger, { ...delivery, at, note: `ack_after_${delivery.state}` });
-          return `ack for ${ack.delivery} arrived after it was ${delivery.state}; nothing changed`;
-        }
-        if (delivery.intent_version !== ack.intent_version || delivery.attempt !== ack.attempt) {
-          yield* appendLine(ledger, { ...delivery, at, note: "ack_mismatch" });
-          return `ack for ${ack.delivery} is about v${ack.intent_version} attempt ${ack.attempt}, not v${delivery.intent_version} attempt ${delivery.attempt}`;
-        }
-        yield* appendLine(ledger, {
-          ...delivery,
-          at,
-          state: "acknowledged",
-          evidence: { kind: "ack", ref: file },
-        });
-        return `${ack.delivery} acknowledged`;
-      }),
-    ).pipe(Effect.catch(() => Effect.succeed(null)));
-  }
-  return `ack for ${ack.delivery}, which no ledger has`;
-});
-
-/** The `## Steering` section a boundary delivery is composed into. */
-export function steeringSection(
-  runDir: string,
-  items: ReadonlyArray<{
-    readonly id: string;
-    readonly text: string;
-    readonly intentVersion: number;
-    readonly attempt: number;
-  }>,
-) {
-  if (items.length === 0) return "";
-  const body = items
-    .map(
-      (item) =>
-        `- (${item.id}) ${item.text}\n\n${ackInstruction(runDir, {
-          id: item.id,
-          intentVersion: item.intentVersion,
-          attempt: item.attempt,
-        })}`,
-    )
-    .join("\n\n");
-  return `## Steering\n\n${body}\n\n`;
 }
 
 /**
@@ -806,9 +648,9 @@ const recordUngated = Effect.fn("Dispatcher.recordUngated")(function* (
 /**
  * The interrupt: keys first, then the text. herdr answering says the keys were sent, and
  * a status that has left `working` says the harness reacted to something — neither is
- * proof it stopped, and no such proof exists at this boundary. So the states are
- * `interrupt_requested` and, once the agent's own ack arrives, `interrupt_acknowledged`.
- * The word this deliberately never uses is the one a reader would most like: stopped.
+ * proof it stopped, and no such proof exists at this boundary. So the log says
+ * `interrupt_requested`, and the text after it is confirmed like any other delivery. The
+ * word this deliberately never uses is the one a reader would most like: stopped.
  */
 export const interrupt = Effect.fn("Dispatcher.interrupt")(function* (
   deps: DispatcherDeps & {

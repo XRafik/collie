@@ -791,7 +791,7 @@ run nothing is driving.
 
 **Attach files…** asks which files to give the Run: paths separated by spaces, quoted as a
 shell quotes them where a name has a space, and relative to the board's own directory.
-They go to the Run's newest live agent as a steer with no words of its own, the steer
+They go to the agent whose step is active, else the builder, as a steer with no words of its own, the steer
 `collie run steer --attach` makes: the host copies each into the Run's `attachments/`, the
 agent is told each path, and every later step's prompt lists them. A Run with no live
 agent left is told so, with the follow-up that would carry the files on instead.
@@ -1477,9 +1477,11 @@ side, or press the gutter's button beside a line, and the comment opens under th
 once added it stays drawn there, where you can edit or remove it too. Each
 comment is a draft that Desktop keeps for that Run while it runs, through tab switches and
 closing the record, and sends to no host until you send it. While a Run has drafts, the
-Plan and Diff tabs show them in one list, where you can edit or remove each, choose which
-of the Run's live agents gets them (labelled as the Terminal tab labels them; the newest,
-the one Go to pane opens, by default), and **Send**. Every draft goes as one message, word
+Plan and Diff tabs show them in one list, where you can edit or remove each, choose who
+gets them — **The agent at work** by default (the agent whose step is active, else the
+builder), a role the Run has a live agent in, or one of its live agents, labelled as the
+Terminal tab labels them — and **Send**. The line it leaves says whether the agent was
+seen to take it. Every draft goes as one message, word
 for word, each item naming the plan file, or `path:line` with `(as it was)` for removed
 lines, quoting what you selected and giving your words;
 a message over 8 KiB arrives as a file in the Run. Only the drafts that were sent are
@@ -1488,7 +1490,7 @@ edited while it was sending. A successful **Try again** clears the original sent
 and keeps any later edits. With no live agent, Send is disabled and the list says "This
 Run has no live agent to tell". Desktop never edits the plan: the
 agent does, and the Plan tab shows its rewrite. An agent sends the same kind of message with
-`collie run steer --agent`.
+`collie run steer --to`.
 
 Every link you press in Desktop opens in your default browser, as `xdg-settings get
 default-web-browser` names it, where you are already signed in. Chrome, Chromium, Brave,

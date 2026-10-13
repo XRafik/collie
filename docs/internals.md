@@ -851,7 +851,7 @@ from their lines rather than by rewriting them:
 - `<state>/agents/<incarnation>/deliveries.jsonl` — one line per state change of one
   message to one agent, under a lock per incarnation. `reserved` is written **before**
   herdr is called, so a crash leaves a durable record that something may have been sent;
-  `submitted`, `acknowledged` and `verified` are separate facts and are never collapsed.
+  `submitted` and `acknowledged` are separate facts and are never collapsed.
   A `reserved` line nobody settled becomes `unknown`, which blocks further deliveries
   about the same work until a human reconciles it. Collie never retries out of `unknown`.
   The one retry is out of `deferred`, herdr answering that the pane cannot take a prompt

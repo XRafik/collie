@@ -237,10 +237,10 @@ export const CollieTools = Toolkit.make(
     description:
       "Everything one Run is waiting on the human for — the Choice it asks with how to " +
       "answer it, and the proposals with their id and hash — and every message that has been sent " +
-      "to its agents with the state each actually reached. `submitted` is that herdr took " +
-      "it, `acknowledged` is that the agent wrote back, `verified` is that something " +
-      "independent checked — they are three different facts and none of them stands in for " +
-      "another. Read this instead of saying that something was done. With no `run` it " +
+      "to its agents with the state each actually reached. `submitted` is that it was sent, " +
+      "`acknowledged` is that the agent took a turn after it, and whether the work went " +
+      "where it was told is the drift judgement in collie_run — different facts, none of " +
+      "them standing in for another. Read this instead of saying that something was done. With no `run` it " +
       "answers about whatever the board has selected, and says which that was.",
     parameters: RunInput.mapFields((fields) => ({
       run: fields.run.annotate({ description: "The Run id; omit for the board's selection" }),

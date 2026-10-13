@@ -14,7 +14,7 @@
 import type { Card } from "./cards";
 import type { Delivery } from "./steering";
 import type { DriftReport, Ref } from "./evaluator";
-import type { Action } from "./actions";
+import { recipientOf, type Action } from "./actions";
 
 /** How much a line asks for the eye. Never the only thing saying what it says. */
 export type Tone = "plain" | "dim" | "bad" | "accent";
@@ -177,7 +177,7 @@ const named = (fields: Record<string, string>) =>
 export function describeAction(action: Action): string {
   switch (action.kind) {
     case "deliver":
-      return `deliver to ${action.agent} (${action.mode}): ${action.text}`;
+      return `deliver to ${recipientOf(action)} (${action.mode}): ${action.text}`;
     case "update_intent":
       return `${action.change} on ${action.run}'s intent: ${action.patch}`;
     case "set_verification":

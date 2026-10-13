@@ -185,6 +185,7 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         return yield* steerRun(env, {
           runId: action.run,
           agent: action.agent,
+          to: action.to,
           text: action.text,
           request: by.requestId,
           mode: action.mode,

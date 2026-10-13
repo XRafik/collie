@@ -306,7 +306,7 @@ collie --json run hold <run-id> [--request-id <id>]
 collie --json run release <run-id> [--request-id <id>]
 collie --json run stop <run-id> [--request-id <id>]
 collie --json run resume <run-id> [--request-id <id>]
-collie --json run steer <run-id> "check the migration too" [--request-id <id>]
+collie --json run steer <run-id> "check the migration too" [--to builder] [--request-id <id>]
 ```
 
 - **`--decision` names the question** where a module is waiting on more than one; leave it
@@ -354,9 +354,13 @@ collie --json run steer <run-id> "check the migration too" [--request-id <id>]
   does not move a Run: `--workspace` only chooses where the command looks, and the resume
   says so.
 - **`run steer` says something to the Run's agent** through the one sender, with the same
-  incarnation and harness-capability checks as every other delivery, and tells you whether
-  it was delivered rather than that it was accepted for sending: anything not sent is
-  `operation_failed`, with why. A message over 8 KiB is kept whole as a file in the Run's
+  incarnation and harness-capability checks as every other delivery. With no `--to`, it
+  goes to the agent whose step is active, else the builder; `--to builder|reviewer|planner`
+  names a role and `--to <agent>` an agent, and `--operation` still names one by its
+  operation ([steering](steering.md#who-a-steer-reaches-and-what-it-says-came-of-it)). It
+  tells you whether the agent was seen to take it: `Delivered to <agent> (observed: <how>).`,
+  or `Sent to <agent>, not observed.` with how to go to its pane, and `data.observed` and
+  `data.how` say the same. Anything not sent is `operation_failed`, with why. A message over 8 KiB is kept whole as a file in the Run's
   `attachments/`, and the agent is told where to read it
   ([steering](steering.md#delivery)). A finished Run's live agent takes one as a running Run's
   does, whether or not its module is still loaded. It carries out nothing:

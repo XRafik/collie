@@ -487,7 +487,7 @@ const correctDrift = Effect.fn("Oversight.correctDrift")(function* (
 });
 
 /** Delivery states nothing follows, so a correction in one is not in flight. */
-const SETTLED: ReadonlySet<string> = new Set(["verified", "failed", "superseded", "expired"]);
+const SETTLED: ReadonlySet<string> = new Set(["failed", "superseded"]);
 
 /**
  * The Run's own SPEC, read into its Intent before anything is judged against it. Only a

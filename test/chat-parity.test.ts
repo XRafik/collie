@@ -276,6 +276,14 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
     },
   ],
   ["run deliveries --reconcile", { route: "shell" }],
+  [
+    "run steer --to",
+    {
+      route: "propose",
+      kind: "deliver",
+      action: { kind: "deliver", run: RUN, to: "builder", text: "keep going" },
+    },
+  ],
 ];
 
 /** Any command in the tree, as the CLI itself types one. */

@@ -92,7 +92,15 @@ import { nowIso } from "./time";
 import { noteContext } from "./metrics";
 import { roomFor, subscriptionOf, type UsageReading } from "./usage-model";
 import { ownCodexReading } from "./usage";
-import { lineageAgent, registerAgent, registryPath, scopeFor, verifyIncarnation } from "./registry";
+import {
+  lineageAgent,
+  registerAgent,
+  registryPath,
+  scopeFor,
+  verifyIncarnation,
+  type AgentEntry,
+} from "./registry";
+import { steerTarget } from "./steer-target";
 import {
   jsonSchemaFor,
   AgentScopes,
@@ -297,15 +305,17 @@ export interface AgentsApi {
     readonly runId: string;
     readonly text: string;
     readonly request: string;
-    /** Which of the run's agents; the newest launch where a caller names none. */
+    /** A role (`builder`, `reviewer`, `planner`), an agent or an operation. */
+    readonly to?: string;
+    /** Which of the run's agents, by operation or name. */
     readonly operation?: string;
     /** One of the run's agents by name, which wins over `operation`. */
     readonly agent?: string;
     readonly mode?: DeliveryMode;
     readonly actor?: Asker;
   }) => Effect.Effect<Steered>;
-  /** The agent this Run launched last, which is whose work a correction is about; null for none. */
-  readonly newest: (runId: string) => Effect.Effect<Launched | null>;
+  /** The agent a steer that names none reaches, which is whose work a correction is about. */
+  readonly atWork: (runId: string) => Effect.Effect<Launched | null>;
   /** One correction Collie decided on, to that agent, through the one sender; whether it went. */
   readonly correct: (
     runId: string,
@@ -333,6 +343,12 @@ export interface Steered {
   readonly detail: string;
   /** Not delivered because no incarnation of the agent is alive. */
   readonly gone?: boolean;
+  /** Whether the agent was seen to take it; absent where nothing was sent. */
+  readonly observed?: boolean;
+  /** How it was seen taken. */
+  readonly how?: string;
+  /** The pane it went to, for a human to look at. */
+  readonly pane?: string;
 }
 
 /** The agents a stop made Quiet, and what may still be running after it. */
@@ -1083,6 +1099,8 @@ export interface AgentHost {
   readonly readyMs?: number;
   /** How long a settled agent may show neither an unobserved prompt nor a turn from it. */
   readonly confirmGraceMs?: number;
+  /** How long a steer or a correction waits to see its agent take it before saying it did not. */
+  readonly observeMs?: number;
   /** How a step's own prompts wait out a pane that says it will clear by itself. */
   readonly patience?: dispatch.Patience;
   /** How long a stop may wait for an agent to be Quiet; the fixed budget where left out. */
@@ -1126,6 +1144,9 @@ const READY_TIMEOUT_MS = 120_000;
 
 /** Longer than herdr takes to see a taken prompt become a turn, even under load. */
 const CONFIRM_GRACE_MS = 15_000;
+
+/** Someone is waiting on a steer's receipt, so it is not held for a busy agent's whole turn. */
+const OBSERVE_MS = 20_000;
 
 /** herdr says this of a pane that exists but whose shell has not come up yet. */
 const paneNotReady = (error: HerdrError) =>
@@ -1293,17 +1314,59 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         ? dispatch.transaction(deps, entry, (channel) => channel.submit(text, draft))
         : dispatch.submitPatiently(deps, entry, text, draft, host.patience)
     ).pipe(Effect.catch((cause) => Effect.succeed(undeliverable(cause))));
-    if (outcome.ok) return { sent: true, why: "" };
+    const pane = entry.paneId;
+    if (outcome.ok) {
+      if (outcome.submission === "observed")
+        return { sent: true, why: "", observed: dispatch.TURN_STARTED, pane };
+      if (delivery.kind !== "steer" && delivery.kind !== "correction")
+        return { sent: true, why: "" };
+      return { sent: true, why: "", observed: yield* observe(about, entry, draft), pane };
+    }
     // Already sent about this work, on whichever attempt got there first. Sending it
     // again is the second copy this ledger exists to prevent.
     if (outcome.reason === "blocked" && outcome.held !== undefined && SENT_STATES.has(outcome.held))
-      return { sent: true, why: outcome.detail };
+      return {
+        sent: true,
+        why: outcome.detail,
+        observed: outcome.held === "acknowledged" ? "taken when it was first sent" : null,
+        pane,
+      };
     return {
       sent: false,
       why: `${outcome.reason}: ${outcome.detail}`,
       refused: outcome.reason === "exhausted",
     };
   });
+
+  /**
+   * How an unobserved steer or correction was seen taken — a turn starting, its harness's
+   * submit hook, or Enter pressed on it still in the prompt box — or null where nothing
+   * showed it within `observeMs`.
+   */
+  const observe = (about: Launched, entry: AgentEntry, draft: dispatch.DeliveryDraft) =>
+    Effect.gen(function* () {
+      const dir = yield* controlDir(host.env.stateDir, about.agent);
+      return yield* dispatch.confirmSubmitted(
+        {
+          stateDir: host.env.stateDir,
+          herdr: host.herdr,
+          log: (line) => log(about.runId, line),
+          taken: (delivery) =>
+            submittedDelivery(dir, delivery.id).pipe(
+              Effect.map((recorded) => (recorded ? "its submit hook recorded it" : null)),
+              Effect.orElseSucceed(() => null),
+            ),
+          pollMs: host.pollMs ?? DEFAULT_POLL_MS,
+          graceMs: host.confirmGraceMs ?? CONFIRM_GRACE_MS,
+        },
+        entry,
+        [causalKey(draft.run, draft.cause, draft.intentVersion)],
+      );
+    }).pipe(
+      Effect.timeoutOption(host.observeMs ?? OBSERVE_MS),
+      Effect.map(Option.getOrNull),
+      Effect.orElseSucceed(() => null),
+    );
 
   /**
    * The workspace this Run's Task lives in. herdr drops a workspace once its last pane
@@ -2148,10 +2211,23 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
       }),
     );
 
+  /** Each launch, and whether its Output is written yet: which step is active. */
+  const candidatesOf = (runId: string) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return yield* Effect.forEach(yield* launchesOf(runId), (one) =>
+        fs.exists(one.output).pipe(
+          Effect.orElseSucceed(() => false),
+          Effect.map((done) => ({ ...one, done })),
+        ),
+      );
+    });
+
   const steer = (options: {
     readonly runId: string;
     readonly text: string;
     readonly request: string;
+    readonly to?: string;
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: DeliveryMode;
@@ -2159,25 +2235,14 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
   }) =>
     under(
       Effect.gen(function* () {
-        const launches = yield* launchesOf(options.runId);
-        const { operation, agent } = options;
-        const launched =
-          agent !== undefined
-            ? launches.findLast((one) => one.agent === agent)
-            : operation !== undefined
-              ? launches.findLast((one) => one.operation === operation || one.agent === operation)
-              : launches.at(-1);
+        const { to, operation, agent } = options;
+        const launched = steerTarget(yield* candidatesOf(options.runId), { to, operation, agent });
         if (launched === undefined) {
-          const about =
-            agent !== undefined
-              ? ` named "${agent}"`
-              : operation !== undefined
-                ? ` on "${operation}"`
-                : "";
+          const named = agent ?? operation ?? to;
           return {
             agent: "",
             delivered: false,
-            detail: `${options.runId} has launched no agent${about}`,
+            detail: `${options.runId} has launched no agent${named === undefined ? "" : ` for "${named}"`}`,
             gone: true,
           };
         }
@@ -2193,7 +2258,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             ? toldLine(launched.agent, options.text)
             : `${launched.agent}: could not be told "${firstLine(options.text)}" (${sent.why})`,
         );
-        if (sent.sent) return { agent: launched.agent, delivered: true, detail: "" };
+        if (sent.sent) return receipt(launched.agent, sent);
         const alive = yield* host.herdr.agentList().pipe(Effect.orElseSucceed(() => []));
         return {
           agent: launched.agent,
@@ -2306,14 +2371,14 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     collect,
     repair,
     steer,
-    newest: (runId) =>
-      under(launchesOf(runId).pipe(Effect.map((launches) => launches.at(-1) ?? null))).pipe(
+    atWork: (runId) =>
+      under(candidatesOf(runId).pipe(Effect.map((all) => steerTarget(all, {}) ?? null))).pipe(
         Effect.orElseSucceed(() => null),
       ),
     correct: (runId, correction) =>
       under(
         Effect.gen(function* () {
-          const launched = (yield* launchesOf(runId)).at(-1);
+          const launched = steerTarget(yield* candidatesOf(runId), {});
           if (launched === undefined) return false;
           const sent = yield* deliver(launched, correction.text, {
             kind: "correction",
@@ -2333,6 +2398,23 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         }),
       ).pipe(Effect.orElseSucceed(() => false)),
   };
+};
+
+/** A steer that went out, with whether it was seen taken. */
+const receipt = (
+  agent: string,
+  sent: { readonly observed?: string | null; readonly pane?: string },
+): Steered => {
+  const how = sent.observed ?? null;
+  const steered: Types.Mutable<Steered> = {
+    agent,
+    delivered: true,
+    detail: "",
+    observed: how !== null,
+  };
+  if (how !== null) steered.how = how;
+  if (sent.pane !== undefined) steered.pane = sent.pane;
+  return steered;
 };
 
 const stepPointer = (file: string) =>

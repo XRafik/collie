@@ -732,6 +732,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly runId: string;
       readonly text: string;
       readonly request: string;
+      /** A role (builder, reviewer, planner), an agent or an operation; else the agent at work. */
+      readonly to?: string;
       readonly operation?: string;
       /** One of the run's agents by name, which wins over operation. */
       readonly agent?: string;
@@ -747,6 +749,9 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly agent: string;
     readonly delivered: boolean;
     readonly detail: string;
+    /** Whether the agent was seen to take it, and how. */
+    readonly observed?: boolean;
+    readonly how?: string;
   }
   export const Agents: Context.Service<AgentsApi, AgentsApi>;
   export type Agents = AgentsApi;
@@ -2636,13 +2641,13 @@ export const hostLayer = (options: {
           // Corrected through the caller's own agents: the work that drifted is theirs.
           // Not at the finish, where there is no next piece of work to bring back.
           const agents = yield* Effect.serviceOption(Agents);
-          const newest =
-            Option.isNone(agents) || judged === "finish" ? null : yield* agents.value.newest(runId);
+          const atWork =
+            Option.isNone(agents) || judged === "finish" ? null : yield* agents.value.atWork(runId);
           const to =
-            Option.isNone(agents) || newest === null
+            Option.isNone(agents) || atWork === null
               ? null
               : {
-                  agent: newest,
+                  agent: atWork,
                   send: (correction: Parameters<Correcting["send"]>[0]) =>
                     agents.value.correct(runId, correction),
                 };
@@ -3316,6 +3321,11 @@ export const Steered = Schema.Struct({
   gone: Schema.optionalKey(Schema.Boolean),
   /** The Run's Workflow has ended, so a gone agent's request is carried on by a new Run. */
   finished: Schema.optionalKey(Schema.Boolean),
+  /** Whether the agent was seen to take it — a turn, its submit hook, Enter on it — and how. */
+  observed: Schema.optionalKey(Schema.Boolean),
+  how: Schema.optionalKey(Schema.String),
+  /** The pane it went to. */
+  pane: Schema.optionalKey(Schema.String),
   /** The kind of each credential-shaped value taken out before anything was written. */
   redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
@@ -3523,6 +3533,7 @@ export interface RegistryApi {
     readonly text: string;
     /** The caller's claim on the delivery, so the same message twice is one message. */
     readonly request: string;
+    readonly to?: string;
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: AgentsSdk.DeliveryMode;
@@ -5375,6 +5386,7 @@ const makeRegistry: (
       readonly runId: string;
       readonly text: string;
       readonly request: string;
+      readonly to?: string;
       readonly operation?: string;
       readonly agent?: string;
       readonly mode?: AgentsSdk.DeliveryMode;

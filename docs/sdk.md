@@ -1053,8 +1053,11 @@ None of it is yours to implement, but it decides where your workflow can be inte
 - **Halting the agent is the host's half of a stop.** `run stop` also closes the panes of
   the Run's agents, and of the Runs it started, which is what stops them; the workspace
   keeps its own tab. When the Run resumes, work whose agent has gone and whose Output never
-  came is given to a new one with the same prompt. Steering — `run steer` — says something
-  to a live agent through the one sender, and says whether it was delivered;
+  came is given to a new one with the same prompt. Steering — `run steer`, and `Agents.steer`
+  from a module — says something to a live agent through the one sender: `to` names a role
+  (`builder`, `reviewer`, `planner`) or an agent, and with none it reaches the agent whose
+  step is active, else the builder. It answers whether it was delivered, and with `observed`
+  and `how`, whether the agent was seen to take it;
   `handOffWork` does the same from a workflow to the live agent in a role of a Run this one
   was started from, as review hands its findings to an implementer already building the
   work. It answers with

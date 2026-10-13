@@ -39,7 +39,7 @@ import { collect, fingerprint, readVerifications } from "../../src/verify";
 import { inputsFor, offersFrom } from "../../src/offers";
 import { Store } from "../../src/store";
 import { everyRegistered, registerAgent, registryPath, scopeFor } from "../../src/registry";
-import { deliveriesOf } from "../../src/steering";
+import { deliveriesOf, SENT_STATES } from "../../src/steering";
 import { fixtures, until } from "./host";
 
 const ROOT = new URL("../../", import.meta.url).pathname;
@@ -519,7 +519,7 @@ scenario(
         expect(
           (yield* deliveriesOf(hostOf().env.stateDir, "r-plan")).some(
             (one) =>
-              one.delivery.cause.ref === "planner-question" && one.delivery.state === "submitted",
+              one.delivery.cause.ref === "planner-question" && SENT_STATES.has(one.delivery.state),
           ),
         ).toBe(true);
       }),

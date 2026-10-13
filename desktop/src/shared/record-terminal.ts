@@ -1,6 +1,7 @@
 // What a card's record decides about its Terminal tab.
 
 import type { BoardAgent } from "../../../src/board-model";
+import { ROLES } from "../../../src/steer-target";
 
 /**
  * Offered while the Run's Machine is reached, and kept while it is the tab shown, so a
@@ -61,6 +62,54 @@ export const recipients = (
   return names
     .filter((name, at) => names.lastIndexOf(name) === at)
     .flatMap((name) => tabs.get(name) ?? []);
+};
+
+/** Where a delivery goes: the agent at work, a role, or one agent by name. */
+export interface DeliveryChoice {
+  readonly key: string;
+  readonly label: string;
+  readonly to?: string;
+  readonly agent?: string;
+}
+
+/** Who a delivery names: one agent, or the role `to` names; neither is the agent at work. */
+export interface Address {
+  agent?: string;
+  to?: string;
+}
+
+/** A delivery's addressee, with only the fields it names. */
+export const addressOf = (who: Readonly<Address>): Address => {
+  const address: Address = {};
+  if (who.agent !== undefined) address.agent = who.agent;
+  if (who.to !== undefined) address.to = who.to;
+  return address;
+};
+
+/**
+ * Who review comments may go to: the agent whose step is active (else the builder), which
+ * is first and the default, then each role the Run has a live agent in, then each agent.
+ */
+export const deliveryChoices = (
+  launches: ReadonlyArray<{ readonly agent: string }> | undefined,
+  live: ReadonlyArray<BoardAgent>,
+): DeliveryChoice[] => {
+  const tabs = recipients(launches, live);
+  if (tabs.length === 0) return [];
+  const roles = new Set(
+    tabs.flatMap((tab) => live.find((one) => one.name === tab.name)?.role ?? []),
+  );
+  return [
+    { key: "@work", label: "The agent at work" },
+    ...Object.entries(ROLES)
+      .filter(([, covered]) => covered.some((role) => roles.has(role)))
+      .map(([to]) => ({
+        key: `@${to}`,
+        label: `The ${to}`,
+        to,
+      })),
+    ...tabs.map((tab) => ({ key: tab.name, label: tab.label, agent: tab.name })),
+  ];
 };
 
 /**

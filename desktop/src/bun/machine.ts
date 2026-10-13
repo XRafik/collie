@@ -59,7 +59,8 @@ import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
 import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
-import { removedIn, withNotice } from "../../../src/redact";
+import { addressOf } from "../shared/record-terminal";
+import { withNotice } from "../../../src/redact";
 
 const children = new Set<Bun.Subprocess>();
 export const endChildren = () => {
@@ -1155,16 +1156,14 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
         return door
           .act({
             actions: [
-              { kind: "deliver", run: action.runId, agent: action.agent, text: action.text },
+              { kind: "deliver", run: action.runId, ...addressOf(action), text: action.text },
             ],
             request,
           })
           .pipe(
             Effect.flatMap(([done]) =>
               done?.state === "applied"
-                ? Effect.succeed(
-                    [`Sent to ${action.agent}`, removedIn(done.note)].filter(Boolean).join(". "),
-                  )
+                ? Effect.succeed(done.note || "Sent")
                 : Effect.fail<Unsteered>({
                     _tag: "Unsteered",
                     message: done?.note || "the host said nothing about it",

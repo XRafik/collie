@@ -45,6 +45,7 @@ import { readDrift } from "../src/drift";
 import { FixOutputSchema, SynthesisSchema } from "../src/output";
 import { seedIntent, writeIntent } from "../src/intent";
 import { appendLine, deliveriesOf, readLedger, reconcile } from "../src/steering";
+import { readLaunches } from "../src/launches";
 import { Store } from "../src/store";
 import { readTask, writeTask } from "../src/task";
 import { taskFor } from "../src/operations";
@@ -651,7 +652,7 @@ test("a pane that is busy when the step's prompt goes out is waited out, and the
       expect(result._tag === "Success" && result.success.note).toBe("after the dialog");
       // Two refused and one taken, all of them one delivery.
       expect(sent(yield* rig.calls(), "Your task for this step")).toBe(3);
-      expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["submitted"]);
+      expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["acknowledged"]);
       expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
     }),
   ));
@@ -680,7 +681,7 @@ test(
         const result = yield* releasedInto("r1");
         expect(result._tag === "Success" && result.success.note).toBe("resumed");
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
-        expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["submitted"]);
+        expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["acknowledged"]);
         expect(yield* fs.exists(controlPath(dir, PARKED, "r1"))).toBe(false);
       }),
     ),
@@ -2338,7 +2339,7 @@ const pairBody = pair.toLayer((payload) =>
   }).pipe(asRun(payload)),
 );
 
-test("a steer that names no agent reaches the one launched last, not the last by name", () =>
+test("a steer that names no agent reaches the builder when no step is active, not the last by name", () =>
   runEffect(
     Effect.gen(function* () {
       yield* rig.queueOutputs([
@@ -2384,6 +2385,106 @@ test("a steer that names an agent reaches that agent, not the one launched last"
         Effect.orDie,
       );
       expect(told.agent).toBe(first);
+    }),
+  ));
+
+/** A builder and then a reviewer, as an implement Run's review round launches them. */
+const reviewed = enveloped({ name: "agent-reviewed", input: {}, success: Schema.String });
+const reviewedBody = reviewed.toLayer((payload) =>
+  Effect.gen(function* () {
+    for (const [operation, role] of [
+      ["build", "implementer"],
+      ["review", "reviewer"],
+    ] as const) {
+      yield* agentWork({
+        operation,
+        role,
+        workflow: "agent-reviewed",
+        cwd: rig.projectDir,
+        instructions: "Do it.",
+        output: Verdict,
+      });
+    }
+    return "both";
+  }).pipe(asRun(payload)),
+);
+
+/** The builder at work again, its Output not yet written, with the reviewer idle. */
+const builderBusy = Effect.gen(function* () {
+  yield* reviewed.execute({ runId: "r1", input: {} });
+  const launches = yield* readLaunches(dir, "r1");
+  const build = launches.find((one) => one.operation === "build")!;
+  yield* (yield* FileSystem.FileSystem).remove(build.output);
+  return build.agent;
+});
+
+/** A pane that takes every prompt without herdr seeing a turn come of it. */
+class BusyPanes extends FakeHerdr {
+  override agentPrompt(target: string, text: string) {
+    return super.agentPrompt(target, text).pipe(Effect.as("unobserved" as const));
+  }
+  override agentStatus() {
+    return Effect.succeed("working" as const);
+  }
+}
+
+test("a busy builder takes the steer that names no one, not the idle reviewer launched after it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "built" },
+        { verdict: "clean", note: "reviewed" },
+      ]);
+      const { builder, told } = yield* Effect.gen(function* () {
+        const builder = yield* builderBusy;
+        return { builder, told: yield* say("r1", "keep going", "steer-1") };
+      }).pipe(
+        Effect.provide(reviewedBody),
+        Effect.provide(agentsLayer(hostOf())),
+        Effect.provide(foundationLayer({ dir })),
+        Effect.scoped,
+        Effect.orDie,
+      );
+      expect(told).toMatchObject({ agent: builder, delivered: true, observed: true });
+      expect(told.how).toBe("a turn started");
+    }),
+  ));
+
+test("a steer nothing shows taken is reported sent and not observed, and a role reaches its agent", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "built" },
+        { verdict: "clean", note: "reviewed" },
+      ]);
+      const told = yield* Effect.gen(function* () {
+        yield* builderBusy;
+        const agents = yield* Agents;
+        return yield* agents.steer({
+          runId: "r1",
+          text: "look again",
+          request: "s-1",
+          to: "reviewer",
+        });
+      }).pipe(
+        Effect.provide(reviewedBody),
+        Effect.provide(
+          agentsLayer({ ...hostOf(), herdr: new BusyPanes(rig.pluginEnv()), observeMs: 500 }),
+        ),
+        Effect.provide(foundationLayer({ dir })),
+        Effect.scoped,
+        Effect.orDie,
+      );
+      expect(told).toMatchObject({
+        agent: agentName("r1", "review", null, 1),
+        delivered: true,
+        observed: false,
+      });
+      expect(told.how).toBeUndefined();
+      const [one] = (yield* deliveriesOf(rig.pluginEnv().stateDir, "r1")).filter(
+        ({ delivery }) => delivery.cause.kind === "steer",
+      );
+      expect(one?.delivery).toMatchObject({ state: "submitted", note: "unobserved" });
     }),
   ));
 

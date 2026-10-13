@@ -977,6 +977,7 @@ export const steerRun = (
     readonly runId: string;
     readonly text: string;
     readonly request: string;
+    readonly to?: string;
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: "boundary" | "now" | "interrupt";
@@ -993,6 +994,7 @@ export const steerRun = (
           runId: options.runId,
           text: options.text,
           request: options.request,
+          to: options.to,
           operation: options.operation,
           agent: options.agent,
           mode: options.mode,
@@ -1013,7 +1015,7 @@ export const steerRun = (
       const { sent, route } = answered.value;
       const data = { run: options.runId, ...sent };
       if (sent.delivered)
-        return { ok: true as const, data, human: withNotice(`Told ${sent.agent}.`, sent.redacted) };
+        return { ok: true as const, data, human: withNotice(deliveredLine(sent), sent.redacted) };
       // A receipt that read as delivered when nothing was sent is the failure ADR-0041 ends.
       const why = `Nothing was delivered: ${sent.detail || "no agent to tell"}.`;
       return err(
@@ -1023,6 +1025,20 @@ export const steerRun = (
       );
     }),
   );
+
+/**
+ * A delivery as a front door says it: observed and how, or sent and not seen taken, with
+ * where to look. Never "told" on the strength of a send alone.
+ */
+export const deliveredLine = (sent: {
+  readonly agent: string;
+  readonly observed?: boolean;
+  readonly how?: string;
+  readonly pane?: string;
+}): string =>
+  sent.observed === true
+    ? `Delivered to ${sent.agent} (observed: ${sent.how ?? "taken"}).`
+    : `Sent to ${sent.agent}, not observed. Go to pane: herdr agent focus ${sent.agent}${sent.pane === undefined ? "" : ` (pane ${sent.pane})`}.`;
 
 /**
  * What carries a request on to a finished Run whose agent is gone: its follow-up offer

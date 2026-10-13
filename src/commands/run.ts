@@ -1045,14 +1045,20 @@ const runSteer = Command.make(
     text: Argument.String("text").pipe(
       Argument.withDescription("What to say to the agent this Run has, in your own words"),
     ),
+    to: Flag.String("to").pipe(
+      Flag.withDescription(
+        "builder, reviewer, planner or an agent's name; by default the agent whose step is active, else the builder",
+      ),
+      Flag.optional,
+    ),
     operation: Flag.String("operation").pipe(
-      Flag.withDescription("Which of the Run's agents; the one most recently launched by default"),
+      Flag.withDescription("Which of the Run's agents, by its operation or name"),
       Flag.optional,
     ),
     attach: attachFlag,
     requestId: requestIdFlag,
   },
-  ({ runId, text, operation, attach, requestId }) =>
+  ({ runId, text, to, operation, attach, requestId }) =>
     Effect.gen(function* () {
       const global = yield* root;
       yield* attempt(
@@ -1066,6 +1072,7 @@ const runSteer = Command.make(
               runId,
               text,
               request: id,
+              to: Option.getOrUndefined(to),
               operation: Option.getOrNull(operation) ?? undefined,
               attachments,
               door,

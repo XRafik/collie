@@ -422,6 +422,8 @@ export const HostRpcs = RpcGroup.make(
       runId: Schema.String,
       text: Schema.String,
       request: Schema.String,
+      /** A role (`builder`, `reviewer`, `planner`), an agent or an operation. */
+      to: Schema.optional(Schema.String),
       operation: Schema.optional(Schema.String),
       agent: Schema.optional(Schema.String),
       mode: Schema.optional(Schema.Literals(["boundary", "now", "interrupt"])),
@@ -648,7 +650,7 @@ const handlers = (
             registry.grant({ runId, name, command }),
           ).pipe(Effect.provideContext(bun)),
         steer: (
-          { runId, text: given, request, operation, agent, mode, attachments },
+          { runId, text: given, request, to, operation, agent, mode, attachments },
           { client },
         ) => {
           const { text, removed } = scrub(given);
@@ -677,6 +679,8 @@ const handlers = (
                 mode: mode ?? null,
               };
               if (attached !== undefined) asked.attachments = attached;
+              // Only where given, so a request recorded before `to` existed still matches.
+              if (to !== undefined) asked.to = to;
               return once(
                 runDir(dir, runId),
                 {
@@ -706,6 +710,7 @@ const handlers = (
                       runId,
                       text: told,
                       request,
+                      to,
                       operation,
                       agent,
                       mode,
@@ -730,6 +735,7 @@ const TOO_LONG =
 /** What a steer's request has to ask again, as `AskedFor` is a start's. */
 type SteerAsked = {
   readonly text: string;
+  to?: string;
   readonly operation: string | null;
   readonly agent: string | null;
   readonly mode: string | null;
