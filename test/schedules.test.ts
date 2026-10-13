@@ -86,7 +86,6 @@ test(
               schedule: { name: "hello-often", occurrence: first.occurrence },
             },
           });
-          // One Run per occurrence, never two.
           const runs = yield* scheduled(world, "hello-often");
           expect(new Set(runs.map((one) => one.occurrence)).size).toBe(runs.length);
 
@@ -156,6 +155,48 @@ const addAsking = (world: World, name: string, cron: string) =>
     "--workspace",
     world.project,
   ]);
+
+test(
+  "a Schedule removed or paused while herdr does not answer starts no Run once herdr is back",
+  () =>
+    proves(
+      "collie-schedule-herdr-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const down = `${world.state}/../herdr-down`;
+          yield* fs.writeFileString(down, "").pipe(Effect.orDie);
+          const env = { ...FAST, FAKE_HERDR_DOWN: down };
+          const add = (name: string) =>
+            collie(
+              world,
+              ["schedule", "add", name, "hello", "--cron", "* * * * * *"].concat([
+                "--input",
+                "name=world",
+                "--workspace",
+                world.project,
+              ]),
+              env,
+            );
+          yield* add("removed");
+          yield* add("paused");
+          yield* until(
+            () => listed(world),
+            (now) =>
+              now.schedules.length === 2 &&
+              now.schedules.every((one) => one.last?.outcome.kind === "waiting-for-herdr"),
+          );
+          yield* collie(world, ["schedule", "remove", "removed"], env);
+          yield* collie(world, ["schedule", "pause", "paused"], env);
+          yield* fs.remove(down).pipe(Effect.orDie);
+          yield* past((yield* Clock.currentTimeMillis) + 4_000);
+          expect(yield* scheduled(world, "removed")).toEqual([]);
+          expect(yield* scheduled(world, "paused")).toEqual([]);
+        }),
+      MODULES,
+    ),
+  60_000,
+);
 
 test(
   "a Run still going holds the next occurrence, its end wakes the chain, and a pause or a removal leaves its Run going",
@@ -270,7 +311,6 @@ test(
             () => scheduled(world, "missed"),
             (runs) => runs.length >= 1,
           );
-          // The latest missed occurrence, not the first nor one for each.
           expect(epochMs(late!.occurrence)).toBeGreaterThan(epochMs(pending!) + 4_000);
           expect(epochMs(late!.occurrence)).toBeGreaterThanOrEqual(restarted - 2_000);
           yield* asking(world, late!.run);

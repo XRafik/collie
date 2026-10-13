@@ -332,34 +332,44 @@ export const schedulesLayer = (options: {
               last: { occurrence, outcome: { kind: "waiting-for-herdr" } },
             })),
           ),
-          Effect.retry({ schedule: Retry.spaced(HERDR_WAIT) }),
+          Effect.retry({ schedule: Retry.spaced(options.seconds ? "1 second" : HERDR_WAIT) }),
           Effect.provideContext(hosted),
           Effect.orDie,
         );
 
       const startOccurrence = Effect.fn("Schedules.startOccurrence")(function* (
         name: string,
+        epoch: string,
         occurrence: string,
       ): Effect.fn.Return<OccurrenceOutcome> {
-        const record = yield* read(name);
-        if (record === null) return { kind: "refused", reason: "the Schedule was removed" };
         yield* herdrAnswers(name, occurrence);
-        const outcome: OccurrenceOutcome = yield* startSaved(record.start, {
-          name,
-          occurrence,
-        }).pipe(
-          Effect.map((run) => ({ kind: "started" as const, run })),
-          Effect.catch((failure) =>
-            Effect.succeed({
-              kind: "refused" as const,
-              reason: "reason" in failure ? failure.reason : reason(failure),
-            }),
-          ),
+        const refused = (why: string) => ({ kind: "refused" as const, reason: why });
+        // Read under the write lock, so a pause, resume or removal lands wholly before the start or after it.
+        const outcome: OccurrenceOutcome = yield* writing.withPermits(1)(
+          Effect.gen(function* () {
+            const record = yield* read(name);
+            if (record === null) return refused("the Schedule was removed");
+            if (record.epoch !== epoch) return refused("the Schedule was resumed");
+            if (record.paused) return refused("the Schedule was paused");
+            return yield* startSaved(record.start, { name, occurrence }).pipe(
+              Effect.map((run) => ({ kind: "started" as const, run })),
+              Effect.catch((failure) =>
+                Effect.succeed(refused("reason" in failure ? failure.reason : reason(failure))),
+              ),
+            );
+          }),
         );
         yield* update(name, (now) =>
-          outcome.kind === "started"
-            ? { ...now, last: { occurrence, outcome }, lastRun: outcome.run, running: outcome.run }
-            : { ...now, last: { occurrence, outcome } },
+          now.epoch !== epoch
+            ? now
+            : outcome.kind === "started"
+              ? {
+                  ...now,
+                  last: { occurrence, outcome },
+                  lastRun: outcome.run,
+                  running: outcome.run,
+                }
+              : { ...now, last: { occurrence, outcome } },
         );
         return outcome;
       });
@@ -452,7 +462,7 @@ export const schedulesLayer = (options: {
             const outcome = yield* Activity.make({
               name: "start",
               success: OccurrenceOutcome,
-              execute: startOccurrence(payload.name, woke.occurrence),
+              execute: startOccurrence(payload.name, payload.epoch, woke.occurrence),
             });
             // On this execution's own fiber, so the Run's end is what wakes it. A suspension
             // is the engine's and passes through; how the Run ended is its own record's.

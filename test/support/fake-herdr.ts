@@ -16,9 +16,17 @@ const held =
       )
     : Effect.void;
 
-const { code, stdout, stderr } = await runEffect(
-  held.pipe(Effect.andThen(fakeHerdr(Bun.argv.slice(2)))),
-);
+// A `workspace list` fails while this file exists, as a herdr that does not answer.
+const down = Bun.env.FAKE_HERDR_DOWN;
+const unanswered =
+  down !== undefined &&
+  Bun.argv[2] === "workspace" &&
+  Bun.argv[3] === "list" &&
+  (await Bun.file(down).exists());
+
+const { code, stdout, stderr } = unanswered
+  ? { code: 1, stdout: "", stderr: "herdr is not running\n" }
+  : await runEffect(held.pipe(Effect.andThen(fakeHerdr(Bun.argv.slice(2)))));
 if (stderr) await Bun.write(Bun.stderr, stderr);
 if (stdout) await Bun.write(Bun.stdout, stdout);
 globalThis.process.exitCode = code;
