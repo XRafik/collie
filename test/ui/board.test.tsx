@@ -1820,3 +1820,20 @@ test("a newer release is said in the board's header, with the command", () =>
       expect(current.said()).not.toContain("is out");
     }),
   ));
+
+test("a newer release gives way to the header's controls on a narrow pane", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const width of [100, 70]) {
+        const header = (app: { frame: () => string }) =>
+          app.frame().split("\n").slice(0, 4).join("\n");
+        const current = header(yield* mount(appState(), width));
+        const stale = header(yield* mount(appState({ board: board({ newer: "99.0.0" }) }), width));
+        for (const control of ["⌕", "+ New run", "≡"]) {
+          expect(stale.includes(control)).toBe(current.includes(control));
+        }
+        expect(stale).toContain("⌕");
+        expect(stale).toContain("+ New run");
+      }
+    }),
+  ));

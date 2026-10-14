@@ -349,9 +349,11 @@ function Header(props: {
         </box>
       </Show>
       <Show when={props.newer !== null}>
-        <text fg={C.amber} wrapMode="none" style={{ flexShrink: 0 }}>
-          {`  ${newerLine(props.newer ?? "")}`}
-        </text>
+        <box style={{ flexShrink: 1, overflow: "hidden" }}>
+          <text fg={C.amber} wrapMode="none">
+            {`  ${newerLine(props.newer ?? "")}`}
+          </text>
+        </box>
       </Show>
       <box style={{ flexGrow: 1 }} />
       {/* A field, not a word: three rows like the buttons beside it, lit while it has
