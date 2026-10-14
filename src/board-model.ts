@@ -10,6 +10,7 @@ import { VerifyEvent, Pass } from "./verify-model";
 export { PASSES, Pass } from "./verify-model";
 import { IntentChangeSchema, ChangedIntent } from "./intent-model";
 import { UsageReading } from "./usage-model";
+import { HostDefinitions } from "./definitions-model";
 import { VerifySpecSchema } from "./verify-spec";
 
 const STATE_ORDER = [
@@ -1337,6 +1338,8 @@ export const FrontDoorRpcs = RpcGroup.make(
     payload: { project: Schema.String },
     success: Schema.Array(Startable),
   }),
+  /** Every Workflow and Persona in this host's shipped and user Layers, read in full. */
+  Rpc.make("definitions", { success: HostDefinitions, error: HostRefused }),
   /** A conversation's pending News, settled as `as` for that conversation alone. */
   Rpc.make("news", {
     payload: {

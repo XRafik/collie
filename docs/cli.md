@@ -1848,7 +1848,11 @@ The operations that change a Run are on `FrontDoorRpcs` too: `start`, `answer`, 
 `invoke` (an offer). Two reads tell a front door on another computer what those take:
 `offers`, what a Run offers to do next as its module decides now, with each offer's
 arguments as JSON Schema; and `workflows`, what may be started in a project and the Inputs
-each asks for. `start` then takes what a human typed in `text`, and the host settles it
+each asks for. A third, `definitions`, reads every Workflow and Persona in the host's
+shipped and user Layers in full: each module as `workflow show` reads it, with its own file
+and the Markdown beside it named `<stem>.md` or `<stem>.<anything>.md`, the modules that
+would not load, each Persona as `persona show` gives it, and the Persona files that would
+not load. It typechecks nothing. `start` then takes what a human typed in `text`, and the host settles it
 against the workflow's own schema. `usage` reads this Machine's [Usage readings](#usage).
 `cleanup` reads what a sweep would remove and keep, and
 `sweep` sweeps now, recorded with its Actor in the state directory's `cleanup/operations.jsonl`

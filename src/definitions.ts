@@ -5,8 +5,9 @@ import { expressionsIn, malformedIn } from "./template";
 import { parseDocument, YamlError, type YamlValue } from "./yaml";
 import { Crypto, Effect, FileSystem, Path, Result, type PlatformError } from "effect";
 import { isString } from "./schema";
+import type { PersonaView } from "./definitions-model";
 
-export type LayerName = "baseline" | "user" | "project";
+export type LayerName = PersonaView["layer"];
 
 export interface Layer {
   name: LayerName;
@@ -60,6 +61,17 @@ export interface PersonaDef extends Provenance {
   name: string;
   description: string;
   body: string;
+}
+
+export function personaData(persona: PersonaDef): PersonaView {
+  return {
+    name: persona.name,
+    description: persona.description,
+    body: persona.body,
+    layer: persona.layer,
+    path: persona.path,
+    extends: persona.extends ?? null,
+  };
 }
 
 /** A full copy whose parent has changed since: what it copied is no longer what it forked. */

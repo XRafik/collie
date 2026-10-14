@@ -2,7 +2,7 @@ import type { BunServices } from "@effect/platform-bun/BunServices";
 import { Effect, FileSystem, Option, Schema, Stdio, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { Argument, Command, Flag } from "effect/cli";
-import { layers, loadDefinitions, type PersonaDef } from "../definitions";
+import { layers, loadDefinitions } from "../definitions";
 import { currentEnv, type PluginEnv } from "../env";
 import { Herdr, type WorkspaceInfo } from "../herdr";
 import { unsafePathComponent } from "../naming";
@@ -152,17 +152,6 @@ export const discoveryContext = Effect.fn("collie.discoveryContext")(function* (
 export const definitions = Effect.fn("collie.definitions")(function* (env: PluginEnv) {
   return yield* loadDefinitions(yield* layers(env));
 });
-
-export function personaData(persona: PersonaDef) {
-  return {
-    name: persona.name,
-    description: persona.description,
-    body: persona.body,
-    layer: persona.layer,
-    path: persona.path,
-    extends: persona.extends ?? null,
-  };
-}
 
 /**
  * A Run named on the command line, with the work it produced and the evidence filed about

@@ -12,15 +12,19 @@
 import { Effect, FileSystem, Path, Schema, type PlatformError } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import {
-  Declared,
   ENTRY_SUFFIX,
-  LAYERS,
   declaredBy,
+  discover,
+  searchPath,
   stem,
   type EntryLayer,
   type Found,
 } from "./discovery";
+import { loadDefinitions, personaData } from "./definitions";
+import type { Described, HostDefinitions } from "./definitions-model";
 import { reason } from "./naming";
+
+export { Described, Drawn } from "./definitions-model";
 import { loadEntry, provisionToolchain, refreshToolchain, typecheckEntry } from "./engine";
 import {
   RESERVED_INPUTS,
@@ -30,36 +34,11 @@ import {
   type WorkflowEntry,
 } from "./sdk";
 
-/** A schema as a front door draws it, and each place the drawing says less than it does. */
-export const Drawn = Schema.Struct({
-  schema: Schema.NullOr(Schema.Json),
-  limits: Schema.Array(Schema.String),
-});
-
 /** Where a module is, as both a reading and a writing name it. */
 export interface Where {
   readonly layer: EntryLayer;
   readonly path: string;
 }
-
-/** One module, in the shape every front door reads it in. */
-export const Described = Schema.Struct({
-  id: Schema.String,
-  title: Schema.String,
-  description: Schema.String,
-  layer: Schema.Literals(LAYERS),
-  path: Schema.String,
-  inputs: Schema.Array(Declared),
-  /** What the host settles beside the payload; a module may not declare one of these. */
-  options: Schema.Array(Schema.Struct({ name: Schema.String, meaning: Schema.String })),
-  success: Drawn,
-  error: Drawn,
-  /** Hints, outcome and offers as data: the author's closures stay in the module. */
-  metadata: Schema.Json,
-  /** Why the module would not construct, or null. Constructing it starts no Run. */
-  broken: Schema.NullOr(Schema.String),
-});
-export type Described = typeof Described.Type;
 
 const NOT_DRAWN = { schema: null, limits: [] } as const;
 
@@ -114,6 +93,42 @@ export const readModule: (found: Found) => Effect.Effect<Described, never, FileS
           broken: loaded.failure.message,
         };
   });
+
+/** Read as `workflow show` and `persona show` read them, with each module's own files. */
+export const readDefinitions = Effect.fn("Authoring.readDefinitions")(function* (where: {
+  readonly pluginRoot: string;
+  readonly userDir: string;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const { entries, problems } = yield* discover(
+    searchPath({ ...where, project: "" }).filter((root) => root.layer !== "project"),
+  );
+  const workflows = yield* Effect.forEach(entries, (found) =>
+    Effect.gen(function* () {
+      const dir = directoryOf(found.path);
+      const own = (name: string) =>
+        name === `${stem(found.path)}${ENTRY_SUFFIX}` ||
+        (name.startsWith(`${stem(found.path)}.`) && name.endsWith(".md"));
+      const names = (yield* fs.readDirectory(dir)).filter(own).sort();
+      const files = yield* Effect.forEach(names, (name) =>
+        fs
+          .readFileString(`${dir}/${name}`)
+          .pipe(Effect.map((text) => ({ path: `${dir}/${name}`, text }))),
+      );
+      return { ...(yield* readModule(found)), files };
+    }),
+  );
+  const { personas, errors } = yield* loadDefinitions([
+    { name: "baseline", dir: where.pluginRoot },
+    { name: "user", dir: where.userDir },
+  ]);
+  return {
+    workflows,
+    problems,
+    personas: [...personas.values()].sort((a, b) => a.name.localeCompare(b.name)).map(personaData),
+    errors,
+  } satisfies HostDefinitions;
+});
 
 /** What `make` gave back, or the sentence it threw instead. One of the two is always null. */
 type Constructed =

@@ -95,6 +95,7 @@ import { configuredAgents } from "./agents";
 import { hostLogger, rotateInPlace } from "./host-log";
 import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
+import { readDefinitions } from "./authoring";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
 import { dataHomeOf, desktopRootOf } from "./desktop";
@@ -1275,6 +1276,11 @@ const frontDoorHandlers = (
                 inputs: inputs.map(({ name, required, schema }) => ({ name, required, schema })),
               })),
             ),
+            Effect.provideContext(bun),
+          ),
+        definitions: () =>
+          readDefinitions(env).pipe(
+            Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
             Effect.provideContext(bun),
           ),
         refresh: ({ request }, { client }) =>
