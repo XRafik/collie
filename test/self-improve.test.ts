@@ -12,6 +12,7 @@ import { agentsLayer, type AgentHost } from "../src/agents";
 import { Children, Host, Run, WorkflowError, type ChildAsk, type Issue } from "../src/sdk";
 import { foundationLayer, loadEntry, runDir } from "../src/engine";
 import { Store } from "../src/store";
+import { redact } from "../src/conversation";
 import selfImprove from "../.collie/workflows/self-improve.workflow";
 import {
   type Finding,
@@ -25,6 +26,8 @@ import {
 } from "../.collie/workflows/retrospective";
 
 const ROOT = new URL("../", import.meta.url).pathname;
+const LEAKED = `ghp_${"x".repeat(24)}`;
+const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 let rig: Rig;
 let dir: string;
@@ -95,12 +98,21 @@ const forge = Layer.effect(Host)(
           completed: [],
           stopped: [],
         }),
-      issues: () => Effect.succeed(open),
+      issues: () =>
+        Effect.succeed([
+          ...open,
+          ...filed.map(({ title, body }, at) => ({
+            number: 101 + at,
+            title,
+            body,
+            url: `https://github.com/cego/collie/issues/${101 + at}`,
+          })),
+        ]),
       fileIssue: ({ title, body }) =>
         refusing.has(title)
           ? Effect.fail(new WorkflowError({ reason: "it names another checkout" }))
           : Effect.sync(() => {
-              filed.push({ title, body });
+              filed.push({ title: redact(title), body: redact(body) });
               const number = 100 + filed.length;
               return { number, url: `https://github.com/cego/collie/issues/${number}` };
             }),
@@ -326,7 +338,7 @@ test(
         yield* rig.queueOutputs([
           triage(
             [
-              finding({ key: "host-crash" }),
+              finding({ key: "host-crash", body: `Leaked ${LEAKED} in its log.` }),
               finding({ key: "once", category: "navigation" }),
               finding({ key: "costly-reads", category: "tool-economy", runs: ["r-a", "r-b"] }),
               finding({ key: "slow-reads", category: "navigation", issue: 7 }),
@@ -372,6 +384,8 @@ test(
         ]);
         expect(started[0]?.input.then).toBe("implement");
         expect(started[0]?.input.goal).toContain("`Closes #101`");
+        expect(started[0]?.input.goal).toContain("Leaked <github token> in its log.");
+        expect(encode(started)).not.toContain(LEAKED);
         expect(started[1]?.input.goal).toContain("`Closes #102`");
 
         const summary = yield* read(`${runDir(dir, "r-day")}/summary.md`);

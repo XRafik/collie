@@ -9,6 +9,7 @@ import markdown from "./self-improve.md" with { type: "text" };
 import {
   type Ended,
   type Finding,
+  type Improvement,
   type Outcome,
   MAX_FINDINGS,
   Pin,
@@ -206,20 +207,39 @@ export default defineWorkflow({
       }
 
       const outcomes = new Map(acted.map(({ finding, outcome }) => [finding.key, outcome]));
-      const filedFor = (key: string) =>
-        acted.flatMap(({ finding, outcome }) =>
-          finding.key === key && outcome.kind === "filed"
-            ? [{ finding, number: outcome.number, url: outcome.url }]
-            : [],
-        );
+      const starting = chosen(triaged.improvements, outcomes, bound);
+      // The issues as the forge holds them, so a goal carries only what the host let out.
+      const published =
+        starting.length === 0
+          ? []
+          : yield* Activity.make({
+              name: "published",
+              success: Opened,
+              error: WorkflowError,
+              execute: host
+                .issues(run.id)
+                .pipe(Effect.map((issues) => issues.map((issue) => ({ ...issue, keys: [] })))),
+            });
+      const issuesOf = (improvement: Improvement) =>
+        improvement.keys.flatMap((key) => {
+          const outcome = outcomes.get(key);
+          return outcome?.kind === "filed"
+            ? published.filter(({ number }) => number === outcome.number)
+            : [];
+        });
       const improvements: ReadonlyArray<Ended> = yield* Effect.all(
-        chosen(triaged.improvements, outcomes, bound).map((improvement) =>
+        starting.map((improvement) =>
           Effect.gen(function* () {
+            const issues = issuesOf(improvement);
+            if (issues.length < improvement.keys.length)
+              return yield* new WorkflowError({
+                reason: "an issue it fixes is not among the forge's open issues",
+              });
             const child = yield* children.start({
               invocation: `improvement-${improvement.name}`,
               workflow: "plan",
               input: {
-                goal: goalOf(improvement, improvement.keys.flatMap(filedFor)),
+                goal: goalOf(issues),
                 // oxlint-disable-next-line unicorn/no-thenable -- plan's Input is named `then`
                 then: "implement",
               },

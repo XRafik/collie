@@ -116,18 +116,16 @@ export const chosen = (
     .slice(0, bound);
 
 export const goalOf = (
-  improvement: Improvement,
   issues: ReadonlyArray<{
-    readonly finding: Finding;
     readonly number: number;
+    readonly title: string;
+    readonly body: string;
     readonly url: string;
   }>,
 ) =>
   [
-    `Fix these issues in Collie, which a self-improve Run filed (${improvement.why}):`,
-    ...issues.map(
-      ({ finding, number, url }) => `## #${number} ${finding.title}\n\n${url}\n\n${finding.body}`,
-    ),
+    "Fix these issues in Collie, which a self-improve Run filed:",
+    ...issues.map(({ number, title, url, body }) => `## #${number} ${title}\n\n${url}\n\n${body}`),
     `The merge request must say ${issues.map(({ number }) => `\`Closes #${number}\``).join(", ")}, one per issue, so merging it closes them.`,
     "Quote nothing from anywhere else: no Run's goal, no person's words, no transcript and no other repository.",
   ].join("\n\n");
