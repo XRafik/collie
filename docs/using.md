@@ -109,7 +109,7 @@ minutes, and says nothing when it cannot.
   shipped workflows, personas, prompts and operator skill. The runner writes it, and every
   upgrade replaces it whole, which also repairs anything missing or damaged in it.
 - `user/` is yours: your workflows and personas, `config.json`, settings and `verify.json`.
-  No upgrade writes it. `COLLIE_USER_DIR` moves it.
+  The first placement creates it empty, and no upgrade writes it. `COLLIE_USER_DIR` moves it.
 - `kept/` holds edits an upgrade found inside `release/` before replacing it, under
   `kept/<when>/` with their paths in the release. The upgrade names each one. A kept edit is
   no longer in force: to keep a change, fork the workflow or persona into `user/`

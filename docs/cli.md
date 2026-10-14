@@ -1537,7 +1537,9 @@ What it does depends on where the installation is, never on its git state
   [Collie directory](using.md#the-collie-directory)'s `release/`, replacing it whole, so it
   also repairs a damaged one. Each file there that differs from what the last placement
   recorded is first copied into `kept/<when>/`, and the report names each one with how to
-  fork it into `user/`. Another version's runner is downloaded with its `.sig`, verified
+  fork it into `user/`. Placements into one Collie directory take turns under its
+  `placing.lock`, so a CLI, Desktop and a peer upgrading at once never mix two releases.
+  Another version's runner is downloaded with its `.sig`, verified
   against Collie's Ed25519 release key, and handed the upgrade (`upgrade --to <version>`
   against the same Collie directory); what it reports is this upgrade's report. No git is
   involved, so nothing anyone wrote can block it. A newest release that cannot be read, a
