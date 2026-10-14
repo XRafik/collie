@@ -91,7 +91,8 @@ herdr actions, and the `collie` CLI.
   client) and `desktop/src/shared/` (the view's RPC and the Flock it folds), with the main
   process's behaviour tested in `test/desktop-*.test.ts`. A card's record is
   `desktop/view/app/components/RunRecord.vue`, one of the pages `usePage` lays over the
-  board's column, with `SettingsPage.vue` and `MachinesPage.vue`; what agent
+  board's column, with `SettingsPage.vue`, `MachinesPage.vue` and `WorkflowsPage.vue` (the
+  Flock's Workflows and Personas, read with `definitionsIn` in `desktop/src/bun/machine.ts`); what agent
   markdown may keep is `desktop/src/shared/markdown.ts` with `desktop/test/markdown.test.ts`; what a click,
   a double-click, a name, a page's back button and Escape do to the selected card and
   the open page is `afterGesture` in `desktop/src/shared/board-clicks.ts`, tested in

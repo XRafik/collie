@@ -1182,12 +1182,6 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
           .pipe(
             Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
           );
-      case "Start":
-        return door
-          .start({ project: action.project, id: action.id, input: {}, text: action.text, request })
-          .pipe(
-            Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
-          );
     }
   })();
   return over(reached, said, request);
@@ -1215,8 +1209,18 @@ export const focusOn = (door: Reached, request: string, runId: string, agent?: s
 export const offersOn = (door: Reached, runId: string) =>
   over(door, door.desktop.offers({ runId }));
 
-export const workflowsOn = (door: Reached, project: string) =>
-  over(door, door.desktop.workflows({ project }));
+/** Its host's Workflows and Personas; a refusal names the Machine. */
+export const definitionsIn = (doors: ReadonlyMap<string, Reached>, installation: string) =>
+  doorTo(doors, installation).pipe(
+    Effect.flatMap((door) =>
+      over(door, door.desktop.definitions()).pipe(
+        Effect.mapError(
+          (failed) =>
+            new ActionFailed({ ...failed, reason: `${door.machine.name}: ${failed.reason}` }),
+        ),
+      ),
+    ),
+  );
 
 /** Each shown Machine's door by installation, which wakes whoever waits on it to change. */
 export class DoorMap<D> extends Map<string, D> {

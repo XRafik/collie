@@ -90,7 +90,7 @@ import {
   runDetailOn,
   usageOn,
   runFileOn,
-  workflowsOn,
+  definitionsIn,
   endChildren,
   flockStream,
   type HerdrMachine,
@@ -1033,8 +1033,7 @@ const main = Effect.gen(function* () {
       ),
     offers: ({ installation, runId }) =>
       doorTo(doors, installation).pipe(Effect.flatMap((door) => offersOn(door, runId))),
-    workflows: ({ installation, project }) =>
-      doorTo(doors, installation).pipe(Effect.flatMap((door) => workflowsOn(door, project))),
+    definitions: ({ installation }) => definitionsIn(doors, installation),
     updates: () => Stream.map(updates.news, (news) => ({ version: manifest.version, news })),
     checkForUpdates: () => updates.check,
     restart: () =>

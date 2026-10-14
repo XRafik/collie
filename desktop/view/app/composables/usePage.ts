@@ -4,7 +4,8 @@
 export type Page =
   | { readonly kind: "record"; readonly key: string }
   | { readonly kind: "settings" }
-  | { readonly kind: "machines" };
+  | { readonly kind: "machines" }
+  | { readonly kind: "workflows" };
 
 const page = ref<Page | null>(null);
 const asked = ref<string | null>(null);
@@ -16,9 +17,9 @@ export const usePage = () => ({
     page.value = { kind: "record", key };
     asked.value = tab;
   },
-  open: (kind: "settings" | "machines") => (page.value = { kind }),
+  open: (kind: Exclude<Page["kind"], "record">) => (page.value = { kind }),
   /** Opens it, or goes back if it is the page open. */
-  toggle: (kind: "settings" | "machines") =>
+  toggle: (kind: Exclude<Page["kind"], "record">) =>
     (page.value = page.value?.kind === kind ? null : { kind }),
   taken: () => (asked.value = null),
   back: () => (page.value = null),

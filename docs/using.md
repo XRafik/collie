@@ -1183,12 +1183,23 @@ herdr's default session. The terminal is `x-terminal-emulator` where it exists, 
 first of `gnome-terminal`, `konsole`, `kitty`, `alacritty` and `xterm` on PATH; on macOS it
 is Terminal.app. Where no terminal was found, or it failed as it started, the card shows
 the command to copy. A Run with no live agent is looked for only in its Task's own Herd,
-since workspace ids are only unique within one. **New run** asks a Machine what a project
-can start, then starts it with what you typed for its inputs. What came of each, or the
+since workspace ids are only unique within one. What came of each action, or the
 host's own words for why not, is said in a toast, and **Try again** on a failure sends the
 same request again, so a host that took it before the answer was lost does it once; the card then changes from the host's
 stream like any other change. Every one is recorded on that Machine as `desktop`, with this
 computer's name.
+
+**Workflows** is a read-only page of every Workflow and Persona the Flock has, in its
+shipped and user Layers. It is one view for the whole Flock, since every In sync Machine
+has the same definitions: it reads this computer's Machine where that is connected, else
+the first connected Machine, names the Machine it read under its title, and reads again
+each time it opens. It lists the Workflows, each marked where it would not construct, the
+modules that would not load, the Personas and the Persona files that would not load.
+A Workflow chosen shows its Inputs, the options the host settles, its result and failure
+schemas, its metadata and each of its files, the module and its Markdown; a Persona chosen
+shows its instructions rendered. A read that failed — no Machine connected, a renewed
+connection, or an older Collie refusing it — is said on the page in its own words. Nothing
+on it starts, edits or checks anything: Runs are started from the Flock chat.
 
 **Machines** is a page that lists every Machine Desktop reaches — this computer first, then
 herdr's — with how it stands, and is where Machines join the Flock. Each joins the same way:

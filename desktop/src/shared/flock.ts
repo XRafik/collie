@@ -19,9 +19,9 @@ import {
   RunDetail,
   RunFile,
   sortBoard,
-  Startable,
   TaskView,
 } from "../../../src/board-model";
+import { HostDefinitions } from "../../../src/definitions-model";
 
 /**
  * A Machine as Desktop knows it: its installation id, the herdr profile it is reached
@@ -256,11 +256,6 @@ export const DesktopAction = Schema.Union([
     offer: Schema.String,
     input: Schema.Record(Schema.String, Schema.Json),
   }),
-  Schema.TaggedStruct("Start", {
-    project: Schema.String,
-    id: Schema.String,
-    text: Schema.Record(Schema.String, Schema.String),
-  }),
 ]);
 export type DesktopAction = typeof DesktopAction.Type;
 
@@ -422,9 +417,10 @@ export const DesktopRpcs = RpcGroup.make(
   Rpc.make("terminalSend", { payload: { command: TerminalCommand }, error: ActionFailed }),
   /** A web page, opened in the human's own browser. */
   Rpc.make("openLink", { payload: { url: Schema.String } }),
-  Rpc.make("workflows", {
-    payload: { installation: Schema.String, project: Schema.String },
-    success: Schema.Array(Startable),
+  /** Its host's Workflows and Personas, for the Workflows page. */
+  Rpc.make("definitions", {
+    payload: { installation: Schema.String },
+    success: HostDefinitions,
     error: ActionFailed,
   }),
   /** Desktop's own version and update news, the latest first. */
@@ -861,13 +857,13 @@ export const flockCards = (flock: Flock) => {
     tasks: sortBoard([...placed.keys()]),
     // SAFETY: the board's helpers filter and sort these Tasks; they never make new ones.
     placedOf: (task: TaskView) => placed.get(task)!,
-    /** Each live Machine by its display name, and the projects its board has work in. */
+    /** Each live Machine by its display name, and whether it is this computer's. */
     machines: [...flock.machines]
       .filter(([, { asOf }]) => asOf === null)
-      .map(([installation, { tasks }]) => ({
+      .map(([installation, { machine }]) => ({
         installation,
         name: names.get(installation)!,
-        projects: [...new Set([...tasks.values()].map((task) => task.project))].sort(),
+        local: machine.profile === "local",
       })),
   };
 };
