@@ -29,6 +29,7 @@ import {
 import { carriedBefore, carryOutProposal } from "./run-actions";
 export { carryOutProposal, registerRunExecutors } from "./run-actions";
 import { shell, whatItSaid, type Runner } from "./mr";
+import { ensureLockDir, withLock } from "./lock";
 import { checkoutsUnder, projectsRoot } from "./projects";
 import { newestRelease, ownPlatform, releasesOf, verifiedRunner } from "./releases";
 import {
@@ -498,6 +499,25 @@ const humansIn = Effect.fn("operations.humansIn")(function* (
   return found;
 });
 
+/** Long enough for another placement to finish; claims are 25ms apart. */
+const PLACING_CLAIMS = 2_400;
+
+/** `placeRelease`, one placement at a time per Collie directory. */
+export const placeLocked = Effect.fn("operations.placeLocked")(function* (
+  carried: Carried,
+  collieDir: string,
+  version: string,
+) {
+  const lock = `${collieDir}/placing.lock`;
+  yield* ensureLockDir(lock);
+  return yield* withLock(
+    lock,
+    Effect.fail(new Error(`another placement held ${lock} for over a minute`)),
+    placeRelease(carried, collieDir, version),
+    PLACING_CLAIMS,
+  );
+});
+
 /** Places the release this runner carries, then prepares it. */
 const placeOwn = Effect.fn("operations.placeOwn")(function* (
   env: PluginEnv,
@@ -512,7 +532,7 @@ const placeOwn = Effect.fn("operations.placeOwn")(function* (
       { root: env.pluginRoot },
     );
   }
-  const placed = yield* Effect.result(placeRelease(carried, env.collieDir, manifest.version));
+  const placed = yield* Effect.result(placeLocked(carried, env.collieDir, manifest.version));
   if (placed._tag === "Failure") {
     return err("operation_failed", `Could not place the release in ${env.collieDir}.`, {
       root: env.collieDir,

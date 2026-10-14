@@ -1,7 +1,6 @@
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { sha256Hex } from "./attachments";
 import { nowIso } from "./time";
-import { ensureLockDir, withLock } from "./lock";
 import type { ChildProcessSpawner } from "effect/process";
 import { shell, type Runner } from "./mr";
 
@@ -101,31 +100,13 @@ const filesUnder = Effect.fn("release.filesUnder")(function* (dir: string) {
   return files.sort();
 });
 
-/** Long enough for another placement to finish; claims are 25ms apart. */
-const PLACING_CLAIMS = 2_400;
-
 /**
  * Writes `carried` into `<collieDir>/release` whole: beside the current one, recorded, then
- * swapped, one placement at a time. Every file of the current release that differs from its
- * own record is copied into `kept/<when>/` first; the result names each, relative to
- * `collieDir`.
+ * swapped. Every file of the current release that differs from its own record is copied into
+ * `kept/<when>/` first; the result names each, relative to `collieDir`. Unlocked: callers go
+ * through `placeLocked`.
  */
 export const placeRelease = Effect.fn("release.place")(function* (
-  carried: Carried,
-  collieDir: string,
-  version: string,
-) {
-  const lock = `${collieDir}/placing.lock`;
-  yield* ensureLockDir(lock);
-  return yield* withLock(
-    lock,
-    Effect.fail(new Error(`another placement held ${lock} for over a minute`)),
-    placeHeld(carried, collieDir, version),
-    PLACING_CLAIMS,
-  );
-});
-
-const placeHeld = Effect.fn("release.placeHeld")(function* (
   carried: Carried,
   collieDir: string,
   version: string,
