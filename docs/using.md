@@ -2360,6 +2360,21 @@ step leaves the new copy paused and says so, and the same move asked again finis
 without doing any step twice. Desktop's **Move to…** and the Flock chat's
 `collie_move_schedule` run this one sequence.
 
+From a terminal, `--machine` puts a Schedule on another paired Machine, and pauses,
+resumes or removes one there:
+
+```sh
+collie --machine vm schedule add nightly-review --cron "0 7 * * *" review \
+  --input target=branch:main --input plan= --input proves= --workspace /home/me/src/app
+collie schedule list
+collie schedule move nightly-review --to laptop --workspace /Users/me/src/app
+```
+
+That Machine decides the add: its own saved Workflows and its own checkout, so name the
+checkout by its absolute path there. `collie schedule list` lists every Machine's Schedules,
+and names a Machine that did not answer. `collie schedule move` moves one from this Machine,
+or the one `--machine` names, to `--to`, as Desktop's **Move to…** does.
+
 A Run a Schedule started says so on its record: "Started by schedule `nightly-review` for
 2026-10-14T05:00:00.000Z".
 

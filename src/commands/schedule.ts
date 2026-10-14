@@ -1,4 +1,4 @@
-// `collie schedule`: this Machine's Schedules, added, listed, paused, resumed and removed
+// `collie schedule`: a Machine's Schedules, added, listed, paused, resumed, removed and moved
 // through its host (ADR-0052). Every line names the Machine it is about.
 
 import { Effect, Option } from "effect";
@@ -7,9 +7,11 @@ import { agentStartRefusal, asOptionText, insideCheckout } from "../agent-start"
 import { mutation } from "../envelope";
 import type { PluginEnv } from "../env";
 import { Herdr } from "../herdr";
-import { changeSchedule, moduleFor, scheduleListing } from "../lifecycle";
+import { changeSchedule, flockSchedules, moduleFor, scheduleDoorOn } from "../lifecycle";
+import { machineName } from "../peers";
+import { moveSchedule } from "../schedule-move";
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { err, type OpResult } from "../operations";
+import { err, type Failure, type OpResult } from "../operations";
 import {
   SCHEDULE_PROJECTS_ROOT,
   type ScheduleChange,
@@ -157,6 +159,16 @@ const scheduleAdd = Command.make(
           );
           const checks = givenVerifications(verify);
           if (!checks.ok) return refused(err("invalid_input", checks.error));
+          const scheduled = (workspace: string) => ({
+            change: "add" as const,
+            name,
+            cron,
+            paused,
+            start: { workflow, inputs, workspace, verify: checks.specs },
+            ...Option.match(tz, { onNone: () => ({}), onSome: (zone) => ({ tz: zone }) }),
+          });
+          // Another Machine's host checks the start against its own modules and checkout.
+          if (env.machine !== undefined) return scheduled(where.trim());
           const checkout = yield* checkoutOf(env, where);
           if ("error" in checkout) return refused(checkout.error);
           const at = checkout.path === SCHEDULE_PROJECTS_ROOT ? null : checkout.path;
@@ -178,14 +190,7 @@ const scheduleAdd = Command.make(
             );
             if (needed !== null) return refused(needed);
           }
-          return {
-            change: "add" as const,
-            name,
-            cron,
-            paused,
-            start: { workflow, inputs, workspace: checkout.path ?? "", verify: checks.specs },
-            ...Option.match(tz, { onNone: () => ({}), onSome: (zone) => ({ tz: zone }) }),
-          };
+          return scheduled(checkout.path ?? "");
         }).pipe(Effect.orDie),
       ),
     ),
@@ -203,21 +208,80 @@ const scheduleAdd = Command.make(
 const scheduleList = Command.make("list", {}, () =>
   answering((env) =>
     Effect.gen(function* () {
-      const listed = yield* scheduleListing(env, yield* cliDoor(env));
+      const listed = yield* flockSchedules(env, yield* cliDoor(env));
       if (!listed.ok) return listed;
-      const { machine, schedules } = listed.value;
+      const { schedules, machines } = listed.value;
       return {
         ok: true as const,
         data: listed.value,
-        human:
-          schedules.length === 0
-            ? `No Schedules on ${machineOf(machine)}.`
-            : [`Schedules on ${machineOf(machine)}:`, ...schedules.map(scheduleLine)].join("\n"),
+        human: [
+          ...(schedules.length === 0
+            ? ["No Schedules."]
+            : schedules.map((entry) => `${machineOf(entry.machine)}\t${scheduleLine(entry)}`)),
+          ...machines.map(({ machine, note }) => `${machine} is away: ${note}`),
+        ].join("\n"),
       };
     }),
   ),
 ).pipe(
-  Command.withDescription("This Machine's Schedules, when each fires next and how its last went"),
+  Command.withDescription(
+    "Every Machine's Schedules, or the one --machine names: when each fires next and how its last went",
+  ),
+);
+
+const MOVE_CODES = {
+  machine_unreachable: "machine_unreachable",
+  schedule_not_found: "invalid_input",
+  move_failed: "operation_failed",
+  move_incomplete: "operation_failed",
+} as const;
+
+const scheduleMove = Command.make(
+  "move",
+  {
+    name: nameArg,
+    to: Flag.String("to").pipe(
+      Flag.withDescription("The Machine it moves to: a paired Machine's name, or this Machine's"),
+    ),
+    requestId: requestIdFlag,
+  },
+  ({ name, to, requestId }) =>
+    Effect.flatMap(root, (global) =>
+      answering((env) =>
+        mutation(env, "schedule-move", requestId, (request) =>
+          Effect.gen(function* () {
+            const here = machineName();
+            const source = env.machine ?? here;
+            if (source === to) return err("invalid_input", `"${name}" is on ${to} already.`);
+            const door = yield* cliDoor(env);
+            const refusals: Array<Failure> = [];
+            const keep = (failure: Failure) => void refusals.push(failure);
+            const moved = yield* moveSchedule({
+              from: yield* scheduleDoorOn(env, source === here ? null : source, door, keep),
+              to: yield* scheduleDoorOn(env, to === here ? null : to, door, keep),
+              name,
+              checkout: Option.getOrUndefined(global.workspace),
+              request,
+            });
+            if (moved.ok) return { ok: true as const, data: moved.moved, human: moved.said };
+            const first = refusals[0];
+            // A Machine that could not be reached is refused as every --machine is.
+            if (moved.code === "machine_unreachable" && first !== undefined) return first;
+            return err(MOVE_CODES[moved.code], moved.message, { step: moved.code });
+          }),
+        ),
+      ),
+    ),
+).pipe(
+  Command.withDescription(
+    "Move a Schedule to another Machine: added there paused, removed here, then resumed there",
+  ),
+  Command.withExamples([
+    {
+      command: "collie schedule move self-improve-daily --to vm --workspace /home/me/collie",
+      description: "Fire it on vm from now on, in the checkout vm has",
+    },
+  ]),
 );
 
 const named = (change: "pause" | "resume" | "remove", description: string) =>
@@ -230,6 +294,7 @@ export const schedule = Command.make("schedule").pipe(
   Command.withSubcommands([
     scheduleAdd,
     scheduleList,
+    scheduleMove,
     named("pause", "Stop a Schedule firing until it is resumed; its Run going now goes on"),
     named("resume", "Fire a paused Schedule again, from its next occurrence, with no catch-up"),
     named("remove", "Remove a Schedule; every Run it started stays"),

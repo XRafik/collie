@@ -72,6 +72,7 @@ import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
 import { reason } from "./naming";
 import { attachmentRefusal } from "./attachments";
 import type { ScheduleChange } from "./schedule-model";
+import type { ScheduleDoor } from "./schedule-move";
 
 export { savedModules } from "./discovery";
 
@@ -1271,6 +1272,68 @@ export const cleanupListing = (env: PluginEnv, door: Door) =>
 /** This Machine's Schedules, as its host keeps them. */
 export const scheduleListing = (env: PluginEnv, door: Door) =>
   asks(env, (client) => client.schedules(), door);
+
+/**
+ * The Schedules of the Machine `--machine` names, or of this Machine and every paired one,
+ * with each peer that did not answer named as away, as `flockRuns` lists Runs.
+ */
+export const flockSchedules = Effect.fn("Lifecycle.flockSchedules")(function* (
+  env: PluginEnv,
+  door: Door,
+) {
+  const local = yield* scheduleListing(env, door);
+  if (!local.ok) return local;
+  const schedules = [...local.value.schedules];
+  const machines: Array<{
+    readonly machine: string;
+    readonly state: "away";
+    readonly note: string;
+  }> = [];
+  if (env.machine === undefined)
+    for (const peer of yield* peersOf(env.stateDir)) {
+      const read = yield* Effect.scoped(
+        reach(env, peer.name, door).pipe(
+          Effect.flatMap((client) => client.schedules()),
+          Effect.result,
+        ),
+      );
+      if (read._tag === "Success") schedules.push(...read.success.schedules);
+      else
+        machines.push({
+          machine: peer.name,
+          state: "away",
+          note: refusal(read.failure).error.message,
+        });
+    }
+  return { ok: true as const, value: { machine: local.value.machine, schedules, machines } };
+});
+
+/**
+ * One Machine's Schedule operations for the shared move sequence: this Machine's host
+ * where `machine` is null, a peer's through its relay otherwise. Each refusal is also
+ * handed to `refused`, so the caller can say it as the front doors do.
+ */
+export const scheduleDoorOn = Effect.fn("Lifecycle.scheduleDoorOn")(function* (
+  env: PluginEnv,
+  machine: string | null,
+  door: Door,
+  refused: (failure: Failure) => void,
+) {
+  const context = yield* Effect.context<Client>();
+  const ask = <A>(question: (client: HostClient) => Effect.Effect<A, HostFailure>) =>
+    Effect.scoped(reach(env, machine, door).pipe(Effect.flatMap(question))).pipe(
+      Effect.mapError((cause) => refusal(cause)),
+      Effect.tapError((failure) => Effect.sync(() => refused(failure))),
+      Effect.mapError((failure) => ({ reason: failure.error.message })),
+      Effect.provideContext(context),
+    );
+  return {
+    name: machine ?? machineName(),
+    schedules: () => ask((client) => client.schedules()),
+    changeSchedule: (asked: { readonly change: ScheduleChange; readonly request: string }) =>
+      ask((client) => client.changeSchedule(asked)),
+  } satisfies ScheduleDoor;
+});
 
 /** Adds, pauses, resumes or removes one of this Machine's Schedules, under the caller's request. */
 export const changeSchedule = (

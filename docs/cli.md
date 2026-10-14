@@ -26,7 +26,8 @@ Put these before the subcommand:
 collie --json --workspace wT run start plan --input goal="ship it" --input then=
 ```
 
-`--machine` is for a command that names no Run: `board`, `run start` and `run list`. A
+`--machine` is for a command that names no Run: `board`, `run start`, `run list` and
+`schedule`. A
 command that names a Run needs none (see [Another Machine's Runs](#another-machines-runs)).
 A start on another Machine opens its own Task there, so `--task`, `--continue-task` and
 `--here` are refused with it, and the module is the one that Machine has saved.
@@ -1525,11 +1526,15 @@ collie schedule add <name> <workflow> --cron <expr> [--tz <zone>] [--paused] \
   --input <k=v>… [--workspace <checkout>] [--verify <check>…] [--request-id <id>]
 collie schedule list
 collie schedule pause|resume|remove <name> [--request-id <id>]
+collie schedule move <name> --to <machine> [--workspace <checkout there>] [--request-id <id>]
 ```
 
 A **Schedule** is a start this Machine's host makes by itself whenever a cron expression
-falls due ([ADR-0052](adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)). Every
-command acts on the Machine it runs on and names it: its hostname and its installation id.
+falls due ([ADR-0052](adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)). `add`,
+`pause`, `resume` and `remove` act on the Machine they run on, or on the paired Machine
+`--machine` names, and name it: its hostname and its installation id. That Machine's host
+records who asked as `cli` or `cli-tty`, with `from.machine` naming the Machine the command
+ran on.
 
 `add` saves a start as an agent's start gives one — the Workflow, every Input (an optional
 one as `""`), the checkout, and `--verify` checks — with a name of lowercase letters, digits
@@ -1541,7 +1546,10 @@ in. `--cron` is five fields — minute, hour, day of month, month, day of week �
 be now: a missing checkout or Input is `needs_input`, naming it; an Input the Workflow will
 not take, a cron expression or time zone that does not parse, and a name already used are
 `invalid_input`; a Workflow nobody saved is `workflow_not_found`. `--paused` adds it paused,
-so it fires only once it is resumed.
+so it fires only once it is resumed. With `--machine`, nothing here is read to decide it:
+the start is sent as given, `--workspace` as an absolute path on that Machine or
+`projects-root`, and that Machine's host checks it against the modules it has saved and the
+checkouts it has, refusing it with its own reason (`invalid_input` or `needs_input`).
 
 `pause` stops it firing; a Run it started that is still going goes on. `resume` fires it
 again from its next occurrence after now, never catching up on what fell while it was
@@ -1557,7 +1565,23 @@ host ran start once, late, for the latest of them. While herdr does not answer, 
 waits and tries again each minute; any other refusal is recorded against its occurrence,
 and the next occurrence is tried as usual.
 
-Under `--json`, `list`'s `data` is the Machine and its Schedules:
+`list` lists this Machine's Schedules and every paired Machine's, each entry naming its
+Machine; a paired Machine that does not answer is named in `machines` as away, with what was
+seen, as `run list` names one. With `--machine` it lists only that Machine's.
+
+`move` moves a Schedule from this Machine, or the one `--machine` names, to `--to`: a
+paired Machine's name, or this Machine's own as `run list` shows it. It adds the same start
+on the target, paused, in the checkout `--workspace` names there or the same path; removes
+it from the source; then resumes it on the target, where it fires from its next occurrence
+with no catch-up. The Runs it already started stay where they ran. Both Machines must answer
+before anything changes, or it is `machine_unreachable` and neither changes. A name on
+neither Machine is `invalid_input`. A target that refuses the start is `operation_failed`
+with its reason and nothing moved; a move that stops after the first step is
+`operation_failed`, leaves the copy paused and says so, and the same request id finishes it
+without repeating a step. It answers with the target's `resume`, as `resume` does.
+
+Under `--json`, `list`'s `data` is the Machine asked, every Schedule listed, and the
+Machines that did not answer:
 
 ```json
 {
@@ -1583,7 +1607,8 @@ Under `--json`, `list`'s `data` is the Machine and its Schedules:
         "outcome": { "kind": "run", "run": "run-1a2b3c4d", "status": "complete" }
       }
     }
-  ]
+  ],
+  "machines": [{ "machine": "vm", "state": "away", "note": "vm did not answer: …" }]
 }
 ```
 

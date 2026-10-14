@@ -164,7 +164,8 @@ herdr actions, and the `collie` CLI.
   engine) and `collie schedule` in `src/commands/schedule.ts`, with
   `test/schedule-model.test.ts`, `test/schedules.test.ts` (a real host, its own clock) and
   `test/schedule-command.test.ts`. Moving one is `src/schedule-move.ts`, the one sequence
-  Desktop and the CLI run, with `test/schedule-move.test.ts`; Desktop's Machines page draws
+  Desktop and the CLI run, with `test/schedule-move.test.ts`, and the CLI's `--machine`
+  over two paired hosts is `test/schedule-remote.test.ts`; Desktop's Machines page draws
   them from `desktop/src/shared/schedules.ts`, with `test/desktop-schedules.test.ts`.
 - **Changing `self-improve`, or the `retro` skill it vendors** →
   [ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md) and

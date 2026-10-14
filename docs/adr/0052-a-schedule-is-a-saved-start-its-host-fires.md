@@ -1,6 +1,7 @@
 # A schedule is a saved start, and its Machine's host fires it
 
-**Status: accepted, to be built.**
+**Status: accepted, to be built.** Amended 2026-10-14: the CLI reaches a Schedule's
+Machine over the paired link.
 
 A Workflow can start by itself: once a day, every Monday at nine, whenever a cron
 expression says. A Schedule is a start an agent could have made, saved with when to make
@@ -194,3 +195,22 @@ Machine fires it.**
   - a "run now", which starts the same Workflow by hand;
   - editing a Schedule in place;
   - `--machine` for commands other than `schedule`.
+
+## Amended 2026-10-14: the CLI reaches a Schedule's Machine over the paired link
+
+[ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md) gave the CLI a reach to
+another Machine before this was built, so Schedules use it rather than one of their own.
+
+- **D8's CLI bullet is replaced:** the CLI names a Machine with `--machine`, the global flag
+  for a paired Machine, by herdr's name for it. The target Machine's host checks the start
+  against the modules it has saved and the checkout it has, and refuses it with its own
+  reason; the CLI reads nothing of its own to decide it. Without `--machine` it acts on the
+  Machine it runs on, and says which. `list` lists this Machine's and every paired
+  Machine's Schedules, naming one that does not answer as away. `move` runs the shared
+  sequence over this Machine's host and a peer's relay. The CLI still never reads the
+  Machine rule.
+- **The Consequences bullet about the CLI's SSH reach is replaced:** Schedule commands take
+  ADR-0057's `--machine`. The CLI runs no `collie` over SSH and lists no machines of its own
+  for them.
+- **No longer undecided:** `--machine` for commands other than `schedule`, which ADR-0057
+  decided.

@@ -249,6 +249,7 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["usage", { route: "shell" }],
   ["schedule add", { route: "shell" }],
   ["schedule list", { route: "shell" }],
+  ["schedule move", { route: "shell" }],
   ["schedule pause", { route: "shell" }],
   ["schedule resume", { route: "shell" }],
   ["schedule remove", { route: "shell" }],
