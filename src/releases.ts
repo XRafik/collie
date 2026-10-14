@@ -1,6 +1,4 @@
-// Collie's published releases: which is newest, and a release's runner, downloaded and
-// verified against the release key. Upgrade, doctor, the board and Desktop's onboarding
-// all read them through here.
+// Collie's published releases: the newest, and a release's runner verified against the release key.
 
 import { Crypto, Data, Duration, Effect, FileSystem, Option } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
