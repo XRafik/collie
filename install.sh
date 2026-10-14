@@ -192,7 +192,7 @@ fresh=1
 if [ -f placed.json ]; then
   echo "bin/collie is the runner this release was placed with"
   fresh=
-elif [ -d .git ] && command -v bun >/dev/null 2>&1; then
+elif [ -e .git ] && command -v bun >/dev/null 2>&1; then
   if needs_build; then
     echo "building from source: $ROOT is a checkout, and its source is what a release is cut from"
     build_from_source

@@ -638,3 +638,19 @@ test("no openssl is named, not taken for a tampered download", () =>
       expect(yield* read(`${root}/bin/collie`)).toBe("the runner already here");
     }),
   ));
+
+test("a linked worktree builds its runner from its own source, as any checkout does", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* remove(`${root}/.git`);
+      yield* fs.writeFileString(`${root}/.git`, `gitdir: ${home}/main/.git/worktrees/collie\n`);
+      yield* bin.add("curl", `echo "$*" >> "${home}/downloads"; exit 1`);
+
+      const done = yield* prepare();
+
+      expect(done.out).toContain("prepare: runner: done");
+      expect(yield* read(`${home}/builds`)).toBe("build\n");
+      expect(yield* exists(`${home}/downloads`)).toBe(false);
+    }),
+  ));
