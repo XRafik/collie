@@ -181,6 +181,68 @@ test("every file of a release placed before records existed is kept", () =>
     }),
   ));
 
+test("a fresh Collie directory gets an empty user/ beside the release", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.remove(`${collieDir}/user`, { recursive: true });
+
+      yield* place();
+
+      expect((yield* fs.readDirectory(collieDir)).sort()).toEqual(["release", "user"]);
+    }),
+  ));
+
+test(
+  "placements at once take turns, so the release is wholly one of them",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const other = `${rig.root}/other/release`;
+        yield* fs.copy(tree, other);
+        yield* write(`${other}/personas/extra.md`, "only in the other\n");
+        // Large enough that the two placements overlap.
+        for (let file = 0; file < 1500; file++) {
+          yield* write(`${tree}/bulk/${file}.md`, `${file}\n`);
+          yield* write(`${other}/other/${file}.md`, `${file}\n`);
+        }
+
+        const both = yield* Effect.promise(() =>
+          Promise.all(
+            [
+              [tree, "1.0.0"],
+              [other, "2.0.0"],
+            ].map(
+              ([from, version]) =>
+                Bun.spawn([
+                  "bun",
+                  `${import.meta.dir}/fixtures/place-release.ts`,
+                  from!,
+                  runner,
+                  collieDir,
+                  version!,
+                ]).exited,
+            ),
+          ),
+        );
+
+        expect(both).toEqual([0, 0]);
+        const record = JSON.parse(yield* read(`${collieDir}/release/placed.json`)) as {
+          files: Record<string, string>;
+        };
+        const placed: string[] = [];
+        for (const name of yield* fs.readDirectory(`${collieDir}/release`, { recursive: true })) {
+          const file = (yield* fs.stat(`${collieDir}/release/${name}`)).type === "File";
+          if (file && name !== "placed.json") placed.push(name);
+        }
+        expect(placed.sort()).toEqual(Object.keys(record.files).sort());
+        expect(yield* exists(`${collieDir}/release.new`)).toBe(false);
+      }),
+    ),
+  60_000,
+);
+
 test("placing the same version twice changes nothing and keeps nothing", () =>
   runEffect(
     Effect.gen(function* () {

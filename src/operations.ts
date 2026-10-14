@@ -522,6 +522,7 @@ const placeOwn = Effect.fn("operations.placeOwn")(function* (
     });
   }
   const { root, kept } = placed.success;
+  yield* (yield* FileSystem.FileSystem).makeDirectory(env.userDir, { recursive: true });
   const prepared = yield* prepareAndDesktop(env, root, manifest.version, run);
   if (!prepared.ok) return prepared;
   const data = {
