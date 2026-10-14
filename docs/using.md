@@ -128,8 +128,8 @@ left exactly as it was and named in the report; delete it yourself once you have
 need from it.
 
 A clone on Collie 0.49.0 or older pulls before it runs the new upgrade, and that pull can
-stop on a conflict with a change of yours. Stash the change and run `collie upgrade` once
-more, or run the [install line](#install), which migrates the clone the same way.
+stop on a conflict with a change of yours. Run the [install line](#install) instead: it
+migrates the clone the same way, without pulling it.
 
 ### Running a checkout of Collie
 

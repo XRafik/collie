@@ -395,11 +395,7 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
   };
 });
 
-/**
- * Migrates a clone at the Collie directory: the target release's own runner places the
- * release inside it, ignored by it, and the clone is deleted only when nothing in it is the
- * human's. `user/` is never touched.
- */
+/** Places a release inside a clone install, and removes the clone where nothing in it is the human's. */
 const migrate = Effect.fn("operations.migrate")(function* (
   env: PluginEnv,
   to: string | undefined,
