@@ -33,12 +33,12 @@ import { checkoutsUnder, projectsRoot } from "./projects";
 import { newestRelease, ownPlatform, releasesOf, verifiedRunner } from "./releases";
 import {
   atCollieDir,
+  isCheckout,
   carriedRelease,
   manifestField,
   placeRelease,
   RELEASE_TAG,
   type Carried,
-  unreleasedBecause,
 } from "./release";
 import manifest from "../herdr-plugin.toml";
 import { everyRegistered, type AgentEntry } from "./registry";
@@ -313,47 +313,6 @@ export function workspaceCwdFromPanes(
   return panes.find((pane) => pane.workspaceId === workspaceId && pane.cwd)?.cwd ?? "";
 }
 
-/** Moves a released checkout to the release `to`, or says why it did not: nothing else changes. */
-export const moveToRelease = Effect.fn("operations.moveToRelease")(function* (
-  root: string,
-  to: string,
-  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
-) {
-  const fetched = yield* run("git", ["fetch", "--quiet", "--tags"], root);
-  if (fetched.code !== 0) {
-    return err("operation_failed", `Could not fetch releases into ${root}.`, {
-      root,
-      output: whatItSaid(fetched),
-    });
-  }
-  // After the fetch, so "ahead of its remote" is judged against the remote as it is now.
-  const unreleased = yield* unreleasedBecause(root, run);
-  if (unreleased !== null) {
-    return err(
-      "invalid_state",
-      `${root} is not at a release: ${unreleased}, so it is never moved.`,
-      {
-        root,
-      },
-    );
-  }
-  const tag = `refs/tags/${to}`;
-  if (
-    (yield* run("git", ["rev-parse", "--verify", "--quiet", `${tag}^{commit}`], root)).code !== 0
-  ) {
-    return err("invalid_input", `There is no release ${to}.`, { to });
-  }
-  // Safe to reset: the checkout is clean and holds no commit its remote lacks.
-  const moved = yield* run("git", ["reset", "--quiet", "--hard", tag], root);
-  if (moved.code !== 0) {
-    return err("operation_failed", `Could not move ${root} to ${to}.`, {
-      root,
-      output: whatItSaid(moved),
-    });
-  }
-  return null;
-});
-
 /**
  * Brings this installation up to date. A release is replaced by the target release's, which
  * this runner places itself or hands to that release's runner. A development checkout is
@@ -377,7 +336,7 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
   }
   const root = env.pluginRoot;
-  const checkout = (yield* run("git", ["rev-parse", "--git-dir"], root)).code === 0;
+  const checkout = yield* isCheckout(root, run);
   if (!checkout) {
     const source = releasesOf(env.raw);
     const target = to ?? (yield* newestRelease(source));

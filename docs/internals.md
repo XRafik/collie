@@ -928,8 +928,9 @@ build and gate on every push. Electrobun keeps its prepared-update record at
 Desktop asks Electrobun for that folder, so the record is found on macOS as on Linux. Electrobun's self-extractor cannot read a GNU long-name tar entry,
 so `tools/check-payload.ts` fails the job when any path in the installer's payload is over
 100 characters. The release job signs Desktop's installer, its update manifest, its update
-archive, any delta patch and `install-desktop.sh`, each as `<asset>.sig` and `<asset>.p256.sig`;
-`install-desktop.sh` checks the installer's `.p256.sig` with `openssl dgst`. It also signs the archive as the
+archive, any delta patch, `install-desktop.sh` and Collie's installer `setup.sh`, each as
+`<asset>.sig` and `<asset>.p256.sig`; `install-desktop.sh` checks the installer's
+`.p256.sig`, and `setup.sh` the runner's, with `openssl dgst`. It also signs the archive as the
 tar it is applied as, `<name>.tar.sig` beside `<name>.tar.zst` (`appliedSignatureOf` in
 `src/signing.ts`). Desktop verifies that tar before it installs an update, whether
 Electrobun built it from the archive or from a delta patch

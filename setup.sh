@@ -1,47 +1,72 @@
 #!/bin/sh
-# One-shot install for a teammate: prepare the machine, add keybindings, reload herdr.
-# The preparation itself is `prepare.sh`; what stays here is the first-time-only work:
-# the checkout, the keybindings, and reloading a running herdr.
+# Installs Collie for this user, or brings an install up to date:
+#
+#   curl -fsSL https://github.com/cego/collie/releases/latest/download/setup.sh | sh
+#
+# It downloads the runner for this platform, verifies it against Collie's release key, and has
+# it place the release it carries into the Collie directory, migrating a clone found there.
+# Then the first-time work: keybindings, the status line, reloading herdr, and `collie doctor`.
 # Safe to re-run; every step skips what is already in place.
 set -eu
 
-REPO_URL="${COLLIE_REPO:-https://github.com/cego/collie.git}"
+RELEASES="${COLLIE_RELEASES:-https://github.com/cego/collie/releases}"
+COLLIE_DIR="${COLLIE_DIR:-$HOME/.collie}"
 PLUGIN_ID="cego.collie"
 CONFIG="${HERDR_CONFIG:-$HOME/.config/herdr/config.toml}"
-CHECKOUT="${COLLIE_DIR:-$HOME/.collie}"
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 die() { printf 'setup: %s\n' "$*" >&2; exit 1; }
 
 command -v herdr >/dev/null 2>&1 || die "herdr is not installed — see https://herdr.dev/docs/install/"
-command -v git >/dev/null 2>&1 || die "git is required"
+command -v curl >/dev/null 2>&1 || die "curl is required"
+openssl=${COLLIE_OPENSSL:-openssl}
+"$openssl" version >/dev/null 2>&1 || die "openssl is required, to check the download's signature"
 
-# Run from a checkout, or clone one next to the user's other tools.
-if [ -f "$HERE/herdr-plugin.toml" ]; then
-  ROOT="$HERE"
+VERSION="${COLLIE_VERSION:-}"
+if [ -n "$VERSION" ]; then
+  printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || die "not a Collie release version: $VERSION"
+  BASE="$RELEASES/download/$VERSION"
 else
-  ROOT="$CHECKOUT"
-  if [ ! -d "$ROOT/.git" ]; then
-    say "Cloning into $ROOT"
-    git clone "$REPO_URL" "$ROOT"
-  fi
+  BASE="$RELEASES/latest/download"
 fi
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$(uname -m)" in
+  x86_64|amd64) ARCH=x64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) ARCH=$(uname -m) ;;
+esac
+ASSET="collie-${OS}-${ARCH}"
 
-# Update it, wherever it came from: the documented install is a clone followed by
-# this script, so re-running the same command has to be how you get newer — the
-# checkout is where the workflows, personas and skills live, not just the runner.
-# `--ff-only`, and a pull it cannot do is said out loud rather than being the end of
-# the install: someone with work in progress here still wants the rest of this run.
-if [ -d "$ROOT/.git" ]; then
-  say "Updating $ROOT"
-  git -C "$ROOT" pull --ff-only || say "Could not update $ROOT; installing what is there"
-fi
+# `release-p256.pub`, inline because this script runs on its own.
+RELEASE_KEY='-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETnwpL6PxMua037RtVs/Op9NkxSch
+DEYreTviEHJTXMq+jbDAWxybnz9wpd9nseh9waYk8QvKMjQM62bag6M7sA==
+-----END PUBLIC KEY-----'
 
-# Everything that is safe to do again — the plugin link, the runner and the `collie`
-# shim, the operator skill, the skills the workflows require — is one routine, so
-# that this script, `collie upgrade` and a plugin rebuild all leave the same machine.
-sh "$ROOT/prepare.sh"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# So a ^C or a kill runs the EXIT trap too, which sh does not do by itself.
+trap 'exit 1' INT TERM
+
+say "Downloading ${ASSET}"
+curl -fsSL "${BASE}/${ASSET}" -o "$work/collie" 2>/dev/null || die "could not download ${BASE}/${ASSET}"
+curl -fsSL "${BASE}/${ASSET}.p256.sig" -o "$work/collie.sig" 2>/dev/null ||
+  die "could not fetch ${BASE}/${ASSET}.p256.sig to check the download, so nothing was installed"
+printf '%s\n' "$RELEASE_KEY" > "$work/release.pub"
+"$openssl" base64 -d -A -in "$work/collie.sig" -out "$work/collie.sig.bin" 2>/dev/null || : > "$work/collie.sig.bin"
+"$openssl" dgst -sha256 -verify "$work/release.pub" -signature "$work/collie.sig.bin" "$work/collie" >/dev/null 2>&1 ||
+  die "${BASE}/${ASSET} does not match its signature from Collie's release key, so nothing was installed"
+case "$(od -An -tx1 -N4 "$work/collie" | tr -d ' \n')" in
+  7f454c46 | cffaedfe | cefaedfe | cafebabe | bebafeca) chmod +x "$work/collie" ;;
+  *) die "${BASE}/${ASSET} is not a program, so nothing was installed" ;;
+esac
+
+# A clone there is an install from before releases were placed: upgrade migrates it.
+if [ -d "$COLLIE_DIR/.git" ]; then plugin_root="$COLLIE_DIR"; else plugin_root="$COLLIE_DIR/release"; fi
+say "Placing Collie into $COLLIE_DIR"
+COLLIE_DIR="$COLLIE_DIR" HERDR_PLUGIN_ROOT="$plugin_root" COLLIE_RELEASES="$RELEASES" \
+  "$work/collie" upgrade ${VERSION:+--to "$VERSION"} || die "the runner did not place its release"
+ROOT="$COLLIE_DIR/release"
 
 add_binding() { # key action description
   if grep -q "command = \"$PLUGIN_ID.$2\"" "$CONFIG" 2>/dev/null; then

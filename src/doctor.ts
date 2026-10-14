@@ -20,7 +20,7 @@ import type { PluginEnv } from "./env";
 import { HARNESSES } from "./harness";
 import { Herdr } from "./herdr";
 import { shell, type Runner } from "./mr";
-import { manifestField } from "./release";
+import { isCheckout, manifestField } from "./release";
 import { isNewer, newestRelease, releasesOf } from "./releases";
 import manifest from "../herdr-plugin.toml";
 import { err } from "./operations";
@@ -422,8 +422,7 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
   });
 
   const gitDir = yield* onPath(search, "git");
-  const checkout =
-    gitDir !== null && (yield* run("git", ["rev-parse", "--git-dir"], root)).code === 0;
+  const checkout = gitDir !== null && (yield* isCheckout(root, run));
   const behind = checkout ? yield* refreshBehind(root, run) : null;
   const newest = checkout ? null : yield* newestRelease(releasesOf(env.raw));
   checks.push({

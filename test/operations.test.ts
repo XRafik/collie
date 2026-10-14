@@ -51,7 +51,7 @@ const fakeTools = Effect.fn("operationsTest.fakeTools")(function* (opts: {
   yield* bin.add(
     "git",
     `case "$1 $2" in
-      "rev-parse --git-dir") echo .git ;;
+      "rev-parse --show-prefix") echo ;;
       "rev-parse --short") echo ${opts.head} ;;
       "pull --ff-only") ${opts.pull ?? "echo Updating; exit 0"} ;;
       *) exit 1 ;;
@@ -134,7 +134,7 @@ test("upgrade that moves the checkout says the range it moved through", () =>
       yield* bin.add(
         "git",
         `case "$1 $2" in
-          "rev-parse --git-dir") echo .git ;;
+          "rev-parse --show-prefix") echo ;;
           "rev-parse --short") if [ -f "${rig.root}/pulled" ]; then echo def5678; else echo abc1234; fi ;;
           "pull --ff-only") touch "${rig.root}/pulled"; echo Updating ;;
           *) exit 1 ;;

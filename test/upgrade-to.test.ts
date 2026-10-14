@@ -1,6 +1,5 @@
 // Checkouts of Collie. A development checkout is pulled with its work riding through and never
-// moved; onboarding moves a clone only when it is at a release. Real git, because what counts
-// is git's answer.
+// moved to a release. Real git, because what counts is git's answer.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect } from "effect";
@@ -8,8 +7,8 @@ import { exec } from "./support/command";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
 import { shell } from "../src/mr";
-import { moveToRelease, upgrade } from "../src/operations";
-import { installation } from "../src/release";
+import { upgrade } from "../src/operations";
+import { installation, isCheckout } from "../src/release";
 
 let rig: Rig;
 let origin: string;
@@ -68,84 +67,6 @@ const development = () => ({
   collieDir: `${rig.root}/elsewhere`,
 });
 
-const at = () => git(clone, "describe", "--exact-match", "--tags", "HEAD");
-
-test("a released clone moves to the exact version", () =>
-  runEffect(
-    Effect.gen(function* () {
-      expect(yield* moveToRelease(clone, "0.2.0", shell)).toBeNull();
-      expect(yield* at()).toBe("0.2.0");
-    }),
-  ));
-
-test("a clone detached on a release tag is a release, whatever else is tagged there", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* git(clone, "checkout", "--quiet", "--detach", "0.1.0");
-      yield* git(clone, "tag", "zzz-local");
-
-      expect(yield* moveToRelease(clone, "0.2.0", shell)).toBeNull();
-    }),
-  ));
-
-test("a version with no release is refused and nothing moves", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const refused = yield* moveToRelease(clone, "9.9.9", shell);
-
-      expect(refused).toMatchObject({ ok: false, error: { code: "invalid_input" } });
-      expect(yield* at()).toBe("0.1.0");
-    }),
-  ));
-
-const refusedAsDevelopment = (reason: RegExp, run = shell) =>
-  Effect.gen(function* () {
-    const head = yield* git(clone, "rev-parse", "HEAD");
-
-    const refused = yield* moveToRelease(clone, "0.2.0", run);
-
-    expect(refused).toMatchObject({ ok: false, error: { code: "invalid_state" } });
-    expect(refused?.ok === false && refused.error.message).toMatch(reason);
-    expect(yield* git(clone, "rev-parse", "HEAD")).toBe(head);
-  });
-
-test("a clone with uncommitted changes is never moved", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* Effect.promise(() => Bun.write(`${clone}/version`, "work in progress"));
-      yield* refusedAsDevelopment(/uncommitted changes/);
-      expect(yield* Effect.promise(() => Bun.file(`${clone}/version`).text())).toBe(
-        "work in progress",
-      );
-    }),
-  ));
-
-test("a clone on a branch of its own is never moved", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* git(clone, "checkout", "--quiet", "-b", "feature");
-      yield* refusedAsDevelopment(/branch feature/);
-    }),
-  ));
-
-test("a clone ahead of its remote is never moved", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* git(clone, "reset", "--quiet", "--hard", "origin/master");
-      yield* git(clone, "commit", "--quiet", "--allow-empty", "-m", "local");
-      yield* refusedAsDevelopment(/ahead of its remote/);
-    }),
-  ));
-
-test("a clone detached on a commit that is not a release is never moved", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* git(clone, "commit", "--quiet", "--allow-empty", "-m", "local");
-      yield* git(clone, "checkout", "--quiet", "--detach", "HEAD");
-      yield* refusedAsDevelopment(/not a release/);
-    }),
-  ));
-
 test("a clone at the Collie directory is the installation, whatever its state", () =>
   runEffect(
     Effect.gen(function* () {
@@ -167,14 +88,6 @@ const noisy = (cmd: string, args: string[], cwd: string) =>
     cwd,
   );
 
-test("a clean released clone moves however noisy its tools' stderr", () =>
-  runEffect(
-    Effect.gen(function* () {
-      expect(yield* moveToRelease(clone, "0.2.0", noisy)).toBeNull();
-      expect(yield* at()).toBe("0.2.0");
-    }),
-  ));
-
 test("a noisy development build is named by its version and commit alone", () =>
   runEffect(
     Effect.gen(function* () {
@@ -184,28 +97,6 @@ test("a noisy development build is named by its version and commit alone", () =>
         release: false,
         build: `0.1.0+${sha}`,
         reason: "it is a development checkout",
-      });
-    }),
-  ));
-
-test("a noisy clone with a real change is still refused for it", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* Effect.promise(() => Bun.write(`${clone}/version`, "work in progress"));
-      yield* refusedAsDevelopment(/uncommitted changes/, noisy);
-    }),
-  ));
-
-test("a failed fetch still says git's own reason", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* exec(["rm", "-rf", origin]);
-
-      const refused = yield* moveToRelease(clone, "0.2.0", noisy);
-
-      expect(refused).toMatchObject({
-        ok: false,
-        error: { code: "operation_failed", details: { output: expect.stringContaining("fatal:") } },
       });
     }),
   ));
@@ -255,5 +146,16 @@ test("a checkout other than the Collie directory is development, whatever its st
         build: `0.1.0+${sha}`,
         reason: "it is a development checkout",
       });
+    }),
+  ));
+
+test("a release placed inside a kept clone is a release, never the clone's checkout", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* exec(["mkdir", "-p", `${clone}/release`]);
+
+      expect(yield* isCheckout(`${clone}/release`)).toBe(false);
+      expect(yield* installation(`${clone}/release`, clone, "0.1.0")).toEqual({ release: true });
+      expect(yield* isCheckout(clone)).toBe(true);
     }),
   ));
