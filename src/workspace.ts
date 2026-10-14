@@ -731,6 +731,9 @@ export function askingRun(view: WorkspaceView): RunRow | null {
 }
 
 /** Plain lists, one screen, no boxes: this is a status board, not an application. */
+/** What every board says of a newer release. */
+export const newerLine = (version: string) => `Collie ${version} is out — collie upgrade`;
+
 export function renderWorkspace(
   view: WorkspaceView,
   note?: string,
@@ -742,7 +745,7 @@ export function renderWorkspace(
   if (view.behind !== null && view.behind > 0) {
     lines.push(`Collie is ${commitsBehind(view.behind)} its remote — \`collie upgrade\``);
   }
-  if (view.newer) lines.push(`Collie ${view.newer} is out — \`collie upgrade\``);
+  if (view.newer) lines.push(newerLine(view.newer));
 
   const agents = view.agents.map(
     (a) => `  ${a.key}  ${a.name.padEnd(22)}${a.status.padEnd(9)}${a.now ?? a.run}`,

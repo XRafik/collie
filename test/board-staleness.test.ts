@@ -64,7 +64,7 @@ test("a release behind the newest says which is out, with the command", () =>
     Effect.gen(function* () {
       const text = yield* settled(yield* release, yield* releasesAt("99.0.0"));
 
-      expect(text).toContain("Collie 99.0.0 is out — `collie upgrade`");
+      expect(text).toContain("Collie 99.0.0 is out — collie upgrade");
     }),
   ));
 

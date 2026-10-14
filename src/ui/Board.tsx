@@ -18,6 +18,7 @@ import {
   type Section as SectionId,
 } from "../board-model";
 import type { UsagePhrase } from "../usage-model";
+import { newerLine } from "../workspace";
 import { ALL_KEYS, type Command, type MenuItem, type Older, primaryFor } from "./state";
 import { C, cardEdge, sentenceColour, stateGlyph, stepGlyph } from "./sections";
 
@@ -41,6 +42,7 @@ export interface BoardProps {
   columns: number;
   header: HeaderSentence;
   usage: UsagePhrase;
+  newer: string | null;
   query: string;
   /** Whether the search field has the keyboard, so the board says where typing goes. */
   searching: boolean;
@@ -264,6 +266,7 @@ export function Board(props: BoardProps) {
       <Header
         header={props.header}
         usage={props.usage}
+        newer={props.newer}
         logo={props.logo}
         width={props.width}
         query={props.query}
@@ -297,6 +300,7 @@ export function Board(props: BoardProps) {
 function Header(props: {
   header: HeaderSentence;
   usage: UsagePhrase;
+  newer: string | null;
   logo: string | null;
   width: number;
   query: string;
@@ -343,6 +347,11 @@ function Header(props: {
             {`  ${props.usage.text}`}
           </text>
         </box>
+      </Show>
+      <Show when={props.newer !== null}>
+        <text fg={C.amber} wrapMode="none" style={{ flexShrink: 0 }}>
+          {`  ${newerLine(props.newer ?? "")}`}
+        </text>
       </Show>
       <box style={{ flexGrow: 1 }} />
       {/* A field, not a word: three rows like the buttons beside it, lit while it has

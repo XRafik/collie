@@ -1776,3 +1776,14 @@ test(
     ),
   120_000,
 );
+
+test("a newer release is said in the board's header, with the command", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stale = yield* mount(appState({ board: board({ newer: "99.0.0" }) }), 200);
+      expect(stale.said()).toContain("Collie 99.0.0 is out — collie upgrade");
+
+      const current = yield* mount(appState(), 200);
+      expect(current.said()).not.toContain("is out");
+    }),
+  ));
