@@ -38,6 +38,7 @@ let commented: Array<{ number: number; body: string }>;
 let refusing: Set<string>;
 let started: ChildAsk[];
 let failing: Set<string>;
+let unlisted: boolean;
 
 beforeEach(() =>
   runEffect(
@@ -58,6 +59,7 @@ beforeEach(() =>
       refusing = new Set();
       started = [];
       failing = new Set();
+      unlisted = false;
     }),
   ),
 );
@@ -99,15 +101,17 @@ const forge = Layer.effect(Host)(
           stopped: [],
         }),
       issues: () =>
-        Effect.succeed([
-          ...open,
-          ...filed.map(({ title, body }, at) => ({
-            number: 101 + at,
-            title,
-            body,
-            url: `https://github.com/cego/collie/issues/${101 + at}`,
-          })),
-        ]),
+        unlisted && filed.length > 0
+          ? Effect.fail(new WorkflowError({ reason: "the forge did not answer" }))
+          : Effect.succeed([
+              ...open,
+              ...filed.map(({ title, body }, at) => ({
+                number: 101 + at,
+                title,
+                body,
+                url: `https://github.com/cego/collie/issues/${101 + at}`,
+              })),
+            ]),
       fileIssue: ({ title, body }) =>
         refusing.has(title)
           ? Effect.fail(new WorkflowError({ reason: "it names another checkout" }))
@@ -398,6 +402,29 @@ test(
 
         yield* ran("r-day", { improvements: 2 });
         expect([filed.length, commented.length, started.length]).toEqual([3, 2, 2]);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "an Improvement whose issues cannot be read back fails to start, and the day still ends with its summary",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        unlisted = true;
+        yield* rig.queueOutputs([
+          triage(
+            [finding({ key: "host-crash" })],
+            [{ name: "first", keys: ["host-crash"], why: "one crash" }],
+          ),
+        ]);
+        const result = yield* ran("r-unlisted", { improvements: 1 });
+        expect(said(result)).toContain("Filed 1, commented 0, refused 0; 1 Improvements, 1 failed");
+        expect(started).toEqual([]);
+        expect(yield* read(`${runDir(dir, "r-unlisted")}/summary.md`)).toContain(
+          "the forge did not answer",
+        );
       }),
     ),
   120_000,

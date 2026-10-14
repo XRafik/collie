@@ -3,7 +3,7 @@
 
 import { Children, Host, Run, WorkflowError, agentWork, contentOf, defineWorkflow } from "collie";
 import { hostname } from "node:os";
-import { DateTime, Duration, Effect, FileSystem, Schema } from "effect";
+import { DateTime, Duration, Effect, FileSystem, Result, Schema } from "effect";
 import * as Activity from "effect/workflow/Activity";
 import markdown from "./self-improve.md" with { type: "text" };
 import {
@@ -211,26 +211,29 @@ export default defineWorkflow({
       // The issues as the forge holds them, so a goal carries only what the host let out.
       const published =
         starting.length === 0
-          ? []
-          : yield* Activity.make({
-              name: "published",
-              success: Opened,
-              error: WorkflowError,
-              execute: host
-                .issues(run.id)
-                .pipe(Effect.map((issues) => issues.map((issue) => ({ ...issue, keys: [] })))),
-            });
-      const issuesOf = (improvement: Improvement) =>
+          ? Result.succeed([])
+          : yield* Effect.result(
+              Activity.make({
+                name: "published",
+                success: Opened,
+                error: WorkflowError,
+                execute: host
+                  .issues(run.id)
+                  .pipe(Effect.map((issues) => issues.map((issue) => ({ ...issue, keys: [] })))),
+              }),
+            );
+      const issuesOf = (improvement: Improvement, listed: typeof Opened.Type) =>
         improvement.keys.flatMap((key) => {
           const outcome = outcomes.get(key);
           return outcome?.kind === "filed"
-            ? published.filter(({ number }) => number === outcome.number)
+            ? listed.filter(({ number }) => number === outcome.number)
             : [];
         });
       const improvements: ReadonlyArray<Ended> = yield* Effect.all(
         starting.map((improvement) =>
           Effect.gen(function* () {
-            const issues = issuesOf(improvement);
+            if (Result.isFailure(published)) return yield* published.failure;
+            const issues = issuesOf(improvement, published.success);
             if (issues.length < improvement.keys.length)
               return yield* new WorkflowError({
                 reason: "an issue it fixes is not among the forge's open issues",
