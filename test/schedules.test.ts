@@ -205,7 +205,7 @@ test(
 );
 
 test(
-  "a removal interrupted after the record went and before its receipt finishes when its request is retried",
+  "a removal interrupted after the record went and before its receipt finishes when its request is retried, and never removes a Schedule added since",
   () =>
     proves(
       "collie-schedule-removing-",
@@ -216,13 +216,15 @@ test(
           // The window: the host wrote what it was removing, removed the record, then stopped.
           yield* fs.writeFileString(`${world.state}/schedules/gone/removed`, "rm-1");
           yield* fs.remove(`${world.state}/schedules/gone/schedule.json`);
+          const other = yield* schedule(world, ["remove", "gone", "--request-id", "rm-2"]);
+          expect(other.envelope.error?.code).toBe("invalid_input");
+          yield* addAsking(world, "gone", "0 8 * * *");
           const retried = yield* schedule(world, ["remove", "gone", "--request-id", "rm-1"]);
           expect(retried.envelope).toMatchObject({
             ok: true,
             data: { change: "remove", schedule: null },
           });
-          const other = yield* schedule(world, ["remove", "gone", "--request-id", "rm-2"]);
-          expect(other.envelope.error?.code).toBe("invalid_input");
+          expect((yield* listed(world)).schedules.map((one) => one.cron)).toEqual(["0 8 * * *"]);
         }).pipe(Effect.orDie),
       MODULES,
     ),

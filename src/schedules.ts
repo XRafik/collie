@@ -532,6 +532,12 @@ export const schedulesLayer = (options: {
               schedule: entry,
             }),
           );
+        if (change.change === "remove") {
+          const removals = yield* fs
+            .readFileString(removedOf(dir, change.name))
+            .pipe(Effect.orElseSucceed(() => ""));
+          if (removals.split("\n").includes(request)) return yield* done(null);
+        }
         // This request's own write, from an attempt that stopped before its receipt.
         if (record !== null && record.epoch === request && change.change !== "pause")
           return yield* done(record);
@@ -568,15 +574,12 @@ export const schedulesLayer = (options: {
             });
           return yield* done(added);
         }
-        if (record === null) {
-          const removedBy = yield* fs
-            .readFileString(removedOf(dir, change.name))
-            .pipe(Effect.orElseSucceed(() => ""));
-          if (change.change === "remove" && removedBy === request) return yield* done(null);
+        if (record === null)
           return yield* refusedInput(`no Schedule called "${change.name}" is on this Machine`);
-        }
         if (change.change === "remove") {
-          yield* fs.writeFileString(removedOf(dir, change.name), request).pipe(Effect.orDie);
+          yield* fs
+            .writeFileString(removedOf(dir, change.name), `${request}\n`, { flag: "a" })
+            .pipe(Effect.orDie);
           yield* fs.remove(recordOf(dir, change.name)).pipe(Effect.orDie);
           return yield* done(null);
         }
