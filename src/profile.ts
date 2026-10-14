@@ -1,4 +1,4 @@
-// The operator's per-role overlay for the agents Collie launches (ADR-draft-a-managed-agent-runs-with-the-operators-profile).
+// The operator's per-role overlay for the agents Collie launches (ADR-0060).
 
 import { Effect, FileSystem, Option, Schema } from "effect";
 import { scrub } from "./redact";
