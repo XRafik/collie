@@ -204,18 +204,46 @@ test(
   90_000,
 );
 
+/** The window: the host wrote which Schedule it was removing, then stopped. */
+const markRemoving = (world: World, name: string, request: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const record = `${world.state}/schedules/${name}/schedule.json`;
+    const { added } = Schema.decodeUnknownSync(
+      Schema.fromJsonString(Schema.Struct({ added: Schema.String })),
+    )(yield* fs.readFileString(record));
+    yield* fs.writeFileString(`${world.state}/schedules/${name}/removed`, `${request} ${added}\n`);
+    return record;
+  });
+
 test(
-  "a removal interrupted after the record went and before its receipt finishes when its request is retried, and never removes a Schedule added since",
+  "a removal interrupted before the record went finishes removing it when its request is retried",
   () =>
     proves(
       "collie-schedule-removing-",
       (world) =>
         Effect.gen(function* () {
+          yield* addAsking(world, "gone", "0 7 * * *");
+          yield* markRemoving(world, "gone", "rm-1");
+          const retried = yield* schedule(world, ["remove", "gone", "--request-id", "rm-1"]);
+          expect(retried.envelope).toMatchObject({ ok: true, data: { change: "remove" } });
+          expect((yield* listed(world)).schedules).toEqual([]);
+        }).pipe(Effect.orDie),
+      MODULES,
+    ),
+  60_000,
+);
+
+test(
+  "a removal interrupted after the record went and before its receipt finishes when its request is retried, and never removes a Schedule added since",
+  () =>
+    proves(
+      "collie-schedule-removed-",
+      (world) =>
+        Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           yield* addAsking(world, "gone", "0 7 * * *");
-          // The window: the host wrote what it was removing, removed the record, then stopped.
-          yield* fs.writeFileString(`${world.state}/schedules/gone/removed`, "rm-1");
-          yield* fs.remove(`${world.state}/schedules/gone/schedule.json`);
+          yield* fs.remove(yield* markRemoving(world, "gone", "rm-1"));
           const other = yield* schedule(world, ["remove", "gone", "--request-id", "rm-2"]);
           expect(other.envelope.error?.code).toBe("invalid_input");
           yield* addAsking(world, "gone", "0 8 * * *");
