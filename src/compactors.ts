@@ -10,8 +10,11 @@
 import { Clock, Data, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
+  agentThreads,
   boundThread,
   compactionItems,
+  interruptTurn,
+  runningTurns,
   currentContext as codexContext,
   startCompaction,
   turnOutcome,
@@ -43,7 +46,18 @@ import {
   type AgentContext,
   type LaunchContext,
   type ReadyContext,
+  type StopTarget,
+  type SeenProcess,
+  type Stopped,
 } from "./compaction";
+import {
+  processOf,
+  readsSessions,
+  sessionOf,
+  stillRunning,
+  terminate,
+  type ProcessInfo,
+} from "./processes";
 import { withLock } from "./lock";
 import { carriedDelivery } from "./dispatcher";
 
@@ -86,7 +100,7 @@ import { reason, shellQuote } from "./naming";
  */
 export const VERIFIED_VERSIONS: ReadonlyMap<string, string> = new Map([
   ["claude", "2.1.263"],
-  ["codex", "0.153.4"],
+  ["codex", "0.162.0"],
   ["opencode", "1.18.9"],
   ["pi", "0.87.1"],
 ]);
@@ -909,6 +923,8 @@ export const servedEndpoint = Effect.fn("Compactors.servedEndpoint")(function* (
   startMs: number;
   /** What did not come up, for the failure a human reads. */
   what: string;
+  /** Shell lines run before the server, so it has the agent's environment. */
+  env?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   // Created before the server is, because the wait below reads it: the shell's redirect
@@ -919,14 +935,21 @@ export const servedEndpoint = Effect.fn("Compactors.servedEndpoint")(function* (
   const pid = yield* Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("sh", ["-c", `exec ${opts.command} >${shellQuote(opts.log)} 2>&1`], {
-          cwd: opts.cwd,
-          extendEnv: true,
-          detached: true,
-          stdin: "ignore",
-          stdout: "ignore",
-          stderr: "ignore",
-        }),
+        ChildProcess.make(
+          "sh",
+          [
+            "-c",
+            [...(opts.env ?? []), `exec ${opts.command} >${shellQuote(opts.log)} 2>&1`].join("\n"),
+          ],
+          {
+            cwd: opts.cwd,
+            extendEnv: true,
+            detached: true,
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+          },
+        ),
       );
       // Unref before the scope closes, or the spawner's finalizer kills the server it
       // just started — the same reason a detached Driver is unreffed.
@@ -968,18 +991,22 @@ const CODEX_LOG = "app-server.log";
 const CODEX_LISTENING = /ws:\/\/127\.0\.0\.1:(\d+)/;
 const CODEX_START_MS = 20_000;
 
-const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (ctx: LaunchContext) {
+const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (
+  ctx: LaunchContext,
+  server: string,
+) {
   const path = yield* Path.Path;
   // Through a shell, because the port it chose is only on its stdout.
   const served = yield* servedEndpoint({
     cwd: ctx.cwd,
     log: path.join(ctx.dir, CODEX_LOG),
-    command: `${CODEX_SERVER} --listen ws://127.0.0.1:0`,
+    command: `${server} --listen ws://127.0.0.1:0`,
     listening: CODEX_LISTENING,
     startMs: CODEX_START_MS,
     what: "codex app-server",
+    env: ctx.env,
   });
-  return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: CODEX_SERVER };
+  return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: server };
 });
 
 /** The endpoint this agent's controls talk to, or a failure naming what is missing. */
@@ -988,7 +1015,189 @@ const codexAt = (ctx: AgentContext) =>
     ? Effect.fail(new Error(`${ctx.agent} has no Codex App Server endpoint recorded`))
     : Effect.succeed(ctx.endpoint);
 
-const codex: CompactionPort = {
+/**
+ * Stops a Codex agent where its turns run, on one connection opened before any signal:
+ * prove the server is the agent's, note its turns and its session, drain it with one
+ * SIGTERM — admission closes and no queued or goal continuation starts — interrupt every
+ * running turn, sub-agents' included, wait for the server to exit, then give each proven
+ * process left of its session one SIGTERM. Nothing gets a second, and nothing SIGKILL.
+ */
+const stopCodex = (
+  target: StopTarget,
+  note: (line: string) => Effect.Effect<void>,
+  budgetMs: number,
+) =>
+  Effect.gen(function* () {
+    const deadline = (yield* Clock.currentTimeMillis) + budgetMs;
+    const signalled = [...target.signalled];
+    const before = (one: SeenProcess) =>
+      signalled.some((seen) => seen.pid === one.pid && seen.started === one.started);
+    /** One SIGTERM, never a second, even across stops. */
+    const once = (one: SeenProcess) =>
+      before(one)
+        ? Effect.void
+        : terminate(one.pid).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => signalled.push({ pid: one.pid, started: one.started })),
+            ),
+          );
+    const server = yield* processOf(target.pid);
+    const refused = (why: string): Stopped => ({
+      state: "failed",
+      turns: null,
+      reason: why,
+      signalled,
+      left: [],
+      noted: target.noted,
+    });
+    if (server === null)
+      return yield* survivors(target.pid, target.noted, null, deadline, "failed", signalled, once);
+    if (!server.command.includes(target.command))
+      return refused(`pid ${target.pid} is \`${server.command}\`, not \`${target.command}\``);
+    if (target.started !== null && server.started !== target.started)
+      return refused(`pid ${target.pid} started at ${server.started}, not ${target.started}`);
+
+    let turns: Stopped["turns"] = null;
+    let session: ProcessInfo[] = [];
+    const noted = [...target.noted];
+    let submitted = 0;
+    let acknowledged = 0;
+    const short = (): Stopped["state"] =>
+      acknowledged > 0 ? "acknowledged" : submitted > 0 ? "submitted" : "failed";
+    const seen = (one: ProcessInfo): SeenProcess => ({ pid: one.pid, started: one.started });
+    const notQuiet = (reason: string): Stopped => ({
+      state: short(),
+      turns,
+      reason,
+      signalled,
+      left: [server, ...session].map(seen),
+      noted,
+    });
+    return yield* withCodex(target.endpoint, (client) =>
+      Effect.gen(function* () {
+        const threads = yield* agentThreads(client, target.cwd);
+        const running = threads.flatMap((thread) =>
+          thread.running.map((turn) => ({
+            thread: thread.id,
+            turn,
+            transcript: thread.transcript,
+          })),
+        );
+        turns = running;
+        session = yield* sessionOf(target.pid);
+        for (const one of session)
+          if (!noted.some((seen) => seen.pid === one.pid && seen.started === one.started))
+            noted.push(seen(one));
+        yield* once(server);
+        for (const one of running) {
+          // Its turns have all ended and it has gone: nothing is left to answer.
+          if (!(yield* stillRunning(server))) break;
+          const about = `thread ${one.thread} turn ${one.turn}, server ${target.endpoint} pid ${target.pid}${one.transcript === null ? "" : `, transcript ${one.transcript}`}`;
+          submitted++;
+          yield* note(`${target.agent}: interrupt submitted — ${about}`);
+          // A refusal is read back below rather than believed: the turn may have ended.
+          const answered = yield* interruptTurn(client, one.thread, one.turn).pipe(Effect.result);
+          if (answered._tag === "Success") {
+            acknowledged++;
+            yield* note(`${target.agent}: interrupt acknowledged — ${about}`);
+          } else {
+            yield* note(
+              `${target.agent}: interrupt refused (${reason(answered.failure)}) — ${about}`,
+            );
+          }
+        }
+        for (;;) {
+          if (!(yield* stillRunning(server)))
+            return yield* survivors(target.pid, noted, running, deadline, short(), signalled, once);
+          // Read back rather than assumed: a lost connection is not a turn that ended.
+          let unread: string | null = null;
+          const unended = yield* Effect.forEach(running, (one) =>
+            runningTurns(client, one.thread).pipe(
+              Effect.map((now) => (now.includes(one.turn) ? [one] : [])),
+              Effect.catch((cause) => Effect.sync(() => ((unread = reason(cause)), [one]))),
+            ),
+          ).pipe(Effect.map((all) => all.flat()));
+          if ((yield* Clock.currentTimeMillis) >= deadline) {
+            const seconds = Math.round(budgetMs / 1000);
+            return notQuiet(
+              unread !== null
+                ? `its turns could not be read back (${unread}), and its server is still up after ${seconds}s`
+                : unended.length > 0
+                  ? `${unended.map((one) => `turn ${one.turn}`).join(", ")} still running after ${seconds}s`
+                  : `its server is still up after ${seconds}s`,
+            );
+          }
+          yield* Effect.sleep(50);
+        }
+      }),
+    ).pipe(
+      // Anything here is the connection: unanswered, refused or lost before the stop was done.
+      // Lost because the server exited is the stop going on, not failing.
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          if (yield* stillRunning(server)) return notQuiet(reason(cause));
+          return yield* survivors(target.pid, noted, turns, deadline, short(), signalled, once);
+        }),
+      ),
+    );
+  });
+
+/** How long the processes left of a server get to end, however late it exited in the budget. */
+const SURVIVOR_GRACE_MS = 2_000;
+
+/**
+ * What is left of an exited server's session: each process noted before the drain that is
+ * still the same process gets one SIGTERM and is looked at again; one nobody noted is
+ * named and left alone. Without sessions, the noted descendants are all there is to look
+ * at. Quiet only when none is left.
+ */
+const survivors = (
+  root: number,
+  noted: ReadonlyArray<SeenProcess>,
+  turns: Stopped["turns"],
+  deadline: number,
+  short: Stopped["state"],
+  signalled: ReadonlyArray<SeenProcess>,
+  once: (one: SeenProcess) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const proven = (one: SeenProcess) =>
+      noted.some((seen) => seen.pid === one.pid && seen.started === one.started);
+    const sessions = yield* readsSessions;
+    const remaining = sessions ? sessionOf(root) : Effect.filter(noted, (one) => stillRunning(one));
+    for (const one of yield* remaining) if (proven(one)) yield* once(one);
+    const until = Math.max(deadline, (yield* Clock.currentTimeMillis) + SURVIVOR_GRACE_MS);
+    for (;;) {
+      const left = yield* remaining;
+      if (left.length === 0)
+        return {
+          state: "quiet",
+          turns,
+          reason: null,
+          signalled,
+          left: [],
+          noted,
+        } satisfies Stopped;
+      if ((yield* Clock.currentTimeMillis) >= until) {
+        const named = left.map(
+          (one) =>
+            `pid ${one.pid}${proven(one) || signalled.some((seen) => seen.pid === one.pid && seen.started === one.started) ? "" : " (not signalled: not proven its)"}`,
+        );
+        return {
+          state: short,
+          turns,
+          reason: `its server exited, but ${named.join(", ")} of its session is still running`,
+          signalled,
+          left: left.map((one) => ({ pid: one.pid, started: one.started })),
+          noted,
+        } satisfies Stopped;
+      }
+      yield* Effect.sleep(50);
+    }
+  });
+
+/** Codex's port, over the App Server `server` starts: `codex app-server`, or a test's stand-in. */
+export const codexPort = (server: string): CompactionPort => ({
   gate: () => gateVersion("codex"),
   // The TUI binds a thread on the App Server as it starts, before any prompt.
   ready: (ctx) =>
@@ -998,7 +1207,7 @@ const codex: CompactionPort = {
           Effect.map((thread) => thread !== null),
         ),
   install: (ctx) =>
-    codexEndpoint(ctx).pipe(
+    codexEndpoint(ctx, server).pipe(
       Effect.map(({ endpoint, pid, command }) => ({
         args: ["--remote", endpoint],
         endpoint,
@@ -1006,6 +1215,7 @@ const codex: CompactionPort = {
         command,
       })),
     ),
+  stop: stopCodex,
   usage: (ctx) =>
     Effect.gen(function* () {
       const url = yield* codexAt(ctx);
@@ -1074,7 +1284,7 @@ const codex: CompactionPort = {
         }),
       );
     }),
-};
+});
 
 /**
  * The ordinary OpenCode TUI, hosting its own loopback server on a port Collie picked.
@@ -1149,6 +1359,7 @@ const opencodeLaunch = Effect.fn("Compactors.opencodeLaunch")(function* (ctx: La
     listening: OPENCODE_LISTENING,
     startMs: OPENCODE_START_MS,
     what: "opencode serve",
+    env: ctx.env,
   });
   const session = yield* createSession(base).pipe(Effect.ensuring(stopServer(served.pid)));
 
@@ -1229,7 +1440,12 @@ const opencode: CompactionPort = {
     }),
 };
 
-export const COMPACTION_PORTS: CompactionPorts = { claude, codex, opencode, pi };
+export const COMPACTION_PORTS: CompactionPorts = {
+  claude,
+  codex: codexPort(CODEX_SERVER),
+  opencode,
+  pi,
+};
 
 /**
  * Submissions this agent has taken that neither Collie nor Claude itself made. Claude's

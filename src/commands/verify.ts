@@ -5,6 +5,7 @@ import { verifyRun } from "../lifecycle";
 import { REFUSED_INPUT } from "../engine";
 import { HostRefused } from "../board-model";
 import { type Echo } from "../verify";
+import { checkNameOf } from "../verify-spec";
 import { printResult } from "../envelope";
 import { answering, cliDoor, root } from "./shared";
 
@@ -43,7 +44,9 @@ export const verify = Command.make(
       Flag.optional,
     ),
     name: Flag.String("name").pipe(
-      Flag.withDescription("What to call it on a card; the executable by default"),
+      Flag.withDescription(
+        "What to call it on a card; by default the script it runs, else the tool and its subcommand, else the tool",
+      ),
       Flag.optional,
     ),
     expect: Flag.String("expect").pipe(
@@ -72,7 +75,7 @@ export const verify = Command.make(
         Effect.gen(function* () {
           const request = {
             runId,
-            name: Option.getOrElse(name, () => executable),
+            name: Option.getOrElse(name, () => checkNameOf(executable, argv)),
             executable,
             argv,
             expect: wanted,

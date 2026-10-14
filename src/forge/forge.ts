@@ -40,7 +40,10 @@ export interface ReviewCommands {
 
 /** The command lines an agent is told to run, written for the forge they run on. */
 export interface Commands {
-  /** Opens one, with `<title>` and `<file>` (the description) left for the agent. */
+  /**
+   * Opens one, with `<title>` and `<file>` (the description) left for the agent, and on
+   * GitLab `<iid>`, the number the first line printed. No line substitutes a command.
+   */
   readonly create: string;
   /** Posts `<file>` as a note on the existing one; empty where there is none. */
   readonly comment: string;

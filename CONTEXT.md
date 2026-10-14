@@ -28,7 +28,7 @@
 
 **Fallback chain** — The human's `fallbacks` setting: an ordered list of `harness` or `harness/model` entries, shared across the Flock. It is tried after whatever the work itself prefers, including a Workflow's own `otherwise`. It is empty by default. The **Flock chat** has a chain of its own, `chatFallbacks` in Desktop's Settings, for this computer only. It is tried after the chat's own harness and model, judged by the same rules.
 
-**Fallback** — Work moved to the next agent with room because its agent's Subscription is Exhausted. If that is known before the agent starts, the recorded choice is simply another agent. Mid-work, Collie closes the agent and starts a new one on the same operation, with the same prompt and a hand-over. The hand-over says the checkout holds what was done and where the earlier transcript is. The new agent also takes the old one's place for later work. A Fallback is recorded with what it fell back from and why. In the **Flock chat** a Fallback keeps the conversation on another model of the same harness. On another harness it starts a new conversation, and Desktop's hand-over says where it came from and where the earlier transcript is.
+**Fallback** — Work moved to the next agent with room because its agent's Subscription is Exhausted. If that is known before the agent starts, the recorded choice is simply another agent. Mid-work, Collie stops the agent and, once it is **Quiet**, starts a new one on the same operation, with the same prompt and a hand-over. The hand-over says the checkout holds what was done and where the earlier transcript is. The new agent also takes the old one's place for later work. A Fallback is recorded with what it fell back from and why. In the **Flock chat** a Fallback keeps the conversation on another model of the same harness. On another harness it starts a new conversation, and Desktop's hand-over says where it came from and where the earlier transcript is.
 
 **Input** — A value a Workflow needs (plan directory, diff target, goal). Only the **Launch flow** infers one, for a human, from context (branch, cwd, earlier plan Runs, glab), and a Run records which of its Inputs were inferred and which were given. An agent's start — chat's Collie tools or `collie run start` — gives every Input explicitly, an optional one as an explicit empty, and a start missing one is refused with what would fill it.
 
@@ -153,7 +153,7 @@ not read it; it drops out of batches, an `uncertain` send of it included, and st
 journal. A cause that holds again later is news again.
 
 **Collie tools** — What a chat may reach, over Collie's own shared operations. Most read — `collie_herd`, `collie_run`, `collie_workspaces`,
-`collie_receipts`, `collie_definitions`, `collie_installation`, `collie_news` — Herd-wide,
+`collie_receipts`, `collie_definitions`, `collie_installation`, `collie_report`, `collie_news` — Herd-wide,
 and never narrowed by the board's Filter or its Selection, which are what a human is
 looking at rather than what supervision may see; the Selection is told to chat with each
 prompt and stands in only where a tool was given no Run.
@@ -214,9 +214,13 @@ gate. No action kind confirms anything, so a Proposal can never contain its own.
 
 **Delivery** — One message to one live agent incarnation, with states `queued` (a boundary
 delivery an older Collie held for the agent's next prompt), `reserved`, `deferred` (herdr answered that the
-pane cannot take it yet, so it is tried again under the same id), `submitted`,
-`acknowledged`, `verified` and the terminal `failed`, `unknown`, `superseded`, `expired`.
-They are separate because they are separate facts. A `deliver` with no mode is `now`.
+pane cannot take it yet, so it is tried again under the same id), `submitted` (sent),
+`acknowledged` (the agent took a turn after it) and the terminal `failed` and `superseded`;
+`unknown` blocks the same work until a human settles it. They are separate because they are
+separate facts, and whether the work then went where it was told is the drift judgement's.
+A `deliver` with no mode is `now`. One that names no agent reaches **the agent at work**:
+the agent whose step is active, else the Run's builder (its implementer); `to` names a role
+— `builder`, `reviewer`, `planner` — or an agent instead.
 A Delivery from an agent carries its sender line before the unchanged words: its agent,
 Run and Machine, and the tool and CLI address to answer.
 
@@ -225,7 +229,10 @@ across the compaction decision, the composition and the send.
 
 **Incarnation** — An agent as one live process, identified by herdr's own `terminal_id` and
 `agent_session`. A name and a pane are inherited by whatever takes the role next; neither
-names a process. A registry entry without one is never a delivery target.
+names a process. A registry entry without one is never a delivery target. Where a Harness's
+work runs outside its pane — Codex's, in the App Server Collie starts for that one agent —
+the incarnation is the pane's process and that server, with every thread loaded on it,
+until the server is **Quiet**.
 
 **Drift** — A recorded evidence–Intent mismatch. `rule` drift Collie establishes itself;
 `semantic` drift is judged against bounded actual evidence. Nothing passes on an absence.
@@ -254,7 +261,17 @@ what backs it, and what nobody checked. Its **readiness** — `claimed`, `inspec
 decided by rules over facts: `decision` > `consequential` > `try-it` > `routine`. A
 narrative never raises it.
 
-**Hold** — A Run under a hold starts no new work until a human releases it. It takes effect at the Run's next boundary, so what is already running finishes. Nothing lifts a hold at a time.
+**Hold** — A Run under a hold starts no new work until a human releases it. It takes effect at the Run's next boundary, so what is already running finishes. Nothing lifts a hold at a time. A hold never touches a running turn; **Stop** does.
+
+**Stop** — Ending a Run's work now, and its children's. Each live agent is stopped where
+its work runs, and only then is its pane closed. An agent that does not become **Quiet** is
+named in what the stop reports, its pane is left open, and nothing takes its work until it
+is (ADR-0059).
+
+**Quiet** — An incarnation that can no longer change anything. Every turn it was running
+has ended, as read back from the harness. The process that ran them is gone, and nothing it
+started is still running. `submitted` (an interrupt was sent) and `acknowledged` (the
+harness accepted it) are not Quiet. Only Quiet counts as stopped.
 
 **Conversation** — Scoped to one Herd (Native chat, in its Home) or to the Flock (the
 **Flock chat**, in Desktop). For a Herd, also the durable journal of human and Collie turns, plus the turns
@@ -332,13 +349,15 @@ now; **Ready to release** leads it. Not a **Decision**: a Decision is Collie ask
 has not been mentioned. A Run that ended with nothing to file — no branch, no merge
 request, no plan, no question — has **Landed** and is not waiting on anyone.
 
-**Ready to release** — A Waiting on you Task whose leading Run succeeded, whose merge
-request is open, and whose checks passed: every check Collie collected passed at the
-revision the merge request's branch is at, and the forge's pipeline, where Collie could
-read it, passed too, with nothing failing or still running. Its card says what is ready,
-where, that the checks passed and what the human does next. An open merge request whose
-checks failed, are running or were never run is still Waiting on you, and its card says
-which.
+**Ready to release** — A Waiting on you Task whose merge request the forge would merge now:
+its leading Run succeeded; the merge request is open and not a draft; every check approved
+for the Run passed at its head; the forge's pipeline at that head passed, or there is none;
+no blocking review finding is unresolved; and the forge says it can merge. It is one fact,
+computed once in the board model, that the board, `collie run show`, `collie run wait
+--until ready` and chat all read, with each missing fact named and marked as one that may
+still come by itself (CI running, the forge still working it out) or one only a human can
+move. A card leaves Ready to release when CI or mergeability later says no. An open merge
+request that is not ready is still Waiting on you, and its card says what is missing.
 
 **Reopened** — A finished Run one of whose agents was sent a steer Delivery after the Run
 finished. Not a status: the Run still reads `succeeded`, `failed` or `stopped`, because
@@ -492,6 +511,10 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 **Evidence** — A Verification collected at a revision. An Output field saying the tests pass is a claim, and is shown as one. The gate before a merge request reads evidence, never claims.
 
 **Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
+
+**Integration** — The default branch merged into a Run's branch where it has moved since, with a merge commit in the Run's own checkout: never a rebase and never a force push. It never touches uncommitted work, never counts a default branch it could not fetch, leaves a conflict for the builder to finish, and is recorded in the Run log as `integrated <branch>@<sha>`. A review is diffed against the merge-base it leaves.
+
+**Acceptance criterion** — One checkbox under a ticket's Acceptance criteria heading. The builder's Output answers each with how it is met (a test, a file) or `not met: <reason>`. One unanswered or not met goes back to the builder before any reviewer sees the work, and the reviewer is shown every answer.
 
 **Check pass** — One run of one of a Run's **Checks** by Collie, with why it runs: `gate` on the
 Run's branch, `baseline` where the branch left the default branch, `recheck` on the same

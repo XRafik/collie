@@ -28,7 +28,16 @@ import {
 } from "../src/agents";
 import { Children, Host, Run, jsonSchemaFor, withAgents } from "../src/sdk";
 import { asRun, enveloped } from "./support/enveloped";
-import { PARKED, controlPath, foundationLayer, loadEntry, pollStatus, runDir } from "../src/engine";
+import {
+  PARKED,
+  controlPath,
+  evidenceDir,
+  foundationLayer,
+  loadEntry,
+  pollStatus,
+  runDir,
+} from "../src/engine";
+import { readMetrics } from "../src/metrics";
 import { Launched, runAgents } from "../src/launches";
 import { Collected } from "../src/agents";
 import type { UsageReading } from "../src/usage-model";
@@ -37,15 +46,18 @@ import { readDrift } from "../src/drift";
 import { FixOutputSchema, SynthesisSchema } from "../src/output";
 import { seedIntent, writeIntent } from "../src/intent";
 import { appendLine, deliveriesOf, readLedger, reconcile } from "../src/steering";
+import { readLaunches } from "../src/launches";
 import { Store } from "../src/store";
 import { readTask, writeTask } from "../src/task";
 import { taskFor } from "../src/operations";
 import { lineageAgent, readRegistry, registerAgent, registryPath, scopeFor } from "../src/registry";
 import { HerdrError } from "../src/herdr";
 import { agentName, shellQuote } from "../src/naming";
-import { controlDir, type CompactionPorts } from "../src/compaction";
+import { controlDir, withControlLock, type CompactionPorts } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
+import { FALLBACK_DEFAULTS } from "../src/settings";
+import type { AgentProfile } from "../src/profile";
 
 let rig: Rig;
 let dir: string;
@@ -690,7 +702,7 @@ test("a pane that is busy when the step's prompt goes out is waited out, and the
       expect(result._tag === "Success" && result.success.note).toBe("after the dialog");
       // Two refused and one taken, all of them one delivery.
       expect(sent(yield* rig.calls(), "Your task for this step")).toBe(3);
-      expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["submitted"]);
+      expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["acknowledged"]);
       expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
     }),
   ));
@@ -719,7 +731,7 @@ test(
         const result = yield* releasedInto("r1");
         expect(result._tag === "Success" && result.success.note).toBe("resumed");
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
-        expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["submitted"]);
+        expect((yield* steps("r1")).map((one) => one.delivery.state)).toEqual(["acknowledged"]);
         expect(yield* fs.exists(controlPath(dir, PARKED, "r1"))).toBe(false);
       }),
     ),
@@ -1995,6 +2007,20 @@ test("a lineage lookup leaves every register as it found it, and registrations a
   ));
 
 /** The controls an operator sets, as the host keeps them beside the run. */
+/** Stopped once its agent has been given `about`, the launch that gave it done; then suspended. */
+const stoppedOnce = (runId: string, about: string): Reached => {
+  let stopped = false;
+  return Effect.gen(function* () {
+    if (!stopped) {
+      if (!(yield* prompted(about))) return false;
+      yield* TestClock.withLive(Effect.sleep("100 millis"));
+      yield* control("stop", runId, true);
+      stopped = true;
+    }
+    return yield* suspended(runId);
+  });
+};
+
 const control = (name: string, runId: string, set: boolean) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => {
@@ -2121,8 +2147,7 @@ test(
         const fs = yield* FileSystem.FileSystem;
         // Nothing written, so the collection is still out when the stop arrives.
         yield* rig.queueOutputs([null]);
-        yield* control("stop", "r1", true);
-        yield* interrupted("r1", suspended("r1"));
+        yield* interrupted("r1", stoppedOnce("r1", "Your task for this step"));
         // The agent was launched and is still holding the work: stopping a Run is not
         // halting its agent, which is its own action.
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
@@ -2364,7 +2389,7 @@ const pairBody = pair.toLayer((payload) =>
   }).pipe(asRun(payload)),
 );
 
-test("a steer that names no agent reaches the one launched last, not the last by name", () =>
+test("a steer that names no agent reaches the builder when no step is active, not the last by name", () =>
   runEffect(
     Effect.gen(function* () {
       yield* rig.queueOutputs([
@@ -2413,12 +2438,112 @@ test("a steer that names an agent reaches that agent, not the one launched last"
     }),
   ));
 
+/** A builder and then a reviewer, as an implement Run's review round launches them. */
+const reviewed = enveloped({ name: "agent-reviewed", input: {}, success: Schema.String });
+const reviewedBody = reviewed.toLayer((payload) =>
+  Effect.gen(function* () {
+    for (const [operation, role] of [
+      ["build", "implementer"],
+      ["review", "reviewer"],
+    ] as const) {
+      yield* agentWork({
+        operation,
+        role,
+        workflow: "agent-reviewed",
+        cwd: rig.projectDir,
+        instructions: "Do it.",
+        output: Verdict,
+      });
+    }
+    return "both";
+  }).pipe(asRun(payload)),
+);
+
+/** The builder at work again, its Output not yet written, with the reviewer idle. */
+const builderBusy = Effect.gen(function* () {
+  yield* reviewed.execute({ runId: "r1", input: {} });
+  const launches = yield* readLaunches(dir, "r1");
+  const build = launches.find((one) => one.operation === "build")!;
+  yield* (yield* FileSystem.FileSystem).remove(build.output);
+  return build.agent;
+});
+
+/** A pane that takes every prompt without herdr seeing a turn come of it. */
+class BusyPanes extends FakeHerdr {
+  override agentPrompt(target: string, text: string) {
+    return super.agentPrompt(target, text).pipe(Effect.as("unobserved" as const));
+  }
+  override agentStatus() {
+    return Effect.succeed("working" as const);
+  }
+}
+
+test("a busy builder takes the steer that names no one, not the idle reviewer launched after it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "built" },
+        { verdict: "clean", note: "reviewed" },
+      ]);
+      const { builder, told } = yield* Effect.gen(function* () {
+        const builder = yield* builderBusy;
+        return { builder, told: yield* say("r1", "keep going", "steer-1") };
+      }).pipe(
+        Effect.provide(reviewedBody),
+        Effect.provide(agentsLayer(hostOf())),
+        Effect.provide(foundationLayer({ dir })),
+        Effect.scoped,
+        Effect.orDie,
+      );
+      expect(told).toMatchObject({ agent: builder, delivered: true, observed: true });
+      expect(told.how).toBe("a turn started");
+    }),
+  ));
+
+test("a steer nothing shows taken is reported sent and not observed, and a role reaches its agent", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "built" },
+        { verdict: "clean", note: "reviewed" },
+      ]);
+      const told = yield* Effect.gen(function* () {
+        yield* builderBusy;
+        const agents = yield* Agents;
+        return yield* agents.steer({
+          runId: "r1",
+          text: "look again",
+          request: "s-1",
+          to: "reviewer",
+        });
+      }).pipe(
+        Effect.provide(reviewedBody),
+        Effect.provide(
+          agentsLayer({ ...hostOf(), herdr: new BusyPanes(rig.pluginEnv()), observeMs: 500 }),
+        ),
+        Effect.provide(foundationLayer({ dir })),
+        Effect.scoped,
+        Effect.orDie,
+      );
+      expect(told).toMatchObject({
+        agent: agentName("r1", "review", null, 1),
+        delivered: true,
+        observed: false,
+      });
+      expect(told.how).toBeUndefined();
+      const [one] = (yield* deliveriesOf(rig.pluginEnv().stateDir, "r1")).filter(
+        ({ delivery }) => delivery.cause.kind === "steer",
+      );
+      expect(one?.delivery).toMatchObject({ state: "submitted", note: "unobserved" });
+    }),
+  ));
+
 /** A harness whose context is always over the limit, and which compacts when asked. */
-const fullContext = (asked: string[]): CompactionPorts => ({
+const fullContext = (asked: string[], tokens: number | null = 1_000_000): CompactionPorts => ({
   claude: {
     gate: () => Effect.void,
     install: () => Effect.succeed({ args: [] }),
-    usage: () => Effect.succeed(1_000_000),
+    usage: () => Effect.succeed(tokens),
     request: (_ctx, id) => Effect.sync(() => void asked.push(id)).pipe(Effect.as(null)),
     poll: () => Effect.succeed({ kind: "success" as const }),
   },
@@ -2447,6 +2572,68 @@ test("a reused agent is compacted before its next piece of work, and a new one i
       expect(result._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
       // Once, at the boundary between the two: the agent had just started for the first.
       expect(asked).toHaveLength(1);
+      const context = (yield* readMetrics(evidenceDir(dir, "r1"))).filter(
+        (line) => line.kind === "context",
+      );
+      expect(context.map((line) => [line.subject, line.value])).toEqual([[sweeper, 1_000_000]]);
+    }),
+  ));
+
+/** How many times a reused agent at `tokens` is asked to compact, at the default threshold. */
+const compactionsAtDefault = (tokens: number) =>
+  Effect.gen(function* () {
+    yield* rig.queueOutputs([
+      { verdict: "clean", note: "first" },
+      { verdict: "clean", note: "second" },
+    ]);
+    const asked: string[] = [];
+    yield* listing.execute({ runId: "r1", input: ITEMS }).pipe(
+      Effect.provide(listingBody),
+      Effect.provide(
+        agentsLayer({
+          ...hostOf(),
+          compactAtTokens: FALLBACK_DEFAULTS.compactAtTokens,
+          ports: fullContext(asked, tokens),
+        }),
+      ),
+      Effect.provide(foundationLayer({ dir })),
+      Effect.scoped,
+      Effect.orDie,
+    );
+    return asked.length;
+  });
+
+test("by default a reused agent past 150,000 tokens compacts between tickets", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(FALLBACK_DEFAULTS.compactAtTokens).toBe(150_000);
+      expect(yield* compactionsAtDefault(160_000)).toBe(1);
+    }),
+  ));
+
+test("by default a reused agent under 150,000 tokens is not compacted", () =>
+  runEffect(compactionsAtDefault(140_000).pipe(Effect.map((asked) => expect(asked).toBe(0)))));
+
+test("a boundary whose context cannot be sampled records no context line, never a zero", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      yield* listing
+        .execute({ runId: "r1", input: ITEMS })
+        .pipe(
+          Effect.provide(listingBody),
+          Effect.provide(
+            agentsLayer({ ...hostOf(), compactAtTokens: 1000, ports: fullContext([], null) }),
+          ),
+          Effect.provide(foundationLayer({ dir })),
+          Effect.scoped,
+          Effect.orDie,
+        );
+      const lines = yield* readMetrics(evidenceDir(dir, "r1"));
+      expect(lines.filter((line) => line.kind === "context")).toEqual([]);
     }),
   ));
 
@@ -2497,11 +2684,17 @@ const inTask = (runId: string) =>
 /** Started and left, stopped while the first item's Output is still out. */
 const stoppedAtFirst = (runId: string) =>
   Effect.gen(function* () {
-    yield* control("stop", runId, true);
+    const fs = yield* FileSystem.FileSystem;
     yield* listingSession(
-      listing
-        .execute({ runId, input: ITEMS }, { discard: true })
-        .pipe(Effect.andThen(Effect.sleep(Duration.millis(900)))),
+      Effect.gen(function* () {
+        yield* listing.execute({ runId, input: ITEMS }, { discard: true });
+        // Once the first item's launch is done, so the stop finds its collection out.
+        while (!(yield* prompted("01-api.prompt.md")))
+          yield* TestClock.withLive(Effect.sleep("10 millis"));
+        yield* TestClock.withLive(Effect.sleep("100 millis"));
+        yield* control("stop", runId, true);
+        yield* Effect.sleep(Duration.millis(900));
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
     );
   });
 
@@ -3013,3 +3206,202 @@ test(
     ),
   120_000,
 );
+
+test("a stop closes a Claude agent's pane even while its controls are locked, having nothing to stop there", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      const controls = { compactAtTokens: 1000, ports: claudeControls() };
+      yield* session(started("r1"), controls);
+      const halt = yield* withControlLock(
+        hostOf().env.stateDir,
+        agentFor("r1"),
+        session(halted("r1"), controls),
+      );
+      expect(halt).toEqual({ stopped: [agentFor("r1")], left: [] });
+    }),
+  ));
+
+/** What was typed into the agent's pane, in order, as herdr was asked to run it. */
+const paneLines = (calls: ReadonlyArray<Call>) =>
+  calls.flatMap((call) =>
+    call.argv?.[0] === "pane" && call.argv[1] === "run" ? [call.argv[3] ?? ""] : [],
+  );
+
+const withProfile = (profile: AgentProfile) =>
+  configured(encodeJson({ agent_profile: encodeJson(profile) }));
+
+/** Claude's compaction controls as shipped, with nothing to wait on before the first prompt. */
+const claudeSettingsControls = (): CompactionPorts => ({
+  claude: { ...COMPACTION_PORTS.claude!, gate: () => Effect.void, ready: undefined },
+});
+
+test("with no agent profile a launch types and passes what it always has", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      const before = yield* session(
+        Effect.gen(function* () {
+          yield* started("r1");
+          const first = yield* rig.calls();
+          yield* withProfile({});
+          yield* started("r2");
+          return first;
+        }),
+      );
+      const after = (yield* rig.calls()).slice(before.length);
+
+      const same = (calls: ReadonlyArray<Call>, runId: string) =>
+        [...paneLines(calls), ...launchArgs(calls)].map((said) => said.replaceAll(runId, "<run>"));
+      expect(same(after, "r2")).toEqual(same(before, "r1"));
+      expect(launchArgs(after)).not.toContain("--settings");
+    }),
+  ));
+
+test("with no agent profile Claude's settings file is what Collie always wrote", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([
+        { verdict: "clean", note: "first" },
+        { verdict: "clean", note: "second" },
+      ]);
+      const settingsOf = (runId: string) =>
+        Effect.gen(function* () {
+          const from = (yield* rig.calls()).length;
+          yield* started(runId);
+          const args = launchArgs((yield* rig.calls()).slice(from));
+          return yield* read(args[args.indexOf("--settings") + 1] ?? "");
+        });
+      const [before, after] = yield* session(
+        Effect.gen(function* () {
+          const first = yield* settingsOf("r1");
+          yield* withProfile({ implementer: { env: { ONLY: "theirs" } } });
+          return [first, yield* settingsOf("r2")] as const;
+        }),
+        { compactAtTokens: 1000, ports: claudeSettingsControls() },
+      );
+
+      const runless = (text: string) => text.replaceAll(/\br[12]\b/g, "<run>");
+      expect(runless(after)).toEqual(runless(before));
+      expect(before).toContain("hooks");
+    }),
+  ));
+
+test("a profile's environment is set in the pane before the harness starts, and a file-held value is written nowhere", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const secret = ["glpat", "synthetic0000000000test"].join("-");
+      yield* fs.makeDirectory(`${rig.root}/secrets`, { recursive: true });
+      yield* fs.writeFileString(`${rig.root}/secrets/token`, `${secret}\n`);
+      yield* fs.chmod(`${rig.root}/secrets/token`, 0o600);
+      yield* withProfile({
+        reviewer: {
+          env: { PONYTAIL_DEFAULT_MODE: "off", DEPLOY_TOKEN: { file: "~/secrets/token" } },
+        },
+      });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      const calls = yield* rig.calls();
+      const typed = paneLines(calls);
+      expect(typed).toContain("export PONYTAIL_DEFAULT_MODE='off'");
+      expect(typed).toContain(
+        `IFS= read -r DEPLOY_TOKEN < '${rig.root}/secrets/token'; export DEPLOY_TOKEN`,
+      );
+      const startAt = calls.findIndex((call) => call.argv?.[1] === "start");
+      const lastTyped = calls.findLastIndex(
+        (call) => call.argv?.[0] === "pane" && call.argv[1] === "run",
+      );
+      expect(lastTyped).toBeLessThan(startAt);
+
+      const leaked: string[] = [];
+      for (const path of yield* fs.readDirectory(rig.root, { recursive: true })) {
+        const at = `${rig.root}/${path}`;
+        if (at === `${rig.root}/secrets/token`) continue;
+        if ((yield* fs.stat(at)).type !== "File") continue;
+        if ((yield* fs.readFileString(at).pipe(Effect.orElseSucceed(() => ""))).includes(secret))
+          leaked.push(path);
+      }
+      expect(leaked).toEqual([]);
+      expect(calls.filter((call) => JSON.stringify(call).includes(secret))).toEqual([]);
+    }),
+  ));
+
+test("a file-held value that is not 0600 parks the launch by its path, and opens no tab", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(`${rig.root}/token`, "hunter2\n");
+      yield* fs.chmod(`${rig.root}/token`, 0o644);
+      yield* withProfile({ "*": { env: { DEPLOY_TOKEN: { file: "~/token" } } } });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* interrupted("r1", suspended("r1"));
+
+      expect(yield* statusNow("r1")).toBe("suspended");
+      const why = yield* read(controlPath(dir, PARKED, "r1"));
+      expect(why).toContain(`${rig.root}/token is mode 0644, not 0600`);
+      expect(why).not.toContain("hunter2");
+      const cmds = yield* rig.cmds();
+      expect(cmds).not.toContain("tab create");
+      expect(cmds).not.toContain("agent start");
+    }),
+  ));
+
+test("a Claude overlay is merged into Collie's settings file, and Collie's hooks stay first", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const guard = { matcher: "Bash", hooks: [{ type: "command", command: "guard" }] };
+      yield* withProfile({
+        "*": {
+          claude: {
+            enabledPlugins: { "ponytail@market": false },
+            disableClaudeAiConnectors: true,
+            hooks: { PreToolUse: [guard], UserPromptSubmit: [guard] },
+          },
+        },
+      });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"), { compactAtTokens: 1000, ports: claudeSettingsControls() });
+
+      const args = launchArgs(yield* rig.calls());
+      expect(args.filter((arg) => arg === "--settings")).toHaveLength(1);
+      const settings = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            statusLine: Schema.Unknown,
+            enabledPlugins: Schema.Unknown,
+            disableClaudeAiConnectors: Schema.Boolean,
+            hooks: Schema.Record(Schema.String, Schema.Array(Schema.Unknown)),
+          }),
+        ),
+      )(yield* read(args[args.indexOf("--settings") + 1] ?? ""));
+      expect(settings.enabledPlugins).toEqual({ "ponytail@market": false });
+      expect(settings.disableClaudeAiConnectors).toBe(true);
+      expect(settings.hooks.PreToolUse).toEqual([guard]);
+      expect(settings.hooks.UserPromptSubmit).toHaveLength(2);
+      expect(settings.hooks.UserPromptSubmit?.[1]).toEqual(guard);
+      expect(Object.keys(settings.hooks)).toEqual(
+        expect.arrayContaining(["PreCompact", "PostCompact", "UserPromptSubmit"]),
+      );
+    }),
+  ));
+
+test("without Collie's controls, a Claude overlay is a settings file of its own", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* withProfile({
+        reviewer: { claude: { claudeMdExcludes: ["/home/me/.claude/CLAUDE.md"] } },
+      });
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      const args = launchArgs(yield* rig.calls());
+      const path = args[args.indexOf("--settings") + 1] ?? "";
+      expect(path).toBe(`${dir}/agents/r1/review.settings.json`);
+      expect(yield* read(path)).toContain("/home/me/.claude/CLAUDE.md");
+    }),
+  ));

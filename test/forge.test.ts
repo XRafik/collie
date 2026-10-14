@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { Effect, FileSystem } from "effect";
+import { ConfigProvider, Effect, FileSystem } from "effect";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
+import { gitlab, pipelineChecks } from "../src/forge/gitlab";
 import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
 import { epochMs } from "../src/time";
 import { runEffect } from "./support/effect";
+import { exec } from "./support/command";
 import {
   FORGE_HOST,
   PROJECT,
@@ -190,6 +192,26 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
+    test("says whether it would merge it now, by its own rules and in its own words", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const mergeable = (over: Partial<FakeMr>) =>
+            forge
+              .details(ref(name), "/w", fakeForge(name, model(name, { mrs: [mr(name, over)] })).run)
+              .pipe(Effect.map((panel) => (panel._tag === "Details" ? panel.mergeable : null)));
+          expect(yield* mergeable({})).toEqual({ state: "mergeable", said: "mergeable" });
+          expect((yield* mergeable({ mergeable: "conflict" }))?.state).toBe("blocked");
+          expect((yield* mergeable({ mergeable: "unapproved" }))?.state).toBe("blocked");
+          expect((yield* mergeable({ mergeable: "checking" }))?.state).toBe("unknown");
+          expect((yield* mergeable({ mergeable: "conflict" }))?.said).toBe(
+            name === "gitlab" ? "conflict" : "conflicting",
+          );
+          expect((yield* mergeable({ mergeable: "unapproved" }))?.said).toBe(
+            name === "gitlab" ? "not approved" : "blocked",
+          );
+        }),
+      ));
+
     test("reads the whole panel: draft, people, branches, approval, auto-merge and when it moved", () =>
       runEffect(
         Effect.gen(function* () {
@@ -260,7 +282,7 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* checksOf([{ name: "e2e", state: "running" }])).toEqual({
             state: "running",
           });
-          expect(yield* checksOf([])).toEqual({ state: "unknown" });
+          expect(yield* checksOf([])).toEqual({ state: "none" });
         }),
       ));
 
@@ -358,27 +380,75 @@ for (const name of ["gitlab", "github"] as const) {
             const assignee = `account${SHELL_WORD}`;
             const existing = `https://${PROJECT[name]}/30?query=${SHELL_WORD}`;
             const commands = forge.commands({ project: PROJECT[name], branch, assignee, existing });
+            const lines = commands.create.split("\n");
             const created = yield* shell(
               "sh",
-              ["-c", commands.create.replace("<title>", "Change").replace("<file>", "body.txt")],
+              [
+                "-c",
+                lines[0]!
+                  .replaceAll("<title>", "Change")
+                  .replace("<file>", "body.txt")
+                  .replace("<iid>", "7"),
+              ],
               cwd,
             );
             expect(created.code).toBe(0);
             const args = created.stdout.trimEnd().split("\n");
             expect(args[args.indexOf("--assignee") + 1]).toBe(assignee);
-            if (name === "github") expect(args[args.indexOf("--head") + 1]).toBe(branch);
+            if (name === "github") {
+              expect(lines).toHaveLength(1);
+              expect(args[args.indexOf("--head") + 1]).toBe(branch);
+              expect(args[args.indexOf("--body-file") + 1]).toBe("body.txt");
+            } else {
+              const described = yield* shell(
+                "sh",
+                ["-c", lines[1]!.replace("<file>", "body.txt").replace("<iid>", "7")],
+                cwd,
+              );
+              expect(described.stdout.trimEnd().split("\n")).toEqual([
+                "api",
+                "--hostname",
+                "gitlab.example.com",
+                "--method",
+                "PUT",
+                "projects/group%2Fapp/merge_requests/7",
+                "-F",
+                "description=@body.txt",
+              ]);
+            }
             const noted = yield* shell(
               "sh",
               ["-c", commands.comment.replace("<file>", "body.txt")],
               cwd,
             );
             expect(noted.code).toBe(0);
-            expect(noted.stdout.trimEnd().split("\n")[2]).toBe(existing);
+            const said = noted.stdout.trimEnd().split("\n");
+            if (name === "github") expect(said[2]).toBe(existing);
+            else
+              expect(said.slice(-3)).toEqual([
+                `projects/group%2Fapp/merge_requests/${existing}/notes`,
+                "-F",
+                "body=@body.txt",
+              ]);
           } finally {
             yield* bin.restore();
           }
         }),
       ));
+
+    test("writes its delivery commands without command substitution", () => {
+      const commands = forge.commands({
+        project: PROJECT[name],
+        branch: "feature/one",
+        assignee: "tester",
+        existing: "31",
+      });
+      for (const line of [commands.create, commands.comment]) {
+        expect(line).not.toContain("$(");
+        expect(line).not.toContain("`");
+        expect(line.startsWith(`${CLI[name]} `)).toBe(true);
+      }
+    });
 
     test("keeps shell characters in a review target literal", () =>
       runEffect(
@@ -524,7 +594,65 @@ test("each fake answers the same on PATH, logs what it got, and keeps what was p
           expect((yield* FORGES[name].post(ref(name), "LGTM", false, "/", shell)).ok).toBe(true);
           expect(Object.values((yield* onPath.model()).notes ?? {})).toEqual([["LGTM"]]);
           expect((yield* onPath.calls()).length).toBeGreaterThan(0);
+          yield* forgeOnPath(bin, name, model(name, { installed: false }));
+          expect(yield* exec([CLI[name], "--version"])).toMatchObject({
+            exitCode: 127,
+            stdout: "",
+          });
         }
+      } finally {
+        yield* bin.restore();
+      }
+    }),
+  ));
+
+test("the suite's compiled forge fake receives its model and arguments literally", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const bin = yield* FakeBin.make(yield* fs.makeTempDirectoryScoped({ prefix: "forge-bin-" }));
+      try {
+        const binary = `${bin.dir}/compiled forge's reply`;
+        yield* fs.writeFileString(binary, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n", { mode: 0o755 });
+        yield* forgeOnPath(bin, "github", model("github")).pipe(
+          Effect.provide(
+            ConfigProvider.layerAdd(
+              ConfigProvider.fromUnknown({ COLLIE_TEST_FAKE_FORGE: binary }),
+              { asPrimary: true },
+            ),
+          ),
+        );
+        const args = ["--version", "words with spaces", "a'b", "line one\nline two", "$literal"];
+        expect(yield* exec([CLI.github, ...args])).toEqual({
+          exitCode: 0,
+          stdout: ["github", `${bin.dir}/github.model.json`, ...args].join("\n") + "\n",
+          stderr: "",
+        });
+      } finally {
+        yield* bin.restore();
+      }
+    }),
+  ));
+
+test("the source forge fake works with no Bun command on PATH", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const bin = yield* FakeBin.make(yield* fs.makeTempDirectoryScoped({ prefix: "forge-bin-" }));
+      try {
+        const onPath = yield* forgeOnPath(bin, "github", model("github")).pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+        );
+        expect(
+          yield* exec([CLI.github, "--version"], {
+            env: { ...Bun.env, PATH: `${bin.dir}:/usr/bin:/bin` },
+          }),
+        ).toEqual({
+          exitCode: 0,
+          stdout: "gh version 2.0.0",
+          stderr: "",
+        });
+        expect(yield* onPath.calls()).toEqual(["gh --version"]);
       } finally {
         yield* bin.restore();
       }
@@ -619,3 +747,29 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 }
+
+test("a GitLab pipeline of an older head is not this head's CI, and one that was canceled has not passed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const checksOf = (over: Partial<FakeMr>) =>
+        Effect.map(
+          gitlab.details(
+            ref("gitlab"),
+            "/w",
+            fakeForge(
+              "gitlab",
+              model("gitlab", {
+                mrs: [mr("gitlab", { checks: [{ name: "test", state: "passed" }], ...over })],
+              }),
+            ).run,
+          ),
+          (panel) => (panel._tag === "Details" ? panel.checks : undefined),
+        );
+      expect(yield* checksOf({ head: "new-head" })).toEqual({ state: "passed" });
+      expect(yield* checksOf({ head: "new-head", pipelineAt: "old-head" })).toEqual({
+        state: "unknown",
+      });
+      expect(pipelineChecks("canceled")).toEqual({ state: "unknown" });
+      expect(pipelineChecks("")).toEqual({ state: "none" });
+    }),
+  ));

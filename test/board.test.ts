@@ -9,6 +9,7 @@ import {
   boardLines,
   buildBoard,
   checksAt,
+  withForge,
   finishedLabel,
   heldLine,
   sentenceFor,
@@ -16,7 +17,7 @@ import {
   workingLabel,
   type Sentence,
 } from "../src/board";
-import { mrLabel } from "../src/board-model";
+import { mrLabel, type Mergeability } from "../src/board-model";
 import {
   Answered,
   Controlled,
@@ -51,6 +52,8 @@ import { madeRun } from "./support/records";
 import { collie, proves } from "./support/world";
 import { stopHost, until } from "./support/host";
 import { epochMs } from "../src/time";
+import { seedIntent, writeIntent } from "../src/intent";
+import { approvedFile, encodeApproved } from "../src/verify-spec";
 import { planDirOf } from "../src/run-detail";
 
 function facts(over: Partial<Sentence> = {}): Sentence {
@@ -1617,14 +1620,31 @@ test("a succeeded Run's open merge request is ready only on checks at its branch
       );
 
       yield* appendVerification(run.evidence, checked("lint", head));
-      const green = yield* board(env, [run], {
-        alive: [agent("builder", "idle")],
-        registered: [registered("builder", run.id)],
-      });
+      const forgeSays = (mergeable: Mergeability) =>
+        board(env, [run], {
+          alive: [agent("builder", "idle")],
+          registered: [registered("builder", run.id)],
+          mrStates: new Map([["cego/collie#30", "open"]]),
+          forge: new Map([["cego/collie#30", { checks: { state: "passed" }, head, mergeable }]]),
+        });
+      // Green, but nobody has asked the forge whether it can merge.
+      expect((yield* view).readiness?.missing.map((one) => one.fact)).toEqual([
+        "mr-open",
+        "ci",
+        "mergeable",
+      ]);
+      const green = yield* forgeSays({ state: "mergeable", said: "mergeable" });
       expect(green[0]!.ready).toBe(true);
+      expect(green[0]!.readiness).toEqual({ ready: true, missing: [] });
       expect(sectionOf(green[0]!)).toBe("waiting");
       expect(green[0]!.sentence).toBe(
         `Ready to release: cego/collie#30 is open and its checks passed at ${head.slice(0, 7)}. Next: merge it, or tell builder to.`,
+      );
+      // The forge's approval rules are its own: green and unapproved is not ready.
+      const unapproved = yield* forgeSays({ state: "blocked", said: "not approved" });
+      expect(unapproved[0]!.ready).toBe(false);
+      expect(unapproved[0]!.sentence).toBe(
+        `cego/collie#30 is open and its checks passed at ${head.slice(0, 7)}, but the forge says it cannot merge: not approved.`,
       );
     }),
   ));
@@ -1643,7 +1663,7 @@ test("where the branch cannot be read, the newest revision Collie checked counts
       yield* appendVerification(run.evidence, checked("test", "bbbbbbbnew"));
       const [view] = yield* board(env, [run]);
       expect(view!.checks).toEqual({ state: "passed", at: "bbbbbbbnew" });
-      expect(view!.sentence).toContain("passed at bbbbbbb.");
+      expect(view!.sentence).toContain("passed at bbbbbbb");
     }),
   ));
 
@@ -1964,6 +1984,7 @@ const reopened = Effect.fn("board.reopened")(function* (
   status: AgentInfo["status"],
   steeredAt = "2026-09-14T10:02:00Z",
   over: Partial<Parameters<typeof buildBoard>[0]> = {},
+  passedAt?: string,
 ) {
   const { dir, env } = yield* scratch();
   const run = yield* madeRun(dir, {
@@ -1972,6 +1993,7 @@ const reopened = Effect.fn("board.reopened")(function* (
     mr: "https://github.com/cego/collie/pull/30",
     finished: "2026-09-14T10:00:00Z",
   });
+  if (passedAt !== undefined) yield* appendVerification(run.evidence, checked("test", passedAt));
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(`${dir}/agents/${run.id}`, { recursive: true });
   yield* fs.writeFileString(
@@ -2015,9 +2037,24 @@ test("a Reopened Run whose agent is blocked needs you, in that agent's pane", ()
 test("a Reopened Run whose agent is idle again stands on its own facts", () =>
   runEffect(
     Effect.gen(function* () {
-      const card = yield* reopened("idle", "2026-09-14T10:02:00Z", {
-        forge: new Map([["cego/collie#30", { checks: { state: "passed" }, head: "abc1234def" }]]),
-      });
+      const card = yield* reopened(
+        "idle",
+        "2026-09-14T10:02:00Z",
+        {
+          mrStates: new Map([["cego/collie#30", "open"]]),
+          forge: new Map([
+            [
+              "cego/collie#30",
+              {
+                checks: { state: "passed" },
+                head: "abc1234def",
+                mergeable: { state: "mergeable", said: "mergeable" },
+              },
+            ],
+          ]),
+        },
+        "abc1234def",
+      );
       expect(sectionOf(card)).toBe("waiting");
       expect(card.ready).toBe(true);
       expect(card.sentence).toStartWith("Ready to release: cego/collie#30");
@@ -2134,6 +2171,12 @@ test("only a steer herdr took, dated after the Run ended, reopens it", () =>
     }),
   ));
 
+test("the forge's pass never stands in for a check of Collie's that has not run", () => {
+  const forge = { checks: { state: "passed" as const }, head: "abc" };
+  expect(withForge({ state: "unchecked" }, forge)).toEqual({ state: "unchecked" });
+  expect(withForge({ state: "passed", at: "abc" }, forge)).toEqual({ state: "passed", at: "abc" });
+});
+
 test("an agent's own record of a check never counts toward ready", () => {
   const claimed = { ...checked("test", "abc"), by: "agent" as const };
   expect(checksAt([claimed], "abc")).toEqual({ state: "unchecked" });
@@ -2142,6 +2185,61 @@ test("an agent's own record of a check never counts toward ready", () => {
     at: "abc",
   });
 });
+
+test("a Run's checks are its Intent's as they stand, each passed as the command it names now", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const { repo, head } = yield* checkout("mk/ship");
+      const run = yield* madeRun(dir, {
+        task: "task-1",
+        state: "succeeded",
+        branch: "mk/ship",
+        cwd: repo,
+        mr: PR,
+        finished: "2026-09-14T09:30:00Z",
+      });
+      const spec = (name: string, executable = "true", cwd = "worktree") => ({
+        name,
+        executable,
+        argv: [],
+        cwd,
+      });
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${repo}/packages/b`, { recursive: true });
+      yield* fs.writeFileString(approvedFile(run.evidence), encodeApproved([spec("test")]));
+      // As Collie records it: the executable resolved, in the directory the check names.
+      const ran = (name: string, result: "pass" | "fail" = "pass") => ({
+        ...checked(name, head, result),
+        executable: Bun.which("true")!,
+        cwd: repo,
+      });
+      yield* appendVerification(run.evidence, ran("test"));
+      const checks = Effect.map(board(env, [run]), (views) => views[0]!.checks);
+      expect(yield* checks).toEqual({ state: "passed", at: head });
+
+      const intent = seedIntent(run.id, { runVerification: [spec("test")] });
+      const amended = (verification: ReadonlyArray<ReturnType<typeof spec>>) =>
+        writeIntent(run.dir, {
+          ...intent,
+          authority: { ...intent.authority, run_verification: verification },
+        });
+      // A check added after the seeded one passed has not run.
+      yield* amended([spec("test"), spec("typecheck")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      // A pass of the command a check named before is not a pass of the one it names now.
+      yield* amended([spec("test", "false")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      yield* amended([spec("test", "/opt/new/true")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      yield* amended([spec("test", "true", "packages/b")]);
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      // A check withdrawn after it failed no longer holds the Run back.
+      yield* appendVerification(run.evidence, ran("lint", "fail"));
+      yield* amended([spec("test")]);
+      expect(yield* checks).toEqual({ state: "passed", at: head });
+    }),
+  ));
 
 test("following a check hands on each line while the check is still running", () =>
   runEffect(

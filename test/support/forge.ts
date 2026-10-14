@@ -2,10 +2,11 @@
 // a FakeBin executable answering from the same model for host-driven tests. Both log
 // every call they get.
 
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Effect, FileSystem, Path, Schema } from "effect";
 import type { MrForge } from "../../src/board-model";
 import type { Ran, Runner } from "../../src/mr";
 import type { FakeBin } from "./bin";
+import { shellQuote } from "../../src/script";
 
 export const Check = Schema.Struct({
   name: Schema.String,
@@ -23,6 +24,8 @@ export const FakeMr = Schema.Struct({
   author: Schema.optionalKey(Schema.String),
   assignees: Schema.optionalKey(Schema.Array(Schema.String)),
   head: Schema.optionalKey(Schema.String),
+  /** The revision its pipeline ran on, where that is not its head. */
+  pipelineAt: Schema.optionalKey(Schema.String),
   mergedSha: Schema.optionalKey(Schema.String),
   checks: Schema.optionalKey(Schema.Array(Check)),
   sourceBranch: Schema.optionalKey(Schema.String),
@@ -31,6 +34,8 @@ export const FakeMr = Schema.Struct({
   autoMerge: Schema.optionalKey(Schema.Boolean),
   approved: Schema.optionalKey(Schema.Boolean),
   updatedAt: Schema.optionalKey(Schema.String),
+  /** Whether the forge would merge it now; mergeable where unsaid. */
+  mergeable: Schema.optionalKey(Schema.Literals(["yes", "conflict", "unapproved", "checking"])),
 });
 export type FakeMr = typeof FakeMr.Type;
 
@@ -42,6 +47,20 @@ const FakeIssue = Schema.Struct({
   state: Schema.Literals(["open", "closed"]),
 });
 type FakeIssue = typeof FakeIssue.Type;
+
+const GITLAB_MERGE_STATUS = {
+  yes: "mergeable",
+  conflict: "conflict",
+  unapproved: "not_approved",
+  checking: "checking",
+} as const;
+
+const GITHUB_MERGE_STATE = {
+  yes: { mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" },
+  conflict: { mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" },
+  unapproved: { mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED" },
+  checking: { mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" },
+} as const;
 
 export const ForgeModel = Schema.Struct({
   installed: Schema.Boolean,
@@ -218,13 +237,15 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       assignees: (mr.assignees ?? []).map((username) => ({ username })),
       sha: mr.head ?? null,
       merge_commit_sha: mr.mergedSha ?? null,
-      head_pipeline: pipeline === null ? null : { status: pipeline },
+      head_pipeline:
+        pipeline === null ? null : { status: pipeline, sha: mr.pipelineAt ?? mr.head ?? null },
       source_branch: mr.sourceBranch ?? null,
       source_project_id: mr.fork === true ? 7 : 3,
       target_project_id: 3,
       target_branch: mr.targetBranch ?? null,
       merge_when_pipeline_succeeds: mr.autoMerge ?? false,
       approvals_left: mr.approved === true ? 0 : null,
+      detailed_merge_status: GITLAB_MERGE_STATUS[mr.mergeable ?? "yes"],
       updated_at: mr.updatedAt ?? null,
       web_url: `https://${mr.project}/-/merge_requests/${mr.iid}`,
     });
@@ -398,6 +419,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       url: `https://${pull.project}/pull/${pull.iid}`,
       autoMergeRequest: pull.autoMerge === true ? { enabledAt: "2026-10-01T00:00:00Z" } : null,
       headRefOid: pull.head ?? null,
+      ...GITHUB_MERGE_STATE[pull.mergeable ?? "yes"],
       mergeCommit: pull.mergedSha === undefined ? null : { oid: pull.mergedSha },
       statusCheckRollup: (pull.checks ?? []).map((check) => ({
         __typename: "CheckRun",
@@ -515,7 +537,7 @@ export function fakeForge(forge: MrForge, start: ForgeModel) {
   return { run, calls, model: () => model };
 }
 
-/** The FakeBin face, run as `bun forge-bin.ts <forge> <model file> <args…>`. */
+/** The FakeBin face: the compiled fake or `bun forge-bin.ts`, with the same arguments. */
 export const forgeBin = Effect.fn("forge.bin")(function* (
   forge: MrForge,
   file: string,
@@ -543,8 +565,13 @@ export const forgeOnPath = Effect.fn("forge.onPath")(function* (
   const file = path.join(bin.dir, `${forge}.model.json`);
   yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(model));
   const script = yield* path.fromFileUrl(new URL("./forge-bin.ts", import.meta.url));
-  yield* bin.add(CLI[forge], `exec bun '${script}' ${forge} '${file}' "$@"`);
+  const binary = yield* Config.String("COLLIE_TEST_FAKE_FORGE").pipe(Config.withDefault(""));
+  const command = binary === "" ? [process.execPath, script] : [binary];
+  yield* bin.add(CLI[forge], `exec ${[...command, forge, file].map(shellQuote).join(" ")} "$@"`);
   return {
+    /** The model file holding `next`, as an agent's scripted write would leave it. */
+    holding: (next: ForgeModel) => ({ path: file, text: Schema.encodeSync(ModelJson)(next) }),
+    set: (next: ForgeModel) => fs.writeFileString(file, Schema.encodeSync(ModelJson)(next)),
     model: () => Effect.map(fs.readFileString(file), Schema.decodeSync(ModelJson)),
     calls: () =>
       Effect.map(

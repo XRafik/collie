@@ -10,6 +10,7 @@ import {
   opensHerdrForNoPane,
   shownAgent,
   opensHerdrWithoutPane,
+  deliveryChoices,
   recipients,
   switches,
 } from "../src/shared/record-terminal";
@@ -237,4 +238,21 @@ test.each([
   expect(recipients(launches, agents).map((one) => [one.name, one.label])).toEqual(
     offered.map((entry) => [...entry]),
   );
+});
+
+test("review comments go by default to the agent at work, and may name a role the Run has or an agent", () => {
+  const agents = [live("build-1", "implementer", "working"), live("review-1", "reviewer")];
+  expect(
+    deliveryChoices(launched("build-1", "review-1"), agents).map(({ key, to, agent }) => [
+      key,
+      to ?? agent ?? null,
+    ]),
+  ).toEqual([
+    ["@work", null],
+    ["@builder", "builder"],
+    ["@reviewer", "reviewer"],
+    ["build-1", "build-1"],
+    ["review-1", "review-1"],
+  ]);
+  expect(deliveryChoices(launched("gone"), agents)).toEqual([]);
 });

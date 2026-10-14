@@ -2,7 +2,7 @@
 // layer so the board and the CLI can read it without loading it.
 
 import { DateTime, Effect, FileSystem, Schema } from "effect";
-import { RanOn, type RunAgent } from "./board-model";
+import { RanOn, type RunAgent, type RunStep } from "./board-model";
 
 /**
  * The agent this work is on. Recorded by the launch Activity, so every later attempt
@@ -89,3 +89,14 @@ export const runAgents = (stateDir: string, runId: string) =>
       })),
     ),
   );
+
+/** Each operation the Run launched, in launch order, with its latest agent and whether its Output is in. */
+export const stepsOf = Effect.fn("Launches.steps")(function* (stateDir: string, runId: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const steps = new Map<string, RunStep>();
+  for (const one of yield* readLaunches(stateDir, runId)) {
+    const done = yield* fs.exists(one.output).pipe(Effect.orElseSucceed(() => false));
+    steps.set(one.operation, { operation: one.operation, agent: one.agent, done });
+  }
+  return [...steps.values()];
+});

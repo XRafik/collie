@@ -282,6 +282,7 @@ onMachineWith("pi")(
     runEffect(
       Effect.gen(function* () {
         const wanted = VERIFIED_VERSIONS.get("pi") ?? "";
+        yield* removesCache("node-compile-cache");
         const installed = (yield* Effect.promise(() => Bun.$`pi --version`.text())).trim();
         // A floor, as the name says: the gate below is what checks the interface still holds.
         expect([installed, atLeast(installed, wanted)]).toEqual([installed, true]);
@@ -296,6 +297,7 @@ onMachineWith("pi")(
   () =>
     runEffect(
       Effect.gen(function* () {
+        yield* removesCache("node-compile-cache");
         // The flag the adapter launches with, from the adapter, so the two cannot drift.
         const [flag = ""] = (yield* pi.install({
           agent: "r1",
@@ -321,6 +323,7 @@ onMachineWith("pi")(
     runEffect(
       Effect.gen(function* () {
         yield* removesCache("jiti");
+        yield* removesCache("node-compile-cache");
         const { args } = yield* pi.install({
           agent: "reuse-run-two-r1",
           harness: "pi",
@@ -346,7 +349,11 @@ onMachineWith("pi")(
             schedule: Schedule.spaced("100 millis"),
           }),
           Effect.timeout("20 seconds"),
-          Effect.ensuring(Effect.sync(() => child.kill())),
+          Effect.ensuring(
+            Effect.sync(() => child.kill()).pipe(
+              Effect.andThen(Effect.promise(() => child.exited)),
+            ),
+          ),
         );
 
         // A fresh session has nothing to compact, and Pi says so through this request's

@@ -2,6 +2,7 @@
 // interactive work happens in the pane entrypoints. Every question a human answers goes
 // through `InputPrompts`, so the same flow draws in a popup pane and inline in the tab.
 
+import { withNotice } from "./redact";
 import {
   Cause,
   Clock,
@@ -56,6 +57,7 @@ import {
   invokeOffer,
   type BoardRead,
   offersOf,
+  restartHostAt,
   resumeRun,
   savedModules,
   startRun,
@@ -160,6 +162,19 @@ export const openPicker = Effect.fn("Flows.openPicker")(function* (
     focus: true,
   });
   return 0;
+});
+
+/** The herdr action for `collie host restart`, said as a notification since it has no pane. */
+export const restartHostFlow = Effect.fn("Flows.restartHostFlow")(function* (
+  herdr: Herdr,
+  env: PluginEnv,
+) {
+  const result = yield* restartHostAt(env.stateDir);
+  const [title, body] = result.ok
+    ? ["Collie host restarted", result.human]
+    : ["Collie host did not restart", result.error.message];
+  yield* herdr.notify(title, body, result.ok ? "done" : "request").pipe(Effect.ignore);
+  return result.ok ? 0 : 1;
 });
 
 /**
@@ -508,7 +523,13 @@ const startModule = Effect.fn("Flows.startModule")(function* (
   }
   if (opts.placement === "popup") yield* Effect.ignore(herdr.popupClose());
   const given = Object.entries(text).map(([name, value]) => `${name}=${value}`);
-  return { line: `${module.id}: ${given.join("  ")} → ${started.runId}` };
+  return {
+    line: withNotice(
+      `${module.id}: ${given.join("  ")} → ${started.runId}`,
+      started.redacted,
+      " — ",
+    ),
+  };
 });
 
 /** The one question a start asks: what the human wants, in their own words. */

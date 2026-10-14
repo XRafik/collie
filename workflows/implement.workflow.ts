@@ -15,17 +15,21 @@
 // slice is told, and what the merge request has to say.
 
 import {
+  CriterionSchema,
   FindingSchema,
   FixOutputSchema,
+  IntegrationSchema,
   Agents,
   Children,
   Host,
   Run,
   WorkflowError,
   agentWork,
+  answerFor,
   checkGapsOf,
   classifyWorkSource,
   contentOf,
+  criteriaIn,
   defineWorkflow,
   evidenceGapsOf,
   findingKey,
@@ -40,17 +44,22 @@ import {
   renderEvidence,
   renderProgress,
   settleFinalFix,
+  leaveOutstanding,
+  findingsIn,
   settleRound,
   splitDisputed,
+  unmetCriteria,
   type CheckEvidence,
+  type Criterion,
   type Finding,
   type Handed,
+  type Integration,
   type Slice,
   type SynthesisReport,
   type Verification,
   type VerifySpec,
 } from "collie";
-import { DateTime, Effect, FileSystem, Schema } from "effect";
+import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 import { WorkflowInstance, type WorkflowEngine } from "effect/workflow/WorkflowEngine";
 import * as Workflow from "effect/workflow/Workflow";
 import * as Activity from "effect/workflow/Activity";
@@ -74,6 +83,14 @@ const prompts = {
     progress: text,
     session: Schema.Struct({ ask: text }),
     obstacle: text,
+    criteria: text,
+  }),
+  criteria: content.template("criteria", {
+    ...Implementing.fields,
+    ticket: Schema.Struct({ file: text, title: text }),
+    criteria: text,
+    findings: text,
+    session: Schema.Struct({ ask: text }),
   }),
   fix: content.template("fix", {
     ...Implementing.fields,
@@ -81,6 +98,7 @@ const prompts = {
     max_iterations: text,
     findings: text,
   }),
+  merge: content.template("merge", { ...Implementing.fields, conflict: text }),
   mr: content.template("mr", {
     ...Implementing.fields,
     evidence: text,
@@ -112,6 +130,9 @@ const Built = Schema.Struct({
   commits: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
     description: "the commit subjects you left behind",
   }),
+  criteria: Schema.optionalKey(Schema.Array(CriterionSchema)).annotate({
+    description: "one entry per acceptance criterion you were given",
+  }),
   tests: Schema.optionalKey(Schema.String),
   /** A bug's reproduction, an investigation's answer, a docs run: whichever applies. */
   reproduced: Schema.optionalKey(Schema.String),
@@ -138,6 +159,8 @@ const SliceRecord = Schema.Struct({
   title: Schema.String,
   blockedBy: Schema.Array(Schema.String),
   checks: Schema.Array(Schema.String),
+  // A reading journaled before tickets carried their criteria has none.
+  criteria: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 /** What the step that opens the merge request reports, and what it linked. */
@@ -153,6 +176,11 @@ const Opened = Schema.Struct({
 
 /** At most four rounds per rally; leave when no blocking finding remains. */
 const ROUNDS = 4;
+
+/** How often a ticket's unanswered criteria go back to its builder before a reviewer sees them. */
+const CRITERIA_TRIES = 2;
+/** Hand-backs of what stopped an integration — a commit can uncover a conflict. */
+const MERGE_TRIES = 2;
 
 /** The checks whose latest run by Collie, on the tree in front of it, failed. */
 const failingNow = (evidence: CheckEvidence, names: ReadonlyArray<string>) =>
@@ -271,9 +299,76 @@ export default defineWorkflow({
         run: { dir: place.dir, id: runId },
         verify: yield* checksNow,
       };
-      // Where a question the plan does not cover goes: the planner's own pane while one
-      // is live, and otherwise the human's.
-      const session = { ask: yield* agents.askRoute("planner", place.lineage) };
+      // Where a question the plan does not cover goes: the planner's own pane while one is
+      // live, and otherwise the builder decides and records it under assumptions. Asked
+      // again for each ticket, so a planner that has gone is never described as live.
+      const sessionNow = Effect.map(agents.askRoute("planner", place.lineage), (ask) => ({
+        ask,
+      }));
+
+      // The default branch merged in where it has moved, at each ticket boundary and before
+      // each review round, so drift is met while it is small and a reviewer sees what will
+      // merge. `base` is what a reviewer's diff is taken against.
+      let integrations = 0;
+      let base = "";
+      const integrateNow = Effect.gen(function* () {
+        integrations += 1;
+        const done = yield* Activity.make({
+          name: `integrate.${integrations}`,
+          success: IntegrationSchema,
+          // Suspended inside the Activity, so a resume asks again.
+          execute: Effect.gen(function* () {
+            const done = yield* host.integrate(runId, cwd);
+            if (done.status !== "unavailable") return done;
+            const why = `not integrated: ${done.reason}`;
+            yield* host.record(runId, why);
+            yield* host.parked(
+              runId,
+              `${why.replace(/\.+$/, "")}. Resume ${runId} once it can be read.`,
+            );
+            return yield* Workflow.suspend(yield* WorkflowInstance);
+          }),
+        });
+        yield* host.parked(runId, null);
+        if (done.sha !== "") base = done.sha;
+        if (done.status === "waiting") yield* host.record(runId, `not integrated: ${done.reason}`);
+        return done;
+      });
+      // Work goes on only from an integrated checkout: what stopped the merge goes back to
+      // the builder, and the work stops if it still stands. Conflicts at a ticket boundary
+      // are left for that ticket's own prompt.
+      const integrated = (operation: string, conflictsToTicket = false) =>
+        Effect.gen(function* () {
+          const settles = (done: Integration) =>
+            done.status === "unchanged" ||
+            done.status === "merged" ||
+            (conflictsToTicket && done.status === "conflicted");
+          let merged = yield* integrateNow;
+          for (let tries = 1; tries <= MERGE_TRIES && !settles(merged); tries++) {
+            yield* agentWork({
+              operation: tries === 1 ? operation : `${operation}-${tries}`,
+              agent: BUILDER,
+              role: "implementer",
+              pushes: true,
+              instructions: prompts.merge,
+              input: { ...input, verify: yield* checksNow, conflict: stoppedBy(merged) },
+              output: Built,
+            });
+            merged = yield* integrateNow;
+          }
+          if (!settles(merged))
+            return yield* new WorkflowError({
+              reason: `${merged.ref || merged.branch} is not integrated, so the work stops: ${stoppedBy(merged)}`,
+            });
+          return { ...merged, base };
+        });
+      const rallyAsk = {
+        cwd,
+        plan: source.kind === "plan-dir" ? source.value : "",
+        proves: kind,
+        risks: place.options.risks ?? "",
+        integrate: integrated,
+      };
 
       // The tickets as they stand at each boundary: one added, removed or reordered while
       // another is being built is the plan from then on, and what is built stays built by
@@ -282,11 +377,12 @@ export default defineWorkflow({
       const ticketsNow = Effect.gen(function* () {
         readings += 1;
         if (source.kind !== "plan-dir") return [];
-        return yield* Activity.make({
+        const read = yield* Activity.make({
           name: `tickets.${readings}`,
           success: Schema.Array(SliceRecord),
           execute: orderedTicketsOf(source.value, place.options.repo ?? ""),
         });
+        return read.map((one) => ({ ...one, criteria: one.criteria ?? [] }));
       });
       let tickets: ReadonlyArray<Slice> = yield* ticketsNow;
       // One ticket is not a plan to slice: one pass builds all of it, and only tickets
@@ -295,6 +391,7 @@ export default defineWorkflow({
       const built = new Set<string>();
       const handed: Handed[] = [];
       const assumed: string[] = [];
+      const answeredFor: Answered[] = [];
       let build: typeof Built.Type | null = null;
       let rallied: Rallied | null = null;
       for (;;) {
@@ -307,12 +404,23 @@ export default defineWorkflow({
         if (ticket === undefined) break;
         const before = (yield* host.evidence(runId, cwd)).verifications.length;
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "started", []);
+        const merged =
+          ticket !== null && built.size > 0
+            ? yield* integrated(`${ticket.file}.merge`, true)
+            : null;
+        const session = yield* sessionNow;
+        // A plan built in one pass answers every ticket's criteria, and words their own.
+        const given =
+          ticket?.criteria ??
+          (source.kind === "text"
+            ? criteriaIn(source.value)
+            : tickets.flatMap((one) => one.criteria));
         rallied = null;
         build = yield* agentWork({
           operation: ticket?.file ?? "build",
           agent: BUILDER,
           role: "implementer",
-          skill: "implement",
+          pushes: true,
           instructions: prompts.build,
           input: {
             ...input,
@@ -320,30 +428,89 @@ export default defineWorkflow({
             ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
             progress: renderProgress(handed),
             session,
-            obstacle: "",
+            criteria:
+              ticket === null && source.kind === "linear"
+                ? "Every checkbox in the issue's description. Copy the description into the spec word for word, its checkboxes included, and answer each one."
+                : renderCriteria(given),
+            obstacle:
+              merged?.status === "conflicted"
+                ? `${conflictOf(merged)}\n\nFinish that merge before this ticket's work goes on: resolve those files, \`git add\` them and \`git commit --no-edit\`. Never rebase, reset or abort it.`
+                : "",
           },
           output: Built,
         });
+        const item = ticket?.file ?? "build";
+        // A Linear issue's criteria are read from its description as the builder copied it.
+        const criteria =
+          ticket === null && source.kind === "linear"
+            ? yield* Activity.make({
+                name: "criteria.spec",
+                success: Schema.NullOr(Schema.Array(Schema.String)),
+                execute: FileSystem.FileSystem.pipe(
+                  Effect.flatMap((fs) => fs.readFileString(`${place.dir}/plan/SPEC.md`)),
+                  Effect.map(criteriaIn),
+                  Effect.orElseSucceed(() => null),
+                ),
+              })
+            : given;
+        if (criteria === null) {
+          const why = `${item}: ${place.dir}/plan/SPEC.md cannot be read, so the issue's acceptance criteria cannot be checked and no review starts`;
+          yield* host.record(runId, why);
+          return yield* unbuilt(why);
+        }
+        // Each criterion answered before any reviewer is launched: one left unanswered or
+        // unmet goes back to the builder, and the work stops if it still is.
+        let answers: ReadonlyArray<Criterion> = build.criteria ?? [];
+        const assumptions = [...(build.assumptions ?? [])];
+        const commits = [...(build.commits ?? [])];
+        for (let tries = 1; tries <= CRITERIA_TRIES; tries++) {
+          const unmet = unmetCriteria(item, criteria, answers);
+          if (unmet.length === 0) break;
+          const answered = yield* agentWork({
+            operation: `${item}.criteria-${tries}`,
+            agent: BUILDER,
+            role: "implementer",
+            pushes: true,
+            instructions: prompts.criteria,
+            input: {
+              ...input,
+              verify: yield* checksNow,
+              ticket: { file: ticket?.file ?? "", title: ticket?.title ?? "" },
+              criteria: renderCriteria(criteria),
+              findings: formatFindings(unmet),
+              session: yield* sessionNow,
+            },
+            output: Built,
+          });
+          answers = [...answers, ...(answered.criteria ?? [])];
+          assumptions.push(...(answered.assumptions ?? []));
+          commits.push(...(answered.commits ?? []));
+        }
         const done: Handed = {
-          item: ticket?.file ?? "build",
+          item,
           title: ticket?.title ?? "",
-          commits: [...(build.commits ?? [])],
+          commits,
           verifications: (yield* host.evidence(runId, cwd)).verifications
             .slice(before)
             .map((one) => `${one.name}: ${one.result}`),
         };
         handed.push(done);
-        for (const one of build.assumptions ?? []) assumed.push(`assumed in ${done.item}: ${one}`);
+        const unmet = unmetCriteria(item, criteria, answers);
+        if (unmet.length > 0) {
+          const why = `${item}: acceptance criteria still unanswered or unmet after ${CRITERIA_TRIES} hand-backs, so no review starts: ${unmet.map((one) => one.title).join("; ")}`;
+          yield* host.record(runId, why);
+          return yield* unbuilt(why);
+        }
+        answeredFor.push({ item, criteria, answers, assumptions });
+        for (const one of assumptions) assumed.push(`assumed in ${item}: ${one}`);
         built.add(done.item);
         if (ticket === null) for (const one of tickets) built.add(one.file);
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "done", claimsOf(build, ticket));
         const blocking = (build.findings ?? []).filter(isBlocking);
         if (blocking.length > 0) {
           rallied = yield* rally({
-            cwd,
-            plan: source.kind === "plan-dir" ? source.value : "",
-            proves: kind,
-            risks: place.options.risks ?? "",
+            ...rallyAsk,
+            criteria: renderAnswered(answeredFor),
             input,
             build: {
               item: done.item,
@@ -361,13 +528,7 @@ export default defineWorkflow({
       input = { ...input, verify: yield* checksNow };
 
       if (rallied === null || rallied.unreviewed !== "") {
-        rallied = yield* rally({
-          cwd,
-          plan: source.kind === "plan-dir" ? source.value : "",
-          proves: kind,
-          risks: place.options.risks ?? "",
-          input,
-        });
+        rallied = yield* rally({ ...rallyAsk, criteria: renderAnswered(answeredFor), input });
       }
       if (rallied.halted !== null) {
         yield* host.record(runId, rallied.halted);
@@ -379,9 +540,10 @@ export default defineWorkflow({
       // record in the journal, bound to this tree, is not. Each pass is journaled, so a
       // replay follows the results the merge request will cite rather than a fresh run of
       // checks that may come out differently. What passed is not run again until a gate fix
-      // changes the tree.
+      // changes the tree, nor by the proof that follows.
       let passes = 0;
       let passed: ReadonlyArray<string> = [];
+      let gateLoaded: string | undefined;
       let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
       const readGaps = Effect.fn("implement.readGaps")(function* (
         approved: ReadonlyArray<VerifySpec>,
@@ -411,6 +573,7 @@ export default defineWorkflow({
             // A pass journaled before gaps were told apart handed a fix every gap.
             fixable: Schema.optionalKey(Schema.Array(Schema.String)),
             passed: Schema.Array(Schema.String),
+            loaded: Schema.optionalKey(Schema.String),
           }),
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
@@ -420,10 +583,15 @@ export default defineWorkflow({
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
+            return {
+              ...(yield* readGaps(checks, rallied.reviewed)),
+              passed: now,
+              loaded: yield* thisProcess,
+            };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
+        gateLoaded = pass.loaded;
         return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps };
       });
       let gaps = yield* gapsNow({ pass: "gate" });
@@ -468,6 +636,7 @@ export default defineWorkflow({
           operation: `gate-fix-${at}`,
           agent: BUILDER,
           role: "implementer",
+          pushes: true,
           instructions: prompts.fix,
           input: {
             ...input,
@@ -504,8 +673,30 @@ export default defineWorkflow({
           const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
           const reading = Effect.suspend(() => readGaps(approved, reviewed));
-          for (const spec of approved)
-            yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" });
+          // The gate's passes hold only straight after it: never after a resume or a restart.
+          const reuse =
+            gateLoaded === (yield* thisProcess) &&
+            (yield* firstAttempt(`${place.dir}/steering`, `proof-${proofKey}`));
+          const rely = (reuse: boolean) =>
+            Effect.forEach(
+              approved,
+              (spec) =>
+                Effect.gen(function* () {
+                  const relied = yield* host.verify({
+                    runId,
+                    name: spec.name,
+                    cwd,
+                    pass: "recheck",
+                    reuse,
+                  });
+                  yield* host.record(
+                    runId,
+                    `proof: ${spec.name} relies on verification ${relied.id}`,
+                  );
+                }),
+              { discard: true },
+            );
+          yield* rely(reuse);
           let missing = yield* reading;
           if (missing.fixable.length > 0) {
             yield* host.parked(
@@ -515,6 +706,13 @@ export default defineWorkflow({
             return yield* Workflow.suspend(yield* WorkflowInstance);
           }
           if (missing.gaps.length > 0) {
+            // A fresh review sees what will merge too; checks that passed before a merge
+            // prove nothing about the tree after it.
+            const checked = (yield* host.evidence(runId, cwd)).final;
+            yield* integrated("merge-proof");
+            const now = (yield* host.evidence(runId, cwd)).final;
+            if (now.head_sha !== checked.head_sha || now.fingerprint !== checked.fingerprint)
+              yield* rely(false);
             reviewed = yield* reviewPass({
               target: "",
               plan: source.kind === "plan-dir" ? source.value : "",
@@ -522,6 +720,8 @@ export default defineWorkflow({
               previous: `${place.dir}/review.md`,
               answered: fixes === 0 ? "" : agents.outputFor(runId, `gate-fix-${fixes}`),
               risks: place.options.risks ?? "",
+              criteria: renderAnswered(answeredFor),
+              base,
               at: ROUNDS + 1,
               of: ROUNDS + 1,
               disputed: [],
@@ -535,6 +735,15 @@ export default defineWorkflow({
           yield* host.parked(runId, null);
         }),
       });
+      // A dispute the human settles stays counted at its own severity, whatever review wrote last.
+      if (rallied.disputes.length > 0) {
+        const disputedKeys = new Set(rallied.disputes.map(findingKey));
+        const onFile = yield* findingsIn(place.dir);
+        yield* leaveOutstanding(place.dir, [
+          ...onFile.filter((one) => !disputedKeys.has(findingKey(one))),
+          ...rallied.disputes,
+        ]);
+      }
       const checks = yield* host.approved(runId);
       // Failed before this Run changed anything, and still fails: reported, never passed.
       const failing = failingNow(
@@ -558,18 +767,13 @@ export default defineWorkflow({
         yield* host.parked(runId, reason);
         return yield* Workflow.suspend(yield* WorkflowInstance);
       }
-      // A push that turns someone's auto-merging merge request green merges it (ADR-0050 D4).
-      if (ready.existing && ready.autoMerge) {
-        const why = `not pushed: auto-merge is on for ${ready.existing}`;
-        yield* host.record(runId, why);
-        return why;
-      }
 
       const settledEvidence = yield* host.evidence(runId, cwd);
       const opened = yield* agentWork({
         operation: "mr",
         agent: BUILDER,
         role: "implementer",
+        pushes: true,
         instructions: prompts.mr,
         input: {
           ...input,
@@ -683,6 +887,23 @@ const claimsOf = (built: typeof Built.Type, ticket: Slice): ReadonlyArray<string
   return named.length > 0 ? named : [ticket.title];
 };
 
+/** Whether this mark is new, leaving it so a later execution is not. */
+const firstAttempt = (dir: string, mark: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    if (yield* fs.exists(`${dir}/${mark}`)) return false;
+    yield* fs.makeDirectory(dir, { recursive: true });
+    yield* fs.writeFileString(`${dir}/${mark}`, "");
+    return true;
+  }).pipe(Effect.orElseSucceed(() => false));
+
+/** First asked in this process: a gate pass journaled under another was before a restart. */
+let loaded: string | undefined;
+const thisProcess = Effect.gen(function* () {
+  loaded ??= String(yield* Clock.currentTimeNanos);
+  return loaded;
+});
+
 /**
  * The card a slice landing leaves, in the shape the agent writes its own and the cards
  * read. Written here so a ticket landing is visible whether or not the agent remembered.
@@ -729,6 +950,52 @@ const spawned = (
       : { name: spec.name, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };
   });
 
+/** A ticket's criteria as its builder is given them. */
+const renderCriteria = (criteria: ReadonlyArray<string>) =>
+  criteria.length === 0
+    ? "None: this work names no checkbox criteria, so `criteria` stays empty."
+    : criteria.map((one) => `- ${one}`).join("\n");
+
+/** What a builder said of one item's criteria, and what it decided that the plan did not. */
+interface Answered {
+  readonly item: string;
+  readonly criteria: ReadonlyArray<string>;
+  readonly answers: ReadonlyArray<Criterion>;
+  readonly assumptions: ReadonlyArray<string>;
+}
+
+const showsAnything = (one: Answered) => one.criteria.length > 0 || one.assumptions.length > 0;
+
+/** Every built item's criteria, answers and assumptions, as a reviewer is shown them. */
+const renderAnswered = (all: ReadonlyArray<Answered>) =>
+  all.some(showsAnything)
+    ? [
+        "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts:",
+        ...all
+          .filter(showsAnything)
+          .map((one) =>
+            [
+              `\n${one.item}:`,
+              ...one.criteria.map(
+                (criterion) =>
+                  `- ${criterion}\n  → ${answerFor(criterion, one.answers, one.criteria)?.met ?? "not answered"}`,
+              ),
+              ...one.assumptions.map((assumption) => `- assumed: ${assumption}`),
+            ].join("\n"),
+          ),
+      ].join("\n")
+    : "";
+
+/** A merge of the default branch that stopped on conflicts, as the builder is told it. */
+const conflictOf = (merged: Integration) =>
+  `Collie merged ${merged.ref} (${merged.sha}) into this branch, and the merge stopped on conflicts in: ${merged.files.join(", ")}.`;
+
+/** What stopped an integration, as the builder is told it. */
+const stoppedBy = (merged: Integration) =>
+  merged.status === "conflicted"
+    ? conflictOf(merged)
+    : `Collie could not merge ${merged.ref} (${merged.sha}) into this branch: ${merged.reason}.`;
+
 /** Each blocking dispute left standing, as the merge request lists it for the human. */
 const disputesOf = (findings: ReadonlyArray<Finding>): string[] =>
   findings
@@ -752,6 +1019,8 @@ interface Rallied {
   readonly unreviewed: string;
   /** Blocking disputes nobody answered, for the human to settle in the merge request. */
   readonly unsettled: ReadonlyArray<string>;
+  /** Those disputes as findings, which stay counted until the human settles them. */
+  readonly disputes: ReadonlyArray<Finding>;
   /** The review that decided it, which is the one judgement the gate may read. */
   readonly reviewed: SynthesisReport;
 }
@@ -768,6 +1037,16 @@ const rally = (ask: {
   readonly risks: string;
   readonly input: typeof Implementing.Type;
   readonly build?: PartialBuild;
+  /** The builder's answers to each ticket's criteria, and its assumptions, for the reviewer. */
+  readonly criteria: string;
+  /** Integrates the default branch, answering with what a review is diffed against. */
+  readonly integrate: (
+    operation: string,
+  ) => Effect.Effect<
+    Integration & { readonly base: string },
+    WorkflowError,
+    Run | Agents | Host | WorkflowEngine | WorkflowInstance
+  >;
 }): Effect.Effect<
   Rallied,
   WorkflowError,
@@ -782,6 +1061,7 @@ const rally = (ask: {
     let seen: { readonly at: number; readonly keys: ReadonlyArray<string> } | null = null;
 
     for (let at = 1; at <= ROUNDS; at++) {
+      const merged = yield* ask.integrate(`${prefix}merge-${at}`);
       const synthesis = yield* reviewPass({
         // The change is the work in this checkout: a Run that built it reviews what it
         // built, rather than a merge request somebody else has to be pointed at.
@@ -797,6 +1077,8 @@ const rally = (ask: {
             ? ""
             : `Review the built part of this plan: ${ask.build.completed.join(", ")}. Later tickets have not started and are outside this review, including its scope judgement. Check these findings reported by the implementer:\n${formatFindings(ask.build.findings)}`,
         risks: ask.risks,
+        criteria: ask.criteria,
+        base: merged.base,
         at,
         of: ROUNDS,
         disputed,
@@ -808,6 +1090,7 @@ const rally = (ask: {
           halted: null,
           unreviewed: "",
           unsettled: disputesOf(round.outstanding),
+          disputes: round.outstanding.filter(isBlocking),
           reviewed: synthesis,
         };
       }
@@ -816,6 +1099,7 @@ const rally = (ask: {
           halted: `${round.halt}: ${round.reason}`,
           unreviewed: "",
           unsettled: [],
+          disputes: [],
           reviewed: synthesis,
         };
       }
@@ -828,7 +1112,7 @@ const rally = (ask: {
             `carried ${synthesis.findings.length} non-blocking finding(s) unfixed: ${synthesis.findings.map((one) => one.title).join("; ")}`,
           );
         }
-        return { halted: null, unreviewed: "", unsettled: [], reviewed: synthesis };
+        return { halted: null, unreviewed: "", unsettled: [], disputes: [], reviewed: synthesis };
       }
       seen = { at, keys: round.keys };
 
@@ -836,6 +1120,7 @@ const rally = (ask: {
         operation: `${prefix}fix-${at}`,
         agent: BUILDER,
         role: "implementer",
+        pushes: true,
         instructions: prompts.fix,
         input: {
           ...ask.input,
@@ -856,17 +1141,21 @@ const rally = (ask: {
         const settled = settleFinalFix(round.live, fixed, yield* host.evidence(runId, ask.cwd));
         // Every round's disputes, not only this fix's: earlier ones were split out of what
         // this fix was shown, and are still the human's to settle.
-        if (settled.ok || settled.halt === "dispute_unresolved")
+        if (settled.ok || settled.halt === "dispute_unresolved") {
+          yield* leaveOutstanding((yield* host.place(runId)).dir, settled.outstanding);
           return {
             halted: null,
             unreviewed: settled.attestation,
             unsettled: disputesOf(disputed),
+            disputes: disputed.filter(isBlocking),
             reviewed: synthesis,
           };
+        }
         return {
           halted: `${settled.halt}: ${settled.reasons.join("; ")}`,
           unreviewed: "",
           unsettled: [],
+          disputes: [],
           reviewed: synthesis,
         };
       }

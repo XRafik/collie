@@ -12,7 +12,8 @@ import { agentsLayer, type AgentHost } from "../src/agents";
 import { Children, Host, Run, WorkflowError, type ChildAsk, type Issue } from "../src/sdk";
 import { foundationLayer, loadEntry, runDir } from "../src/engine";
 import { Store } from "../src/store";
-import { redact } from "../src/conversation";
+import { redact } from "../src/redact";
+import { measuresOf } from "../src/outcomes";
 import selfImprove from "../.collie/workflows/self-improve.workflow";
 import {
   type Finding,
@@ -99,6 +100,7 @@ const forge = Layer.effect(Host)(
           failed: [],
           completed: [],
           stopped: [],
+          measures: measuresOf([]),
         }),
       issues: () =>
         unlisted && filed.length > 0

@@ -7,12 +7,14 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
   LOG_BYTES,
   TOO_LARGE,
+  appendVerification,
   collect,
   fingerprint,
   insideRun,
   readVerifications,
   resolveExecutable,
   resultOf,
+  reusableFor,
   runApproved,
   staleAgainst,
 } from "../src/verify";
@@ -428,5 +430,109 @@ test("a log past its bound is cut, and says it was", () =>
       ).toBe(true);
       expect(text.startsWith("a".repeat(LOG_BYTES))).toBe(true);
       expect(text.length).toBeLessThan(LOG_BYTES + 200);
+    }),
+  ));
+
+/** Sets NODE_OPTIONS for this process, and returns what puts it back. */
+function nodeOptions(value: string): () => void {
+  const before = Bun.env.NODE_OPTIONS;
+  Bun.env.NODE_OPTIONS = value;
+  return () => {
+    if (before === undefined) delete Bun.env.NODE_OPTIONS;
+    else Bun.env.NODE_OPTIONS = before;
+  };
+}
+
+/** A tool of the test's own, outside the tree, whose content is what it is. */
+const tool = (dir: string, body: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const at = `${dir}/tool`;
+    yield* fs.writeFileString(at, `#!/bin/sh\n${body}\n`);
+    yield* fs.chmod(at, 0o755);
+    return at;
+  });
+
+test("every record carries the environment it ran in, which moves with the tool and the toolchain", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const runDir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-verify-run-" });
+      const executable = yield* tool(runDir, "exit 0");
+      const ran = () =>
+        collect(runDir, { run: "r1", name: "t", executable, argv: [], cwd: repo, by: "collie" });
+      const first = (yield* ran()).environment;
+      expect(first).toBeString();
+      expect((yield* ran()).environment).toBe(first);
+
+      const restore = nodeOptions("--max-old-space-size=64");
+      const optioned = yield* ran().pipe(Effect.ensuring(Effect.sync(restore)));
+      expect(optioned.environment).not.toBe(first);
+
+      yield* tool(runDir, "exit 0 # upgraded");
+      expect((yield* ran()).environment).not.toBe(first);
+    }),
+  ));
+
+test("a Collie pass is reused only while its tree, its command and its environment are unchanged", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const runDir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-verify-run-" });
+      const executable = yield* tool(runDir, "exit 0");
+      const spec: VerifySpec = { name: "unit", executable, argv: [], cwd: "." };
+      const run = { id: "r1", cwd: repo, worktree: null };
+      const reused = () => reusableFor(runDir, run, spec);
+
+      expect(yield* reused()).toBeNull();
+      const passed = yield* runApproved(runDir, run, [spec], spec);
+      expect((yield* reused())?.id).toBe(passed.id);
+
+      // An agent's record is never what the gate relies on, and does not hide Collie's.
+      yield* collect(runDir, {
+        run: "r1",
+        name: "unit",
+        executable,
+        argv: [],
+        cwd: repo,
+        by: "agent",
+      });
+      expect((yield* reused())?.id).toBe(passed.id);
+
+      // Another command under the same name.
+      expect(yield* reusableFor(runDir, run, { ...spec, argv: ["--bail"] })).toBeNull();
+
+      // The tree moved.
+      yield* fs.writeFileString(path.join(repo, "tracked.txt"), "two\n");
+      expect(yield* reused()).toBeNull();
+      yield* git(["checkout", "-q", "--", "."]);
+      expect((yield* reused())?.id).toBe(passed.id);
+
+      // The tool changed.
+      yield* tool(runDir, "exit 0 # upgraded");
+      expect(yield* reused()).toBeNull();
+    }),
+  ));
+
+test("the latest Collie result decides, and a record from before environments is never reused", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const runDir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-verify-run-" });
+      const flag = `${runDir}/red`;
+      const executable = yield* tool(runDir, `[ ! -f ${flag} ]`);
+      const spec: VerifySpec = { name: "unit", executable, argv: [], cwd: "." };
+      const run = { id: "r1", cwd: repo, worktree: null };
+      const passed = yield* runApproved(runDir, run, [spec], spec);
+
+      yield* fs.writeFileString(flag, "");
+      yield* runApproved(runDir, run, [spec], spec);
+      yield* fs.remove(flag);
+      expect(yield* reusableFor(runDir, run, spec)).toBeNull();
+
+      const { environment: _, ...older } = passed;
+      yield* appendVerification(runDir, { ...older, id: "older" });
+      expect(yield* reusableFor(runDir, run, spec)).toBeNull();
     }),
   ));

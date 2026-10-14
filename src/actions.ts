@@ -46,7 +46,10 @@ export const ActionSchema = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("deliver"),
     run: Schema.String,
-    agent: Schema.String,
+    /** One of the Run's agents by name. */
+    agent: Schema.optionalKey(Schema.String),
+    /** A role (`builder`, `reviewer`, `planner`) or an agent; neither is the agent at work. */
+    to: Schema.optionalKey(Schema.String),
     text: Schema.String,
     /** Absent is `now`: a human's message is about the work under way, not the next step. */
     mode: Schema.Literals(["boundary", "now", "interrupt"]).pipe(
@@ -167,3 +170,7 @@ export const ActionSchema = Schema.Union([
 ]);
 export type Action = Schema.Schema.Type<typeof ActionSchema>;
 export type ActionKind = Action["kind"];
+
+/** Who a `deliver` is for, as a sentence names it. */
+export const recipientOf = (action: Extract<Action, { kind: "deliver" }>): string =>
+  action.agent ?? action.to ?? "the agent at work";

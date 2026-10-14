@@ -34,13 +34,28 @@ import { latest, readDispositions } from "./disposition";
 import { repositoryOf } from "./strategies";
 import { LEDGER_FILE } from "./steering";
 import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
-import { CONTROL_DIR, putDownControl } from "./compaction";
+import {
+  CONTROL_DIR,
+  keptFor,
+  notStopped,
+  putDownControl,
+  readControl,
+  stopAgent,
+  type CompactionPorts,
+} from "./compaction";
+import { readLaunches } from "./launches";
+import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
 /** One kind of thing Collie cleans. */
 export interface Sweeper {
   readonly judge: Effect.Effect<
-    { remove: ReadonlyArray<CleanupItem>; keep: ReadonlyArray<CleanupKept> },
+    {
+      remove: ReadonlyArray<CleanupItem>;
+      keep: ReadonlyArray<CleanupKept>;
+      /** Kept for now, but a sweep still offers each to `remove`: a stop to try again. */
+      retry?: ReadonlyArray<CleanupItem>;
+    },
     never,
     BunServices
   >;
@@ -153,8 +168,9 @@ export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: Sw
     const keep: CleanupKept[] = [];
     for (const sweeper of sweepers) {
       const judged = yield* sweeper.judge;
-      keep.push(...judged.keep);
-      for (const item of judged.remove) {
+      const retried = new Set((judged.retry ?? []).map((item) => item.target));
+      keep.push(...judged.keep.filter((one) => !retried.has(one.target)));
+      for (const item of [...judged.remove, ...(judged.retry ?? [])]) {
         const outcome = yield* sweeper.remove(item);
         if ("kept" in outcome) {
           keep.push({ kind: item.kind, target: item.target, reason: outcome.kept });
@@ -369,6 +385,8 @@ const KEPT_KINDS = new Set([
   "host.db-journal",
   "host.lock",
   "host.sock",
+  "host.out",
+  "host.out.1",
   "installation",
   "installation.new",
   PRUNE_FILE,
@@ -534,10 +552,16 @@ const removeIf = (
   });
 
 /**
- * Compaction controls of agents no herdr session lists: their endpoint stopped and their
- * state removed. Nothing is judged where herdr will not list its agents.
+ * Compaction controls of agents no herdr session lists: their server stopped and their
+ * state removed, or kept with why while it is not Quiet, to be stopped again next sweep.
+ * Nothing is judged where herdr will not list its agents.
  */
-export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herdr>): Sweeper => {
+export const compactionSweeper = (
+  stateDir: string,
+  sessions: ReadonlyArray<Herdr>,
+  ports: CompactionPorts = COMPACTION_PORTS,
+  stopMs?: number,
+): Sweeper => {
   const kind = "compaction";
   const root = `${stateDir}/${CONTROL_DIR}`;
   /** Every agent any session lists, or null where one would not say. */
@@ -557,14 +581,25 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
       const live = yield* listed;
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
+      const retry: CleanupItem[] = [];
       for (const name of names) {
         const target = `${root}/${name}`;
         if (live === null) keep.push({ kind, target, reason: "could not ask herdr what is live" });
-        else if (!live.has(name))
-          remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+        else if (!live.has(name)) {
+          const record = yield* readControl(stateDir, name).pipe(Effect.orElseSucceed(() => null));
+          const kept = record === null ? null : yield* keptFor(record);
+          if (kept !== null) {
+            keep.push({ kind, target, reason: kept });
+            retry.push({ kind, target, bytes: 0, reason: kept });
+          } else remove.push({ kind, target, bytes: 0, reason: "herdr no longer lists its agent" });
+        }
       }
       const sizes = yield* sizesOf(remove.map((item) => item.target));
-      return { remove: remove.map((item, at) => ({ ...item, bytes: sizes[at] ?? 0 })), keep };
+      return {
+        remove: remove.map((item, at) => ({ ...item, bytes: sizes[at] ?? 0 })),
+        keep,
+        retry,
+      };
     }),
     remove: (item) =>
       Effect.gen(function* () {
@@ -573,12 +608,12 @@ export const compactionSweeper = (stateDir: string, sessions: ReadonlyArray<Herd
         if (live === null) return { kept: "could not ask herdr what is live" };
         if (live.has(name)) return { kept: "herdr lists its agent again" };
         const bytes = yield* sizeOf(item.target);
-        const done = yield* putDownControl(
-          { stateDir, log: () => Effect.void },
+        const kept = yield* putDownControl(
+          { stateDir, ports, stopMs, log: () => Effect.void },
           name,
           Effect.map(listed, (now) => now === null || now.has(name)),
-        ).pipe(Effect.orElseSucceed(() => false));
-        return done ? { freed: bytes } : { kept: "its controls are in use" };
+        ).pipe(Effect.orElseSucceed(() => "its controls are in use"));
+        return kept === null ? { freed: bytes } : { kept };
       }),
   };
 };
@@ -690,8 +725,33 @@ export const taskWorkspacesSweeper = (opts: {
   views: ReadonlyArray<TaskView>;
   runs: ReadonlyArray<RunFacts>;
   seen: Map<string, number>;
+  ports?: CompactionPorts;
+  stopMs?: number;
 }): Sweeper => {
   const kind = "workspace";
+  const stopping = {
+    ports: opts.ports ?? COMPACTION_PORTS,
+    stateDir: opts.stateDir,
+    log: () => Effect.void,
+  };
+  /** The agents a Task's Runs launched. */
+  const agentsOf = (task: TaskRecord) =>
+    Effect.forEach(
+      opts.runs.filter((run) => run.task === task.id),
+      (run) => readLaunches(opts.stateDir, run.id),
+    ).pipe(Effect.map((all) => [...new Set(all.flat().map((one) => one.agent))]));
+  /** Why one of them may still be writing after an earlier stop, or null. */
+  const stillWriting = (task: TaskRecord) =>
+    Effect.gen(function* () {
+      for (const agent of yield* agentsOf(task)) {
+        const record = yield* readControl(opts.stateDir, agent).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        const kept = record === null ? null : yield* keptFor(record);
+        if (kept !== null) return kept;
+      }
+      return null;
+    });
   const named = new Map<string, number>();
   for (const task of opts.tasks) named.set(task.workspace, (named.get(task.workspace) ?? 0) + 1);
 
@@ -705,7 +765,9 @@ export const taskWorkspacesSweeper = (opts: {
   const verdict = (
     task: TaskRecord,
   ): Effect.Effect<
-    { keep: string } | { remove: string; terminals: ReadonlySet<string> } | null,
+    | { keep: string }
+    | { remove: string; terminals: ReadonlySet<string>; writing: string | null }
+    | null,
     never,
     BunServices
   > =>
@@ -740,7 +802,9 @@ export const taskWorkspacesSweeper = (opts: {
       const foreign = paneNotOwned(task, panes.value, terminals);
       if (foreign !== undefined)
         return { keep: `holds a pane Collie did not open (${foreign.paneId})` };
-      return { remove: `Finished ${minutes} min ago`, terminals };
+      // Kept in a listing, while a sweep stops it again.
+      const writing = yield* stillWriting(task);
+      return { remove: `Finished ${minutes} min ago`, terminals, writing };
     });
 
   const taskAt = (target: string) => opts.tasks.find((task) => task.workspace === target);
@@ -749,13 +813,17 @@ export const taskWorkspacesSweeper = (opts: {
     judge: Effect.gen(function* () {
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
+      const retry: CleanupItem[] = [];
       for (const task of opts.tasks) {
         const judged = yield* verdict(task);
         if (judged === null) continue;
         if ("keep" in judged) keep.push({ kind, target: task.workspace, reason: judged.keep });
-        else remove.push({ kind, target: task.workspace, bytes: 0, reason: judged.remove });
+        else if (judged.writing !== null) {
+          keep.push({ kind, target: task.workspace, reason: judged.writing });
+          retry.push({ kind, target: task.workspace, bytes: 0, reason: judged.writing });
+        } else remove.push({ kind, target: task.workspace, bytes: 0, reason: judged.remove });
       }
-      return { remove, keep };
+      return { remove, keep, retry };
     }),
     remove: (item) =>
       Effect.gen(function* () {
@@ -766,6 +834,15 @@ export const taskWorkspacesSweeper = (opts: {
         const judged = yield* verdict(task);
         if (judged === null) return { kept: "already closed" };
         if ("keep" in judged) return { kept: judged.keep };
+        // Its agents are stopped where their work runs before any pane of theirs closes.
+        for (const agent of yield* agentsOf(task)) {
+          const reached = yield* stopAgent(stopping, agent, opts.stopMs).pipe(Effect.result);
+          if (reached._tag === "Failure") return { kept: "its agents' controls are in use" };
+          if (reached.success !== null && reached.success.state !== "quiet")
+            return {
+              kept: `its Codex turn has not stopped: ${notStopped(agent, reached.success, reached.success.target)}`,
+            };
+        }
         const closed = yield* session.herdr.workspaceClose(task.workspace).pipe(Effect.result);
         if (closed._tag === "Failure") return { kept: herdrFailureReason(closed.failure) };
         // Its agents left in another workspace go with it, matched by terminal as a stop does.

@@ -5,6 +5,7 @@ import {
   mrPath,
   mrWords,
   type ForgeChecks,
+  type Mergeability,
   type MrDetails,
   type MrPanel,
   type MrRef,
@@ -50,8 +51,26 @@ const PullJson = Schema.fromJsonString(
     updatedAt: optionalText,
     url: optionalText,
     autoMergeRequest: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
+    mergeable: optionalText,
+    mergeStateStatus: optionalText,
   }),
 );
+
+/** GitHub's merge states it would merge in; the rest say why not, or that it is still deciding. */
+const MERGES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
+
+/** GitHub's own answer to "can this merge now", which carries its branch protection. */
+function mergeabilityOf(pull: Pull): Mergeability | undefined {
+  if (pull.mergeable === "CONFLICTING") return { state: "blocked", said: "conflicting" };
+  const status = pull.mergeStateStatus;
+  if (status === undefined || status === null || status === "") {
+    if (pull.mergeable === "MERGEABLE") return { state: "mergeable", said: "mergeable" };
+    return pull.mergeable === "UNKNOWN" ? { state: "unknown", said: "unknown" } : undefined;
+  }
+  if (status === "UNKNOWN") return { state: "unknown", said: "unknown" };
+  if (MERGES.has(status)) return { state: "mergeable", said: "mergeable" };
+  return { state: "blocked", said: status.toLowerCase().replaceAll("_", " ") };
+}
 type Pull = typeof PullJson.Type;
 
 const RED = new Set([
@@ -67,7 +86,7 @@ const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 /** A pull request's check rollup: a check run's conclusion, or a status context's state. */
 export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
   const checks = rollup ?? [];
-  if (checks.length === 0) return { state: "unknown" };
+  if (checks.length === 0) return { state: "none" };
   const verdicts = checks.map((one) => ({
     name: one.name ?? one.context ?? "a check",
     // A check run has a conclusion once it completes; a status context has only a state.
@@ -98,6 +117,8 @@ const FIELDS = [
   "updatedAt",
   "url",
   "autoMergeRequest",
+  "mergeable",
+  "mergeStateStatus",
 ].join(",");
 
 /** GitHub's review decision, phrased as a GitLab panel phrases its approvals. */
@@ -124,7 +145,8 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
     const checks = rollupChecks(pull.statusCheckRollup);
     const head = pull.headRefOid ?? "";
     const updated = pull.updatedAt ? epochMs(pull.updatedAt) : Number.NaN;
-    return {
+    const mergeable = mergeabilityOf(pull);
+    const details = {
       _tag: "Details",
       iid: ref.iid,
       project: ref.project,
@@ -135,7 +157,7 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       sourceBranch: pull.headRefName ?? "",
       fork: pull.isCrossRepository === true,
       targetBranch: pull.baseRefName ?? "",
-      pipeline: checks.state === "unknown" ? "" : checks.state,
+      pipeline: checks.state === "none" ? "" : checks.state,
       checks,
       approvals: APPROVALS.get(pull.reviewDecision ?? "") ?? "",
       unresolved: false,
@@ -147,6 +169,7 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       url: pull.url ?? mrWords(ref).url ?? "",
       autoMerge: pull.autoMergeRequest != null,
     } satisfies MrDetails;
+    return mergeable === undefined ? details : { ...details, mergeable };
   });
 }
 

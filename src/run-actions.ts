@@ -10,6 +10,7 @@
 // from `operations.ts`. One direction each way is a cycle; one module downstream of both
 // is not.
 
+import { withNotice } from "./redact";
 import { Effect, Option, Schema } from "effect";
 import { hostname } from "node:os";
 import type { PlatformError } from "effect/PlatformError";
@@ -187,6 +188,7 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         return yield* steerRun(env, {
           runId: action.run,
           agent: action.agent,
+          to: action.to,
           text: action.text,
           request: by.requestId,
           mode: action.mode,
@@ -375,7 +377,10 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         attachments: action.attachments,
       });
       return started.ok
-        ? { state: "applied" as const, note: `started ${started.runId}` }
+        ? {
+            state: "applied" as const,
+            note: withNotice(`started ${started.runId}`, started.redacted, "; "),
+          }
         : failed(started.error.message);
     }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
   );

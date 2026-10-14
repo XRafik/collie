@@ -122,6 +122,12 @@ herdr actions, and the `collie` CLI.
   `test/flock-chat-turns.test.ts`, `test/desktop-settings.test.ts` and
   `test/flock-tools.test.ts`. A model change waits for the current turn and keeps the
   conversation.
+- **Changing what a managed agent is launched with beyond Collie's own setup** →
+  [ADR-0060](docs/adr/0060-a-managed-agent-runs-with-the-operators-profile.md)
+  and [`docs/using.md`](docs/using.md#what-collies-agents-get), alongside `src/profile.ts`
+  (what `agent_profile` may say, its env lines and the Claude merge) and the launch in
+  `src/agents.ts`, with `test/profile.test.ts` and `test/agents.test.ts`. A secret is a 0600
+  file on each Machine, read by the pane's shell; only its path is shared.
 - **Changing what files a Run, or the Flock chat, is given** →
   [ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md), alongside
   `src/attachments.ts` (a Run's copies and its prompts' list), `src/uploads.ts` and
@@ -279,7 +285,11 @@ herdr actions, and the `collie` CLI.
   [`docs/cli.md`](docs/cli.md#answering-holding-and-steering-one), alongside `src/engine.ts`,
   `src/lifecycle.ts` and `test/control.test.ts`. The host settles it whichever door it came
   in; a question is asked with `ask` so the host knows it is open, and a control says
-  whether it reached the run rather than confirming what it could not.
+  whether it reached the run rather than confirming what it could not. Where a stop ends an
+  agent's work — its App Server, not its pane, for Codex — and what may replace it after:
+  [ADR-0059](docs/adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md), with
+  `stopAgent` in `src/compaction.ts`, the port's stop in `src/compactors.ts`,
+  `src/processes.ts` and `test/codex-stop.test.ts`.
 - **Changing how a workflow module reaches a service or another workflow** →
   [ADR-0022](docs/adr/0022-a-workflow-is-made-of-workflows.md) and
   [`docs/sdk.md`](docs/sdk.md#a-workflow-made-of-other-workflows), alongside `src/sdk.ts`,
@@ -380,7 +390,9 @@ of the view is covered by testing the logic it renders.
    ([ADR-0015](docs/adr/0015-one-local-host-owns-a-state-directory.md)). Mutate a Run
    through it, under a request id, and never by writing its files.
 5. Plan artefacts live in the run directory ([ADR-0002](docs/adr/0002-plan-artefacts-live-in-the-run-directory.md)).
-   Glossary and ADR changes belong in the repository.
+   Glossary and ADR changes belong in the repository. A branch's new ADR is a draft,
+   `docs/adr/draft-<slug>.md`, named in text as `ADR-draft-<slug>`, and takes its number
+   only when the branch lands ([`docs/internals.md`](docs/internals.md#numbering-a-branchs-adrs)).
 6. Collie has one engine, and nothing an older one recorded is carried over
    ([ADR-0027](docs/adr/0027-one-engine-and-a-hard-cutover.md)). No code reads a `run.json`.
 7. Docs change in the same merge request as the behavior they describe.

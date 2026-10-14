@@ -9,18 +9,25 @@
 import { expect, test } from "bun:test";
 import { Config, ConfigProvider, Effect, FileSystem, Layer, Option, Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { connect, ownerOf } from "../src/host";
+import { connect, outputOf, ownerOf, restartHost } from "../src/host";
 import { signalProcess } from "../src/lock";
 import { exec } from "./support/command";
-import { runEffect, suiteEnv } from "./support/effect";
+import { fastForward, runEffect, suiteEnv } from "./support/effect";
 import { stopHost, until } from "./support/host";
+import { FakeHerdr, Rig } from "./support/recorder";
+import { restartHostFlow } from "../src/flows";
 
 const root = new URL("../", import.meta.url).pathname;
 const fixtures = `${root}test/fixtures/workflows`;
 
 /** The command a client starts a host with, as `connect` reads it. */
 const starts = (command: ReadonlyArray<string>) =>
-  ConfigProvider.layer(ConfigProvider.fromUnknown({ COLLIE_HOST: JSON.stringify(command) }));
+  ConfigProvider.layer(
+    ConfigProvider.fromUnknown({
+      COLLIE_HOST: JSON.stringify(command),
+      COLLIE_HOST_STOP_GRACE: Bun.env.COLLIE_HOST_STOP_GRACE,
+    }),
+  );
 
 /**
  * The compiled binary when one is named, and the sources otherwise, so the host under
@@ -322,6 +329,126 @@ test(
 );
 
 test(
+  "a restart with no host starts one, and one with a host replaces it while a parked and a pending Run carry on",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { wf, project, state } = yield* workspace("collie-host-restart-cmd-");
+        const fresh = yield* restartHost(state).pipe(Effect.orDie);
+        expect(fresh.before).toBeNull();
+        expect((yield* ownerOf(state))?.pid).toBe(fresh.after.pid);
+
+        const marker = `${state}/started`;
+        const runs = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* connect(state);
+            yield* client.load({ entry: `${wf}/proof.workflow.ts` });
+            const parked = yield* client.start({
+              project,
+              id: "proof",
+              request: "req-parked",
+              input: { note: "parked" },
+            });
+            const pending = yield* client.start({
+              project,
+              id: "stubborn",
+              request: "req-pending",
+              input: { marker },
+            });
+            yield* until(
+              () => client.status({ runId: parked.runId }),
+              (status) => status.status === "suspended",
+            );
+            return { parked: parked.runId, pending: pending.runId };
+          }),
+        ).pipe(Effect.orDie);
+        yield* until(() => fs.exists(marker), Boolean);
+        yield* fs.remove(marker);
+
+        const restarted = yield* restartHost(state).pipe(Effect.orDie);
+        expect(restarted.before).toEqual(fresh.after);
+        expect(restarted.after.pid).not.toBe(fresh.after.pid);
+        expect(yield* signalProcess(fresh.after.pid)).toBe(false);
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* connect(state);
+            expect((yield* client.identity()).pid).toBe(restarted.after.pid);
+            // The step that was running when its host went is run again by the new one.
+            yield* until(() => fs.exists(marker), Boolean);
+            expect((yield* client.status({ runId: runs.pending })).status).toBe("pending");
+            expect((yield* client.status({ runId: runs.parked })).status).toBe("suspended");
+            yield* client.answer({
+              runId: runs.parked,
+              decision: "decision",
+              value: "after",
+              request: "answer-after",
+            });
+            const done = yield* until(
+              () => client.status({ runId: runs.parked }),
+              (status) => status.status === "complete",
+            );
+            expect(done).toEqual({ status: "complete", value: "note:parked=after" });
+          }),
+        ).pipe(Effect.orDie);
+        yield* stopHost(state);
+      }),
+    ),
+  180_000,
+);
+
+test(
+  "the herdr action restarts the host and says what it did",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const starting = yield* collie;
+        const rig = yield* Effect.acquireRelease(Rig.make(), (rig) => Effect.orDie(rig.close()));
+        const env = rig.pluginEnv();
+        const old = yield* Effect.scoped(
+          connect(env.stateDir).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.provide(starting), Effect.orDie);
+
+        expect(yield* restartHostFlow(new FakeHerdr(env), env).pipe(Effect.provide(starting))).toBe(
+          0,
+        );
+        const owner = yield* ownerOf(env.stateDir);
+        expect(owner?.pid).not.toBe(old.pid);
+        const shown = (yield* rig.calls()).find((call) => call.cmd === "notification show");
+        expect(shown?.argv).toContain("Collie host restarted");
+        expect(shown?.argv?.join(" ")).toContain(`pid ${old.pid}`);
+        yield* stopHost(env.stateDir);
+      }).pipe(Effect.scoped, Effect.orDie),
+    ),
+  120_000,
+);
+
+test(
+  "what a spawned host writes to its stderr is kept in the state directory",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { state } = yield* workspace("collie-host-output-");
+        const binary = yield* Config.option(Config.String("COLLIE_TEST_BINARY"));
+        const host = Option.isSome(binary)
+          ? [binary.value]
+          : [process.execPath, `${root}src/main.ts`];
+        const noisy = ["/bin/sh", "-c", 'echo "said on stderr" >&2; exec "$@"', "sh", ...host];
+        yield* Effect.scoped(
+          connect(state).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.provide(starts(noisy)), Effect.orDie);
+        const kept = yield* fs.readFileString(outputOf(state));
+        expect(kept).toContain("said on stderr");
+        expect(kept).toContain("host started");
+        yield* stopHost(state);
+      }).pipe(Effect.scoped),
+    ),
+  120_000,
+);
+
+test(
   "a host told to stop while a step will not end is gone within seconds, and lets go",
   () =>
     proves(
@@ -406,7 +533,7 @@ test(
         });
         // A restart is the instruction, and the client is what stops: nothing here kills
         // the host or takes its directory.
-        expect(refused.restart).toContain(`stop it (pid ${who.pid})`);
+        expect(refused.restart).toContain("run `collie host restart`");
         expect((yield* ownerOf(state))?.pid).toBe(who.pid);
 
         // The host it would not talk to is still the host every matching client gets.
@@ -465,6 +592,8 @@ test(
         yield* until(() => fs.exists(marker), Boolean);
 
         const refused = yield* Effect.scoped(connect(state, { build: "999.0.0" })).pipe(
+          // Move the client's timers slowly enough for the real replacement to start.
+          (effect) => fastForward(effect, 5),
           Effect.flip,
         );
         expect(refused._tag).toBe("HostVersionMismatch");
@@ -488,6 +617,7 @@ test(
         // Its socket still accepts, and nothing behind it reads.
         yield* signalProcess(who.pid, "SIGSTOP");
         const refused = yield* Effect.scoped(connect(state)).pipe(
+          fastForward,
           Effect.flip,
           Effect.ensuring(signalProcess(who.pid, "SIGCONT")),
         );
@@ -513,6 +643,7 @@ test(
         yield* signalProcess(old.pid, "SIGSTOP");
 
         const refused = yield* Effect.scoped(connect(state, { build: "999.0.0" })).pipe(
+          (effect) => fastForward(effect, 5),
           Effect.flip,
         );
         expect(refused._tag).toBe("HostVersionMismatch");

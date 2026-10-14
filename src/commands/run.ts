@@ -1,4 +1,5 @@
 import { Cause, Duration, Effect, Exit, Option, Path, Ref, Schema, Stdio, Stream } from "effect";
+import { redactedField, withNotice } from "../redact";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { Argument, Command, Flag } from "effect/cli";
 import { err, type Failure } from "../operations";
@@ -24,6 +25,7 @@ import {
   statusOf,
   watchRun,
   runShown,
+  runProgress,
 } from "../lifecycle";
 import { unsafePathComponent } from "../naming";
 import type { RunView } from "../engine";
@@ -50,8 +52,24 @@ import { PROJECTS_ROOT_OPTION, projectsRoot } from "../projects";
 import { currentReports } from "../drift";
 import { newest } from "../cards";
 import { metricsOf } from "../metrics";
-import { requestedByLine, ranOn, type Metrics, type RunAgent } from "../board-model";
-import { reportOf } from "../report";
+import {
+  requestedByLine,
+  ranOn,
+  type Metrics,
+  type ReadyToRelease,
+  type RunAgent,
+  type RunProgress,
+} from "../board-model";
+import {
+  followEvents,
+  followLine,
+  readyLines,
+  reached,
+  UNTILS,
+  type Followed,
+  type Until,
+} from "../following";
+import { reportFor, reportLines } from "../report";
 import { latest, statusLine } from "../disposition";
 import { epochMs } from "../time";
 import type { PluginEnv } from "../env";
@@ -333,8 +351,9 @@ const runStart = Command.make(
                     workflow,
                     registration: started.registration,
                     fresh: started.fresh,
+                    ...redactedField(started.redacted),
                   },
-                  human: `Started run ${started.runId}.`,
+                  human: withNotice(`Started run ${started.runId}.`, started.redacted),
                 };
               }
               // Nothing else runs work. An id with no module is a workflow this
@@ -444,11 +463,13 @@ const runShow = Command.make(
             return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
           const shown = yield* runShown(resolved.env, runId);
           if (!shown.ok) return shown;
-          const { view, agents, disposition, children, machine, startedBy } = shown;
+          const { view, agents, disposition, children, machine, startedBy, handoffs = [] } = shown;
           // A Task is this Machine's, so a Run on another is never outside it.
           const task = yield* selectedTask(global);
           if (machine === null && task !== null && view.task !== task)
             return outsideTask(runId, task).result;
+          const progress = yield* runProgress(resolved.env, runId);
+          const ready = progress.ok && progress.value !== null ? progress.value.ready : null;
           // Both facts on the head line: how execution ended, and what became of the
           // work. A Run that failed and whose work shipped anyway says both.
           return {
@@ -462,6 +483,8 @@ const runShow = Command.make(
               waiting: view.waiting,
               next_action: view.waiting[0]?.name ?? null,
               machine,
+              handoffs,
+              ready,
             },
             human: [
               `${view.runId}\t${statusLine(statusOf(view), disposition)}\t${view.workflow}`,
@@ -482,6 +505,8 @@ const runShow = Command.make(
               ...agentLines(agents),
               ...describeWaiting(view),
               ...children.map((child) => `  ${child.runId}\t${child.workflow}\t${statusOf(child)}`),
+              ...handoffs.map((file) => `  handoff ${file.path} (${file.bytes} bytes)`),
+              ...(ready === null ? [] : readyLines(ready).map((line) => `  ${line}`)),
             ].join("\n"),
           };
         }),
@@ -644,39 +669,13 @@ const runReport = Command.make(
             return err("invalid_input", `--since is not a date: ${from}`);
           const resolved = yield* context(global, false);
           if (resolved._tag === "ContextFailure") return resolved.result;
-          const hosted = yield* runViews(resolved.env, null);
-          const metrics = new Map<string, Metrics>();
-          for (const view of hosted.runs) {
-            const records = yield* asksRun(resolved.env, view.runId, (client) =>
-              client.runMetrics({ runId: view.runId }),
-            );
-            if (!records.ok) return records;
-            metrics.set(view.runId, metricsOf(records.value, view.created));
-          }
-          const report = reportOf(hosted.runs, metrics, from);
-          const unreadable = hosted.unreadable === null ? [] : [`runs: ${hosted.unreadable}`];
-          const human =
-            report.total === 0
-              ? [...unreadable, "No runs found."].join("\n")
-              : [
-                  `${report.total} Runs`,
-                  ...report.workflows.map(
-                    (t) =>
-                      `${t.workflow}  ${t.total}: ${t.complete} complete, ${t.failed} failed, ${t.suspended} suspended, ${t.pending} pending; ${t.withMr} recorded a merge request; ${t.stopped} stopped; ${t.answered} decisions answered; rework ${t.rework}; verifications ${t.verifications.pass} pass, ${t.verifications.fail} fail, ${t.verifications.unstable} unstable`,
-                  ),
-                  ...(report.failed.length === 0 ? [] : ["failed:"]),
-                  ...capped(
-                    report.failed.map(
-                      (r) => `  ${r.runId}  ${r.workflow}  ${r.reason.slice(0, 120)}`,
-                    ),
-                  ),
-                  ...(report.completed.length === 0 ? [] : ["complete:"]),
-                  ...capped(report.completed.map((r) => `  ${r.runId}  ${r.workflow}  ${r.value}`)),
-                  ...(report.stopped.length === 0 ? [] : ["stopped:"]),
-                  ...capped(report.stopped.map((r) => `  ${r.runId}  ${r.workflow}`)),
-                  ...unreadable,
-                ].join("\n");
-          return { ok: true, data: { ...report, unreadable: hosted.unreadable }, human };
+          const done = yield* reportFor(resolved.env, from);
+          if (!done.ok) return done;
+          return {
+            ok: true,
+            data: { ...done.report, unreadable: done.unreadable },
+            human: reportLines(done.report, done.unreadable),
+          };
         }),
         global.json,
       );
@@ -742,17 +741,16 @@ function parseTimeout(value: Option.Option<string>): ParsedTimeout {
     : { ok: false, error: err("invalid_input", `Invalid timeout "${value.value}".`) };
 }
 
-type Until = "terminal" | "attention";
 type ParsedUntil = { ok: true; until: Until } | { ok: false; error: Result };
 
 /** What ends the wait. Omitted keeps the terminal-only wait every caller already has. */
 function parseUntil(value: Option.Option<string>): ParsedUntil {
   if (Option.isNone(value)) return { ok: true, until: "terminal" };
-  if (value.value === "terminal" || value.value === "attention")
-    return { ok: true, until: value.value };
+  const until = UNTILS.find((one) => one === value.value);
+  if (until !== undefined) return { ok: true, until };
   return {
     ok: false,
-    error: err("invalid_input", `Invalid --until "${value.value}"; use terminal or attention.`),
+    error: err("invalid_input", `Invalid --until "${value.value}"; use ${UNTILS.join(", ")}.`),
   };
 }
 
@@ -761,7 +759,9 @@ const runWait = Command.make(
   {
     runId: runIdArg,
     follow: Flag.Boolean("follow").pipe(
-      Flag.withDescription("Print each Step's progress while waiting, instead of only the result"),
+      Flag.withDescription(
+        "Print each change while waiting: status, steps, agents, parks, the merge request and CI",
+      ),
       Flag.withDefault(false),
     ),
     timeout: Flag.String("timeout").pipe(
@@ -770,7 +770,7 @@ const runWait = Command.make(
     ),
     until: Flag.String("until").pipe(
       Flag.withDescription(
-        "`terminal` (the default) waits for the Run to end; `attention` also returns on a question",
+        "`terminal` (the default) waits for the Run to end; `attention` also returns on a question, hold, stop or park; `ready` waits for Ready to release; `needs-human` for whatever only a human can move",
       ),
       Flag.optional,
     ),
@@ -788,9 +788,10 @@ const runWait = Command.make(
 );
 
 /**
- * A Run watched to the end, or to the question it is waiting on. Every state the
- * host reports arrives here, current one first — so a wait that starts long after the
- * work did is not waiting for an update that has already happened.
+ * A Run watched to the end, or to whatever `until` names. Every state the host reports
+ * arrives here, current one first — so a wait that starts long after the work did is not
+ * waiting for an update that has already happened. What the status stream does not carry —
+ * Ready to release, steps, agents and CI — is asked for every `PROGRESS_EVERY`.
  */
 const waitForRun = Effect.fn("collie.waitForRun")(function* (
   global: Global,
@@ -799,12 +800,28 @@ const waitForRun = Effect.fn("collie.waitForRun")(function* (
   options: {
     readonly follow: boolean;
     readonly ms: number | null;
-    readonly wantsAttention: boolean;
+    readonly until: Until;
   },
 ) {
   const seen = yield* Ref.make<RunView | null>(null);
-  const enough = (view: RunView) =>
-    isSettled(view) || (options.wantsAttention && view.status.status === "suspended");
+  const progressed = yield* Ref.make<RunProgress | null>(null);
+  const told = yield* Ref.make<Followed>({ view: null, progress: null });
+  const verdict = Effect.gen(function* () {
+    const view = yield* Ref.get(seen);
+    return view === null
+      ? "waiting"
+      : reached(options.until, view, yield* Ref.get(progressed), isSettled(view));
+  });
+  const tell = Effect.gen(function* () {
+    if (!options.follow) return;
+    const now = { view: yield* Ref.get(seen), progress: yield* Ref.get(progressed) };
+    for (const event of followEvents(yield* Ref.getAndSet(told, now), now))
+      yield* say(
+        global.json
+          ? Schema.encodeSync(UnknownJson)({ ...event, run: runId })
+          : followLine(runId, event),
+      );
+  });
   const once = watchRun(env, runId, (view) =>
     Effect.gen(function* () {
       const last = yield* Ref.getAndSet(seen, view);
@@ -816,7 +833,8 @@ const waitForRun = Effect.fn("collie.waitForRun")(function* (
             : `${view.runId}: ${statusOf(view)}`,
         );
       }
-      return enough(view);
+      yield* tell;
+      return (yield* verdict) !== "waiting";
     }).pipe(Effect.orDie),
   ).pipe(Effect.scoped);
   // A host replaced or restarted under the wait ends its stream before the Run got
@@ -825,8 +843,11 @@ const waitForRun = Effect.fn("collie.waitForRun")(function* (
   const watching = Effect.gen(function* () {
     for (;;) {
       const exit = yield* Effect.exit(once);
-      const last = yield* Ref.get(seen);
-      if (Exit.isSuccess(exit) && (exit.value !== null || last === null || enough(last))) {
+      const over = (yield* verdict) !== "waiting";
+      if (
+        Exit.isSuccess(exit) &&
+        (exit.value !== null || (yield* Ref.get(seen)) === null || over)
+      ) {
         return exit.value;
       }
       if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
@@ -835,7 +856,31 @@ const waitForRun = Effect.fn("collie.waitForRun")(function* (
       yield* Effect.sleep("500 millis");
     }
   });
-  const bounded = options.ms === null ? watching : watching.pipe(Effect.timeout(options.ms));
+  const needsProgress = options.until === "ready" || options.until === "needs-human";
+  const asking = options.follow || needsProgress;
+  // A host restarting under the wait fails a look or two; one that never answers, such as
+  // an older build without `progress`, cannot end a wait for readiness.
+  const polling = Effect.gen(function* () {
+    let failures = 0;
+    for (;;) {
+      const read = yield* runProgress(env, runId);
+      if (read.ok && read.value !== null) {
+        failures = 0;
+        yield* Ref.set(progressed, read.value);
+        yield* tell;
+        if ((yield* verdict) !== "waiting") return null;
+      } else if (needsProgress && ++failures >= PROGRESS_TRIES) {
+        return err(
+          "operation_failed",
+          `The host could not say whether run "${runId}" is ready${read.ok ? "" : `: ${read.error.message}`}.`,
+          { run: runId },
+        );
+      }
+      yield* Effect.sleep(PROGRESS_EVERY);
+    }
+  });
+  const both = asking ? Effect.raceFirst(watching, polling) : watching;
+  const bounded = options.ms === null ? both : both.pipe(Effect.timeout(options.ms));
   const failed = yield* bounded.pipe(
     Effect.catch((cause) =>
       Effect.succeed(
@@ -846,6 +891,22 @@ const waitForRun = Effect.fn("collie.waitForRun")(function* (
     ),
   );
   if (failed !== null) return yield* printResult(failed, global.json);
+  // The status stream can end the race between two looks: what changed since is still said.
+  if (asking) {
+    const last = yield* runProgress(env, runId);
+    if (last.ok && last.value !== null) yield* Ref.set(progressed, last.value);
+    yield* tell;
+  }
+  const progress = yield* Ref.get(progressed);
+  if ((yield* verdict) === "stuck")
+    return yield* printResult(
+      err(
+        "invalid_state",
+        `Run "${runId}" will not become ready by itself: ${(progress?.ready.missing ?? []).map((one) => one.said).join("; ")}.`,
+        { run: runId },
+      ),
+      global.json,
+    );
   // `--follow` has already said everything as it happened, as it does for a Run with a
   // Driver: one envelope after the stream would be the last line twice.
   if (options.follow) return;
@@ -856,10 +917,23 @@ const waitForRun = Effect.fn("collie.waitForRun")(function* (
       global.json,
     );
   yield* printResult(
-    { ok: true, data: { run: view }, human: `${view.runId}: ${statusOf(view)}` },
+    {
+      ok: true,
+      data: progress === null ? { run: view } : { run: view, ready: progress.ready },
+      human:
+        progress === null
+          ? `${view.runId}: ${statusOf(view)}`
+          : `${view.runId}: ${statusOf(view)}\n${readyLines(progress.ready)
+              .map((line) => `  ${line}`)
+              .join("\n")}`,
+    },
     global.json,
   );
 });
+
+/** How often a wait asks for what the status stream does not carry. */
+const PROGRESS_EVERY = "2 seconds";
+const PROGRESS_TRIES = 5;
 
 export const waitFor = Effect.fn("collie.waitFor")(function* (
   global: Global,
@@ -875,13 +949,17 @@ export const waitFor = Effect.fn("collie.waitFor")(function* (
   const { ms } = timeoutResult;
   const untilResult = parseUntil(until);
   if (!untilResult.ok) return yield* printResult(untilResult.error, global.json);
-  const wantsAttention = untilResult.until === "attention";
+
   const shown = yield* runShown(resolved.env, runId);
   if (!shown.ok) return yield* printResult(shown, global.json);
   const task = yield* selectedTask(global);
   if (shown.machine === null && task !== null && shown.view.task !== task)
     return yield* printResult(outsideTask(runId, task).result, global.json);
-  return yield* waitForRun(global, resolved.env, runId, { follow, ms, wantsAttention });
+  return yield* waitForRun(global, resolved.env, runId, {
+    follow,
+    ms,
+    until: untilResult.until,
+  });
 });
 
 /**
@@ -945,14 +1023,20 @@ const runSteer = Command.make(
     text: Argument.String("text").pipe(
       Argument.withDescription("What to say to the agent this Run has, in your own words"),
     ),
+    to: Flag.String("to").pipe(
+      Flag.withDescription(
+        "builder, reviewer, planner or an agent's name; by default the agent whose step is active, else the builder",
+      ),
+      Flag.optional,
+    ),
     operation: Flag.String("operation").pipe(
-      Flag.withDescription("Which of the Run's agents; the one most recently launched by default"),
+      Flag.withDescription("Which of the Run's agents, by its operation or name"),
       Flag.optional,
     ),
     attach: attachFlag,
     requestId: requestIdFlag,
   },
-  ({ runId, text, operation, attach, requestId }) =>
+  ({ runId, text, to, operation, attach, requestId }) =>
     Effect.gen(function* () {
       const global = yield* root;
       yield* attempt(
@@ -966,6 +1050,7 @@ const runSteer = Command.make(
               runId,
               text,
               request: id,
+              to: Option.getOrUndefined(to),
               operation: Option.getOrNull(operation) ?? undefined,
               attachments,
               door,
@@ -1408,12 +1493,15 @@ function intentChange(
               yield* cliDoor(resolved.env),
             );
             if (!result.ok) return result;
-            const { version, propagated, approved, warning } = result.value;
+            const { version, propagated, approved, warning, redacted } = result.value;
             return approved === undefined
               ? {
                   ok: true as const,
-                  data: { runId, version, propagated },
-                  human: [`${runId}: intent v${version}`, ...propagated].join("\n"),
+                  data: { runId, version, propagated, ...redactedField(redacted) },
+                  human: withNotice(
+                    [`${runId}: intent v${version}`, ...propagated].join("\n"),
+                    redacted,
+                  ),
                 }
               : {
                   ok: true as const,

@@ -130,9 +130,10 @@ file it names appears in the diff.
 The states a message passes through are separate facts, and collapsing them is how a send
 gets reported as progress. The delivery ledger's states and what each one rests on are
 canonical in [Steering](steering.md#the-states-and-why-they-are-kept-apart); in short: `reserved` is
-Collie's intent to send, `submitted` says herdr accepted the text, `acknowledged` needs
-the agent's own ack file, and `verified` needs an independent check. `unknown` is the
-honest state when nobody can say, and only a person settles it.
+Collie's intent to send, `submitted` says herdr accepted the text, and `acknowledged` says
+the agent took a turn after it. Whether the work then went where it was told is the drift
+judgement's, never a delivery state. `unknown` is the honest state when nobody can say, and
+only a person settles it.
 
 The same distinction applies one level up, at the agent's own front door, where Collie
 has no ledger:
@@ -197,6 +198,17 @@ A remotely started investigation reporting back and closing is a backend row pro
 to investigate a Desktop Machines page state on its branch, receive its findings and
 observe the laptop workspace close. It remains pending until recorded at a revision.
 
+A stopped Codex agent being Quiet before anything replaces it is a backend row proved by
+the restart regression in `test/codex-stop.test.ts`, run against the stand-in App Server.
+Its operator row is the live check on vm-mk with a real Codex turn, an ignored interrupt
+among it. It stays pending until someone records the result at a revision.
+
 Remote Run records, Intent mutations, remembered checks, override clearing, verification
 and live check output have backend rows proved by `test/remote-cli.test.ts`. The caller
 has no local Runs; both inferred and explicit Machine selection read the owner's record.
+
+A managed agent's profile has a backend row proved by `test/agents.test.ts`: the role's env
+is typed into its pane before the harness starts, and a file-held value appears in nothing
+Collie wrote. Whether Claude honours the merged settings only a live agent can show, so the
+operator row asks for one Claude agent's `/status`, `/context` and `/hooks` with the overlay
+in effect, recorded at a revision.

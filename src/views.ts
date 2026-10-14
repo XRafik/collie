@@ -6,6 +6,7 @@
 
 import { Effect, FileSystem, Option, Path, Stream } from "effect";
 import { attachmentsDir, listAttachments } from "./attachments";
+import { handoffsIn } from "./handoffs";
 import { attentionFor } from "./attention";
 import { configValue, readConfig, readSettingsSet } from "./config";
 import { settingOf, SETTINGS } from "./settings";
@@ -430,6 +431,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
       }),
     ),
     evidence: yield* evidenceIn(run.evidence),
+    handoffFiles: yield* handoffsIn(run.dir),
     attachments: (yield* listAttachments(attachmentsDir(run.dir))).map(
       ({ name, size, mediaType }) => ({ name, size, mediaType }),
     ),
@@ -442,7 +444,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
 export interface SettingsView {
   configPath: string;
   /** The defaults a Run uses, resolved through the config file and the fallbacks. */
-  defaults: Array<{ key: string; value: string }>;
+  defaults: Array<{ key: string; value: string; multiline: boolean }>;
   /** Values a Run remembered for next time, `linear.team` and its kind. */
   remembered: Array<{ key: string; value: string }>;
   /** Whether the harness will work in this directory without stopping to ask. */
@@ -483,9 +485,13 @@ export const buildSettings = Effect.fn("Views.buildSettings")(function* (env: Pl
     configPath: path.join(env.userDir, "config.json"),
     // As written where it is set, so a hand-edited value that loadDefaults would
     // coerce is shown here, where it is put right.
-    defaults: SETTINGS.map(({ key, fallback }) => {
+    defaults: SETTINGS.map(({ key, kind, fallback }) => {
       const written = configValue(raw, key);
-      return { key, value: written === undefined ? fallback : scalar(written) };
+      return {
+        key,
+        value: written === undefined ? fallback : scalar(written),
+        multiline: kind === "json",
+      };
     }),
     // Everything else the file holds: remembered answers, per-harness model lists, the
     // notification kinds someone turned off. Shown as written rather than interpreted.

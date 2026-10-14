@@ -15,7 +15,7 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { Significance, mrWords, readMrRef } from "./board-model";
 import { forgeOf } from "./forge/forge";
 import { appendJournal, readJournal } from "./journal";
-import { redact } from "./conversation";
+import { redact } from "./redact";
 import type { Verification } from "./verify";
 
 const RevisionSchema = Schema.Struct({

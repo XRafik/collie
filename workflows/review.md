@@ -3,6 +3,10 @@ Project root: {{cwd}}
 Spec: {{inputs.plan}}
 Outcome the change has to prove (not given means unclassified): {{inputs.outcome}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 Read the target first:
 
 - `mr:<project>!<iid>` or `mr:github.com/<owner>/<repo>#<n>` — a {{mr.forge}} {{mr.noun}}.
@@ -10,9 +14,9 @@ Read the target first:
   for the change and `{{mr.view}}` for the description. An older target is a bare
   `mr:<iid>`, which means the merge request of the project you are standing in.
 - `branch:<base>...<head>` — `git diff <base>...<head>`.
-- `worktree` — the change in front of you: `git status` and `git diff HEAD` for
-  uncommitted work, and `git log --oneline <default-branch>..HEAD` plus `git diff
-  <default-branch>...HEAD` for commits this branch has that the default branch does not.
+- `worktree`, or no target — the change in front of you: `git status` and `git diff HEAD`
+  for uncommitted work, and `git log --oneline {{base}}..HEAD` plus `git diff
+  {{base}}...HEAD` for commits this branch has that the default branch does not.
 
 The spec above is a directory when this review has one: read `SPEC.md` and the tickets
 in `issues/` and hold the change to them. When it is empty there is no spec, and the
@@ -35,8 +39,16 @@ changed but not fixed, or fixed. Then review what has changed since that review,
 callers and tests the fixes touched, and raise what is new. A finding you carry forward
 is the same finding: keep its file and title unless the code moved under it.
 
-Review against the project's own standards too — `CLAUDE.md`, `CONTEXT.md`, `README.md`
-and the code around the change.
+Review against the project's own standards too — `CLAUDE.md`, `README.md` and the code
+around the change. Of `CONTEXT.md`, read only the entries for the terms the diff touches,
+never the whole glossary.
+
+Every finding has one of three severities: `blocker` (wrong, unsafe, or breaks a
+contract), `major` (will bite us), `minor` (worth fixing, not worth blocking). Only `minor`
+lets a change ship without another fix, and a severity outside the three blocks.
+
+Where a finding is one instance of a class of bug, list every instance of it in the diff
+in that finding, or say there is no other.
 
 {{risks}}
 
@@ -63,10 +75,20 @@ can, raise it with a `"rebuttal"` saying why that reason does not hold; that put
 in front of the implementer. If you cannot, leave it alone — it is the human's call now,
 not another round's.
 
+The checks already recorded for this Run, the latest of each — `by collie` is one Collie
+ran itself, `by agent` one an agent ran through the collector:
+
+{{checks}}
+
+Read these rather than running them again. Run only targeted checks — the test file or
+command that confirms or refutes a finding — and never the whole suite.
+
 Where you run something to check a finding, run it through the collector so the result
 is bound to the tree you checked it on: `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`; Collie records the result
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
+
+{{criteria}}
 
 ### Your judgement on the outcome
 
@@ -167,9 +189,9 @@ and say what you ran: what Collie watched is a verification, and anything else i
 
 At the end of the round, where `{{branch}}` has an open merge request (a pull request on
 GitHub), push this round's commits to it: a plain push, never forced. A rejected push is
-reported, never retried with force — someone else's commits may be on that branch. Where
-that merge request merges itself once green (auto-merge), do not push, and say that is
-why: that push would be a merge. Where `{{branch}}` has no open merge request, do not push.
+reported, never retried with force — someone else's commits may be on that branch. Collie
+checked before this round started that it does not merge itself once green. Where
+`{{branch}}` has no open merge request, do not push.
 Never open or edit a merge request, and never comment anywhere. Report `"pushed"` and the
 `branch` your commits are on, so a local-only result is never mistaken for a landed one.
 

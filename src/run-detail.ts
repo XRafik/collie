@@ -13,6 +13,7 @@ import {
   type RunFile,
 } from "./board-model";
 import { attachmentsDir } from "./attachments";
+import { handoffsDir } from "./handoffs";
 import { classifyWorkSource } from "./inputs";
 import { shell } from "./mr";
 import { forgeOfUrl } from "./forge/forge";
@@ -344,6 +345,8 @@ export const fetchRef = Effect.fn("RunDetail.fetchRef")(function* (
       return yield* under(run.evidence, name, "evidence called");
     case "attachment":
       return yield* under(attachmentsDir(run.dir), name, "attachment");
+    case "handoff":
+      return yield* under(handoffsDir(run.dir), name, "handoff note");
     case "plan": {
       const dir = yield* planDirOf(run).pipe(Effect.orElseSucceed(() => null));
       if (dir === null) return yield* refused(`${run.id} has no plan`);

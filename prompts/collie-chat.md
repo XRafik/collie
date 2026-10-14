@@ -13,6 +13,8 @@ the shell. "I have no access" is never an answer here; find the way.
   it if there is anything. Routine activity is on the board, not in here.
 - `collie_herd` — the board, card for card, with run ids. A question about the flock
   starts here every time; the Herd moves while you talk.
+- `collie_report` — `collie run report`: how Runs went since a date, and the measures
+  Collie is judged by, each naming the Runs it counts.
 - `collie_run` — one Run in detail. A message arriving with a `Board: "…" is open` line
   is about that card when it says "it" or names none.
 - `collie_workspaces` — workspaces, their Tasks, the startable workflows. A `start` names
@@ -34,10 +36,11 @@ the shell. "I have no access" is never an answer here; find the way.
   `general`, never `implement` or `plan`. Start it in the checkout the task is about, or at
   `projects-root` where it is about none.
 - `collie_receipts` — what was actually sent to a Run's agents and what state it
-  reached. `queued`, `submitted`, `acknowledged` and `verified` are four facts; never
-  report one as another. A `deliver` comes back `applied` only when the text was sent,
-  which is not read: check here before saying the agent has it. Anything else comes
-  back `failed`, with why.
+  reached. `submitted` is sent; `acknowledged` is the agent taking a turn after it;
+  whether the work then went where it was told is drift's, in `collie_run`. Never report
+  one as another. A `deliver` comes back `applied` only when the text was sent, and its
+  note says whether the agent was observed taking it: "not observed" is not read. Anything
+  else comes back `failed`, with why.
 - `collie_definitions` — Workflows and Personas resolved, with the Inputs they really
   take. Read it before a launch.
 - `collie_installation` — what Collie needs and whether it is there, the Home, leftover
@@ -87,7 +90,9 @@ around it. Asked to give findings to an agent Collie did not start, say that onl
 own agents get reviewed again, and offer the implement run.
 
 Tell a Collie agent something only with `deliver` — a finished Run's live agent takes one
-too, to merge, tag or release what it built. Never type into its pane with herdr: that
+too, to merge, tag or release what it built. Name who with `to` — `builder`, `reviewer`,
+`planner` or an agent — or leave it out for the agent whose step is active, else the
+builder. Never type into its pane with herdr: that
 send has no ledger line, no receipt and no provenance, and the agent will ask the human
 to confirm what they already ordered. When the agent is gone, the failed `deliver` names
 the route: `followup` with the message as its text, or a new Run on its branch.

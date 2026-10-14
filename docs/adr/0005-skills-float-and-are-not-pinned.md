@@ -33,6 +33,12 @@ its `.claude-plugin/plugin.json` skill list, which is exactly `skills/engineerin
 list of skill names — a path keeps picking up what upstream adds to it, where a name list
 would silently stop at what we knew about.
 
+_Amended 2026-10-13:_ the shipped workflows need nine of the ten. `implement` no longer
+starts its builder with the `implement` skill, whose last line ran a second review beside
+Collie's own and whose "full test suite once at the end" was the gate's job. The build and
+fix steps now say how to build, so neither validation nor the doctor requires that skill.
+It is still installed with its bucket, and a fork may still name it.
+
 ## Alternatives
 
 - **Commit a `skills-lock.json` and bump deliberately.** Correct on paper, and it would

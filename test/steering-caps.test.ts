@@ -5,7 +5,7 @@
 import { Effect, FileSystem, Path } from "effect";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { CAPABILITIES, gate, interruptKeys, needed } from "../src/steering-caps";
-import { DELIVERY_TOKEN, ackInstruction, ackPath, readAcks, transaction } from "../src/dispatcher";
+import { DELIVERY_TOKEN, transaction } from "../src/dispatcher";
 import { appendLine, ledgerPath, readLedger, type Delivery } from "../src/steering";
 import type { AgentEntry } from "../src/registry";
 import type { AgentInfo } from "../src/herdr";
@@ -185,67 +185,5 @@ test("an interrupt is a key and a message, and is never called stopping", () =>
         const text = yield* fs.readFileString(source);
         expect([name, text.includes(`"stopped"`)]).toEqual([name, false]);
       }
-    }),
-  ));
-
-test("the ack instruction carries the token a hook can see, and the file it asks for", () => {
-  const instruction = ackInstruction("/runs/r1", { id: "d1", intentVersion: 2, attempt: 3 });
-  expect(instruction.split("\n")[0]).toBe(`${DELIVERY_TOKEN}d1`);
-  expect(instruction).toContain(ackPath("/runs/r1", "d1"));
-  expect(instruction).toContain(`"intent_version":2`);
-  expect(instruction).toContain(`"attempt":3`);
-});
-
-test("an ack for what was sent is acknowledgement; one for something else is a mismatch", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const ledger = yield* ledgerPath(stateDir, "term-1");
-      yield* appendLine(ledger, delivery());
-      const acks = path.join(runDir, "steering", "acks");
-      yield* fs.makeDirectory(acks, { recursive: true });
-
-      // The wrong attempt: the agent is answering a message that is not this one.
-      yield* fs.writeFileString(
-        path.join(acks, "d1.json"),
-        `{"delivery":"d1","intent_version":2,"attempt":9,"understood":"stay in src"}`,
-      );
-      yield* readAcks(stateDir, runDir, () => Effect.void);
-      expect((yield* readLedger(ledger)).at(-1)).toMatchObject({
-        state: "submitted",
-        note: "ack_mismatch",
-      });
-
-      yield* fs.writeFileString(
-        path.join(acks, "d1.json"),
-        `{"delivery":"d1","intent_version":2,"attempt":1,"understood":"stay in src"}`,
-      );
-      yield* readAcks(stateDir, runDir, () => Effect.void);
-      expect((yield* readLedger(ledger)).at(-1)).toMatchObject({
-        state: "acknowledged",
-        evidence: { kind: "ack" },
-      });
-      // Removed only once its line is written, so a crash in between re-reads it.
-      expect(yield* fs.exists(path.join(acks, "d1.json"))).toBe(false);
-    }),
-  ));
-
-test("an ack nobody can decode is reported, not acted on", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const acks = path.join(runDir, "steering", "acks");
-      yield* fs.makeDirectory(acks, { recursive: true });
-      yield* fs.writeFileString(path.join(acks, "d9.json"), "not json at all");
-
-      const said: string[] = [];
-      yield* readAcks(stateDir, runDir, (line) =>
-        Effect.sync(() => {
-          said.push(line);
-        }),
-      );
-      expect(said).toEqual(["ack d9.json could not be read"]);
     }),
   ));

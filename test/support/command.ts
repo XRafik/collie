@@ -2,8 +2,31 @@
 // child's exit and spin the worker forever (oven-sh/bun#34069), so every later test in that
 // worker times out.
 
-import { Effect, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { Effect } from "effect";
+
+const signal = (child: Bun.Subprocess, name: NodeJS.Signals) => {
+  try {
+    if (process.platform === "win32") child.kill(name);
+    else process.kill(-child.pid, name);
+  } catch {
+    // The process group exited already.
+  }
+};
+
+const terminate = Effect.fn("test.command.terminate")(function* (child: Bun.Subprocess) {
+  signal(child, "SIGTERM");
+  yield* Effect.promise(() => child.exited).pipe(
+    Effect.timeoutOrElse({
+      duration: "5 seconds",
+      orElse: () =>
+        Effect.sync(() => signal(child, "SIGKILL")).pipe(
+          Effect.andThen(Effect.promise(() => child.exited)),
+        ),
+    }),
+  );
+  // A fixture's descendants must not outlive their leader, even if they ignore SIGTERM.
+  signal(child, "SIGKILL");
+});
 
 export interface Ran {
   readonly exitCode: number;
@@ -17,33 +40,30 @@ export interface ExecOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
-const text = (stream: ChildProcessSpawner.ChildProcessHandle["stdout"]) =>
-  stream.pipe(
-    Stream.decodeText(),
-    Stream.runFold(
-      () => "",
-      (out, chunk) => out + chunk,
-    ),
-  );
-
 export const exec = Effect.fn("test.exec")(
   function* (argv: ReadonlyArray<string>, options: ExecOptions = {}) {
-    const [cmd = "", ...args] = argv;
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const handle = yield* spawner.spawn(
-      ChildProcess.make(cmd, args, {
-        cwd: options.cwd,
-        env: options.env === undefined ? undefined : { ...options.env },
-        extendEnv: options.env === undefined,
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      }),
+    const handle = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.spawn([...argv], {
+          cwd: options.cwd,
+          env: options.env === undefined ? process.env : { ...options.env },
+          detached: process.platform !== "win32",
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        }),
+      ),
+      terminate,
     );
     const [stdout, stderr, exitCode] = yield* Effect.all(
-      [text(handle.stdout), text(handle.stderr), handle.exitCode],
+      [
+        Effect.promise(() => new Response(handle.stdout).text()),
+        Effect.promise(() => new Response(handle.stderr).text()),
+        Effect.promise(() => handle.exited).pipe(Effect.tap(() => terminate(handle))),
+      ],
       { concurrency: "unbounded" },
     );
+    if (handle.signalCode !== null) throw new Error(`command ended by ${handle.signalCode}`);
     return { exitCode: Number(exitCode), stdout, stderr } satisfies Ran;
   },
   Effect.scoped,

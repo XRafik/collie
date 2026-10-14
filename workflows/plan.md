@@ -6,6 +6,10 @@ Project root: {{cwd}}
 This run's plan directory: {{run.dir}}/plan
 This run's id: {{run.id}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 {{rooting}}
 
 {{attendance}}
@@ -32,7 +36,8 @@ Then write your Output, with what we settled under `decided`.
 
 You were started with {{skill:to-spec}}. Write the spec to `{{run.dir}}/plan/SPEC.md`. It has the problem in one
 paragraph, what is explicitly out of scope, the ordered work with the seams that want
-tests, and how we will know the whole thing works.
+tests, and how we will know the whole thing works. The tickets carry each piece's detail
+and acceptance criteria, so the spec does not restate them.
 
 Then write your Output, naming the spec you wrote.
 

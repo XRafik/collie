@@ -285,6 +285,8 @@ export const loadDefaults = Effect.fn("Config.loadDefaults")(function* (userDir:
       isString(raw.gitlab_host) && isHostName(raw.gitlab_host)
         ? raw.gitlab_host
         : FALLBACK_DEFAULTS.gitlabHost,
+    // As written: a launch reads it again and refuses what it cannot apply.
+    agentProfile: isString(raw.agent_profile) ? raw.agent_profile : FALLBACK_DEFAULTS.agentProfile,
   };
   if (isString(raw.effort)) defaults.effort = raw.effort;
   return defaults;

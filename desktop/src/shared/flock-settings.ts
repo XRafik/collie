@@ -180,12 +180,12 @@ const flockRow = (flock: FlockSettings, setting: Setting): SettingRow => {
     set: value !== "",
     from: held?.differed === true ? held.from : null,
     shared: true,
-    multiline: false,
+    multiline: setting.kind === "json",
   };
 };
 
 const defaultSaid = ({ kind, unit }: Setting, fallback: string) => {
-  if (kind === "list") return "Default: none";
+  if (kind === "list" || kind === "json") return "Default: none";
   if (fallback === "") return "Unset: the harness decides";
   if (kind === "boolean") return `Default: ${fallback === "true" ? "on" : "off"}`;
   return `Default: ${fallback}${unit === undefined ? "" : ` ${unit}`}`;

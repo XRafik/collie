@@ -7,6 +7,7 @@ import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import { type ForgeFacts } from "./board";
 import {
   ForgeChecks,
+  Mergeability,
   mrLabel,
   mrRefOf,
   sectionOf,
@@ -20,7 +21,7 @@ import type { Runner } from "./mr";
 import { runDir } from "./engine";
 import { nowIso } from "./time";
 
-/** How long one merge request's answer stands before GitLab is asked again. */
+/** How long one merge request's answer stands before its forge is asked again. */
 export const MERGE_POLL_MS = 5 * 60_000;
 
 /** What the merge watch last read of each merge request, by label, and when. */
@@ -56,6 +57,8 @@ const EntrySchema = Schema.Struct({
   state: StateSchema,
   checks: Schema.optionalKey(ForgeChecks),
   head: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  draft: Schema.optionalKey(Schema.Boolean),
+  mergeable: Schema.optionalKey(Mergeability),
 });
 const StatesJson = Schema.fromJsonString(Schema.Record(Schema.String, EntrySchema));
 /** The shape written before checks were kept: a bare state per merge request. */
@@ -71,7 +74,7 @@ function stateOf(state: string): MrState {
 
 /**
  * One round: every Task waiting on a merge request whose answer is stale is asked about,
- * a merged one gets its `merged` disposition recorded as GitLab's word, and what was
+ * a merged one gets its `merged` disposition recorded as its forge's word, and what was
  * learned is written where `collie --json board` reads it. `checked` and `states` are the
  * caller's memory between rounds; the file is everyone else's.
  */
@@ -135,7 +138,10 @@ const sameFacts = (a: ForgeFacts | undefined, b: ForgeFacts) =>
   a !== undefined &&
   a.head === b.head &&
   a.checks.state === b.checks.state &&
-  ("name" in a.checks ? a.checks.name : "") === ("name" in b.checks ? b.checks.name : "");
+  ("name" in a.checks ? a.checks.name : "") === ("name" in b.checks ? b.checks.name : "") &&
+  a.draft === b.draft &&
+  a.mergeable?.state === b.mergeable?.state &&
+  a.mergeable?.said === b.mergeable?.said;
 
 /**
  * One merge request's state and checks, from whichever forge it is on, or null where that
@@ -159,12 +165,14 @@ const forgeAnswer = Effect.fn("Merges.forgeAnswer")(function* <R>(
     const tier = yield* forge.liveTier(ref, panel.mergedSha, cwd, run);
     state = tier === "production" ? "in-prod" : tier === "staging" ? "on-stage" : "merged";
   }
+  const facts: ForgeFacts = {
+    checks: panel.checks ?? { state: "unknown" },
+    head: (panel.head ?? "") === "" ? null : panel.head!,
+    draft: panel.state === "draft",
+  };
   return {
     state,
-    facts: {
-      checks: panel.checks ?? { state: "unknown" as const },
-      head: (panel.head ?? "") === "" ? null : panel.head!,
-    },
+    facts: panel.mergeable === undefined ? facts : { ...facts, mergeable: panel.mergeable },
     by: forge.name,
   };
 });
@@ -185,10 +193,7 @@ export const writeMrStates = Effect.fn("Merges.write")(function* (
   const entries = new Map(yield* readEntries(stateDir));
   for (const [label, state] of states) {
     const facts = forge.get(label) ?? factsOf(entries.get(label));
-    entries.set(
-      label,
-      facts === null ? { state } : { state, checks: facts.checks, head: facts.head },
-    );
+    entries.set(label, facts === null ? { state } : { state, ...facts });
   }
   yield* fs.makeDirectory(path.dirname(file), { recursive: true });
   yield* fs.writeFileString(
@@ -211,8 +216,12 @@ const readEntries = Effect.fn("Merges.readEntries")(function* (stateDir: string)
   return new Map<string, Entry>(Object.entries(old).map(([label, state]) => [label, { state }]));
 });
 
-const factsOf = (entry: Entry | undefined): ForgeFacts | null =>
-  entry?.checks === undefined ? null : { checks: entry.checks, head: entry.head ?? null };
+const factsOf = (entry: Entry | undefined): ForgeFacts | null => {
+  if (entry?.checks === undefined) return null;
+  const facts: ForgeFacts = { checks: entry.checks, head: entry.head ?? null };
+  const drafted = entry.draft === undefined ? facts : { ...facts, draft: entry.draft };
+  return entry.mergeable === undefined ? drafted : { ...drafted, mergeable: entry.mergeable };
+};
 
 /** Each merge request's state, as the last watch learned it. */
 export const readMrStates = Effect.fn("Merges.read")(function* (stateDir: string) {

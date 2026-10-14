@@ -203,6 +203,28 @@ test("a Machine's GitLab host and a value its setting refuses are not the Flock'
   expect(Object.keys(flock.settings)).toEqual(["model"]);
 });
 
+test("the agent profile is one shared JSON text: an edit is checked, synced as written, and typed over lines", () => {
+  const profile = '{"*": {"env": {"TOKEN": {"file": "~/.secrets/token"}}}}';
+  const edited = editSetting(NO_FLOCK_SETTINGS, "agent_profile", profile, at(12));
+  if ("refused" in edited) throw new Error(edited.refused);
+  // Only the file's path is shared; each Machine reads its own file at launch.
+  expect(takeFrom(edited, "vm-a", []).give).toEqual([
+    { key: "agent_profile", value: profile, at: at(12) },
+  ]);
+  expect(
+    editSetting(
+      NO_FLOCK_SETTINGS,
+      "agent_profile",
+      '{"*": {"claude": {"disableAllHooks": true}}}',
+      at(12),
+    ),
+  ).toEqual({ refused: "*.claude.disableAllHooks would switch off Collie's own hooks" });
+  const row = settingSections(edited, { proactive: true })
+    .flatMap(({ rows }) => rows)
+    .find(({ key }) => key === "agent_profile");
+  expect(row).toMatchObject({ value: profile, multiline: true, shared: true });
+});
+
 /** A Machine's host as Collie's answers: each key written only where the given edit is later. */
 const machine = (name: string, held: ReadonlyArray<SharedSetting>, meanwhile = Effect.void) => {
   const asked: Array<ReadonlyArray<SharedSetting>> = [];

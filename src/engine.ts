@@ -78,6 +78,7 @@ import {
   type WorkflowEntry,
 } from "./sdk";
 import { FALLBACK_DEFAULTS, configValue, gitlabHostOf, loadDefaults, readConfig } from "./config";
+import { unlistedServers } from "./compaction";
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
@@ -95,12 +96,20 @@ import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
 import type { CheckoutKind, InputStrategy } from "./definitions";
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
-import { noteVerification, metricsOf, readMetrics } from "./metrics";
-import { prepareMergeRequest, postNote, projectHere, forgeHere, shell as runShell } from "./mr";
-import { redact } from "./conversation";
+import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
+import {
+  autoMergingHere,
+  forgeHere,
+  prepareMergeRequest,
+  postNote,
+  projectHere,
+  shell as runShell,
+} from "./mr";
+import { redact } from "./redact";
 import { reportOf } from "./report";
 import type { Metrics } from "./board-model";
 import { parseMrTarget, parseMrUrl } from "./board-model";
+import { integrateDefault, integratedLine } from "./integrate";
 import { strategyNamed } from "./strategies";
 import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
 import {
@@ -156,12 +165,20 @@ import { listTasks, newTask, taskOfWorkspace, writeTask } from "./task";
 import { nowIso, epochMs } from "./time";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
 import type { BunServices } from "@effect/platform-bun/BunServices";
-import { approvedFrom, VerifySpecSchema, type VerifySpec } from "./verify-spec";
+import {
+  approvedFile,
+  approvedFrom,
+  approvedIn,
+  encodeApproved,
+  VerifySpecSchema,
+  type VerifySpec,
+} from "./verify-spec";
 import {
   encodeVerifying,
   fingerprint,
   insideRun,
   readVerifications,
+  reusableFor,
   runApproved,
   VERIFYING_FILE,
   type CheckPass,
@@ -254,6 +271,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /** A command Collie watched, bound to the tree it ran on. Never an Output's claim. */
   export interface Verification {
+    /** What a log line or a merge request names it by. */
+    readonly id: string;
     readonly name: string;
     /** As PATH resolved it when it ran, so the record says what ran. */
     readonly executable: string;
@@ -266,6 +285,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly result: "pass" | "fail" | "unstable";
     readonly at: string;
     readonly by: "agent" | "collie";
+    /** What it ran with outside the tree; absent on a record from before environments were. */
+    readonly environment?: string;
   }
 
   /** What the journal holds and the tree in front of you, for checks to be read against. */
@@ -287,6 +308,20 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     /** This Run, then the Runs it was started from or builds a plan of, and so on: whose agents it may ask. */
     readonly lineage: ReadonlyArray<string>;
   }
+
+  /**
+   * What merging the default branch did. \`ref\` and \`sha\` are what the branch is now
+   * measured against; \`conflicted\` leaves the merge for the builder, naming \`files\`.
+   */
+  export interface Integration {
+    readonly status: "unchanged" | "merged" | "conflicted" | "waiting" | "unavailable";
+    readonly branch: string;
+    readonly ref: string;
+    readonly sha: string;
+    readonly files: ReadonlyArray<string>;
+    readonly reason: string;
+  }
+  export const IntegrationSchema: Schema.Codec<Integration, unknown, never, never>;
 
   /** What became of a note: whether it landed, and the sentence a human reads either way. */
   export interface Posted {
@@ -366,6 +401,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       /** Why it is run: the gate on the branch, a recheck for a flake, or a fix after gate fix \`round\`. */
       readonly pass?: "gate" | "recheck" | "fix";
       readonly round?: number;
+      /** Answer with its latest pass on this tree in this environment, where nothing a human did since could change it. */
+      readonly reuse?: boolean;
     }) => Effect.Effect<Verification, WorkflowError>;
     /**
      * Puts a file on the merge request a Run was pointed at, as one note Collie sends.
@@ -391,6 +428,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly source?: { readonly value: string; readonly kind: string };
     }) => Effect.Effect<MrReady>;
     /**
+     * The checkout's branch's open merge request where it merges itself once green, else null.
+     * Fails, saying why, where the forge cannot be read: not knowing is not a no.
+     */
+    readonly autoMerging: (cwd: string) => Effect.Effect<string | null, WorkflowError>;
+    /**
      * Blocks until this Run holds the shared claim on the repository it works in, and
      * answers null where that repository has none. Waiting here costs wall clock and no
      * model tokens. adopting is asked only where the claim was already the operator's.
@@ -405,6 +447,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly release: (runId: string) => Effect.Effect<void>;
     /** Records the merge request this Run opened, as a fact its card reads. */
     readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
+    /**
+     * Fetches the default branch and, where it has moved, merges it into the checkout at cwd:
+     * a merge commit, never a rebase or a push. Uncommitted changes are left alone (\`waiting\`);
+     * a conflict is left in progress for the builder. Each merge is recorded in the Run log as
+     * \`integrated <branch>@<sha>\`. Take it inside an Activity, so a replay does not merge again.
+     */
+    readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
   }
   export const Host: Context.Service<HostApi, HostApi>;
   export interface IssueRef { readonly number: number; readonly url: string; }
@@ -768,6 +817,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly runId: string;
       readonly text: string;
       readonly request: string;
+      /** A role (builder, reviewer, planner), an agent or an operation; else the agent at work. */
+      readonly to?: string;
       readonly operation?: string;
       /** One of the run's agents by name, which wins over operation. */
       readonly agent?: string;
@@ -783,6 +834,9 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly agent: string;
     readonly delivered: boolean;
     readonly detail: string;
+    /** Whether the agent was seen to take it, and how. */
+    readonly observed?: boolean;
+    readonly how?: string;
   }
   export const Agents: Context.Service<AgentsApi, AgentsApi>;
   export type Agents = AgentsApi;
@@ -814,6 +868,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly workflow?: string;
     /** The skill this work is started with, where the work is one a skill describes. */
     readonly skill?: string;
+    /** The agent pushes the branch: while its merge request auto-merges, the Run parks instead. */
+    readonly pushes?: boolean;
     readonly harness?: string;
     readonly model?: string;
     readonly effort?: string;
@@ -971,6 +1027,32 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     note?: string;
   }
 
+  /** How one of a ticket's acceptance criteria is met: a test, a file, or "not met: <reason>". */
+  export interface Criterion {
+    readonly criterion: string;
+    readonly met: string;
+  }
+
+  /**
+   * The newest answer to this criterion. A copy without its formatting counts, and so does its
+   * bold lead alone where no other criterion \`among\` the ticket's opens with the same lead.
+   */
+  export function answerFor(
+    criterion: string,
+    answers: ReadonlyArray<Criterion>,
+    among?: ReadonlyArray<string>,
+  ): Criterion | undefined;
+
+  /**
+   * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
+   * as a blocking finding against the ticket.
+   */
+  export function unmetCriteria(
+    ticket: string,
+    criteria: ReadonlyArray<string>,
+    answers: ReadonlyArray<Criterion>,
+  ): Finding[];
+
   export interface Synthesis extends ReviewOutput {
     summary: string;
     dropped: Finding[];
@@ -1077,6 +1159,17 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     synthesis: SynthesisReport,
   ): Effect.Effect<void, never, FileSystem.FileSystem>;
 
+  /** The findings still standing after a last fix settleFinalFix accepted; the prose stays. */
+  export function leaveOutstanding(
+    dir: string,
+    outstanding: ReadonlyArray<Finding>,
+  ): Effect.Effect<void, never, FileSystem.FileSystem>;
+
+  /** The findings of the review the Run that owns this directory left, or none. */
+  export function findingsIn(
+    dir: string,
+  ): Effect.Effect<ReadonlyArray<Finding>, never, FileSystem.FileSystem>;
+
   /** How many findings the Run that owns this directory left for somebody to fix. */
   export function openFindingsIn(
     dir: string,
@@ -1129,6 +1222,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
    */
   export const FindingSchema: Schema.Codec<Finding, unknown, never, never>;
   export const FixedSchema: Schema.Codec<Fixed, unknown, never, never>;
+  export const CriterionSchema: Schema.Codec<Criterion, unknown, never, never>;
   export const CheckSchema: Schema.Codec<Check, unknown, never, never>;
   export const ReviewOutputSchema: Schema.Codec<ReviewReport, unknown, never, never>;
   export const SynthesisSchema: Schema.Codec<SynthesisReport, unknown, never, never>;
@@ -1214,10 +1308,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly blockedBy: ReadonlyArray<string>;
     /** The verification names its **Checks:** line promised will prove it. */
     readonly checks: ReadonlyArray<string>;
+    /** Its acceptance criteria, which the builder answers one by one. */
+    readonly criteria: ReadonlyArray<string>;
   }
 
   /** The verification names a ticket's **Checks:** line promises. */
   export function checksIn(text: string): string[];
+
+  /**
+   * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
+   * Acceptance criteria heading where it has one. A nested list and fenced code are not.
+   */
+  export function criteriaIn(text: string): string[];
 
   /** A plan's tickets in an order they can be built in, narrowed to one repository. */
   export function orderedTickets(
@@ -1276,6 +1378,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /** What was actually collected, and by whom, for a merge request to say what it proved. */
   export function renderEvidence(
+    got: { readonly verifications: ReadonlyArray<Verification>; readonly final: Snapshot },
+  ): string;
+
+  /** Every check this Run's journal holds, latest of each and its baseline, for a reviewer to read. */
+  export function renderRecordedChecks(
     got: { readonly verifications: ReadonlyArray<Verification>; readonly final: Snapshot },
   ): string;
 
@@ -1985,11 +2092,7 @@ const mergeRequestOf = (fs: FileSystem.FileSystem, dir: string, runId: string) =
     Effect.orElseSucceed(() => null),
   );
 
-const approvedPath = (dir: string, runId: string) => `${evidenceDir(dir, runId)}/approved.json`;
-
-const ApprovedJson = Schema.fromJsonString(Schema.Array(VerifySpecSchema));
-const decodeApproved = Schema.decodeUnknownEffect(ApprovedJson);
-const encodeApproved = Schema.encodeSync(ApprovedJson);
+const approvedPath = (dir: string, runId: string) => approvedFile(evidenceDir(dir, runId));
 
 /**
  * This Run's checks as they were when the Run started. Frozen at
@@ -2017,14 +2120,7 @@ export const freezeApproved = Effect.fn("Engine.freezeApproved")(function* (opti
   yield* fs.writeFileString(path, encodeApproved(approved));
 });
 
-const approvedOf = Effect.fn("Engine.approvedOf")(function* (dir: string, runId: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const none: ReadonlyArray<VerifySpec> = [];
-  const text = yield* fs
-    .readFileString(approvedPath(dir, runId))
-    .pipe(Effect.orElseSucceed(() => "[]"));
-  return yield* decodeApproved(text).pipe(Effect.orElseSucceed(() => none));
-});
+const approvedOf = (dir: string, runId: string) => approvedIn(evidenceDir(dir, runId));
 
 /** Where a host keeps what a Run claimed, so a resume knows whose the claim was. */
 const claimPath = (dir: string, runId: string) => `${runDir(dir, runId)}/helle.json`;
@@ -2253,6 +2349,10 @@ export const hostLayer = (options: {
             const marker = `${runDir(dir, asked.runId)}/${VERIFYING_FILE}`;
             const away = `${runDir(dir, asked.runId)}/${AWAY_FILE}`;
             yield* restoreCheckout(asked.cwd, away);
+            if (asked.reuse === true && asked.at === undefined && asked.expect !== "fail") {
+              const kept = yield* reusableFor(journal, { ...own, cwd: asked.cwd }, spec);
+              if (kept !== null) return kept;
+            }
             // Written once the checkout is where the check runs, so it names that revision.
             const verified = (base: string | null) =>
               Effect.gen(function* () {
@@ -2564,12 +2664,23 @@ export const hostLayer = (options: {
           return (
             why === null
               ? fs.remove(path, { force: true }).pipe(Effect.orDie)
-              : fs
-                  .writeFileString(path, why)
-                  .pipe(
-                    Effect.orDie,
-                    Effect.andThen(notify(runId, "needs-you", why, { key: `parked:${why}` })),
-                  )
+              : Effect.gen(function* () {
+                  const before = yield* fs.readFileString(path).pipe(Effect.option);
+                  yield* fs.writeFileString(path, why).pipe(Effect.orDie);
+                  if (Option.getOrNull(before) === why) return;
+                  yield* under(
+                    Effect.gen(function* () {
+                      yield* appendMetric(evidenceDir(dir, runId), {
+                        at: yield* nowIso(),
+                        kind: "halt",
+                        subject: "",
+                        value: 0,
+                        note: why,
+                      });
+                    }),
+                  );
+                  yield* notify(runId, "needs-you", why, { key: `parked:${why}` });
+                })
           ).pipe(Effect.andThen(store.announce));
         },
         asking: (runId, question) =>
@@ -2637,6 +2748,15 @@ export const hostLayer = (options: {
                 issues: [],
               })),
             ),
+          ),
+        autoMerging: (cwd) =>
+          under(
+            Effect.gen(function* () {
+              const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
+                Effect.mapError((cause) => `the configuration could not be read: ${cause.message}`),
+              );
+              return yield* autoMergingHere(cwd, runShell, gitlabHost);
+            }).pipe(Effect.mapError((reason) => new WorkflowError({ reason }))),
           ),
         claim: <E, R>(asked: {
           readonly runId: string;
@@ -2723,6 +2843,16 @@ export const hostLayer = (options: {
             );
             yield* fs.remove(file, { force: true });
           }).pipe(Effect.provideContext(services), Effect.ignore),
+        integrate: (runId, cwd) =>
+          under(
+            integrateDefault(runShell, cwd).pipe(
+              Effect.tap((done) => {
+                const line = integratedLine(done);
+                return line === null ? Effect.void : appendLog(runDir(dir, runId), line);
+              }),
+              Effect.orDie,
+            ),
+          ),
         mergeRequest: (runId, url) =>
           fs.makeDirectory(runDir(dir, runId), { recursive: true }).pipe(
             Effect.andThen(fs.writeFileString(mergeRequestPath(dir, runId), `${url}\n`)),
@@ -2821,13 +2951,13 @@ export const hostLayer = (options: {
           // Corrected through the caller's own agents: the work that drifted is theirs.
           // Not at the finish, where there is no next piece of work to bring back.
           const agents = yield* Effect.serviceOption(Agents);
-          const newest =
-            Option.isNone(agents) || judged === "finish" ? null : yield* agents.value.newest(runId);
+          const atWork =
+            Option.isNone(agents) || judged === "finish" ? null : yield* agents.value.atWork(runId);
           const to =
-            Option.isNone(agents) || newest === null
+            Option.isNone(agents) || atWork === null
               ? null
               : {
-                  agent: newest,
+                  agent: atWork,
                   send: (correction: Parameters<Correcting["send"]>[0]) =>
                     agents.value.correct(runId, correction),
                 };
@@ -3501,6 +3631,13 @@ export const Steered = Schema.Struct({
   gone: Schema.optionalKey(Schema.Boolean),
   /** The Run's Workflow has ended, so a gone agent's request is carried on by a new Run. */
   finished: Schema.optionalKey(Schema.Boolean),
+  /** Whether the agent was seen to take it — a turn, its submit hook, Enter on it — and how. */
+  observed: Schema.optionalKey(Schema.Boolean),
+  how: Schema.optionalKey(Schema.String),
+  /** The pane it went to. */
+  pane: Schema.optionalKey(Schema.String),
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 export const RunView = Schema.Struct({
@@ -3689,6 +3826,7 @@ export interface RegistryApi {
     readonly text: string;
     /** The caller's claim on the delivery, so the same message twice is one message. */
     readonly request: string;
+    readonly to?: string;
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: AgentsSdk.DeliveryMode;
@@ -4967,6 +5105,13 @@ const makeRegistry: (
         }
       }
     }
+    const servers = yield* unlistedServers(placing.env.stateDir, sessions);
+    if (servers === null) return "herdr would not say which agents it has";
+    for (const record of servers) {
+      const there = yield* real(record.cwd);
+      if (there === dir || there.startsWith(`${dir}/`))
+        return `${record.agent}'s server may still be writing in it`;
+    }
     return null;
   }, Effect.provideContext(bun));
 
@@ -5596,6 +5741,7 @@ const makeRegistry: (
       readonly runId: string;
       readonly text: string;
       readonly request: string;
+      readonly to?: string;
       readonly operation?: string;
       readonly agent?: string;
       readonly mode?: AgentsSdk.DeliveryMode;
@@ -5760,6 +5906,18 @@ export const provisionToolchain: (
       `${unmerged.join(" and ")} in ${dir} is not plain JSON, so nothing was merged into it: add "effect" and "typescript" to package.json and map "collie" to ./collie.d.ts under compilerOptions.paths`,
     );
   }
+  // A successful dry run or an install omitting dev dependencies is not a toolchain.
+  const compiler = yield* fs
+    .exists(`${dir}/node_modules/typescript/lib/tsc.js`)
+    .pipe(Effect.mapError((cause) => unavailable(String(cause))));
+  const effect = yield* fs
+    .readFileString(`${dir}/node_modules/effect/package.json`)
+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(InstalledPackage)), Effect.option);
+  if (!compiler || Option.isNone(effect) || effect.value.version !== TOOLCHAIN.effect) {
+    return yield* unavailable(
+      `cannot provision the workflow toolchain in ${dir}: Bun's install settings did not install TypeScript and Effect ${TOOLCHAIN.effect}`,
+    );
+  }
 });
 
 const InstalledPackage = Schema.fromJsonString(Schema.Struct({ version: Schema.String }));
@@ -5847,14 +6005,18 @@ const runBun = (
 ): Effect.Effect<
   { readonly code: number; readonly output: string },
   string,
-  ChildProcessSpawner.ChildProcessSpawner
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 > =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const tmp = yield* fs.makeTempDirectoryScoped({ prefix: "collie-bun-" });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make(process.execPath, args, {
         cwd,
-        env: { BUN_BE_BUN: "1", PATH: "/usr/bin:/bin" },
+        env: { BUN_BE_BUN: "1", PATH: "/usr/bin:/bin", TMPDIR: tmp },
+        // Registry credentials, proxy settings and package caches belong to the caller.
+        extendEnv: true,
         stdout: "pipe",
         stderr: "pipe",
       }),

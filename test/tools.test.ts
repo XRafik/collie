@@ -106,6 +106,7 @@ test("the tools are the whole of the model's reach, and only one of them asks fo
     "collie_news",
     "collie_propose",
     "collie_receipts",
+    "collie_report",
     "collie_run",
     "collie_workspaces",
   ]);
@@ -136,6 +137,7 @@ test("the tools are one Toolkit, each saying how it fails and that it needs no a
     "collie_news",
     "collie_propose",
     "collie_receipts",
+    "collie_report",
     "collie_run",
     "collie_workspaces",
   ]);
@@ -987,6 +989,7 @@ test("the definitions tool answers with the module an id runs, not the file belo
         ...process.env,
         HERDR_PLUGIN_ROOT: new URL("../", import.meta.url).pathname,
         HERDR_PLUGIN_STATE_DIR: stateDir,
+        COLLIE_USER_DIR: `${stateDir}/user`,
         COLLIE_CWD: stateDir,
       });
       const ask = (input: JsonObject) =>

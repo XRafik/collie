@@ -116,4 +116,6 @@ export const ChangedIntent = Schema.Struct({
   propagated: Schema.Array(Schema.String),
   approved: Schema.optionalKey(Schema.Array(VerifySpecSchema)),
   warning: Schema.optionalKey(Schema.String),
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });

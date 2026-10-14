@@ -126,7 +126,7 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["run disposition", { route: "write", tool: "collie_do" }],
   ["run metrics", { route: "read", tool: "collie_run", input: { run: RUN } }],
   ["run checks", { route: "read", tool: "collie_run", input: { run: RUN } }],
-  ["run report", { route: "read", tool: "collie_herd" }],
+  ["run report", { route: "read", tool: "collie_report", input: { since: "2026-01-01" } }],
   ["run drift", { route: "read", tool: "collie_run", input: { run: RUN } }],
   ["run cards", { route: "read", tool: "collie_run", input: { run: RUN } }],
   ["run actions", { route: "read", tool: "collie_run", input: { run: RUN } }],
@@ -281,6 +281,7 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["tools call", { route: "shell" }],
   ["mcp", { route: "shell" }],
   ["host", { route: "shell" }],
+  ["host restart", { route: "shell" }],
   ["bridge", { route: "shell" }],
   ["machine list", { route: "shell" }],
   ["machine invite", { route: "shell" }],
@@ -298,6 +299,14 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
     },
   ],
   ["run deliveries --reconcile", { route: "shell" }],
+  [
+    "run steer --to",
+    {
+      route: "propose",
+      kind: "deliver",
+      action: { kind: "deliver", run: RUN, to: "builder", text: "keep going" },
+    },
+  ],
 ];
 
 /** Any command in the tree, as the CLI itself types one. */

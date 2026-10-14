@@ -109,6 +109,103 @@ export const Checks = Schema.Union([
 ]);
 export type Checks = typeof Checks.Type;
 
+/**
+ * What the forge said of a merge request's own checks: a pipeline or a check rollup. `none`
+ * is no pipeline at all; `unknown` is one that has not passed at its head: canceled, manual,
+ * skipped, or run on an older head.
+ */
+export const ForgeChecks = Schema.Union([
+  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown", "none"]) }),
+  Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
+]);
+export type ForgeChecks = typeof ForgeChecks.Type;
+
+/** Whether the forge would merge it now, and its own word for why not. */
+export const Mergeability = Schema.Struct({
+  state: Schema.Literals(["mergeable", "blocked", "unknown"]),
+  said: Schema.String,
+});
+export type Mergeability = typeof Mergeability.Type;
+
+/** One fact Ready to release still lacks; `settling` where it may come without anyone acting. */
+export const MissingFact = Schema.Struct({
+  fact: Schema.Literals([
+    "succeeded",
+    "leads",
+    "mr-open",
+    "not-draft",
+    "checks",
+    "ci",
+    "review",
+    "mergeable",
+  ]),
+  said: Schema.String,
+  settling: Schema.Boolean,
+});
+export type MissingFact = typeof MissingFact.Type;
+
+/** Whether the work is mergeable now, and what it lacks where it is not. */
+export const ReadyToRelease = Schema.Struct({
+  ready: Schema.Boolean,
+  missing: Schema.Array(MissingFact),
+});
+export type ReadyToRelease = typeof ReadyToRelease.Type;
+
+/** What Ready to release is decided from. */
+export interface ReleaseFacts {
+  readonly succeeded: boolean;
+  readonly mr: string | null;
+  /** What the forge last said; null where it has not been asked. */
+  readonly mrState: MrState | null;
+  readonly draft: boolean;
+  /** Collie's approved checks at the merge request's head. */
+  readonly checks: Checks | null;
+  /** The forge's pipeline at that head; null where it has not been asked. */
+  readonly ci: ForgeChecks | null;
+  /** Blocking review findings nobody has resolved. */
+  readonly blocking: number;
+  readonly mergeable: Mergeability | null;
+}
+
+/**
+ * Ready to release: the leading Run succeeded, its merge request is open and not a draft,
+ * Collie's checks and CI passed at its head, no blocking finding is open, and the forge
+ * says it can merge. The board, `run show` and `run wait` all ask this.
+ */
+export function readyToRelease(facts: ReleaseFacts): ReadyToRelease {
+  const missing: MissingFact[] = [];
+  const lack = (fact: MissingFact["fact"], said: string, settling = false) =>
+    missing.push({ fact, said, settling });
+  if (!facts.succeeded) lack("succeeded", "the leading Run has not succeeded");
+  if (facts.mr === null) lack("mr-open", "there is no merge request");
+  else {
+    const label = mrLabel(facts.mr);
+    if (facts.mrState === null)
+      lack("mr-open", `the forge has not said whether ${label} is open`, true);
+    else if (facts.mrState !== "open") lack("mr-open", `${label} is ${facts.mrState}`);
+    if (facts.draft) lack("not-draft", `${label} is a draft`);
+    const checks = facts.checks ?? { state: "unchecked" };
+    if (checks.state === "failed")
+      lack("checks", `${checks.name} failed at ${checks.at.slice(0, 7)}`);
+    else if (checks.state === "running") lack("checks", "Collie's checks are still running", true);
+    else if (checks.state === "unchecked")
+      lack("checks", "its checks have not all run at its head");
+    if (facts.ci === null) lack("ci", "the forge has not been asked about its pipeline", true);
+    else if (facts.ci.state === "failed") lack("ci", `${facts.ci.name} failed in CI`);
+    else if (facts.ci.state === "running") lack("ci", "CI is still running", true);
+    else if (facts.ci.state === "unknown") lack("ci", "its pipeline has not passed at its head");
+    if (facts.mergeable === null)
+      lack("mergeable", "the forge has not said whether it can merge", true);
+    else if (facts.mergeable.state === "blocked")
+      lack("mergeable", `the forge says it cannot merge: ${facts.mergeable.said}`);
+    else if (facts.mergeable.state === "unknown")
+      lack("mergeable", "the forge is still working out whether it can merge", true);
+  }
+  if (facts.blocking > 0)
+    lack("review", `${facts.blocking} blocking review finding(s) are unresolved`);
+  return { ready: missing.length === 0, missing };
+}
+
 /** A check running now, and what it is measured against. */
 export const RunningCheck = Schema.Struct({
   name: Schema.String,
@@ -177,8 +274,10 @@ export const TaskView = Schema.Struct({
   mrState: Schema.NullOr(MrState),
   /** What checked the open merge request's branch, or null where no merge request waits. */
   checks: Schema.optionalKey(Schema.NullOr(Checks)),
-  /** Ready to release: the leading Run succeeded, its merge request is open and its checks passed. */
+  /** Ready to release: whether the work is mergeable now (`readyToRelease`). */
   ready: Schema.optionalKey(Schema.Boolean),
+  /** What Ready to release still lacks; absent from a host older than the field. */
+  readiness: Schema.optionalKey(ReadyToRelease),
   /** The check Collie is running for the leading Run now, or null for none. */
   check: Schema.optionalKey(Schema.NullOr(RunningCheck)),
   /** A finished Run whose agent was told something after it ended, or null (ADR-0041 D5). */
@@ -279,13 +378,6 @@ export const Metrics = Schema.Struct({
 });
 export type Metrics = typeof Metrics.Type;
 
-/** What the forge said of a merge request's own checks: a pipeline or a check rollup. */
-export const ForgeChecks = Schema.Union([
-  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown"]) }),
-  Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
-]);
-export type ForgeChecks = typeof ForgeChecks.Type;
-
 /**
  * The merge request behind a review, as the app's panel shows it. Every field but the
  * iid is optional on the wire — glab's shape varies with the GitLab version and what
@@ -327,6 +419,8 @@ export const MrDetails = Schema.TaggedStruct("Details", {
   url: Schema.String,
   /** Whether it merges itself once its checks are green. */
   autoMerge: Schema.optionalKey(Schema.Boolean),
+  /** Whether the forge would merge it now, by its own rules. */
+  mergeable: Schema.optionalKey(Mergeability),
 });
 export type MrDetails = typeof MrDetails.Type;
 
@@ -395,7 +489,7 @@ export const SteeringCard = Schema.Struct({
 
 export type SteeringCard = typeof SteeringCard.Type;
 
-/** A file the Run kept as evidence, fetched as `evidence:<name>`. */
+/** A file the Run kept, fetched as `evidence:<name>`, or `handoff:<name>` for a handoff note. */
 export const EvidenceFile = Schema.Struct({ name: Schema.String, bytes: Schema.Int });
 export type EvidenceFile = typeof EvidenceFile.Type;
 
@@ -560,6 +654,8 @@ export const RunDetail = Schema.Struct({
   verifications: Schema.Array(VerificationView),
   steering: Schema.Array(SteeringCard),
   evidence: Schema.Array(EvidenceFile),
+  /** What its agents left in its `handoffs/` directory. Absent from an older host. */
+  handoffFiles: Schema.optional(Schema.Array(EvidenceFile)),
   /** Absent from a host older than attachments. */
   attachments: Schema.optional(Schema.Array(AttachmentFile)),
   /** Null for a Run with no branch or no checkout left to compare. */
@@ -600,11 +696,51 @@ export const Startable = Schema.Struct({
 });
 export type Startable = typeof Startable.Type;
 
+/** One step a Run's agent was given: its operation, who has it, and whether its Output is in. */
+export const RunStep = Schema.Struct({
+  operation: Schema.String,
+  agent: Schema.String,
+  done: Schema.Boolean,
+});
+export type RunStep = typeof RunStep.Type;
+
+/** Where a Run has got to, for `run show`, `run wait` and chat. */
+export const RunProgress = Schema.Struct({
+  ready: ReadyToRelease,
+  /** The forge's pipeline at its merge request's head; null where it has not been asked. */
+  ci: Schema.NullOr(ForgeChecks),
+  steps: Schema.Array(RunStep),
+});
+export type RunProgress = typeof RunProgress.Type;
+
+/** Ready to release as one Run reads it: its card's, where it leads that card. */
+export function readinessOfRun(
+  runId: string,
+  card: TaskView | undefined,
+  ended: boolean,
+): ReadyToRelease {
+  if (card === undefined)
+    return {
+      ready: false,
+      missing: [
+        ended
+          ? { fact: "leads", said: "it ended on no card", settling: false }
+          : { fact: "leads", said: "it is on no card yet", settling: true },
+      ],
+    };
+  if (card.run !== runId)
+    return {
+      ready: false,
+      missing: [{ fact: "leads", said: `${card.run} leads its Task now`, settling: false }],
+    };
+  return card.readiness ?? { ready: card.ready ?? false, missing: [] };
+}
+
 /**
  * The board protocol's version. An optional field, a new operation or a new kind of
  * message keeps it; a removal or a change of meaning bumps it.
  */
-export const PROTOCOL = 3;
+export const PROTOCOL = 4;
 
 /** One herdr session whose Tasks are on this board. */
 export const Herd = Schema.Struct({
@@ -688,6 +824,8 @@ export const Answered = Schema.Struct({
   decision: Schema.String,
   value: Schema.String,
   fresh: Schema.Boolean,
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 /**
@@ -707,12 +845,25 @@ export const Controlled = Schema.Struct({
   closed: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+/**
+ * What every door says of a control that left something running, or null where it left
+ * nothing: a stop that could not make an agent Quiet is a failed operation, never "Stopped".
+ */
+export const leftSaid = (done: typeof Controlled.Type): string | null => {
+  if (done.left.length === 0) return null;
+  if (done.closed !== undefined) return `${done.runId} has finished, but ${done.left.join("; ")}.`;
+  const what = `${done.set ? done.control : `un${done.control}`} ${done.runId}`;
+  return `Recorded ${what}, but ${done.left.join("; ")}.`;
+};
+
 /** What a start became: the run it is, and whether this call is what made it. */
 export const Started = Schema.Struct({
   runId: Schema.String,
   registration: Schema.String,
   execution: Schema.String,
   fresh: Schema.Boolean,
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
 /**
@@ -758,6 +909,8 @@ export const SteerOutcome = Schema.Struct({
   code: Schema.NullOr(Schema.String),
   human: Schema.String,
   data: Schema.Json,
+  /** The kind of each credential-shaped value taken out before anything was written. */
+  redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type SteerOutcome = typeof SteerOutcome.Type;
 
@@ -1017,6 +1170,11 @@ export const FrontDoorRpcs = RpcGroup.make(
     payload: { runId: Schema.String, request: Schema.String },
     success: Controlled,
     error: Schema.Union([HostRefused, RequestConflict]),
+  }),
+  /** Where one Run has got to: Ready to release, its steps and its CI, as the board last read them. */
+  Rpc.make("progress", {
+    payload: { runId: Schema.String },
+    success: Schema.NullOr(RunProgress),
   }),
   /**
    * One Run's details while a drawer is open: current first, then again whenever they

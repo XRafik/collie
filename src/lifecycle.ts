@@ -8,6 +8,7 @@
 // What a Run is and what became of it stays Collie's; what a workflow has done stays
 // Effect's. Nothing here copies the second into the first.
 
+import { redactedField, withNotice } from "./redact";
 import type { SettingValue } from "./settings";
 import { resultText } from "./report";
 import {
@@ -32,6 +33,8 @@ import {
   connect,
   connectPeer,
   frontDoor,
+  restartHost,
+  restartSaid,
   socketOf,
   type HostClient,
   type HostUnavailable,
@@ -46,6 +49,7 @@ import {
   type BoardSnapshot,
   type RunDetail,
   type Controlled,
+  leftSaid,
   FrontDoor,
   Declaration,
   HostRefused,
@@ -433,6 +437,7 @@ export const startRun = Effect.fn("Lifecycle.startRun")(function* (
             runId: answered.value.runId,
             registration: answered.value.registration,
             fresh: answered.value.fresh,
+            redacted: answered.value.redacted ?? [],
           }
         : answered,
     ),
@@ -471,6 +476,10 @@ export const runShown = (env: PluginEnv, runId: string) =>
           : { ok: true as const, ...answered.value, machine: answered.machine },
     ),
   );
+
+/** Where a Run has got to: Ready to release, its steps and its CI, from the host that has it. */
+export const runProgress = (env: PluginEnv, runId: string) =>
+  asksRun(env, runId, (client) => client.progress({ runId }));
 
 /**
  * The checkout a Run's verifications are about: the one the host placed it on. A
@@ -798,9 +807,12 @@ export const answerRun = (
         ? {
             ok: true as const,
             data: { run: options.runId, ...answered.value },
-            human: answered.value.fresh
-              ? `Answered ${options.runId}: ${answered.value.decision} = ${answered.value.value}.`
-              : `${options.runId} already had that answer to ${answered.value.decision}.`,
+            human: withNotice(
+              answered.value.fresh
+                ? `Answered ${options.runId}: ${answered.value.decision} = ${answered.value.value}.`
+                : `${options.runId} already had that answer to ${answered.value.decision}.`,
+              answered.value.redacted,
+            ),
           }
         : answered,
     ),
@@ -836,17 +848,16 @@ export const controlRun = (
     options.door,
   ).pipe(Effect.map(controlled));
 
-const controlled = (
+/** What a control's answer is, at the CLI, in chat and on the TUI board. */
+export const controlled = (
   answered: { readonly ok: true; readonly value: typeof Controlled.Type } | Failure,
 ): OpResult => {
   if (!answered.ok) return answered;
   const done = answered.value;
+  const left = leftSaid(done);
+  if (left !== null)
+    return err("operation_failed", left, { run: done.runId, left: [...done.left] });
   if (done.closed !== undefined) {
-    if (done.left.length > 0)
-      return err("operation_failed", `${done.runId} has finished, but ${done.left.join("; ")}.`, {
-        run: done.runId,
-        left: [...done.left],
-      });
     return {
       ok: true as const,
       data: { run: done.runId, ...done },
@@ -857,12 +868,6 @@ const controlled = (
     };
   }
   const what = `${done.set ? done.control : `un${done.control}`} ${done.runId}`;
-  if (done.left.length > 0) {
-    return err("operation_failed", `Recorded ${what}, but ${done.left.join("; ")}.`, {
-      run: done.runId,
-      left: [...done.left],
-    });
-  }
   return {
     ok: true as const,
     data: { run: done.runId, ...done },
@@ -977,6 +982,7 @@ export const steerRun = (
     readonly runId: string;
     readonly text: string;
     readonly request: string;
+    readonly to?: string;
     readonly operation?: string;
     readonly agent?: string;
     readonly mode?: "boundary" | "now" | "interrupt";
@@ -993,6 +999,7 @@ export const steerRun = (
           runId: options.runId,
           text: options.text,
           request: options.request,
+          to: options.to,
           operation: options.operation,
           agent: options.agent,
           mode: options.mode,
@@ -1012,12 +1019,31 @@ export const steerRun = (
       if (!answered.ok) return answered;
       const { sent, route } = answered.value;
       const data = { run: options.runId, ...sent };
-      if (sent.delivered) return { ok: true as const, data, human: `Told ${sent.agent}.` };
+      if (sent.delivered)
+        return { ok: true as const, data, human: withNotice(deliveredLine(sent), sent.redacted) };
       // A receipt that read as delivered when nothing was sent is the failure ADR-0041 ends.
       const why = `Nothing was delivered: ${sent.detail || "no agent to tell"}.`;
-      return err("operation_failed", route === null ? why : `${why} ${route}`, data);
+      return err(
+        "operation_failed",
+        withNotice(route === null ? why : `${why} ${route}`, sent.redacted, " "),
+        data,
+      );
     }),
   );
+
+/**
+ * A delivery as a front door says it: observed and how, or sent and not seen taken, with
+ * where to look. Never "told" on the strength of a send alone.
+ */
+export const deliveredLine = (sent: {
+  readonly agent: string;
+  readonly observed?: boolean;
+  readonly how?: string;
+  readonly pane?: string;
+}): string =>
+  sent.observed === true
+    ? `Delivered to ${sent.agent} (observed: ${sent.how ?? "taken"}).`
+    : `Sent to ${sent.agent}, not observed. Go to pane: herdr agent focus ${sent.agent}${sent.pane === undefined ? "" : ` (pane ${sent.pane})`}.`;
 
 /**
  * What carries a request on to a finished Run whose agent is gone: its follow-up offer
@@ -1160,8 +1186,16 @@ export const invokeOffer = (
       answered.ok
         ? {
             ok: true as const,
-            data: { run: answered.value.runId, from: options.runId, offer: options.offer },
-            human: `Started run ${answered.value.runId} from ${options.runId}'s "${options.offer}".`,
+            data: {
+              run: answered.value.runId,
+              from: options.runId,
+              offer: options.offer,
+              ...redactedField(answered.value.redacted),
+            },
+            human: withNotice(
+              `Started run ${answered.value.runId} from ${options.runId}'s "${options.offer}".`,
+              answered.value.redacted,
+            ),
           }
         : answered,
     ),
@@ -1577,11 +1611,29 @@ export const followUpRun = (
       answered.ok
         ? {
             ok: true as const,
-            data: { run: answered.value.runId, from: options.runId },
-            human: `Started run ${answered.value.runId} to follow up ${options.runId}.`,
+            data: {
+              run: answered.value.runId,
+              from: options.runId,
+              ...redactedField(answered.value.redacted),
+            },
+            human: withNotice(
+              `Started run ${answered.value.runId} to follow up ${options.runId}.`,
+              answered.value.redacted,
+            ),
           }
         : answered,
     ),
+  );
+
+/** Replaces the host that owns `dir` with this install's, as `collie host restart` and the herdr action do. */
+export const restartHostAt = (dir: string): Effect.Effect<OpResult, never, Client> =>
+  restartHost(dir).pipe(
+    Effect.map((restarted): OpResult => ({
+      ok: true,
+      data: { dir, ...restarted },
+      human: restartSaid(dir, restarted),
+    })),
+    Effect.catch((cause) => Effect.succeed(refusal(cause))),
   );
 
 /** This Machine's peers, with the standings its host keeps. */

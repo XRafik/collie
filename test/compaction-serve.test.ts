@@ -8,6 +8,7 @@ import { Effect, FileSystem, Path } from "effect";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
 import { servedEndpoint } from "../src/compactors";
+import { envLines } from "../src/profile";
 
 let rig: Rig;
 let fs: FileSystem.FileSystem;
@@ -138,5 +139,28 @@ test("what the server printed stays in the agent's own log, for the human", () =
 
       const written = yield* fs.readFileString(path.join(dir, "server.log"));
       expect(written).toContain("ws://127.0.0.1:34567");
+    }),
+  ));
+
+test("the server starts with the agent's profile environment, a file-held value read by its shell", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fs.writeFileString(path.join(dir, "token"), "from-the-file\n");
+      const script = path.join(dir, "env-stand-in.sh");
+      yield* fs.writeFileString(
+        script,
+        `#!/bin/sh\necho $$ >> ${pids()}\necho "up:$MODE:$TOKEN"\nexec sleep 30\n`,
+      );
+      const served = yield* servedEndpoint({
+        cwd: rig.projectDir,
+        log: path.join(dir, "server.log"),
+        command: `sh ${script}`,
+        listening: /up:(.*)/,
+        startMs: 5_000,
+        what: "the stand-in server",
+        env: envLines({ MODE: "off", TOKEN: { file: "~/token" } }, dir),
+      });
+
+      expect(served.found).toBe("off:from-the-file");
     }),
   ));

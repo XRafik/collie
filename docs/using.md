@@ -118,7 +118,7 @@ Run's audit, with the Machine it came from
 
 ### The skills
 
-The baseline workflows hard-require ten skills they do not ship, and a missing skill stops
+The baseline workflows hard-require the skills they name and do not ship, and a missing skill stops
 a run before its first tab opens. `prepare.sh` installs them for you with the
 [skills.sh](https://skills.sh/) CLI (`npx skills`), from three sources:
 
@@ -258,6 +258,21 @@ runs from a shell inside herdr: `herdr plugin action invoke cego.collie.pick`.
 The same operations are available without opening UI, which is how an agent drives Collie:
 see [CLI](cli.md).
 
+### Credentials never go in a goal or a steer
+
+An agent reaches GitLab or GitHub through the forge login its Machine already has: `glab
+auth login` or `gh auth login` in a terminal, or Desktop's credentials when it onboards a
+Machine. A token pasted into a goal, an Input, a constraint, a steer, a follow-up, an answer
+or a review comment is never needed, and it would outlive the Run in every file Collie keeps.
+
+So Collie takes it out before it writes or forwards anything. A value shaped like a GitLab,
+GitHub, AWS, Slack or API token, a JWT, a bearer token or a `NAME_TOKEN=…` assignment is
+replaced by its kind, such as `<gitlab token>`, and the operation goes ahead with that in its
+place. Whichever door it came in by — the CLI, chat, the board or Desktop — says what it
+removed: "removed 1 credential-shaped value(s): <gitlab token>". The same list redacts chat
+and cards (`src/redact.ts`). An agent's own harness transcript is not Collie's to
+write, so a value an agent prints there stays in it.
+
 ### Agents talking to each other
 
 Every Run's agent has Collie's tools and knows its own Run, agent name and Machine.
@@ -289,7 +304,7 @@ Task workspace when no other Run or human pane needs it. A stale local branch or
 changes are refused, preserving that work. `run show` and the drawer say who started it
 and whether its report was delivered. Start another investigation to ask again.
 
-Once Schedules (ADR-0052) are implemented,
+Once Schedules are implemented,
 `--machine` will also add, pause and remove a peer's Schedule. Its own host fires it;
 this change adds no scheduler.
 
@@ -319,8 +334,11 @@ before this existed stay exactly where they are and belong to no task.
 A task workspace groups work. It gives no file or branch isolation — that is what the
 worktree below is for, and it is unchanged.
 
-Stopping a run closes its agents' panes, which is what stops them, and nothing else in the
-workspace. The workspace's own shell tab is never given to an agent, so closing an agent's
+Stopping a run stops its agents where their work runs, and nothing else in the workspace.
+A Codex agent works in the App Server Collie started for it, so its running turns are
+interrupted there and its pane is closed only once nothing of it is left running; one
+that will not stop is named in the failed stop, with its pane left open. Claude, Pi and
+OpenCode agents work in their panes, and closing the pane stops them. The workspace's own shell tab is never given to an agent, so closing an agent's
 pane never leaves it empty, and `run resume` starts the work again there. If herdr closes it anyway, the next agent the task starts reopens it on
 that run's checkout, and every run of the task uses the new one from then on; a checkout
 that has gone as well leaves the run parked, saying so, until you restore it or start
@@ -452,9 +470,11 @@ claims a new one.
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
 no commit that is not on the remote already, nothing is working in it or could be resumed
-in it while its work has not landed, its merge request is merged or closed on GitHub or
-GitLab (or a Disposition says what became of it, or its remote branch is gone), and its
-Task's workspace has closed. A squash merge counts: the head that merged is on the remote. A
+in it while its work has not landed — a Codex agent's server still running after herdr
+stopped listing the agent counts as working in it — its merge request is merged or
+closed on GitHub or GitLab (or a Disposition says what became of it, or its remote
+branch is gone), and its Task's workspace has closed. A squash merge counts: the head that
+merged is on the remote. A
 `renovate` checkout has no branch to ask either question about, so a clean one nothing is
 working in is settled, and there is no branch to delete with it. Pruning is part of the
 host's [cleanup](#cleanup) sweep, every ten minutes, whether or not a pane is open. The board says both what went and what is being held on to, with
@@ -626,7 +646,14 @@ carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup
 revision they ran at, which is the one Collie's own checks are counted at too: a failing
 one names itself (`cego/collie#30 is open, but lint failed at 1a2b3c4.`), a pending one
 reads `cego/collie#30 is open; its checks are still running.`, and Ready to release needs
-every check the card knows of to have passed. No `gh`, or one nobody logged in to, leaves
+every check the card knows of to have passed: each of the Run's checks as its Intent has
+them now, passed as the command each names, and the forge's pipeline at the merge
+request's head. A merge request with no pipeline lacks nothing there; one whose pipeline
+ran at another revision, or has not passed, does. It also needs what the forge would merge
+on: the merge request is not a draft, no blocking review finding is unresolved — after a
+last fix that stood without a review, the findings it left — and the forge says it can merge — GitLab's detailed merge status, GitHub's mergeable state. Otherwise the
+card says the first thing missing: `cego/collie#30 is open and its checks passed at
+1a2b3c4, but the forge says it cannot merge: conflicting.` No `gh`, or one nobody logged in to, leaves
 the card `nothing has checked it` and says nothing about why. A pull request's details —
 title, state, author and assignees, branches, checks, approval, comments, head and
 whether it moved since the review — show in the drawer and Desktop's record as a merge
@@ -767,7 +794,7 @@ run nothing is driving.
 
 **Attach files…** asks which files to give the Run: paths separated by spaces, quoted as a
 shell quotes them where a name has a space, and relative to the board's own directory.
-They go to the Run's newest live agent as a steer with no words of its own, the steer
+They go to the agent whose step is active, else the builder, as a steer with no words of its own, the steer
 `collie run steer --attach` makes: the host copies each into the Run's `attachments/`, the
 agent is told each path, and every later step's prompt lists them. A Run with no live
 agent left is told so, with the follow-up that would carry the files on instead.
@@ -1455,9 +1482,11 @@ side, or press the gutter's button beside a line, and the comment opens under th
 once added it stays drawn there, where you can edit or remove it too. Each
 comment is a draft that Desktop keeps for that Run while it runs, through tab switches and
 closing the record, and sends to no host until you send it. While a Run has drafts, the
-Plan and Diff tabs show them in one list, where you can edit or remove each, choose which
-of the Run's live agents gets them (labelled as the Terminal tab labels them; the newest,
-the one Go to pane opens, by default), and **Send**. Every draft goes as one message, word
+Plan and Diff tabs show them in one list, where you can edit or remove each, choose who
+gets them — **The agent at work** by default (the agent whose step is active, else the
+builder), a role the Run has a live agent in, or one of its live agents, labelled as the
+Terminal tab labels them — and **Send**. The line it leaves says whether the agent was
+seen to take it. Every draft goes as one message, word
 for word, each item naming the plan file, or `path:line` with `(as it was)` for removed
 lines, quoting what you selected and giving your words;
 a message over 8 KiB arrives as a file in the Run. Only the drafts that were sent are
@@ -1466,7 +1495,7 @@ edited while it was sending. A successful **Try again** clears the original sent
 and keeps any later edits. With no live agent, Send is disabled and the list says "This
 Run has no live agent to tell". Desktop never edits the plan: the
 agent does, and the Plan tab shows its rewrite. An agent sends the same kind of message with
-`collie run steer --agent`.
+`collie run steer --to`.
 
 Every link you press in Desktop opens in your default browser, as `xdg-settings get
 default-web-browser` names it, where you are already signed in. Chrome, Chromium, Brave,
@@ -1877,6 +1906,19 @@ is not a pane: the picker hands it to the host, which outlives it, and the Contr
 renders what the host reports. A run therefore
 survives the picker closing, the Control Plane closing, and the terminal being detached.
 
+### Keeping up with the default branch
+
+Before every ticket after the first, and before every review round, `implement` fetches the
+default branch. Where it has moved, Collie merges it into the Run's branch with a merge
+commit and records `integrated <branch>@<sha>` in the Run's log. It never rebases and never
+force-pushes. A checkout with uncommitted changes is left alone and handed back for the
+builder to commit, and an unchanged default branch is skipped. A conflict at a ticket
+boundary is the builder's next work: that ticket's prompt names the conflicted files and has
+the merge finished first. Before a review, a merge step finishes it. Work goes on only from
+an integrated checkout: what still stops the merge after two hand-backs stops the Run, and a
+fetch that fails parks it until resumed. The reviewer diffs against the merge-base after the
+integration, so it sees what will actually merge.
+
 ### Why a run stopped
 
 `implement` sends a `blocker` or `major` reported by its builder to reviewers before
@@ -1949,12 +1991,19 @@ about an edit while it is building a ticket. Each reading is recorded, so a repl
 restart follows the lists that were read rather than reading them again.
 
 **A decision the plan does not cover.** The implementer's prompt names the live planner's
-agent and pane and tells it to ask there rather than stopping. Where nobody can answer,
-the same prompt tells it to decide and record the decision under `assumptions`, and each
-one is listed in the merge request for you. It asks for one authority: an answer in the
-pane, or the answer written into the ticket and the pane saying only that — because an
-implementer that builds a pane answer while the file says something wider believes it is
-done.
+agent and pane and tells it to ask there rather than stopping. Which planner is live is read
+again for each ticket, so one that has gone is never named. Where nobody can answer, the
+same prompt tells it to decide and record the decision under `assumptions`. The reviewer is
+shown each one, and each is listed in the merge request for you. It asks for one authority:
+an answer in the pane, or the answer written into the ticket and the pane saying only that —
+because an implementer that builds a pane answer while the file says something wider
+believes it is done.
+
+**Each acceptance criterion answered.** A ticket's checkboxes under its Acceptance criteria
+heading are its acceptance criteria. The builder's Output says how each is met, by the test
+or the file that shows it, or why it is not. One left unanswered or not met goes back to the
+builder before any reviewer starts, and what is still unmet after two tries is a blocking
+finding in the review.
 
 ## Reviewing someone else's merge request
 
@@ -2006,7 +2055,7 @@ working tree to review, so the target menu is one entry — **Type it…**.
   "handoff_timeout_ms": 7200000,
   "quiet_ms": 600000,
   "board_quiet_ms": 300000,
-  "compact_at_tokens": 372000,
+  "compact_at_tokens": 150000,
   "claude_auto_compact_window": 400000,
   "notifications": { "run-done": false },
   "proactive": true,
@@ -2071,7 +2120,10 @@ out and no fallback has room, Collie checks again each minute while waiting for 
 Adding a usable fallback then moves the unfinished work to it automatically. The Run's record and
 `collie run show` say which agent each step landed on, as in
 `codex/default (fell back from claude/opus: session 100%, resets 15:45)`, and the Run's log
-gets a line when it happens. Usage never refuses, holds or delays work.
+gets a line when it happens. The agent that ran out is stopped first, listed by herdr or
+not, and its successor starts only once it is **Quiet**; one that will not stop parks the
+work, naming its thread, turn and server, and a resume tries again. Usage never refuses,
+holds or delays work: only an agent that may still be writing does.
 
 `notifications` turns a kind of toast off: `{"run-done": false}`, and a kind left out is on.
 The host raises one when a run finishes (`run-done`), fails (`run-failed`, or
@@ -2099,11 +2151,76 @@ set, `auto` for the model's own window, or a whole number from 100000 to 1000000
 Claude Code's alone; Codex, OpenCode and Pi are passed nothing. See
 [Compaction between pieces of work](#compaction-between-pieces-of-work).
 
+`agent_profile` is what the agents Collie launches get beyond Collie's own setup, per role.
+See [What Collie's agents get](#what-collies-agents-get).
+
 `gitlab_host` is the one GitLab this Machine works against, `gitlab.cego.dk` unless you
 change it under Settings, which refuses anything that is not a host name. `collie doctor`
 checks glab's login, the token and `git push` for that host alone, and `collie onboard` logs
 in and pushes to it; another host glab knows is named in a note and never counts against
 the Machine. `GITLAB_HOST`, or `--gitlab-host` on either command, overrides it for one run.
+
+## What Collie's agents get
+
+An agent Collie launches is a fresh harness in a pane, so it would otherwise pick up
+everything your own sessions do: every plugin and persona, every connector, your global
+`CLAUDE.md`. `agent_profile` says what a managed agent gets instead, per role, without
+touching your own sessions or config files. It is one shared setting, edited as JSON under
+Settings in the TUI (Alt+Enter for a new line) and in Desktop, or with
+`collie settings set agent_profile '<json>'`, and the latest edit reaches every Machine.
+Empty, which is the default, launches agents exactly as before.
+
+```json
+{
+  "*": {
+    "env": { "PONYTAIL_DEFAULT_MODE": "off" },
+    "claude": {
+      "enabledPlugins": { "ponytail@your-marketplace": false },
+      "claudeMdExcludes": ["/home/you/.claude/CLAUDE.md"],
+      "hooks": {
+        "PreToolUse": [
+          {
+            "matcher": "Bash",
+            "hooks": [{ "type": "command", "command": "~/bin/no-substitution" }]
+          }
+        ]
+      }
+    }
+  },
+  "implementer": {
+    "env": {
+      "PONYTAIL_DEFAULT_MODE": "off",
+      "DEPLOY_TOKEN": { "file": "~/.secrets/deploy-token" }
+    },
+    "claude": { "disableClaudeAiConnectors": true }
+  }
+}
+```
+
+These are one operator's choices, shown as examples rather than defaults: the persona
+plugin's mode off for managed agents, the persona plugin itself off, claude.ai connectors
+off for roles that need none, `~/.claude/CLAUDE.md` excluded, a `PreToolUse` guard that
+refuses command substitution because CrowdStrike flags it, and — should the security
+runbook find tools printing tokens — a second guard against the commands that print them.
+
+- **A role's own entry, else `*`.** A role with its own entry gets only that one; the two
+  are not merged.
+- **`env`, for every harness.** Each name is a value, or `{"file": "<path>"}` for a value
+  held in a file. Collie types `export NAME='value'` into the agent's pane before the
+  harness starts; for a file it types `IFS= read -r NAME < '<path>'`, so the shell reads
+  the value and Collie never sees or types it. The value is the file's first line. `~` is
+  that Machine's home, and each Machine keeps its own file at that path. The server Collie
+  starts for a Codex or OpenCode agent runs the same lines first, so its tools see the same
+  environment.
+- **A secret is never a literal.** The setting is shared with every Machine, so a value
+  that looks like a credential is refused with the reason, and is held in a file instead.
+  A file that is missing, or not mode `0600`, stops that agent's launch with its path and
+  the problem, never its contents; fix it and resume the Run.
+- **`claude`, for Claude Code only.** `enabledPlugins`, `skillOverrides`,
+  `claudeMdExcludes`, `disableClaudeAiConnectors` and `hooks` are merged into the settings
+  file Collie passes with `--settings`, Collie's own hooks first. `disableAllHooks`, which
+  would switch Collie's hooks off, and any other key are refused with the reason. Codex, Pi
+  and OpenCode take `env` only.
 
 ## Compaction between pieces of work
 
@@ -2114,7 +2231,8 @@ piece of work, Collie reads that harness's own current-context measure and, at o
 anything.
 
 One absolute number rather than a percentage: the four harnesses measure different
-windows, and one number is what you can reason about. **372,000 tokens** by default.
+windows, and one number is what you can reason about. **150,000 tokens** by default, so an
+agent working through a plan's tickets starts each one well short of its window.
 `"compact_at_tokens": 0` turns the feature off; anything else has to be a whole number of
 tokens above zero, and a value that is not is refused where it is written and fails a step
 that would launch an agent rather than falling back to the default. There are no workflow,
@@ -2159,7 +2277,7 @@ into your `~/.pi` or `~/.claude`:
 | ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pi          | 0.87.1           | An extension passed with `-e`. `ctx.getContextUsage()` is the estimate Pi's own compaction and footer use, and `ctx.compact`'s per-request callbacks are the outcome.                                                                                                                                                                              |
 | Claude Code | 2.1.263          | A settings file passed with `--settings`, which is _additional_ settings. Its status line reports `context_window` — input plus output, cache folded into the input total exactly once — and its `PreCompact`/`PostCompact` hooks are the lifecycle — the request's token reaches `PreCompact` only, so the completion is the one that follows it. |
-| Codex       | 0.153.4          | An App Server of its own on a loopback port, with the ordinary TUI pointed at it by `--remote`. `thread/tokenUsage/updated`'s `last.totalTokens` is the context its own indicator shows, `thread/compact/start` is the request, and the compaction's own turn is the outcome.                                                                      |
+| Codex       | 0.162.0          | An App Server of its own on a loopback port, with the ordinary TUI pointed at it by `--remote`. `thread/tokenUsage/updated`'s `last.totalTokens` is the context its own indicator shows, `thread/compact/start` is the request, and the compaction's own turn is the outcome.                                                                      |
 | OpenCode    | 1.18.9+          | The ordinary TUI hosting its own loopback server, on a session Collie created for it. The latest assistant message's tokens are the accounting OpenCode's own overflow predicate reads, `POST /session/{id}/summarize` is the request, and the compaction's own message is the outcome.                                                            |
 
 Two things to know about the Claude one. It borrows your status line, so it prints the
@@ -2446,7 +2564,9 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   are never closed. The Task's agents close with it, including any of its panes left in
   another workspace. A Task that stops being Finished, because a new Run joined it or a
   steer reopened it, starts its hour again. Continue task, or a Follow-up Run, reopens a
-  closed workspace on the Task's checkout.
+  closed workspace on the Task's checkout. A Codex agent of the Task is stopped where its
+  work runs first, and a workspace whose agent does not reach **Quiet** is kept, with the
+  reason.
 - **Worktrees** Collie made, once they are **Settled** (see
   [What a run does to your repository](#what-a-run-does-to-your-repository)).
 - **Staged module generations** under `~/.cache/collie/entries`, once unused for 7 days.
@@ -2461,7 +2581,10 @@ every ten minutes, whether or not a pane is open. A sweep removes:
 - **Uploads** under `uploads/`, a week after a front door last asked for them; a Run given
   one holds its own copy.
 - **Compaction controls** of an agent no herdr session lists any more, with the endpoint it
-  held open.
+  held open. A Codex agent's server is stopped first; if it does not reach **Quiet** the
+  record is kept, and listed with the reason ("its Codex turn has not stopped: …"), until a
+  later sweep finds it stopped. A launch puts down such records the same way, and never
+  fails over one it keeps.
 - **Runner copies** under `~/.cache/collie/runners`, but the running version's and the
   newest.
 - **Desktop's own files**, on a computer with Desktop: staged updates, runner copies, usage

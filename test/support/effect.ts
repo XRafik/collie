@@ -22,11 +22,13 @@ export const suiteEnv = Config.all({
   COLLIE_HOST_STOP_GRACE: Config.String("COLLIE_HOST_STOP_GRACE").pipe(
     Config.withDefault("500 millis"),
   ),
+  BUN_INSTALL_CACHE_DIR: Config.String("BUN_INSTALL_CACHE_DIR").pipe(Config.withDefault("")),
+  COLLIE_TEST_FAKE_FORGE: Config.String("COLLIE_TEST_FAKE_FORGE").pipe(Config.withDefault("")),
 });
 
 /**
- * Runs `effect` on a test clock that a fiber of its own keeps moving, `tick` of it for
- * each millisecond of real time, from the wall clock's now: a session on it reads what
+ * Runs `effect` on a test clock that a fiber advances by `tick` between real one-millisecond
+ * sleeps, from the wall clock's now: a session on it reads what
  * sessions on the real clock wrote, so a lock or a timestamp of theirs is not in its
  * future. Its timers fire in order and many times faster, finalizers' included, and the
  * file and database IO between them still takes the real time it takes.

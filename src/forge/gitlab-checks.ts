@@ -1,6 +1,7 @@
 // The doctor's GitLab checks: glab and its login, the token's expiry, and whether this
 // Machine can push to the Flock's GitLab. They run glab, so they live beside its adapter.
 
+import { hostname } from "node:os";
 import { Clock, Effect, Option, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { gitlabHostOf } from "../config";
@@ -18,6 +19,7 @@ import {
 import type { PluginEnv } from "../env";
 import { daysLeft, RENEW_WITHIN_DAYS, TokenSelf, tokenPage } from "../gitlab-token";
 import { whatItSaid, type Runner } from "../mr";
+import { shellQuote } from "../script";
 
 /**
  * Each host `glab auth status` names (its unindented lines), and whether git reaches it
@@ -81,7 +83,7 @@ export const pushCheck = Effect.fn("Doctor.pushCheck")(function* (
   }
   return failed(
     `cannot push to ${host.host}${forwarded ? " without the forwarded SSH agent" : ""}`,
-    `[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519; GITLAB_HOST=${host.host} glab ssh-key add ~/.ssh/id_ed25519.pub --title "$(hostname)"`,
+    `[ -f ~/.ssh/id_ed25519 ] || ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519; GITLAB_HOST=${host.host} glab ssh-key add ~/.ssh/id_ed25519.pub --title ${shellQuote(hostname())}`,
   );
 });
 
