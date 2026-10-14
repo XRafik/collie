@@ -84,6 +84,7 @@ bump at a time.
   checkout, and bind it here — this is the one branch this checkout may hold. Never name
   it under `renovate/`, or the repository's configured Renovate `branchPrefix`: Renovate
   Bot owns every branch there, and marks a request from one it did not make as abandoned.
+  Where that prefix covers `deps/`, use `collie/batch-<YYYY-MM-DD>` instead.
 - Before you take a Renovate branch in, ask git who holds it: `git worktree list` names
   every registered worktree and the branch each has checked out. A branch another worktree
   holds is **left out and reported**, not merged from its remote-tracking ref either.
