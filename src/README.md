@@ -19,7 +19,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `yaml.ts`           | Frontmatter split and write-back over Effect's YAML parser                                                |
 | `schema.ts`         | Shared Schema predicates used across boundary decoders                                                    |
 | `journal.ts`        | Append-only JSONL: the read that survives a torn line, and the append that makes its dir                  |
-| `harness.ts`        | Per-harness start, model flag, effort flag and persona injection                                          |
+| `harness.ts`        | Per-harness start, model and effort flags, persona injection, and the Collie MCP tools it wires in        |
 | `inputs.ts`         | Input inference from branch, cwd, earlier runs and glab                                                   |
 | `strategies.ts`     | Which Input carries which strategy, and how a settled Run is read through one                             |
 | `workspace.ts`      | The Control Plane: what the Session's board shows, and the text fallback that draws it                    |
@@ -35,7 +35,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `attention.ts`      | Why a run wants a human, and which actions are safe now                                                   |
 | `registry.ts`       | Which long-lived agents this Session still has, per workspace + repo                                      |
 | `handoff.ts`        | Giving one Run's result to another Run's live agent                                                       |
-| `output.ts`         | The Output and Synthesis schemas, `review.md`, and which findings the loop still owns                     |
+| `output.ts`         | The Output and Synthesis schemas, their parsers, `review.md`, and which findings the loop still owns      |
 | `run.ts`            | The run directory: audit trail and resume state                                                           |
 | `intent.ts`         | What a Run is for, what bounds it, and what Collie may do about it without asking                         |
 | `intent-model.ts`   | The Intent's Schemas alone, so a browser bundle of the board can carry a start                            |
@@ -46,8 +46,9 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `proposals.ts`      | Hash-bound proposals, and the Confirmation rule that a yes names its exact payload                        |
 | `executors.ts`      | Which action kinds this build can carry out; an unregistered one is refused, never faked                  |
 | `drift.ts`          | Where the work and the Intent disagree: rules, judgement, and the correction loop                         |
-| `verify.ts`         | A command's result bound to the tree it ran on, so a card can say verified not claimed                    |
+| `verify.ts`         | A command's result bound to its tree, so a card can say verified; a running check's marker and log        |
 | `verify-spec.ts`    | Which commands Collie may run itself for a Run, and where that permission came from                       |
+| `checks.ts`         | The one reading of a Run's running and finished checks that every door uses                               |
 | `outcome.ts`        | What a Run must prove to close, per kind, and what is still missing                                       |
 | `metrics.ts`        | What a Run produced and when: evidence, slices, rework, context — never pane activity                     |
 | `report.ts`         | Where Runs end across every Run: per workflow, and each that failed, finished or stopped                  |
@@ -80,7 +81,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `lifecycle.ts`      | A front door's side of every host operation, the board and a drawer's details                             |
 | `signing.ts`        | The release key: signing a runner or Desktop's update in CI, and the check before either is installed     |
 | `desktop.ts`        | `collie upgrade`'s Desktop step: a verified Desktop update, staged as Electrobun would                    |
-| `sdk.ts`            | `collie`: what a module exports, declares, waits on, and starts as a child                                |
+| `sdk.ts`            | `collie`: what a module exports, declares, waits on, and starts as a child, and what it refuses           |
 | `agents.ts`         | What a workflow does with an agent: one launch, one collection, one repair                                |
 | `launches.ts`       | What each of a Run's agents was launched on, read back in launch order                                    |
 | `proactive.ts`      | What is worth Collie starting a turn about, and what it has already said                                  |
@@ -93,7 +94,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `script.ts`         | Literal shell arguments and a login under `script`'s pseudo-terminal on Linux or macOS                    |
 | `task.ts`           | A Task: the work, its herdr workspace, and which Runs belong to it                                        |
 | `tasknames.ts`      | What a task workspace is called, from the work and the session's own live labels                          |
-| `naming.ts`         | herdr-legal agent names vs readable tab and pane labels                                                   |
+| `naming.ts`         | herdr-legal agent names vs readable tab and pane labels, and which labels Collie still owns               |
 | `keys.ts`           | Raw keypresses, for the text board a pane falls back to when the renderer will not start                  |
 | `fork.ts`           | Take a persona into a later layer: an `extends:` stub, or a full copy                                     |
 | `trust.ts`          | Whether a harness will work in a directory, or stop and ask first                                         |
@@ -114,7 +115,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `compactors.ts`     | Each harness's official compaction interface, generated per agent and bundled in Collie                   |
 | `codex.ts`          | Codex's App Server as a client: thread identity, its context, its compactions and its turns               |
 | `processes.ts`      | A process's command, start time and session, proven before anything signals it                            |
-| `usage-model.ts`    | A Subscription's Usage reading: its Schemas, parsing, and Exhausted (pure)                                |
+| `usage-model.ts`    | A Subscription's Usage reading: Schemas, parsing, Exhausted; pure, so Desktop and a module share it       |
 | `usage.ts`          | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                        |
 | `run-record.ts`     | Run records served by their owning host, including Outputs confined to the Run directory                  |
 | `verify-model.ts`   | Verification and stream Schemas shared with front doors without loading the collector                     |

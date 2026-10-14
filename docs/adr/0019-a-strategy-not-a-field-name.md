@@ -14,7 +14,9 @@ shipped workflows happen to call their work source `plan` and their diff target 
 Branch inference, the label a Run is listed under, a step's requirements, fan-out, the
 previous review of the same change and the repository a roaming Run is cut from all find
 the field by the strategy it was declared under. A workflow that calls them `spec` and
-`change` behaves identically, and one that declares neither simply has neither.
+`change` behaves identically, and one that declares neither simply has neither. Code in
+`src/` reads a settled Input through `workSourceOf`, `diffTargetOf` or `repositoryOf` in
+`src/strategies.ts`, never by looking a field's name up.
 
 **D2. A Run records which strategy settled each Input.** `input_strategies` is written at
 creation from the definition the Run froze, so a reader needs neither the definition nor a

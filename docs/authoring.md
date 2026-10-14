@@ -46,6 +46,9 @@ three answers apart: a problem stops the module running, `drawn without:` is a p
 JSON Schema drawn for a prompt says less than your schema does, and `ok, not typechecked`
 means no compiler is installed in that directory.
 
+`workflow list`, `workflow show`, `collie_definitions` and a `needs_input` refusal all come
+from one reading of the module, so every door names the same file, schemas and diagnostics.
+
 **One launch Input.** A module that takes any input names exactly one of them as its launch
 Input: the field it hints with `goal`, `work-source`, `diff-target` or
 `repository` (which a module may still spell by its old name, `gitlab-repository`), which is what a human's words fill when they start it. `check` refuses a
