@@ -40,6 +40,12 @@ title = "Fork a workflow or persona"
 contexts = ["global", "workspace"]
 command = ["bin/collie", "herdr", "fork"]
 
+[[actions]]
+id = "restart-host"
+title = "Restart the Collie host"
+contexts = ["global"]
+command = ["bin/collie", "herdr", "restart-host"]
+
 [[panes]]
 id = "picker"
 title = "Pick a Workflow"

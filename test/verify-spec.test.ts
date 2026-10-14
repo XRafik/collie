@@ -7,6 +7,7 @@ import { runEffect } from "./support/effect";
 import {
   approvedFor,
   approvedFrom,
+  checkNameOf,
   rememberedFile,
   renderApproved,
   PROJECT_FILE,
@@ -196,3 +197,20 @@ test("a Run keeps the set it started with, whatever the file says later", () =>
       expect(approvedFor(now, yield* readIntent(dir))).toEqual([TESTS]);
     }),
   ));
+
+test("a check is named by the script it runs, else the tool and its subcommand, else the tool", () => {
+  const named = (command: string) => {
+    const [executable = "", ...argv] = command.split(" ");
+    return checkNameOf(executable, argv);
+  };
+  expect(named("bun run typecheck")).toBe("typecheck");
+  expect(named("npm run lint")).toBe("lint");
+  expect(named("pnpm run test")).toBe("test");
+  expect(named("bun test ./x.test.ts")).toBe("bun test");
+  expect(named("tsc --noEmit")).toBe("tsc");
+  expect(named("/usr/local/bin/tsc --noEmit")).toBe("tsc");
+  expect(named("bun --silent run lint")).toBe("lint");
+  expect(named("bun run --cwd pkg typecheck")).toBe("typecheck");
+  expect(named("npm run test -- --watch")).toBe("test");
+  expect(named("npm --version")).toBe("npm");
+});

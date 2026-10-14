@@ -16,7 +16,7 @@
 
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
 import { autoCompactWindowAsWritten, readConfig } from "./config";
-import { redact } from "./conversation";
+import { redact } from "./redact";
 import { NATIVE, newsPath } from "./news";
 import { selfCommand, type PluginEnv } from "./env";
 import { autoCompactWindowFor, HARNESSES, installedHelp } from "./harness";

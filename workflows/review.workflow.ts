@@ -33,7 +33,7 @@ import {
 } from "collie";
 import { Effect, FileSystem, Schema } from "effect";
 import * as Activity from "effect/workflow/Activity";
-import { FIX_PROMPT, IMPLEMENTER, NO_MR, REVIEWER, reviewPass } from "./reviewing.ts";
+import { DEFAULT_BASE, FIX_PROMPT, IMPLEMENTER, NO_MR, REVIEWER, reviewPass } from "./reviewing.ts";
 
 const FIX = "Fix findings";
 const IMPLEMENT = "Fix findings in a full implement run";
@@ -143,6 +143,7 @@ export default defineWorkflow({
         risks: riskLine(place.options.risks ?? ""),
         target_repo: repoArgs(parseMrTarget(asked.target)?.project ?? null).join(" "),
         mr: mrForgeFacts(asked.target) ?? NO_MR,
+        base: DEFAULT_BASE,
         obstacle: "",
       };
 
@@ -287,6 +288,7 @@ export default defineWorkflow({
         const fixed = yield* agentWork({
           operation,
           role: "implementer",
+          pushes: true,
           instructions: FIX_PROMPT,
           input: {
             inputs,

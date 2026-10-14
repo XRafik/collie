@@ -153,7 +153,7 @@ function violation(
   run: string,
   intentVersion: number,
   at_: string,
-  evidence: ReadonlyArray<Ref>,
+  { evidence, truncated }: Breach,
 ): DriftReport {
   return {
     id: `d-${findingKey(constraint.id, evidence)}`,
@@ -164,7 +164,7 @@ function violation(
     kind: "rule",
     severity: constraint.severity,
     evidence: [...evidence],
-    evidence_truncated: false,
+    evidence_truncated: truncated,
     resolution: "open",
   };
 }
@@ -188,18 +188,35 @@ export function checkRules(intent: Intent, facts: RuleFacts, at_: string): Drift
   return found;
 }
 
-function breachOf(rule: RuleSpec, facts: RuleFacts): Ref[] | null {
+/** What a rule found, and whether the list was cut to `MAX_FILES`. */
+interface Breach {
+  readonly evidence: ReadonlyArray<Ref>;
+  readonly truncated: boolean;
+}
+
+const whole = (evidence: ReadonlyArray<Ref> | null): Breach | null =>
+  evidence === null ? null : { evidence, truncated: false };
+
+function breachOf(rule: RuleSpec, facts: RuleFacts): Breach | null {
+  if (rule.kind !== "protected_paths") return whole(refsOf(rule, facts));
+  // Not "these paths may not change": the globs are where change is allowed, and what
+  // is reported is every file outside them.
+  const outside = facts.changedFiles.filter(
+    (file) => !rule.globs.some((glob) => matchesGlob(glob, file)),
+  );
+  return outside.length === 0
+    ? null
+    : {
+        evidence: outside.slice(0, MAX_FILES).map((path) => ({ kind: "diff" as const, path })),
+        truncated: outside.length > MAX_FILES,
+      };
+}
+
+function refsOf(
+  rule: Exclude<RuleSpec, { kind: "protected_paths" }>,
+  facts: RuleFacts,
+): Ref[] | null {
   switch (rule.kind) {
-    // Not "these paths may not change": the globs are where change is allowed, and what
-    // is reported is every file outside them.
-    case "protected_paths": {
-      const outside = facts.changedFiles.filter(
-        (file) => !rule.globs.some((glob) => matchesGlob(glob, file)),
-      );
-      return outside.length === 0
-        ? null
-        : outside.slice(0, MAX_FILES).map((path) => ({ kind: "diff" as const, path }));
-    }
     case "branch_is":
       return facts.branch === rule.name
         ? null
@@ -247,6 +264,12 @@ function breachOf(rule: RuleSpec, facts: RuleFacts): Ref[] | null {
     }
   }
 }
+
+/** The log line a drift report found at `where` leaves, saying when its evidence was cut. */
+export const driftSaid = (report: DriftReport, where: string) =>
+  `drift at ${where}: ${report.constraint} (${report.severity}) — ${report.evidence
+    .map((ref) => ref.path ?? ref.excerpt ?? ref.kind)
+    .join(", ")}${report.evidence_truncated ? " (evidence truncated)" : ""}`;
 
 export interface EvidenceBlock {
   readonly path: string;

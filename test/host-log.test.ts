@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Logger } from "effect";
-import { hostLogger } from "../src/host-log";
+import { hostLogger, rotateInPlace } from "../src/host-log";
 import { runEffect } from "./support/effect";
 
 test("the host log starts again past its bound and keeps the one before it", () =>
@@ -25,6 +25,28 @@ test("the host log starts again past its bound and keeps the one before it", () 
         expect(newest).not.toContain("line 1 ");
         expect(newest.length).toBeLessThanOrEqual(250);
         expect(yield* fs.readFileString(`${file}.1`)).toContain("line 8 ");
+      }),
+    ),
+  ));
+
+test("kept output past its bound moves to the one before it, and its writer carries on in the same file", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-host-out-" });
+        const file = `${dir}/host.out`;
+        const writer = yield* fs.open(file, { flag: "a" });
+        const write = (text: string) => writer.write(new TextEncoder().encode(text));
+        yield* write("small\n");
+        yield* rotateInPlace(file, 100);
+        expect(yield* fs.exists(`${file}.1`)).toBe(false);
+
+        yield* write(`${"x".repeat(120)}\n`);
+        yield* rotateInPlace(file, 100);
+        expect(yield* fs.readFileString(`${file}.1`)).toContain("small");
+        yield* write("after\n");
+        expect(yield* fs.readFileString(file)).toBe("after\n");
       }),
     ),
   ));

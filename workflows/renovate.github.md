@@ -4,6 +4,10 @@ Linear Renovate issue (not given means find it): {{inputs.issue}}
 This run's checkout: {{cwd}}
 This run's directory: {{run.dir}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 This checkout is the Run's own, detached at the repository's default branch. Collie made
 it before you started and removes it when it is settled: never create one, never switch
 the operator's, and never bind a branch to this one — except the batch branch the `batch`

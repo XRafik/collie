@@ -25,7 +25,9 @@ Work runs in one background **host** per state directory
 <state>`, started by the first client that needs it and owned under `host.lock`. The CLI,
 the board and chat reach it over Effect RPC on `host.sock`, so a Run survives the picker
 closing, the board closing and the terminal being detached, and a client of another build
-is told to restart the host rather than served. A host stops by itself once its lock is
+is told to run `collie host restart` rather than served. That command, and the herdr action
+beside it, is the same stop a newer client uses followed by an ordinary start, so what the
+old host was running is the new one's startup recovery and nothing else. A host stops by itself once its lock is
 gone with the state directory it was in — there is nothing left for it to serve, even if its
 socket makes the directory again — or once the process named in `COLLIE_HOST_WATCH_PID`,
 where one is, has exited.
@@ -54,11 +56,14 @@ nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host ke
 `LD_LIBRARY_PATH` and `ICU_DATA`.
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
-whether the grace ran out, every warning the engine and the registry log — since its own
-stdout and stderr go nowhere. Lines are flushed every 100 ms, so a host killed outright can
-lose its last few. Past 1 MiB the file starts again and the previous one is kept as
-`host.log.1`. Look there first when a host
-stops answering.
+whether the grace ran out, every warning the engine and the registry log. Lines are flushed
+every 100 ms, so a host killed outright can lose its last few. Past 1 MiB the file starts
+again and the previous one is kept as `host.log.1`. Look there first when a host stops
+answering. What a host started by a client writes to its stdout and stderr, a stack trace
+the log never saw among it, is in `host.out`: the client starts it through `/bin/sh`, which
+opens that file for appending and `exec`s the host with its pid. The host keeps it to 1 MiB
+by copying it to `host.out.1` and emptying it in place, checked each minute and at each
+start, since renaming a file the process still writes to would not move its writes.
 
 A workflow is a TypeScript module, and the host runs it on Effect's own engine
 ([ADR-0014](adr/0014-native-workflows-run-on-effects-own-engine.md)): a
@@ -87,7 +92,10 @@ checkout gone — parks with the reason and the repair, and `run resume` picks i
 
 Beside the database, a Run's files are its audit trail: `agents/<run>/<operation>.prompt.md`
 with the Output it came back with, `evidence/<run>/` with its checks
-and the ones collected, and `runs/<run>/` with its cards, its `plan/` and the review it left.
+and the ones collected, and `runs/<run>/` with its cards, its `plan/`, the review it left and the notes its agents
+handed on in `handoffs/`, which the shipped workflows tell them to write there rather than in
+`/tmp` and which `run show` and the Run's record list. They are the Run's, so they go only
+when it does.
 Nothing an older Collie recorded is read ([ADR-0027](adr/0027-one-engine-and-a-hard-cutover.md)),
 and the host's cleanup sweep removes it once it has not changed for a day.
 
@@ -113,7 +121,8 @@ Plan artefacts are the same story from the other side: `SPEC.md`, tickets, wayfi
 and architecture reports go into the run's `plan/` directory and never into the repository
 ([ADR-0002](adr/0002-plan-artefacts-live-in-the-run-directory.md)). Glossary and ADR changes
 made while planning _are_ written into the repository — those are domain knowledge, not
-plans.
+plans. A new ADR is written as a draft named by its slug and numbered when its branch lands
+([Numbering a branch's ADRs](#numbering-a-branchs-adrs)).
 
 A plan can also move while it is being built. `implement` reads its tickets by name each
 time it reaches its list, so a ticket edited since is built as it reads now and a completed
@@ -842,7 +851,7 @@ from their lines rather than by rewriting them:
 - `<state>/agents/<incarnation>/deliveries.jsonl` — one line per state change of one
   message to one agent, under a lock per incarnation. `reserved` is written **before**
   herdr is called, so a crash leaves a durable record that something may have been sent;
-  `submitted`, `acknowledged` and `verified` are separate facts and are never collapsed.
+  `submitted` and `acknowledged` are separate facts and are never collapsed.
   A `reserved` line nobody settled becomes `unknown`, which blocks further deliveries
   about the same work until a human reconciles it. Collie never retries out of `unknown`.
   The one retry is out of `deferred`, herdr answering that the pane cannot take a prompt
@@ -892,6 +901,30 @@ target release's own `install.sh`, so `upgrade --to` or `onboard --to` a release
 it installs that release's runner unchecked. Rotating a key means changing both its secret and
 its public key file, and
 releases signed with the old key stop verifying.
+
+### Numbering a branch's ADRs
+
+A new ADR on a branch has no number: it is `docs/adr/draft-<slug>.md`, and text names it
+`ADR-draft-<slug>`, whether a document, a code comment or a test. Two branches open at once
+would otherwise both take the next number, and whichever lands second renumbers its ADR and
+every reference to it by hand.
+
+Whoever lands the branch numbers its drafts first, from the branch's checkout:
+
+```sh
+bun run tools/adr-number.ts            # against origin/HEAD, or master without one
+bun run tools/adr-number.ts --base master
+```
+
+Each draft takes the next number above the highest on the default branch and on this
+branch, in slug order. Every reference to it in the repository follows: the link to
+`draft-<slug>.md` becomes `NNNN-<slug>.md` and `ADR-draft-<slug>` becomes `ADR-NNNN`.
+It changes only the drafts and the files that name them, and commits nothing; review the
+working tree and commit it with the landing. With no drafts left it changes nothing. A
+number the default branch already has twice is reported and left as it is.
+
+`test/docs-links.test.ts` fails on a plain-text `ADR-NNNN` or `ADR-draft-<slug>` in the
+docs, `src`, `workflows`, `test` or `desktop` that names no ADR file.
 
 Collie Desktop is built by the same release, from the same tag, by the workflow's
 `desktop` job: `bun run build` in `desktop/` builds the stable channel at
@@ -1005,6 +1038,32 @@ change environment variables and prototypes, so `--concurrent` is not safe here.
 default timeout is 30 seconds rather than Bun's five: a test that starts processes is
 slower on a busy machine, and that is not a hang. For debugging, `bun test
 ./test/engine.test.ts` runs one file against the sources, without workers.
+
+One whole suite runs at a time on a Machine, per user. `bun run test` takes a lock,
+`collie-test-suite-<uid>.lock` in `TMPDIR`, and a second waits its turn: it prints once who
+holds the lock — the pid, its command line and when it started — and then, every 30
+seconds, how long it has waited (`tools/suite-lock.ts`). Which forms take the lock:
+
+- `bun run check`, `bun run test`, and `bun run test <args>`, whose arguments go to
+  `bun test` inside the lock: a focused run through the script still waits for a whole
+  suite.
+- `bun test <file>`, `bun test -t <name>` and `bun run test:live` do not: they run the
+  sources directly, beside whatever suite is running.
+
+### Tests against an installed harness
+
+A handful of tests ask the installed Claude, Codex, OpenCode and Pi whether they still take what
+Collie's adapters pass them, Pi's version floor among them. Their answer depends on the
+version installed on the machine, so they are never part of `bun run test` or `bun run
+check`: `onMachineWith` (`test/support/live.ts`) runs them only where
+`COLLIE_LIVE_HARNESSES=1` is set and the harness is on `PATH`, and the suite runner drops
+that variable. `bun run test:live` sets it for the files that hold them, and `test/live-tests.test.ts`
+fails where a file of them is missing from that script. A harness
+that is not installed is skipped even then, so a machine with some of them checks those.
+
+Run them when a change touches a harness adapter — how an agent is launched in
+`src/agents.ts` or `src/harness.ts`, or a harness's controls in `src/compactors.ts` — or
+compaction in `src/compaction.ts`, and after upgrading a harness.
 
 Bun records file durations in `.scratch/test-timings.json` and uses them to schedule slow
 files first next time. When that file is absent, the runner seeds it from the measured

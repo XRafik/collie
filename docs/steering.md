@@ -49,13 +49,16 @@ the audit line records the words as asked
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `reserved`     | Written **before** herdr was called. A crash here leaves this.                                                                                       |
 | `deferred`     | herdr answered that the pane cannot take a prompt yet, with a code that says it clears by itself. Nothing was delivered; the same id is tried again. |
-| `submitted`    | herdr took it. Not: the agent read it.                                                                                                               |
-| `acknowledged` | The agent wrote the ack file naming this delivery, version and attempt.                                                                              |
-| `verified`     | An independent check says the thing asked for actually happened.                                                                                     |
+| `submitted`    | Sent: herdr typed it and pressed Enter. Not: the agent read it.                                                                                      |
+| `acknowledged` | The agent took a turn after it: herdr saw one start, or Claude's prompt-submit hook recorded the delivery's token.                                   |
 
-They are separate because they are separate facts. herdr types text into a pane and
-returns; that says the keystrokes went somewhere. Collapsing them would let Collie report
-work as done on the strength of a send.
+[PRODUCT.md](../PRODUCT.md) names three facts: a message sent, an instruction acknowledged
+and an outcome verified. Sent is `submitted`. Acknowledged is `acknowledged`, a turn taken
+after the delivery. Verified is not a delivery state at all: it is the drift judgement on
+the Run, whether the work came back where it was told (below). They are separate because
+they are separate facts. herdr types text into a pane and returns; that says the keystrokes
+went somewhere. Collapsing them would let Collie report work as done on the strength of a
+send.
 
 `submitted` carries one qualification. herdr's own gate waits for a turn to start after
 the prompt; where that wait ran out, or the agent was already working, the delivery is
@@ -64,8 +67,8 @@ and `run deliveries` shows the note beside the state. It is never rounded up to 
 nobody saw, and never rounded down to a failure: a prompt that arrived and one the agent
 ignored look the same from here, and the note is what tells a later reader that.
 
-The terminal states are `failed` (herdr refused), `unknown` (herdr never answered, so
-nobody can say), `superseded` and `expired`. `unknown` blocks further deliveries about the
+The terminal states are `failed` (herdr refused) and `superseded` (a human reconciled it).
+`unknown` (herdr never answered, so nobody can say) blocks further deliveries about the
 same work until a human reconciles it, and Collie never retries out of it on its own.
 A step's prompt or repair left `unobserved` with nothing to show it was taken parks its
 Run the same way, and is reconciled the same way; `not-sent` has the resume send it again.
@@ -83,27 +86,32 @@ is alive and its prompt is written, so `run show` says so and `collie run resume
 prompt to that agent. A human's steer is sent once and told the refusal, since they are
 waiting on the answer.
 
-A step prompt's delivery ends `superseded` with the note `work_collected` once the agent
-has gone quiet and its Output has been read: what the prompt asked for is in the Run, and a
-later prompt about the same step — a human's `run resume` re-running a disputed fix at the
-same iteration, to the same live implementer — is a new attempt, not a second copy of this
-one. That settlement never happens after a give-up, and never touches a `reserved` or
-`unknown` line: an agent that may still be working keeps its delivery in flight, so the
-same work is not sent to it twice, and a delivery in doubt stays a human's to reconcile.
+## Who a steer reaches, and what it says came of it
 
-Every delivery asks the agent to write
-`<run dir>/steering/acks/<delivery id>.json` with the delivery id, the Intent version, the
-attempt and one sentence saying what it understood. An ack for a different version or
-attempt is recorded as `ack_mismatch` and changes nothing — it is the agent answering a
-different question.
+A steer, a review comment, chat's `deliver` and a correction that name no agent reach the
+agent whose step is active — its newest launch has no Output yet — and with none active,
+the Run's builder (its `implementer`), else whoever was launched last — a Run with no
+implementer, such as an investigation, has no builder, and `--to builder` there says no
+agent was launched for it. A busy builder is reached even when an idle reviewer was
+launched after it. `--to builder|reviewer|planner` names a role, `--to <agent>` an agent or
+an operation, and `--operation` still works; where both are given, an agent's name wins,
+then `--operation`, then `--to`.
+
+A steer or correction that herdr did not see start a turn is confirmed as a step's prompt
+is: a turn starting once the agent has settled, Claude's prompt-submit receipt, or, with
+its token still in the prompt box of a settled agent, one Enter. It waits for that up to
+twenty seconds, since someone is waiting on the answer. The result carries `observed` and
+`how`; the CLI says `Delivered to <agent> (observed: <how>).`, or `Sent to <agent>, not
+observed.` with the `herdr agent focus` that shows its pane. It never says the agent was
+told when nothing was seen.
 
 ## Interrupts are never "stopped"
 
 An interrupt sends the harness's interrupt key and then the message. What can be observed
 is that herdr sent the keys, and that the agent's status left `working`. Neither is proof
-the harness stopped, and no such proof exists at this boundary — so the states are
-`interrupt_requested` and `interrupt_acknowledged`, and the word "stopped" appears in
-none of it.
+the harness stopped, and no such proof exists at this boundary — so the log says
+`interrupt_requested`, the text after it is confirmed like any other delivery, and the word
+"stopped" appears in none of it.
 
 ## Manual override
 

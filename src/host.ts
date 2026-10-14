@@ -76,6 +76,8 @@ import {
   CheckEvent,
   outputsOf,
 } from "./run-record";
+import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
+import { removedNotice, scrub, scrubJson } from "./redact";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
 import { readDrift } from "./drift";
@@ -90,7 +92,8 @@ import { ChangedIntent } from "./intent-model";
 import { donePasses, markersOf, runningCheck, followLog } from "./checks";
 import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
-import { hostLogger } from "./host-log";
+import { hostLogger, rotateInPlace } from "./host-log";
+import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
@@ -121,7 +124,7 @@ import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
-import { watchedMr, type MrPanels } from "./merges";
+import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
 import { buildRunDetail, type PlanCache } from "./views";
@@ -139,6 +142,8 @@ import {
   SharedSettings,
   ShellResult,
   PROTOCOL,
+  mrLabel,
+  readinessOfRun,
   ProposalRefused,
   PART_BYTES,
   RequestConflict,
@@ -215,7 +220,7 @@ import {
   type RelayHeader,
 } from "./peers-model";
 import { latest, readDispositions } from "./disposition";
-import { runAgents } from "./launches";
+import { runAgents, stepsOf } from "./launches";
 import { factsOfView, settled } from "./runs";
 import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
@@ -236,6 +241,8 @@ export const BUILD: string = manifest.version;
 export const socketOf = (dir: string) => `${dir}/host.sock`;
 const lockOf = (dir: string) => `${dir}/host.lock`;
 const logOf = (dir: string) => `${dir}/host.log`;
+/** What a spawned host writes to its stdout and stderr. */
+export const outputOf = (dir: string) => `${dir}/host.out`;
 /** Which build owns the directory, written down for a client the host does not answer. */
 const recordOf = (dir: string) => `${dir}/host.build`;
 const HostRecord = Schema.fromJsonString(
@@ -286,6 +293,10 @@ const RunShown = Schema.Struct({
   agents: Schema.Array(RunAgent),
   disposition: Schema.NullOr(Disposition),
   children: Schema.Array(RunView),
+  /** The handoff notes its agents left, where they are on the host's Machine. Absent from an older host. */
+  handoffs: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ path: Schema.String, bytes: Schema.Int })),
+  ),
 });
 
 const Loaded = Schema.Struct({
@@ -293,6 +304,20 @@ const Loaded = Schema.Struct({
   registration: Schema.String,
   title: Schema.String,
 });
+
+/** A result that says what kind of credential-shaped value was taken out of its asking. */
+const saying =
+  (removed: ReadonlyArray<string>) =>
+  <A extends object>(result: A): A & { readonly redacted?: ReadonlyArray<string> } =>
+    removed.length === 0 ? result : { ...result, redacted: [...removed] };
+
+/** A steer's outcome, telling its asker what kind of credential-shaped value was taken out. */
+const outcomeSaying = (removed: ReadonlyArray<string>, outcome: SteerOutcome): SteerOutcome => {
+  const notice = removedNotice(removed);
+  return notice === null
+    ? outcome
+    : { ...outcome, human: `${outcome.human}\n${notice}`, redacted: [...removed] };
+};
 
 /**
  * What a client may ask of a host. Both ends read these declarations, so a request is a
@@ -340,6 +365,11 @@ export const HostRpcs = RpcGroup.make(
   Rpc.make("runDispositions", {
     payload: { runId: Schema.String },
     success: RunDispositions,
+    error: HostRefused,
+  }),
+  Rpc.make("runOutcomes", {
+    payload: { runId: Schema.String },
+    success: OutcomeRecords,
     error: HostRefused,
   }),
   Rpc.make("runOutputs", {
@@ -392,6 +422,8 @@ export const HostRpcs = RpcGroup.make(
       runId: Schema.String,
       text: Schema.String,
       request: Schema.String,
+      /** A role (`builder`, `reviewer`, `planner`), an agent or an operation. */
+      to: Schema.optional(Schema.String),
       operation: Schema.optional(Schema.String),
       agent: Schema.optional(Schema.String),
       mode: Schema.optional(Schema.Literals(["boundary", "now", "interrupt"])),
@@ -516,6 +548,7 @@ const handlers = (
         runDrift: ({ runId }) => record(runId, readDrift(runDir(dir, runId))),
         runIntent: ({ runId }) => record(runId, readIntent(runDir(dir, runId))),
         runDispositions: ({ runId }) => record(runId, readDispositions(runDir(dir, runId))),
+        runOutcomes: ({ runId }) => record(runId, outcomeRecordsOf(dir, runId)),
         runOutputs: ({ runId }) => record(runId, outputsOf(dir, runId)),
         runChecks: ({ runId }) =>
           Effect.gen(function* () {
@@ -580,6 +613,10 @@ const handlers = (
                 yield* readDispositions(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
               ),
               children: all.filter((one) => one.parent === runId),
+              handoffs: (yield* handoffsIn(runDir(dir, runId))).map((file) => ({
+                path: `${handoffsDir(runDir(dir, runId))}/${file.name}`,
+                bytes: file.bytes,
+              })),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>
@@ -612,7 +649,11 @@ const handlers = (
             },
             registry.grant({ runId, name, command }),
           ).pipe(Effect.provideContext(bun)),
-        steer: ({ runId, text, request, operation, agent, mode, attachments }, { client }) => {
+        steer: (
+          { runId, text: given, request, to, operation, agent, mode, attachments },
+          { client },
+        ) => {
+          const { text, removed } = scrub(given);
           const into = attachmentsDir(runDir(dir, runId));
           const actor = stampIn(declared, client);
           // Files go only into a Run this host has.
@@ -638,6 +679,8 @@ const handlers = (
                 mode: mode ?? null,
               };
               if (attached !== undefined) asked.attachments = attached;
+              // Only where given, so a request recorded before `to` existed still matches.
+              if (to !== undefined) asked.to = to;
               return once(
                 runDir(dir, runId),
                 {
@@ -667,12 +710,14 @@ const handlers = (
                       runId,
                       text: told,
                       request,
+                      to,
                       operation,
                       agent,
                       mode,
                       actor,
                     }),
                   ),
+                  Effect.map(saying(removed)),
                 ),
               );
             }),
@@ -690,6 +735,7 @@ const TOO_LONG =
 /** What a steer's request has to ask again, as `AskedFor` is a start's. */
 type SteerAsked = {
   readonly text: string;
+  to?: string;
   readonly operation: string | null;
   readonly agent: string | null;
   readonly mode: string | null;
@@ -1139,21 +1185,20 @@ const frontDoorHandlers = (
             project,
             id,
             request,
-            input,
-            text,
             inferred,
             root,
             options,
             task,
-            taskLabel,
             parent,
-            intent,
             verify,
             attachments,
+            ...given
           },
           { client },
-        ) =>
-          attachedFor(attachments, (asked) =>
+        ) => {
+          const scrubbed = scrubJson(given);
+          const { input, text, taskLabel, intent } = scrubbed.value;
+          return attachedFor(attachments, (asked) =>
             fresh(
               (started) => started.runId,
               { operation: "start", request, ...whoOf(client), asked, result: Started },
@@ -1194,17 +1239,21 @@ const frontDoorHandlers = (
                             attachments,
                           }),
                         ),
+                        Effect.map(saying(scrubbed.removed)),
                       ),
                 ),
               ),
             ),
-          ),
-        answer: ({ runId, decision, value, request }, { client }) =>
-          fresh(
+          );
+        },
+        answer: ({ runId, decision, value: given, request }, { client }) => {
+          const { text: value, removed } = scrub(given);
+          return fresh(
             () => runId,
             { operation: "answer", request, ...whoOf(client), result: Answered },
-            registry.answer({ runId, decision, value, request }),
-          ),
+            registry.answer({ runId, decision, value, request }).pipe(Effect.map(saying(removed))),
+          );
+        },
         control: ({ runId, control, set, request, reason }, { client }) =>
           auditedControl(
             runId,
@@ -1360,14 +1409,18 @@ const frontDoorHandlers = (
               return swept;
             }),
           ),
-        invoke: ({ runId, offer, input, request, attachments }, { client }) =>
-          attachedFor(attachments, (asked) =>
+        invoke: ({ runId, offer, input: given, request, attachments }, { client }) => {
+          const { value: input, removed } = scrubJson(given);
+          return attachedFor(attachments, (asked) =>
             fresh(
               () => runId,
               { operation: "invoke", request, ...whoOf(client), asked, result: Started },
-              registry.invoke({ runId, offer, input, request, attachments }),
+              registry
+                .invoke({ runId, offer, input, request, attachments })
+                .pipe(Effect.map(saying(removed))),
             ),
-          ),
+          );
+        },
         upload: (part, { client }) =>
           refusedPlainly(
             Effect.gen(function* () {
@@ -1465,8 +1518,11 @@ const frontDoorHandlers = (
                 )
               : Effect.succeed({ proposal }),
           ),
-        propose: ({ herd, interpretation, actions, request: requestId }, { client }) =>
-          Effect.gen(function* () {
+        propose: ({ herd, request: requestId, ...given }, { client }) => {
+          const scrubbed = scrubJson(given);
+          const { interpretation, actions } = scrubbed.value;
+          const removed = scrubbed.removed;
+          return Effect.gen(function* () {
             const asker = askerEnv(client);
             const decoded = Schema.decodeUnknownOption(Schema.Array(ActionSchema))(actions);
             if (Option.isNone(decoded))
@@ -1493,7 +1549,7 @@ const frontDoorHandlers = (
                 Effect.flatMap((result) =>
                   !result.ok && REJECTED.includes(result.error.code)
                     ? Effect.fail(new SteerUnanswered({ outcome: outcomeOf(result) }))
-                    : Effect.succeed(outcomeOf(result)),
+                    : Effect.succeed(outcomeSaying(removed, outcomeOf(result))),
                 ),
               ),
             );
@@ -1501,7 +1557,7 @@ const frontDoorHandlers = (
             Effect.catch((cause) =>
               Effect.succeed(
                 Schema.is(SteerUnanswered)(cause)
-                  ? cause.outcome
+                  ? outcomeSaying(removed, cause.outcome)
                   : Schema.is(RequestConflict)(cause)
                     ? outcomeOf(err("invalid_input", cause.reason))
                     : outcomeOf(
@@ -1511,9 +1567,12 @@ const frontDoorHandlers = (
             ),
             Effect.provideContext(bun),
             Effect.provideContext(hosted),
-          ),
-        act: ({ actions, request }, { client }) =>
-          plainly(
+          );
+        },
+        act: ({ actions: given, request }, { client }) => {
+          const scrubbed = given.map((one) => scrubJson(one));
+          const actions = scrubbed.map((one) => one.value);
+          return plainly(
             Schema.decodeUnknownEffect(Schema.Array(ActionSchema))(actions).pipe(
               Effect.mapError(
                 () =>
@@ -1532,10 +1591,20 @@ const frontDoorHandlers = (
                   : carryOutAsked(askerEnv(client), decoded, {
                       ...whoOf(client),
                       requestId: request,
-                    });
+                    }).pipe(
+                      Effect.map((results) =>
+                        results.map((result, index) => {
+                          const notice = removedNotice(scrubbed[index]?.removed ?? []);
+                          return notice === null
+                            ? result
+                            : { ...result, note: [result.note, notice].filter(Boolean).join("; ") };
+                        }),
+                      ),
+                    );
               }),
             ),
-          ),
+          );
+        },
         reconcile: ({ proposal, index, as, request }, { client }) =>
           plainly(
             Effect.gen(function* () {
@@ -1668,8 +1737,13 @@ const frontDoorHandlers = (
               ),
             ),
           ),
-        changeIntent: ({ runId, change, propagate: spread, request }, { client }) =>
-          plainly(
+        changeIntent: ({ runId, change: given, propagate: spread, request }, { client }) => {
+          const scrubbed =
+            given.kind === "set-goal" || given.kind === "add-constraint"
+              ? scrubJson(given)
+              : { value: given, removed: [] };
+          const change = scrubbed.value;
+          return plainly(
             Effect.gen(function* () {
               const edit = Effect.gen(function* () {
                 if ((yield* registry.view(runId)) === null)
@@ -1759,7 +1833,7 @@ const frontDoorHandlers = (
                   }
                 const answer = { version: next?.version ?? null, propagated };
                 return approved === undefined ? answer : { ...answer, approved };
-              });
+              }).pipe(Effect.map(saying(scrubbed.removed)));
               return yield* change.kind === "verification"
                 ? edit
                 : once(
@@ -1774,7 +1848,8 @@ const frontDoorHandlers = (
                     edit,
                   );
             }),
-          ),
+          );
+        },
         settleDelivery: ({ runId, delivery, as, request }, { client }) =>
           plainly(
             once(
@@ -1918,8 +1993,9 @@ const frontDoorHandlers = (
               );
             }),
           ),
-        steerAbout: ({ runId, text, from, dryRun, request }, { client }) =>
-          Effect.gen(function* () {
+        steerAbout: ({ runId, text: given, from, dryRun, request }, { client }) => {
+          const { text, removed } = scrub(given);
+          return Effect.gen(function* () {
             const view = yield* registry.view(runId);
             if (view === null)
               return { ok: false, code: "run_not_found", human: `No Run "${runId}".`, data: {} };
@@ -1955,19 +2031,19 @@ const frontDoorHandlers = (
                       data: fromText(toText(said.error.details)),
                     },
                   });
-                return {
+                return outcomeSaying(removed, {
                   ok: true,
                   code: null,
                   human: said.human,
                   data: fromText(toText(said.data)),
-                };
+                });
               }),
             );
           }).pipe(
             Effect.catch((cause) =>
               Effect.succeed(
                 Schema.is(SteerUnanswered)(cause)
-                  ? cause.outcome
+                  ? outcomeSaying(removed, cause.outcome)
                   : Schema.is(RequestConflict)(cause)
                     ? { ok: false, code: "invalid_input", human: cause.reason, data: {} }
                     : {
@@ -1979,9 +2055,11 @@ const frontDoorHandlers = (
               ),
             ),
             Effect.provideContext(bun),
-          ),
-        followUp: ({ runId, text, request, attachments }, { client }) =>
-          attachedFor(attachments, (asked) =>
+          );
+        },
+        followUp: ({ runId, text: given, request, attachments }, { client }) => {
+          const { text, removed } = scrub(given);
+          return attachedFor(attachments, (asked) =>
             fresh(
               () => runId,
               { operation: "followup", request, ...whoOf(client), asked, result: Started },
@@ -2010,14 +2088,34 @@ const frontDoorHandlers = (
                   request,
                   attachments,
                 });
-              }),
+              }).pipe(Effect.map(saying(removed))),
             ),
-          ),
+          );
+        },
         read: ({ tool, input }, { client }) =>
           Effect.promise(() => import("./tools")).pipe(
             Effect.flatMap(({ answerRead }) => answerRead(askerEnv(client), tool, input)),
             Effect.provideContext(bun),
           ),
+        progress: ({ runId }) =>
+          Effect.gen(function* () {
+            const view = yield* registry.view(runId);
+            if (view === null) return null;
+            const board = Option.getOrElse(yield* Stream.runHead(boards), () => []);
+            const card = board.find((one) => one.runs.includes(runId));
+            const mr = card?.run === runId ? card.mr : null;
+            const forged =
+              mr === null ? undefined : (yield* readForge(env.stateDir)).get(mrLabel(mr));
+            return {
+              ready: readinessOfRun(
+                runId,
+                card,
+                view.status.status === "complete" || view.status.status === "failed",
+              ),
+              ci: forged?.checks ?? null,
+              steps: yield* stepsOf(env.stateDir, runId),
+            };
+          }).pipe(Effect.provideContext(bun)),
         runDetail: ({ runId, tail, pages, refreshMr }) => {
           let fresh = refreshMr;
           const detail = Effect.gen(function* () {
@@ -2121,6 +2219,11 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
       Effect.void,
       boundedStop(lock).pipe(
         Effect.andThen(Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`)),
+        Effect.andThen(
+          Effect.forkScoped(
+            rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
+          ),
+        ),
         Effect.andThen(Effect.race(own(dir), orphaned(dir))),
         Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true })),
       ),
@@ -2364,13 +2467,53 @@ export const connect = (
         client: build,
         pid: who.pid,
         restart: ours
-          ? `the host for ${dir} is collie ${who.build} and this is ${build}: stop it (pid ${who.pid}) and run this again`
-          : `the host for ${dir} serves ${who.root} and this is collie ${build} from ${install}: point HERDR_PLUGIN_STATE_DIR at a directory of its own, or stop that host (pid ${who.pid}) and run this again`,
+          ? `the host for ${dir} is collie ${who.build} and this is ${build}: run \`collie host restart\` and run this again`
+          : `the host for ${dir} serves ${who.root} and this is collie ${build} from ${install}: point HERDR_PLUGIN_STATE_DIR at a directory of its own, or run \`collie host restart\` and run this again`,
       });
     }
     // What the old host was doing is the new one's startup recovery, not this client's wait.
     return yield* open(dir);
   });
+
+/** A host as a restart names it; `build` is null for one that owned the directory but did not answer. */
+export interface HostSeen {
+  readonly pid: number;
+  readonly build: string | null;
+}
+
+/**
+ * Replaces whatever host owns `dir` with this install's, by the same stop and start a newer
+ * client uses: the new host recovers what the old one left, as on any start (ADR-0015).
+ */
+export const restartHost = Effect.fn("Host.restart")(function* (
+  dir: string,
+  options?: { readonly build?: string; readonly hostEnv?: Readonly<Record<string, string>> },
+) {
+  const owner = yield* liveOwner(dir);
+  let before: HostSeen | null = null;
+  if (owner !== null) {
+    const answered = yield* ask(dir).pipe(Effect.option);
+    before = {
+      pid: owner.pid,
+      build: Option.match(answered, { onNone: () => null, onSome: (who) => who.build }),
+    };
+    yield* stopOwner(dir, owner.pid);
+  }
+  const who = yield* ensureRunning(dir, options?.hostEnv ?? {}, options?.build ?? BUILD);
+  return { before, after: { pid: who.pid, build: who.build } };
+});
+
+/** What a restart did, in the sentence every door says it with. */
+export const restartSaid = (
+  dir: string,
+  restarted: { readonly before: HostSeen | null; readonly after: HostSeen },
+) => {
+  const named = (host: HostSeen) =>
+    `pid ${host.pid} (${host.build === null ? "build unknown" : `collie ${host.build}`})`;
+  return restarted.before === null
+    ? `No host was running for ${dir}; started ${named(restarted.after)}.`
+    : `Restarted the host for ${dir}: ${named(restarted.before)} → ${named(restarted.after)}.`;
+};
 
 /** What a stopping host is given beyond its grace, and a killed one to be gone. */
 const STOP_SLACK = Duration.seconds(5);
@@ -2394,7 +2537,7 @@ const stopOwner = Effect.fn("Host.stopOwner")(function* (dir: string, pid: numbe
   if (yield* goneWithin(Duration.sum(yield* stopGrace, STOP_SLACK))) return;
   yield* signalProcess(pid, "SIGKILL");
   if (yield* goneWithin(STOP_SLACK)) return;
-  return yield* unavailable(dir, `pid ${pid} is an older host and did not stop`);
+  return yield* unavailable(dir, `pid ${pid} owns the directory and did not stop`);
 });
 
 /** One connection, in the caller's scope: theirs to keep, and theirs to close. */
@@ -2646,8 +2789,8 @@ const diagnose = Effect.fn("Host.diagnose")(function* (dir: string) {
 /**
  * Starts a host and leaves. Detached and unreferenced, because the point of the host is
  * that it outlives whoever needed it: a CLI command that exits, a board that is closed,
- * a chat turn that ends. Its stdio is closed for the same reason — there is no terminal
- * it belongs to.
+ * a chat turn that ends. There is no terminal it belongs to, so its stdout and stderr are
+ * appended to `host.out` by a shell that then becomes the host, keeping its pid.
  */
 const spawnHost = Effect.fn("Host.spawn")(function* (
   named: string,
@@ -2663,18 +2806,32 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
     yield* fs.makeDirectory(named, { recursive: true });
     // The host starts in it, so a relative one would name somewhere else from there.
     const dir = yield* fs.realPath(named);
+    yield* rotateInPlace(outputOf(dir));
     const handle = yield* spawner.spawn(
-      ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
-        cwd: dir,
-        // A client started by Desktop may carry its launcher's LD_PRELOAD.
-        // oxlint-disable-next-line effecttsgo/process-env
-        env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
-        extendEnv: false,
-        detached: true,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      }),
+      ChildProcess.make(
+        "/bin/sh",
+        [
+          "-c",
+          'out=$1; shift; exec "$@" >>"$out" 2>&1',
+          "sh",
+          outputOf(dir),
+          ...command,
+          "host",
+          "--dir",
+          dir,
+        ],
+        {
+          cwd: dir,
+          // A client started by Desktop may carry its launcher's LD_PRELOAD.
+          // oxlint-disable-next-line effecttsgo/process-env
+          env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+          extendEnv: false,
+          detached: true,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
     );
     // Unreferenced before the caller's scope closes, or the spawner's finalizer kills the
     // host it has just started: it leaves a child alone only once it is unreferenced.

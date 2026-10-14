@@ -123,7 +123,11 @@ const drawnLine = computed(() =>
                   :rows="3"
                   autoresize
                   :model-value="shown(row)"
-                  placeholder="Frontend work is on the laptop, everything else is on the vm"
+                  :placeholder="
+                    row.kind === 'json'
+                      ? '{&quot;*&quot;: {&quot;env&quot;: {&quot;NAME&quot;: &quot;value&quot;}}}'
+                      : 'Frontend work is on the laptop, everything else is on the vm'
+                  "
                   :aria-label="row.label"
                   :data-testid="`${idOf(row)}-text`"
                   @update:model-value="(typed) => (drafts[idOf(row)] = String(typed))"

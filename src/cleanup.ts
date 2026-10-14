@@ -385,6 +385,8 @@ const KEPT_KINDS = new Set([
   "host.db-journal",
   "host.lock",
   "host.sock",
+  "host.out",
+  "host.out.1",
   "installation",
   "installation.new",
   PRUNE_FILE,

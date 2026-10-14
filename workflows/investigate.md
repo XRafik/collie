@@ -1,3 +1,7 @@
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 ## investigate
 
 Investigate this goal on this Machine:

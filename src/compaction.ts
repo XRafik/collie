@@ -45,7 +45,7 @@ const CONTROL_FILE = "control.json";
 /**
  * The configured threshold, resolved. `bad` is kept as a message rather than coerced:
  * the fallback would be the default, so a `-1` or a `3.5` someone meant as a limit
- * would silently become 372,000 and compact an agent they had tried to leave alone.
+ * would silently become the default and compact an agent they had tried to leave alone.
  */
 export type Threshold =
   | { readonly tokens: number }
@@ -91,6 +91,8 @@ export interface LaunchContext {
   cwd: string;
   /** This agent's own control directory. Collie creates it before `install`. */
   dir: string;
+  /** Shell lines setting the operator's environment, for a server the port starts. */
+  env?: ReadonlyArray<string>;
 }
 
 export interface AgentContext extends LaunchContext {
@@ -416,6 +418,7 @@ const enabled = Effect.fn("Compaction.enabled")(function* (configured: number) {
 export const installControls = Effect.fn("Compaction.installControls")(function* (
   deps: Pick<CompactionDeps, "ports" | "stateDir" | "configured" | "log" | "herdr" | "stopMs">,
   agent: { agent: string; harness: string; cwd: string; runLog: string },
+  env: ReadonlyArray<string> = [],
 ) {
   const limit = yield* enabled(deps.configured);
   const fs = yield* FileSystem.FileSystem;
@@ -454,6 +457,7 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
     harness: agent.harness,
     cwd: agent.cwd,
     dir,
+    env,
   });
   const started =
     installed.pid === undefined ? null : ((yield* processOf(installed.pid))?.started ?? null);

@@ -49,7 +49,7 @@ export type DriftReport = Schema.Schema.Type<typeof DriftReportSchema>;
 export const JudgementSchema = Schema.Struct({ reports: Schema.Array(DriftReportSchema) });
 export type Judgement = Schema.Schema.Type<typeof JudgementSchema>;
 
-import { ActionSchema, type Action } from "./actions";
+import { ActionSchema, recipientOf, type Action } from "./actions";
 
 export const ProposalSchema = Schema.Struct({
   interpretation: Schema.String,
@@ -467,10 +467,11 @@ function refusalFor(action: Action, ctx: ValidationContext): string | null {
   if (run !== null && !ctx.runs.has(run))
     return `I proposed ${action.kind} for run "${run}", which was not among the runs I was shown.`;
   if (action.kind === "deliver") {
-    if (!ctx.agents.get(action.run)?.has(action.agent))
-      return `I proposed a message for agent "${action.agent}", which is not one of run ${action.run}'s.`;
+    const agent = action.agent;
+    if (agent !== undefined && !ctx.agents.get(action.run)?.has(agent))
+      return `I proposed a message for agent "${agent}", which is not one of run ${action.run}'s.`;
     if (Buffer.byteLength(action.text, "utf8") > ctx.maxDeliveryBytes)
-      return `The message I wrote for ${action.agent} is over the ${ctx.maxDeliveryBytes}-byte limit.`;
+      return `The message I wrote for ${recipientOf(action)} is over the ${ctx.maxDeliveryBytes}-byte limit.`;
   }
   if (action.kind === "update_intent") {
     const current = ctx.intents.get(action.run)?.version;

@@ -12,8 +12,8 @@ export interface PaneProps {
   rows: ReadonlyArray<Row>;
   /** What to say when there is nothing in it, so an empty pane is not a dead end. */
   empty: string;
-  /** The setting being typed into, and what has been typed at it. */
-  editing: { key: string; typed: string } | null;
+  /** The setting being typed into, what has been typed at it, and whether Alt+Enter is a new line. */
+  editing: { key: string; typed: string; multiline: boolean } | null;
   onPress: (row: Row) => void;
   onClose: () => void;
 }
@@ -35,7 +35,13 @@ export function Pane(props: PaneProps) {
           <For each={props.rows}>
             {(row) => (
               <box
-                style={{ flexDirection: "row", height: 1 }}
+                style={{
+                  flexDirection: "row",
+                  height:
+                    props.editing?.key === row.setting?.key && props.editing?.multiline === true
+                      ? undefined
+                      : 1,
+                }}
                 onMouseDown={(event: MouseEvent) => {
                   event.stopPropagation();
                   props.onPress(row);

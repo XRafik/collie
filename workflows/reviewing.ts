@@ -22,6 +22,7 @@ import {
   leaveReview,
   mrForgeFacts,
   parseMrTarget,
+  renderRecordedChecks,
   repoArgs,
   riskLine,
   targetKind,
@@ -39,10 +40,14 @@ const change = {
   inputs: Schema.Struct({ target: text, target_kind: text, plan: text, outcome: text }),
   target_repo: text,
   mr: Schema.Struct({ forge: text, noun: text, diff: text, view: text, checkout: text }),
+  base: text,
 };
 
 /** What a prompt is told of a target that is not a merge request. */
 export const NO_MR = { forge: "", noun: "", diff: "", view: "", checkout: "" };
+
+/** What a worktree's change is measured against where nothing integrated the default branch. */
+export const DEFAULT_BASE = "<default-branch>";
 
 /** A reviewer's round: the one before it, what was disputed, and where this Run keeps its work. */
 const REVIEW = content.template("review", {
@@ -54,11 +59,14 @@ const REVIEW = content.template("review", {
   disputed: text,
   risks: text,
   obstacle: text,
+  checks: text,
+  criteria: text,
 });
 
 /** The reviews to reconcile, and the one before them. */
 const SYNTHESIZE = content.template("synthesize", {
   ...change,
+  run: Schema.Struct({ dir: text, id: text }),
   previous: Schema.Struct({ review: text }),
   fan_in: text,
   obstacle: text,
@@ -106,6 +114,10 @@ export interface ReviewAsk {
   readonly disputed: ReadonlyArray<Finding>;
   readonly prefix?: string;
   readonly obstacle?: string;
+  /** The commit a worktree's change is diffed against: the default branch as last integrated. */
+  readonly base?: string;
+  /** What the builder says of each criterion, and its assumptions, for the reviewer to check. */
+  readonly criteria?: string;
 }
 
 /** What the reviewers and the synthesis are both told, beside the section they are given. */
@@ -125,6 +137,7 @@ const told = (ask: ReviewAsk, run: { readonly dir: string; readonly id: string }
   risks: riskLine(ask.risks),
   target_repo: repoArgs(parseMrTarget(ask.target)?.project ?? null).join(" "),
   mr: mrForgeFacts(ask.target) ?? NO_MR,
+  base: ask.base || DEFAULT_BASE,
   obstacle: ask.obstacle ?? "",
 });
 
@@ -136,8 +149,10 @@ export const reviewPass = (ask: ReviewAsk) =>
   Effect.gen(function* () {
     const agents = yield* Agents;
     const { id } = yield* Run;
-    const { dir } = yield* (yield* Host).place(id);
+    const host = yield* Host;
+    const { dir, cwd } = yield* host.place(id);
     const input = told(ask, { dir, id });
+    const checks = renderRecordedChecks(yield* host.evidence(id, cwd));
     // The round comes first, and the first round keeps the plain names: a Run with one
     // review reads as one, and a rally's rounds sort in the order they happened.
     const prefix = ask.prefix ?? "";
@@ -158,7 +173,7 @@ export const reviewPass = (ask: ReviewAsk) =>
         role: "reviewer",
         seat: only!.seat,
         instructions: REVIEW,
-        input,
+        input: { ...input, checks, criteria: ask.criteria ?? "" },
         output: SynthesisSchema,
       });
       yield* leaveReview(dir, alone);
@@ -172,7 +187,7 @@ export const reviewPass = (ask: ReviewAsk) =>
           role: "reviewer",
           seat,
           instructions: REVIEW,
-          input,
+          input: { ...input, checks, criteria: ask.criteria ?? "" },
           output: ReviewOutputSchema,
         }),
       { concurrency: "unbounded" },

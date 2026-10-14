@@ -43,6 +43,7 @@ import {
 import { dispositionsFor, menuFor, type Command, type MenuItem } from "./state";
 import { styledMarkdown } from "./markdown";
 import { C, stateGlyph, stepGlyph } from "./sections";
+import { handoffsDir } from "../handoffs";
 
 /** How many of a running check's last lines the Summary shows. */
 const DRAWER_LINES = 8;
@@ -173,6 +174,14 @@ export function Drawer(props: DrawerProps) {
       text: `${props.detail!.dir}/attachments/${file.name}`,
       mark: "•",
       right: `${file.size} bytes`,
+    }));
+
+  /** What its agents left for whoever comes next. */
+  const handedOn = (): Line[] =>
+    (props.detail?.handoffFiles ?? []).map((file) => ({
+      text: `${handoffsDir(props.detail!.dir)}/${file.name}`,
+      mark: "•",
+      right: `${file.bytes} bytes`,
     }));
 
   const branch = (): Line[] => [
@@ -320,6 +329,9 @@ export function Drawer(props: DrawerProps) {
           <Section title="intent" lines={intent()} />
           <Show when={attached().length > 0}>
             <Section title="attachments" lines={attached()} />
+          </Show>
+          <Show when={handedOn().length > 0}>
+            <Section title="handoffs" lines={handedOn()} />
           </Show>
           <Section title="steps" lines={steps()} />
           <Section title="agents" lines={agents()} />

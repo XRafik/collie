@@ -29,7 +29,7 @@ type MainServices = BunServices.BunServices | FileSystem.FileSystem | Path.Path;
 
 const herdr: (command: string, mode?: string) => Effect.Effect<void, MainError, MainServices> =
   Effect.fn("main.herdr")(function* (command: string, mode?: string) {
-    const [{ currentEnv }, { Herdr }, { boardFlow, openPicker, workspaceFlow }] =
+    const [{ currentEnv }, { Herdr }, { boardFlow, openPicker, restartHostFlow, workspaceFlow }] =
       yield* Effect.promise(() =>
         Promise.all([import("./env"), import("./herdr"), import("./flows")]),
       );
@@ -50,6 +50,8 @@ const herdr: (command: string, mode?: string) => Effect.Effect<void, MainError, 
           return boardFlow(client, env);
         case "workspace":
           return workspaceFlow(client, env);
+        case "restart-host":
+          return restartHostFlow(client, env);
         default:
           return Console.error(`Unknown Herdr entrypoint "${command}".`).pipe(Effect.as(2));
       }

@@ -203,7 +203,7 @@ test("the same work blocks a second delivery; the same words about other work do
   expect(blocked([inFlight], elsewhere.causal_key)).toBeNull();
 
   // Settled work stops blocking; unknown work keeps blocking until someone answers.
-  expect(blocked([delivery({ state: "verified" })], inFlight.causal_key)).toBeNull();
+  expect(blocked([delivery({ state: "superseded" })], inFlight.causal_key)).toBeNull();
   expect(blocked([delivery({ state: "unknown" })], inFlight.causal_key)?.state).toBe("unknown");
 });
 

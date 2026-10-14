@@ -923,6 +923,8 @@ export const servedEndpoint = Effect.fn("Compactors.servedEndpoint")(function* (
   startMs: number;
   /** What did not come up, for the failure a human reads. */
   what: string;
+  /** Shell lines run before the server, so it has the agent's environment. */
+  env?: ReadonlyArray<string>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   // Created before the server is, because the wait below reads it: the shell's redirect
@@ -933,14 +935,21 @@ export const servedEndpoint = Effect.fn("Compactors.servedEndpoint")(function* (
   const pid = yield* Effect.scoped(
     Effect.gen(function* () {
       const handle = yield* spawner.spawn(
-        ChildProcess.make("sh", ["-c", `exec ${opts.command} >${shellQuote(opts.log)} 2>&1`], {
-          cwd: opts.cwd,
-          extendEnv: true,
-          detached: true,
-          stdin: "ignore",
-          stdout: "ignore",
-          stderr: "ignore",
-        }),
+        ChildProcess.make(
+          "sh",
+          [
+            "-c",
+            [...(opts.env ?? []), `exec ${opts.command} >${shellQuote(opts.log)} 2>&1`].join("\n"),
+          ],
+          {
+            cwd: opts.cwd,
+            extendEnv: true,
+            detached: true,
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+          },
+        ),
       );
       // Unref before the scope closes, or the spawner's finalizer kills the server it
       // just started — the same reason a detached Driver is unreffed.
@@ -995,6 +1004,7 @@ const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (
     listening: CODEX_LISTENING,
     startMs: CODEX_START_MS,
     what: "codex app-server",
+    env: ctx.env,
   });
   return { endpoint: `ws://127.0.0.1:${served.found}`, pid: served.pid, command: server };
 });
@@ -1349,6 +1359,7 @@ const opencodeLaunch = Effect.fn("Compactors.opencodeLaunch")(function* (ctx: La
     listening: OPENCODE_LISTENING,
     startMs: OPENCODE_START_MS,
     what: "opencode serve",
+    env: ctx.env,
   });
   const session = yield* createSession(base).pipe(Effect.ensuring(stopServer(served.pid)));
 

@@ -60,6 +60,16 @@ and the one before. Version 1 has none before it.
   whose Task is in it; a Task with no Herd recorded is the host's own Herd's. Event turns stay with each conversation, which reads its Herd's
   News.
 
+## Amended 2026-10-13: ready means mergeable now
+
+A TaskView's `ready` used to mean that the leading Run succeeded, its merge request was
+open and its checks passed. It now means the forge would merge it now: no draft, Collie's
+approved checks passed at the head, CI passed or there is none, no blocking review finding
+open, and the forge says it can merge. A client of protocol 3 would read the new `ready`
+with the old meaning, which is a change of meaning, so `PROTOCOL` is 4. `readiness`, which
+names each missing fact, and the `progress` operation that serves one Run's readiness, steps
+and CI to `run show`, `run wait` and chat, are additive.
+
 ## Amended 2026-10-12: a paired Machine reaches it over a link
 
 D2's "another computer reaches it through a bridge on the Machine itself" is now one of two

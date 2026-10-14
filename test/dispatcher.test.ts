@@ -11,12 +11,11 @@ import {
   dispatchOrder,
   interrupt,
   transaction,
-  steeringSection,
   MAX_DELIVERY_BYTES,
-  settleCollected,
   submitPatiently,
   marked,
   carriedDelivery,
+  confirmSubmitted,
 } from "../src/dispatcher";
 import {
   appendLine,
@@ -222,7 +221,12 @@ test("the record is written before herdr is called, and settled after", () =>
 
       expect(outcome).toEqual({ ok: true, id: "req-1-1", submission: "observed" });
       expect(atSendTime).toEqual(["reserved"]);
-      expect(yield* states()).toEqual(["req-1-1 reserved", "req-1-1 submitted"]);
+      // Sent, then taken: herdr saw a turn start from it.
+      expect(yield* states()).toEqual([
+        "req-1-1 reserved",
+        "req-1-1 submitted",
+        "req-1-1 acknowledged",
+      ]);
       // The lock is not left behind.
       expect(yield* fs.exists(`${file}.lock`)).toBe(false);
     }),
@@ -246,69 +250,36 @@ test("a submission herdr saw no turn come of is submitted, with that as its note
     }),
   ));
 
-test("collecting a step's work settles only what was known sent, never what is in doubt", () =>
+test("a steer to a busy agent is taken once a turn starts after it settles, and recorded acknowledged", () =>
   runEffect(
     Effect.gen(function* () {
-      const file = yield* ledgerPath(stateDir, "term-1");
-      const key = causalKey(draft.run, draft.cause, draft.intentVersion);
-      // One delivery about this work in each state a reader could find it in.
-      const base = {
-        run: draft.run,
-        incarnation: "term-1",
-        agent: entry.agent,
-        causal_key: key,
-        cause: draft.cause,
-        mode: "boundary" as const,
-        text_hash: "t",
-        intent_version: draft.intentVersion,
-        attempt: 1,
-      };
-      const at = "2026-01-01T00:00:00.000Z";
-      yield* appendLine(file, { ...base, id: "sent", request_id: "sent", at, state: "submitted" });
-      yield* appendLine(file, {
-        ...base,
-        id: "acked",
-        request_id: "acked",
-        at,
-        state: "acknowledged",
-      });
-      yield* appendLine(file, {
-        ...base,
-        id: "doubt",
-        request_id: "doubt",
-        at,
-        state: "submitted",
-        note: "unobserved",
-      });
-      yield* appendLine(file, { ...base, id: "held", request_id: "held", at, state: "reserved" });
-      yield* appendLine(file, { ...base, id: "lost", request_id: "lost", at, state: "unknown" });
-      yield* appendLine(file, {
-        ...base,
-        id: "other",
-        request_id: "other",
-        at,
-        causal_key: "other-work",
-        state: "submitted",
-      });
-
-      yield* settleCollected(stateDir, "term-1", key);
-
-      const after = newestById(yield* readLedger(file));
-      const state = (id: string) => [after.get(id)?.state, after.get(id)?.note];
-      // Sent and taken: over, and said so.
-      expect(state("sent")).toEqual(["superseded", "work_collected"]);
-      expect(state("acked")).toEqual(["superseded", "work_collected"]);
-      // A reservation nobody settled and a delivery nobody can account for are exactly
-      // the cases a human has to reconcile; collecting an Output says nothing about them.
-      expect(state("held")).toEqual(["reserved", undefined]);
-      expect(state("lost")).toEqual(["unknown", undefined]);
-      // Written, but herdr saw no turn come of it: an Output beside it does not say it was
-      // read, so it stays in flight — an ack or a human settles it, never a collection.
-      expect(state("doubt")).toEqual(["submitted", "unobserved"]);
-      // Other work is other work.
-      expect(state("other")).toEqual(["submitted", undefined]);
-      // And the doubt still blocks a repeat of this work.
-      expect(["held", "lost", "doubt"]).toContain(blocked(yield* readLedger(file), key)?.id ?? "");
+      const steer = { ...draft, cause: { kind: "steer" as const, ref: "s-1" }, requestId: "s-1" };
+      const sent = yield* transaction(fake({ saw: "unobserved" }).deps, entry, (channel) =>
+        channel.submit("keep going", steer),
+      );
+      expect(sent).toMatchObject({ ok: true, submission: "unobserved" });
+      // Busy with its own turn, then between turns, then on a turn this message started.
+      const statuses = ["working", "idle", "working"] as const;
+      let looked = 0;
+      const how = yield* confirmSubmitted(
+        {
+          stateDir,
+          herdr: {
+            agentStatus: () => Effect.succeed(statuses[Math.min(looked++, 2)]!),
+            promptBox: () => Effect.succeed(""),
+            agentPressEnter: () => Effect.void,
+          },
+          log: () => Effect.void,
+          taken: () => Effect.succeed(null),
+          pollMs: 1,
+          graceMs: 60_000,
+        },
+        entry,
+        [causalKey(steer.run, steer.cause, steer.intentVersion)],
+      );
+      expect(how).toBe("a turn started");
+      const last = (yield* readLedger(yield* ledgerPath(stateDir, "term-1"))).at(-1);
+      expect(last).toMatchObject({ state: "acknowledged", note: "taken: a turn started" });
     }),
   ));
 
@@ -377,6 +348,7 @@ test("a pane that refuses while it is busy is retried until it takes the prompt,
         "deferred",
         "reserved",
         "submitted",
+        "acknowledged",
       ]);
       expect(lines.filter((line) => line.state === "deferred").map((line) => line.code)).toEqual([
         "agent_blocked",
@@ -600,18 +572,6 @@ test("the order survives the inbox, whose decode types mode and cause as plain s
     "handoff",
     "from-a-newer-collie",
   ]);
-});
-
-test("a boundary steer is composed in front of the work, with its acknowledgement", () => {
-  expect(steeringSection("/runs/r1", [])).toBe("");
-  const section = steeringSection("/runs/r1", [
-    { id: "d1", text: "stay inside src/", intentVersion: 2, attempt: 1 },
-  ]);
-  expect(section.startsWith("## Steering\n")).toBe(true);
-  expect(section).toContain("(d1) stay inside src/");
-  expect(section).toContain("/runs/r1/steering/acks/d1.json");
-  expect(section).toContain("collie-delivery:d1");
-  expect(section).toContain('"intent_version":2');
 });
 
 test("a prompt's delivery token is near its top, and a slash command keeps its first line", () => {

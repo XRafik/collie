@@ -319,3 +319,29 @@ export function renderEvidence(got: Pick<Collected, "verifications" | "final">):
     })
     .join("\n");
 }
+
+/**
+ * Every check this Run's journal holds, latest of each, for a reviewer to read rather than run
+ * again: who ran it, whether on the tree in front of it, when, and the baseline where there is one.
+ */
+export function renderRecordedChecks(got: Pick<Collected, "verifications" | "final">): string {
+  const latest = new Map<string, Verification>();
+  const baseline = new Map<string, Verification>();
+  for (const v of got.verifications)
+    if (v.pass === "baseline") baseline.set(v.name, v);
+    else latest.set(`${v.name}:${v.by}`, v);
+  if (latest.size + baseline.size === 0) return "(nothing is recorded for this Run)";
+  const onTree = (v: Verification) =>
+    v.end.head_sha === got.final.head_sha && v.end.fingerprint === got.final.fingerprint
+      ? "on this tree"
+      : "on an earlier tree";
+  return [
+    ...[...latest.values()].map(
+      (v) => `- ${v.name}: ${v.result} (by ${v.by}), ${onTree(v)}, at ${v.at}`,
+    ),
+    ...[...baseline.values()].map(
+      (v) =>
+        `- ${v.name} (baseline, where this branch leaves the default branch, ${v.start.head_sha.slice(0, 12)}): ${v.result}, at ${v.at}`,
+    ),
+  ].join("\n");
+}

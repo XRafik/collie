@@ -59,7 +59,7 @@ given.
 
 ```sh
 collie --json run start review \
-  --input target=worktree --input plan= --input proves= --request-id "$(uuidgen)"
+  --input target=worktree --input plan= --input proves= [--request-id <id>]
 ```
 
 A start that leaves anything out comes back as `needs_input`, with `details.inputs` naming
@@ -80,8 +80,9 @@ command whose passing on the final tree proves the work, or name one on a live R
 Run works on, is derived from the target or the plan directory when you leave it out, and
 comes back as `needs_input` when nothing names one.
 
-A Run asks its questions when it reaches them. `--decide`, `--goal` and `--constraint`
-are refused rather than recorded: answer the question when the wait returns it.
+A Run asks its questions when it reaches them, so `--decide` is refused: answer the
+question when the wait returns it. `--goal` and `--constraint` are recorded into the Run's
+Intent, which the Run is steered against from its start.
 
 Done when you have reported the Run id to the user and said how you will watch it.
 
@@ -128,7 +129,7 @@ An open question is an entry in `data.run.waiting` with `answer: null`.
 
    ```sh
    collie --json run answer <run-id> "<option>" \
-     --decision "<name>" --request-id "$(uuidgen)"
+     --decision "<name>" [--request-id <id>]
    ```
 
    `--decision` is what stops a late answer from landing on another question: one already
@@ -143,9 +144,9 @@ Done when `run show` reports that question with its answer.
 
 ```sh
 collie --json run list
-collie --json run resume <run-id>  --request-id "$(uuidgen)"
-collie --json run stop <run-id>    --request-id "$(uuidgen)"
-collie --json run release <run-id> --request-id "$(uuidgen)"
+collie --json run resume <run-id>  [--request-id <id>]
+collie --json run stop <run-id>    [--request-id <id>]
+collie --json run release <run-id> [--request-id <id>]
 ```
 
 `run list` finds the Run when the user names it by repo, workflow or "the one from this
@@ -166,8 +167,8 @@ project's. Saving the file is the whole of it — there is no registry to edit, 
 rebuild and no host to restart. Never write workflow YAML: it is not what runs.
 
 ```sh
-collie --json workflow create <id> --request-id "$(uuidgen)"
-collie --json workflow fork <id> --layer user --name <yours> --request-id "$(uuidgen)"
+collie --json workflow create <id> [--request-id <id>]
+collie --json workflow fork <id> --layer user --name <yours> [--request-id <id>]
 collie --json workflow check <id>
 ```
 
@@ -184,7 +185,7 @@ typechecks the module without starting a Run. `problem(s)` is what stops it runn
 `drawn without:` is a projection limit and not a fault, and `ok, not typechecked` means
 nothing compiled it. Read `~/.collie/docs/sdk.md` before writing the body.
 
-`collie --json persona fork <name> --layer user --request-id "$(uuidgen)"` forks a persona,
+`collie --json persona fork <name> --layer user [--request-id <id>]` forks a persona,
 which is Markdown and is copied whole.
 
 Done when the file exists and `workflow check` passes.
@@ -192,10 +193,10 @@ Done when the file exists and `workflow check` passes.
 ## Retrying
 
 Every mutation — `run start`, `run answer`, `run stop`, `run resume`, `workflow create` and
-both forks — takes `--request-id`. Generate one per intended action and reuse it for every
-retry of that
-action: Collie returns the first result instead of repeating the effect. Without one, a
-retried `run start` is a second Run. A failure carries the id back in
+both forks — takes an optional `--request-id`: any string unique to the intended action,
+such as `start-review-1`. Reuse it for every retry of that action: Collie returns the
+first result instead of repeating the effect. Without one, a retried `run start` is a
+second Run. A failure carries the id back in
 `error.details.requestId`, so there is always something to retry with. Exit statuses and
 which failures are worth retrying: `docs/cli.md`.
 

@@ -100,6 +100,44 @@ test(
   120_000,
 );
 
+test(
+  "the handoff notes a Run's agents leave are on its record, in run show and fetched by reference",
+  () =>
+    proves(
+      "collie-detail-handoffs-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const runId = yield* started(world, ["plain", "--input", "note=hi"]);
+          const handoffs = `${runDir(world.state, runId)}/handoffs`;
+          yield* fs.makeDirectory(`${handoffs}/review`, { recursive: true });
+          yield* fs.writeFileString(`${handoffs}/review/notes.md`, "for the reviewer\n");
+
+          const shown = yield* collie(world, ["run", "show", runId]);
+          expect(shown.envelope.data).toMatchObject({
+            handoffs: [{ path: `${handoffs}/review/notes.md`, bytes: 17 }],
+          });
+
+          const door = yield* frontDoor(socketOf(world.state));
+          const detail = yield* door
+            .runDetail({ runId, tail: false, pages: 1, refreshMr: false })
+            .pipe(Stream.runHead, Effect.timeout("30 seconds"));
+          expect(Option.getOrNull(detail)?.handoffFiles).toEqual([
+            { name: "review/notes.md", bytes: 17 },
+          ]);
+          const note = yield* door.runFile({ runId, ref: "handoff:review/notes.md" });
+          expect(note.content).toBe("for the reviewer\n");
+          const outside = yield* door
+            .runFile({ runId, ref: "handoff:../log.txt" })
+            .pipe(Effect.flip);
+          expect(outside._tag).toBe("HostRefused");
+          yield* stopHost(world.state);
+        }).pipe(Effect.orDie),
+      ["plain.workflow.ts"],
+    ),
+  120_000,
+);
+
 const MR = "mr:gitlab.example.com/mk/project!7";
 
 test(

@@ -324,6 +324,12 @@ const verdict =
   with the first message — which is the only way to reach a skill that refuses to be called
   by a model. A skill _mentioned_ in your Markdown as `{{skill:name}}` renders as the path
   to read instead, so a prompt never spells one harness's syntax.
+- **`pushes: true` is read before the agent starts.** The host reads the branch's merge
+  request through its forge, and while it merges itself once green the work does not start:
+  the Run records `not pushed: auto-merge is on for <url>` and parks as Needs you until
+  auto-merge is off and it is resumed
+  ([ADR-0050 D4](adr/0050-a-merge-request-is-its-forges.md)). Give it to any work whose
+  agent pushes.
 - **`input` is what the instructions name.** With a template it is exactly what the
   template declares, so the compiler checks it; with text, `{{run.dir}}` reads `input.run.dir`.
   An expression nothing fills fails the work before any agent starts, never renders empty.
@@ -339,7 +345,8 @@ the same role is never the answer, however recently it was started from the same
 name the role — who may be asked is your workflow's declaration, not an assumption Collie
 makes about it. Give that work's Output an `assumptions` field and carry what it says to the
 human, as implement's `Built` does into the merge request: a field the schema lacks is
-decoded away.
+decoded away. Ask it again for each piece of work rather than once per Run: a planner that
+has gone since is otherwise still described as live. Shipped `implement` asks per ticket.
 
 The work itself is written to `<state>/agents/<run>/<operation>.prompt.md` and the message
 names that file. One send is one message and not a transcript: a step's prompt carries a
@@ -584,7 +591,11 @@ replay does not cut a second checkout. Shipped `review` takes it before its own 
 `place.dir` is where what a Run produces belongs, and where the things that read a Run look:
 a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its findings in
 `findings.json` — `leaveReview` writes both. A card counts those; nothing counts a Run's
-prose.
+prose. `findingsIn(dir)` reads the findings back. After a last fix `settleFinalFix`
+accepted, `leaveOutstanding(dir, outstanding)` leaves the findings it says still stand, and
+the review's prose as it was. Shipped `implement` also leaves every blocking dispute still
+the human's among them at its own severity, whichever review wrote last, so the card counts
+it.
 
 `place.options` is the other half of the launch. The names in `RESERVED_INPUTS` are the
 host's, so they are never in your payload — a caller asking for extra review axes or naming
@@ -622,6 +633,25 @@ because a step that cannot reach its forge has
 nothing to fill in — check it before you start an agent, and say the reason where it is no.
 Once one is open, `host.mergeRequest(runId, url)` records it as a fact of the Run: its card
 links it, waits on it, and follows what the forge says of it.
+
+`host.integrate(runId, cwd)` fetches the default branch and, where it has moved, merges it
+into the branch checked out at `cwd` with a merge commit: never a rebase, never a push.
+It answers with an `Integration` (`IntegrationSchema` journals it):
+
+- `unchanged`: the branch already contains the default branch.
+- `merged`: the default branch was merged in.
+- `conflicted`: the merge is left in progress, naming its `files`, for an agent to finish. A
+  merge still unfinished is answered the same way, however often it is asked about.
+- `waiting`: the checkout had uncommitted changes, untracked files among them, and was left
+  alone.
+- `unavailable`: nothing was merged, with the `reason`: no default branch, a fetch that
+  failed, one that cannot be read, or a merge git refused without a conflict.
+
+`ref` and `sha` are what the branch is measured against from then on, so a reviewer's diff
+is `<sha>...HEAD`. Each merge is recorded in the Run log as `integrated <branch>@<sha>`.
+Take it inside an `Activity`, so a replay does not merge again. Shipped `implement` calls it
+before every ticket after the first, before every review round and before the gate's fresh
+review, and goes on only from `unchanged` or `merged`.
 The shipped `renovate` workflow still requires GitLab for its merge and release commands.
 
 `host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on
@@ -917,8 +947,10 @@ for (const [at, ticket] of tickets.entries()) {
 
 `orderedTickets` (and `orderedTicketsOf`) reads a plan directory as tickets in an order they
 can be built in — `Blocked by` before blocked, plan order among the rest — narrowed to one
-repository where you name one. Skipping is your own `continue` with a reason recorded: no
-agent, no tab and no Output written as though somebody had answered. An empty list is no
+repository where you name one. Each ticket's `criteria` are its acceptance criteria, one per
+checkbox under its Acceptance criteria heading (`criteriaIn` reads them from a ticket's
+text); a ticket with no checkboxes has none. Skipping is your own `continue` with a reason
+recorded: no agent, no tab and no Output written as though somebody had answered. An empty list is no
 work, and findings are yours to carry — nothing here ends a list because an item found
 something.
 
@@ -983,10 +1015,18 @@ Collie never works a pass out from your workflow's id.
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 ```
 
+`reuse: true` answers with the latest pass Collie collected for that check instead of
+running it, where it was the same command on this tree in this
+[environment](cli.md#verify); otherwise the check runs. Ask for it only where
+nothing a human did since could change the answer: `implement`'s proof asks on its first
+execution, straight after the gate, and never after a resume.
+
 `host.approved(runId)` is the Run's checks as they stand now, for a prompt to name what the
 work will be held to — `renderApproved` writes it out — and
 `renderEvidence(host.evidence(...))` is what was actually collected and by whom, for a
-merge request to say what it proved. The list can grow while the Run works, since an
+merge request to say what it proved. `renderRecordedChecks` writes the same journal for a
+reviewer — the latest of each check, by whom, whether on the tree in front of it, when, and
+the baseline — so a review reads what was run rather than running it again. The list can grow while the Run works, since an
 agent may name a check, so read it again where you need it — at each gate pass, inside the
 Activity that runs it, so a replay sees what that pass saw — rather than once at the start.
 An empty list stops nothing: where your Run's kind of result needs checks,
@@ -1039,8 +1079,11 @@ None of it is yours to implement, but it decides where your workflow can be inte
 - **Halting the agent is the host's half of a stop.** `run stop` also closes the panes of
   the Run's agents, and of the Runs it started, which is what stops them; the workspace
   keeps its own tab. When the Run resumes, work whose agent has gone and whose Output never
-  came is given to a new one with the same prompt. Steering — `run steer` — says something
-  to a live agent through the one sender, and says whether it was delivered;
+  came is given to a new one with the same prompt. Steering — `run steer`, and `Agents.steer`
+  from a module — says something to a live agent through the one sender: `to` names a role
+  (`builder`, `reviewer`, `planner`) or an agent, and with none it reaches the agent whose
+  step is active, else the builder. It answers whether it was delivered, and with `observed`
+  and `how`, whether the agent was seen to take it;
   `handOffWork` does the same from a workflow to the live agent in a role of a Run this one
   was started from, as review hands its findings to an implementer already building the
   work. It answers with
@@ -1143,6 +1186,20 @@ before anything exists: `new`, or the absolute path of a directory. Anything els
 `PlanOutputSchema` are exported so a step you write declares the same contract the engine
 reads, rather than a copy of it. `FindingSchema`, `FixedSchema` and `CheckSchema` are the
 pieces they are built from.
+
+`CriterionSchema` is how a builder answers one of its ticket's acceptance criteria:
+`criterion`, copied from the ticket, and `met`, the test or file that shows it, or
+`not met: <reason>`. Implement's `Built` carries them as an optional `criteria` list.
+`unmetCriteria(ticket, criteria, answers)` turns each criterion left unanswered or not met
+into a blocking finding against the ticket. `answerFor(criterion, answers, among)` is the
+answer a criterion has; a copy that dropped the criterion's formatting still counts, and so
+does its bold lead alone where no other criterion `among` the ticket's shares it. Shipped
+`implement` hands what is unmet back to the builder before any reviewer is launched, twice at
+most, and stops the work if any is still unmet, so no reviewer starts on it. A text work
+source's criteria are its own checkboxes; a Linear issue's are read from `plan/SPEC.md`, the
+copy of its description the builder makes, and a copy that cannot be read stops the work. The reviewer's prompt
+shows every criterion, its answer and the builder's assumptions. A workflow that never reads
+the field is unaffected.
 
 They are deliberately loose where judgement lives. `severity` is free text: `blocker`,
 `major` and `minor` are what the shipped prompts ask for, but a fork's own word is a

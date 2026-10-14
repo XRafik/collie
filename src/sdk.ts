@@ -38,6 +38,7 @@ import {
 } from "./outcome";
 import type { Source } from "./offers";
 import type { UsageReading } from "./usage-model";
+import type { Integration } from "./integrate";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -54,9 +55,12 @@ export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";
+/** What merging the default branch into a Run's branch did (`HostApi.integrate`). */
+export { IntegrationSchema, type Integration } from "./integrate";
 
 export {
   CheckSchema,
+  CriterionSchema,
   FindingSchema,
   FixOutputSchema,
   FixedSchema,
@@ -72,6 +76,7 @@ export {
  * workflow says it the same way.
  */
 export {
+  answerFor,
   blockingKeys,
   findingKey,
   formatFindings,
@@ -81,9 +86,11 @@ export {
   settleRound,
   splitDisputed,
   substantiated,
+  unmetCriteria,
   unsubstantiated,
   type Check,
   type CheckEvidence,
+  type Criterion,
   type FinalFix,
   type Finding,
   type FixOutput,
@@ -98,10 +105,20 @@ export {
 
 /**
  * What a Run leaves behind about a review, and where. `leaveReview` writes both halves —
- * the prose a human reads and the findings whatever comes next counts — and `riskLine` is
+ * the prose a human reads and the findings whatever comes next counts, read back by
+ * `findingsIn` — `leaveOutstanding`
+ * the findings still standing after a last fix `settleFinalFix` accepted, and `riskLine`
  * the paragraph an extra axis adds to what a reviewer is asked.
  */
-export { FINDINGS_FILE, REVIEW_FILE, leaveReview, openFindingsIn, riskLine } from "./output";
+export {
+  FINDINGS_FILE,
+  REVIEW_FILE,
+  findingsIn,
+  leaveOutstanding,
+  leaveReview,
+  openFindingsIn,
+  riskLine,
+} from "./output";
 
 export type { Snapshot, Verification } from "./verify";
 export type { VerifySpec } from "./verify-spec";
@@ -113,7 +130,7 @@ export { renderApproved } from "./verify-spec";
  * What kind of result a Run is for, and what the journal says it actually collected —
  * for a merge request to say what was proved rather than what an Output claimed.
  */
-export { isOutcome, renderEvidence, type Outcome } from "./outcome";
+export { isOutcome, renderEvidence, renderRecordedChecks, type Outcome } from "./outcome";
 
 /**
  * Which of the five kinds of work a work source is. A workflow that reads a plan
@@ -135,6 +152,7 @@ export { identityProblem, renderProgress, type Handed } from "./slices";
  */
 export {
   checksIn,
+  criteriaIn,
   isSingleRepo,
   orderedTickets,
   orderedTicketsOf,
@@ -562,6 +580,11 @@ export interface HostApi {
      */
     readonly pass?: "gate" | "recheck" | "fix";
     readonly round?: number;
+    /**
+     * Answer with its latest pass on this tree in this environment instead of running it.
+     * Only where nothing since, such as a resume, could change the answer.
+     */
+    readonly reuse?: boolean;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
    * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt
@@ -589,6 +612,12 @@ export interface HostApi {
     readonly source?: { readonly value: string; readonly kind: string };
   }) => Effect.Effect<MrReady>;
   /**
+   * The URL of the checkout's branch's open merge request where it merges itself once
+   * green, else null: a push to it would be a merge (ADR-0050 D4). Read fresh each time.
+   * Fails, saying why, where the forge cannot be read: not knowing is not a no.
+   */
+  readonly autoMerging: (cwd: string) => Effect.Effect<string | null, WorkflowError>;
+  /**
    * Blocks until this Run holds the shared claim on the repository it works in, and
    * answers null where that repository has none. Waiting here costs wall clock and no
    * model tokens, which is the point of claiming before an agent starts rather than
@@ -611,6 +640,14 @@ export interface HostApi {
    * its card links it, says it waits on it, and follows what the forge says of it.
    */
   readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
+  /**
+   * Fetches the default branch and, where it has moved, merges it into the branch checked
+   * out at `cwd`: a merge commit, never a rebase or a push. A checkout with uncommitted
+   * changes is left alone (`waiting`); a conflict leaves the merge in progress, naming its
+   * files, for the builder to finish. Each merge is recorded in the Run log as
+   * `integrated <branch>@<sha>`. Take it inside an Activity, so a replay does not merge again.
+   */
+  readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
   /**
    * Puts a note on the merge request a Run was pointed at, sent by Collie rather than
    * written out again by an agent — asking for a file to be repeated verbatim is how
@@ -677,7 +714,7 @@ export interface MrReady {
   readonly autoMerge?: boolean;
   /** The command lines an agent runs, written by the forge's adapter. */
   readonly commands?: {
-    /** Opens one, with `<title>` and `<file>` (the description file) left to fill in. */
+    /** Opens one, with `<title>`, `<file>` (the description file) and any `<iid>` left to fill in. */
     readonly create: string;
     /** Posts `<file>` as a note on `existing`; empty where there is none. */
     readonly comment: string;

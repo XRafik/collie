@@ -77,6 +77,15 @@ request that has auto-merge on. Collie reads that and does not run the step. An 
 still the one that opens a merge request and writes its description, with the command
 the adapter wrote for it.
 
+_Amended 2026-10-13:_ the rule covers every step that pushes, not only delivery. Before
+`implement`'s build, each fix round and gate fix, its delivery, and `review`'s fix, the
+host reads the branch's merge request through the adapter (`pushes` on `agentWork`).
+Where it merges itself once green, the step does not start: the Run records `not pushed:
+auto-merge is on for <url>` and parks as Needs you until the human turns auto-merge off
+and resumes it. The implementer persona's own `gh pr list` check is gone. A command the
+adapter writes substitutes no command: `glab` takes a file only through its API, which
+reads `@<file>` itself, so GitLab's create is `glab mr create` and then that API call.
+
 **D5. Who a branch and a merge request belong to is the checkout's forge's login.** A
 generated branch is namespaced under the login the checkout's forge reports, and a merge
 request is assigned to it, unless the human set someone:
