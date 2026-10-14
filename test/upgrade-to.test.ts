@@ -159,3 +159,26 @@ test("a release placed inside a kept clone is a release, never the clone's check
       expect(yield* isCheckout(clone)).toBe(true);
     }),
   ));
+
+test("work that conflicts with the pull is reported in git's words, and nothing is prepared", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* exec(["sh", "-c", "echo shipped > notes.md"], { cwd: origin });
+      yield* git(origin, "add", "notes.md");
+      yield* git(origin, "commit", "--quiet", "-m", "notes");
+      yield* git(clone, "pull", "--quiet", "--ff-only");
+      yield* exec(["sh", "-c", "echo upstream > notes.md"], { cwd: origin });
+      yield* git(origin, "commit", "--quiet", "-am", "upstream notes");
+      yield* Effect.promise(() => Bun.write(`${clone}/notes.md`, "mine\n"));
+      yield* Effect.promise(() =>
+        Bun.write(`${clone}/prepare.sh`, `echo ran > "${rig.root}/prepared"\n`),
+      );
+      yield* git(clone, "update-index", "--assume-unchanged", "prepare.sh");
+
+      const refused = yield* upgrade(development());
+
+      expect(refused).toMatchObject({ ok: false, error: { code: "operation_failed" } });
+      expect(!refused.ok && JSON.stringify(refused.error.details)).toMatch(/conflict/i);
+      expect(yield* Effect.promise(() => Bun.file(`${rig.root}/prepared`).exists())).toBe(false);
+    }),
+  ));

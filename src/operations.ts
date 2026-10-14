@@ -371,7 +371,9 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
   // `--ff-only`: an upgrade that quietly merged or rebased someone's local work would be a
   // surprise nobody asked this command for. Uncommitted work rides through the pull.
   const pulled = yield* run("git", ["pull", "--ff-only", "--autostash"], root);
-  if (pulled.code !== 0) {
+  // A conflicting autostash still exits 0, leaving the work unmerged.
+  const unmerged = (yield* run("git", ["ls-files", "--unmerged"], root)).stdout.trim();
+  if (pulled.code !== 0 || unmerged !== "") {
     return err("operation_failed", `Could not update ${root}.`, {
       root,
       output: whatItSaid(pulled),
