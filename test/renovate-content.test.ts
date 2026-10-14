@@ -36,3 +36,12 @@ test("RENOVATE is still the GitLab content a fork written before there were two 
   expect(RENOVATE.merge.text).toContain("glab mr approve");
   expect(RENOVATE_ON.github.merge.text).toContain("gh pr merge");
 });
+
+test("the batch branch is named outside Renovate Bot's branch prefix on both forges", () => {
+  for (const content of [gitlab, github]) {
+    const batch = content.sections.get("batch") ?? "";
+    expect(batch).toContain("`deps/batch-<YYYY-MM-DD>`");
+    expect(batch).toContain("git push -u origin deps/batch-<date>");
+    expect(batch).not.toContain("renovate/batch");
+  }
+});

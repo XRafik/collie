@@ -4818,7 +4818,7 @@ for (const name of ["gitlab", "github"] as const) {
           yield* rig.queueOutputs([
             TRACKED,
             { verdict: "clean", up_to_date: false, is_package: false, merge_requests: BUMPS },
-            { verdict: "clean", branch: "renovate/batch" },
+            { verdict: "clean", branch: "deps/batch" },
             { verdict: "clean", verified: false },
           ]);
           const result = yield* ran({
@@ -4985,7 +4985,7 @@ scenario(
         yield* rig.queueOutputs([
           TRACKED,
           { verdict: "clean", up_to_date: false, is_package: false, merge_requests: BUMPS },
-          { verdict: "clean", mr_url: "https://gitlab.example.com/x!99", branch: "renovate/batch" },
+          { verdict: "clean", mr_url: "https://gitlab.example.com/x!99", branch: "deps/batch" },
           { verdict: "clean", verified: true, verified_by: "e2e-stage" },
           { verdict: "clean", approved_by: ["a-teammate"], head_sha: "abc" },
           MERGED,

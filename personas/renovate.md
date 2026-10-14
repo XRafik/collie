@@ -26,7 +26,9 @@ Rules:
 - Fix only what the dependency bump broke: a conflict, a call site, a failing test. Never
   an unrelated refactor, never a weakened check, and never a bypass of branch protection.
   The only aggregate branch is the batch branch the `batch` step makes for an
-  application, proven on stage and approved by a teammate before it is merged.
+  application, proven on stage and approved by a teammate before it is merged. It is
+  `deps/batch-<YYYY-MM-DD>`, never under Renovate Bot's `renovate/` prefix, which is the
+  Bot's own.
 - Never force a merge, never force-push, and never merge with failing required checks.
 - Every merge request you touch ends with exactly one recorded outcome: `merged`, `closed`
   or `deferred`. A `closed` needs evidence that the change is already on the default
