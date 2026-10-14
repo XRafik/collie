@@ -266,7 +266,6 @@ export function Board(props: BoardProps) {
       <Header
         header={props.header}
         usage={props.usage}
-        newer={props.newer}
         logo={props.logo}
         width={props.width}
         query={props.query}
@@ -275,6 +274,12 @@ export function Board(props: BoardProps) {
         onNewRun={props.onNewRun}
         onOverflow={props.onOverflow}
       />
+      {/* A row of its own, so it is said whole however little the header leaves. */}
+      <Show when={props.newer !== null}>
+        <text fg={C.amber} wrapMode="none" style={{ paddingLeft: SIDE, flexShrink: 0 }}>
+          {newerLine(props.newer ?? "")}
+        </text>
+      </Show>
       {/* Nothing in this column may shrink: yoga would otherwise fit a tall board into the
           viewport by compressing every card, which drew sentences over names and folds
           over borders the moment the content outgrew the pane. The scroll area is what
@@ -300,7 +305,6 @@ export function Board(props: BoardProps) {
 function Header(props: {
   header: HeaderSentence;
   usage: UsagePhrase;
-  newer: string | null;
   logo: string | null;
   width: number;
   query: string;
@@ -345,13 +349,6 @@ function Header(props: {
         <box style={{ flexShrink: 1, overflow: "hidden" }}>
           <text fg={props.usage.warn ? C.amber : C.dim} wrapMode="none">
             {`  ${props.usage.text}`}
-          </text>
-        </box>
-      </Show>
-      <Show when={props.newer !== null}>
-        <box style={{ flexShrink: 1, overflow: "hidden" }}>
-          <text fg={C.amber} wrapMode="none">
-            {`  ${newerLine(props.newer ?? "")}`}
           </text>
         </box>
       </Show>

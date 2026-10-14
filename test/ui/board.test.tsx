@@ -1821,12 +1821,12 @@ test("a newer release is said in the board's header, with the command", () =>
     }),
   ));
 
-test("a newer release gives way to the header's controls on a narrow pane", () =>
+test("a newer release is said in full on a narrow pane, and hides none of the header's controls", () =>
   runEffect(
     Effect.gen(function* () {
       for (const width of [100, 70]) {
         const header = (app: { frame: () => string }) =>
-          app.frame().split("\n").slice(0, 4).join("\n");
+          app.frame().split("\n").slice(0, 5).join("\n");
         const current = header(yield* mount(appState(), width));
         const stale = header(yield* mount(appState({ board: board({ newer: "99.0.0" }) }), width));
         for (const control of ["⌕", "+ New run", "≡"]) {
@@ -1834,6 +1834,7 @@ test("a newer release gives way to the header's controls on a narrow pane", () =
         }
         expect(stale).toContain("⌕");
         expect(stale).toContain("+ New run");
+        expect(stale).toContain("Collie 99.0.0 is out — collie upgrade");
       }
     }),
   ));
