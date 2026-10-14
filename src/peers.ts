@@ -54,8 +54,10 @@ import {
 } from "./peers-model";
 import { reason } from "./naming";
 import { sharedSettings, takeShared } from "./config";
-import { takeFrom } from "./flock-settings";
-import { epochMs, nowIso } from "./time";
+import { byKey, latestEdits, takeFrom } from "./flock-settings";
+import type { SharedDefinition } from "./definitions-model";
+import { byPath, landed, sharedDefinitions, takeDefinitions } from "./shared-definitions";
+import { nowIso } from "./time";
 import { RELEASE_TAG } from "./release";
 import type { HostUnavailable, HostVersionMismatch } from "./host";
 import type * as RpcClientError from "effect/rpc/RpcClientError";
@@ -287,6 +289,11 @@ export interface PeerClient {
   readonly setSettings: (
     asked: Pick<SharedSettings, "settings"> & Pick<ShellRequest, "request">,
   ) => Effect.Effect<SharedSettings, PeerCallFailure>;
+  readonly sharedDefinitions: () => Effect.Effect<ReadonlyArray<SharedDefinition>, PeerCallFailure>;
+  readonly setSharedDefinitions: (asked: {
+    readonly definitions: ReadonlyArray<SharedDefinition>;
+    readonly request: string;
+  }) => Effect.Effect<ReadonlyArray<SharedDefinition>, PeerCallFailure>;
 }
 
 /** What a peer link reaches its own host with, which only it may declare `from.machine` with. */
@@ -538,12 +545,15 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
                 ]),
             );
             const merged = takeFrom({ settings, synced: [] }, peer.name, theirs.settings);
-            const take = Object.entries(merged.flock.settings).flatMap(([key, { value, at }]) => {
-              const kept = mine.settings.find((one) => one.key === key);
-              return kept === undefined || epochMs(at) > epochMs(kept.at)
-                ? [{ key, value, at }]
-                : [];
-            });
+            const { take } = latestEdits(
+              mine.settings,
+              Object.entries(merged.flock.settings).map(([key, { value, at }]) => ({
+                key,
+                value,
+                at,
+              })),
+              byKey,
+            );
             if (take.length > 0) yield* takeShared(link.userDir, take, peer.name, yield* nowIso());
             if (merged.give.length > 0)
               yield* door.setSettings({
@@ -556,6 +566,42 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       .pipe(
         Effect.catch((cause) =>
           Effect.logWarning(`settings not synced with ${peer.name}: ${reason(cause)}`),
+        ),
+        Effect.provideContext(services),
+      );
+
+  /** This Machine's and a peer's shared definitions, each given the other's later edits. */
+  /** Per peer, the edit of each path it is known to hold, so a watch gives it only newer ones. */
+  const holds = new Map<string, Map<string, string>>();
+  const unsynced = (peer: Peer, held: ReadonlyArray<SharedDefinition>) =>
+    held.some((one) => holds.get(peer.installation)?.get(one.path) !== one.at);
+
+  const syncDefinitions = (peer: Peer) =>
+    syncing
+      .withPermits(1)(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const door = yield* link.connect(peer);
+            const mine = yield* sharedDefinitions(link.userDir, yield* nowIso());
+            const { take, give } = latestEdits(mine, yield* door.sharedDefinitions(), byPath);
+            const held =
+              take.length > 0
+                ? yield* takeDefinitions(link.userDir, take, peer.name, yield* nowIso())
+                : mine;
+            if (give.length > 0)
+              yield* door.setSharedDefinitions({
+                definitions: give,
+                request: `sync:${link.installation}:${yield* (yield* Crypto.Crypto).randomUUIDv4}`,
+              });
+            const known = holds.get(peer.installation) ?? new Map<string, string>();
+            for (const one of landed([...mine, ...take], held)) known.set(one.path, one.at);
+            holds.set(peer.installation, known);
+          }),
+        ),
+      )
+      .pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning(`definitions not synced with ${peer.name}: ${reason(cause)}`),
         ),
         Effect.provideContext(services),
       );
@@ -580,7 +626,10 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         reconcileMachines.pipe(
           Effect.andThen(() =>
             peers.some((one) => one.installation === peer.installation)
-              ? level(peer).pipe(Effect.andThen(syncSettings(peer)))
+              ? level(peer).pipe(
+                  Effect.andThen(syncSettings(peer)),
+                  Effect.andThen(syncDefinitions(peer)),
+                )
               : Effect.void,
           ),
         ),
@@ -1092,6 +1141,37 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
       Effect.catch((cause) =>
         Effect.logWarning(`could not watch shared settings: ${reason(cause)}`),
       ),
+    ),
+    scope,
+  );
+  const definitionDirs = [`${link.userDir}/workflows`, `${link.userDir}/personas`];
+  yield* Effect.forkIn(
+    Effect.gen(function* () {
+      for (const dir of definitionDirs) yield* fs.makeDirectory(dir, { recursive: true });
+      yield* Stream.mergeAll(
+        definitionDirs.map((dir) => fs.watch(dir)),
+        { concurrency: "unbounded" },
+      ).pipe(
+        Stream.runForEach(() =>
+          Effect.gen(function* () {
+            const live = peers.filter((peer) => standings.get(peer.installation)?.state === "live");
+            if (live.length === 0) return;
+            const held = yield* sharedDefinitions(link.userDir, yield* nowIso());
+            yield* Effect.forEach(
+              live.filter((peer) => unsynced(peer, held)),
+              syncDefinitions,
+              { discard: true },
+            );
+          }),
+        ),
+      );
+    }).pipe(
+      // A watch ends with its directory; watching again recreates it.
+      Effect.catch((cause) =>
+        Effect.logWarning(`could not watch shared definitions: ${reason(cause)}`),
+      ),
+      Effect.andThen(Effect.sleep("10 seconds")),
+      Effect.forever,
     ),
     scope,
   );

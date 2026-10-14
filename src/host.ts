@@ -96,6 +96,8 @@ import { hostLogger, rotateInPlace } from "./host-log";
 import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
 import { readDefinitions } from "./authoring";
+import { SharedDefinition } from "./definitions-model";
+import { DefinitionRefused, sharedDefinitions, takeDefinitions } from "./shared-definitions";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
 import { dataHomeOf, desktopRootOf } from "./desktop";
@@ -906,6 +908,7 @@ const CLEANUP_TRAIL = 50;
 
 /** How many of the settings operations a host keeps a record of. */
 const SETTINGS_TRAIL = 50;
+const DEFINITIONS_TRAIL = 50;
 /** How many usage reads the host keeps a record of: Desktop asks every minute. */
 const USAGE_TRAIL = 200;
 /** How many of the chat's writes to files the host keeps a record of. */
@@ -1374,6 +1377,57 @@ const frontDoorHandlers = (
               );
               yield* trimAudit(trail, SETTINGS_TRAIL).pipe(Effect.orDie);
               return taken;
+            }),
+          ),
+        sharedDefinitions: (_, { client }) =>
+          Effect.gen(function* () {
+            const held = yield* sharedDefinitions(env.userDir, yield* nowIso());
+            const trail = (yield* Path.Path).join(env.stateDir, "definitions");
+            yield* recordAudit(trail, {
+              operation: "definitions",
+              request: yield* (yield* Crypto.Crypto).randomUUIDv4,
+              ...whoOf(client),
+              result: Schema.Number,
+              value: held.length,
+            }).pipe(Effect.andThen(trimAudit(trail, DEFINITIONS_TRAIL)), Effect.orDie);
+            return held;
+          }).pipe(
+            Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+            Effect.provideContext(bun),
+          ),
+        setSharedDefinitions: ({ definitions, request }, { client }) =>
+          plainly(
+            Effect.gen(function* () {
+              const who = whoOf(client);
+              const trail = (yield* Path.Path).join(env.stateDir, "definitions");
+              const held = yield* once(
+                trail,
+                {
+                  operation: "share definitions",
+                  request,
+                  ...who,
+                  asked: { definitions },
+                  result: Schema.Array(SharedDefinition),
+                },
+                takeDefinitions(
+                  env.userDir,
+                  definitions,
+                  who.from?.machine?.name ?? who.from?.client ?? who.origin,
+                  yield* nowIso(),
+                ).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new HostRefused({
+                        reason:
+                          cause instanceof DefinitionRefused
+                            ? `${REFUSED_INPUT}: ${cause.reason}`
+                            : reason(cause),
+                      }),
+                  ),
+                ),
+              );
+              yield* trimAudit(trail, DEFINITIONS_TRAIL).pipe(Effect.orDie);
+              return held;
             }),
           ),
         usage: (_, { client }) =>

@@ -34,6 +34,29 @@ const same = (a: Schema.Json | null, b: Schema.Json | null) =>
 const GIVEN_ONLY = "gitlab_host";
 
 /**
+ * The latest edit of each key: `take` is each of `has` later than what is held or not held,
+ * and `give` is each held one later than `has`'s or missing from it. A tie keeps what is
+ * held, and a removal is an edit like any other.
+ */
+export const latestEdits = <
+  Held extends { readonly at: string },
+  Has extends { readonly at: string },
+>(
+  held: ReadonlyArray<Held>,
+  has: ReadonlyArray<Has>,
+  keyOf: (edit: Held | Has) => string,
+) => {
+  const later = (one: Held | Has, others: ReadonlyArray<Held | Has>) => {
+    const other = others.find((each) => keyOf(each) === keyOf(one));
+    return other === undefined || epochMs(one.at) > epochMs(other.at);
+  };
+  return {
+    take: has.filter((one) => later(one, held)),
+    give: held.filter((one) => later(one, has)),
+  };
+};
+
+/**
  * What a Machine has, taken into the Flock's where it is the later edit and a value its
  * setting takes, and what the Machine should then be given: each key whose latest edit it
  * lacks.
@@ -45,10 +68,13 @@ export const takeFrom = (
 ) => {
   const settings = { ...flock.settings };
   const first = !flock.synced.includes(machine);
-  for (const { key, value, at } of has) {
+  const held = (edits: FlockSettings["settings"]) =>
+    Object.entries(edits).map(([key, { value, at }]): SharedSetting => ({ key, value, at }));
+  const takeable = has.filter(
+    ({ key, value }) => key !== GIVEN_ONLY && !("refused" in parseShared(key, value)),
+  );
+  for (const { key, value, at } of latestEdits(held(settings), takeable, byKey).take) {
     const kept = settings[key];
-    if (key === GIVEN_ONLY || "refused" in parseShared(key, value)) continue;
-    if (kept !== undefined && epochMs(at) <= epochMs(kept.at)) continue;
     settings[key] = {
       value,
       at,
@@ -56,10 +82,9 @@ export const takeFrom = (
       differed: first && kept !== undefined && kept.from !== machine && !same(kept.value, value),
     };
   }
-  const give = Object.entries(settings).flatMap(([key, { value, at }]): SharedSetting[] => {
-    const theirs = has.find((one) => one.key === key);
-    return theirs !== undefined && epochMs(theirs.at) >= epochMs(at) ? [] : [{ key, value, at }];
-  });
+  const { give } = latestEdits(held(settings), has, byKey);
   const synced = first ? [...flock.synced, machine] : flock.synced;
   return { flock: { settings, synced } satisfies FlockSettings, give };
 };
+
+export const byKey = (setting: { readonly key: string }) => setting.key;

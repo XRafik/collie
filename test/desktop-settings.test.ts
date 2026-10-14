@@ -14,6 +14,7 @@ import {
   takeFrom,
 } from "../desktop/src/shared/flock-settings";
 import { flockSync } from "../desktop/src/bun/flock-settings";
+import { latestEdits } from "../src/flock-settings";
 import { settingStored } from "../src/settings";
 import {
   applyChange,
@@ -27,6 +28,26 @@ const set = (key: string, value: SharedSetting["value"], hour: number): SharedSe
   key,
   value,
   at: at(hour),
+});
+
+test("the latest edit of each key wins, a removal is an edit, and a tie keeps what is held", () => {
+  const held = [
+    set("a", "old", 9),
+    set("b", "mine", 11),
+    set("c", "held", 9),
+    set("d", "only mine", 9),
+  ];
+  const has = [
+    set("a", null, 10),
+    set("b", "theirs", 10),
+    set("c", "other", 9),
+    set("e", "theirs", 8),
+  ];
+
+  expect(latestEdits(held, has, (one) => one.key)).toEqual({
+    take: [set("a", null, 10), set("e", "theirs", 8)],
+    give: [set("b", "mine", 11), set("d", "only mine", 9)],
+  });
 });
 
 test("the first sync takes a key set on only one Machine from it", () => {

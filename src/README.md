@@ -121,8 +121,9 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 
 The Machine link is `peers.ts`: pairing, TLS channels, relay sockets, dial-back and
 keeping paired Machines level. `peers-model.ts` holds the peer records and states
-Desktop shares. `flock-settings.ts` holds the latest-edit merge both hosts and Desktop
-use. `channel.ts` declares and pipes the channel the bridge and peer link share.
+Desktop shares. `flock-settings.ts` holds the latest-edit rule and merge both hosts and
+Desktop use. `shared-definitions.ts` reads and writes the user Layer's files a Flock
+shares, keeping replaced text under `replaced/`. `channel.ts` declares and pipes the channel the bridge and peer link share.
 
 `reports.ts` sends a settled Run's result to its recorded requester once, through the
 Dispatcher, and closes a `closes: "reported"` Run's own agents and eligible Task workspace.

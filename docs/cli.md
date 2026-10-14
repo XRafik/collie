@@ -1900,7 +1900,14 @@ the Machine's `config.json`, each with its own edit's time and only where that i
 the Machine's own last edit of the key, records when each was set in `settings-set.json`
 and, when Desktop asks, that a Desktop gave them, and refuses the whole batch over any value the TUI's Settings
 would refuse ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)); `settings`
-reads them back, each with when it was set; and `news`, which
+reads them back, each with when it was set; `sharedDefinitions`, which reads the user
+Layer's shared definitions, each with its text (null for a removal) and the time of its
+latest edit; `setSharedDefinitions`, which writes the Flock's where each is later than the
+Machine's own, gives each written file its edit's time, keeps the text a write replaces
+under `replaced/`, and refuses the whole batch over any path that is not a file directly in
+`workflows/` or `personas/`
+([ADR-draft-a-users-definitions-are-the-flocks](adr/draft-a-users-definitions-are-the-flocks.md));
+and `news`, which
 hands one conversation its Herd's pending News, each item with its Significance, and
 records it `read`, `sent` or `uncertain` for that conversation alone. Given `keys`, it hands
 over every pending item and records only those keys: what Desktop's Flock chat actually

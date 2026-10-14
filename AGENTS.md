@@ -165,7 +165,11 @@ herdr actions, and the `collie` CLI.
   [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), alongside
   `src/settings.ts` (the one list the TUI, Desktop and the host read), `setSetting` and
   `takeShared` in `src/config.ts`, and `desktop/src/shared/flock-settings.ts` with
-  `test/desktop-settings.test.ts`. The latest edit of a key wins.
+  `test/desktop-settings.test.ts`. The latest edit of a key wins, by `latestEdits` in
+  `src/flock-settings.ts`. The user Layer's files are shared by the same rule
+  ([ADR-draft-a-users-definitions-are-the-flocks](docs/adr/draft-a-users-definitions-are-the-flocks.md)),
+  in `src/shared-definitions.ts`, with the peer sync in `src/peers.ts`, tested in
+  `test/shared-definitions.test.ts` and `test/peer-definitions.test.ts`.
 - **Changing what a Run must prove, or what counts as proof** →
   [`docs/cli.md`](docs/cli.md#outcomes) and
   [ADR-0010](docs/adr/0010-a-run-proves-its-outcome.md), alongside `src/outcome.ts` (the

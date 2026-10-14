@@ -1332,6 +1332,24 @@ its setting refuses, written into its file by hand, is not taken. What stays eac
 is everything else in its `config.json`: remembered answers such as `linear.team` and
 `gitlab.assignee`, `chat_harness`, and `projects.root`, which is a path on that Machine.
 
+Your user Layer is shared the same way
+([ADR-draft-a-users-definitions-are-the-flocks](adr/draft-a-users-definitions-are-the-flocks.md)).
+Every file directly in `~/.collie/user/workflows/` and `~/.collie/user/personas/` is a
+**shared definition**: a module, its Markdown, a helper, a Persona. Each file is decided by
+whichever edit of it was made last, by a Collie command or in your editor. A file's edit is
+its text at its modification time. Removing a file is an edit too, so a fork you delete on
+one Machine is deleted on the others. Paired hosts sync them when their link comes up and
+whenever a file in either directory changes, with Desktop closed. What stays each Machine's
+own is the toolchain Collie provisions to typecheck modules (`package.json`, `tsconfig.json`,
+`collie.d.ts`, `bun.lock` and `node_modules/`), any subdirectory, a hidden file or one ending
+in `~` (an editor's swap and backup files), a symbolic link, and the project and shipped
+Layers. Before a sync replaces or removes a file whose text differs, the host keeps that
+text as `~/.collie/user/replaced/<time of its edit>/<workflows or personas>/<name>` and logs
+it. So when two Machines edit one file between syncs, the edit that lost is still on disk.
+Nothing prunes `replaced/`. A file's modification time is its edit's time, so a copy
+that keeps an old one, such as `cp -p` from `replaced/` or a `git checkout`, loses to any
+later edit elsewhere. Touch it to make it the latest.
+
 Paired hosts also bring an older release to the newer one's version when their link
 comes up, without Desktop. A development checkout neither upgrades nor is upgraded.
 `collie machine list` names an upgrade failure; the next link-up tries it again.

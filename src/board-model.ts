@@ -10,7 +10,7 @@ import { VerifyEvent, Pass } from "./verify-model";
 export { PASSES, Pass } from "./verify-model";
 import { IntentChangeSchema, ChangedIntent } from "./intent-model";
 import { UsageReading } from "./usage-model";
-import { HostDefinitions } from "./definitions-model";
+import { HostDefinitions, SharedDefinition } from "./definitions-model";
 import { VerifySpecSchema } from "./verify-spec";
 
 const STATE_ORDER = [
@@ -1377,6 +1377,17 @@ export const FrontDoorRpcs = RpcGroup.make(
   Rpc.make("setSettings", {
     payload: { settings: Schema.Array(SharedSetting), request: Schema.String },
     success: SharedSettings,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
+  /** This Machine's shared definitions: the user Layer's files, each with its latest edit. */
+  Rpc.make("sharedDefinitions", { success: Schema.Array(SharedDefinition), error: HostRefused }),
+  /**
+   * The Flock's shared definitions, each written with its own edit's time where it is later
+   * than this Machine's, keeping the text it replaces under `replaced/`.
+   */
+  Rpc.make("setSharedDefinitions", {
+    payload: { definitions: Schema.Array(SharedDefinition), request: Schema.String },
+    success: Schema.Array(SharedDefinition),
     error: Schema.Union([HostRefused, RequestConflict]),
   }),
   /** This Machine's Usage readings, one per Subscription (ADR-0049). */

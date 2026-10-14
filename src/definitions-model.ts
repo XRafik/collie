@@ -79,3 +79,13 @@ export const HostDefinitions = Schema.Struct({
   errors: Schema.Array(Schema.String),
 });
 export type HostDefinitions = typeof HostDefinitions.Type;
+
+/** One file of the user Layer a Flock shares, as its latest edit. */
+export const SharedDefinition = Schema.Struct({
+  /** Where it is in the user directory, such as `workflows/plan.workflow.ts`. */
+  path: Schema.String,
+  /** Its text, or null where the edit removed it. */
+  text: Schema.NullOr(Schema.String),
+  at: Schema.String,
+});
+export type SharedDefinition = typeof SharedDefinition.Type;

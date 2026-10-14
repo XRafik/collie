@@ -12,6 +12,11 @@ export function epochMs(iso: string): number {
   });
 }
 
+/** A recorded timestamp as the `Date` a file's times are set with. */
+export function fileTime(iso: string) {
+  return DateTime.toDateUtc(DateTime.makeUnsafe(iso));
+}
+
 /**
  * The one set of thresholds "how long ago" is answered against, so the two renderings
  * below cannot drift into disagreeing about when an hour becomes a day.

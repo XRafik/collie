@@ -5549,6 +5549,16 @@ const TOOLCHAIN_FILES = {
 `,
 } as const;
 
+const SDK_FILE = "collie.d.ts";
+
+/** Every file the toolchain puts beside a workflow directory, which is each Machine's own. */
+export const TOOLCHAIN_NAMES: ReadonlyArray<string> = [
+  ...Object.keys(TOOLCHAIN_FILES),
+  SDK_FILE,
+  "bun.lock",
+  "node_modules",
+];
+
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
 const isJsonObject = Schema.is(JsonObject);
 const readJsonObject = Schema.decodeUnknownOption(Schema.fromJsonString(JsonObject));
@@ -5603,7 +5613,7 @@ export const provisionToolchain: (
     new ToolchainError({ code: "toolchain_unavailable", message });
   yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.orDie);
   // Collie's own, so an upgraded installation's declarations replace the last one's.
-  yield* fs.writeFileString(`${dir}/collie.d.ts`, SDK_DECLARATIONS).pipe(Effect.orDie);
+  yield* fs.writeFileString(`${dir}/${SDK_FILE}`, SDK_DECLARATIONS).pipe(Effect.orDie);
   const unmerged: string[] = [];
   for (const [name, merge] of [
     ["package.json", mergedPackage],
