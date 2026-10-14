@@ -1211,16 +1211,22 @@ updates** where it needs a newer Desktop. A live Machine is behind on its
 version when it runs a release older than Desktop's, which the row says with both versions;
 never on a development checkout, and never while Desktop itself isn't a release. It is
 behind on settings when its last settings sync failed, with the host's reason; behind on
+definitions when its last sync of the user Layer's shared definitions failed, with the host's
+reason — a Collie from before they were shared fails it until it is upgraded, and a
+development checkout, which nothing upgrades, says it is updated by hand; behind on
 credentials for each credential Desktop holds that it lacks, with why the last give failed
 where one did, though never on one its onboarding skipped, which Desktop gives only when the
 token is saved or renewed; and behind on onboarding when `collie doctor` doesn't find it onboarded, and
 the row lists the missing steps with their fixes. A part not known yet, such as a first sync
 not finished or doctor not having answered, is not counted, and a credential Desktop holds
 none of is no Machine's to lack: the summary says "Desktop has no GitLab token to give"
-instead. **Sync now** on a Machine behind on its version, settings or credentials does what
+instead. **Sync now** on a Machine behind on its version, settings, definitions or credentials does what
 connecting would: behind on its version, it reopens the Machine's connection, which asks the
 upgrade again and then syncs and gives on the new one; otherwise it syncs its settings and
-gives it what it lacks. A toast says what it did, red where a part of it failed. The Flock
+its definitions and gives it what it lacks. Desktop keeps the Flock's definitions in
+`flock-definitions.json` beside its settings, each with its edit's time and the Machine it
+came from, syncs each Machine's whenever it connects, and passes an edit taken from one
+Machine on to every other connected one. A toast says what it did, red where a part of it failed. The Flock
 chat reads the same standing and does the same Sync now through `collie_in_sync`. The header's **Machines** button shows how many Machines aren't in sync, those
 still connecting left out.
 

@@ -1,4 +1,5 @@
-// The Flock's settings on this computer, and each Machine synced with them through its host.
+// The Flock's settings and shared definitions on this computer, and each Machine synced with
+// them through its host.
 
 import {
   Cause,
@@ -11,6 +12,8 @@ import {
   SubscriptionRef,
 } from "effect";
 import type { SharedSetting, SharedSettings } from "../../../src/board-model";
+import type { SharedDefinition } from "../../../src/definitions-model";
+import { latestEdits } from "../../../src/flock-settings";
 import { FlockSettings, NO_FLOCK_SETTINGS, takeFrom } from "../shared/flock-settings";
 
 const FlockSettingsFile = Schema.fromJsonString(FlockSettings);
@@ -36,6 +39,68 @@ export const writeFlockSettings = Effect.fn("FlockSettings.write")(function* (
     Schema.encodeSync(FlockSettingsFile)(flock),
   );
 });
+
+/** The Flock's shared definitions by path in the user directory, each its latest edit. */
+export const FlockDefinitions = Schema.Record(
+  Schema.String,
+  Schema.Struct({
+    /** Null where the edit removed it. */
+    text: Schema.NullOr(Schema.String),
+    at: Schema.String,
+    /** The Machine whose edit it is. */
+    from: Schema.String,
+  }),
+);
+export type FlockDefinitions = typeof FlockDefinitions.Type;
+
+const FlockDefinitionsFile = Schema.fromJsonString(FlockDefinitions);
+const DEFINITIONS_FILE = "flock-definitions.json";
+
+/** The Flock's shared definitions, or none where nothing is saved or it cannot be read. */
+export const readFlockDefinitions = Effect.fn("FlockDefinitions.read")(function* (dir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* fs.readFileString((yield* Path.Path).join(dir, DEFINITIONS_FILE)).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(FlockDefinitionsFile)),
+    Effect.orElseSucceed((): FlockDefinitions => ({})),
+  );
+});
+
+export const writeFlockDefinitions = Effect.fn("FlockDefinitions.write")(function* (
+  dir: string,
+  flock: FlockDefinitions,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.makeDirectory(dir, { recursive: true });
+  yield* fs.writeFileString(
+    (yield* Path.Path).join(dir, DEFINITIONS_FILE),
+    Schema.encodeSync(FlockDefinitionsFile)(flock),
+  );
+});
+
+const heldDefinitions = (flock: FlockDefinitions) =>
+  Object.entries(flock).map(([path, { text, at }]): SharedDefinition => ({ path, text, at }));
+const byPath = (definition: { readonly path: string }) => definition.path;
+
+/** What a Machine has taken in where it is the later edit, and what it should then be given. */
+export const takeDefinitions = (
+  flock: FlockDefinitions,
+  machine: string,
+  has: ReadonlyArray<SharedDefinition>,
+) => {
+  const taken = { ...flock };
+  for (const { path, text, at } of latestEdits(heldDefinitions(flock), has, byPath).take)
+    taken[path] = { text, at, from: machine };
+  return { flock: taken, give: latestEdits(heldDefinitions(taken), has, byPath).give };
+};
+
+/** What a Machine's host answers about its shared definitions. */
+export interface DefinitionsDoor<E> {
+  readonly sharedDefinitions: () => Effect.Effect<ReadonlyArray<SharedDefinition>, E>;
+  readonly setSharedDefinitions: (asked: {
+    readonly definitions: ReadonlyArray<SharedDefinition>;
+    readonly request: string;
+  }) => Effect.Effect<ReadonlyArray<SharedDefinition>, E>;
+}
 
 /** What a Machine's host answers about its settings. */
 export interface SettingsDoor<E> {
@@ -73,42 +138,53 @@ const Refusal = Schema.Struct({ reason: Schema.String });
 /** Why a sync failed, in its host's words where it gave some. */
 const reasonOf = (cause: Cause.Cause<unknown>) => {
   const error = Cause.squash(cause);
-  return Option.match(Schema.decodeUnknownOption(Refusal)(error), {
+  const said = Option.match(Schema.decodeUnknownOption(Refusal)(error), {
     onSome: ({ reason }) => reason,
     onNone: () => (error instanceof Error ? error.message : String(error)),
   });
+  return said.startsWith("Unknown request tag")
+    ? "its Collie is too old for this; upgrade it"
+    : said;
 };
-/**
- * Syncs connected Machines with the Flock's settings, one at a time. What a Machine answers
- * is taken into the settings as they are by then, so an edit made meanwhile survives, and an
- * edit taken from it goes on to every other connected Machine. Each sync tells how it ended.
- */
-export const flockSync = <E, S, M extends SettingsMachine<E>>(options: {
-  readonly flock: SubscriptionRef.SubscriptionRef<FlockSettings>;
+
+interface Synced<T, M> {
+  readonly flock: SubscriptionRef.SubscriptionRef<T>;
   readonly machines: () => ReadonlyArray<M>;
-  readonly save: (flock: FlockSettings) => Effect.Effect<void, S>;
+  readonly save: (flock: T) => Effect.Effect<void, unknown>;
   readonly request: Effect.Effect<string>;
   readonly told: (machine: M, failed: string | null) => Effect.Effect<void>;
-}) =>
+}
+
+/**
+ * Syncs connected Machines with what the Flock holds, one at a time. What a Machine answers
+ * is taken into it as it is by then, so an edit made meanwhile survives, and an edit taken
+ * from it goes on to every other connected Machine. Each sync tells how it ended.
+ */
+const latestSync = <T, Has, M extends { readonly name: string }>(
+  options: Synced<T, M> & {
+    readonly what: string;
+    readonly exchange: (held: T, machine: M, request: string) => Effect.Effect<Has, unknown>;
+    readonly take: (now: T, machine: string, has: Has) => T;
+    readonly edits: (held: T) => Readonly<Record<string, { readonly at: string }>>;
+  },
+) =>
   Effect.gen(function* () {
     const syncing = yield* Semaphore.make(1);
     const took = (machine: M) =>
       syncing.withPermits(1)(
         Effect.gen(function* () {
-          const has = yield* syncSettings(
+          const has = yield* options.exchange(
             yield* SubscriptionRef.get(options.flock),
-            machine.name,
-            machine.door,
+            machine,
             yield* options.request,
           );
           const [before, after] = yield* SubscriptionRef.modify(options.flock, (now) => {
-            const taken = takeFrom(now, machine.name, has).flock;
+            const taken = options.take(now, machine.name, has);
             return [[now, taken] as const, taken];
           });
           yield* options.save(after);
-          return Object.entries(after.settings).some(
-            ([key, { at }]) => before.settings[key]?.at !== at,
-          );
+          const was = options.edits(before);
+          return Object.entries(options.edits(after)).some(([key, { at }]) => was[key]?.at !== at);
         }),
       );
     /** Why the sync with `machine` failed, or null. */
@@ -127,7 +203,7 @@ export const flockSync = <E, S, M extends SettingsMachine<E>>(options: {
         Effect.as(null),
         Effect.catchCause((cause) => {
           const failed = reasonOf(cause);
-          return Effect.logWarning(`Settings not synced with ${machine.name}`, cause).pipe(
+          return Effect.logWarning(`${options.what} not synced with ${machine.name}`, cause).pipe(
             Effect.andThen(options.told(machine, failed)),
             Effect.as(failed),
           );
@@ -136,4 +212,37 @@ export const flockSync = <E, S, M extends SettingsMachine<E>>(options: {
     const syncEvery = () =>
       Effect.forEach(options.machines(), syncOn, { concurrency: "unbounded", discard: true });
     return { syncOn, syncEvery };
+  });
+
+/** Syncs connected Machines with the Flock's settings. */
+export const flockSync = <E, M extends SettingsMachine<E>>(options: Synced<FlockSettings, M>) =>
+  latestSync({
+    ...options,
+    what: "Settings",
+    exchange: (flock, { name, door }, request) => syncSettings(flock, name, door, request),
+    take: (now, name, has: ReadonlyArray<SharedSetting>) => takeFrom(now, name, has).flock,
+    edits: (flock) => flock.settings,
+  });
+
+/** Syncs connected Machines with the Flock's shared definitions, giving only what one lacks. */
+export const definitionsSync = <
+  E,
+  M extends { readonly name: string; readonly door: DefinitionsDoor<E> },
+>(
+  options: Synced<FlockDefinitions, M>,
+) =>
+  latestSync({
+    ...options,
+    what: "Definitions",
+    exchange: (flock, { name, door }, request) =>
+      Effect.gen(function* () {
+        const has = yield* door.sharedDefinitions();
+        const { give } = takeDefinitions(flock, name, has);
+        return give.length === 0
+          ? has
+          : yield* door.setSharedDefinitions({ definitions: give, request });
+      }),
+    take: (now, name, has: ReadonlyArray<SharedDefinition>) =>
+      takeDefinitions(now, name, has).flock,
+    edits: (flock) => flock,
   });

@@ -483,6 +483,7 @@ const row = (over: Partial<MachineRow> = {}): MachineRow => ({
   build: "0.35.0",
   development: null,
   settings: null,
+  definitions: null,
   credentials: {},
   reason: null,
   ...over,
@@ -595,6 +596,43 @@ test("a Machine whose last settings sync failed is behind on settings, with why;
   expect(inSync(row({ settings: null }), DESKTOP).state).toBe("in-sync");
 });
 
+test("a Machine whose last definitions sync failed is behind on definitions, with why, and Sync now is offered", () => {
+  const failed = inSync(row({ definitions: { failed: "Unknown request tag" } }), DESKTOP);
+  expect(failed).toEqual({
+    state: "behind",
+    behind: [
+      { part: "definitions", said: "Definitions didn't sync: Unknown request tag", steps: [] },
+    ],
+  });
+  expect(syncable(failed)).toBe(true);
+  expect(inSync(row({ definitions: { failed: null } }), DESKTOP).state).toBe("in-sync");
+  expect(inSync(row({ definitions: null }), DESKTOP).state).toBe("in-sync");
+});
+
+test("a development checkout behind on definitions says it is updated by hand", () => {
+  expect(
+    inSync(
+      row({
+        development: "0.35.0+abc1234",
+        definitions: { failed: "can't say; upgrade this Machine" },
+      }),
+      DESKTOP,
+    ).behind,
+  ).toEqual([
+    {
+      part: "definitions",
+      said: "Definitions didn't sync: can't say; upgrade this Machine (a development checkout, updated by hand)",
+      steps: [],
+    },
+  ]);
+});
+
+test("the Flock chat's In sync line names a Machine behind on definitions", () => {
+  expect(flockInSyncSaid([row({ definitions: { failed: "host refused" } })], DESKTOP)).toBe(
+    "Not in sync with Desktop 0.35.0: vm-mk: behind on definitions. vm-mk: Definitions didn't sync: host refused",
+  );
+});
+
 test("a Machine lacking a credential Desktop holds is behind on it, naming it and why a give failed", () => {
   const holds = DESKTOP;
   const lacking = row({
@@ -634,20 +672,22 @@ test("the summary says which credentials Desktop has none of to give, and blames
 test("a Machine's settings sync and its credentials are kept on its row, and dropped with it", () => {
   const items: FlockItem[] = [
     routed(vm),
-    { _tag: "Synced", machine: vm, failed: "host refused" },
+    { _tag: "Synced", part: "settings", machine: vm, failed: "host refused" },
+    { _tag: "Synced", part: "definitions", machine: vm, failed: "no such operation" },
     { _tag: "Given", machine: vm, credential: "gitlab", given: false, failed: "nope" },
     { _tag: "Given", machine: vm, credential: "gitlab", given: true, failed: null },
   ];
   const flock = items.reduce(applyItem, EMPTY_FLOCK);
   expect(machineRows(flock)[0]).toMatchObject({
     settings: { failed: "host refused" },
+    definitions: { failed: "no such operation" },
     credentials: { gitlab: { given: true, failed: null } },
   });
   const removed = applyItem(flock, {
     _tag: "Removed",
     machine: { profile: vm.profile, name: vm.name },
   });
-  expect(removed.synced.size + removed.given.size).toBe(0);
+  expect(removed.synced.size + removed.definitions.size + removed.given.size).toBe(0);
 });
 
 test("a Flock held across a new subscription drops each Machine its routes no longer name", () => {

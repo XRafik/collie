@@ -1320,6 +1320,7 @@ export const syncNow = (
   steps: {
     readonly reopen: Effect.Effect<unknown>;
     readonly sync: Effect.Effect<string | null>;
+    readonly syncDefinitions: Effect.Effect<string | null>;
     readonly give: Effect.Effect<
       ReadonlyArray<{ readonly credential: Credential; readonly failed: string | null }>
     >;
@@ -1329,19 +1330,24 @@ export const syncNow = (
     if (behind.includes("version")) {
       yield* steps.reopen;
       return {
-        said: `Reopening ${machine.name} to upgrade it; its settings and credentials follow once it connects`,
+        said: `Reopening ${machine.name} to upgrade it; its settings, definitions and credentials follow once it connects`,
         failed: false,
       };
     }
     const failed = yield* steps.sync;
+    const unshared = yield* steps.syncDefinitions;
     const gave = yield* steps.give;
     const said = [
       `${machine.name}: ${failed === null ? "settings synced" : `settings didn't sync: ${failed}`}`,
+      unshared === null ? "definitions synced" : `definitions didn't sync: ${unshared}`,
       ...gave.map(({ credential, failed: why }) =>
         why === null
           ? `${CREDENTIAL_SAID[credential].lacks} given`
           : `${CREDENTIAL_SAID[credential].lacks} not given: ${why}`,
       ),
     ].join("; ");
-    return { said, failed: failed !== null || gave.some(({ failed: why }) => why !== null) };
+    return {
+      said,
+      failed: failed !== null || unshared !== null || gave.some(({ failed: why }) => why !== null),
+    };
   });

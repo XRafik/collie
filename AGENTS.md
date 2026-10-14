@@ -168,8 +168,9 @@ herdr actions, and the `collie` CLI.
   `test/desktop-settings.test.ts`. The latest edit of a key wins, by `latestEdits` in
   `src/flock-settings.ts`. The user Layer's files are shared by the same rule
   ([ADR-draft-a-users-definitions-are-the-flocks](docs/adr/draft-a-users-definitions-are-the-flocks.md)),
-  in `src/shared-definitions.ts`, with the peer sync in `src/peers.ts`, tested in
-  `test/shared-definitions.test.ts` and `test/peer-definitions.test.ts`.
+  in `src/shared-definitions.ts`, with the peer sync in `src/peers.ts` and Desktop's in
+  `desktop/src/bun/flock-settings.ts`, tested in `test/shared-definitions.test.ts`,
+  `test/peer-definitions.test.ts` and `test/desktop-settings.test.ts`.
 - **Changing what a Run must prove, or what counts as proof** →
   [`docs/cli.md`](docs/cli.md#outcomes) and
   [ADR-0010](docs/adr/0010-a-run-proves-its-outcome.md), alongside `src/outcome.ts` (the

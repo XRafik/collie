@@ -1,6 +1,6 @@
 # A user's definitions are the Flock's
 
-**Status: accepted, built for paired hosts; Desktop's part (D5) is to be built.** Extends [ADR-0043](0043-a-shared-setting-is-its-latest-edit.md)
+**Status: accepted, built.** Extends [ADR-0043](0043-a-shared-setting-is-its-latest-edit.md)
 from settings to the user Layer, and [ADR-0057](0057-a-machine-reaches-another-over-a-paired-link.md)
 D9 to what paired hosts sync.
 
