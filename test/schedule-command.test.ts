@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { hostname } from "node:os";
 import { Effect, FileSystem } from "effect";
-import { changedLine } from "../src/commands/schedule";
+import { changedLine } from "../src/schedule-model";
 import { collie, proves, type World } from "./support/world";
 
 const MODULES = ["hello.workflow.ts", "typed.workflow.ts"];

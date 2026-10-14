@@ -2,6 +2,7 @@
 import { type OnboardRun, SETTLED } from "../../../src/shared/flock";
 import { buildOf, type InSync, NOT_LIVE_SAID, syncable } from "../../../src/shared/in-sync";
 import { type Level, machineUsage } from "../../../src/shared/usage";
+import { type ScheduleAction, machineSchedules } from "../../../src/shared/schedules";
 
 const emit = defineEmits<{ back: [] }>();
 const { machines, summary } = useInSync();
@@ -10,13 +11,60 @@ const { checkForUpdates, removeMachine, syncNow } = useActions();
 const { onboardOn, loginOn } = useOnboarding();
 const adding = ref(false);
 const usage = useUsage();
-onMounted(() => void usage.refresh());
+const scheduled = useSchedules();
+onMounted(() => {
+  void usage.refresh();
+  void scheduled.refresh();
+});
+const schedulesOf = (row: (typeof machines.value)[number]["row"]) => {
+  const read =
+    row.state === "live"
+      ? scheduled.machines.value.find(({ profile }) => profile === row.profile)
+      : {
+          installation: "",
+          profile: row.profile,
+          name: row.name,
+          schedules: [],
+          problem: row.reason,
+          unreachable: true,
+        };
+  return read === undefined ? null : { installation: read.installation, ...machineSchedules(read) };
+};
 const rows = computed(() =>
   machines.value.map((machine) => {
     const read = usage.machines.value.find(({ profile }) => profile === machine.row.profile);
-    return { ...machine, usage: read === undefined ? null : machineUsage(read, now.value) };
+    return {
+      ...machine,
+      usage: read === undefined ? null : machineUsage(read, now.value),
+      schedules: schedulesOf(machine.row),
+    };
   }),
 );
+const moving = ref<{ name: string; from: string } | null>(null);
+const movingOpen = computed({
+  get: () => moving.value !== null,
+  set: (open) => {
+    if (!open) moving.value = null;
+  },
+});
+const targets = computed(() =>
+  scheduled.machines.value
+    .filter(
+      ({ unreachable, problem, installation }) =>
+        !unreachable && problem === null && installation !== moving.value?.from,
+    )
+    .map(({ installation, name }) => ({ installation, name })),
+);
+const ACTION = {
+  pause: { label: "Pause", icon: "i-lucide-pause" },
+  resume: { label: "Resume", icon: "i-lucide-play" },
+  remove: { label: "Remove", icon: "i-lucide-trash-2" },
+  move: { label: "Move to…", icon: "i-lucide-arrow-right-left" },
+} as const satisfies Record<ScheduleAction, { label: string; icon: string }>;
+const onAction = (installation: string, name: string, action: ScheduleAction) =>
+  action === "move"
+    ? (moving.value = { name, from: installation })
+    : void scheduled.change(installation, name, action);
 const METER = { ok: "primary", warn: "warning", out: "error" } as const satisfies Record<
   Level,
   string
@@ -55,8 +103,14 @@ const missing = (run: OnboardRun) => run.steps.filter(({ status }) => !SETTLED.i
           @click="adding = true"
         />
         <AddMachineDialog v-model:open="adding" />
+        <MoveScheduleDialog
+          v-model:open="movingOpen"
+          :name="moving?.name ?? ''"
+          :from="moving?.from ?? ''"
+          :targets="targets"
+        />
         <section
-          v-for="{ row, verdict, usage: block } in rows"
+          v-for="{ row, verdict, usage: block, schedules: listed } in rows"
           :key="row.profile"
           :data-testid="`machine-${row.name}`"
           class="flex flex-col gap-2 border-t border-default pt-4"
@@ -131,6 +185,43 @@ const missing = (run: OnboardRun) => run.steps.filter(({ status }) => !SETTLED.i
                 </span>
               </div>
               <span class="text-xs text-muted">{{ subscription.said }}</span>
+            </div>
+          </section>
+          <section v-if="listed !== null" class="flex flex-col gap-2" data-testid="schedules">
+            <h3 class="text-sm font-semibold">Schedules on {{ row.name }}</h3>
+            <p
+              v-if="listed.said !== null"
+              class="text-sm"
+              :class="listed.state === 'empty' ? 'text-muted' : 'text-warning'"
+              data-testid="schedules-said"
+            >
+              {{ listed.said }}
+            </p>
+            <div
+              v-for="schedule in listed.rows"
+              :key="schedule.name"
+              class="flex flex-col gap-1 text-sm"
+              :data-testid="`schedule-${schedule.name}`"
+            >
+              <div class="flex items-center gap-2">
+                <strong>{{ schedule.name }}</strong>
+                <span class="text-muted">{{ schedule.workflow }} in {{ schedule.checkout }}</span>
+              </div>
+              <span>{{ schedule.when }} · {{ schedule.next }}</span>
+              <span class="text-xs text-muted">last {{ schedule.last }}</span>
+              <div class="flex gap-2">
+                <UButton
+                  v-for="action in schedule.actions"
+                  :key="action"
+                  size="xs"
+                  color="neutral"
+                  variant="outline"
+                  :icon="ACTION[action].icon"
+                  :label="ACTION[action].label"
+                  :data-testid="`schedule-${action}`"
+                  @click="onAction(listed.installation, schedule.name, action)"
+                />
+              </div>
             </div>
           </section>
           <div class="flex justify-end gap-2">

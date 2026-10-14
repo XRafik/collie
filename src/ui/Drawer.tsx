@@ -116,7 +116,11 @@ export function Drawer(props: DrawerProps) {
 
   const requester = (): Line[] => {
     const who = props.detail?.requestedBy;
-    return who === undefined ? [] : [{ text: requestedByLine(who) }];
+    const started = props.detail?.startedBy;
+    return [
+      ...(started === undefined ? [] : [{ text: started }]),
+      ...(who === undefined ? [] : [{ text: requestedByLine(who) }]),
+    ];
   };
   const report = (): Line[] => {
     const report = props.detail?.report;

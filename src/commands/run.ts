@@ -444,7 +444,7 @@ const runShow = Command.make(
             return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
           const shown = yield* runShown(resolved.env, runId);
           if (!shown.ok) return shown;
-          const { view, agents, disposition, children, machine } = shown;
+          const { view, agents, disposition, children, machine, startedBy } = shown;
           // A Task is this Machine's, so a Run on another is never outside it.
           const task = yield* selectedTask(global);
           if (machine === null && task !== null && view.task !== task)
@@ -457,6 +457,7 @@ const runShow = Command.make(
               run: view,
               agents,
               disposition,
+              startedBy: startedBy ?? null,
               outcome: view.outcome,
               waiting: view.waiting,
               next_action: view.waiting[0]?.name ?? null,
@@ -470,6 +471,7 @@ const runShow = Command.make(
                 ([name, value]) =>
                   `  ${name} = ${textOf(value)} (${view.provenance[name] ?? GIVEN})`,
               ),
+              ...(startedBy === undefined ? [] : [`  ${startedBy}`]),
               ...(view.requestedBy === undefined ? [] : [`  ${requestedByLine(view.requestedBy)}`]),
               ...(view.report === undefined
                 ? []

@@ -3,6 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { Effect, Fiber, FileSystem, Option, Schedule, Schema, Stream } from "effect";
+import { startedBy, type AuditLine } from "../src/audit";
 import type { RunDetail } from "../src/board-model";
 import { runDir } from "../src/engine";
 import { currentEnv } from "../src/env";
@@ -486,3 +487,65 @@ test("a rewritten ticket, and a finished Run's rewritten plan, reach the record'
       }),
     ),
   ));
+
+test("a Run's record says who started it, from its start line, else from its parent", () => {
+  const start = (actor: Partial<AuditLine["actor"]> & Pick<AuditLine["actor"], "origin">) =>
+    [
+      {
+        at: "",
+        operation: "answer",
+        request: "a",
+        actor: { requestId: "a", origin: "chat" },
+        result: null,
+      },
+      {
+        at: "",
+        operation: "start",
+        request: "r",
+        actor: { requestId: "r", ...actor },
+        result: null,
+      },
+    ] satisfies ReadonlyArray<AuditLine>;
+  const top = { id: "run-1", parent: null };
+  expect(
+    startedBy(
+      start({
+        origin: "schedule",
+        schedule: { name: "daily", occurrence: "2026-10-14T07:00:00Z" },
+      }),
+      top,
+    ),
+  ).toBe("Started by schedule `daily` for 2026-10-14T07:00:00Z");
+  expect(startedBy(start({ origin: "chat" }), top)).toBe("Started from chat");
+  expect(startedBy(start({ origin: "desktop" }), top)).toBe("Started from Desktop");
+  expect(startedBy(start({ origin: "board" }), top)).toBe("Started from the board");
+  expect(startedBy(start({ origin: "cli" }), top)).toBe("Started from the CLI");
+  expect(startedBy(start({ origin: "cli-tty" }), top)).toBe("Started from the CLI");
+  expect(startedBy([], { id: "run-1.review", parent: "run-1" })).toBe("Started by run-1 as review");
+  expect(startedBy([], top)).toBeUndefined();
+});
+
+test(
+  "a Run started from the CLI says so in its details and in run show",
+  () =>
+    proves(
+      "collie-started-by-",
+      (world) =>
+        Effect.gen(function* () {
+          const runId = yield* started(world, ["plain", "--input", "note=hi"]);
+          const door = yield* frontDoor(socketOf(world.state));
+          const detail = yield* door
+            .runDetail({ runId, tail: false, pages: 1, refreshMr: false })
+            .pipe(Stream.runHead, Effect.timeout("30 seconds"));
+          expect(Option.getOrNull(detail)?.startedBy).toBe("Started from the CLI");
+          const shown = yield* collie(world, ["run", "show", runId]);
+          expect(shown.envelope).toMatchObject({
+            ok: true,
+            data: { startedBy: "Started from the CLI" },
+          });
+          yield* stopHost(world.state);
+        }).pipe(Effect.orDie),
+      ["plain.workflow.ts"],
+    ),
+  120_000,
+);

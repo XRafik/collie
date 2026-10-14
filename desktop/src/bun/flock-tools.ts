@@ -31,6 +31,7 @@ import {
 } from "../../../src/toolkit";
 import type { Staged } from "../shared/attachments";
 import { type ChatBoard, unreadBecause } from "../shared/flock";
+import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { carriedPaths } from "./carried";
 import type { Door } from "./machine";
 
@@ -51,6 +52,8 @@ export const chatDoor = (door: Door) => ({
   editFile: (asked: Parameters<Door["editFile"]>[0]) => door.editFile(asked),
   upload: (asked: Parameters<Door["upload"]>[0]) => door.upload(asked),
   read: (asked: Parameters<Door["read"]>[0]) => door.read(asked),
+  schedules: () => door.schedules(),
+  changeSchedule: (asked: Parameters<Door["changeSchedule"]>[0]) => door.changeSchedule(asked),
 });
 
 export type ChatDoor = ReturnType<typeof chatDoor>;
@@ -117,6 +120,25 @@ const MachineRuleTool = Tool.make("collie_machine_rule", {
   .annotate(Tool.Title, "The Machine rule")
   .annotate(Tool.Readonly, false);
 
+/** Desktop's own: moving needs two Machines, which a Herd's chat never has. */
+const MoveScheduleTool = Tool.make("collie_move_schedule", {
+  description:
+    "Move a Schedule to another Machine, when the human asks: it is added there paused, " +
+    "removed here, then resumed there, and starts fresh with no catch-up. Name it as " +
+    "<machine>:<name> and the Machine by name. `checkout` is its checkout's absolute path " +
+    "on that Machine, where it is not the same path. Both Machines must be reachable.",
+  parameters: Schema.Struct({
+    schedule: Schema.String,
+    to: Schema.String,
+    checkout: Schema.optionalKey(Schema.String),
+  }),
+  success: Schema.String,
+  failureMode: "return",
+  needsApproval: false,
+})
+  .annotate(Tool.Title, "Move a Schedule")
+  .annotate(Tool.Readonly, false);
+
 /** Desktop's own: a Herd's chat runs on the Home's harness. */
 const ChatHarnessTool = Tool.make("collie_chat_harness", {
   description:
@@ -165,6 +187,7 @@ export const FlockTools = Toolkit.make(
   CollieTools.tools.collie_do,
   CollieTools.tools.collie_propose,
   MachineRuleTool,
+  MoveScheduleTool,
   ChatHarnessTool,
   InSyncTool,
 );
@@ -751,6 +774,42 @@ const propose = Effect.fn("FlockTools.propose")(
   ),
 );
 
+const moveScheduleBetween = Effect.fn("FlockTools.moveSchedule")(function* (
+  flock: FlockChat,
+  input: { readonly schedule: string; readonly to: string; readonly checkout?: string },
+) {
+  const colon = input.schedule.indexOf(":");
+  const named = (name: string) => flock.machines().find((one) => one.name === name);
+  const from = colon > 0 ? named(input.schedule.slice(0, colon)) : undefined;
+  const to = named(input.to);
+  if (from === undefined || to === undefined)
+    return `Name the Schedule as <machine>:<name> and the Machine it goes to by name; Machines: ${flock
+      .machines()
+      .map((one) => one.name)
+      .join(", ")}. Nothing was moved.`;
+  const reached = yield* Effect.forEach([from, to], (machine) =>
+    writable(machine).pipe(Effect.result),
+  );
+  const away = reached.flatMap((one) => (one._tag === "Failure" ? [reasonOf(one.failure)] : []));
+  if (away.length > 0) return `machine_unreachable: ${away.join("; ")}`;
+  const [source, target] = reached.flatMap((one) => (one._tag === "Success" ? [one.success] : []));
+  yield* declareVoice(flock, source!);
+  yield* declareVoice(flock, target!);
+  const door = (machine: Reached): ScheduleDoor => ({
+    name: machine.name,
+    schedules: () => machine.door.schedules(),
+    changeSchedule: (asked) => machine.door.changeSchedule(asked),
+  });
+  const moved = yield* moveSchedule({
+    from: door(source!),
+    to: door(target!),
+    name: input.schedule.slice(colon + 1),
+    request: yield* newRequest,
+    checkout: input.checkout,
+  });
+  return moved.ok ? moved.said : `${moved.code}: ${moved.message}`;
+});
+
 const machineRule = (flock: FlockChat, asked: string | undefined) => {
   if (asked !== undefined) {
     const rule = asked.trim();
@@ -811,6 +870,7 @@ const handlersFor = (flock: FlockChat, sent: JsonObject) =>
       collie_do: () => answer(carryOut(flock, sent)),
       collie_propose: () => answer(propose(flock, sent)),
       collie_machine_rule: ({ rule }) => answer(machineRule(flock, rule)),
+      collie_move_schedule: (input) => answer(moveScheduleBetween(flock, input)),
       collie_chat_harness: (change) => answer(chatHarness(flock, change)),
       collie_in_sync: ({ sync }) => answer(flock.inSync(sync)),
     });

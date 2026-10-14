@@ -143,6 +143,41 @@ const machine = (
         note("read", payload);
         return `${payload.tool} answered by ${name}`;
       }),
+    schedules: () =>
+      Effect.sync(() => {
+        note("schedules", {});
+        const on = { installation: `i-${name}`, hostname: name };
+        return {
+          machine: on,
+          schedules:
+            name !== "vm-mk"
+              ? []
+              : [
+                  {
+                    machine: on,
+                    name: "daily",
+                    workflow: "proof",
+                    checkout: "/src/collie",
+                    cron: "0 7 * * *",
+                    tz: "UTC",
+                    paused: false,
+                    start: { workflow: "proof", inputs: {}, workspace: "/src/collie", verify: [] },
+                    next: null,
+                    last: null,
+                  },
+                ],
+        };
+      }),
+    changeSchedule: (payload) =>
+      Effect.sync(() => {
+        note("changeSchedule", payload);
+        return {
+          machine: { installation: `i-${name}`, hostname: name },
+          change: payload.change.change,
+          name: payload.change.name,
+          schedule: null,
+        };
+      }),
   };
   return {
     name,
@@ -969,4 +1004,53 @@ test("a Machine whose Collie has no such operation is told to upgrade, and the r
       expect(said).toContain("upgrade Collie on vm-mk");
       expect(said).toContain("collie_workspaces answered by mk-pc");
     }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("the Flock chat moves a Schedule between two Machines through the shared sequence", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const said = yield* call(asked, "collie_move_schedule", {
+        schedule: "vm-mk:daily",
+        to: "mk-pc",
+        checkout: "/home/mk/collie",
+      });
+      expect(said).toContain('Moved "daily" from vm-mk to mk-pc');
+      const changes = asked
+        .filter(({ op }) => op === "changeSchedule")
+        .map(({ machine, payload }) => [machine, payload]);
+      expect(changes).toMatchObject([
+        [
+          "mk-pc",
+          {
+            change: { change: "add", paused: true, start: { workspace: "/home/mk/collie" } },
+          },
+        ],
+        ["vm-mk", { change: { change: "remove", name: "daily" } }],
+        ["mk-pc", { change: { change: "resume", name: "daily" } }],
+      ]);
+      // Each Machine records the human's words with what it was asked.
+      for (const on of ["mk-pc", "vm-mk"])
+        expect(asked.some(({ machine, op }) => machine === on && op === "declare")).toBe(true);
+    }),
+  ));
+
+test("a Flock chat move to a Machine it cannot reach is refused, and nothing is changed", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const said = yield* callFlockTool(
+        {
+          ...flockOf(asked),
+          machines: () => [
+            machine("vm-mk", [], asked),
+            unread("mk-pc", { _tag: "Lost", state: "unreachable", reason: "ssh timed out" }),
+          ],
+        },
+        "collie_move_schedule",
+        { schedule: "vm-mk:daily", to: "mk-pc" },
+      ).pipe(Effect.provide(BunServices.layer));
+      expect(said).toContain("machine_unreachable");
+      expect(asked.filter(({ op }) => op === "changeSchedule")).toEqual([]);
+    }),
   ));

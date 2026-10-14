@@ -29,6 +29,7 @@ import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } fr
 import { newest, readCards } from "./cards";
 import { diffOf, planDirOf } from "./run-detail";
 import { readVerifications } from "./verify";
+import { readAudit, startedBy } from "./audit";
 
 /** Long enough to answer "what did I do here", short enough to stay one read. */
 const HISTORY = 200;
@@ -359,6 +360,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
   return {
     id: run.id,
     requestedBy: run.requestedBy,
+    startedBy: startedBy(yield* readAudit(run.dir).pipe(Effect.orElseSucceed(() => [])), run),
     report: run.report,
     dir: run.dir,
     title: runTitle(run),

@@ -495,6 +495,8 @@ export const ranOn = (agent: RunAgent) => {
 export const RunDetail = Schema.Struct({
   id: Schema.String,
   requestedBy: Schema.optional(RequestedBy),
+  /** Who started it, as a sentence; absent where nothing records it, and from an older host. */
+  startedBy: Schema.optional(Schema.String),
   report: Schema.optional(RunReport),
   dir: Schema.String,
   title: Schema.String,

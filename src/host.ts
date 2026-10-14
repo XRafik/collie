@@ -116,7 +116,7 @@ import {
   worktreesSweeper,
   type SweptBy,
 } from "./cleanup";
-import { once, readAudit, recordAudit, trimAudit } from "./audit";
+import { once, readAudit, recordAudit, startedBy, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
@@ -287,6 +287,7 @@ const RunShown = Schema.Struct({
   agents: Schema.Array(RunAgent),
   disposition: Schema.NullOr(Disposition),
   children: Schema.Array(RunView),
+  startedBy: Schema.optional(Schema.String),
 });
 
 const Loaded = Schema.Struct({
@@ -581,6 +582,10 @@ const handlers = (
                 yield* readDispositions(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
               ),
               children: all.filter((one) => one.parent === runId),
+              startedBy: startedBy(
+                yield* readAudit(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
+                { id: runId, parent: view.parent },
+              ),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>

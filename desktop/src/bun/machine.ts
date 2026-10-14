@@ -56,6 +56,9 @@ import {
 } from "../shared/flock";
 import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
+import { type MachineSchedules, SCHEDULES_UPGRADE_SAID } from "../shared/schedules";
+import type { ScheduleChange } from "../../../src/schedule-model";
+import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 
@@ -1295,6 +1298,83 @@ export const usageOn = (
           : Cause.pretty(cause).split("\n")[0]!;
       return Effect.succeed({ profile, name, readings: [], problem });
     }),
+  );
+
+/**
+ * What a Machine's host listed of its Schedules. A host too old to have the call asks for an
+ * upgrade; one that does not answer is unreachable, which stops none of its Schedules.
+ */
+export const schedulesOn = (
+  { installation, profile, name }: KnownMachine & { readonly installation: string },
+  door: Pick<Door, "schedules">,
+): Effect.Effect<MachineSchedules> => {
+  const read = (over: Partial<MachineSchedules>): MachineSchedules => ({
+    installation,
+    profile,
+    name,
+    schedules: [],
+    problem: null,
+    unreachable: false,
+    ...over,
+  });
+  return door.schedules().pipe(
+    Effect.map(({ schedules }) => read({ schedules })),
+    Effect.timeoutOrElse({
+      duration: "15 seconds",
+      orElse: () =>
+        Effect.succeed(read({ unreachable: true, problem: "its host did not answer in time" })),
+    }),
+    Effect.catch((error) =>
+      Effect.succeed(
+        error._tag === "HostRefused"
+          ? read({ problem: error.reason })
+          : read({ unreachable: true, problem: error.message }),
+      ),
+    ),
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
+      const defect = Cause.findDefect(cause);
+      return Effect.succeed(
+        defect._tag === "Success" && String(defect.success).startsWith("Unknown request tag")
+          ? read({ problem: SCHEDULES_UPGRADE_SAID })
+          : read({ unreachable: true, problem: Cause.pretty(cause).split("\n")[0]! }),
+      );
+    }),
+  );
+};
+
+/** A pause, resume or removal of one of the Machine's Schedules, under its own request. */
+export const changeScheduleOn = (door: Reached, change: ScheduleChange, request: string) =>
+  over(door, door.desktop.changeSchedule({ change, request }), request);
+
+const scheduleDoor = (door: Reached): ScheduleDoor => ({
+  name: door.machine.name,
+  schedules: () => door.desktop.schedules(),
+  changeSchedule: (asked) => door.desktop.changeSchedule(asked),
+});
+
+/** Moves a Schedule between two Machines' hosts through the one shared sequence. */
+export const moveScheduleOn = (
+  asked: {
+    readonly from: Reached;
+    readonly to: Reached;
+    readonly name: string;
+    readonly checkout: string | undefined;
+  },
+  request: string,
+) =>
+  moveSchedule({
+    from: scheduleDoor(asked.from),
+    to: scheduleDoor(asked.to),
+    name: asked.name,
+    request,
+    checkout: asked.checkout,
+  }).pipe(
+    Effect.flatMap((moved) =>
+      moved.ok
+        ? Effect.succeed(moved.said)
+        : Effect.fail(new ActionFailed({ request, reason: `${moved.code}: ${moved.message}` })),
+    ),
   );
 
 /** What connecting would do for a Machine that lags on `behind`, and whether any of it failed. */

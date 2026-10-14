@@ -90,6 +90,21 @@ export const ScheduleListing = Schema.Struct({
 });
 export type ScheduleListing = typeof ScheduleListing.Type;
 
+/** What one Schedule's last occurrence came to, in a few words. */
+export const lastLine = (last: ScheduleEntry["last"]) => {
+  if (last === null) return "nothing yet";
+  const outcome = last.outcome;
+  const said =
+    outcome.kind === "run"
+      ? `${outcome.run} ${outcome.status}`
+      : outcome.kind === "waiting-for-run"
+        ? `waiting for ${outcome.run} (${outcome.status})`
+        : outcome.kind === "waiting-for-herdr"
+          ? "waiting for herdr"
+          : `refused: ${outcome.reason}`;
+  return `${last.occurrence} ${said}`;
+};
+
 /** The one write: add (paused or not), pause, resume or remove. */
 export const ScheduleChange = Schema.Union([
   Schema.Struct({
@@ -116,6 +131,25 @@ export const ScheduleChanged = Schema.Struct({
   schedule: Schema.NullOr(ScheduleEntry),
 });
 export type ScheduleChanged = typeof ScheduleChanged.Type;
+
+export const machineOf = (machine: ScheduleMachine) =>
+  `${machine.hostname} (${machine.installation})`;
+
+/** What a write did, in the line every door says it in. */
+export const changedLine = (changed: ScheduleChanged) => {
+  const on = machineOf(changed.machine);
+  const entry = changed.schedule;
+  switch (changed.change) {
+    case "add":
+      return `Added schedule ${changed.name} on ${on}${entry?.paused === true ? ", paused" : `; next ${entry?.next ?? "when its Run ends"}`}.`;
+    case "pause":
+      return `Paused schedule ${changed.name} on ${on}.`;
+    case "resume":
+      return `Resumed schedule ${changed.name} on ${on}; next ${entry?.next ?? "when its last Run ends"}.`;
+    case "remove":
+      return `Removed schedule ${changed.name} from ${on}; the Runs it started stay.`;
+  }
+};
 
 /**
  * A cron expression read in a time zone, at minute resolution: five fields, or six where

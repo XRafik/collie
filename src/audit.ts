@@ -32,6 +32,31 @@ export const AuditLine = Schema.Struct({
 });
 export type AuditLine = typeof AuditLine.Type;
 
+const STARTED_FROM: Partial<Record<FrontDoor, string>> = {
+  chat: "chat",
+  desktop: "Desktop",
+  board: "the board",
+  cli: "the CLI",
+  "cli-tty": "the CLI",
+};
+
+/** Who started a Run, from its start line, else from its parent; undefined where neither says. */
+export const startedBy = (
+  lines: ReadonlyArray<AuditLine>,
+  run: { readonly id: string; readonly parent: string | null },
+): string | undefined => {
+  const actor = lines.find((line) => line.operation === "start")?.actor;
+  if (actor?.schedule !== undefined)
+    return `Started by schedule \`${actor.schedule.name}\` for ${actor.schedule.occurrence}`;
+  const door = actor === undefined ? undefined : STARTED_FROM[actor.origin];
+  if (door !== undefined) return `Started from ${door}`;
+  if (run.parent === null) return undefined;
+  const invocation = run.id.startsWith(`${run.parent}.`)
+    ? run.id.slice(run.parent.length + 1)
+    : run.id;
+  return `Started by ${run.parent} as ${invocation}`;
+};
+
 const AuditJson = Schema.fromJsonString(AuditLine);
 const sameJson = Schema.toEquivalence(Schema.Json);
 export const AUDIT_FILE = "operations.jsonl";

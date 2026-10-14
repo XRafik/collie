@@ -97,7 +97,8 @@ herdr actions, and the `collie` CLI.
   the open page is `afterGesture` in `desktop/src/shared/board-clicks.ts`, tested in
   `test/desktop-view.test.ts`, with where a gesture landed read in
   `desktop/test/board-clicks.test.ts`; whether a Machine is In sync is
-  `desktop/src/shared/in-sync.ts`, tested in `test/desktop-view.test.ts`; and the window's
+  `desktop/src/shared/in-sync.ts`, tested in `test/desktop-view.test.ts`; what a Machine's
+  Schedules section says and offers is `desktop/src/shared/schedules.ts`; and the window's
   navigation rule is in
   `desktop/src/bun/index.ts`. Desktop has its own `package.json`; Effect is the root's, so
   the board's Schemas exist once. The
@@ -162,7 +163,9 @@ herdr actions, and the `collie` CLI.
   (the records under `schedules/`, the one write, and the `Schedule` workflow on the host's
   engine) and `collie schedule` in `src/commands/schedule.ts`, with
   `test/schedule-model.test.ts`, `test/schedules.test.ts` (a real host, its own clock) and
-  `test/schedule-command.test.ts`.
+  `test/schedule-command.test.ts`. Moving one is `src/schedule-move.ts`, the one sequence
+  Desktop and the CLI run, with `test/schedule-move.test.ts`; Desktop's Machines page draws
+  them from `desktop/src/shared/schedules.ts`, with `test/desktop-schedules.test.ts`.
 - **Adding a setting, or changing how settings are shared across a Flock** →
   [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), alongside
   `src/settings.ts` (the one list the TUI, Desktop and the host read), `setSetting` and

@@ -13,31 +13,15 @@ import { err, type OpResult } from "../operations";
 import {
   SCHEDULE_PROJECTS_ROOT,
   type ScheduleChange,
-  type ScheduleChanged,
+  changedLine,
+  lastLine,
+  machineOf,
   type ScheduleEntry,
-  type ScheduleMachine,
 } from "../schedule-model";
 import { givenVerifications } from "../verify-spec";
 import { answering, cliDoor, parseInput, requestIdFlag, root } from "./shared";
 
-const machineOf = (machine: ScheduleMachine) => `${machine.hostname} (${machine.installation})`;
-
 const SCHEDULE_CHECKOUT_FIX = `Name the checkout with --workspace <absolute path>, a workspace's id or label, or ${SCHEDULE_PROJECTS_ROOT}.`;
-
-/** What one Schedule's last occurrence came to, in a few words. */
-const lastLine = (last: ScheduleEntry["last"]) => {
-  if (last === null) return "nothing yet";
-  const outcome = last.outcome;
-  const said =
-    outcome.kind === "run"
-      ? `${outcome.run} ${outcome.status}`
-      : outcome.kind === "waiting-for-run"
-        ? `waiting for ${outcome.run} (${outcome.status})`
-        : outcome.kind === "waiting-for-herdr"
-          ? "waiting for herdr"
-          : `refused: ${outcome.reason}`;
-  return `${last.occurrence} ${said}`;
-};
 
 export const scheduleLine = (entry: ScheduleEntry) =>
   [
@@ -48,21 +32,6 @@ export const scheduleLine = (entry: ScheduleEntry) =>
     entry.paused ? "paused" : `next ${entry.next ?? "when its Run ends"}`,
     `last ${lastLine(entry.last)}`,
   ].join("\t");
-
-export const changedLine = (changed: ScheduleChanged) => {
-  const on = machineOf(changed.machine);
-  const entry = changed.schedule;
-  switch (changed.change) {
-    case "add":
-      return `Added schedule ${changed.name} on ${on}${entry?.paused === true ? ", paused" : `; next ${entry?.next ?? "when its Run ends"}`}.`;
-    case "pause":
-      return `Paused schedule ${changed.name} on ${on}.`;
-    case "resume":
-      return `Resumed schedule ${changed.name} on ${on}; next ${entry?.next ?? "when its last Run ends"}.`;
-    case "remove":
-      return `Removed schedule ${changed.name} from ${on}; the Runs it started stay.`;
-  }
-};
 
 /**
  * The checkout a Schedule's start names, as a path or `projects-root`: given, or the

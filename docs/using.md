@@ -823,7 +823,9 @@ it, never instead of it, because reading one task must not cost the overview of 
 other. `close` or Esc puts it away. Under the name and the buttons are five tabs, and one
 is showing at a time:
 
-- **Summary** — what it is for and where it has got to: the intent (its goal, and each
+- **Summary** — what it is for and where it has got to: who started it ("Started from
+  chat", "Started by schedule `nightly-review` for …", "Started by run-1 as review"), the
+  intent (its goal, and each
   constraint marked `¬`), the files the Run was given, each with its size and its path
   in the Run's directory where its agents read it, the steps with a duration each, the live agents — each saying
   what it is doing right now, from the terminal title its harness publishes, so progress is
@@ -2342,6 +2344,25 @@ Run's status, that it is waiting for herdr, or why it was refused. Every change 
 occurrence is recorded with who asked in `schedules/<name>/operations.jsonl` under the state
 directory.
 
+In Desktop, the Machines page has a **Schedules on <machine>** section for each Machine,
+beside its Usage, with the same facts as `collie schedule list` and the cron expression put
+in words where it is a common one ("every day at 07:00"). Each row can be paused, resumed,
+removed, or moved with **Move to…**. A Machine Desktop cannot reach says so: its Schedules
+still fire there while its host runs. One whose Collie is too old to list them asks for an
+upgrade. There is no add form: ask the Flock chat to add one.
+
+**Moving** a Schedule takes three steps over the two Machines' hosts: it is added on the
+other Machine, paused, with the same start; removed from this one; then resumed there. It
+starts fresh there, with no catch-up, and the Runs it already started stay where they ran.
+Name its checkout on the other Machine where the path differs. Both Machines must be
+reachable, or nothing is moved (`machine_unreachable`). A move that stops after the first
+step leaves the new copy paused and says so, and the same move asked again finishes it
+without doing any step twice. Desktop's **Move to…** and the Flock chat's
+`collie_move_schedule` run this one sequence.
+
+A Run a Schedule started says so on its record: "Started by schedule `nightly-review` for
+2026-10-14T05:00:00.000Z".
+
 ## Cleanup
 
 Collie removes what it made once nothing needs it, and only what it can show it made
@@ -2382,7 +2403,7 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   — a workspace, an agent, a checkout, another Run — needs them.
 
 An entry of the state directory that is no kind Collie knows is listed as kept and never
-removed. [Schedules](#schedules) under `schedules/` are the host's own and never swept.
+removed. [Schedules](#schedules) under `schedules/` are the host's own: listed as kept, and never swept.
 
 `collie cleanup` lists what a sweep would remove now, with each item's size and the total,
 and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.
