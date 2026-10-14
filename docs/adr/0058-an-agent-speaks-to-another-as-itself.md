@@ -109,5 +109,5 @@ for ([ADR-0033](0033-a-run-started-from-the-home-is-placed-not-asked.md)).
 - Each line of that conversation is recorded on the Run that received it, as the agent
   that sent it.
 - A Schedule on one Machine may manage another's through `--machine` once
-  ADR-0052 is built. A Schedule
+  Schedules are built. A Schedule
   still belongs to the Machine that fires it.

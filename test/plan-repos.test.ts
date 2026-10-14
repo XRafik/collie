@@ -4,7 +4,14 @@
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
-import { checksIn, isSingleRepo, orderedTickets, planReposOf, readPlanRepos } from "../src/plan";
+import {
+  checksIn,
+  criteriaIn,
+  isSingleRepo,
+  orderedTickets,
+  planReposOf,
+  readPlanRepos,
+} from "../src/plan";
 import { runEffect } from "./support/effect";
 
 function ticket(file: string, opts: { repo?: string; blockedBy?: string } = {}) {
@@ -407,3 +414,33 @@ test("under a Projects root that is no repository, a checkout five levels down i
       expect(refused.refusal?.message).toContain("team/platform/services/billing");
     }).pipe(Effect.scoped),
   ));
+
+test("a ticket's acceptance criteria are its checkboxes, each one whole", () => {
+  const text = [
+    "# 05: a",
+    "",
+    "## Acceptance criteria",
+    "",
+    "- [ ] **The field.** The Output gains `criteria`, with one",
+    "  entry per criterion.",
+    "- [x] **Before round one.** Blocking.",
+    "  - A nested note, not part of what is copied.",
+    "* [ ] Starred.",
+    "",
+    "- a plain bullet is not a criterion",
+    "",
+    "## Not in this ticket",
+    "",
+    "- [ ] Outside its section, a checkbox is not this ticket's.",
+  ].join("\n");
+  expect(criteriaIn(text)).toEqual([
+    "**The field.** The Output gains `criteria`, with one entry per criterion.",
+    "**Before round one.** Blocking.",
+    "Starred.",
+  ]);
+  // A ticket with no such section has its checkboxes wherever they are, but never in code.
+  expect(criteriaIn("- [ ] One.\n\n```\n- [ ] Code.\n```\n")).toEqual(["One."]);
+  expect(criteriaIn("# 01\n\nNo boxes here.\n")).toEqual([]);
+  const [slice] = orderedTickets([{ file: "01-a.md", text }]);
+  expect(slice!.criteria).toHaveLength(3);
+});

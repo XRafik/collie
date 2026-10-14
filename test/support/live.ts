@@ -2,14 +2,16 @@
 
 import { test } from "bun:test";
 import { Config, Effect, FileSystem } from "effect";
+import { LIVE_HARNESSES } from "./live-switch";
 
 /**
- * The test, where that harness is on this machine, and skipped where it is not. What
- * these ask — does the installed Claude still take the flag the adapter passes — has no
- * answer on a runner with no Claude on it, and asserting one there fails on the harness's
- * absence rather than on the contract.
+ * The test, where it was asked for and that harness is on this machine, and skipped
+ * otherwise. What these ask — does the installed Claude still take the flag the adapter
+ * passes — depends on whatever version happens to be installed, so an ordinary run never
+ * fails on it, and a runner with no Claude has no answer to give.
  */
-export const onMachineWith = (harness: string) => (Bun.which(harness) === null ? test.skip : test);
+export const onMachineWith = (harness: string) =>
+  Bun.env[LIVE_HARNESSES] === "1" && Bun.which(harness) !== null ? test : test.skip;
 
 /** Removes, when the test's scope closes, the cache an installed harness keeps in `TMPDIR`. */
 export const removesCache = Effect.fn("live.removesCache")(function* (name: string) {

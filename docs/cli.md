@@ -301,12 +301,12 @@ is.
 commands do the rest — whichever door you come in, it is the host that settles it:
 
 ```bash
-collie --json run answer <run-id> yes --decision keep --request-id "$(uuidgen)"
-collie --json run hold <run-id> --request-id "$(uuidgen)"
-collie --json run release <run-id> --request-id "$(uuidgen)"
-collie --json run stop <run-id> --request-id "$(uuidgen)"
-collie --json run resume <run-id> --request-id "$(uuidgen)"
-collie --json run steer <run-id> "check the migration too" --request-id "$(uuidgen)"
+collie --json run answer <run-id> yes --decision keep [--request-id <id>]
+collie --json run hold <run-id> [--request-id <id>]
+collie --json run release <run-id> [--request-id <id>]
+collie --json run stop <run-id> [--request-id <id>]
+collie --json run resume <run-id> [--request-id <id>]
+collie --json run steer <run-id> "check the migration too" [--to builder] [--request-id <id>]
 ```
 
 - **`--decision` names the question** where a module is waiting on more than one; leave it
@@ -354,9 +354,13 @@ collie --json run steer <run-id> "check the migration too" --request-id "$(uuidg
   does not move a Run: `--workspace` only chooses where the command looks, and the resume
   says so.
 - **`run steer` says something to the Run's agent** through the one sender, with the same
-  incarnation and harness-capability checks as every other delivery, and tells you whether
-  it was delivered rather than that it was accepted for sending: anything not sent is
-  `operation_failed`, with why. A message over 8 KiB is kept whole as a file in the Run's
+  incarnation and harness-capability checks as every other delivery. With no `--to`, it
+  goes to the agent whose step is active, else the builder; `--to builder|reviewer|planner`
+  names a role and `--to <agent>` an agent, and `--operation` still names one by its
+  operation ([steering](steering.md#who-a-steer-reaches-and-what-it-says-came-of-it)). It
+  tells you whether the agent was seen to take it: `Delivered to <agent> (observed: <how>).`,
+  or `Sent to <agent>, not observed.` with how to go to its pane, and `data.observed` and
+  `data.how` say the same. Anything not sent is `operation_failed`, with why. A message over 8 KiB is kept whole as a file in the Run's
   `attachments/`, and the agent is told where to read it
   ([steering](steering.md#delivery)). A finished Run's live agent takes one as a running Run's
   does, whether or not its module is still loaded. It carries out nothing:
@@ -529,6 +533,8 @@ Retry with the same `--request-id` once you have the values.
 collie --json run wait <run-id> --follow
 collie --json run wait <run-id> --timeout "10 minutes"
 collie --json run wait <run-id> --until attention
+collie --json run wait <run-id> --until ready
+collie --json run wait <run-id> --until needs-human
 collie --json run show <run-id>
 collie --json run list
 collie --json run output <run-id>
@@ -545,7 +551,8 @@ one interrupted before it has an answer still prints an envelope: `operation_fai
 A Run is watched from the host's own stream: every update
 is the whole current state rather than a change to apply, so a `wait` started long after
 the work — or resumed after the last one was interrupted — reads where the Run is instead
-of waiting for a notification that has already been and gone. `run show` names the module file the Run is on, and a
+of waiting for a notification that has already been and gone. `run show` lists the handoff notes the Run's agents left under its `handoffs/` directory,
+by path (`data.handoffs`). It names the module file the Run is on, and a
 Run whose module has been deleted still reads, pending, with that file named: its history
 is Collie's rows, and none of them went anywhere. `run list` shows those Runs beside the
 rest; where the host will not start it says so and still lists the others.
@@ -553,19 +560,35 @@ rest; where the host will not start it says so and still lists the others.
 A run that stops to ask a question is **not** ended, so a plain `run wait` waits straight
 through it. `--until attention` is the wait that does not: it returns as soon as the run is
 suspended — at a question, held, stopped or parked — or has ended, whichever comes first,
-and returns immediately when that is already true. `--until terminal` is the default
-spelled out; any other value is `invalid_input`.
+and returns immediately when that is already true. A Run that parked its own work while
+its status is still `pending` counts too. `--until terminal` is the default spelled out.
+
+`--until ready` returns once the Run is Ready to release (see `ready` below). When what is
+missing can only be moved by a human — the Run is at attention, or it has ended and nothing
+missing may still come by itself — it ends instead as `invalid_state`, naming what is
+missing. `--until needs-human` returns at either: ready, or nothing will move without you.
+Both ask the host for the Run's readiness every two seconds; the envelope they return
+carries it as `data.ready`. A host that cannot say five times running, such as an older build, ends the wait as `operation_failed`. Any other value is `invalid_input`.
 
 Answer what the wait returned with `run answer <run-id> <option> --decision <name>` — see
 [Answer a question](#answer-a-question).
 
 `--follow` streams instead of returning one envelope: one newline-delimited
 `{"type":"status","run":…}` line each time the run's status changes, carrying the same
-`run` object as `run show`. Failures still arrive as a normal envelope — a timeout, or a
+`run` object as `run show`, and one line for each other change, with the Run's id as `run`:
+`{"type":"step","operation":…,"agent":…,"state":"started"|"finished"}`,
+`{"type":"agent","agent":…,"operation":…}` when an agent is launched,
+`{"type":"parked","reason":…}`, `{"type":"mr","mr":…}` when the merge request opens and
+`{"type":"ci","ci":…}` when the forge's pipeline changes state. Without `--json` each is
+one line: `run-1a2b: step 01-a.md finished`, `run-1a2b: parked: …`, `run-1a2b: CI running`. Failures still arrive as a normal envelope — a timeout, or a
 run the host could not watch — so a consumer reads each line as JSON and branches on
 whether `type` is present.
 
-`run show` is the Run as the host has it. Its `run` object carries:
+`run show` is the Run as the host has it. Beside `run`, `data.ready` is Ready to release
+for this Run — `ready`, and `missing[]`, each a `fact` (`succeeded`, `leads`, `mr-open`,
+`not-draft`, `checks`, `ci`, `review` or `mergeable`), what is `said` of it, and whether it
+is `settling`, may still come by itself — or `null` from a host that cannot say. A Run that
+does not lead its Task's card is never ready. Its `run` object carries:
 
 | Field                                    | What it tells you                                                                                                                                                                                    |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -635,7 +658,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `ended`                   | When the leading Run ended, or `null` while it has not.                                                                                                         |
 | `planReady`, `offer`      | A finished plan nobody has implemented, and the offer its card's first action invokes.                                                                          |
 | `checks`                  | What checked an open merge request: `passed` or `failed` (with `name`) at revision `at`, `running`, or `unchecked`; else `null`.                                |
-| `ready`                   | Ready to release: the leading Run succeeded, its merge request is open, and its `checks` passed.                                                                |
+| `ready`, `readiness`      | Ready to release: the forge would merge it now. `readiness` names each fact missing, as `run show`'s `data.ready` does.                                         |
 | `check`                   | The check Collie is running for the leading Run, as `collie run checks` gives `running` (with its `log` and `lastLines`), or `null`.                            |
 | `reopened`                | A finished Run whose agent took a steer after it ended: the `delivery`, the `agent`, the first line it was `told` and its `status` now; else `null`.            |
 | `run`, `runs[]`           | The Run a card acts on, and every Run of the Task.                                                                                                              |
@@ -643,6 +666,16 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 A fan-out finds its plan from its work source even where the kind was never recorded with
 its input, as for an implement Run started from a plan's end menu: a plan directory is the
 plan, so `children` lists every repository it names, those not started as `todo`.
+
+## Credentials never go in a goal or a steer
+
+Every operation that carries words to a Run — `run start` (its goal, Inputs and
+constraints), `run intent set-goal` and `add-constraint`, `run steer`, `steer`, a follow-up,
+`run answer`, and the same actions through chat and the board — has any credential-shaped
+value replaced by its kind before the host records or forwards it. It is never refused for
+one. The result says so in its text, and in `--json` as `redacted`: the kind of each value
+taken out, `[]` or absent where there was none. Give an agent a credential through its
+forge login instead ([Using Collie](using.md#credentials-never-go-in-a-goal-or-a-steer)).
 
 ## Answer a question
 
@@ -652,7 +685,7 @@ naming the question:
 
 ```sh
 collie --json run show <run-id>                            # read waiting
-collie --json run answer <run-id> "Implement now" --decision next-1 --request-id "$(uuidgen)"
+collie --json run answer <run-id> "Implement now" --decision next-1 [--request-id <id>]
 collie --json run show <run-id>                            # confirm it took
 ```
 
@@ -667,8 +700,8 @@ does. A refusal is `invalid_input` where your answer was the reason, and otherwi
 ## Stop and resume
 
 ```sh
-collie --json run stop <run-id> --request-id "$(uuidgen)"
-collie --json run resume <run-id> --request-id "$(uuidgen)"
+collie --json run stop <run-id> [--request-id <id>]
+collie --json run resume <run-id> [--request-id <id>]
 ```
 
 `stop` parks the run where it is — at its next boundary, or inside the wait it is in — and
@@ -718,7 +751,7 @@ collie --json run start implement --input plan=./plans/steering \
   --constraint "no new dependencies"
 
 collie --json run intent show <run-id>
-collie --json run intent set-goal <run-id> "<goal>" --request-id "$(uuidgen)"
+collie --json run intent set-goal <run-id> "<goal>" [--request-id <id>]
 collie --json run intent add-constraint <run-id> "<text>" --severity block
 collie --json run intent remove-constraint <run-id> <constraint-id>
 collie --json run intent authority <run-id> auto_correct=true --propagate
@@ -1089,7 +1122,11 @@ says what is missing. A check
 that failed runs once more; gaps a check could still close go to the implementer for up to
 four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
 Repair the checks and resume the Run: the pending proof reruns them even when the repair
-only changes the environment. A changed tree or set of checks also gets fresh proof while
+only changes the environment. Straight after the gate, with no resume between, the proof
+runs a check again only where the gate's own result no longer holds: it relies on the
+latest pass Collie collected for that check when that was the same command, on the same
+tree and in the same environment, and logs the verification it relied on by id. So a
+green Run runs each check once. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
@@ -1128,11 +1165,14 @@ readiness, assignee, template, Linear tickets and this branch's open merge reque
 The commands quote repository, branch and assignee values so the shell passes them literally.
 Readiness requires the forge's CLI installed and logged in to its host, and on GitHub able
 to read the repository. An existing merge request on the branch is updated rather than
-given a second one. If any request returned for the branch merges itself once green,
-delivery does not push: the step records `not pushed: auto-merge is on for <url>` and
-starts no agent. Before every
-GitHub push in the build and fix steps, the implementer still reads the branch's open pull
-requests and refuses a push if auto-merge is enabled or that reading fails.
+given a second one. Before every step that pushes — each build, fix round and gate fix,
+and delivery — the host reads the branch's open merge request. Where it merges itself once
+green, the step starts no agent: the Run records `not pushed: auto-merge is on for <url>`
+and parks as Needs you until auto-merge is off and the Run is resumed. Where the forge
+cannot be read, the step starts no agent either: the Run records `not pushed: whether it
+merges itself is unknown: <why>` and parks until it is resumed with the forge readable.
+`review`'s fix round is held to the same rule. The commands contain no command substitution: GitLab's
+description and note are read from the file by `glab api` (`-F description=@<file>`).
 An unavailable forge parks the Run with the repair it needs.
 A delivery agent that did not push, supplied no merge request URL or reported findings
 fails the Run with the reason and a follow-up repair; it cannot report successful delivery.
@@ -1205,6 +1245,25 @@ open, and the rework and verifications summed from each Run's metrics. Then each
 failed, with its reason, each that completed, with its result, and each that was stopped.
 `--since` keeps only Runs admitted at or after that date.
 
+Then the measures a change to Collie is judged by, under `measures` in `--json`. Each one is
+counted from what the Runs in the window recorded, and each names the Run ids it counts
+(`runs`), so an issue can cite them. Chat reads the same report through `collie_report`.
+
+| Field           | What it counts                                                                                                                                                                                                                                               |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rounds`        | Runs with a review rally (a review allowed more than one round): `runs[]` with the round each `reached` and its `cap`, the `median` round (`null` for none), and `atCap`, the Runs that reached their cap.                                                   |
+| `dispositions`  | `merged`, `superseded` and `abandoned`, each a `count`, its `runs` and its `share` of the three (`null` where none was recorded).                                                                                                                            |
+| `steering`      | `runs[]`: each Run's `steer`, `followup`, `deliver` and `correction` counts and `byOrigin`. `byOrigin`: who asked — `human` (the board, Desktop, a terminal), `chat`, `agent` (an agent or a non-interactive CLI) and `host` (Collie's own corrections).     |
+| `verifications` | `total`, `runs[]` with each Run's `total` and how many an `agent` and `collie` collected, `byCollector`, `repeated` (same Run, check, start tree, result and collector as one before it) and `executableOnly` (named only by its executable, such as `bun`). |
+| `parks`         | `byReason`: each park's `reason`, with the Run, pane, path and command it named taken out so like counts with like, and `collectExpiries`: an agent that had written nothing when its collect budget ran out.                                                |
+| `peakContext[]` | Each Run's largest context sample at a work boundary, in `tokens`, and the `agent` it was on. A sample, not tokens consumed; `null` is not recorded, and is never estimated.                                                                                 |
+
+Every field before `measures` is unchanged. A park is recorded as a `halt` line in the Run's
+metrics each time it parks, or parks for a different reason, and a context sample as a
+`context` line wherever Collie samples a reused agent's context at a work boundary. A Run
+from before those were recorded counts none of either. The text caps each list at 20 lines and each list of Run ids
+at 10.
+
 Like metrics, the report is data: no number in it is a threshold, and it refuses nothing.
 
 ## Verify
@@ -1224,12 +1283,18 @@ What the command prints is shown as it runs — its stdout on stdout and its std
 stderr, or both on stderr under `--json`, where stdout is the one envelope — and the exit
 status is the command's own, so a failure says why the first time.
 
-| Flag       | What it does                                                                                                                                             |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                              |
-| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it. |
-| `--name`   | What to call it on a card. The executable by default.                                                                                                    |
-| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                  |
+| Flag       | What it does                                                                                                                                                         |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                                          |
+| `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it.             |
+| `--name`   | What to call it on a card. By default the script it runs (`bun run typecheck` is `typecheck`), else the tool and its subcommand (`bun test`), else the tool (`tsc`). |
+| `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                              |
+
+Every record carries the **environment** it ran in: a digest of the executable's real path
+and content, the `node` and `bun` that `PATH` resolves to, again by path and content, and
+`PATH`, `NODE_ENV` and `NODE_OPTIONS`. A gate relies on an earlier pass only where this
+matches, so an upgraded toolchain is a fresh run. A record from before environments were
+recorded has none, and is never relied on.
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command
@@ -1295,9 +1360,9 @@ to change the set, or delete it to withdraw it.
 ## Hold and release
 
 ```sh
-collie --json run hold <run-id> --request-id "$(uuidgen)"
-collie --json run hold --workspace <workspace-id> --request-id "$(uuidgen)"
-collie --json run release <run-id> --request-id "$(uuidgen)"
+collie --json run hold <run-id> [--request-id <id>]
+collie --json run hold --workspace <workspace-id> [--request-id <id>]
+collie --json run release <run-id> [--request-id <id>]
 ```
 
 `hold` stops a run taking on **new** work; whatever is already running carries on. The run
@@ -1392,12 +1457,12 @@ human line and a failure prints `error.message`.
 Every mutation — `run start`, `run answer`, `run stop`, `run resume`, `workflow fork`,
 `persona fork` — accepts `--request-id`. Collie writes a receipt under its state directory
 keyed by that id, so retrying the same id returns the original result instead of repeating
-the effect. Generate one per intended action and reuse it for every retry of that action:
+the effect. Choose one per intended action — any unique string — and reuse it for every
+retry of that action:
 
 ```sh
-id=$(uuidgen)
-collie --json run start implement --input plan="$PWD/plan" --request-id "$id" \
-  || collie --json run start implement --input plan="$PWD/plan" --request-id "$id"
+collie --json run start implement --input plan="$PWD/plan" --request-id start-plan-1 \
+  || collie --json run start implement --input plan="$PWD/plan" --request-id start-plan-1
 ```
 
 A receipt is reserved before the action starts. If execution is interrupted before its
@@ -1429,7 +1494,9 @@ collie settings set <key> <value> [--request-id <id>]
 unsets it. It is an edit made now, so a Desktop that shares settings with its Flock gives it
 to every Machine: the latest edit of a key wins
 ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)). Remembered answers and
-anything else in `config.json` are not settings and are refused.
+anything else in `config.json` are not settings and are refused. `agent_profile` takes its
+JSON as one quoted argument and is refused as a whole where any part of it is
+([What Collie's agents get](using.md#what-collies-agents-get)).
 
 ## Cleaning up
 
@@ -1754,12 +1821,27 @@ everything is ready, or what is missing and how to fix each one.
 
 ```sh
 collie host --dir <state-dir>
+collie host restart [--dir <state-dir>]
 ```
 
-The process durable work runs in. Nobody is expected to type this: a client that needs a
-host and finds none starts one, detached, and leaves it running — so the work outlives the
+The process durable work runs in. Nobody is expected to type the first: a client that needs
+a host and finds none starts one, detached, and leaves it running — so the work outlives the
 command, the board or the chat turn that asked for it. Typing it is how you watch one in a
 terminal.
+
+`host restart` replaces the host that owns the state directory (this installation's by
+default) with this install's: it asks the owner to stop, kills it if it is still there five
+seconds past its stop grace, starts a host, and waits until that one answers. It prints the
+old and new pid and build, `data.before` and `data.after` under `--json`; with no host
+running, `before` is null and it says it started one. A stopped host never answered is named
+with its pid and `build unknown`. Nothing about a Run is touched: the new host recovers
+what the old one was doing, exactly as on any start, so a parked Run is still parked and a
+step that was cut short runs again. The herdr action "Restart the Collie host" does the
+same and says what it did as a notification.
+
+A host a client started has no terminal, so its own stdout and stderr — a crash's stack
+trace among them — are appended to `host.out` in the state directory, beside `host.log`.
+Like the log it is kept to about 1 MiB, with what came before it kept once as `host.out.1`.
 
 One host owns one state directory, and the pid lock beside its SQLite decides which. Start
 four clients at once and they converge on one owner; the three hosts that lost the lock
@@ -1800,7 +1882,8 @@ installation id is written once, by the first host to own the directory, and sur
 restarts and upgrades.
 
 The host also runs what nobody has to have a pane open for: the merge watch, which asks
-GitLab about each waiting merge request every 5 minutes and records a merge; each Herd's
+the merge request's forge, GitLab or GitHub, about each waiting one every 5 minutes and
+records a merge; each Herd's
 News, which it also supersedes once an item's cause no longer holds; and the
 [cleanup](#cleaning-up) sweep, every ten minutes.
 
@@ -1871,6 +1954,11 @@ chat's tools all go through these, so the host is the only writer of what they r
 for the asking channel exactly as the Machine's Native chat would, with no board selection
 standing in for a Run nobody named. It records nothing. Desktop's Flock chat reads through
 it.
+
+`progress` answers for one Run what its status does not carry: its Ready to release, the
+forge's pipeline at its merge request's head, and each operation's latest agent and whether
+it has written its Output. `run show`, `run wait` and chat read it; `null` is a Run the host
+does not have.
 
 `runDetail` streams one Run's details while a drawer is open — intent, plan, review,
 log tail, verifications, metrics, steering cards, the files it kept as evidence, its diff
@@ -1958,8 +2046,8 @@ It says which build it is, and which installation it serves. A client newer than
 from the same installation (after `collie upgrade`), stops it and starts itself in its
 place; a host still there five seconds past its stop grace is killed, and its work is
 recovered by the one that replaces it. A host that does not answer is replaced the same way
-when the build it recorded in `host.build` is older. Any other client of another build is told which build is running and which pid to
-stop, and sends nothing else. That includes a checkout under development, which is pointed
+when the build it recorded in `host.build` is older. Any other client of another build is told which build is running and to run
+`collie host restart`, and sends nothing else. That includes a checkout under development, which is pointed
 at a state directory of its own rather than replacing the installed host. Such a
 checkout's host also says `development: "<version>+<sha>"`; a release's does not.
 A host that cannot be started at all, or that takes a connection and does not answer within

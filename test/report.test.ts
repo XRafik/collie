@@ -4,6 +4,8 @@ import { expect, test } from "bun:test";
 import { HOLD, STOP, type RunView } from "../src/engine";
 import type { Metrics } from "../src/board-model";
 import { reportOf } from "../src/report";
+import type { OutcomeRecords } from "../src/outcomes";
+import type { Metric } from "../src/metrics";
 
 const view = (over: Partial<RunView> & { runId: string }): RunView => ({
   workflow: "implement",
@@ -143,4 +145,196 @@ test("a completed value that is not a string is shown as JSON, oldest first", ()
     { runId: "earlier", workflow: "implement", value: "plain", mr: null },
     { runId: "later", workflow: "implement", value: '{"mr":7}', mr: "https://mr/7" },
   ]);
+});
+
+const records = (over: Partial<OutcomeRecords> = {}): OutcomeRecords => ({
+  rounds: [],
+  disposition: null,
+  steering: [],
+  verifications: [],
+  ...over,
+});
+
+const check = (over: Partial<OutcomeRecords["verifications"][number]> = {}) => ({
+  name: "check",
+  executable: "bun",
+  argv: ["run", "check"],
+  cwd: "/w",
+  start: "abc:f1",
+  result: "pass",
+  by: "collie",
+  ...over,
+});
+
+const line = (kind: Metric["kind"], subject: string, value: number, note = ""): Metric => ({
+  at: "2026-09-30T10:00:00.000Z",
+  kind,
+  subject,
+  value,
+  note,
+});
+
+test("an empty window measures nothing, and says no share rather than zero", () => {
+  const report = reportOf(
+    [view({ runId: "old", created: "2026-01-01T00:00:00.000Z" })],
+    new Map(),
+    "2026-09-01",
+    new Map([["old", { records: records({ disposition: "merged" }), metrics: [] }]]),
+  );
+  expect(report.total).toBe(0);
+  expect(report.measures.rounds).toEqual({ runs: [], median: null, atCap: { count: 0, runs: [] } });
+  expect(report.measures.dispositions.merged).toEqual({ count: 0, runs: [], share: null });
+  expect(report.measures.verifications.total).toBe(0);
+  expect(report.measures.peakContext).toEqual([]);
+});
+
+test("every measure is counted from the Runs' records, and names the Runs it counts", () => {
+  const report = reportOf(
+    ["a", "b", "c", "d"].map((runId) => view({ runId })),
+    new Map(),
+    null,
+    new Map([
+      [
+        "a",
+        {
+          records: records({
+            rounds: [
+              { round: 1, of: 4 },
+              { round: 2, of: 4 },
+              { round: 3, of: 4 },
+              { round: 4, of: 4 },
+            ],
+            disposition: "merged",
+            steering: [
+              { kind: "steer", origin: "board" },
+              { kind: "followup", origin: "chat" },
+              { kind: "deliver", origin: "agent" },
+              { kind: "correction", origin: "evaluator" },
+            ],
+            verifications: [
+              check(),
+              check(),
+              check({ result: "fail" }),
+              check({ by: "agent", name: "typecheck" }),
+            ],
+          }),
+          metrics: [
+            line("context", "a-build", 90_000),
+            line("context", "a-review", 120_000),
+            line("halt", "", 0, "a-build has written nothing to /s/agents/run-1/build.json yet."),
+          ],
+        },
+      ],
+      [
+        "b",
+        {
+          records: records({
+            rounds: [
+              { round: 1, of: 4 },
+              { round: 2, of: 4 },
+            ],
+            disposition: "superseded",
+            steering: [{ kind: "steer", origin: "cli-tty" }],
+          }),
+          metrics: [
+            line(
+              "halt",
+              "",
+              0,
+              "run-b-review-1-r1 in pane w7:p1 could not be sent its step. `collie run resume run-b` tries again.",
+            ),
+          ],
+        },
+      ],
+      [
+        "c",
+        {
+          records: records({ rounds: [{ round: 1, of: 1 }], disposition: "merged" }),
+          metrics: [
+            line(
+              "halt",
+              "",
+              0,
+              "run-c-review-1-r1 in pane w9:p2 could not be sent its step. `collie run resume run-c` tries again.",
+            ),
+          ],
+        },
+      ],
+      ["d", { records: null, metrics: [] }],
+    ]),
+  );
+  const { rounds, dispositions, steering, verifications, parks, peakContext } = report.measures;
+  // A lone review allows one round, so it is no rally and is not counted as one.
+  expect(rounds.runs).toEqual([
+    { runId: "a", reached: 4, cap: 4 },
+    { runId: "b", reached: 2, cap: 4 },
+  ]);
+  expect(rounds.median).toBe(3);
+  expect(rounds.atCap).toEqual({ count: 1, runs: ["a"] });
+  expect(dispositions.merged).toEqual({ count: 2, runs: ["a", "c"], share: 2 / 3 });
+  expect(dispositions.superseded).toEqual({ count: 1, runs: ["b"], share: 1 / 3 });
+  expect(dispositions.abandoned).toEqual({ count: 0, runs: [], share: 0 });
+  expect(steering.runs).toEqual([
+    {
+      runId: "a",
+      steer: 1,
+      followup: 1,
+      deliver: 1,
+      correction: 1,
+      byOrigin: { human: 1, chat: 1, agent: 1, host: 1 },
+    },
+    {
+      runId: "b",
+      steer: 1,
+      followup: 0,
+      deliver: 0,
+      correction: 0,
+      byOrigin: { human: 1, chat: 0, agent: 0, host: 0 },
+    },
+  ]);
+  expect(steering.byOrigin.human).toEqual({ count: 2, runs: ["a", "b"] });
+  expect(steering.byOrigin.host).toEqual({ count: 1, runs: ["a"] });
+  expect(verifications.total).toBe(4);
+  expect(verifications.runs).toEqual([{ runId: "a", total: 4, agent: 1, collie: 3 }]);
+  expect(verifications.byCollector).toEqual({ agent: 1, collie: 3 });
+  // The second identical pass repeats the first; the failure on the same tree does not.
+  expect(verifications.repeated).toEqual({ count: 1, runs: ["a"] });
+  expect(verifications.executableOnly).toEqual({ count: 0, runs: [] });
+  expect(parks.collectExpiries).toEqual({ count: 1, runs: ["a"] });
+  expect(parks.byReason).toEqual([
+    {
+      reason: "<run> in pane <pane> could not be sent its step. <command> tries again.",
+      count: 2,
+      runs: ["b", "c"],
+    },
+  ]);
+  expect(peakContext).toEqual([
+    { runId: "a", tokens: 120_000, agent: "a-review" },
+    { runId: "b", tokens: null, agent: null },
+    { runId: "c", tokens: null, agent: null },
+    { runId: "d", tokens: null, agent: null },
+  ]);
+});
+
+test("a check named only by its executable is counted, wherever the executable was found", () => {
+  const report = reportOf(
+    [view({ runId: "a" })],
+    new Map(),
+    null,
+    new Map([
+      [
+        "a",
+        {
+          records: records({
+            verifications: [
+              check({ name: "bun", executable: "/usr/local/bin/bun" }),
+              check({ name: "test" }),
+            ],
+          }),
+          metrics: [],
+        },
+      ],
+    ]),
+  );
+  expect(report.measures.verifications.executableOnly).toEqual({ count: 1, runs: ["a"] });
 });

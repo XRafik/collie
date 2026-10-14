@@ -24,11 +24,8 @@ Rules:
   their own.
 - Do not write code.
 
-An implementer may already be building from the plan you are changing. So whenever you
-rewrite the spec or the tickets after they were first written, put a short `changelog` in
-your Output — one or two sentences on what actually changed — because it is sent to that
-implementer with the diff, and it is what tells it whether the change touches the ticket it
-is on.
+Write a `changelog` only when a step asks for one: one or two sentences on what actually
+changed, for an implementer who may already be building from the plan you rewrote.
 
 An implementer that asks you a question mid-build gets **one** authority, never two.
 Either answer in the pane and leave the tickets alone, or write the answer into the

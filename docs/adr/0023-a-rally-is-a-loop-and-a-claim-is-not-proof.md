@@ -19,6 +19,14 @@ The proof is the outcome table and the shipped-workflow scenarios, including the
 scenarios under unrelated workflow ids, in `test/outcome.test.ts` and
 `test/support/baseline.ts`.
 
+## Amended 2026-10-13: the proof relies on the gate's own pass
+
+On its first execution, straight after the gate, the proof runs a check only where the
+latest pass Collie collected for it is not the same command on the same tree in the same
+environment; each record now carries that environment. It logs the verification it relied
+on. A resume runs every check again, as above, so a repair outside the tree is still
+proved. The scenarios are in `test/support/baseline.ts`.
+
 **Status: accepted, and proven against real agents through the real dispatcher, over a real
 repository.** The seams are `src/output.ts` (`settleRound` beside `splitDisputed` and
 `settleFinalFix`), `src/sdk.ts` (what a module may reach for), `src/native.ts` (the host's

@@ -76,6 +76,8 @@ import {
   CheckEvent,
   outputsOf,
 } from "./run-record";
+import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
+import { removedNotice, scrub, scrubJson } from "./redact";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
 import { readDrift } from "./drift";
@@ -90,7 +92,8 @@ import { ChangedIntent } from "./intent-model";
 import { donePasses, markersOf, runningCheck, followLog } from "./checks";
 import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
-import { hostLogger } from "./host-log";
+import { hostLogger, rotateInPlace } from "./host-log";
+import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
@@ -121,7 +124,7 @@ import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
 import { Herdr, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
-import { watchedMr, type MrPanels } from "./merges";
+import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
 import { buildRunDetail, type PlanCache } from "./views";
@@ -139,6 +142,8 @@ import {
   SharedSettings,
   ShellResult,
   PROTOCOL,
+  mrLabel,
+  readinessOfRun,
   ProposalRefused,
   PART_BYTES,
   RequestConflict,
@@ -171,7 +176,13 @@ import {
 } from "./news";
 import { evaluationDeps } from "./evaluator";
 import { ActionSchema } from "./actions";
-import { clearOverride, err, request, steer, type OpResult } from "./operations";
+import {
+  clearOverride,
+  err,
+  request,
+  steer,
+  type OpResult,
+} from "./operations";
 import { REJECTED } from "./envelope";
 import {
   appendLine,
@@ -202,10 +213,28 @@ import { everyRegistered } from "./registry";
 import { listTasks, readTask } from "./task";
 import { nowIso } from "./time";
 import { reason } from "./naming";
-import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-files";
+import {
+  editString,
+  globFiles,
+  grepFiles,
+  readPart,
+  writeWhole,
+} from "./host-files";
 import { receive, uploadsDir } from "./uploads";
-import { loadDefaults, SettingRefused, sharedSettings, takeShared } from "./config";
-import { decodeAnswer, machineName, relayOf, runShell, startPeers, type Peers } from "./peers";
+import {
+  loadDefaults,
+  SettingRefused,
+  sharedSettings,
+  takeShared,
+} from "./config";
+import {
+  decodeAnswer,
+  machineName,
+  relayOf,
+  runShell,
+  startPeers,
+  type Peers,
+} from "./peers";
 import {
   Invited,
   MachineUnreachable,
@@ -215,7 +244,7 @@ import {
   type RelayHeader,
 } from "./peers-model";
 import { latest, readDispositions } from "./disposition";
-import { runAgents } from "./launches";
+import { runAgents, stepsOf } from "./launches";
 import { factsOfView, settled } from "./runs";
 import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
@@ -236,6 +265,8 @@ export const BUILD: string = manifest.version;
 export const socketOf = (dir: string) => `${dir}/host.sock`;
 const lockOf = (dir: string) => `${dir}/host.lock`;
 const logOf = (dir: string) => `${dir}/host.log`;
+/** What a spawned host writes to its stdout and stderr. */
+export const outputOf = (dir: string) => `${dir}/host.out`;
 /** Which build owns the directory, written down for a client the host does not answer. */
 const recordOf = (dir: string) => `${dir}/host.build`;
 const HostRecord = Schema.fromJsonString(
@@ -258,7 +289,9 @@ export class HostUnavailable extends Data.TaggedError("HostUnavailable")<{
  * so the client says so and stops, rather than sending a request the host may read
  * differently or taking the directory away from work that is still running.
  */
-export class HostVersionMismatch extends Data.TaggedError("HostVersionMismatch")<{
+export class HostVersionMismatch extends Data.TaggedError(
+  "HostVersionMismatch",
+)<{
   readonly dir: string;
   readonly host: string;
   readonly client: string;
@@ -286,6 +319,10 @@ const RunShown = Schema.Struct({
   agents: Schema.Array(RunAgent),
   disposition: Schema.NullOr(Disposition),
   children: Schema.Array(RunView),
+  /** The handoff notes its agents left, where they are on the host's Machine. Absent from an older host. */
+  handoffs: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ path: Schema.String, bytes: Schema.Int })),
+  ),
 });
 
 const Loaded = Schema.Struct({
@@ -293,6 +330,29 @@ const Loaded = Schema.Struct({
   registration: Schema.String,
   title: Schema.String,
 });
+
+/** A result that says what kind of credential-shaped value was taken out of its asking. */
+const saying =
+  (removed: ReadonlyArray<string>) =>
+  <A extends object>(
+    result: A,
+  ): A & { readonly redacted?: ReadonlyArray<string> } =>
+    removed.length === 0 ? result : { ...result, redacted: [...removed] };
+
+/** A steer's outcome, telling its asker what kind of credential-shaped value was taken out. */
+const outcomeSaying = (
+  removed: ReadonlyArray<string>,
+  outcome: SteerOutcome,
+): SteerOutcome => {
+  const notice = removedNotice(removed);
+  return notice === null
+    ? outcome
+    : {
+        ...outcome,
+        human: `${outcome.human}\n${notice}`,
+        redacted: [...removed],
+      };
+};
 
 /**
  * What a client may ask of a host. Both ends read these declarations, so a request is a
@@ -308,7 +368,10 @@ export const HostRpcs = RpcGroup.make(
   Rpc.make("registrations", { success: Registrations }),
   // Which project is asking, because the answer differs: an override is one project's
   // and the host serves them all.
-  Rpc.make("discover", { payload: { project: Schema.String }, success: Catalogue }),
+  Rpc.make("discover", {
+    payload: { project: Schema.String },
+    success: Catalogue,
+  }),
   Rpc.make("status", {
     payload: { runId: Schema.String },
     success: RunStatus,
@@ -316,7 +379,10 @@ export const HostRpcs = RpcGroup.make(
   }),
   // The read model both front doors show. A run whose module is missing is still here,
   // with the file to repair named, rather than an error where its history was.
-  Rpc.make("run", { payload: { runId: Schema.String }, success: Schema.NullOr(RunView) }),
+  Rpc.make("run", {
+    payload: { runId: Schema.String },
+    success: Schema.NullOr(RunView),
+  }),
   Rpc.make("runMetrics", {
     payload: { runId: Schema.String },
     success: RunMetrics,
@@ -340,6 +406,11 @@ export const HostRpcs = RpcGroup.make(
   Rpc.make("runDispositions", {
     payload: { runId: Schema.String },
     success: RunDispositions,
+    error: HostRefused,
+  }),
+  Rpc.make("runOutcomes", {
+    payload: { runId: Schema.String },
+    success: OutcomeRecords,
     error: HostRefused,
   }),
   Rpc.make("runOutputs", {
@@ -392,6 +463,8 @@ export const HostRpcs = RpcGroup.make(
       runId: Schema.String,
       text: Schema.String,
       request: Schema.String,
+      /** A role (`builder`, `reviewer`, `planner`), an agent or an operation. */
+      to: Schema.optional(Schema.String),
       operation: Schema.optional(Schema.String),
       agent: Schema.optional(Schema.String),
       mode: Schema.optional(Schema.Literals(["boundary", "now", "interrupt"])),
@@ -401,15 +474,26 @@ export const HostRpcs = RpcGroup.make(
     error: Schema.Union([HostRefused, RequestConflict]),
   }),
   /** A Run as `run show` prints it: the read model, its agents, what became of it, its children. */
-  Rpc.make("shown", { payload: { runId: Schema.String }, success: Schema.NullOr(RunShown) }),
+  Rpc.make("shown", {
+    payload: { runId: Schema.String },
+    success: Schema.NullOr(RunShown),
+  }),
   /** Pairs this Machine with the installation asking, over the SSH login that asked. */
   Rpc.make("invite", {
-    payload: { for: Schema.String, name: Schema.String, address: Schema.NullOr(Schema.String) },
+    payload: {
+      for: Schema.String,
+      name: Schema.String,
+      address: Schema.NullOr(Schema.String),
+    },
     success: Invited,
     error: HostRefused,
   }),
   /** Keeps a pairing this Machine made with a peer it dials. */
-  Rpc.make("pair", { payload: { peer: Peer }, success: Schema.Void, error: HostRefused }),
+  Rpc.make("pair", {
+    payload: { peer: Peer },
+    success: Schema.Void,
+    error: HostRefused,
+  }),
   /** The peer asking has forgotten this Machine, so this one forgets it too. */
   Rpc.make("forget", { success: Schema.Void, error: HostRefused }),
   Rpc.make("peers", { success: Schema.Array(PeerView) }),
@@ -431,12 +515,18 @@ const serialization = RpcSerialization.layerNdjson;
 
 /** What each connection declared, which every operation it asks is recorded under. */
 // ponytail: one entry per connection, never removed; prune on disconnect if hosts live for months.
-type Declared = Map<number, { readonly frontDoor: FrontDoor; readonly from?: Where | undefined }>;
+type Declared = Map<
+  number,
+  { readonly frontDoor: FrontDoor; readonly from?: Where | undefined }
+>;
 
 /** What an operation on this connection is recorded as: `cli` where it declared nothing. */
 const stampIn = (declared: Declared, client: { readonly id: number }) => {
   const channel = declared.get(client.id);
-  return { origin: channel?.frontDoor ?? ("cli" as const), from: channel?.from };
+  return {
+    origin: channel?.frontDoor ?? ("cli" as const),
+    from: channel?.from,
+  };
 };
 
 /**
@@ -462,14 +552,24 @@ const handlers = (
       // The installation this host belongs to, which the client that started it named.
       const env = yield* currentEnv.pipe(Effect.orDie);
       const catalogue = (project: string) =>
-        discover(searchPath({ pluginRoot: env.pluginRoot, userDir: env.userDir, project }));
+        discover(
+          searchPath({
+            pluginRoot: env.pluginRoot,
+            userDir: env.userDir,
+            project,
+          }),
+        );
 
       const record = <A, E, R>(runId: string, read: Effect.Effect<A, E, R>) =>
         registry.view(runId).pipe(
           Effect.flatMap((view): Effect.Effect<A, E | HostRefused, R> =>
-            view === null ? Effect.fail(new HostRefused({ reason: `No Run "${runId}".` })) : read,
+            view === null
+              ? Effect.fail(new HostRefused({ reason: `No Run "${runId}".` }))
+              : read,
           ),
-          Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+          Effect.mapError(
+            (cause) => new HostRefused({ reason: reason(cause) }),
+          ),
         );
       return HostRpcs.of({
         identity: () =>
@@ -511,18 +611,22 @@ const handlers = (
           ),
         status: ({ runId }) => registry.status(runId),
         run: ({ runId }) => registry.view(runId),
-        runMetrics: ({ runId }) => record(runId, readMetrics(evidenceDir(dir, runId))),
+        runMetrics: ({ runId }) =>
+          record(runId, readMetrics(evidenceDir(dir, runId))),
         runCards: ({ runId }) => record(runId, readCards(runDir(dir, runId))),
         runDrift: ({ runId }) => record(runId, readDrift(runDir(dir, runId))),
         runIntent: ({ runId }) => record(runId, readIntent(runDir(dir, runId))),
-        runDispositions: ({ runId }) => record(runId, readDispositions(runDir(dir, runId))),
+        runDispositions: ({ runId }) =>
+          record(runId, readDispositions(runDir(dir, runId))),
+        runOutcomes: ({ runId }) => record(runId, outcomeRecordsOf(dir, runId)),
         runOutputs: ({ runId }) => record(runId, outputsOf(dir, runId)),
         runChecks: ({ runId }) =>
           Effect.gen(function* () {
             const views = yield* registry.views(null);
             const runs = views.map((view) => factsOfView(dir, view));
             const run = runs.find((one) => one.id === runId);
-            if (run === undefined) return yield* new HostRefused({ reason: `No Run "${runId}".` });
+            if (run === undefined)
+              return yield* new HostRefused({ reason: `No Run "${runId}".` });
             return {
               running: yield* runningCheck(
                 run,
@@ -547,12 +651,18 @@ const handlers = (
                 yield* markersOf(runs),
                 yield* Clock.currentTimeMillis,
               );
-              if (running?.log == null) return Stream.make({ _tag: "Ended" as const, check: null });
+              if (running?.log == null)
+                return Stream.make({ _tag: "Ended" as const, check: null });
               return Stream.callback<typeof CheckEvent.Type>((emit) =>
                 Effect.gen(function* () {
-                  yield* Queue.offer(emit, { _tag: "Output", text: `${running.sentence}\n` });
+                  yield* Queue.offer(emit, {
+                    _tag: "Output",
+                    text: `${running.sentence}\n`,
+                  });
                   const ended = yield* followLog(run, running.log!, (text) =>
-                    Queue.offer(emit, { _tag: "Output", text }).pipe(Effect.orDie),
+                    Queue.offer(emit, { _tag: "Output", text }).pipe(
+                      Effect.orDie,
+                    ),
                   );
                   yield* Queue.offer(emit, { _tag: "Ended", check: ended });
                   yield* Queue.end(emit);
@@ -577,25 +687,41 @@ const handlers = (
               view,
               agents: yield* runAgents(dir, runId),
               disposition: latest(
-                yield* readDispositions(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
+                yield* readDispositions(runDir(dir, runId)).pipe(
+                  Effect.orElseSucceed(() => []),
+                ),
               ),
               children: all.filter((one) => one.parent === runId),
+              handoffs: (yield* handoffsIn(runDir(dir, runId))).map((file) => ({
+                path: `${handoffsDir(runDir(dir, runId))}/${file.name}`,
+                bytes: file.bytes,
+              })),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>
-          peers.invite({ installation: asked.for, name: asked.name, address: asked.address }),
+          peers.invite({
+            installation: asked.for,
+            name: asked.name,
+            address: asked.address,
+          }),
         pair: ({ peer }) => peers.add(peer),
         forget: (_, { client }) => {
           const machine = stampIn(declared, client).from?.machine;
           return machine === undefined
-            ? Effect.fail(new HostRefused({ reason: "only a paired Machine's link can forget it" }))
+            ? Effect.fail(
+                new HostRefused({
+                  reason: "only a paired Machine's link can forget it",
+                }),
+              )
             : peers.forget(machine.installation);
         },
         peers: () => peers.list,
         agentRun: ({ agent }) =>
           everyRegistered(dir).pipe(
             Effect.map(
-              (entries) => entries.findLast((entry) => entry.agent === agent)?.runId ?? null,
+              (entries) =>
+                entries.findLast((entry) => entry.agent === agent)?.runId ??
+                null,
             ),
             Effect.orElseSucceed(() => null),
             Effect.provideContext(bun),
@@ -612,20 +738,43 @@ const handlers = (
             },
             registry.grant({ runId, name, command }),
           ).pipe(Effect.provideContext(bun)),
-        steer: ({ runId, text, request, operation, agent, mode, attachments }, { client }) => {
+        steer: (
+          {
+            runId,
+            text: given,
+            request,
+            to,
+            operation,
+            agent,
+            mode,
+            attachments,
+          },
+          { client },
+        ) => {
+          const { text, removed } = scrub(given);
           const into = attachmentsDir(runDir(dir, runId));
           const actor = stampIn(declared, client);
           // Files go only into a Run this host has.
           const known =
             (attachments ?? []).length === 0 &&
-            Buffer.byteLength(deliveryText(text, actor), "utf8") <= MAX_DELIVERY_BYTES
+            Buffer.byteLength(deliveryText(text, actor), "utf8") <=
+              MAX_DELIVERY_BYTES
               ? Effect.void
-              : Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(runDir(dir, runId))).pipe(
+              : Effect.flatMap(FileSystem.FileSystem, (fs) =>
+                  fs.exists(runDir(dir, runId)),
+                ).pipe(
                   Effect.orElseSucceed(() => false),
                   Effect.flatMap((exists) =>
-                    exists && !/[/\\]/.test(runId) && runId !== ".." && runId !== "."
+                    exists &&
+                    !/[/\\]/.test(runId) &&
+                    runId !== ".." &&
+                    runId !== "."
                       ? Effect.void
-                      : Effect.fail(new HostRefused({ reason: `There is no Run ${runId} here.` })),
+                      : Effect.fail(
+                          new HostRefused({
+                            reason: `There is no Run ${runId} here.`,
+                          }),
+                        ),
                   ),
                 );
           return known.pipe(
@@ -638,6 +787,8 @@ const handlers = (
                 mode: mode ?? null,
               };
               if (attached !== undefined) asked.attachments = attached;
+              // Only where given, so a request recorded before `to` existed still matches.
+              if (to !== undefined) asked.to = to;
               return once(
                 runDir(dir, runId),
                 {
@@ -648,17 +799,32 @@ const handlers = (
                   result: Steered,
                 },
                 copyInto(into, attachments ?? []).pipe(
-                  Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+                  Effect.mapError(
+                    (cause) => new HostRefused({ reason: reason(cause) }),
+                  ),
                   Effect.flatMap((copied) => {
-                    const lines = copied.map((one) => attachedLine(`${into}/${one.name}`));
-                    const whole = [text, ...lines].filter((line) => line !== "").join("\n");
-                    return Buffer.byteLength(deliveryText(whole, actor), "utf8") <=
-                      MAX_DELIVERY_BYTES
+                    const lines = copied.map((one) =>
+                      attachedLine(`${into}/${one.name}`),
+                    );
+                    const whole = [text, ...lines]
+                      .filter((line) => line !== "")
+                      .join("\n");
+                    return Buffer.byteLength(
+                      deliveryText(whole, actor),
+                      "utf8",
+                    ) <= MAX_DELIVERY_BYTES
                       ? Effect.succeed(whole)
                       : keepMessage(into, text).pipe(
-                          Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+                          Effect.mapError(
+                            (cause) =>
+                              new HostRefused({ reason: reason(cause) }),
+                          ),
                           Effect.map((kept) =>
-                            [TOO_LONG, attachedLine(`${into}/${kept}`), ...lines].join("\n"),
+                            [
+                              TOO_LONG,
+                              attachedLine(`${into}/${kept}`),
+                              ...lines,
+                            ].join("\n"),
                           ),
                         );
                   }),
@@ -667,12 +833,14 @@ const handlers = (
                       runId,
                       text: told,
                       request,
+                      to,
                       operation,
                       agent,
                       mode,
                       actor,
                     }),
                   ),
+                  Effect.map(saying(removed)),
                 ),
               );
             }),
@@ -690,6 +858,7 @@ const TOO_LONG =
 /** What a steer's request has to ask again, as `AskedFor` is a start's. */
 type SteerAsked = {
   readonly text: string;
+  to?: string;
   readonly operation: string | null;
   readonly agent: string | null;
   readonly mode: string | null;
@@ -701,22 +870,34 @@ type SteerAsked = {
  * (an empty directory where null), and where it came from. Refused, naming the path, where
  * one cannot be attached.
  */
-const attachedAs = (into: string | null, paths: ReadonlyArray<string> | undefined) =>
+const attachedAs = (
+  into: string | null,
+  paths: ReadonlyArray<string> | undefined,
+) =>
   Effect.gen(function* () {
     if (paths === undefined || paths.length === 0) return undefined;
     const refused = yield* attachmentRefusal(paths);
-    if (refused !== null) return yield* new HostRefused({ reason: `${REFUSED_INPUT}: ${refused}` });
-    return (yield* namesIn(into, paths)).map(({ name, from }) => ({ name, from }));
+    if (refused !== null)
+      return yield* new HostRefused({ reason: `${REFUSED_INPUT}: ${refused}` });
+    return (yield* namesIn(into, paths)).map(({ name, from }) => ({
+      name,
+      from,
+    }));
   }).pipe(
     Effect.mapError((cause) =>
-      Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
+      Schema.is(HostRefused)(cause)
+        ? cause
+        : new HostRefused({ reason: reason(cause) }),
     ),
   );
 
 /** A steer that came to nothing, which is told to the caller but not kept as its request's answer. */
-class SteerUnanswered extends Schema.TaggedError<SteerUnanswered>()("SteerUnanswered", {
-  outcome: SteerOutcome,
-}) {}
+class SteerUnanswered extends Schema.TaggedError<SteerUnanswered>()(
+  "SteerUnanswered",
+  {
+    outcome: SteerOutcome,
+  },
+) {}
 
 /** What `act` carries out with no proposal: what the human asks for by name, and chat's hold. */
 const ACTED_KINDS = new Set<string>([...ASKED_KINDS, "hold"]);
@@ -724,7 +905,12 @@ const ACTED_KINDS = new Set<string>([...ASKED_KINDS, "hold"]);
 /** An operation's result as the front doors print it: a failure carries its code. */
 const outcomeOf = (result: OpResult): SteerOutcome =>
   result.ok
-    ? { ok: true, code: null, human: result.human, data: fromText(toText(result.data)) }
+    ? {
+        ok: true,
+        code: null,
+        human: result.human,
+        data: fromText(toText(result.data)),
+      }
     : {
         ok: false,
         code: result.error.code,
@@ -756,7 +942,11 @@ const hostBoard = (dir: string) =>
     const herdr = new Herdr(env);
     const runs = registry
       .views(null)
-      .pipe(Effect.map((views) => views.map((view) => factsOfView(env.stateDir, view))));
+      .pipe(
+        Effect.map((views) =>
+          views.map((view) => factsOfView(env.stateDir, view)),
+        ),
+      );
     const boardOf = (alive: ReadonlyArray<AgentInfo>) =>
       Effect.gen(function* () {
         return yield* buildBoard({
@@ -772,7 +962,9 @@ const hostBoard = (dir: string) =>
         });
       }).pipe(Effect.provideContext(bun));
     const build = Effect.flatMap(
-      Effect.flatMap(liveHerds(herdr, env), aliveIn).pipe(Effect.provideContext(bun)),
+      Effect.flatMap(liveHerds(herdr, env), aliveIn).pipe(
+        Effect.provideContext(bun),
+      ),
       boardOf,
     );
     // What ended and what it opened needs no herdr: the merge watch asks nobody's panes.
@@ -830,11 +1022,16 @@ const hostBoard = (dir: string) =>
           stateDir: env.stateDir,
           sessions,
           // Every read or none: a Task judged without its Runs would look forgettable.
-          facts: Effect.all({ tasks: listTasks(env.stateDir), views: build, runs }).pipe(
+          facts: Effect.all({
+            tasks: listTasks(env.stateDir),
+            views: build,
+            runs,
+          }).pipe(
             Effect.orElseSucceed(() => ({ tasks: [], views: [], runs: [] })),
             Effect.provideContext(bun),
           ),
-          retire: (ids) => registry.retire(ids).pipe(Effect.provideContext(storage)),
+          retire: (ids) =>
+            registry.retire(ids).pipe(Effect.provideContext(storage)),
         }),
       ];
     });
@@ -845,11 +1042,18 @@ const hostBoard = (dir: string) =>
 const sideJobsLayer = (dir: string, panels: MrPanels) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
-      const { env, herdr, bun, runs, build, unattended, sweepers } = yield* hostBoard(dir);
+      const { env, herdr, bun, runs, build, unattended, sweepers } =
+        yield* hostBoard(dir);
       yield* Effect.forkScoped(
-        sideJobs({ env, herdr, runs, board: unattended, liveBoard: build, panels, sweepers }).pipe(
-          Effect.provideContext(bun),
-        ),
+        sideJobs({
+          env,
+          herdr,
+          runs,
+          board: unattended,
+          liveBoard: build,
+          panels,
+          sweepers,
+        }).pipe(Effect.provideContext(bun)),
       );
     }),
   );
@@ -869,7 +1073,8 @@ const Written = Schema.Struct({ path: Schema.String, bytes: Schema.Int });
 const Edited = Schema.Struct({ path: Schema.String, replaced: Schema.Int });
 
 /** A Herd's key names one directory under the state directory, and nothing above it. */
-const isHerdName = (herd: string) => herd !== "." && herd !== ".." && /^[^/\\]+$/.test(herd);
+const isHerdName = (herd: string) =>
+  herd !== "." && herd !== ".." && /^[^/\\]+$/.test(herd);
 
 /**
  * The board, built here for every front door. Anything written under the state
@@ -896,8 +1101,10 @@ const frontDoorHandlers = (
       // Every drawer on a finished Run shares one read of its plan until a file of it changes.
       // ponytail: kept for the host's life; evict by age if a host lives for months.
       const plans: PlanCache = new Map();
-      const stampOf = (client: { readonly id: number }) => stampIn(declared, client);
-      const doorOf = (client: { readonly id: number }) => stampOf(client).origin;
+      const stampOf = (client: { readonly id: number }) =>
+        stampIn(declared, client);
+      const doorOf = (client: { readonly id: number }) =>
+        stampOf(client).origin;
       /** Who asks on a channel: its front door, and a chat's voice. */
       const askerOf = (client: { readonly id: number }): Asker => ({
         origin: doorOf(client),
@@ -910,13 +1117,18 @@ const frontDoorHandlers = (
       });
       type Carrying = ReturnType<typeof carryOut>;
       /** Each carry-out still running, so a retry of its confirm answers what it came to. */
-      type Carried = Exit.Exit<Effect.Success<Carrying>, Effect.Error<Carrying>>;
+      type Carried = Exit.Exit<
+        Effect.Success<Carrying>,
+        Effect.Error<Carrying>
+      >;
       const carrying = new Map<string, Deferred.Deferred<Carried>>();
       const carryingKey = (proposal: string, request: string) =>
         JSON.stringify([proposal, request]);
       const carriedBy = (proposal: string, request: string) => {
         const running = carrying.get(carryingKey(proposal, request));
-        return running === undefined ? null : Effect.flatten(Deferred.await(running));
+        return running === undefined
+          ? null
+          : Effect.flatten(Deferred.await(running));
       };
       // ponytail: one entry per connection, never removed, as `declared`.
       const sessions = new Map<number, string>();
@@ -925,15 +1137,23 @@ const frontDoorHandlers = (
       const askerEnv = (client: { readonly id: number }) => {
         const session = sessions.get(client.id);
         const rooted = { ...env, hostStamp: stamp, asker: whoOf(client) };
-        return session === undefined ? rooted : { ...rooted, socketPath: session };
+        return session === undefined
+          ? rooted
+          : { ...rooted, socketPath: session };
       };
       const trail = (runId: string) => runDir(env.stateDir, runId);
       /** The Herd of the session the asker runs in, where it names none. */
       const askersHerd = (client: { readonly id: number }) =>
-        herdOf(askerEnv(client).socketPath).pipe(Effect.catch(() => Effect.succeed(null)));
+        herdOf(askerEnv(client).socketPath).pipe(
+          Effect.catch(() => Effect.succeed(null)),
+        );
       /** An operation that is idempotent by itself, recorded the first time it does anything. */
       // ponytail: a host that dies between acting and recording leaves that one unrecorded.
-      const fresh = <A extends { readonly fresh: boolean }, I extends Schema.Json, E>(
+      const fresh = <
+        A extends { readonly fresh: boolean },
+        I extends Schema.Json,
+        E,
+      >(
         runId: (value: A) => string,
         line: {
           readonly operation: string;
@@ -948,7 +1168,9 @@ const frontDoorHandlers = (
         act.pipe(
           Effect.tap((value) =>
             value.fresh
-              ? recordAudit(trail(runId(value)), { ...line, value }).pipe(Effect.orDie)
+              ? recordAudit(trail(runId(value)), { ...line, value }).pipe(
+                  Effect.orDie,
+                )
               : Effect.void,
           ),
           Effect.provideContext(hosted),
@@ -956,7 +1178,9 @@ const frontDoorHandlers = (
       /** A new Run's attachments, refused before anything is claimed, as its audit line asks them. */
       const attachedFor = <A, E, R>(
         paths: ReadonlyArray<string> | undefined,
-        act: (asked: { readonly attachments: Schema.Json } | undefined) => Effect.Effect<A, E, R>,
+        act: (
+          asked: { readonly attachments: Schema.Json } | undefined,
+        ) => Effect.Effect<A, E, R>,
       ) =>
         attachedAs(null, paths).pipe(
           Effect.provideContext(bun),
@@ -999,7 +1223,9 @@ const frontDoorHandlers = (
             ),
           ).pipe(Effect.provideContext(hosted));
       /** A file operation's failure as the host's refusal, in its own words. */
-      const refusedPlainly = <A, E, R extends BunServices>(effect: Effect.Effect<A, E, R>) =>
+      const refusedPlainly = <A, E, R extends BunServices>(
+        effect: Effect.Effect<A, E, R>,
+      ) =>
         effect.pipe(
           Effect.mapError((cause) =>
             Schema.is(RequestConflict)(cause) || Schema.is(HostRefused)(cause)
@@ -1055,7 +1281,8 @@ const frontDoorHandlers = (
             });
           const lines = yield* readProposals(file);
           const found = lines.find(
-            (line): line is ProposalRecord => line.kind === "proposal" && line.id === proposal,
+            (line): line is ProposalRecord =>
+              line.kind === "proposal" && line.id === proposal,
           );
           if (found?.content_hash !== hash)
             return yield* new ProposalRefused({
@@ -1092,18 +1319,27 @@ const frontDoorHandlers = (
       ).pipe(Stream.share({ capacity: 1, strategy: "sliding" }));
       const boards = yield* shareBoard({ build, changed });
       return FrontDoorRpcs.of({
-        declare: ({ frontDoor, session, from, stamp: stamped, ...voice }, { client }) => {
+        declare: (
+          { frontDoor, session, from, stamp: stamped, ...voice },
+          { client },
+        ) => {
           // Which Machine a channel came from is said by this host's own link, never by the channel.
           if (from?.machine !== undefined && stamped !== stamp)
             return Effect.fail(
-              new HostRefused({ reason: "a channel cannot say which Machine it came from" }),
+              new HostRefused({
+                reason: "a channel cannot say which Machine it came from",
+              }),
             );
           if (frontDoor === "host" && stamped !== stamp)
-            return Effect.fail(new HostRefused({ reason: "only a host's own link is host" }));
+            return Effect.fail(
+              new HostRefused({ reason: "only a host's own link is host" }),
+            );
           const already = declared.get(client.id);
           if (already !== undefined && already.frontDoor !== frontDoor) {
             return Effect.fail(
-              new HostRefused({ reason: `this channel is already ${already.frontDoor}` }),
+              new HostRefused({
+                reason: `this channel is already ${already.frontDoor}`,
+              }),
             );
           }
           return Effect.gen(function* () {
@@ -1112,9 +1348,13 @@ const frontDoorHandlers = (
               const entry = (yield* everyRegistered(dir)).findLast(
                 (one) => one.agent === from?.agent,
               );
-              if (entry === undefined || (from?.run !== undefined && from.run !== entry.runId))
+              if (
+                entry === undefined ||
+                (from?.run !== undefined && from.run !== entry.runId)
+              )
                 return yield* new HostRefused({
-                  reason: "this agent's Run could not be named from its registration",
+                  reason:
+                    "this agent's Run could not be named from its registration",
                 });
               where = {
                 ...from,
@@ -1126,10 +1366,13 @@ const frontDoorHandlers = (
             if (frontDoor === "chat") voices.set(client.id, voiceOf(voice));
             if (already !== undefined) return;
             declared.set(client.id, { frontDoor, from: where });
-            if (session !== undefined && session !== null) sessions.set(client.id, session);
+            if (session !== undefined && session !== null)
+              sessions.set(client.id, session);
           }).pipe(
             Effect.mapError((cause) =>
-              Schema.is(HostRefused)(cause) ? cause : new HostRefused({ reason: reason(cause) }),
+              Schema.is(HostRefused)(cause)
+                ? cause
+                : new HostRefused({ reason: reason(cause) }),
             ),
             Effect.provideContext(bun),
           );
@@ -1139,24 +1382,29 @@ const frontDoorHandlers = (
             project,
             id,
             request,
-            input,
-            text,
             inferred,
             root,
             options,
             task,
-            taskLabel,
             parent,
-            intent,
             verify,
             attachments,
+            ...given
           },
           { client },
-        ) =>
-          attachedFor(attachments, (asked) =>
+        ) => {
+          const scrubbed = scrubJson(given);
+          const { input, text, taskLabel, intent } = scrubbed.value;
+          return attachedFor(attachments, (asked) =>
             fresh(
               (started) => started.runId,
-              { operation: "start", request, ...whoOf(client), asked, result: Started },
+              {
+                operation: "start",
+                request,
+                ...whoOf(client),
+                asked,
+                result: Started,
+              },
               startCheckout(
                 env,
                 project,
@@ -1164,10 +1412,16 @@ const frontDoorHandlers = (
                 whoOf(client).from?.machine !== undefined &&
                   whoOf(client).from?.machine?.installation !== installation,
               ).pipe(
-                Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+                Effect.mapError(
+                  (cause) => new HostRefused({ reason: reason(cause) }),
+                ),
                 Effect.flatMap((placed) =>
                   "error" in placed
-                    ? Effect.fail(new HostRefused({ reason: `${REFUSED_INPUT}: ${placed.error}` }))
+                    ? Effect.fail(
+                        new HostRefused({
+                          reason: `${REFUSED_INPUT}: ${placed.error}`,
+                        }),
+                      )
                     : registry.resolve({ project: placed.project, id }).pipe(
                         Effect.flatMap((generation) =>
                           registry.start({
@@ -1175,7 +1429,9 @@ const frontDoorHandlers = (
                             requestedBy:
                               whoOf(client).origin === "agent"
                                 ? Option.getOrUndefined(
-                                    Schema.decodeUnknownOption(RequestedBy)(whoOf(client).from),
+                                    Schema.decodeUnknownOption(RequestedBy)(
+                                      whoOf(client).from,
+                                    ),
                                   )
                                 : undefined,
                             project: placed.project,
@@ -1194,17 +1450,28 @@ const frontDoorHandlers = (
                             attachments,
                           }),
                         ),
+                        Effect.map(saying(scrubbed.removed)),
                       ),
                 ),
               ),
             ),
-          ),
-        answer: ({ runId, decision, value, request }, { client }) =>
-          fresh(
+          );
+        },
+        answer: ({ runId, decision, value: given, request }, { client }) => {
+          const { text: value, removed } = scrub(given);
+          return fresh(
             () => runId,
-            { operation: "answer", request, ...whoOf(client), result: Answered },
-            registry.answer({ runId, decision, value, request }),
-          ),
+            {
+              operation: "answer",
+              request,
+              ...whoOf(client),
+              result: Answered,
+            },
+            registry
+              .answer({ runId, decision, value, request })
+              .pipe(Effect.map(saying(removed))),
+          );
+        },
         control: ({ runId, control, set, request, reason }, { client }) =>
           auditedControl(
             runId,
@@ -1214,16 +1481,31 @@ const frontDoorHandlers = (
             reason,
           )(registry.control({ runId, control, set })),
         resume: ({ runId, request }, { client }) =>
-          auditedControl(runId, "resume", request, whoOf(client))(takeUp(runId)),
+          auditedControl(
+            runId,
+            "resume",
+            request,
+            whoOf(client),
+          )(takeUp(runId)),
         offers: ({ runId }) => registry.offers(runId),
         workflows: ({ project }) =>
-          discover(searchPath({ pluginRoot: env.pluginRoot, userDir: env.userDir, project })).pipe(
+          discover(
+            searchPath({
+              pluginRoot: env.pluginRoot,
+              userDir: env.userDir,
+              project,
+            }),
+          ).pipe(
             Effect.map(({ entries }) =>
               entries.map(({ id, title, description, inputs }) => ({
                 id,
                 title,
                 description,
-                inputs: inputs.map(({ name, required, schema }) => ({ name, required, schema })),
+                inputs: inputs.map(({ name, required, schema }) => ({
+                  name,
+                  required,
+                  schema,
+                })),
               })),
             ),
             Effect.provideContext(bun),
@@ -1231,7 +1513,12 @@ const frontDoorHandlers = (
         refresh: ({ request }, { client }) =>
           once(
             `${env.stateDir}/host`,
-            { operation: "refresh", request, ...whoOf(client), result: Schema.Boolean },
+            {
+              operation: "refresh",
+              request,
+              ...whoOf(client),
+              result: Schema.Boolean,
+            },
             Effect.gen(function* () {
               const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
               const child = yield* spawner.spawn(
@@ -1248,7 +1535,9 @@ const frontDoorHandlers = (
             }).pipe(
               Effect.uninterruptible,
               Effect.scoped,
-              Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+              Effect.mapError(
+                (cause) => new HostRefused({ reason: reason(cause) }),
+              ),
             ),
           ).pipe(Effect.provideContext(bun)),
         shell: ({ script, stdin, request }, { client }) =>
@@ -1261,7 +1550,10 @@ const frontDoorHandlers = (
                     operation: "shell",
                     request,
                     ...whoOf(client),
-                    asked: { script, stdinHash: stdin === undefined ? null : sha256Hex(stdin) },
+                    asked: {
+                      script,
+                      stdinHash: stdin === undefined ? null : sha256Hex(stdin),
+                    },
                     result: ShellResult,
                   },
                   runShell(script, stdin),
@@ -1272,14 +1564,18 @@ const frontDoorHandlers = (
                   duration: "10 minutes",
                   orElse: () =>
                     Effect.fail(
-                      new HostRefused({ reason: "the shell did not finish within 10 minutes" }),
+                      new HostRefused({
+                        reason: "the shell did not finish within 10 minutes",
+                      }),
                     ),
                 }),
               ),
           ),
         settings: () =>
           sharedSettings(env.userDir).pipe(
-            Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
+            Effect.mapError(
+              (cause) => new HostRefused({ reason: reason(cause) }),
+            ),
             Effect.provideContext(bun),
           ),
         setSettings: ({ settings, request }, { client }) =>
@@ -1327,7 +1623,10 @@ const frontDoorHandlers = (
               const readings = yield* usage.readings;
               const trail = (yield* Path.Path).join(env.stateDir, "usage");
               const request = yield* (yield* Crypto.Crypto).randomUUIDv4;
-              const value = usagePhrase(readings, yield* Clock.currentTimeMillis).text;
+              const value = usagePhrase(
+                readings,
+                yield* Clock.currentTimeMillis,
+              ).text;
               yield* recordingUsage.withPermits(1)(
                 recordAudit(trail, {
                   operation: "usage",
@@ -1335,7 +1634,10 @@ const frontDoorHandlers = (
                   ...whoOf(client),
                   result: Schema.String,
                   value,
-                }).pipe(Effect.andThen(trimAudit(trail, USAGE_TRAIL)), Effect.orDie),
+                }).pipe(
+                  Effect.andThen(trimAudit(trail, USAGE_TRAIL)),
+                  Effect.orDie,
+                ),
               );
               return readings;
             }),
@@ -1351,23 +1653,44 @@ const frontDoorHandlers = (
               const trail = (yield* Path.Path).join(env.stateDir, "cleanup");
               const swept = yield* once(
                 trail,
-                { operation: "cleanup", request, ...who, asked: {}, result: CleanupReport },
+                {
+                  operation: "cleanup",
+                  request,
+                  ...who,
+                  asked: {},
+                  result: CleanupReport,
+                },
                 sweeping.withPermit(
-                  Effect.flatMap(sweepers, (all) => sweep(all, env.stateDir, actor)),
+                  Effect.flatMap(sweepers, (all) =>
+                    sweep(all, env.stateDir, actor),
+                  ),
                 ),
               );
               yield* trimAudit(trail, CLEANUP_TRAIL).pipe(Effect.orDie);
               return swept;
             }),
           ),
-        invoke: ({ runId, offer, input, request, attachments }, { client }) =>
-          attachedFor(attachments, (asked) =>
+        invoke: (
+          { runId, offer, input: given, request, attachments },
+          { client },
+        ) => {
+          const { value: input, removed } = scrubJson(given);
+          return attachedFor(attachments, (asked) =>
             fresh(
               () => runId,
-              { operation: "invoke", request, ...whoOf(client), asked, result: Started },
-              registry.invoke({ runId, offer, input, request, attachments }),
+              {
+                operation: "invoke",
+                request,
+                ...whoOf(client),
+                asked,
+                result: Started,
+              },
+              registry
+                .invoke({ runId, offer, input, request, attachments })
+                .pipe(Effect.map(saying(removed))),
             ),
-          ),
+          );
+        },
         upload: (part, { client }) =>
           refusedPlainly(
             Effect.gen(function* () {
@@ -1378,11 +1701,17 @@ const frontDoorHandlers = (
                   operation: "upload",
                   request: part.sha256,
                   ...whoOf(client),
-                  asked: { name: part.name, size: part.size, sha256: part.sha256 },
+                  asked: {
+                    name: part.name,
+                    size: part.size,
+                    sha256: part.sha256,
+                  },
                   result: Schema.String,
                   value: got.path,
                 }).pipe(
-                  Effect.andThen(trimAudit(uploadsDir(env.stateDir), UPLOADS_TRAIL)),
+                  Effect.andThen(
+                    trimAudit(uploadsDir(env.stateDir), UPLOADS_TRAIL),
+                  ),
                   Effect.orDie,
                 );
               return { path: got.path };
@@ -1390,7 +1719,8 @@ const frontDoorHandlers = (
           ),
         readFile: ({ path, offset, length }) =>
           readPart(path, offset, length).pipe(Effect.provideContext(bun)),
-        glob: ({ pattern, path }) => refusedPlainly(globFiles(pattern, path ?? env.home)),
+        glob: ({ pattern, path }) =>
+          refusedPlainly(globFiles(pattern, path ?? env.home)),
         grep: ({ path, ...asked }) =>
           refusedPlainly(grepFiles({ ...asked, path: path ?? env.home })),
         writeFile: ({ path, content, request }, { client }) =>
@@ -1409,17 +1739,28 @@ const frontDoorHandlers = (
               writeWhole(path, content, env.stateDir),
             ),
           ),
-        editFile: ({ path, oldString, newString, replaceAll, request }, { client }) =>
+        editFile: (
+          { path, oldString, newString, replaceAll, request },
+          { client },
+        ) =>
           refusedPlainly(
             filesOnce(
               {
                 operation: "edit",
                 request,
                 ...whoOf(client),
-                asked: { path, oldString, newString, replaceAll: replaceAll ?? false },
+                asked: {
+                  path,
+                  oldString,
+                  newString,
+                  replaceAll: replaceAll ?? false,
+                },
                 result: Edited,
               },
-              editString({ path, oldString, newString, replaceAll }, env.stateDir),
+              editString(
+                { path, oldString, newString, replaceAll },
+                env.stateDir,
+              ),
             ),
           ),
         confirm: ({ proposal, hash, request }, { client }) =>
@@ -1447,37 +1788,58 @@ const frontDoorHandlers = (
                   () =>
                     carriedBy(proposal, request) ??
                     readProposals(file).pipe(
-                      Effect.map((now) => ({ proposal, results: stepResults(now, proposal) })),
+                      Effect.map((now) => ({
+                        proposal,
+                        results: stepResults(now, proposal),
+                      })),
                     ),
                 ),
           ),
         decline: ({ proposal, hash, request }, { client }) =>
           answeredOnce(proposal, hash, request, "declined", (file, lines) =>
             lines === null
-              ? decline(file, proposal, { ...whoOf(client), requestId: request }).pipe(
+              ? decline(file, proposal, {
+                  ...whoOf(client),
+                  requestId: request,
+                }).pipe(
                   Effect.flatMap((done) =>
                     done.refused === null
                       ? Effect.succeed({ proposal })
                       : Effect.fail(
-                          new ProposalRefused({ refused: done.refused, detail: done.detail }),
+                          new ProposalRefused({
+                            refused: done.refused,
+                            detail: done.detail,
+                          }),
                         ),
                   ),
                 )
               : Effect.succeed({ proposal }),
           ),
-        propose: ({ herd, interpretation, actions, request: requestId }, { client }) =>
-          Effect.gen(function* () {
+        propose: ({ herd, request: requestId, ...given }, { client }) => {
+          const scrubbed = scrubJson(given);
+          const { interpretation, actions } = scrubbed.value;
+          const removed = scrubbed.removed;
+          return Effect.gen(function* () {
             const asker = askerEnv(client);
-            const decoded = Schema.decodeUnknownOption(Schema.Array(ActionSchema))(actions);
+            const decoded = Schema.decodeUnknownOption(
+              Schema.Array(ActionSchema),
+            )(actions);
             if (Option.isNone(decoded))
               return outcomeOf(
-                err("invalid_input", "An action is not one of the kinds Collie takes."),
+                err(
+                  "invalid_input",
+                  "An action is not one of the kinds Collie takes.",
+                ),
               );
             if (herd !== null && !isHerdName(herd))
-              return outcomeOf(err("invalid_input", `"${herd}" is not a Herd.`));
+              return outcomeOf(
+                err("invalid_input", `"${herd}" is not a Herd.`),
+              );
             const key = herd ?? (yield* askersHerd(client));
             if (key === null)
-              return outcomeOf(err("invalid_state", "No Herd to keep the request in."));
+              return outcomeOf(
+                err("invalid_state", "No Herd to keep the request in."),
+              );
             const actor = { ...whoOf(client), requestId };
             return yield* once(
               yield* herdDir(env.stateDir, key),
@@ -1489,11 +1851,17 @@ const frontDoorHandlers = (
                 result: SteerOutcome,
               },
               // A refusal is not kept against its request, so it can be asked again corrected.
-              request(asker, key, { interpretation, actions: decoded.value, actor }).pipe(
+              request(asker, key, {
+                interpretation,
+                actions: decoded.value,
+                actor,
+              }).pipe(
                 Effect.flatMap((result) =>
                   !result.ok && REJECTED.includes(result.error.code)
-                    ? Effect.fail(new SteerUnanswered({ outcome: outcomeOf(result) }))
-                    : Effect.succeed(outcomeOf(result)),
+                    ? Effect.fail(
+                        new SteerUnanswered({ outcome: outcomeOf(result) }),
+                      )
+                    : Effect.succeed(outcomeSaying(removed, outcomeOf(result))),
                 ),
               ),
             );
@@ -1501,20 +1869,28 @@ const frontDoorHandlers = (
             Effect.catch((cause) =>
               Effect.succeed(
                 Schema.is(SteerUnanswered)(cause)
-                  ? cause.outcome
+                  ? outcomeSaying(removed, cause.outcome)
                   : Schema.is(RequestConflict)(cause)
                     ? outcomeOf(err("invalid_input", cause.reason))
                     : outcomeOf(
-                        err("operation_failed", `Collie could not do it: ${reason(cause)}.`),
+                        err(
+                          "operation_failed",
+                          `Collie could not do it: ${reason(cause)}.`,
+                        ),
                       ),
               ),
             ),
             Effect.provideContext(bun),
             Effect.provideContext(hosted),
-          ),
-        act: ({ actions, request }, { client }) =>
-          plainly(
-            Schema.decodeUnknownEffect(Schema.Array(ActionSchema))(actions).pipe(
+          );
+        },
+        act: ({ actions: given, request }, { client }) => {
+          const scrubbed = given.map((one) => scrubJson(one));
+          const actions = scrubbed.map((one) => one.value);
+          return plainly(
+            Schema.decodeUnknownEffect(Schema.Array(ActionSchema))(
+              actions,
+            ).pipe(
               Effect.mapError(
                 () =>
                   new HostRefused({
@@ -1522,7 +1898,9 @@ const frontDoorHandlers = (
                   }),
               ),
               Effect.flatMap((decoded) => {
-                const proposed = decoded.filter((action) => !ACTED_KINDS.has(action.kind));
+                const proposed = decoded.filter(
+                  (action) => !ACTED_KINDS.has(action.kind),
+                );
                 return proposed.length > 0
                   ? Effect.fail(
                       new HostRefused({
@@ -1532,10 +1910,27 @@ const frontDoorHandlers = (
                   : carryOutAsked(askerEnv(client), decoded, {
                       ...whoOf(client),
                       requestId: request,
-                    });
+                    }).pipe(
+                      Effect.map((results) =>
+                        results.map((result, index) => {
+                          const notice = removedNotice(
+                            scrubbed[index]?.removed ?? [],
+                          );
+                          return notice === null
+                            ? result
+                            : {
+                                ...result,
+                                note: [result.note, notice]
+                                  .filter(Boolean)
+                                  .join("; "),
+                              };
+                        }),
+                      ),
+                    );
               }),
             ),
-          ),
+          );
+        },
         reconcile: ({ proposal, index, as, request }, { client }) =>
           plainly(
             Effect.gen(function* () {
@@ -1574,25 +1969,48 @@ const frontDoorHandlers = (
           Stream.unwrap(
             Effect.gen(function* () {
               const view = yield* known(runId);
-              const { collect, insideRun } = yield* Effect.promise(() => import("./verify"));
-              const { noteVerification } = yield* Effect.promise(() => import("./metrics"));
+              const { collect, insideRun } = yield* Effect.promise(
+                () => import("./verify"),
+              );
+              const { noteVerification } = yield* Effect.promise(
+                () => import("./metrics"),
+              );
               const where = cwd ?? view.cwd;
               if (!(yield* insideRun(where, { cwd: view.cwd, worktree: null })))
                 return yield* new HostRefused({
                   reason: `${REFUSED_INPUT}: "${where}" is not inside run ${runId}; a verification names the tree it ran on.`,
                 });
-              return Stream.callback<typeof import("./verify-model").VerifyEvent.Type, HostRefused>(
+              return Stream.callback<
+                typeof import("./verify-model").VerifyEvent.Type,
+                HostRefused
+              >(
                 (queue) =>
                   Effect.gen(function* () {
-                    const echo = (stream: "stdout" | "stderr") => (text: string) =>
-                      Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
+                    const echo =
+                      (stream: "stdout" | "stderr") => (text: string) =>
+                        Queue.offer(queue, {
+                          _tag: "Output",
+                          stream,
+                          text,
+                        }).pipe(Effect.asVoid);
                     const collected = yield* collect(
                       evidenceDir(env.stateDir, runId),
-                      { run: runId, name, executable, argv, cwd: where, by: "agent", expect },
+                      {
+                        run: runId,
+                        name,
+                        executable,
+                        argv,
+                        cwd: where,
+                        by: "agent",
+                        expect,
+                      },
                       { stdout: echo("stdout"), stderr: echo("stderr") },
                     ).pipe(
                       Effect.mapError(
-                        (cause) => new HostRefused({ reason: `${REFUSED_INPUT}: ${cause.why}` }),
+                        (cause) =>
+                          new HostRefused({
+                            reason: `${REFUSED_INPUT}: ${cause.why}`,
+                          }),
                       ),
                       Effect.result,
                     );
@@ -1600,7 +2018,10 @@ const frontDoorHandlers = (
                       yield* Queue.fail(queue, collected.failure);
                       return;
                     }
-                    yield* noteVerification(evidenceDir(env.stateDir, runId), collected.success);
+                    yield* noteVerification(
+                      evidenceDir(env.stateDir, runId),
+                      collected.success,
+                    );
                     yield* recordAudit(trail(runId), {
                       operation: "verify",
                       request: collected.success.id,
@@ -1609,7 +2030,10 @@ const frontDoorHandlers = (
                       result: Schema.Json,
                       value: fromText(toText(collected.success)),
                     }).pipe(Effect.orDie);
-                    yield* Queue.offer(queue, { _tag: "Result", verification: collected.success });
+                    yield* Queue.offer(queue, {
+                      _tag: "Result",
+                      verification: collected.success,
+                    });
                     yield* Queue.end(queue);
                   }).pipe(Effect.provideContext(hosted)),
                 { bufferSize: 16 },
@@ -1629,7 +2053,9 @@ const frontDoorHandlers = (
               },
               Effect.gen(function* () {
                 const view = yield* known(runId);
-                const { rememberChecks } = yield* Effect.promise(() => import("./lifecycle"));
+                const { rememberChecks } = yield* Effect.promise(
+                  () => import("./lifecycle"),
+                );
                 return fromText(
                   toText(
                     yield* rememberChecks(askerEnv(client), {
@@ -1668,12 +2094,22 @@ const frontDoorHandlers = (
               ),
             ),
           ),
-        changeIntent: ({ runId, change, propagate: spread, request }, { client }) =>
-          plainly(
+        changeIntent: (
+          { runId, change: given, propagate: spread, request },
+          { client },
+        ) => {
+          const scrubbed =
+            given.kind === "set-goal" || given.kind === "add-constraint"
+              ? scrubJson(given)
+              : { value: given, removed: [] };
+          const change = scrubbed.value;
+          return plainly(
             Effect.gen(function* () {
               const edit = Effect.gen(function* () {
                 if ((yield* registry.view(runId)) === null)
-                  return yield* new HostRefused({ reason: `No Run "${runId}".` });
+                  return yield* new HostRefused({
+                    reason: `No Run "${runId}".`,
+                  });
                 const by = { ...whoOf(client), requestId: request };
                 const approved =
                   change.kind === "verification"
@@ -1683,30 +2119,47 @@ const frontDoorHandlers = (
                           operation: "grant",
                           request,
                           ...whoOf(client),
-                          asked: { name: change.name, command: fromText(toText(change.command)) },
+                          asked: {
+                            name: change.name,
+                            command: fromText(toText(change.command)),
+                          },
                           result: Schema.Array(VerifySpecSchema),
                         },
-                        registry.grant({ runId, name: change.name, command: change.command }),
+                        registry.grant({
+                          runId,
+                          name: change.name,
+                          command: change.command,
+                        }),
                       )
                     : undefined;
                 const updated = yield* withDirLock(
                   runDir(env.stateDir, runId),
                   Effect.gen(function* () {
-                    const current = yield* readIntent(runDir(env.stateDir, runId));
+                    const current = yield* readIntent(
+                      runDir(env.stateDir, runId),
+                    );
                     if (current === null) return null;
                     const recorded =
                       change.kind === "verification"
-                        ? (yield* readAudit(trail(runId))).find((one) => one.request === request)
+                        ? (yield* readAudit(trail(runId))).find(
+                            (one) => one.request === request,
+                          )
                         : undefined;
                     const amendedBy = recorded?.actor ?? by;
                     if (
                       change.kind === "verification" &&
-                      current.history.some((one) => one.by === actorName(amendedBy))
+                      current.history.some(
+                        (one) => one.by === actorName(amendedBy),
+                      )
                     )
                       return current;
                     const wanted =
                       change.kind === "verification"
-                        ? verificationGrant(current, change.name, change.command)
+                        ? verificationGrant(
+                            current,
+                            change.name,
+                            change.command,
+                          )
                         : change;
                     const amended = amend(
                       current,
@@ -1716,13 +2169,18 @@ const frontDoorHandlers = (
                       voiceOf(amendedBy),
                     );
                     if (amended !== current)
-                      yield* writeIntentHeld(runDir(env.stateDir, runId), amended);
+                      yield* writeIntentHeld(
+                        runDir(env.stateDir, runId),
+                        amended,
+                      );
                     return amended;
                   }),
                 ).pipe(Effect.result);
                 if (updated._tag === "Failure") {
                   if (approved === undefined)
-                    return yield* new HostRefused({ reason: reason(updated.failure) });
+                    return yield* new HostRefused({
+                      reason: reason(updated.failure),
+                    });
                   return {
                     version: null,
                     propagated: [],
@@ -1746,20 +2204,29 @@ const frontDoorHandlers = (
                     const note = yield* withDirLock(
                       runDir(env.stateDir, child.runId),
                       Effect.gen(function* () {
-                        const current = yield* readIntent(runDir(env.stateDir, child.runId)).pipe(
-                          Effect.orElseSucceed(() => null),
-                        );
+                        const current = yield* readIntent(
+                          runDir(env.stateDir, child.runId),
+                        ).pipe(Effect.orElseSucceed(() => null));
                         if (current === null) return null;
                         const carried = propagateIntent(next, current);
-                        yield* writeIntentHeld(runDir(env.stateDir, child.runId), carried.intent);
+                        yield* writeIntentHeld(
+                          runDir(env.stateDir, child.runId),
+                          carried.intent,
+                        );
                         return `  ${child.runId}: propagated${carried.conflicts.length ? ` (${carried.conflicts.join("; ")})` : ""}`;
                       }),
-                    ).pipe(Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })));
+                    ).pipe(
+                      Effect.mapError(
+                        (cause) => new HostRefused({ reason: reason(cause) }),
+                      ),
+                    );
                     if (note !== null) propagated.push(note);
                   }
                 const answer = { version: next?.version ?? null, propagated };
-                return approved === undefined ? answer : { ...answer, approved };
-              });
+                return approved === undefined
+                  ? answer
+                  : { ...answer, approved };
+              }).pipe(Effect.map(saying(scrubbed.removed)));
               return yield* change.kind === "verification"
                 ? edit
                 : once(
@@ -1774,7 +2241,8 @@ const frontDoorHandlers = (
                     edit,
                   );
             }),
-          ),
+          );
+        },
         settleDelivery: ({ runId, delivery, as, request }, { client }) =>
           plainly(
             once(
@@ -1802,7 +2270,9 @@ const frontDoorHandlers = (
                   yield* nowIso(),
                 );
                 if ("error" in settled)
-                  return yield* new HostRefused({ reason: `${REFUSED_INPUT}: ${settled.error}` });
+                  return yield* new HostRefused({
+                    reason: `${REFUSED_INPUT}: ${settled.error}`,
+                  });
                 yield* appendLine(found.file, settled);
                 return fromText(toText(settled));
               }),
@@ -1827,7 +2297,10 @@ const frontDoorHandlers = (
                   operation: "news",
                   request,
                   ...whoOf(client),
-                  asked: keys === undefined ? { conversation, as } : { conversation, as, keys },
+                  asked:
+                    keys === undefined
+                      ? { conversation, as }
+                      : { conversation, as, keys },
                   result: NewsBatch,
                 },
                 Effect.gen(function* () {
@@ -1881,14 +2354,18 @@ const frontDoorHandlers = (
           plainly(
             Effect.gen(function* () {
               const view = yield* known(runId);
-              const task = view.task === null ? null : yield* readTask(env.stateDir, view.task);
+              const task =
+                view.task === null
+                  ? null
+                  : yield* readTask(env.stateDir, view.task);
               const agents = (yield* everyRegistered(env.stateDir))
                 .filter((entry) => entry.runId === runId)
                 .map((entry) => entry.agent)
                 .filter((name) => agent === undefined || name === agent)
                 .reverse();
               const sessions = (yield* liveHerds(herdr, env)).toSorted(
-                (a, b) => Number(b.herd === task?.herd) - Number(a.herd === task?.herd),
+                (a, b) =>
+                  Number(b.herd === task?.herd) - Number(a.herd === task?.herd),
               );
               return yield* once(
                 trail(runId),
@@ -1918,12 +2395,24 @@ const frontDoorHandlers = (
               );
             }),
           ),
-        steerAbout: ({ runId, text, from, dryRun, request }, { client }) =>
-          Effect.gen(function* () {
+        steerAbout: (
+          { runId, text: given, from, dryRun, request },
+          { client },
+        ) => {
+          const { text, removed } = scrub(given);
+          return Effect.gen(function* () {
             const view = yield* registry.view(runId);
             if (view === null)
-              return { ok: false, code: "run_not_found", human: `No Run "${runId}".`, data: {} };
-            const task = view.task === null ? null : yield* readTask(env.stateDir, view.task);
+              return {
+                ok: false,
+                code: "run_not_found",
+                human: `No Run "${runId}".`,
+                data: {},
+              };
+            const task =
+              view.task === null
+                ? null
+                : yield* readTask(env.stateDir, view.task);
             // Only an answer is kept against its request: a failure is retried under the same one.
             return yield* once(
               trail(runId),
@@ -1936,7 +2425,10 @@ const frontDoorHandlers = (
               },
               Effect.gen(function* () {
                 const asker = askerEnv(client);
-                const deps = yield* evaluationDeps({ ...asker, herdKey: task?.herd ?? undefined });
+                const deps = yield* evaluationDeps({
+                  ...asker,
+                  herdKey: task?.herd ?? undefined,
+                });
                 const said = yield* steer(asker, deps, {
                   text,
                   target: runId,
@@ -1955,21 +2447,26 @@ const frontDoorHandlers = (
                       data: fromText(toText(said.error.details)),
                     },
                   });
-                return {
+                return outcomeSaying(removed, {
                   ok: true,
                   code: null,
                   human: said.human,
                   data: fromText(toText(said.data)),
-                };
+                });
               }),
             );
           }).pipe(
             Effect.catch((cause) =>
               Effect.succeed(
                 Schema.is(SteerUnanswered)(cause)
-                  ? cause.outcome
+                  ? outcomeSaying(removed, cause.outcome)
                   : Schema.is(RequestConflict)(cause)
-                    ? { ok: false, code: "invalid_input", human: cause.reason, data: {} }
+                    ? {
+                        ok: false,
+                        code: "invalid_input",
+                        human: cause.reason,
+                        data: {},
+                      }
                     : {
                         ok: false,
                         code: "operation_failed",
@@ -1979,17 +2476,29 @@ const frontDoorHandlers = (
               ),
             ),
             Effect.provideContext(bun),
-          ),
-        followUp: ({ runId, text, request, attachments }, { client }) =>
-          attachedFor(attachments, (asked) =>
+          );
+        },
+        followUp: (
+          { runId, text: given, request, attachments },
+          { client },
+        ) => {
+          const { text, removed } = scrub(given);
+          return attachedFor(attachments, (asked) =>
             fresh(
               () => runId,
-              { operation: "followup", request, ...whoOf(client), asked, result: Started },
+              {
+                operation: "followup",
+                request,
+                ...whoOf(client),
+                asked,
+                result: Started,
+              },
               Effect.gen(function* () {
                 const view = yield* known(runId);
                 if (!settled(factsOfView(env.stateDir, view)))
                   return yield* new HostRefused({
-                    reason: "a follow-up is a child of a finished run, and this one is still going",
+                    reason:
+                      "a follow-up is a child of a finished run, and this one is still going",
                   });
                 const offered = (yield* registry.offers(runId)).find(
                   (one) => one.kind === "follow-up",
@@ -2010,14 +2519,42 @@ const frontDoorHandlers = (
                   request,
                   attachments,
                 });
-              }),
+              }).pipe(Effect.map(saying(removed))),
             ),
-          ),
+          );
+        },
         read: ({ tool, input }, { client }) =>
           Effect.promise(() => import("./tools")).pipe(
-            Effect.flatMap(({ answerRead }) => answerRead(askerEnv(client), tool, input)),
+            Effect.flatMap(({ answerRead }) =>
+              answerRead(askerEnv(client), tool, input),
+            ),
             Effect.provideContext(bun),
           ),
+        progress: ({ runId }) =>
+          Effect.gen(function* () {
+            const view = yield* registry.view(runId);
+            if (view === null) return null;
+            const board = Option.getOrElse(
+              yield* Stream.runHead(boards),
+              () => [],
+            );
+            const card = board.find((one) => one.runs.includes(runId));
+            const mr = card?.run === runId ? card.mr : null;
+            const forged =
+              mr === null
+                ? undefined
+                : (yield* readForge(env.stateDir)).get(mrLabel(mr));
+            return {
+              ready: readinessOfRun(
+                runId,
+                card,
+                view.status.status === "complete" ||
+                  view.status.status === "failed",
+              ),
+              ci: forged?.checks ?? null,
+              steps: yield* stepsOf(env.stateDir, runId),
+            };
+          }).pipe(Effect.provideContext(bun)),
         runDetail: ({ runId, tail, pages, refreshMr }) => {
           let fresh = refreshMr;
           const detail = Effect.gen(function* () {
@@ -2037,7 +2574,15 @@ const frontDoorHandlers = (
                     fresh,
                   });
             fresh = false;
-            return yield* buildRunDetail({ env, runId, runs: [run], mr, tail, pages, plans });
+            return yield* buildRunDetail({
+              env,
+              runId,
+              runs: [run],
+              mr,
+              tail,
+              pages,
+              plans,
+            });
           }).pipe(Effect.provideContext(bun));
           return followDetail(detail, changed).pipe(Stream.orDie);
         },
@@ -2067,7 +2612,13 @@ const frontDoorHandlers = (
                     protocol: PROTOCOL,
                     files: true,
                     herds: sessions.flatMap(({ herd, name }) =>
-                      herd === null ? [] : [name === undefined ? { id: herd } : { id: herd, name }],
+                      herd === null
+                        ? []
+                        : [
+                            name === undefined
+                              ? { id: herd }
+                              : { id: herd, name },
+                          ],
                     ),
                   },
                   boards,
@@ -2081,10 +2632,14 @@ const frontDoorHandlers = (
   );
 
 /** The state directory's own id, made the first time a host owns it and kept from then on. */
-const installationOf = Effect.fn("Host.installationOf")(function* (dir: string) {
+const installationOf = Effect.fn("Host.installationOf")(function* (
+  dir: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const file = `${dir}/installation`;
-  const known = (yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""))).trim();
+  const known = (yield* fs
+    .readFileString(file)
+    .pipe(Effect.orElseSucceed(() => ""))).trim();
   if (known !== "") return known;
   const made = yield* (yield* Crypto.Crypto).randomUUIDv4;
   // Renamed into place, so a host that dies mid-write leaves no half an id.
@@ -2101,7 +2656,9 @@ const installationOf = Effect.fn("Host.installationOf")(function* (dir: string) 
  * Losing the lock is not a failure. It means a host is already here, which is what the
  * caller wanted; the client that started this one connects to that host instead.
  */
-export const serve = (named: string): Effect.Effect<void, never, BunServices | Scope.Scope> =>
+export const serve = (
+  named: string,
+): Effect.Effect<void, never, BunServices | Scope.Scope> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.makeDirectory(named, { recursive: true });
@@ -2120,9 +2677,20 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
       lock,
       Effect.void,
       boundedStop(lock).pipe(
-        Effect.andThen(Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`)),
+        Effect.andThen(
+          Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`),
+        ),
+        Effect.andThen(
+          Effect.forkScoped(
+            rotateInPlace(outputOf(dir)).pipe(
+              Effect.repeat(Schedule.spaced("1 minute")),
+            ),
+          ),
+        ),
         Effect.andThen(Effect.race(own(dir), orphaned(dir))),
-        Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true })),
+        Effect.provide(
+          Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true }),
+        ),
       ),
       0,
     );
@@ -2146,7 +2714,11 @@ const boundedStop = (lock: string) =>
     yield* Deferred.await(stopping).pipe(
       Effect.andThen(Effect.logInfo("asked to stop")),
       Effect.andThen(Effect.sleep(grace)),
-      Effect.andThen(Effect.logWarning(`still stopping after ${Duration.format(grace)}; exiting`)),
+      Effect.andThen(
+        Effect.logWarning(
+          `still stopping after ${Duration.format(grace)}; exiting`,
+        ),
+      ),
       Effect.andThen(Effect.sleep(LOG_FLUSH)),
       // Let go of here rather than left for the next host to judge stale.
       Effect.andThen(releaseOwnLock(lock)),
@@ -2178,9 +2750,9 @@ const boundedStop = (lock: string) =>
 const orphaned = (dir: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const watched = yield* Config.option(Config.Int("COLLIE_HOST_WATCH_PID")).pipe(
-      Effect.orElseSucceed(() => Option.none<number>()),
-    );
+    const watched = yield* Config.option(
+      Config.Int("COLLIE_HOST_WATCH_PID"),
+    ).pipe(Effect.orElseSucceed(() => Option.none<number>()));
     const alive = (pid: number) => {
       try {
         process.kill(pid, 0);
@@ -2191,7 +2763,10 @@ const orphaned = (dir: string) =>
     };
     for (;;) {
       yield* Effect.sleep("1 second");
-      if (!(yield* fs.exists(lockOf(dir)).pipe(Effect.orElseSucceed(() => true)))) return;
+      if (
+        !(yield* fs.exists(lockOf(dir)).pipe(Effect.orElseSucceed(() => true)))
+      )
+        return;
       if (Option.isSome(watched) && !alive(watched.value)) return;
     }
   });
@@ -2202,13 +2777,19 @@ const orphaned = (dir: string) =>
  * selects in the parent's own project exactly as a start from a front door does.
  */
 const locateIn =
-  (install: { readonly pluginRoot: string; readonly userDir: string }): Locate =>
+  (install: {
+    readonly pluginRoot: string;
+    readonly userDir: string;
+  }): Locate =>
   ({ project, id }) =>
     discover(searchPath({ ...install, project })).pipe(
       Effect.flatMap((found) => {
         const entry = found.entries.find((one) => one.id === id);
         if (entry !== undefined) {
-          return Effect.succeed({ entry: entry.path, revision: entry.revision });
+          return Effect.succeed({
+            entry: entry.path,
+            revision: entry.revision,
+          });
         }
         // A file the search path refuses is refused here by name: what it was written to
         // override is not what the author asked to run.
@@ -2222,11 +2803,15 @@ const locateIn =
       }),
     );
 
-const isCrashPoint = Schema.is(Schema.Literals(["admitted", "executed", "answered", "reported"]));
+const isCrashPoint = Schema.is(
+  Schema.Literals(["admitted", "executed", "answered", "reported"]),
+);
 
 /** Where a test has this host kill itself mid-start; unset for every other host. */
 const crashPoint = Config.option(Config.String("COLLIE_HOST_CRASH_AT")).pipe(
-  Effect.map((set) => Option.filter(set, isCrashPoint).pipe(Option.getOrUndefined)),
+  Effect.map((set) =>
+    Option.filter(set, isCrashPoint).pipe(Option.getOrUndefined),
+  ),
   Effect.orDie,
 );
 
@@ -2243,12 +2828,22 @@ const own = (dir: string) =>
     yield* fs
       .writeFileString(
         recordOf(dir),
-        encodeRecord({ pid: yield* currentPid, build: BUILD, root: env.pluginRoot }),
+        encodeRecord({
+          pid: yield* currentPid,
+          build: BUILD,
+          root: env.pluginRoot,
+        }),
       )
       .pipe(Effect.orDie);
     const installation = yield* installationOf(dir).pipe(Effect.orDie);
-    const installed = yield* installedRelease(env.pluginRoot, env.collieDir, BUILD);
-    const development: Development = installed.release ? {} : { development: installed.build };
+    const installed = yield* installedRelease(
+      env.pluginRoot,
+      env.collieDir,
+      BUILD,
+    );
+    const development: Development = installed.release
+      ? {}
+      : { development: installed.build };
     // One reader of this Machine's usage, so every door and every choice of agent paces as one.
     const usage = yield* Usage;
     const panels: MrPanels = new Map();
@@ -2259,23 +2854,34 @@ const own = (dir: string) =>
       userDir: env.userDir,
       build: BUILD,
       ...development,
-      connect: (peer) => connectPeer(dir, peer.name, { as: "host", client: machineName(), stamp }),
+      connect: (peer) =>
+        connectPeer(dir, peer.name, {
+          as: "host",
+          client: machineName(),
+          stamp,
+        }),
       installation,
       stamp,
       socket: socketOf(dir),
       machines: herdr.machineList().pipe(
-        Effect.map((machines): ReadonlyArray<{ readonly label: string }> => machines),
+        Effect.map(
+          (machines): ReadonlyArray<{ readonly label: string }> => machines,
+        ),
         Effect.orElseSucceed(() => null),
         Effect.provideContext(bun),
       ),
       tell: (peer) =>
         Effect.scoped(
-          connectPeer(dir, peer.name, { as: "host", client: machineName(), stamp }).pipe(
-            Effect.flatMap((client) => client.forget()),
-          ),
+          connectPeer(dir, peer.name, {
+            as: "host",
+            client: machineName(),
+            stamp,
+          }).pipe(Effect.flatMap((client) => client.forget())),
         ).pipe(
           Effect.catch((cause) =>
-            Effect.logWarning(`could not tell ${peer.name} it was forgotten: ${reason(cause)}`),
+            Effect.logWarning(
+              `could not tell ${peer.name} it was forgotten: ${reason(cause)}`,
+            ),
           ),
           Effect.provideContext(bun),
         ),
@@ -2285,12 +2891,23 @@ const own = (dir: string) =>
         Layer.provide(
           Layer.mergeAll(
             handlers(dir, installation, development, declared, peers),
-            frontDoorHandlers(dir, installation, development, panels, declared, stamp),
+            frontDoorHandlers(
+              dir,
+              installation,
+              development,
+              panels,
+              declared,
+              stamp,
+            ),
             sideJobsLayer(dir, panels),
             Layer.effectDiscard(
               Effect.gen(function* () {
-                const { reportsLayer } = yield* Effect.promise(() => import("./reports"));
-                yield* Layer.build(reportsLayer({ env, installation, stamp, crashAt }));
+                const { reportsLayer } = yield* Effect.promise(
+                  () => import("./reports"),
+                );
+                yield* Layer.build(
+                  reportsLayer({ env, installation, stamp, crashAt }),
+                );
               }),
             ),
           ).pipe(
@@ -2314,7 +2931,9 @@ const own = (dir: string) =>
             dir,
             userDir: env.userDir,
             toast: (title, body, sound) =>
-              herdr.notify(title, body, sound).pipe(Effect.provideContext(bun), Effect.ignore),
+              herdr
+                .notify(title, body, sound)
+                .pipe(Effect.provideContext(bun), Effect.ignore),
             herd: { socketPath: env.socketPath, pluginRoot: env.pluginRoot },
             readings: usage.readings,
           }),
@@ -2364,13 +2983,63 @@ export const connect = (
         client: build,
         pid: who.pid,
         restart: ours
-          ? `the host for ${dir} is collie ${who.build} and this is ${build}: stop it (pid ${who.pid}) and run this again`
-          : `the host for ${dir} serves ${who.root} and this is collie ${build} from ${install}: point HERDR_PLUGIN_STATE_DIR at a directory of its own, or stop that host (pid ${who.pid}) and run this again`,
+          ? `the host for ${dir} is collie ${who.build} and this is ${build}: run \`collie host restart\` and run this again`
+          : `the host for ${dir} serves ${who.root} and this is collie ${build} from ${install}: point HERDR_PLUGIN_STATE_DIR at a directory of its own, or run \`collie host restart\` and run this again`,
       });
     }
     // What the old host was doing is the new one's startup recovery, not this client's wait.
     return yield* open(dir);
   });
+
+/** A host as a restart names it; `build` is null for one that owned the directory but did not answer. */
+export interface HostSeen {
+  readonly pid: number;
+  readonly build: string | null;
+}
+
+/**
+ * Replaces whatever host owns `dir` with this install's, by the same stop and start a newer
+ * client uses: the new host recovers what the old one left, as on any start (ADR-0015).
+ */
+export const restartHost = Effect.fn("Host.restart")(function* (
+  dir: string,
+  options?: {
+    readonly build?: string;
+    readonly hostEnv?: Readonly<Record<string, string>>;
+  },
+) {
+  const owner = yield* liveOwner(dir);
+  let before: HostSeen | null = null;
+  if (owner !== null) {
+    const answered = yield* ask(dir).pipe(Effect.option);
+    before = {
+      pid: owner.pid,
+      build: Option.match(answered, {
+        onNone: () => null,
+        onSome: (who) => who.build,
+      }),
+    };
+    yield* stopOwner(dir, owner.pid);
+  }
+  const who = yield* ensureRunning(
+    dir,
+    options?.hostEnv ?? {},
+    options?.build ?? BUILD,
+  );
+  return { before, after: { pid: who.pid, build: who.build } };
+});
+
+/** What a restart did, in the sentence every door says it with. */
+export const restartSaid = (
+  dir: string,
+  restarted: { readonly before: HostSeen | null; readonly after: HostSeen },
+) => {
+  const named = (host: HostSeen) =>
+    `pid ${host.pid} (${host.build === null ? "build unknown" : `collie ${host.build}`})`;
+  return restarted.before === null
+    ? `No host was running for ${dir}; started ${named(restarted.after)}.`
+    : `Restarted the host for ${dir}: ${named(restarted.before)} → ${named(restarted.after)}.`;
+};
 
 /** What a stopping host is given beyond its grace, and a killed one to be gone. */
 const STOP_SLACK = Duration.seconds(5);
@@ -2380,7 +3049,10 @@ const STOP_SLACK = Duration.seconds(5);
  * than by a count of polls so that load cannot stretch it. One that is still there after
  * its stop grace is killed: its work is durable, and the next host recovers it.
  */
-const stopOwner = Effect.fn("Host.stopOwner")(function* (dir: string, pid: number) {
+const stopOwner = Effect.fn("Host.stopOwner")(function* (
+  dir: string,
+  pid: number,
+) {
   const goneWithin = (duration: Duration.Input) =>
     liveOwner(dir).pipe(
       Effect.repeat({
@@ -2394,18 +3066,26 @@ const stopOwner = Effect.fn("Host.stopOwner")(function* (dir: string, pid: numbe
   if (yield* goneWithin(Duration.sum(yield* stopGrace, STOP_SLACK))) return;
   yield* signalProcess(pid, "SIGKILL");
   if (yield* goneWithin(STOP_SLACK)) return;
-  return yield* unavailable(dir, `pid ${pid} is an older host and did not stop`);
+  return yield* unavailable(
+    dir,
+    `pid ${pid} owns the directory and did not stop`,
+  );
 });
 
 /** One connection, in the caller's scope: theirs to keep, and theirs to close. */
 const openGroup = <Rpcs extends Rpc.Any>(
   socket: string,
   group: RpcGroup.RpcGroup<Rpcs>,
-  through: Layer.Layer<Socket.Socket, Socket.SocketError> = BunSocket.layerNet({ path: socket }),
+  through: Layer.Layer<Socket.Socket, Socket.SocketError> = BunSocket.layerNet({
+    path: socket,
+  }),
 ) =>
   Effect.gen(function* () {
     const context = yield* Layer.build(
-      RpcClient.layerProtocolSocket().pipe(Layer.provide(through), Layer.provide(serialization)),
+      RpcClient.layerProtocolSocket().pipe(
+        Layer.provide(through),
+        Layer.provide(serialization),
+      ),
     );
     return yield* RpcClient.make(group).pipe(Effect.provideContext(context));
   }).pipe(Effect.mapError((cause) => unavailable(socket, String(cause))));
@@ -2422,49 +3102,74 @@ export const frontDoor = (socket: string) => openGroup(socket, FrontDoorRpcs);
  * A connection through this Machine's relay to a peer, opened as the front door its
  * header names, once the relay says the peer answered.
  */
-export const peerChannel = (stateDir: string, name: string, header: RelayHeader) =>
+export const peerChannel = (
+  stateDir: string,
+  name: string,
+  header: RelayHeader,
+) =>
   Effect.acquireRelease(
-    Effect.callback<NetSocket, HostUnavailable | MachineUnreachable>((resume) => {
-      const path = relayOf(stateDir, name);
-      const conn = createConnection(path);
-      let seen = Buffer.alloc(0);
-      const take = (chunk: Buffer) => {
-        seen = Buffer.concat([seen, chunk]);
-        const end = seen.indexOf(10);
-        if (end === -1) return;
-        conn.off("data", take);
-        conn.pause();
-        const line = seen.subarray(0, end).toString("utf8");
-        const answer = decodeAnswer(line);
-        if (Option.isNone(answer) || (!answer.value.ok && answer.value.unreachable === undefined)) {
-          conn.destroy();
-          const said = Option.isSome(answer) ? (answer.value.refused ?? line) : line;
-          return resume(Effect.fail(unavailable(path, `the relay to ${name} refused: ${said}`)));
-        }
-        if (!answer.value.ok) {
-          conn.destroy();
-          return resume(
-            Effect.fail(new MachineUnreachable({ machine: name, seen: answer.value.unreachable! })),
-          );
-        }
-        const rest = seen.subarray(end + 1);
-        if (rest.length > 0) conn.unshift(rest);
-        resume(Effect.succeed(conn));
-      };
-      conn.on("data", take);
-      conn.once("connect", () => conn.write(`${encodeHeader(header)}\n`));
-      conn.once("error", (cause) =>
-        resume(
-          Effect.fail(
-            unavailable(path, `${name} is not paired with this Machine: ${cause.message}`),
+    Effect.callback<NetSocket, HostUnavailable | MachineUnreachable>(
+      (resume) => {
+        const path = relayOf(stateDir, name);
+        const conn = createConnection(path);
+        let seen = Buffer.alloc(0);
+        const take = (chunk: Buffer) => {
+          seen = Buffer.concat([seen, chunk]);
+          const end = seen.indexOf(10);
+          if (end === -1) return;
+          conn.off("data", take);
+          conn.pause();
+          const line = seen.subarray(0, end).toString("utf8");
+          const answer = decodeAnswer(line);
+          if (
+            Option.isNone(answer) ||
+            (!answer.value.ok && answer.value.unreachable === undefined)
+          ) {
+            conn.destroy();
+            const said = Option.isSome(answer)
+              ? (answer.value.refused ?? line)
+              : line;
+            return resume(
+              Effect.fail(
+                unavailable(path, `the relay to ${name} refused: ${said}`),
+              ),
+            );
+          }
+          if (!answer.value.ok) {
+            conn.destroy();
+            return resume(
+              Effect.fail(
+                new MachineUnreachable({
+                  machine: name,
+                  seen: answer.value.unreachable!,
+                }),
+              ),
+            );
+          }
+          const rest = seen.subarray(end + 1);
+          if (rest.length > 0) conn.unshift(rest);
+          resume(Effect.succeed(conn));
+        };
+        conn.on("data", take);
+        conn.once("connect", () => conn.write(`${encodeHeader(header)}\n`));
+        conn.once("error", (cause) =>
+          resume(
+            Effect.fail(
+              unavailable(
+                path,
+                `${name} is not paired with this Machine: ${cause.message}`,
+              ),
+            ),
           ),
-        ),
-      );
-      conn.once("close", () =>
-        resume(Effect.fail(unavailable(path, `the relay to ${name} hung up`))),
-      );
-      return Effect.sync(() => conn.destroy());
-    }),
+        );
+        conn.once("close", () =>
+          resume(
+            Effect.fail(unavailable(path, `the relay to ${name} hung up`)),
+          ),
+        );
+        return Effect.sync(() => conn.destroy());
+      },
+    ),
     (conn) => Effect.sync(() => conn.destroy()),
   );
 
@@ -2499,11 +3204,16 @@ export const connectPeer = (
         duration: ASK_TIMEOUT,
         orElse: () =>
           Effect.fail(
-            new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+            new MachineUnreachable({
+              machine: name,
+              seen: `no answer within ${ASK_TIMEOUT}`,
+            }),
           ),
       }),
       Effect.mapError((cause) =>
-        Schema.is(MachineUnreachable)(cause) ? cause : unavailable(stateDir, reason(cause)),
+        Schema.is(MachineUnreachable)(cause)
+          ? cause
+          : unavailable(stateDir, reason(cause)),
       ),
     );
     if (who.build !== build && header.as !== "host")
@@ -2539,18 +3249,23 @@ export const connectPeer = (
       orElse: () =>
         Effect.fail(
           mismatch ??
-            new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+            new MachineUnreachable({
+              machine: name,
+              seen: `no answer within ${ASK_TIMEOUT}`,
+            }),
         ),
     }),
   );
 };
 
-const unavailable = (dir: string, reason: string) => new HostUnavailable({ dir, reason });
+const unavailable = (dir: string, reason: string) =>
+  new HostUnavailable({ dir, reason });
 
 /** Which process owns this directory, or null when none does. */
 export const ownerOf = (
   dir: string,
-): Effect.Effect<LockHolder | null, never, FileSystem.FileSystem> => lockHolder(lockOf(dir));
+): Effect.Effect<LockHolder | null, never, FileSystem.FileSystem> =>
+  lockHolder(lockOf(dir));
 
 /** The owner of this directory while it lives; a claim a dead host left is nobody's. */
 const liveOwner = (dir: string) =>
@@ -2571,16 +3286,23 @@ const ASK_TIMEOUT = "5 seconds";
  * The owner of `dir` when it does not answer and recorded itself as an older build of this
  * installation: a client that cannot ask it can still replace it.
  */
-const olderSilentOwner = Effect.fn("Host.olderSilentOwner")(function* (dir: string, build: string) {
+const olderSilentOwner = Effect.fn("Host.olderSilentOwner")(function* (
+  dir: string,
+  build: string,
+) {
   const owner = yield* liveOwner(dir);
   if (owner === null) return null;
   const fs = yield* FileSystem.FileSystem;
   const recorded = yield* fs
     .readFileString(recordOf(dir))
-    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(HostRecord)), Effect.option);
+    .pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(HostRecord)),
+      Effect.option,
+    );
   if (Option.isNone(recorded) || recorded.value.pid !== owner.pid) return null;
   const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
-  return sameInstallation(recorded.value.root, install) && newer(build, recorded.value.build)
+  return sameInstallation(recorded.value.root, install) &&
+    newer(build, recorded.value.build)
     ? owner.pid
     : null;
 });
@@ -2621,24 +3343,36 @@ const ensureRunning = Effect.fn("Host.ensureRunning")(function* (
         liveOwner(dir),
       ]).pipe(Effect.map(([running, owner]) => running || owner !== null));
       return yield* ask(dir).pipe(
-        Effect.retry({ schedule: Schedule.spaced("100 millis"), while: () => coming }),
+        Effect.retry({
+          schedule: Schedule.spaced("100 millis"),
+          while: () => coming,
+        }),
       );
     }),
   );
   return yield* started.pipe(
     // The owner it lost to has gone since, so nothing is starting.
-    Effect.retry({ times: 2, while: () => Effect.map(liveOwner(dir), (owner) => owner === null) }),
-    Effect.timeoutOrElse({ duration: HOST_START_TIMEOUT, orElse: () => diagnose(dir) }),
+    Effect.retry({
+      times: 2,
+      while: () => Effect.map(liveOwner(dir), (owner) => owner === null),
+    }),
+    Effect.timeoutOrElse({
+      duration: HOST_START_TIMEOUT,
+      orElse: () => diagnose(dir),
+    }),
     Effect.catch(() => diagnose(dir)),
   );
 });
 
 /** One question, and hang up: the connection a client keeps is opened once it is theirs. */
 const ask = (dir: string) =>
-  Effect.scoped(open(dir).pipe(Effect.flatMap((client) => client.identity()))).pipe(
+  Effect.scoped(
+    open(dir).pipe(Effect.flatMap((client) => client.identity())),
+  ).pipe(
     Effect.timeoutOrElse({
       duration: ASK_TIMEOUT,
-      orElse: () => unavailable(dir, `no answer on ${socketOf(dir)} within ${ASK_TIMEOUT}`),
+      orElse: () =>
+        unavailable(dir, `no answer on ${socketOf(dir)} within ${ASK_TIMEOUT}`),
     }),
   );
 
@@ -2656,8 +3390,8 @@ const diagnose = Effect.fn("Host.diagnose")(function* (dir: string) {
 /**
  * Starts a host and leaves. Detached and unreferenced, because the point of the host is
  * that it outlives whoever needed it: a CLI command that exits, a board that is closed,
- * a chat turn that ends. Its stdio is closed for the same reason — there is no terminal
- * it belongs to.
+ * a chat turn that ends. There is no terminal it belongs to, so its stdout and stderr are
+ * appended to `host.out` by a shell that then becomes the host, keeping its pid.
  */
 const spawnHost = Effect.fn("Host.spawn")(function* (
   named: string,
@@ -2673,23 +3407,37 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
     yield* fs.makeDirectory(named, { recursive: true });
     // The host starts in it, so a relative one would name somewhere else from there.
     const dir = yield* fs.realPath(named);
+    yield* rotateInPlace(outputOf(dir));
     const handle = yield* spawner.spawn(
-      ChildProcess.make(command[0] ?? "collie", [...command.slice(1), "host", "--dir", dir], {
-        cwd: dir,
-        // A client started by Desktop may carry its launcher's LD_PRELOAD.
-        // oxlint-disable-next-line effecttsgo/process-env
-        env: withoutLauncher({
-          ...process.env,
-          ...hostEnv,
-          HERDR_PLUGIN_ROOT: pluginRoot,
-          COLLIE_USER_DIR: userDir,
-        }),
-        extendEnv: false,
-        detached: true,
-        stdin: "ignore",
-        stdout: "ignore",
-        stderr: "ignore",
-      }),
+      ChildProcess.make(
+        "/bin/sh",
+        [
+          "-c",
+          'out=$1; shift; exec "$@" >>"$out" 2>&1',
+          "sh",
+          outputOf(dir),
+          ...command,
+          "host",
+          "--dir",
+          dir,
+        ],
+        {
+          cwd: dir,
+          // A client started by Desktop may carry its launcher's LD_PRELOAD.
+          // oxlint-disable-next-line effecttsgo/process-env
+          env: withoutLauncher({
+            ...process.env,
+            ...hostEnv,
+            HERDR_PLUGIN_ROOT: pluginRoot,
+            COLLIE_USER_DIR: userDir,
+          }),
+          extendEnv: false,
+          detached: true,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "ignore",
+        },
+      ),
     );
     // Unreferenced before the caller's scope closes, or the spawner's finalizer kills the
     // host it has just started: it leaves a child alone only once it is unreferenced.
@@ -2706,16 +3454,20 @@ const CommandJson = Schema.fromJsonString(Schema.Array(Schema.String));
  * one path or a JSON array of them, the way `COLLIE_DRIVER` does, for a caller whose own
  * entry is not Collie's — a test suite, above all.
  */
-const hostCommand: Effect.Effect<ReadonlyArray<string>> = Effect.gen(function* () {
-  const override = yield* Config.option(Config.String("COLLIE_HOST"));
-  if (override._tag === "Some") {
-    const value = override.value;
-    if (!value.trimStart().startsWith("[")) return [value];
-    return yield* Schema.decodeUnknownEffect(CommandJson)(value).pipe(
-      Effect.orElseSucceed(() => [value]),
-    );
-  }
-  // A standalone executable's entry lives in the binary itself, under `/$bunfs`; there
-  // is no file to pass, and passing that path would be read as a subcommand.
-  return Bun.main.startsWith("/$bunfs/") ? [process.execPath] : [process.execPath, Bun.main];
-}).pipe(Effect.orDie);
+const hostCommand: Effect.Effect<ReadonlyArray<string>> = Effect.gen(
+  function* () {
+    const override = yield* Config.option(Config.String("COLLIE_HOST"));
+    if (override._tag === "Some") {
+      const value = override.value;
+      if (!value.trimStart().startsWith("[")) return [value];
+      return yield* Schema.decodeUnknownEffect(CommandJson)(value).pipe(
+        Effect.orElseSucceed(() => [value]),
+      );
+    }
+    // A standalone executable's entry lives in the binary itself, under `/$bunfs`; there
+    // is no file to pass, and passing that path would be read as a subcommand.
+    return Bun.main.startsWith("/$bunfs/")
+      ? [process.execPath]
+      : [process.execPath, Bun.main];
+  },
+).pipe(Effect.orDie);

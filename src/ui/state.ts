@@ -195,7 +195,7 @@ export interface Row {
   /** The Workflow or Persona this row names, for the Workflows view. */
   definition: DefinitionRow | null;
   /** The config key this row names, for the Settings view. */
-  setting: { key: string; value: string; writable: boolean } | null;
+  setting: { key: string; value: string; writable: boolean; multiline: boolean } | null;
   choice: PendingChoice | null;
   /** Where Enter on this row goes, or null for a row that is only a row. */
   jump: Jump | null;
@@ -288,7 +288,7 @@ export type Command =
    * keyboard honoured and a click on the same button took literally — unsetting the
    * default it was labelled to set.
    */
-  | { _tag: "EditSetting"; key: string }
+  | { _tag: "EditSetting"; key: string; multiline: boolean }
   /** Open this Task's record. The app answers it: the drawer is its own, not the bridge's. */
   | { _tag: "OpenRecord"; id: string }
   /** The same, with the keyboard in the steer field. Also the app's own. */
@@ -603,6 +603,7 @@ function settingRow(
   value: string,
   writable: boolean,
   shared?: string,
+  multiline = false,
 ): Row {
   const shown = value === "" ? "(unset)" : value;
   return {
@@ -611,7 +612,7 @@ function settingRow(
     kind: "setting",
     title: key,
     detail: shared === undefined ? shown : `${shown} · ${shared}`,
-    setting: { key, value, writable },
+    setting: { key, value, writable, multiline },
   };
 }
 
@@ -929,6 +930,7 @@ export function viewRows(state: AppState): Row[] {
             d.value,
             true,
             settings.flock === null ? undefined : `shared with the Flock by ${settings.flock}`,
+            d.multiline,
           ),
         ),
         ...settings.remembered.map((d) => settingRow(`remembered:${d.key}`, d.key, d.value, false)),
@@ -1012,7 +1014,17 @@ export function actionsFor(row: Row | null, filter: Filter): Action[] {
     // A remembered value is a Run's own note to itself; the defaults are what a human
     // sets, so only those are offered for editing.
     return row.setting?.writable
-      ? [{ key: "\r", label: "set", command: { _tag: "EditSetting", key: row.setting.key } }]
+      ? [
+          {
+            key: "\r",
+            label: "set",
+            command: {
+              _tag: "EditSetting",
+              key: row.setting.key,
+              multiline: row.setting.multiline,
+            },
+          },
+        ]
       : [];
   }
 
@@ -1308,6 +1320,7 @@ export interface Keypress {
   name?: string;
   shift?: boolean;
   ctrl?: boolean;
+  meta?: boolean;
 }
 
 /**

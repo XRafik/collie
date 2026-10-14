@@ -10,6 +10,7 @@ import {
   alignment,
   appendDrift,
   checkRules,
+  driftSaid,
   evaluatedFor,
   judge,
   currentReports,
@@ -70,6 +71,21 @@ test("protected paths report the files that were outside them, not that some wer
   expect(report?.kind).toBe("rule");
   expect(report?.severity).toBe("block");
   expect(report?.evidence.map((ref) => ref.path)).toEqual(["docs/using.md", ".gitlab-ci.yml"]);
+});
+
+test("protected paths say when their list of files was cut, and the line says so too", () => {
+  const intent = intentWith({ kind: "protected_paths", globs: ["src/**"] });
+  const outside = Array.from({ length: MAX_FILES + 5 }, (_, at) => `docs/${at}.md`);
+  const [cut] = checkRules(intent, facts({ changedFiles: outside }), "t");
+  expect(cut?.evidence).toHaveLength(MAX_FILES);
+  expect(cut?.evidence_truncated).toBe(true);
+  expect(driftSaid(cut!, "boundary before build")).toEndWith("(evidence truncated)");
+
+  const [whole] = checkRules(intent, facts({ changedFiles: outside.slice(0, 2) }), "t");
+  expect(whole?.evidence_truncated).toBe(false);
+  expect(driftSaid(whole!, "boundary before build")).toBe(
+    `drift at boundary before build: ${whole!.constraint} (block) — docs/0.md, docs/1.md`,
+  );
 });
 
 test("a branch and a merge request are checked against what is recorded", () => {

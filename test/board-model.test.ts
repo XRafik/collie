@@ -11,6 +11,8 @@ import {
   openMrLabel,
   primaryAction,
   readMrRef,
+  readinessOfRun,
+  readyToRelease,
   RunDetail,
   TaskView,
 } from "../src/board-model";
@@ -253,4 +255,73 @@ test.each([
     disposition: "superseded",
     ref,
   });
+});
+
+const MR = "mr:gitlab.example.com/mk/project!7";
+const HEAD = "1a2b3c4d5e6f";
+const mergeableNow = {
+  succeeded: true,
+  mr: MR,
+  mrState: "open",
+  draft: false,
+  checks: { state: "passed", at: HEAD },
+  ci: { state: "passed" },
+  blocking: 0,
+  mergeable: { state: "mergeable", said: "mergeable" },
+} as const;
+
+test("ready to release is mergeable now, and nothing is missing", () => {
+  expect(readyToRelease(mergeableNow)).toEqual({ ready: true, missing: [] });
+  // No pipeline at all is not a pipeline that has not passed.
+  expect(readyToRelease({ ...mergeableNow, ci: { state: "none" } }).ready).toBe(true);
+});
+
+test("each fact ready to release needs is named when it is missing, and whether it may yet come", () => {
+  const missing = (over: Partial<Parameters<typeof readyToRelease>[0]>) =>
+    readyToRelease({ ...mergeableNow, ...over }).missing.map(({ fact, settling }) => [
+      fact,
+      settling,
+    ]);
+  expect(missing({ succeeded: false })).toEqual([["succeeded", false]]);
+  expect(missing({ mr: null })).toEqual([["mr-open", false]]);
+  expect(missing({ mrState: "merged" })).toEqual([["mr-open", false]]);
+  expect(missing({ mrState: null })).toEqual([["mr-open", true]]);
+  expect(missing({ draft: true })).toEqual([["not-draft", false]]);
+  expect(missing({ checks: { state: "failed", name: "check", at: HEAD } })).toEqual([
+    ["checks", false],
+  ]);
+  expect(missing({ checks: { state: "running" } })).toEqual([["checks", true]]);
+  expect(missing({ checks: { state: "unchecked" } })).toEqual([["checks", false]]);
+  expect(missing({ ci: { state: "failed", name: "lint" } })).toEqual([["ci", false]]);
+  expect(missing({ ci: { state: "running" } })).toEqual([["ci", true]]);
+  expect(missing({ ci: null })).toEqual([["ci", true]]);
+  // A pipeline that exists and has not passed (canceled, manual, skipped, or of an older head).
+  expect(missing({ ci: { state: "unknown" } })).toEqual([["ci", false]]);
+  expect(missing({ blocking: 2 })).toEqual([["review", false]]);
+  expect(missing({ mergeable: { state: "blocked", said: "not_approved" } })).toEqual([
+    ["mergeable", false],
+  ]);
+  expect(missing({ mergeable: { state: "unknown", said: "checking" } })).toEqual([
+    ["mergeable", true],
+  ]);
+  expect(missing({ mergeable: null })).toEqual([["mergeable", true]]);
+
+  const said = readyToRelease({
+    ...mergeableNow,
+    ci: { state: "failed", name: "lint" },
+    mergeable: { state: "blocked", said: "conflict" },
+  }).missing.map((one) => one.said);
+  expect(said).toEqual(["lint failed in CI", "the forge says it cannot merge: conflict"]);
+});
+
+test("one Run is ready only where it leads its card, and a Run on no card says whether one may come", () => {
+  const ready = { ready: true, missing: [] };
+  const card = task({ run: "r2", runs: ["r1", "r2"], ready: true, readiness: ready });
+  expect(readinessOfRun("r2", card, true)).toEqual(ready);
+  expect(readinessOfRun("r1", card, true)).toEqual({
+    ready: false,
+    missing: [{ fact: "leads", said: "r2 leads its Task now", settling: false }],
+  });
+  expect(readinessOfRun("r3", undefined, false).missing.map((one) => one.settling)).toEqual([true]);
+  expect(readinessOfRun("r3", undefined, true).missing.map((one) => one.settling)).toEqual([false]);
 });

@@ -16,6 +16,7 @@ import {
   appendElection,
   askJudgement,
   checkRules,
+  driftSaid,
   correctionText,
   correctionsSent,
   decideCorrections,
@@ -297,12 +298,7 @@ const checkRuleDrift = Effect.fn("Oversight.checkRuleDrift")(function* (
   const before = yield* readDrift(at.runDir).pipe(Effect.orElseSucceed(() => []));
   for (const report of newReports(found, before)) {
     yield* appendDrift(at.runDir, report).pipe(Effect.ignore);
-    yield* said(
-      at,
-      `drift at ${where}: ${report.constraint} (${report.severity}) — ${report.evidence
-        .map((ref) => ref.path ?? ref.excerpt ?? ref.kind)
-        .join(", ")}`,
-    );
+    yield* said(at, driftSaid(report, where));
   }
   // A report that was open and is no longer found is one the work came back from — but
   // only where the check found fewer things: an unchanged tree finds the same ones, and
@@ -491,7 +487,7 @@ const correctDrift = Effect.fn("Oversight.correctDrift")(function* (
 });
 
 /** Delivery states nothing follows, so a correction in one is not in flight. */
-const SETTLED: ReadonlySet<string> = new Set(["verified", "failed", "superseded", "expired"]);
+const SETTLED: ReadonlySet<string> = new Set(["failed", "superseded"]);
 
 /**
  * The Run's own SPEC, read into its Intent before anything is judged against it. Only a

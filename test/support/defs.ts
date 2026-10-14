@@ -14,7 +14,6 @@ export function installFakeSkills(home: string) {
       "code-review",
       "code-review-and-quality",
       "code-simplification",
-      "implement",
       "tdd",
       "grill-with-docs",
       "to-spec",

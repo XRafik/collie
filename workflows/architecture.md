@@ -5,6 +5,10 @@ The goal, in my words:
 Project root: {{cwd}}
 Report: {{run.dir}}/plan/ARCHITECTURE.md
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 {{rooting}}
 
 ## attended

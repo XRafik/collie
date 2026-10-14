@@ -1,5 +1,5 @@
-import { agentWork, contentOf, defineWorkflow } from "collie";
-import { Schema } from "effect";
+import { Host, Run, agentWork, contentOf, defineWorkflow } from "collie";
+import { Effect, Schema } from "effect";
 import markdown from "./investigate.md" with { type: "text" };
 
 const Findings = Schema.Struct({
@@ -18,11 +18,18 @@ export default defineWorkflow({
   checkout: "branch",
   closes: "reported",
   run: ({ input }) =>
-    agentWork({
-      operation: "investigate",
-      role: "investigator",
-      instructions: content.template("investigate", { goal: Schema.String }),
-      input,
-      output: Findings,
+    Effect.gen(function* () {
+      const run = yield* Run;
+      const place = yield* (yield* Host).place(run.id);
+      return yield* agentWork({
+        operation: "investigate",
+        role: "investigator",
+        instructions: content.template("investigate", {
+          goal: Schema.String,
+          run: Schema.Struct({ dir: Schema.String }),
+        }),
+        input: { goal: input.goal, run: { dir: place.dir } },
+        output: Findings,
+      });
     }),
 });

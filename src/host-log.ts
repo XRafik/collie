@@ -22,3 +22,16 @@ export const hostLogger = (file: string, maxBytes: number = MAX_BYTES) =>
     // Flushed often, because a host stopped past its grace exits without flushing.
     return yield* Logger.batched(Logger.formatLogFmt, { window: "100 millis", flush: append });
   });
+
+/**
+ * Keeps `file` under `maxBytes` while a process holds it open for appending: it is copied to
+ * `<file>.1` and emptied in place, since a rename would leave the writer on the old file.
+ */
+export const rotateInPlace = (file: string, maxBytes: number = MAX_BYTES) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const size = Number((yield* fs.stat(file)).size);
+    if (size <= maxBytes) return;
+    yield* fs.copyFile(file, `${file}.1`);
+    yield* fs.truncate(file);
+  }).pipe(Effect.ignore);

@@ -27,10 +27,10 @@ const CauseSchema = Schema.Struct({
 });
 export type Cause = Schema.Schema.Type<typeof CauseSchema>;
 /**
- * Where a delivery has got to. `submitted` says herdr took it, which is not the same as
- * the agent having read it; `acknowledged` needs the agent's own ack file; `verified`
- * needs an independent check. They are separate states because they are separate facts,
- * and a system that collapsed them would report work as done on the strength of a send.
+ * Where a delivery has got to. `submitted` says the text and the Enter went in, which is
+ * not the same as the agent having read it; `acknowledged` says it took a turn after the
+ * delivery — herdr saw one start, or its harness's submit hook recorded the prompt. Whether
+ * the work then went where it was told is the drift judgement's, never a delivery state.
  *
  * `unknown` is the honest state for a crash between reserving and submitting: nobody can
  * say whether herdr got it. It blocks the same work from being sent again until a human
@@ -45,15 +45,13 @@ const DELIVERY_STATES = [
   "deferred",
   "submitted",
   "acknowledged",
-  "verified",
   "failed",
   "unknown",
   "superseded",
-  "expired",
 ] as const;
 
 /** States that say herdr took the text: a delivery in one of these was sent. */
-export const SENT_STATES: ReadonlySet<string> = new Set(["submitted", "acknowledged", "verified"]);
+export const SENT_STATES: ReadonlySet<string> = new Set(["submitted", "acknowledged"]);
 
 /** The line a Run's agents log keeps for a human's message told to one of its agents. */
 export const toldLine = (agent: string, text: string) =>
@@ -67,12 +65,7 @@ export function toldIn(log: string, agent: string): string | null {
 }
 
 /** States nothing follows: a causal key with one of these is free for a new delivery. */
-const TERMINAL_STATES: ReadonlySet<string> = new Set([
-  "verified",
-  "failed",
-  "superseded",
-  "expired",
-]);
+const TERMINAL_STATES: ReadonlySet<string> = new Set(["failed", "superseded"]);
 
 export const DeliverySchema = Schema.Struct({
   id: Schema.String,
@@ -153,11 +146,7 @@ export const ledgerPath = Effect.fn("Steering.ledgerPath")(function* (
   return path.join(stateDir, "agents", incarnationKey(incarnation), LEDGER_FILE);
 });
 
-/**
- * Every incarnation's ledger this state dir has. An acknowledgement names only its
- * delivery, so finding which agent it belongs to means looking; the alternative is a
- * second index of what the journals already say.
- */
+/** Every incarnation's ledger this state dir has. */
 export const ledgerFiles = Effect.fn("Steering.ledgerFiles")(function* (stateDir: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

@@ -258,8 +258,34 @@ const github = (
     ...over,
   });
 
-/** The card after one round of the watch, read back the way the CLI's board reads it. */
-const cardAfter = Effect.fn("merges.cardAfter")(function* (mr: string, run: Runner) {
+/** A check Collie ran for the Run, at a revision. */
+const collieRan = (run: string, at: string, result: "pass" | "fail" = "pass") => ({
+  id: `v-${at}`,
+  run,
+  name: "test",
+  executable: result === "pass" ? "/usr/bin/true" : "/usr/bin/false",
+  argv: [],
+  cwd: "/project",
+  start: { head_sha: at, fingerprint: "f" },
+  end: { head_sha: at, fingerprint: "f" },
+  exit: result === "pass" ? 0 : 1,
+  seconds: 1,
+  expect: "pass" as const,
+  tail: { stdout: "", stderr: "" },
+  result,
+  at: "2026-09-17T09:00:00Z",
+  by: "collie" as const,
+});
+
+/**
+ * The card after one round of the watch, read back the way the CLI's board reads it, with
+ * Collie's own checks passed at `passedAt` where one is given.
+ */
+const cardAfter = Effect.fn("merges.cardAfter")(function* (
+  mr: string,
+  run: Runner,
+  passedAt?: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-forge-" });
   const env = readEnv({ HERDR_PLUGIN_STATE_DIR: stateDir, COLLIE_CWD: "/project" });
@@ -268,6 +294,8 @@ const cardAfter = Effect.fn("merges.cardAfter")(function* (mr: string, run: Runn
     mr,
     created: "2026-09-17T09:00:00Z",
   });
+  if (passedAt !== undefined)
+    yield* appendVerification(made.evidence, collieRan(made.id, passedAt));
   const now = epochMs("2026-09-17T10:00:00Z");
   const views = yield* buildBoard({ env, runs: [made], now });
   yield* settleMerges({
@@ -295,7 +323,8 @@ test("a GitLab pipeline that failed, is running or passed is what the card's che
       const going = (yield* cardAfter(MR, piped("running"))).card;
       expect(going.checks).toEqual({ state: "running" });
       expect(going.sentence).toBe("mk/collie!65 is open; its pipeline is still running.");
-      const green = (yield* cardAfter(MR, piped("passed"))).card;
+      expect((yield* cardAfter(MR, piped("passed"))).card.ready).toBe(false);
+      const green = (yield* cardAfter(MR, piped("passed"), HEAD)).card;
       expect(green.ready).toBe(true);
       expect(green.sentence).toBe(
         "Ready to release: mk/collie!65 is open and its checks passed at 1a2b3c4. Next: merge it.",
@@ -318,11 +347,49 @@ test("a GitHub check rollup that is red, pending or green is what the card's che
       expect((yield* cardAfter(PR, github("open", [tests, queued]))).card.checks).toEqual({
         state: "running",
       });
-      const green = (yield* cardAfter(PR, github("open", [tests]))).card;
+      const green = (yield* cardAfter(PR, github("open", [tests]), HEAD)).card;
       expect(green.ready).toBe(true);
       expect(green.sentence).toBe(
         "Ready to release: cego/collie#30 is open and its checks passed at 1a2b3c4. Next: merge it.",
       );
+    }),
+  ));
+
+test("a draft, and what the forge says of merging, reach the card's readiness", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const green = [{ name: "build", state: "passed" }] as const;
+      const draft = (yield* cardAfter(
+        MR,
+        forge("gitlab", { mrs: [mr65({ head: HEAD, draft: true, checks: green })] }),
+        HEAD,
+      )).card;
+      expect(draft.ready).toBe(false);
+      expect(draft.readiness?.missing.map((one) => one.fact)).toEqual(["not-draft"]);
+
+      const conflicted = (yield* cardAfter(
+        PR,
+        github("open", green, {
+          mrs: [
+            {
+              project: "github.com/cego/collie",
+              iid: "30",
+              state: "open",
+              head: HEAD,
+              checks: green,
+              mergeable: "conflict",
+            },
+          ],
+        }),
+        HEAD,
+      )).card;
+      expect(conflicted.readiness?.missing).toEqual([
+        {
+          fact: "mergeable",
+          said: "the forge says it cannot merge: conflicting",
+          settling: false,
+        },
+      ]);
     }),
   ));
 
@@ -365,7 +432,7 @@ test("a board file in the old shape still reads, with nothing known of the forge
     }),
   ));
 
-test("green forge checks with Collie's evidence at an older head pass on the forge's word, at its head", () =>
+test("green forge checks never stand in for Collie's own, which count only at the forge's head", () =>
   runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -373,23 +440,7 @@ test("green forge checks with Collie's evidence at an older head pass on the for
       const env = readEnv({ HERDR_PLUGIN_STATE_DIR: stateDir, COLLIE_CWD: "/project" });
       const made = yield* madeRun(stateDir, { state: "succeeded", mr: PR });
       // Red, but on a tree the pull request has moved past.
-      yield* appendVerification(made.evidence, {
-        id: "v-old",
-        run: made.id,
-        name: "test",
-        executable: "/usr/bin/false",
-        argv: [],
-        cwd: "/project",
-        start: { head_sha: "0ld0ld0", fingerprint: "f" },
-        end: { head_sha: "0ld0ld0", fingerprint: "f" },
-        exit: 1,
-        seconds: 1,
-        expect: "pass",
-        tail: { stdout: "", stderr: "" },
-        result: "fail",
-        at: "2026-09-17T09:00:00Z",
-        by: "collie",
-      });
+      yield* appendVerification(made.evidence, collieRan(made.id, "0ld0ld0", "fail"));
       const now = epochMs("2026-09-17T10:00:00Z");
       const tests = { name: "test", state: "passed" } as const;
       yield* settleMerges({
@@ -403,8 +454,12 @@ test("green forge checks with Collie's evidence at an older head pass on the for
         panels: new Map(),
       });
       const [card] = yield* buildBoard({ env, runs: [made], now });
-      expect(card!.checks).toEqual({ state: "passed", at: HEAD });
-      expect(card!.sentence).toContain("passed at 1a2b3c4.");
+      expect(card!.checks).toEqual({ state: "unchecked" });
+      expect(card!.ready).toBe(false);
+      yield* appendVerification(made.evidence, collieRan(made.id, HEAD));
+      const [passed] = yield* buildBoard({ env, runs: [made], now });
+      expect(passed!.checks).toEqual({ state: "passed", at: HEAD });
+      expect(passed!.sentence).toContain("passed at 1a2b3c4.");
     }),
   ));
 

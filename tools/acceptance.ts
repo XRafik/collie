@@ -729,6 +729,30 @@ const BACKEND: readonly Check[] = [
       name: "the CLI records a disposition and leaves the Run's status as it was",
     },
   },
+  {
+    id: "backend/a-managed-agent-runs-with-the-operators-profile",
+    statement:
+      "An agent Collie launches is given its role's agent_profile: env set in its pane before the harness starts, a file-held value never written anywhere Collie writes, and Claude settings merged into Collie's own.",
+    owner: RETRO,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/agents.test.ts",
+      name: "a profile's environment is set in the pane before the harness starts, and a file-held value is written nowhere",
+    },
+  },
+  {
+    id: "operator/a-claude-agent-shows-its-profile",
+    statement:
+      "A live Claude agent launched with an agent_profile shows the overlay in effect in its /status, /context and /hooks.",
+    owner: RETRO,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "Set an agent_profile that turns a plugin off, excludes ~/.claude/CLAUDE.md and adds a PreToolUse hook; start one implement Run. In its agent's pane, record /status (the settings file), /context (no excluded CLAUDE.md, no disabled plugin's skills) and /hooks (Collie's hooks and the added one), with the revision.",
+    },
+  },
 
   {
     id: "desktop/go-to-pane-rides-the-machines-master",

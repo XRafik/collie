@@ -30,7 +30,10 @@ const CallLine = Schema.fromJsonString(
 );
 
 /** A `told` Run that has succeeded with its agent still alive, and the env chat acts in. */
-const finishedWithAgent = Effect.fn("test.finishedWithAgent")(function* (world: World) {
+const finishedWithAgent = Effect.fn("test.finishedWithAgent")(function* (
+  world: World,
+  workflow = "told",
+) {
   resetExecutors();
   const env = readEnv({
     HERDR_PLUGIN_ROOT: world.install,
@@ -42,7 +45,7 @@ const finishedWithAgent = Effect.fn("test.finishedWithAgent")(function* (world: 
   const client = yield* connect(world.state).pipe(Effect.orDie);
   const request = yield* (yield* Crypto.Crypto).randomUUIDv4;
   const started = yield* client
-    .start({ project: world.project, id: "told", request, input: { work: "the picker" } })
+    .start({ project: world.project, id: workflow, request, input: { work: "the picker" } })
     .pipe(Effect.orDie);
   const view = yield* until(
     () => client.run({ runId: started.runId }).pipe(Effect.orDie),
@@ -75,6 +78,7 @@ const steerable = <A, E>(
   body: (world: World) => Effect.Effect<A, E, BunServices | Scope.Scope>,
   /** What the fake agent answers its prompts with; none leaves it working for good. */
   answers: ReadonlyArray<{ readonly verdict: string }> = [{ verdict: "built" }],
+  modules: ReadonlyArray<string> = ["told.workflow.ts"],
 ) =>
   proves(
     prefix,
@@ -105,7 +109,7 @@ const steerable = <A, E>(
         );
         return yield* body(world).pipe(Effect.ensuring(stopHost(world.state)));
       }),
-    ["told.workflow.ts"],
+    modules,
   );
 
 test(
@@ -371,7 +375,7 @@ test(
           typing(`'my shot.png' ${world.project}/log.txt`),
           runId,
         );
-        expect(note).toStartWith("Told ");
+        expect(note).toStartWith("Delivered to ");
         const dir = `${runDir(world.state, runId)}/attachments`;
         expect(yield* fs.readFileString(`${dir}/my shot.png`).pipe(Effect.orDie)).toBe("png");
         const told = (yield* fs.readFileString(Bun.env.FAKE_HERDR_LOG!).pipe(Effect.orDie))
@@ -408,6 +412,36 @@ test(
         expect(note).toContain("Nothing was delivered");
         expect(note).toContain('follow-up offer "carry-on"');
       }),
+    ),
+  120_000,
+);
+
+test(
+  "a steer that names nobody reaches a finished Run's builder, not the reviewer launched after it, and says it was observed",
+  () =>
+    steerable(
+      "collie-finished-builder-",
+      (world) =>
+        Effect.gen(function* () {
+          const { env, runId } = yield* finishedWithAgent(world, "steered");
+          const [done] = yield* carryOutAsked(
+            env,
+            [{ kind: "deliver", run: runId, text: "merge it", mode: "boundary" }],
+            chat(),
+          );
+          expect(done?.state).toBe("applied");
+          expect(done?.note).toMatch(
+            /^Delivered to run-\S+-build-r1 \(observed: a turn started\)\.$/,
+          );
+          const [reviewer] = yield* carryOutAsked(
+            env,
+            [{ kind: "deliver", run: runId, to: "reviewer", text: "look again", mode: "boundary" }],
+            chat(),
+          );
+          expect(reviewer?.note).toMatch(/^Delivered to run-\S+-review-r1 /);
+        }),
+      [{ verdict: "built" }, { verdict: "reviewed" }],
+      ["steered.workflow.ts"],
     ),
   120_000,
 );

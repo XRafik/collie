@@ -12,6 +12,8 @@ import { evidenceDir } from "../src/engine";
 import { connect, frontDoor, socketOf } from "../src/host";
 import { readAudit } from "../src/audit";
 import { VerifySpecSchema } from "../src/verify-spec";
+import { callTool } from "../src/tools";
+import { readEnv } from "../src/env";
 
 const root = new URL("../", import.meta.url).pathname;
 const join = (...parts: string[]) => parts.join("/").replace(/\/+/g, "/");
@@ -898,6 +900,33 @@ test(
         const data = report.data as { total: number; workflows: Array<{ total: number }> };
         expect(data.total).toBe(1);
         expect(data.workflows[0]!.total).toBe(1);
+
+        // The measures, from what the Run recorded: a context sample, and nothing else.
+        const ran = yield* settledRun(world, "hello");
+        yield* appendMetric(evidenceDir(world.state, ran.id), {
+          at: "2026-09-30T10:00:00.000Z",
+          kind: "context",
+          subject: "hello-agent",
+          value: 42_000,
+          note: "",
+        });
+        const measured = yield* cli(["--json", "run", "report"], env);
+        // SAFETY: `run report`'s `data` is the Report; only its peak context is read.
+        const measures = (yield* parseEnvelope(measured.stdout)).data as {
+          measures: {
+            peakContext: Array<{ runId: string; tokens: number | null; agent: string | null }>;
+          };
+        };
+        expect(measures.measures.peakContext).toContainEqual({
+          runId: ran.id,
+          tokens: 42_000,
+          agent: "hello-agent",
+        });
+        // Chat reads the same report, word for word.
+        const text = yield* cli(["run", "report"], env);
+        expect(text.stdout).toContain("peak context tokens: 1 of 2 Runs recorded");
+        const asked = yield* callTool(readEnv({ ...process.env, ...env }), "collie_report", {});
+        expect(asked).toBe(text.stdout.trim());
 
         const later = yield* cli(["--json", "run", "report", "--since", "2999-01-01"], env);
         expect(later.exit).toBe(0);

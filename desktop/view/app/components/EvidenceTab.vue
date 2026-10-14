@@ -154,6 +154,27 @@ const metrics = computed(() => {
       />
     </section>
 
+    <section
+      v-if="(detail.handoffFiles ?? []).length > 0"
+      class="flex flex-col gap-2"
+      data-testid="handoffs"
+    >
+      <h3 class="font-semibold">Handoff notes</h3>
+      <EvidenceText
+        v-for="file in detail.handoffFiles"
+        :key="file.name"
+        :data-testid="`handoff-${file.name}`"
+        :title="file.name"
+        :item="`handoff:${file.name}`"
+        :installation="installation"
+        :run-id="detail.id"
+      >
+        <template #trailing>
+          <small class="text-muted">{{ file.bytes }} bytes</small>
+        </template>
+      </EvidenceText>
+    </section>
+
     <section v-if="sorted.files.length > 0" class="flex flex-col gap-2" data-testid="files">
       <h3 class="font-semibold">Logs and files</h3>
       <EvidenceText

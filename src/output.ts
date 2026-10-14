@@ -171,6 +171,79 @@ export const CheckSchema = Schema.Struct({
   note: Schema.optionalKey(Schema.String),
 });
 
+/** How one of a ticket's acceptance criteria is met, in the builder's words. */
+export const CriterionSchema = Schema.Struct({
+  criterion: Schema.String.annotate({
+    description: "the criterion, copied from the ticket",
+  }).pipe(said("criterion")),
+  met: Schema.String.annotate({
+    description: 'how it is met — the test or the file that shows it — or "not met: <reason>"',
+  }).pipe(said("met")),
+});
+export type Criterion = typeof CriterionSchema.Type;
+
+/** A criterion as compared: its words, without the formatting a copy may drop. */
+const criterionKey = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[*_`]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.:;\s]+$/, "")
+    .trim();
+
+/** A criterion's bold lead, where it opens with one. */
+const leadOf = (criterion: string) => /^\*\*(.+?)\*\*/.exec(criterion)?.[1];
+
+/**
+ * The newest answer to this criterion. A copy without its formatting counts, and so does its
+ * bold lead alone where no other criterion `among` the ticket's opens with the same lead.
+ */
+export const answerFor = (
+  criterion: string,
+  answers: ReadonlyArray<Criterion>,
+  among: ReadonlyArray<string> = [criterion],
+): Criterion | undefined => {
+  const lead = leadOf(criterion);
+  const unique =
+    lead !== undefined &&
+    among.filter((other) => criterionKey(leadOf(other) ?? "") === criterionKey(lead)).length <= 1;
+  const keys = [criterionKey(criterion), ...(unique ? [criterionKey(lead)] : [])];
+  return answers.findLast((one) => keys.includes(criterionKey(one.criterion)));
+};
+
+/**
+ * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
+ * as a blocking finding against the ticket.
+ */
+export function unmetCriteria(
+  ticket: string,
+  criteria: ReadonlyArray<string>,
+  answers: ReadonlyArray<Criterion>,
+): Finding[] {
+  return criteria.flatMap((criterion): Finding[] => {
+    const met = answerFor(criterion, answers, criteria)?.met;
+    if (met === undefined)
+      return [
+        {
+          file: ticket,
+          severity: "blocker",
+          title: `acceptance criterion not answered: ${criterion}`,
+          detail: "The builder's Output says nothing of how this criterion is met.",
+        },
+      ];
+    if (/^not met\b/i.test(met.trim()))
+      return [
+        {
+          file: ticket,
+          severity: "blocker",
+          title: `acceptance criterion not met: ${criterion}`,
+          detail: met,
+        },
+      ];
+    return [];
+  });
+}
+
 export const FixOutputSchema = Schema.Struct({
   verdict: VerdictSchema,
   findings: optionalList(FindingSchema),
@@ -228,6 +301,21 @@ export const leaveReview = (
       ]),
     ),
     Effect.asVoid,
+    Effect.orDie,
+  );
+
+/**
+ * The findings still standing after a last fix `settleFinalFix` accepted, for whatever
+ * counts them next. The review's prose stays as the reviewers wrote it.
+ */
+export const leaveOutstanding = (
+  dir: string,
+  outstanding: ReadonlyArray<Finding>,
+): Effect.Effect<void, never, FileSystem.FileSystem> =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      fs.writeFileString(`${dir}/${FINDINGS_FILE}`, encodeFindings(outstanding)),
+    ),
     Effect.orDie,
   );
 

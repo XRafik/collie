@@ -3,6 +3,7 @@ import { ConfigProvider, Effect, FileSystem } from "effect";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
+import { gitlab, pipelineChecks } from "../src/forge/gitlab";
 import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
 import { epochMs } from "../src/time";
@@ -103,6 +104,26 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
+    test("says whether it would merge it now, by its own rules and in its own words", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const mergeable = (over: Partial<FakeMr>) =>
+            forge
+              .details(ref(name), "/w", fakeForge(name, model(name, { mrs: [mr(name, over)] })).run)
+              .pipe(Effect.map((panel) => (panel._tag === "Details" ? panel.mergeable : null)));
+          expect(yield* mergeable({})).toEqual({ state: "mergeable", said: "mergeable" });
+          expect((yield* mergeable({ mergeable: "conflict" }))?.state).toBe("blocked");
+          expect((yield* mergeable({ mergeable: "unapproved" }))?.state).toBe("blocked");
+          expect((yield* mergeable({ mergeable: "checking" }))?.state).toBe("unknown");
+          expect((yield* mergeable({ mergeable: "conflict" }))?.said).toBe(
+            name === "gitlab" ? "conflict" : "conflicting",
+          );
+          expect((yield* mergeable({ mergeable: "unapproved" }))?.said).toBe(
+            name === "gitlab" ? "not approved" : "blocked",
+          );
+        }),
+      ));
+
     test("reads the whole panel: draft, people, branches, approval, auto-merge and when it moved", () =>
       runEffect(
         Effect.gen(function* () {
@@ -173,7 +194,7 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* checksOf([{ name: "e2e", state: "running" }])).toEqual({
             state: "running",
           });
-          expect(yield* checksOf([])).toEqual({ state: "unknown" });
+          expect(yield* checksOf([])).toEqual({ state: "none" });
         }),
       ));
 
@@ -271,27 +292,75 @@ for (const name of ["gitlab", "github"] as const) {
             const assignee = `account${SHELL_WORD}`;
             const existing = `https://${PROJECT[name]}/30?query=${SHELL_WORD}`;
             const commands = forge.commands({ project: PROJECT[name], branch, assignee, existing });
+            const lines = commands.create.split("\n");
             const created = yield* shell(
               "sh",
-              ["-c", commands.create.replace("<title>", "Change").replace("<file>", "body.txt")],
+              [
+                "-c",
+                lines[0]!
+                  .replaceAll("<title>", "Change")
+                  .replace("<file>", "body.txt")
+                  .replace("<iid>", "7"),
+              ],
               cwd,
             );
             expect(created.code).toBe(0);
             const args = created.stdout.trimEnd().split("\n");
             expect(args[args.indexOf("--assignee") + 1]).toBe(assignee);
-            if (name === "github") expect(args[args.indexOf("--head") + 1]).toBe(branch);
+            if (name === "github") {
+              expect(lines).toHaveLength(1);
+              expect(args[args.indexOf("--head") + 1]).toBe(branch);
+              expect(args[args.indexOf("--body-file") + 1]).toBe("body.txt");
+            } else {
+              const described = yield* shell(
+                "sh",
+                ["-c", lines[1]!.replace("<file>", "body.txt").replace("<iid>", "7")],
+                cwd,
+              );
+              expect(described.stdout.trimEnd().split("\n")).toEqual([
+                "api",
+                "--hostname",
+                "gitlab.example.com",
+                "--method",
+                "PUT",
+                "projects/group%2Fapp/merge_requests/7",
+                "-F",
+                "description=@body.txt",
+              ]);
+            }
             const noted = yield* shell(
               "sh",
               ["-c", commands.comment.replace("<file>", "body.txt")],
               cwd,
             );
             expect(noted.code).toBe(0);
-            expect(noted.stdout.trimEnd().split("\n")[2]).toBe(existing);
+            const said = noted.stdout.trimEnd().split("\n");
+            if (name === "github") expect(said[2]).toBe(existing);
+            else
+              expect(said.slice(-3)).toEqual([
+                `projects/group%2Fapp/merge_requests/${existing}/notes`,
+                "-F",
+                "body=@body.txt",
+              ]);
           } finally {
             yield* bin.restore();
           }
         }),
       ));
+
+    test("writes its delivery commands without command substitution", () => {
+      const commands = forge.commands({
+        project: PROJECT[name],
+        branch: "feature/one",
+        assignee: "tester",
+        existing: "31",
+      });
+      for (const line of [commands.create, commands.comment]) {
+        expect(line).not.toContain("$(");
+        expect(line).not.toContain("`");
+        expect(line.startsWith(`${CLI[name]} `)).toBe(true);
+      }
+    });
 
     test("keeps shell characters in a review target literal", () =>
       runEffect(
@@ -590,3 +659,29 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 }
+
+test("a GitLab pipeline of an older head is not this head's CI, and one that was canceled has not passed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const checksOf = (over: Partial<FakeMr>) =>
+        Effect.map(
+          gitlab.details(
+            ref("gitlab"),
+            "/w",
+            fakeForge(
+              "gitlab",
+              model("gitlab", {
+                mrs: [mr("gitlab", { checks: [{ name: "test", state: "passed" }], ...over })],
+              }),
+            ).run,
+          ),
+          (panel) => (panel._tag === "Details" ? panel.checks : undefined),
+        );
+      expect(yield* checksOf({ head: "new-head" })).toEqual({ state: "passed" });
+      expect(yield* checksOf({ head: "new-head", pipelineAt: "old-head" })).toEqual({
+        state: "unknown",
+      });
+      expect(pipelineChecks("canceled")).toEqual({ state: "unknown" });
+      expect(pipelineChecks("")).toEqual({ state: "none" });
+    }),
+  ));

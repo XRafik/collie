@@ -11,6 +11,7 @@ import {
   KINDS,
   noCheckNamed,
   renderEvidence,
+  renderRecordedChecks,
 } from "../src/outcome";
 import type { Collected, Outcome } from "../src/outcome";
 import type { Verification } from "../src/verify";
@@ -447,6 +448,36 @@ test("the rendered evidence says who collected each result, and which tree it wa
     "- regression: pass (by collie, expected to fail) (on an earlier tree)",
   );
   expect(rendered).toContain("- lint: pass (by agent)");
+});
+
+test("a reviewer is handed the recorded checks: result, who, tree, when, and the baseline", () => {
+  expect(renderRecordedChecks(collected({ verifications: [] }))).toBe(
+    "(nothing is recorded for this Run)",
+  );
+  const rendered = renderRecordedChecks(
+    collected({
+      verifications: [
+        record({ name: "tests", result: "fail", at: "2026-09-11T09:00:00.000Z" }),
+        record({ name: "tests", at: "2026-09-11T10:00:00.000Z" }),
+        record({ name: "lint", end: EARLIER, at: "2026-09-11T08:00:00.000Z" }),
+        record({ name: "typecheck", by: "agent" }),
+        record({
+          name: "tests",
+          pass: "baseline",
+          result: "fail",
+          start: EARLIER,
+          end: EARLIER,
+          at: "2026-09-11T09:30:00.000Z",
+        }),
+      ],
+    }),
+  );
+  expect(rendered.split("\n")).toEqual([
+    "- tests: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z",
+    "- lint: pass (by collie), on an earlier tree, at 2026-09-11T08:00:00.000Z",
+    "- typecheck: pass (by agent), on this tree, at 2026-09-11T10:00:00.000Z",
+    "- tests (baseline, where this branch leaves the default branch, abc000): fail, at 2026-09-11T09:30:00.000Z",
+  ]);
 });
 
 test("every kind has a rule, so a new one cannot be added without one", () => {

@@ -1,7 +1,15 @@
 // The GitLab adapter: everything Collie asks GitLab, through `glab`.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
-import type { ForgeChecks, MrDetails, MrPanel, MrRef, MrUnavailable } from "../board-model";
+import {
+  mrPath,
+  type ForgeChecks,
+  type Mergeability,
+  type MrDetails,
+  type MrPanel,
+  type MrRef,
+  type MrUnavailable,
+} from "../board-model";
 import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
@@ -36,7 +44,9 @@ export function hostOf(project: string | null): string | null {
 const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
 const optionalFlag = Schema.optionalKey(Schema.NullOr(Schema.Boolean));
 const optionalCount = Schema.optionalKey(Schema.NullOr(Schema.Number));
-const optionalStatus = Schema.optionalKey(Schema.NullOr(Schema.Struct({ status: optionalText })));
+const optionalStatus = Schema.optionalKey(
+  Schema.NullOr(Schema.Struct({ status: optionalText, sha: optionalText })),
+);
 
 const MrDetailsJson = Schema.fromJsonString(
   Schema.Struct({
@@ -65,8 +75,34 @@ const MrDetailsJson = Schema.fromJsonString(
     user_notes_count: optionalCount,
     approvals_required: optionalCount,
     approvals_left: optionalCount,
+    detailed_merge_status: optionalText,
+    merge_status: optionalText,
   }),
 );
+
+/** What GitLab says while it is still working out whether it can merge. */
+const SETTLING_MERGE = new Set([
+  "checking",
+  "unchecked",
+  "preparing",
+  "approvals_syncing",
+  "cannot_be_merged_recheck",
+]);
+
+/**
+ * GitLab's own answer to "can this merge now", which carries its approval rules: the
+ * detailed status where this GitLab has one, else the older `merge_status`.
+ */
+function mergeabilityOf(
+  detailed: string | null | undefined,
+  legacy: string | null | undefined,
+): Mergeability | undefined {
+  const said = detailed ?? (legacy === "can_be_merged" ? "mergeable" : legacy);
+  if (said === undefined || said === null || said === "") return undefined;
+  const words = said.replaceAll("_", " ");
+  if (said === "mergeable") return { state: "mergeable", said: words };
+  return { state: SETTLING_MERGE.has(said) ? "unknown" : "blocked", said: words };
+}
 
 /**
  * One merge request, in one `glab mr view` call. `gitlabForProject` first, because "no
@@ -108,7 +144,8 @@ export function mrDetails<R>(
     const draft = mr.draft === true || mr.work_in_progress === true;
     const pipeline = mr.head_pipeline?.status ?? mr.pipeline?.status ?? "";
     const updated = mr.updated_at ? epochMs(mr.updated_at) : Number.NaN;
-    return {
+    const mergeable = mergeabilityOf(mr.detailed_merge_status, mr.merge_status);
+    const details = {
       _tag: "Details",
       iid: mr.iid === undefined || mr.iid === null ? ref.iid : String(mr.iid),
       project: ref.project,
@@ -122,7 +159,7 @@ export function mrDetails<R>(
       fork: mr.source_project_id !== mr.target_project_id,
       targetBranch: mr.target_branch ?? "",
       pipeline,
-      checks: pipelineChecks(pipeline),
+      checks: headChecks(mr.head_pipeline ?? mr.pipeline ?? null, mr.sha ?? ""),
       approvals: approvalsLine(mr.approvals_required, mr.approvals_left),
       unresolved: mr.blocking_discussions_resolved === false,
       notes: mr.user_notes_count ?? 0,
@@ -134,6 +171,7 @@ export function mrDetails<R>(
       url: mr.web_url ?? "",
       autoMerge: mr.merge_when_pipeline_succeeds === true,
     } satisfies MrDetails;
+    return mergeable === undefined ? details : { ...details, mergeable };
   });
 }
 
@@ -156,8 +194,19 @@ function approvalsLine(
   return `${left} of ${required} still needed`;
 }
 
+/** A pipeline counts for the head it ran on; its own head pipeline need not say which. */
+function headChecks(
+  pipeline: { readonly status?: string | null; readonly sha?: string | null } | null,
+  head: string,
+): ForgeChecks {
+  if (pipeline === null) return { state: "none" };
+  if (pipeline.sha && head !== "" && pipeline.sha !== head) return { state: "unknown" };
+  return pipelineChecks(pipeline.status ?? "");
+}
+
 /** GitLab's head pipeline status, as the card reads it. */
 export function pipelineChecks(status: string): ForgeChecks {
+  if (status === "") return { state: "none" };
   if (status === "success" || status === "passed") return { state: "passed" };
   if (status === "failed") return { state: "failed", name: "pipeline" };
   if (
@@ -410,13 +459,22 @@ export const gitlab: Forge = {
   noun: "merge request",
   forBranch,
   template,
-  commands: ({ project, assignee, existing }) => ({
-    create: `glab mr create --assignee ${shellQuote(assignee)} --title "<title>" --description "$(cat <file>)"`,
-    comment:
-      existing === null
-        ? ""
-        : `glab mr note ${shellQuote(existing)} --repo ${shellQuote(project)} --message "$(cat <file>)"`,
-  }),
+  // `glab mr create` and `glab mr note` take text only, so a file goes through the API,
+  // which reads `@<file>` itself: no command substitution (CrowdStrike flags it).
+  commands: ({ project, assignee, existing }) => {
+    const api = `glab api --hostname ${shellQuote(hostOf(project) ?? "")}`;
+    const route = `projects/${encodeURIComponent(mrPath({ project, iid: "" }))}/merge_requests`;
+    return {
+      create: [
+        `glab mr create --assignee ${shellQuote(assignee)} --title "<title>" --description "<title>" --yes`,
+        `${api} --method PUT ${shellQuote(`${route}/<iid>`)} -F description=@<file>`,
+      ].join("\n"),
+      comment:
+        existing === null
+          ? ""
+          : `${api} --method POST ${shellQuote(`${route}/${existing}/notes`)} -F body=@<file>`,
+    };
+  },
   ready: gitlabForProject,
   login: glabLogin,
   details: mrDetails,

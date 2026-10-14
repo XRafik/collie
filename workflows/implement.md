@@ -3,6 +3,10 @@ Repository: {{inputs.repo}}
 Project root: {{cwd}}
 This run's directory: {{run.dir}}
 
+A note you hand on — to a later step, another agent or a human — goes in
+`{{run.dir}}/handoffs/`, never `/tmp`: the Run's record lists it, and it is kept as long
+as the Run is.
+
 Outcome to prove (not given means unclassified): {{inputs.outcome}}
 
 The verifications this run is held to — Collie runs exactly these itself, and nothing
@@ -39,8 +43,8 @@ The work source above is one of five kinds. Do the one that matches
   disagree with is `disputed` with a reason, exactly as in a fix round — never silently
   skipped.
 - **linear** — a Linear issue id. Fetch it with the Linear MCP (`get_issue`) and treat
-  its description as the spec. Before building, write that spec to
-  `{{run.dir}}/plan/SPEC.md` and a short task list to `{{run.dir}}/plan/issues/NN-*.md`,
+  its description as the spec. Before building, write that description word for word,
+  checkboxes included, to `{{run.dir}}/plan/SPEC.md` and a short task list to `{{run.dir}}/plan/issues/NN-*.md`,
   one file per slice, so the run records what you decided to build. Every ticket you write
   carries a `**Checks:**` line naming the `collie verify` commands that will prove it —
   from the checks above or the ones you named. Clear work states its acceptance checks before it starts;
@@ -74,9 +78,23 @@ not redo their work. What they left:
 Where no ticket is named, the work source is not a plan of several tickets and the whole
 of it is yours.
 
-You were started with {{skill:implement}}, so build what this step is for, with
-{{skill:tdd}} at the seams the spec names and the project's tests green. Commit as you
-go — one commit per ticket. There is no separate commit step.
+The acceptance criteria this work is held to, one by one:
+
+{{criteria}}
+
+In your Output, `criteria` has one entry for each of them: `criterion` copied from the list
+above, and `met` saying how it is met (the test or the file that shows it), or
+`not met: <reason>`. A criterion left out, or not met, comes back to you before any
+reviewer sees the work, and the reviewer is shown every answer and every assumption.
+
+Build it test first, with {{skill:tdd}} at the seams the spec names: the failing test,
+then the code that makes it pass. As you go, run the typecheck and the test files you
+touched, each through `collie verify` as below. The whole suite is the gate's: Collie runs
+this run's checks itself once the review is done, so do not run the whole suite yourself.
+Commit to this branch as you go — one commit per ticket. There is no separate commit step.
+
+Collie reviews this work in its own rally once you are done. Do not run a review skill,
+and do not start review sub-agents or threads.
 
 Apply your persona's **Code comment hygiene** rules to comments this branch added or
 changed: make the code self-explanatory, delete unnecessary comments, and reduce each
@@ -103,12 +121,6 @@ Run every test, lint and typecheck command through
 `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`; Collie records the result
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
-
-When you finish a ticket, write `{{run.dir}}/steering/progress/<ticket file without
-.md>.json` as `{"ticket":"<file>","status":"done","claims":["<what you believe is
-done>"],"at":"<iso>"}`. Collie writes the same file when it hands you the ticket and when
-the slice ends; yours is what puts your own words on the card before that. These are your
-claims, and Collie labels them as such.
 
 {{obstacle}}
 
@@ -160,7 +172,14 @@ finding arrives once and already reconciled. Apply the ones you agree with, as f
 commits on this branch. For any finding you believe is wrong, do not apply it — record it
 under `disputed` with your reason, and the human sees it at the end. A reason you give
 once settles that finding: the reviewers are told about it and the loop stops raising it.
-Re-run the tests.
+
+Fix test first, with {{skill:tdd}} where a finding is a behaviour: the failing test, then
+the fix. Run the typecheck and the test files you touched, each through `collie verify` as
+below. The whole suite is the gate's: Collie runs this run's checks itself, so do not run
+the whole suite yourself. Commit each fix to this branch.
+
+Collie reviews this fix in its own rally. Do not run a review skill, and do not start
+review sub-agents or threads.
 
 Apply your persona's **Code comment hygiene** rules to comments this fix added or changed,
 the same way `build` does.
@@ -174,10 +193,6 @@ Run every test, lint and typecheck command through
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
 
-When you start each ticket and when you finish it, write
-`{{run.dir}}/steering/progress/<ticket-slug>.json` as `{"ticket":"<file>","status":
-"started"|"done","claims":["<what you believe is done>"],"at":"<iso>"}`. These are your
-claims, and Collie labels them as such.
 Never defer a blocking finding to a follow-up or leave it out of your Output: every
 `blocker` and `major` above is either under `fixed` or under `disputed`, never both and
 never neither. A blocking finding you dispute goes to the next review, and one still
@@ -195,9 +210,54 @@ raises again. A push that fails is reported as `"pushed": false`, not fatal.
 
 Then write your Output. `file` and `title` in `fixed` and `disputed` are exactly as the
 finding above gives them, so Collie can match them; `checks` names every test and lint
-command you ran, one entry each, by the name `collie verify` recorded it under (the
-command's first word, unless you gave `--name`). A check with no record on this tree is
-not a passing check, whatever the note says.
+command you ran, one entry each, by the name `collie verify` recorded it under: `--name`
+where you gave one, else the script it runs (`typecheck` for `bun run typecheck`), else
+the tool and its subcommand (`bun test`), else the tool (`tsc`). A check with no record
+on this tree is not a passing check, whatever the note says.
+
+## criteria
+
+Before anyone reviews {{ticket.file}}, each of its acceptance criteria needs an answer.
+These do not have one yet:
+
+{{findings}}
+
+Meet each one, or, where it cannot be met, say plainly why. The ticket's whole list:
+
+{{criteria}}
+
+Build what is missing test first, with {{skill:tdd}}, and run the typecheck and the test
+files you touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
+Commit to this branch and push it, as in the build: `git push -u origin HEAD -o ci.skip`
+on GitLab, or `git push -u origin HEAD` on GitHub. A push that fails is reported as
+`"pushed": false`, not fatal.
+
+{{session.ask}}
+
+Then write your Output: `criteria` answers every criterion in the whole list above, not
+only these, with `met` naming the test or the file that shows it or `not met: <reason>`.
+List the commits you left and any decision you made under `assumptions`.
+
+## merge
+
+Collie merges the default branch into this branch at each ticket boundary and before each
+review, so the reviewer sees what will actually merge, and no work goes on until it has.
+This time it stopped:
+
+{{conflict}}
+
+Settle that and nothing else. Work left uncommitted is committed as it stands. A merge in
+progress is finished: resolve each conflicted file so both sides' intent survives, `git add`
+them, and `git commit --no-edit`. Never rebase, reset or abort it, and never force-push:
+this branch's history only grows. Run the typecheck and the test files the conflicts
+touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
+
+Push the merge — `git push -u origin HEAD -o ci.skip` on GitLab, or
+`git push -u origin HEAD` on GitHub. A push that fails is reported as `"pushed": false`,
+not fatal.
+
+Then write your Output: `commits` names each commit you made, and `findings` anything
+you could not settle.
 
 ## mr
 
@@ -261,7 +321,8 @@ Do **not** open a second {{mr.noun}} for the same branch. Report its URL as `mr_
 exactly as if you had opened it.
 
 **Otherwise**, write the description to a file in `{{run.dir}}` and open the {{mr.noun}}
-with this command, filling in a title and that file:
+with this command, filling in a title and that file, and where a second line asks for
+`<iid>`, the number at the end of the URL the first one printed:
 
 ```
 {{mr.create}}

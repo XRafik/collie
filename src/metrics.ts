@@ -73,6 +73,10 @@ export const noteVerification = (
     note: record.result,
   });
 
+/** One context sample the harness reported at a work boundary. */
+export const noteContext = (runDir: string, at: string, agent: string, tokens: number) =>
+  appendMetric(runDir, { at, kind: "context", subject: agent, value: tokens, note: "" });
+
 export const readMetrics = Effect.fn("Metrics.read")(function* (runDir: string) {
   const none: Metric[] = [];
   return yield* readJournal(yield* metricsPath(runDir), MetricJson).pipe(

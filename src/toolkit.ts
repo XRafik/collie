@@ -237,14 +237,32 @@ export const CollieTools = Toolkit.make(
     description:
       "Everything one Run is waiting on the human for — the Choice it asks with how to " +
       "answer it, and the proposals with their id and hash — and every message that has been sent " +
-      "to its agents with the state each actually reached. `submitted` is that herdr took " +
-      "it, `acknowledged` is that the agent wrote back, `verified` is that something " +
-      "independent checked — they are three different facts and none of them stands in for " +
-      "another. Read this instead of saying that something was done. With no `run` it " +
+      "to its agents with the state each actually reached. `submitted` is that it was sent, " +
+      "`acknowledged` is that the agent took a turn after it, and whether the work went " +
+      "where it was told is the drift judgement in collie_run — different facts, none of " +
+      "them standing in for another. Read this instead of saying that something was done. With no `run` it " +
       "answers about whatever the board has selected, and says which that was.",
     parameters: RunInput.mapFields((fields) => ({
       run: fields.run.annotate({ description: "The Run id; omit for the board's selection" }),
     })),
+  }),
+  collieTool("collie_report", {
+    readOnly: true,
+    title: "How Runs went",
+    description:
+      "`collie run report`: every Run since a date tallied by how it ended, then the " +
+      "measures Collie is judged by — review rounds and how many hit the cap, merged " +
+      "against superseded against abandoned, steers, follow-ups, deliveries and " +
+      "corrections by who sent them, verifications with the repeated ones and the ones " +
+      "named only by their executable, parks by reason, and peak context tokens. Each " +
+      "measure names the Run ids it counts, so an answer can cite them.",
+    parameters: Schema.Struct({
+      since: Schema.optionalKey(
+        Schema.String.annotate({
+          description: "Only Runs admitted at or after this ISO date; omit for every Run",
+        }),
+      ),
+    }),
   }),
   collieTool("collie_news", {
     readOnly: false,
@@ -335,6 +353,7 @@ export const TAKES: Record<ToolName, string> = {
   collie_run: `It takes {"run": "<run id>"}, or nothing at all for the board's selection.`,
   collie_workspaces: "It takes nothing.",
   collie_receipts: `It takes {"run": "<run id>"}, or nothing at all for the board's selection.`,
+  collie_report: 'It takes nothing, or {"since": "<ISO date>"}.',
   collie_news: "It takes nothing.",
   collie_definitions: 'It takes {"workflow": "<name>"} or {"persona": "<name>"}.',
   collie_installation: "It takes nothing.",
