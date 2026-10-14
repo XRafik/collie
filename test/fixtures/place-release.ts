@@ -3,12 +3,7 @@ import { Effect } from "effect";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { placeRelease } from "../../src/release";
 
-const [tree, runner, collieDir, version] = process.argv.slice(2) as [
-  string,
-  string,
-  string,
-  string,
-];
+const [tree = "", runner = "", collieDir = "", version = ""] = process.argv.slice(2);
 await Effect.runPromise(
   placeRelease({ tree, runner }, collieDir, version).pipe(Effect.provide(BunServices.layer)),
 );

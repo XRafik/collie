@@ -4,7 +4,7 @@
 // verified first.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, FileSystem } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
 import { upgrade } from "../src/operations";
@@ -228,9 +228,11 @@ test(
         );
 
         expect(both).toEqual([0, 0]);
-        const record = JSON.parse(yield* read(`${collieDir}/release/placed.json`)) as {
-          files: Record<string, string>;
-        };
+        const record = yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Struct({ files: Schema.Record(Schema.String, Schema.String) }),
+          ),
+        )(yield* read(`${collieDir}/release/placed.json`));
         const placed: string[] = [];
         for (const name of yield* fs.readDirectory(`${collieDir}/release`, { recursive: true })) {
           const file = (yield* fs.stat(`${collieDir}/release/${name}`)).type === "File";
