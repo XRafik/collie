@@ -594,7 +594,8 @@ a plan's tickets under `plan/issues/`, a review's prose in `review.md` and its f
 prose. `findingsIn(dir)` reads the findings back. After a last fix `settleFinalFix`
 accepted, `leaveOutstanding(dir, outstanding)` leaves the findings it says still stand, and
 the review's prose as it was. Shipped `implement` also leaves every blocking dispute still
-the human's among them, whichever review wrote last, so the card counts it.
+the human's among them at its own severity, whichever review wrote last, so the card counts
+it.
 
 `place.options` is the other half of the launch. The names in `RESERVED_INPUTS` are the
 host's, so they are never in your payload — a caller asking for extra review axes or naming

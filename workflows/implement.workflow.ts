@@ -735,11 +735,15 @@ export default defineWorkflow({
           yield* host.parked(runId, null);
         }),
       });
-      // A dispute the human settles stays counted, whichever review last wrote the findings.
-      const onFile = yield* findingsIn(place.dir);
-      const counted = new Set(onFile.map(findingKey));
-      const carried = rallied.disputes.filter((one) => !counted.has(findingKey(one)));
-      if (carried.length > 0) yield* leaveOutstanding(place.dir, [...onFile, ...carried]);
+      // A dispute the human settles stays counted at its own severity, whatever review wrote last.
+      if (rallied.disputes.length > 0) {
+        const disputedKeys = new Set(rallied.disputes.map(findingKey));
+        const onFile = yield* findingsIn(place.dir);
+        yield* leaveOutstanding(place.dir, [
+          ...onFile.filter((one) => !disputedKeys.has(findingKey(one))),
+          ...rallied.disputes,
+        ]);
+      }
       const checks = yield* host.approved(runId);
       // Failed before this Run changed anything, and still fails: reported, never passed.
       const failing = failingNow(

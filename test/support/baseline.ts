@@ -3745,6 +3745,58 @@ scenario(
 );
 
 scenario(
+  "a blocking dispute the next review repeats as minor stays a blocker on the card",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `exit 0`);
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        yield* approve("r-impl-weakened", ["unit"]);
+        const finding = {
+          severity: "blocker",
+          title: "the guard is on the wrong side",
+          file: "src/a.ts",
+        };
+        yield* rig.queueOutputs([
+          BUILT,
+          { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [finding] },
+          {
+            verdict: "clean",
+            findings: [],
+            fixed: [],
+            disputed: [{ ...finding, reason: "the list is never empty here" }],
+            checks: [{ name: "unit" }],
+          },
+          {
+            ...CLEAN_SYNTHESIS,
+            verdict: "findings",
+            findings: [{ ...finding, severity: "minor" }],
+          },
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-impl-weakened",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked("r-impl-weakened", "mr")).toContain(
+          "- disputed blocking finding: [blocker] the guard is on the wrong side",
+        );
+        const onFile = yield* findingsIn(runDir(dir, "r-impl-weakened"));
+        expect(
+          onFile.filter((one) => one.title === finding.title).map((one) => one.severity),
+        ).toEqual(["blocker"]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "a dispute left open by the last fix reaches the merge request, and so does that fix being unreviewed",
   () =>
     runEffect(
