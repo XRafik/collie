@@ -108,6 +108,22 @@ minutes, and says nothing when it cannot.
   no longer in force: to keep a change, fork the workflow or persona into `user/`
   (`collie workflow fork`, `collie persona fork`) and make it there.
 
+### A clone install
+
+A Machine installed before
+[ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md) has a git clone of
+Collie at `~/.collie`. Its next `collie upgrade` places the release inside the clone, at
+`~/.collie/release/`, and switches the plugin, the `collie` shim, the operator skill and the
+host over to it. It then removes the clone, leaving `release/` and `user/`, unless the clone
+holds anything of yours — changes, files git ignores beyond what an install made, commits on
+no remote, a stash, a worktree, or a live Run working in it. A clone kept for any of those is
+left exactly as it was and named in the report; delete it yourself once you have what you
+need from it.
+
+A clone on Collie 0.49.0 or older pulls before it runs the new upgrade, and that pull can
+stop on a conflict with a change of yours. Stash the change and run `collie upgrade` once
+more, or run the new installer, which places the release beside the clone the same way.
+
 ### Running a checkout of Collie
 
 Collie is developed in a checkout like any other project. To run your checkout's build as

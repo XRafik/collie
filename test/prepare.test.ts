@@ -311,6 +311,23 @@ test("prepare leaves a skill link that is not ours alone", () =>
     }),
   ));
 
+test("prepare repoints a skill link to another Collie installation, as a clone install's is", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const clone = `${home}/old-clone`;
+      yield* fs.makeDirectory(`${clone}/skills/collie`, { recursive: true });
+      yield* fs.writeFileString(`${clone}/herdr-plugin.toml`, `id = "cego.collie"\n`);
+      yield* fs.makeDirectory(`${home}/.claude/skills`, { recursive: true });
+      yield* fs.symlink(`${clone}/skills/collie`, `${home}/.claude/skills/collie`);
+
+      const run = yield* prepare();
+
+      expect(run.out).toContain("prepare: operator-skill: done");
+      expect(yield* fs.readLink(`${home}/.claude/skills/collie`)).toBe(`${root}/skills/collie`);
+    }),
+  ));
+
 /**
  * The skills.sh CLI as the runner's own Bun runs it (`BUN_BE_BUN=1 bin/collie x`): it
  * records what it was asked and populates the global store.

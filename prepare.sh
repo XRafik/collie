@@ -83,6 +83,10 @@ link_operator_skill() { # skills dir -> done | already in place | skipped — �
   link="$1/collie"
   if [ "$(readlink "$link" 2>/dev/null)" = "$ROOT/skills/collie" ]; then
     echo "already in place"
+  elif [ -L "$link" ] && grep -qx 'id = "cego.collie"' "$(readlink "$link")/../../herdr-plugin.toml" 2>/dev/null; then
+    # Another Collie installation's, as a clone install left it before its release was placed.
+    ln -sfn "$ROOT/skills/collie" "$link"
+    echo "done"
   elif [ -e "$link" ]; then
     echo "skipped — $link is not ours to replace"
   elif [ -L "$link" ]; then

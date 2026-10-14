@@ -25,7 +25,8 @@ export const atCollieDir = Effect.fn("release.atCollieDir")(function* (
 });
 
 /**
- * Not a checkout is a release. A checkout anywhere but the Collie directory is a development
+ * Not a checkout is a release, and so is a clone at the Collie directory: an install from
+ * before ADR-0060, which its next upgrade migrates. Any other checkout is a development
  * checkout, whatever its git state.
  */
 export const installation = Effect.fn("release.installation")(function* (
@@ -40,31 +41,35 @@ export const installation = Effect.fn("release.installation")(function* (
 > {
   const git = (...args: string[]) => run("git", args, root);
   if ((yield* git("rev-parse", "--git-dir")).code !== 0) return RELEASED;
+  if (yield* atCollieDir(root, collieDir)) return RELEASED;
   const sha = (yield* git("rev-parse", "--short", "HEAD")).stdout.trim();
-  const development = (reason: string): Installation => ({
-    release: false,
-    build: `${version}+${sha}`,
-    reason,
-  });
-  if (!(yield* atCollieDir(root, collieDir))) return development("it is a development checkout");
+  return { release: false, build: `${version}+${sha}`, reason: "it is a development checkout" };
+});
 
+/**
+ * Why a clone may not be reset to a release tag, or null where it may: it is clean, on
+ * `master` level with its remote or detached on a release. Onboarding's alone.
+ */
+export const unreleasedBecause = Effect.fn("release.unreleasedBecause")(function* (
+  root: string,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner> = shell,
+) {
+  const git = (...args: string[]) => run("git", args, root);
   const status = yield* git("status", "--porcelain");
-  if (status.code !== 0 || status.stdout.trim() !== "") {
-    return development("it has uncommitted changes");
-  }
+  if (status.code !== 0 || status.stdout.trim() !== "") return "it has uncommitted changes";
   const branch = yield* git("symbolic-ref", "--quiet", "--short", "HEAD");
   if (branch.code !== 0) {
     const tags = (yield* git("tag", "--points-at", "HEAD")).stdout.split("\n");
     return tags.some((tag) => RELEASE_TAG.test(tag.trim()))
-      ? RELEASED
-      : development("it is on a commit that is not a release");
+      ? null
+      : "it is on a commit that is not a release";
   }
   const name = branch.stdout.trim();
-  if (name !== RELEASE_BRANCH) return development(`it is on branch ${name}, not ${RELEASE_BRANCH}`);
+  if (name !== RELEASE_BRANCH) return `it is on branch ${name}, not ${RELEASE_BRANCH}`;
   const ahead = yield* git("rev-list", "--count", "@{upstream}..HEAD");
-  if (ahead.code !== 0) return development(`${name} has no remote to compare with`);
-  if (ahead.stdout.trim() !== "0") return development("it is ahead of its remote");
-  return RELEASED;
+  if (ahead.code !== 0) return `${name} has no remote to compare with`;
+  if (ahead.stdout.trim() !== "0") return "it is ahead of its remote";
+  return null;
 });
 
 /** One string field of the plugin manifest at `root`, or "" where there is none. */

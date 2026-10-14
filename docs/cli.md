@@ -1549,8 +1549,21 @@ What it does depends on where the installation is, never on its git state
   directory — is pulled with `git pull --ff-only --autostash`, so uncommitted work rides
   through a pull that touches other files. A pull it cannot do, a conflict included, is
   reported in git's words rather than installed over.
-- **A clone at the Collie directory**, an install from before ADR-0060, is pulled with
-  `--ff-only` as before.
+- **A clone at the Collie directory**, an install from before ADR-0060, becomes a release.
+  `release/` and `kept/` are added to the clone's `.git/info/exclude` first, so the release
+  never shows as a change in it. The target release's runner (the newest, or `--to`) is
+  downloaded, verified and handed the upgrade with `HERDR_PLUGIN_ROOT` at `release/`: it
+  places the release there, links it as the plugin (herdr replaces the clone's link of the
+  same plugin id), points the operator skill at it, and the host the clone served is replaced
+  by the release's. The runner is downloaded even at this runner's own version, because a
+  clone's runner may have been built from its source. Then the clone is removed — everything
+  in the Collie directory but `release/`, `user/` and `kept/` — only where nothing in it is
+  yours: no changed or untracked file, no ignored file beyond `bin/`, `node_modules/` and
+  `user/`, no commit that no remote branch contains, no stash, no linked worktree, and no live
+  Run working in it. Where any of those is found, or the host cannot be asked about live
+  Runs, the clone is kept exactly as it was and the report names what kept it; it is an
+  ordinary checkout from then on. Under `--json`, `data.clone` is `"removed"` or
+  `{ "kept": ["<what kept it>", …] }`.
 
 Then it runs `prepare.sh` —
 the one routine every entry point ends in, so this brings the plugin link, the runner and
@@ -1593,9 +1606,8 @@ hand-off, and reports the same way, with `data.version`. `--to` the runner's own
 places it again, which repairs a damaged `release/`. A development checkout is refused as
 `invalid_state` and left as it was: only `git` moves it, and Desktop and paired Machines
 never upgrade it. A host's `identity` names a development checkout's build as
-`development: "<version>+<sha>"`. A clone at the Collie directory is moved to the release
-tag as before, unless it is on another branch, has uncommitted changes or is ahead of its
-remote.
+`development: "<version>+<sha>"`. A clone at the Collie directory becomes exactly that
+release, as above.
 
 ## Onboarding a Machine
 

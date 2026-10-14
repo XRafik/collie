@@ -19,7 +19,7 @@ import { err, moveToRelease, prepareSteps, type OpResult } from "./operations";
 import { whatItSaid } from "./mr";
 import { HELLE_TOKEN_STEPS, helleUrlOf } from "./helle-url";
 import { helleEnvPath, LINEAR_MCP_ADD, LINEAR_MCP_FIX, probeLinearMcp } from "./optional";
-import { installation, manifestField, RELEASE_TAG } from "./release";
+import { manifestField, RELEASE_TAG, unreleasedBecause } from "./release";
 
 export type StepStatus = "done" | "in_place" | "skipped" | "needs_root" | "needs_human" | "failed";
 
@@ -263,17 +263,14 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
       if (!(yield* fs.exists(`${root}/.git`))) {
         return failed(`${root} is there and is not a checkout of Collie`);
       }
-      const current = yield* installation(
-        root,
-        env.collieDir,
-        yield* manifestField(root, "version"),
-        exec,
-      );
-      if (!current.release) {
+      const unreleased = yield* unreleasedBecause(root, exec);
+      if (unreleased !== null) {
         development = true;
+        const sha = (yield* exec("git", ["rev-parse", "--short", "HEAD"], root)).stdout.trim();
+        const version = yield* manifestField(root, "version");
         return {
           status: "skipped",
-          detail: `development build ${current.build} (${current.reason}): checks and logins only, nothing installed or moved`,
+          detail: `development build ${version}+${sha} (${unreleased}): checks and logins only, nothing installed or moved`,
         } satisfies Outcome;
       }
       const tags = yield* exec("git", ["tag", "--points-at", "HEAD"], root);

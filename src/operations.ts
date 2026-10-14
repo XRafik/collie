@@ -34,15 +34,15 @@ import { newestRelease, ownPlatform, releasesOf, verifiedRunner } from "./releas
 import {
   atCollieDir,
   carriedRelease,
-  installation,
   manifestField,
   placeRelease,
   RELEASE_TAG,
   type Carried,
+  unreleasedBecause,
 } from "./release";
 import manifest from "../herdr-plugin.toml";
 import { everyRegistered, type AgentEntry } from "./registry";
-import { listRuns, type Asked, type RunFacts } from "./runs";
+import { listRuns, liveCheckouts, type Asked, type RunFacts } from "./runs";
 import { newTask, taskOfWorkspace, writeTask, type TaskChoice, type TaskRecord } from "./task";
 import { nameTask, type LiveNames } from "./tasknames";
 import { readIntent, type Authority, type Intent } from "./intent";
@@ -327,12 +327,14 @@ export const moveToRelease = Effect.fn("operations.moveToRelease")(function* (
     });
   }
   // After the fetch, so "ahead of its remote" is judged against the remote as it is now.
-  const current = yield* installation(root, root, manifest.version, run);
-  if (!current.release) {
+  const unreleased = yield* unreleasedBecause(root, run);
+  if (unreleased !== null) {
     return err(
       "invalid_state",
-      `${root} is a development build (${current.build}): ${current.reason}, so it is never upgraded.`,
-      { root, build: current.build },
+      `${root} is not at a release: ${unreleased}, so it is never moved.`,
+      {
+        root,
+      },
     );
   }
   const tag = `refs/tags/${to}`;
@@ -355,7 +357,8 @@ export const moveToRelease = Effect.fn("operations.moveToRelease")(function* (
 /**
  * Brings this installation up to date. A release is replaced by the target release's, which
  * this runner places itself or hands to that release's runner. A development checkout is
- * pulled. A clone at the Collie directory is pulled, or moved to a release tag.
+ * pulled. A clone at the Collie directory has a release placed inside it, and is removed
+ * where nothing in it is the human's.
  */
 export const upgrade = Effect.fn("operations.upgrade")(function* (
   env: PluginEnv,
@@ -364,6 +367,8 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     readonly carried?: Carried | null;
     /** The key a downloaded runner must verify against; Collie's own unless a test says. */
     readonly key?: string;
+    /** Where live Runs work, or null where that cannot be asked; the host's answer by default. */
+    readonly liveCheckouts?: Effect.Effect<ReadonlyArray<string> | null, never, BunServices>;
   } = {},
   run: Runner<ChildProcessSpawner.ChildProcessSpawner> = shell,
 ) {
@@ -392,8 +397,10 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
     );
   }
 
-  const development = !(yield* atCollieDir(root, env.collieDir));
-  if (development && to !== undefined) {
+  if (yield* atCollieDir(root, env.collieDir)) {
+    return yield* migrate(env, to, options.key, options.liveCheckouts ?? liveCheckouts(env), run);
+  }
+  if (to !== undefined) {
     return err(
       "invalid_state",
       `${root} is a development checkout, so it is never moved to a release; \`collie upgrade\` pulls it.`,
@@ -402,37 +409,22 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
   }
   const head = () => run("git", ["rev-parse", "--short", "HEAD"], root).pipe(Effect.map(short));
   const before = yield* head();
-  if (to !== undefined) {
-    const refused = yield* moveToRelease(root, to, run);
-    if (refused) return refused;
-  } else {
-    // `--ff-only`: an upgrade that quietly merged or rebased someone's local work would be a
-    // surprise nobody asked this command for. A development checkout's uncommitted work rides
-    // through the pull.
-    const pull = development ? ["pull", "--ff-only", "--autostash"] : ["pull", "--ff-only"];
-    const pulled = yield* run("git", pull, root);
-    if (pulled.code !== 0) {
-      return err("operation_failed", `Could not update ${root}.`, {
-        root,
-        output: whatItSaid(pulled),
-      });
-    }
+  // `--ff-only`: an upgrade that quietly merged or rebased someone's local work would be a
+  // surprise nobody asked this command for. Uncommitted work rides through the pull.
+  const pulled = yield* run("git", ["pull", "--ff-only", "--autostash"], root);
+  if (pulled.code !== 0) {
+    return err("operation_failed", `Could not update ${root}.`, {
+      root,
+      output: whatItSaid(pulled),
+    });
   }
   const after = yield* head();
   const moved = before !== after;
-  const prepared = yield* prepareAndDesktop(env, root, to, run);
+  const prepared = yield* prepareAndDesktop(env, root, undefined, run);
   if (!prepared.ok) return prepared;
   return {
     ok: true as const,
-    data: {
-      root,
-      checkout,
-      before,
-      after,
-      updated: moved,
-      steps: prepared.steps,
-      ...(to && { version: to }),
-    },
+    data: { root, checkout, before, after, updated: moved, steps: prepared.steps },
     human: [
       moved
         ? `Updated ${root} from ${before} to ${after}.`
@@ -440,6 +432,113 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
       ...stepLines(prepared.steps),
     ].join("\n"),
   };
+});
+
+/**
+ * Migrates a clone at the Collie directory: the target release's own runner places the
+ * release inside it, ignored by it, and the clone is deleted only when nothing in it is the
+ * human's. `user/` is never touched.
+ */
+const migrate = Effect.fn("operations.migrate")(function* (
+  env: PluginEnv,
+  to: string | undefined,
+  key: string | undefined,
+  live: Effect.Effect<ReadonlyArray<string> | null, never, BunServices>,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = env.pluginRoot;
+  const exclude = path.resolve(
+    root,
+    (yield* run("git", ["rev-parse", "--git-path", "info/exclude"], root)).stdout.trim(),
+  );
+  const excluded = yield* fs.readFileString(exclude).pipe(Effect.orElseSucceed(() => ""));
+  const adding = MIGRATION_EXCLUDES.filter((line) => !excluded.split("\n").includes(line));
+  if (adding.length > 0) {
+    yield* fs.makeDirectory(path.dirname(exclude), { recursive: true });
+    const separator = excluded === "" || excluded.endsWith("\n") ? "" : "\n";
+    yield* fs.writeFileString(exclude, `${excluded}${separator}${adding.join("\n")}\n`);
+  }
+
+  const source = releasesOf(env.raw);
+  const target = to ?? (yield* newestRelease(source));
+  if (target === null) {
+    return err(
+      "operation_failed",
+      `Could not read the newest release from ${source}, so ${root} was left as it was.`,
+      { root, source },
+    );
+  }
+  // Always the release's own runner: one built from this clone would place the clone's source.
+  const placed = yield* handOff(env, target, source, key, run, path.join(env.collieDir, "release"));
+  if (!placed.ok) return placed;
+
+  const found = yield* humansIn(root, live, run);
+  if (found.length === 0) {
+    for (const entry of yield* fs.readDirectory(env.collieDir)) {
+      if (!COLLIE_DIR_ENTRIES.includes(entry)) {
+        yield* fs.remove(path.join(env.collieDir, entry), { recursive: true });
+      }
+    }
+  }
+  return {
+    ok: true as const,
+    data: { ...placed.data, clone: found.length === 0 ? ("removed" as const) : { kept: found } },
+    human: [
+      placed.human,
+      found.length === 0
+        ? `Removed the clone that was installed at ${root}: nothing in it was yours.`
+        : [
+            `Kept the clone at ${root} as it was, because it holds:`,
+            ...found.map((what) => `  ${what}`),
+            `It is an ordinary checkout now; Collie runs from ${placed.data.root}.`,
+          ].join("\n"),
+    ].join("\n"),
+  };
+});
+
+const MIGRATION_EXCLUDES = ["/release/", "/kept/"];
+const COLLIE_DIR_ENTRIES = ["release", "user", "kept"];
+/** What an install leaves ignored in its clone that is Collie's, or `user/`. */
+const INSTALL_IGNORED = ["bin/", "node_modules/", "user/", "release/", "kept/"];
+
+/** What in a clone is the human's, one line per kind; empty where nothing is. */
+const humansIn = Effect.fn("operations.humansIn")(function* (
+  root: string,
+  live: Effect.Effect<ReadonlyArray<string> | null, never, BunServices>,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const git = (...args: string[]) => run("git", args, root);
+  const said = (result: { code: number; stdout: string }) =>
+    result.code === 0 ? result.stdout.trim() : null;
+  const found: string[] = [];
+
+  const status = said(yield* git("status", "--porcelain"));
+  if (status !== "") found.push("changed or untracked files");
+  const ignored = (said(yield* git("status", "--porcelain", "--ignored")) ?? "")
+    .split("\n")
+    .filter((line) => line.startsWith("!! "))
+    .map((line) => line.slice(3))
+    .filter((entry) => !INSTALL_IGNORED.includes(entry));
+  if (ignored.length > 0) found.push(`ignored files of yours: ${ignored.join(", ")}`);
+  if (said(yield* git("log", "--branches", "--not", "--remotes", "--oneline")) !== "") {
+    found.push("commits no remote branch contains");
+  }
+  if (said(yield* git("stash", "list")) !== "") found.push("a stash");
+  const worktrees = said(yield* git("worktree", "list", "--porcelain"));
+  if (
+    worktrees === null ||
+    worktrees.split("\n").filter((line) => line.startsWith("worktree ")).length > 1
+  ) {
+    found.push("linked worktrees");
+  }
+  const checkouts = yield* live;
+  if (checkouts === null) found.push("live Runs on this Machine, which could not be asked about");
+  else if (checkouts.some((cwd) => cwd === root || cwd.startsWith(`${root}/`))) {
+    found.push("a live Run working in it");
+  }
+  return found;
 });
 
 /** Places the release this runner carries, then prepares it. */
@@ -517,6 +616,8 @@ const handOff = Effect.fn("operations.handOff")(function* (
   source: string,
   key: string | undefined,
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+  /** The installation the release's runner upgrades, where it is not this one. */
+  pluginRoot: string = env.pluginRoot,
 ) {
   const got = yield* Effect.result(
     verifiedRunner(`${source}/download`, target, ownPlatform(), `${env.stateDir}/runners`, key),
@@ -536,7 +637,7 @@ const handOff = Effect.fn("operations.handOff")(function* (
     [
       `COLLIE_DIR=${env.collieDir}`,
       `COLLIE_USER_DIR=${env.userDir}`,
-      `HERDR_PLUGIN_ROOT=${env.pluginRoot}`,
+      `HERDR_PLUGIN_ROOT=${pluginRoot}`,
       `COLLIE_RELEASES=${source}`,
       got.success.file,
       "--json",

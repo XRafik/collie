@@ -2351,7 +2351,7 @@ export const connect = (
     let who = yield* ensureRunning(dir, hostEnv, build);
     // Only a newer copy of the same installation upgrades the host; a dev checkout is not one.
     const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
-    const ours = who.root === undefined || who.root === install;
+    const ours = who.root === undefined || sameInstallation(who.root, install);
     const replaced = ours && newer(build, who.build);
     if (replaced) {
       yield* stopOwner(dir, who.pid);
@@ -2580,8 +2580,18 @@ const olderSilentOwner = Effect.fn("Host.olderSilentOwner")(function* (dir: stri
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(HostRecord)), Effect.option);
   if (Option.isNone(recorded) || recorded.value.pid !== owner.pid) return null;
   const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
-  return recorded.value.root === install && newer(build, recorded.value.build) ? owner.pid : null;
+  return sameInstallation(recorded.value.root, install) && newer(build, recorded.value.build)
+    ? owner.pid
+    : null;
 });
+
+/**
+ * Whether a host serving `served` is this installation's: the same root, or the clone install
+ * whose release this client was placed inside.
+ * ponytail: the `/release` case goes once no host still serves a clone install.
+ */
+const sameInstallation = (served: string, install: string) =>
+  served === install || install === `${served}/release`;
 
 /**
  * A host answering at this directory, started here if there was none, and asked who it
