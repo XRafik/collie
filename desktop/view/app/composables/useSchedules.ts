@@ -4,7 +4,7 @@
 import { useAtomSet } from "@effect/atom-vue";
 import { Cause, Exit } from "effect";
 import { type Failed, failureOf } from "../../../src/shared/actions";
-import type { MachineSchedules } from "../../../src/shared/schedules";
+import type { MachineSchedules, ScheduleAsk } from "../../../src/shared/schedules";
 import { FlockClient } from "../flock";
 
 const schedulesAtom = FlockClient.mutation("schedules");
@@ -34,8 +34,8 @@ export const useSchedules = () => {
   return {
     machines: readonly(machines),
     refresh,
-    change: (installation: string, name: string, to: "pause" | "resume" | "remove") =>
-      change({ payload: { installation, name, change: to } }).then(said),
+    change: (payload: Extract<ScheduleAsk, { kind: "change" }>["payload"]) =>
+      change({ payload }).then(said),
     move: (from: string, to: string, name: string, checkout: string) =>
       move({ payload: { from, to, name, checkout } }).then(said),
   };

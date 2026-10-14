@@ -17,7 +17,9 @@ import {
   type MachineSchedules,
   machineSchedules,
   SCHEDULES_UPGRADE_SAID,
+  scheduleAsk,
 } from "../desktop/src/shared/schedules";
+import { DesktopRpcs } from "../desktop/src/shared/flock";
 import type { ScheduleEntry } from "../src/schedule-model";
 import { suiteEnv } from "./support/effect";
 import { root, stopHost } from "./support/host";
@@ -91,6 +93,24 @@ test("a paused Schedule offers resume, remove and move; an active one pause, rem
     ["off", "paused", ["resume", "remove", "move"]],
     ["daily", "next 2026-10-15T05:00:00.000Z", ["pause", "remove", "move"]],
   ]);
+});
+
+test("a row's pause, resume and remove ask its Machine's host for that change; move opens the dialog", () => {
+  const payload = DesktopRpcs.requests.get("changeSchedule")!.payloadSchema;
+  for (const change of ["pause", "resume", "remove"] as const) {
+    const asked = scheduleAsk("i-vm", "daily", change);
+    expect(asked).toEqual({
+      kind: "change",
+      payload: { installation: "i-vm", name: "daily", change },
+    });
+    if (asked.kind === "change")
+      expect(Schema.decodeUnknownSync(payload)(asked.payload)).toEqual(asked.payload);
+  }
+  expect(scheduleAsk("i-vm", "daily", "move")).toEqual({
+    kind: "move",
+    from: "i-vm",
+    name: "daily",
+  });
 });
 
 test("a host too old to list Schedules asks for an upgrade", () => {

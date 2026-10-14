@@ -20,6 +20,27 @@ export const SCHEDULES_UPGRADE_SAID = "Can't list its Schedules; upgrade this Ma
 
 export type ScheduleAction = "pause" | "resume" | "remove" | "move";
 
+/** What a row's action asks: a change sent as `changeSchedule`'s payload, or the move dialog. */
+export type ScheduleAsk =
+  | { readonly kind: "move"; readonly from: string; readonly name: string }
+  | {
+      readonly kind: "change";
+      readonly payload: {
+        readonly installation: string;
+        readonly name: string;
+        readonly change: "pause" | "resume" | "remove";
+      };
+    };
+
+export const scheduleAsk = (
+  installation: string,
+  name: string,
+  action: ScheduleAction,
+): ScheduleAsk =>
+  action === "move"
+    ? { kind: "move", from: installation, name }
+    : { kind: "change", payload: { installation, name, change: action } };
+
 export interface ScheduleRowView {
   readonly name: string;
   readonly workflow: string;

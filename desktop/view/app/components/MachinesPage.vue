@@ -2,7 +2,7 @@
 import { type OnboardRun, SETTLED } from "../../../src/shared/flock";
 import { buildOf, type InSync, NOT_LIVE_SAID, syncable } from "../../../src/shared/in-sync";
 import { type Level, machineUsage } from "../../../src/shared/usage";
-import { type ScheduleAction, machineSchedules } from "../../../src/shared/schedules";
+import { type ScheduleAction, machineSchedules, scheduleAsk } from "../../../src/shared/schedules";
 
 const emit = defineEmits<{ back: [] }>();
 const { machines, summary } = useInSync();
@@ -61,10 +61,11 @@ const ACTION = {
   remove: { label: "Remove", icon: "i-lucide-trash-2" },
   move: { label: "Move to…", icon: "i-lucide-arrow-right-left" },
 } as const satisfies Record<ScheduleAction, { label: string; icon: string }>;
-const onAction = (installation: string, name: string, action: ScheduleAction) =>
-  action === "move"
-    ? (moving.value = { name, from: installation })
-    : void scheduled.change(installation, name, action);
+const onAction = (installation: string, name: string, action: ScheduleAction) => {
+  const asked = scheduleAsk(installation, name, action);
+  if (asked.kind === "move") moving.value = { name: asked.name, from: asked.from };
+  else void scheduled.change(asked.payload);
+};
 const METER = { ok: "primary", warn: "warning", out: "error" } as const satisfies Record<
   Level,
   string
