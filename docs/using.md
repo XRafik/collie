@@ -319,8 +319,11 @@ before this existed stay exactly where they are and belong to no task.
 A task workspace groups work. It gives no file or branch isolation — that is what the
 worktree below is for, and it is unchanged.
 
-Stopping a run closes its agents' panes, which is what stops them, and nothing else in the
-workspace. The workspace's own shell tab is never given to an agent, so closing an agent's
+Stopping a run stops its agents where their work runs, and nothing else in the workspace.
+A Codex agent works in the App Server Collie started for it, so its running turns are
+interrupted there and its pane is closed only once nothing of it is left running; one
+that will not stop is named in the failed stop, with its pane left open. Claude, Pi and
+OpenCode agents work in their panes, and closing the pane stops them. The workspace's own shell tab is never given to an agent, so closing an agent's
 pane never leaves it empty, and `run resume` starts the work again there. If herdr closes it anyway, the next agent the task starts reopens it on
 that run's checkout, and every run of the task uses the new one from then on; a checkout
 that has gone as well leaves the run parked, saying so, until you restore it or start
@@ -452,9 +455,11 @@ claims a new one.
 The worktree outlives the merge request: it is still there when the run ends, so you can
 look at what it built. It is removed only once **settled** — the tree is clean, it holds
 no commit that is not on the remote already, nothing is working in it or could be resumed
-in it while its work has not landed, its merge request is merged or closed on GitHub or
-GitLab (or a Disposition says what became of it, or its remote branch is gone), and its
-Task's workspace has closed. A squash merge counts: the head that merged is on the remote. A
+in it while its work has not landed — a Codex agent's server still running after herdr
+stopped listing the agent counts as working in it — its merge request is merged or
+closed on GitHub or GitLab (or a Disposition says what became of it, or its remote
+branch is gone), and its Task's workspace has closed. A squash merge counts: the head that
+merged is on the remote. A
 `renovate` checkout has no branch to ask either question about, so a clean one nothing is
 working in is settled, and there is no branch to delete with it. Pruning is part of the
 host's [cleanup](#cleanup) sweep, every ten minutes, whether or not a pane is open. The board says both what went and what is being held on to, with
@@ -2069,7 +2074,10 @@ out and no fallback has room, Collie checks again each minute while waiting for 
 Adding a usable fallback then moves the unfinished work to it automatically. The Run's record and
 `collie run show` say which agent each step landed on, as in
 `codex/default (fell back from claude/opus: session 100%, resets 15:45)`, and the Run's log
-gets a line when it happens. Usage never refuses, holds or delays work.
+gets a line when it happens. The agent that ran out is stopped first, listed by herdr or
+not, and its successor starts only once it is **Quiet**; one that will not stop parks the
+work, naming its thread, turn and server, and a resume tries again. Usage never refuses,
+holds or delays work: only an agent that may still be writing does.
 
 `notifications` turns a kind of toast off: `{"run-done": false}`, and a kind left out is on.
 The host raises one when a run finishes (`run-done`), fails (`run-failed`, or
@@ -2157,7 +2165,7 @@ into your `~/.pi` or `~/.claude`:
 | ----------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Pi          | 0.87.1           | An extension passed with `-e`. `ctx.getContextUsage()` is the estimate Pi's own compaction and footer use, and `ctx.compact`'s per-request callbacks are the outcome.                                                                                                                                                                              |
 | Claude Code | 2.1.263          | A settings file passed with `--settings`, which is _additional_ settings. Its status line reports `context_window` — input plus output, cache folded into the input total exactly once — and its `PreCompact`/`PostCompact` hooks are the lifecycle — the request's token reaches `PreCompact` only, so the completion is the one that follows it. |
-| Codex       | 0.153.4          | An App Server of its own on a loopback port, with the ordinary TUI pointed at it by `--remote`. `thread/tokenUsage/updated`'s `last.totalTokens` is the context its own indicator shows, `thread/compact/start` is the request, and the compaction's own turn is the outcome.                                                                      |
+| Codex       | 0.162.0          | An App Server of its own on a loopback port, with the ordinary TUI pointed at it by `--remote`. `thread/tokenUsage/updated`'s `last.totalTokens` is the context its own indicator shows, `thread/compact/start` is the request, and the compaction's own turn is the outcome.                                                                      |
 | OpenCode    | 1.18.9+          | The ordinary TUI hosting its own loopback server, on a session Collie created for it. The latest assistant message's tokens are the accounting OpenCode's own overflow predicate reads, `POST /session/{id}/summarize` is the request, and the compaction's own message is the outcome.                                                            |
 
 Two things to know about the Claude one. It borrows your status line, so it prints the
@@ -2313,7 +2321,9 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   are never closed. The Task's agents close with it, including any of its panes left in
   another workspace. A Task that stops being Finished, because a new Run joined it or a
   steer reopened it, starts its hour again. Continue task, or a Follow-up Run, reopens a
-  closed workspace on the Task's checkout.
+  closed workspace on the Task's checkout. A Codex agent of the Task is stopped where its
+  work runs first, and a workspace whose agent does not reach **Quiet** is kept, with the
+  reason.
 - **Worktrees** Collie made, once they are **Settled** (see
   [What a run does to your repository](#what-a-run-does-to-your-repository)).
 - **Staged module generations** under `~/.cache/collie/entries`, once unused for 7 days.
@@ -2328,7 +2338,10 @@ every ten minutes, whether or not a pane is open. A sweep removes:
 - **Uploads** under `uploads/`, a week after a front door last asked for them; a Run given
   one holds its own copy.
 - **Compaction controls** of an agent no herdr session lists any more, with the endpoint it
-  held open.
+  held open. A Codex agent's server is stopped first; if it does not reach **Quiet** the
+  record is kept, and listed with the reason ("its Codex turn has not stopped: …"), until a
+  later sweep finds it stopped. A launch puts down such records the same way, and never
+  fails over one it keeps.
 - **Runner copies** under `~/.cache/collie/runners`, but the running version's and the
   newest.
 - **Desktop's own files**, on a computer with Desktop: staged updates, runner copies, usage

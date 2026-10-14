@@ -45,6 +45,7 @@ import {
   type BoardSnapshot,
   type RunDetail,
   type Controlled,
+  leftSaid,
   FrontDoor,
   Declaration,
   HostRefused,
@@ -831,17 +832,16 @@ export const controlRun = (
     options.door,
   ).pipe(Effect.map(controlled));
 
-const controlled = (
+/** What a control's answer is, at the CLI, in chat and on the TUI board. */
+export const controlled = (
   answered: { readonly ok: true; readonly value: typeof Controlled.Type } | Failure,
 ): OpResult => {
   if (!answered.ok) return answered;
   const done = answered.value;
+  const left = leftSaid(done);
+  if (left !== null)
+    return err("operation_failed", left, { run: done.runId, left: [...done.left] });
   if (done.closed !== undefined) {
-    if (done.left.length > 0)
-      return err("operation_failed", `${done.runId} has finished, but ${done.left.join("; ")}.`, {
-        run: done.runId,
-        left: [...done.left],
-      });
     return {
       ok: true as const,
       data: { run: done.runId, ...done },
@@ -852,12 +852,6 @@ const controlled = (
     };
   }
   const what = `${done.set ? done.control : `un${done.control}`} ${done.runId}`;
-  if (done.left.length > 0) {
-    return err("operation_failed", `Recorded ${what}, but ${done.left.join("; ")}.`, {
-      run: done.runId,
-      left: [...done.left],
-    });
-  }
   return {
     ok: true as const,
     data: { run: done.runId, ...done },

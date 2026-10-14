@@ -32,6 +32,7 @@ import {
   PROTOCOL,
   FrontDoorRpcs,
   HostRefused,
+  leftSaid,
   type ProposalRefused,
   type RequestConflict,
   type RunDetail,
@@ -1102,7 +1103,14 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
         const verb = action.control === "stop" ? "Stopped" : action.set ? "Held" : "Released";
         return door
           .control({ runId: action.runId, control: action.control, set: action.set, request })
-          .pipe(Effect.map((done) => done.detail || `${verb} ${action.runId}`));
+          .pipe(
+            Effect.flatMap((done) => {
+              const left = leftSaid(done);
+              return left === null
+                ? Effect.succeed(done.detail || `${verb} ${action.runId}`)
+                : Effect.fail(new HostRefused({ reason: left }));
+            }),
+          );
       }
       case "Resume":
         return door

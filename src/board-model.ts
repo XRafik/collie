@@ -704,6 +704,17 @@ export const Controlled = Schema.Struct({
   closed: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+/**
+ * What every door says of a control that left something running, or null where it left
+ * nothing: a stop that could not make an agent Quiet is a failed operation, never "Stopped".
+ */
+export const leftSaid = (done: typeof Controlled.Type): string | null => {
+  if (done.left.length === 0) return null;
+  if (done.closed !== undefined) return `${done.runId} has finished, but ${done.left.join("; ")}.`;
+  const what = `${done.set ? done.control : `un${done.control}`} ${done.runId}`;
+  return `Recorded ${what}, but ${done.left.join("; ")}.`;
+};
+
 /** What a start became: the run it is, and whether this call is what made it. */
 export const Started = Schema.Struct({
   runId: Schema.String,

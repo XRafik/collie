@@ -136,7 +136,9 @@ back as Waiting on you.
 **D6. Processes go with what owns them:**
 
 - A Task's agents close with its workspace.
-- A compactor endpoint stops once herdr no longer lists its agent.
+- A compactor endpoint stops once herdr no longer lists its agent. Amended by
+  [ADR-0059](0059-a-stopped-agent-is-stopped-where-its-turn-runs.md): a Codex App Server
+  is stopped through its turns, and its record is kept until it is Quiet.
 - A host stops once its lock or its directory is gone, or once the process it watches
   has exited. This was already true. What changes is that every temporary state directory a
   test or a tool makes is now removed, so its host goes too.

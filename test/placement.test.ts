@@ -34,6 +34,8 @@ import { VerifySpecSchema } from "../src/verify-spec";
 import { readTask, writeTask, type TaskRecord } from "../src/task";
 import type { Call } from "./support/recorder";
 
+const asJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const ROOT = new URL("../", import.meta.url).pathname;
 const shipped = (name: string) => `${ROOT}workflows/${name}.workflow.ts`;
 const LOGIN = "mk";
@@ -1280,6 +1282,47 @@ test(
 
         expect(refused).toContain(`${roaming} is a checkout of`);
         expect(refused).toContain("agent claude in pane p-moved works in it");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a roaming start is refused an ended Run's checkout while a server of an agent herdr no longer lists may write in it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const refused = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [roams] = yield* loaded(registry, [`${fixtures}/roams.workflow.ts`]);
+            const first = yield* start(roams!, { request: "r1", text: { work: "fail" } });
+            if (first._tag === "Failure") return yield* Effect.die(first.failure);
+            yield* finished(first.success.runId);
+            const fs = yield* FileSystem.FileSystem;
+            const control = `${dir()}/compaction/r1-worker`;
+            yield* fs.makeDirectory(control, { recursive: true });
+            yield* fs.writeFileString(
+              `${control}/control.json`,
+              asJson({
+                agent: "r1-worker",
+                harness: "codex",
+                cwd: roaming,
+                dir: control,
+                endpoint: "ws://127.0.0.1:1",
+                pid: process.pid,
+                command: null,
+                started: null,
+                attempt: null,
+              }),
+            );
+            return refusedWith(yield* start(roams!, { request: "r2", text: { work: "next" } }));
+          }),
+        );
+
+        expect(refused).toContain(`${roaming} is a checkout of`);
+        expect(refused).toContain("r1-worker's server may still be writing in it");
       }),
     ),
   120_000,

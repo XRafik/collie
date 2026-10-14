@@ -42,7 +42,7 @@ import { taskFor } from "../src/operations";
 import { lineageAgent, readRegistry, registerAgent, registryPath, scopeFor } from "../src/registry";
 import { HerdrError } from "../src/herdr";
 import { agentName, shellQuote } from "../src/naming";
-import { controlDir, type CompactionPorts } from "../src/compaction";
+import { controlDir, withControlLock, type CompactionPorts } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
 
@@ -1945,6 +1945,20 @@ test("a lineage lookup leaves every register as it found it, and registrations a
   ));
 
 /** The controls an operator sets, as the host keeps them beside the run. */
+/** Stopped once its agent has been given `about`, the launch that gave it done; then suspended. */
+const stoppedOnce = (runId: string, about: string): Reached => {
+  let stopped = false;
+  return Effect.gen(function* () {
+    if (!stopped) {
+      if (!(yield* prompted(about))) return false;
+      yield* TestClock.withLive(Effect.sleep("100 millis"));
+      yield* control("stop", runId, true);
+      stopped = true;
+    }
+    return yield* suspended(runId);
+  });
+};
+
 const control = (name: string, runId: string, set: boolean) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => {
@@ -2071,8 +2085,7 @@ test(
         const fs = yield* FileSystem.FileSystem;
         // Nothing written, so the collection is still out when the stop arrives.
         yield* rig.queueOutputs([null]);
-        yield* control("stop", "r1", true);
-        yield* interrupted("r1", suspended("r1"));
+        yield* interrupted("r1", stoppedOnce("r1", "Your task for this step"));
         // The agent was launched and is still holding the work: stopping a Run is not
         // halting its agent, which is its own action.
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
@@ -2447,11 +2460,17 @@ const inTask = (runId: string) =>
 /** Started and left, stopped while the first item's Output is still out. */
 const stoppedAtFirst = (runId: string) =>
   Effect.gen(function* () {
-    yield* control("stop", runId, true);
+    const fs = yield* FileSystem.FileSystem;
     yield* listingSession(
-      listing
-        .execute({ runId, input: ITEMS }, { discard: true })
-        .pipe(Effect.andThen(Effect.sleep(Duration.millis(900)))),
+      Effect.gen(function* () {
+        yield* listing.execute({ runId, input: ITEMS }, { discard: true });
+        // Once the first item's launch is done, so the stop finds its collection out.
+        while (!(yield* prompted("01-api.prompt.md")))
+          yield* TestClock.withLive(Effect.sleep("10 millis"));
+        yield* TestClock.withLive(Effect.sleep("100 millis"));
+        yield* control("stop", runId, true);
+        yield* Effect.sleep(Duration.millis(900));
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
     );
   });
 
@@ -2963,3 +2982,18 @@ test(
     ),
   120_000,
 );
+
+test("a stop closes a Claude agent's pane even while its controls are locked, having nothing to stop there", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      const controls = { compactAtTokens: 1000, ports: claudeControls() };
+      yield* session(started("r1"), controls);
+      const halt = yield* withControlLock(
+        hostOf().env.stateDir,
+        agentFor("r1"),
+        session(halted("r1"), controls),
+      );
+      expect(halt).toEqual({ stopped: [agentFor("r1")], left: [] });
+    }),
+  ));

@@ -22,6 +22,7 @@ import {
   Layer,
   Option,
   Path,
+  Predicate,
   Schedule,
   Schema,
 } from "effect";
@@ -38,6 +39,10 @@ import {
   awaitReady,
   controlDir,
   installControls,
+  notStopped,
+  NotQuiet,
+  STOP_WAIT_MS,
+  stopAgent,
   withControlLock,
   type CompactionDeps,
   type CompactionPorts,
@@ -232,12 +237,12 @@ export interface AgentsApi {
   readonly launch: (ask: AgentAsk) => Effect.Effect<Launched, AgentUncertain | AgentParked>;
   /**
    * Starts this work's agent again with its prompt where it is gone and its Output never
-   * came; `unless` is an unusable Output that counts as none.
+   * came, true where it did; `unless` is an unusable Output that counts as none.
    */
   readonly revive: (
     ask: AgentAsk,
     unless?: string | null,
-  ) => Effect.Effect<void, AgentUncertain | AgentParked>;
+  ) => Effect.Effect<boolean, AgentUncertain | AgentParked>;
   /**
    * Hands a message, through the one sender, to the live agent in this role of a Run this
    * one came from; null where none. Parked where nobody can say whether it arrived.
@@ -249,7 +254,10 @@ export interface AgentsApi {
     readonly lineage: ReadonlyArray<string>;
     readonly text: string;
   }) => Effect.Effect<Steered | null, AgentParked>;
-  /** Closes the panes of this run's live agents, which stops them; `left` may still be running. */
+  /**
+   * Stops every agent this run launched where its work runs, then closes its pane; one
+   * that is not Quiet is in `left`, its pane open.
+   */
   readonly halt: (runId: string) => Effect.Effect<Halted>;
   /**
    * What the agent wrote, or null where it has written nothing in the time allowed.
@@ -317,7 +325,7 @@ export interface Steered {
   readonly gone?: boolean;
 }
 
-/** What a stop closed, and what may still be running after it. */
+/** The agents a stop made Quiet, and what may still be running after it. */
 export interface Halted {
   readonly stopped: ReadonlyArray<string>;
   readonly left: ReadonlyArray<string>;
@@ -550,18 +558,33 @@ export const agentWork = <
                   `${on.agent} has written nothing to ${output} yet. If it is still working, resume once it has written it; if it has stopped, ask it to write it and resume.`,
               }),
             );
+    /** Stops an agent started as a stop landed; one that is not Quiet is what the Run says. */
+    const haltLate = agents
+      .halt(runId)
+      .pipe(
+        Effect.flatMap(({ left }) =>
+          left.length === 0 ? Effect.void : host.parked(runId, left.join("; ")),
+        ),
+      );
+    // Uninterruptible, so a stop racing a restart waits for it and finds its agent to stop.
+    const reviving = (from: AgentAsk, unless?: string | null) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          if (yield* host.stopRequested(runId)) return;
+          if ((yield* agents.revive(from, unless)) && (yield* host.stopRequested(runId)))
+            yield* haltLate;
+        }),
+      );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
     const collecting = (on: Launched, from: AgentAsk, waiting?: string) => {
       const output = watching(agents.collect(on)).pipe(Effect.flatMap(written(on, waiting)));
       return stoppable(
         parkedWhenStuck(
-          agents
-            .revive(from)
-            .pipe(
-              Effect.andThen(
-                waiting === undefined ? Effect.raceFirst(output, agents.ranOut(on)) : output,
-              ),
+          reviving(from).pipe(
+            Effect.andThen(
+              waiting === undefined ? Effect.raceFirst(output, agents.ranOut(on)) : output,
             ),
+          ),
           host,
           work.runId,
         ),
@@ -570,11 +593,23 @@ export const agentWork = <
         agents.pollMs,
       );
     };
+    const launching = (next: AgentAsk) =>
+      Effect.gen(function* () {
+        const instance = yield* WorkflowEngine.WorkflowInstance;
+        if (yield* host.stopRequested(runId)) return yield* Workflow.suspend(instance);
+        const launched = yield* parkedWhenStuck(agents.launch(next), host, work.runId);
+        // A stop that landed while it started: that agent is stopped too, and the work waits.
+        if (yield* host.stopRequested(runId)) {
+          yield* haltLate;
+          return yield* Workflow.suspend(instance);
+        }
+        return launched;
+      });
     let current = yield* Activity.make({
       name: `${work.operation}.launch`,
       success: Launched,
       error: AgentUncertain,
-      execute: parkedWhenStuck(agents.launch(ask), host, work.runId),
+      execute: launching(ask),
     });
     let currentAsk: AgentAsk = ask;
     let collected = yield* Activity.make({
@@ -656,7 +691,7 @@ export const agentWork = <
         name: `${work.operation}.fallback-${n}.launch`,
         success: Launched,
         error: AgentUncertain,
-        execute: parkedWhenStuck(agents.launch(nextAsk), host, work.runId),
+        execute: launching(nextAsk),
       });
       currentAsk = nextAsk;
       collected = yield* Activity.make({
@@ -681,9 +716,9 @@ export const agentWork = <
       error: AgentUncertain,
       execute: stoppable(
         parkedWhenStuck(
-          agents
-            .revive(currentAsk, first)
-            .pipe(Effect.andThen(agents.repair(current, read.problem, first))),
+          reviving(currentAsk, first).pipe(
+            Effect.andThen(agents.repair(current, read.problem, first)),
+          ),
           host,
           work.runId,
         ),
@@ -702,9 +737,9 @@ export const agentWork = <
             // Null here is also the same unusable Output written again, which a repair
             // has had its one chance at, so it ends the work rather than parking it.
             parkedWhenStuck(
-              agents
-                .revive(currentAsk, first)
-                .pipe(Effect.andThen(watching(agents.collect(current, first)))),
+              reviving(currentAsk, first).pipe(
+                Effect.andThen(watching(agents.collect(current, first))),
+              ),
               host,
               work.runId,
             ),
@@ -1005,6 +1040,8 @@ export interface AgentHost {
   readonly confirmGraceMs?: number;
   /** How a step's own prompts wait out a pane that says it will clear by itself. */
   readonly patience?: dispatch.Patience;
+  /** How long a stop may wait for an agent to be Quiet; the fixed budget where left out. */
+  readonly stopMs?: number;
   /** Each harness's compaction controls; the shipped ones where none are given. */
   readonly ports?: CompactionPorts;
   /** A harness's `--help`, by its kind; the installed one's where left out. */
@@ -1417,7 +1454,17 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           agent,
           harness: adapter.id,
           cwd: ask.cwd,
-        });
+          runLog: `${host.dir}/agents/${ask.runId}/agents.log`,
+        }).pipe(
+          Effect.catchIf(isNotQuiet, (refused) =>
+            Effect.fail(
+              new AgentParked({
+                operation: ask.operation,
+                reason: `${refused.message}. Nothing was started in its place; once it has stopped, \`collie run resume ${ask.runId}\``,
+              }),
+            ),
+          ),
+        );
         const workspace = ask.workspace ?? (yield* taskWorkspace(ask));
         const reused = ask.workspace ? null : yield* rootPane(ask);
         const label = agentTabLabel(ask);
@@ -1491,29 +1538,43 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const live = listing.success.find((one) => one.name === agent);
         const alive = live !== undefined && !fresh;
         const fs = yield* FileSystem.FileSystem;
-        // A launch file already here is this same work replayed, not new work for the agent.
-        const replayed = yield* fs
-          .exists(launchPath(ask.runId, stemOf(ask)))
-          .pipe(Effect.orElseSucceed(() => false));
-        const terminalId = alive
-          ? (live.terminalId ?? undefined)
-          : yield* start(ask, agent, { agents: listing.success, listedAt });
-        const landed: Types.Mutable<Launched> = {
-          agent,
-          output: ask.output,
-          reused: alive,
-          runId: ask.runId,
-          operation: ask.operation,
-          role: ask.role,
-          workflow: ask.workflow,
-          harness: ask.harness ?? host.harness,
-          model: ask.model ?? host.model,
-          effort: ask.effort,
-        };
-        if ((ask.sequence ?? 1) > 1) landed.sequence = ask.sequence;
-        landed.at = yield* Clock.currentTimeMillis;
-        fellBack(landed, ask.from, ask.why);
-        const launched = terminalId === undefined ? landed : { ...landed, terminalId };
+        // Work in the launch order already is this same work replayed, not new work for the agent.
+        const replayed = (yield* fs
+          .readFileString(launchOrder(ask.runId))
+          .pipe(Effect.orElseSucceed(() => "")))
+          .split("\n")
+          .includes(stemOf(ask));
+        const recorded = (terminalId: string | undefined) =>
+          Effect.gen(function* () {
+            const landed: Types.Mutable<Launched> = {
+              agent,
+              output: ask.output,
+              reused: alive,
+              runId: ask.runId,
+              operation: ask.operation,
+              role: ask.role,
+              workflow: ask.workflow,
+              harness: ask.harness ?? host.harness,
+              model: ask.model ?? host.model,
+              effort: ask.effort,
+            };
+            if ((ask.sequence ?? 1) > 1) landed.sequence = ask.sequence;
+            landed.at = yield* Clock.currentTimeMillis;
+            fellBack(landed, ask.from, ask.why);
+            const launched = terminalId === undefined ? landed : { ...landed, terminalId };
+            // Beside it, the agent this work landed on, so a stop and a human steering this
+            // run later reach the agent that has it rather than one derived from a name again.
+            yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(launched));
+            return launched;
+          });
+        // Started and recorded as one step, so a stop never misses an agent this started.
+        const launched = alive
+          ? yield* recorded(live.terminalId ?? undefined)
+          : yield* Effect.uninterruptible(
+              start(ask, agent, { agents: listing.success, listedAt }).pipe(
+                Effect.flatMap(recorded),
+              ),
+            );
         const adapter = adapterFor(launched.harness);
         const prefix = personaPrefix(adapter, yield* personaOf(ask.persona ?? ask.role));
         const file = `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
@@ -1544,9 +1605,6 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             return yield* new AgentParked({ operation: ask.operation, reason: due.reason });
           }
         }
-        // Beside it, the agent this work landed on, so a human steering this run later
-        // reaches the agent that has it rather than one derived from a name again.
-        yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(launched));
         if (!replayed) yield* append(launchOrder(ask.runId), stemOf(ask));
         // The work is the file, and the message says where it is: one send is one
         // message and not a transcript, and a step's prompt carries a whole contract.
@@ -1729,15 +1787,17 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const written = yield* fs.readFileString(ask.output).pipe(Effect.orElseSucceed(() => ""));
-        if (written.trim() !== "" && written !== unless) return;
+        if (written.trim() !== "" && written !== unless) return false;
         const agent = agentName(ask.runId, ask.agent ?? ask.operation, null, ask.sequence ?? 1);
         const listing = yield* host.herdr.agentList().pipe(Effect.option);
-        if (listing._tag === "None" || listing.value.some((one) => one.name === agent)) return;
+        if (listing._tag === "None" || listing.value.some((one) => one.name === agent))
+          return false;
         yield* log(
           ask.runId,
           `${agent}: gone before ${ask.operation} was written; starting it again`,
         );
         yield* launch(ask);
+        return true;
       }),
     );
 
@@ -1884,6 +1944,18 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           (launched.terminalId === undefined ||
             one.terminalId === null ||
             one.terminalId === launched.terminalId);
+        if (running || one === undefined) {
+          const reached = yield* stopAgent(
+            compactionDeps(host, launched.runId),
+            launched.agent,
+            host.stopMs ?? STOP_WAIT_MS,
+          ).pipe(Effect.mapError((cause) => parked(`it could not be stopped (${reason(cause)})`)));
+          if (reached !== null && reached.state !== "quiet")
+            return yield* new AgentParked({
+              operation: launched.operation,
+              reason: `${notStopped(launched.agent, reached, reached.target)}. It ran out, and no agent takes its work until it has stopped; resume once it has`,
+            });
+        }
         if (running) {
           const panes = yield* host.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
           yield* keepWorkspace(one.paneId, panes);
@@ -1914,14 +1986,32 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const stopped: string[] = [];
         const left: string[] = [];
         let panes = yield* host.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
-        for (const one of listing.success) {
-          const ours = launches.findLast((launched) => launched.agent === one.name);
-          if (ours === undefined) continue;
-          if (ours.terminalId === undefined || one.terminalId === null) {
+        // Every agent it launched, listed or not: a closed pane is not a stopped server.
+        for (const name of new Set(launches.map((launched) => launched.agent))) {
+          const ours = launches.findLast((launched) => launched.agent === name)!;
+          const one = listing.success.find((agent) => agent.name === name);
+          if (one !== undefined && (ours.terminalId === undefined || one.terminalId === null)) {
             left.push(`${one.name} cannot be proven to be this Run's, so it was left running`);
             continue;
           }
-          if (ours.terminalId !== one.terminalId) continue;
+          if (one !== undefined && ours.terminalId !== one.terminalId) continue;
+          const reached = yield* stopAgent(
+            compactionDeps(host, runId),
+            name,
+            host.stopMs ?? STOP_WAIT_MS,
+          ).pipe(Effect.result);
+          if (reached._tag === "Failure") {
+            left.push(`${name} could not be stopped (${reason(reached.failure)})`);
+            continue;
+          }
+          if (reached.success !== null && reached.success.state !== "quiet") {
+            left.push(notStopped(name, reached.success, reached.success.target));
+            continue;
+          }
+          if (one === undefined) {
+            if (reached.success !== null) stopped.push(name);
+            continue;
+          }
           yield* keepWorkspace(one.paneId, panes);
           const closed = yield* host.herdr.paneClose(one.paneId).pipe(Effect.result);
           panes = panes.filter((pane) => pane.paneId !== one.paneId);
@@ -2138,6 +2228,7 @@ const isParked = Schema.is(AgentParked);
 
 /** Anything a launch failed on, said as what it means: nobody can be sure what happened. */
 const isUncertain = Schema.is(AgentUncertain);
+const isNotQuiet = (cause: unknown): cause is NotQuiet => Predicate.isTagged(cause, "NotQuiet");
 const asUncertain = (operation: string, cause: unknown): AgentUncertain =>
   isUncertain(cause) ? cause : new AgentUncertain({ operation, reason: herdrFailureReason(cause) });
 
@@ -2164,6 +2255,7 @@ const compactionDeps = (host: AgentHost, runId: string): CompactionDeps => ({
   warn: (line) => append(`${host.dir}/agents/${runId}/agents.log`, line),
   waitMs: COMPACTION_WAIT_MS,
   pollMs: host.pollMs ?? DEFAULT_POLL_MS,
+  stopMs: host.stopMs ?? STOP_WAIT_MS,
 });
 
 const undeliverable = (cause: unknown) => ({
