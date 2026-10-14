@@ -80,11 +80,12 @@ Gather every relevant pull request into **one batch branch**, so the whole month
 is proven on stage once and reviewed once, instead of landing on the default branch one
 bump at a time.
 
-- Branch `deps/batch-<YYYY-MM-DD>` from the default branch's current head, in this
-  checkout, and bind it here — this is the one branch this checkout may hold. Never name
-  it under `renovate/`, or the repository's configured Renovate `branchPrefix`: Renovate
-  Bot owns every branch there, and marks a request from one it did not make as abandoned.
-  Where that prefix covers `deps/`, use `collie/batch-<YYYY-MM-DD>` instead.
+- Branch the batch branch from the default branch's current head, in this checkout, and
+  bind it here — this is the one branch this checkout may hold. Name it
+  `deps/batch-<YYYY-MM-DD>`, or `collie/batch-<YYYY-MM-DD>` where the repository's
+  configured Renovate `branchPrefix` covers `deps/`. Never name it under `renovate/` or
+  that `branchPrefix`: Renovate Bot owns every branch there, and marks a request from one
+  it did not make as abandoned.
 - Before you take a Renovate branch in, ask git who holds it: `git worktree list` names
   every registered worktree and the branch each has checked out. A branch another worktree
   holds is **left out and reported**, not merged from its remote-tracking ref either.
@@ -93,7 +94,7 @@ bump at a time.
   the batch branch: a conflict, a call site, a failing test. Anything larger is a
   consultation.
 - Run the repository's own install, lint, typecheck and tests on the batch branch before
-  you push it. Push with `git push -u origin deps/batch-<date>`.
+  you push it. Push with `git push -u origin <batch branch>`.
 - Open one pull request from the batch branch to the default branch with
   `gh pr create --assignee {{mr.assignee}}`, titled `Renovate batch <YYYY-MM-DD>`, whose
   description lists every Renovate pull request it carries as `- <what it bumps> (#<n>)`

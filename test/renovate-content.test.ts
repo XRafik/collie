@@ -41,7 +41,9 @@ test("the batch branch is named outside Renovate Bot's branch prefix on both for
   for (const content of [gitlab, github]) {
     const batch = content.sections.get("batch") ?? "";
     expect(batch).toContain("`deps/batch-<YYYY-MM-DD>`");
-    expect(batch).toContain("git push -u origin deps/batch-<date>");
+    expect(batch).toContain("`collie/batch-<YYYY-MM-DD>`");
+    expect(batch).toContain("git push -u origin <batch branch>");
+    expect(batch).not.toContain("git push -u origin deps/");
     expect(batch).not.toContain("renovate/batch");
   }
 });
