@@ -64,6 +64,8 @@ export const schedulesDir = (dir: string) => `${dir}/schedules`;
 /** A Schedule's own directory: its record, and the trail of each change and occurrence. */
 const trailOf = (dir: string, name: string) => `${schedulesDir(dir)}/${name}`;
 const recordOf = (dir: string, name: string) => `${trailOf(dir, name)}/schedule.json`;
+/** The request that last removed it, kept so a retry interrupted before its receipt finds it done. */
+const removedOf = (dir: string, name: string) => `${trailOf(dir, name)}/removed`;
 
 /** How long an occurrence waits between asking a herdr that does not answer. */
 const HERDR_WAIT = "1 minute";
@@ -344,34 +346,37 @@ export const schedulesLayer = (options: {
       ): Effect.fn.Return<OccurrenceOutcome> {
         yield* herdrAnswers(name, occurrence);
         const refused = (why: string) => ({ kind: "refused" as const, reason: why });
-        // Read under the write lock, so a pause, resume or removal lands wholly before the start or after it.
-        const outcome: OccurrenceOutcome = yield* writing.withPermits(1)(
-          Effect.gen(function* () {
+        // Under the write lock from the read to the recorded Run, so a pause, resume or
+        // removal lands wholly before the start or after its Run is the Schedule's.
+        return yield* writing.withPermits(1)(
+          Effect.gen(function* (): Effect.fn.Return<OccurrenceOutcome> {
             const record = yield* read(name);
             if (record === null) return refused("the Schedule was removed");
             if (record.epoch !== epoch) return refused("the Schedule was resumed");
-            if (record.paused) return refused("the Schedule was paused");
-            return yield* startSaved(record.start, { name, occurrence }).pipe(
+            if (record.paused) {
+              const outcome = refused("the Schedule was paused");
+              yield* write({ ...record, last: { occurrence, outcome } });
+              return outcome;
+            }
+            const outcome = yield* startSaved(record.start, { name, occurrence }).pipe(
               Effect.map((run) => ({ kind: "started" as const, run })),
               Effect.catch((failure) =>
                 Effect.succeed(refused("reason" in failure ? failure.reason : reason(failure))),
               ),
             );
+            yield* write(
+              outcome.kind === "started"
+                ? {
+                    ...record,
+                    last: { occurrence, outcome },
+                    lastRun: outcome.run,
+                    running: outcome.run,
+                  }
+                : { ...record, last: { occurrence, outcome } },
+            );
+            return outcome;
           }),
         );
-        yield* update(name, (now) =>
-          now.epoch !== epoch
-            ? now
-            : outcome.kind === "started"
-              ? {
-                  ...now,
-                  last: { occurrence, outcome },
-                  lastRun: outcome.run,
-                  running: outcome.run,
-                }
-              : { ...now, last: { occurrence, outcome } },
-        );
-        return outcome;
       });
 
       /**
@@ -563,9 +568,15 @@ export const schedulesLayer = (options: {
             });
           return yield* done(added);
         }
-        if (record === null)
+        if (record === null) {
+          const removedBy = yield* fs
+            .readFileString(removedOf(dir, change.name))
+            .pipe(Effect.orElseSucceed(() => ""));
+          if (change.change === "remove" && removedBy === request) return yield* done(null);
           return yield* refusedInput(`no Schedule called "${change.name}" is on this Machine`);
+        }
         if (change.change === "remove") {
+          yield* fs.writeFileString(removedOf(dir, change.name), request).pipe(Effect.orDie);
           yield* fs.remove(recordOf(dir, change.name)).pipe(Effect.orDie);
           return yield* done(null);
         }

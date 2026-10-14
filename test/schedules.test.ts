@@ -4,7 +4,7 @@
 
 import { expect, test } from "bun:test";
 import { hostname } from "node:os";
-import { Clock, Effect, FileSystem, Schema } from "effect";
+import { Clock, Effect, Fiber, FileSystem, Schema } from "effect";
 import { readAudit } from "../src/audit";
 import { connect, ownerOf } from "../src/host";
 import { isoOf, ScheduleChanged, ScheduleListing } from "../src/schedule-model";
@@ -155,6 +155,79 @@ const addAsking = (world: World, name: string, cron: string) =>
     "--workspace",
     world.project,
   ]);
+
+test(
+  "a pause and a resume asked while an occurrence is admitted wait for its Run, and start no second one beside it",
+  () =>
+    proves(
+      "collie-schedule-admitting-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          // The occurrence's first `workspace list` asks whether herdr answers; its second,
+          // inside admission, waits until the pause and the resume are both queued.
+          const hold = `${world.state}/../hold-list`;
+          yield* fs.writeFileString(hold, "1").pipe(Effect.orDie);
+          const env = { ...FAST, FAKE_HERDR_HOLD_WORKSPACE_LIST: hold };
+          yield* collie(
+            world,
+            ["schedule", "add", "racing", "proof", "--cron", "* * * * * *"].concat([
+              "--input",
+              "note=n",
+              "--workspace",
+              world.project,
+            ]),
+            env,
+          );
+          yield* past((yield* Clock.currentTimeMillis) + 2_500);
+          const pausing = yield* Effect.forkScoped(
+            collie(world, ["schedule", "pause", "racing"], env),
+          );
+          yield* past((yield* Clock.currentTimeMillis) + 700);
+          const resuming = yield* Effect.forkScoped(
+            collie(world, ["schedule", "resume", "racing"], env),
+          );
+          yield* past((yield* Clock.currentTimeMillis) + 700);
+          yield* fs.remove(hold).pipe(Effect.orDie);
+          expect((yield* Fiber.join(pausing)).envelope.ok).toBe(true);
+          expect((yield* Fiber.join(resuming)).envelope.ok).toBe(true);
+          const [first] = yield* until(
+            () => scheduled(world, "racing"),
+            (runs) => runs.length >= 1,
+          );
+          yield* asking(world, first!.run);
+          yield* past((yield* Clock.currentTimeMillis) + 4_000);
+          expect(yield* scheduled(world, "racing")).toHaveLength(1);
+        }),
+      MODULES,
+    ),
+  90_000,
+);
+
+test(
+  "a removal interrupted after the record went and before its receipt finishes when its request is retried",
+  () =>
+    proves(
+      "collie-schedule-removing-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* addAsking(world, "gone", "0 7 * * *");
+          // The window: the host wrote what it was removing, removed the record, then stopped.
+          yield* fs.writeFileString(`${world.state}/schedules/gone/removed`, "rm-1");
+          yield* fs.remove(`${world.state}/schedules/gone/schedule.json`);
+          const retried = yield* schedule(world, ["remove", "gone", "--request-id", "rm-1"]);
+          expect(retried.envelope).toMatchObject({
+            ok: true,
+            data: { change: "remove", schedule: null },
+          });
+          const other = yield* schedule(world, ["remove", "gone", "--request-id", "rm-2"]);
+          expect(other.envelope.error?.code).toBe("invalid_input");
+        }).pipe(Effect.orDie),
+      MODULES,
+    ),
+  60_000,
+);
 
 test(
   "a Schedule removed or paused while herdr does not answer starts no Run once herdr is back",
