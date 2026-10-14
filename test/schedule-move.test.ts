@@ -1,5 +1,3 @@
-// Moving a Schedule between two Machines: the one sequence Desktop and the CLI both run.
-
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import type { ScheduleChange, ScheduleChanged, ScheduleEntry } from "../src/schedule-model";

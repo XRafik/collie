@@ -1,5 +1,3 @@
-// What the Machines page says of each Machine's Schedules, and what each row offers.
-
 import { describe, expect, test } from "bun:test";
 import { Config, Effect, Option, Schema } from "effect";
 import * as Rpc from "effect/rpc/Rpc";
