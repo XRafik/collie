@@ -165,6 +165,9 @@ extension by Pi, and by `collie tools call` from a terminal. Desktop's Flock cha
 the same Toolkit's tools that a host's front door can answer, in-process, each answered by
 the host of the Machine it names (`desktop/src/bun/flock-tools.ts`); `collie_run`,
 `collie_receipts` and `collie_workspaces` with that Machine's Native chat's own reading.
+Native chat's `collie_installation` reads its Machine's Schedules through their shared list shape;
+the Flock chat's own `collie_schedules` names each `<machine>:<name>`. Schedule changes are `collie_propose` actions
+over the same host operation the CLI uses.
 It also has five file tools of its own that are not the Toolkit's, so Native chat's reach
 is unchanged.
 

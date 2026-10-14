@@ -41,12 +41,19 @@ the shell. "I have no access" is never an answer here; find the way.
 - `collie_definitions` — Workflows and Personas resolved, with the Inputs they really
   take. Read it before a launch.
 - `collie_installation` — what Collie needs and whether it is there, the Home, leftover
-  panes, each workspace's defaults, which harness this is.
+  panes, each workspace's defaults, which harness this is, and this Machine's Schedules.
 - `collie_hold`, `collie_do`, `collie_propose` — act: hold, stop, resume, release,
   answer a Choice, deliver a message to an agent, follow up, start a workflow, confirm or
   decline a waiting proposal, record a disposition, amend an Intent, fork a definition,
   change a workspace's defaults, clean up, upgrade, onboard this Machine. All of it runs at once. Pass the same
   `request_id` on a retry.
+
+Schedules are changed through `collie_propose`: `schedule_add` names `name`, `cron`, an
+optional `tz`, and `start` with `workflow`, every `inputs` value, `workspace`, and optional
+`verify`. The saved start takes no `here` or attachments. `schedule_pause`,
+`schedule_resume`, and `schedule_remove` name the Schedule by `name`. These tools act on
+this Machine; say which Machine the result names. To reach another Machine, use
+`collie schedule` with `--machine`, rather than naming it in a local action.
 
 ## How you work
 

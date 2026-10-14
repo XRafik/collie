@@ -11,6 +11,7 @@
 // is not.
 
 import { Effect, Option, Schema } from "effect";
+import { hostname } from "node:os";
 import type { PlatformError } from "effect/PlatformError";
 import { reason } from "./naming";
 import type { BunServices } from "@effect/platform-bun/BunServices";
@@ -29,7 +30,9 @@ import {
   resumeRun,
   runViews,
   sweepNow,
+  changeSchedule,
 } from "./lifecycle";
+import type { ScheduleChange } from "./schedule-model";
 import { humanBytes } from "./cleanup";
 import { agentStartRefusal, CHAT_CHECKOUT_FIX } from "./agent-start";
 import { RESERVED_INPUTS } from "./sdk";
@@ -465,6 +468,60 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
       };
     }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
   );
+  const scheduleChange = (env: PluginEnv, by: Actor, change: ScheduleChange, machine?: string) =>
+    machine !== undefined && machine !== hostname()
+      ? Effect.succeed(
+          failed(
+            `Native chat acts on ${hostname()}; use collie schedule --machine ${machine} for another Machine`,
+          ),
+        )
+      : changeSchedule(env, { door: by, change, request: by.requestId }).pipe(
+          Effect.map((done): ExecutionResult =>
+            done.ok
+              ? {
+                  state: "applied",
+                  note: `Schedule ${done.value.name} on ${done.value.machine.hostname} (${done.value.machine.installation}): ${done.value.change}`,
+                }
+              : failed(done.error.message),
+          ),
+        );
+  registerExecutor("schedule_add", (action, by, env) =>
+    Effect.gen(function* () {
+      const named = action.start.workspace ?? "";
+      let workspace = named;
+      if (named !== "" && named !== PROJECTS_ROOT_OPTION && !named.startsWith("/")) {
+        const repository = yield* repositoryCheckout(env, named);
+        if (repository !== null && "error" in repository) return failed(repository.error);
+        if (repository !== null) workspace = repository.path;
+        else {
+          const where = yield* workspaceNamed(env, named);
+          if (where !== null && "error" in where) return failed(where.error);
+          workspace = where?.found.cwd ?? "";
+        }
+      }
+      return yield* scheduleChange(
+        env,
+        by,
+        {
+          change: "add",
+          name: action.name,
+          cron: action.cron,
+          tz: action.tz,
+          paused: false,
+          start: { ...action.start, workspace, verify: action.start.verify ?? [] },
+        },
+        action.machine,
+      );
+    }).pipe(Effect.catch((cause) => Effect.succeed(failed(reason(cause))))),
+  );
+  for (const [kind, change] of [
+    ["schedule_pause", "pause"],
+    ["schedule_resume", "resume"],
+    ["schedule_remove", "remove"],
+  ] as const)
+    registerExecutor(kind, (action, by, env) =>
+      scheduleChange(env, by, { change, name: action.name }, action.machine),
+    );
   registerExecutor("cleanup", (_action, by, env) =>
     sweepNow(env, { door: by, request: by.requestId }).pipe(
       Effect.map((swept) =>

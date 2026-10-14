@@ -16,24 +16,13 @@ import {
   SCHEDULE_PROJECTS_ROOT,
   type ScheduleChange,
   changedLine,
-  lastLine,
   machineOf,
-  type ScheduleEntry,
+  scheduleLine,
 } from "../schedule-model";
 import { givenVerifications } from "../verify-spec";
 import { answering, cliDoor, parseInput, requestIdFlag, root } from "./shared";
 
 const SCHEDULE_CHECKOUT_FIX = `Name the checkout with --workspace <absolute path>, a workspace's id or label, or ${SCHEDULE_PROJECTS_ROOT}.`;
-
-export const scheduleLine = (entry: ScheduleEntry) =>
-  [
-    entry.name,
-    `${entry.cron} ${entry.tz}`,
-    entry.workflow,
-    entry.checkout,
-    entry.paused ? "paused" : `next ${entry.next ?? "when its Run ends"}`,
-    `last ${lastLine(entry.last)}`,
-  ].join("\t");
 
 /**
  * The checkout a Schedule's start names, as a path or `projects-root`: given, or the

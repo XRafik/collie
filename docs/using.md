@@ -2344,6 +2344,18 @@ Run's status, that it is waiting for herdr, or why it was refused. Every change 
 occurrence is recorded with who asked in `schedules/<name>/operations.jsonl` under the state
 directory.
 
+You can ask chat to manage Schedules: “Schedule a review of `/src/app` on `vm` every morning
+at seven,” “Pause `vm:nightly-review`,” or “Remove `vm:nightly-review`.” Chat carries out
+your request at once through the same host operations as the CLI, and reports any refusal.
+Adding one requires every Input, just as starting a Workflow does.
+
+The Flock chat reads each Machine's Schedules with `collie_schedules` and names them
+`<machine>:<name>`. Your **Machine rule** covers Schedules as well as starts, unless your
+message names a Machine. With several Machines reachable, an add that names none is
+refused. An unreachable Machine is reported; chat never schedules the work somewhere else.
+Native chat reads and manages its own Machine's Schedules and says which Machine it acted on;
+for another Machine it runs `collie --machine <machine> schedule`.
+
 In Desktop, the Machines page has a **Schedules on <machine>** section for each Machine,
 beside its Usage, with the same facts as `collie schedule list` and the cron expression put
 in words where it is a common one ("every day at 07:00"). Each row can be paused, resumed,

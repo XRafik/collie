@@ -105,6 +105,22 @@ export const lastLine = (last: ScheduleEntry["last"]) => {
   return `${last.occurrence} ${said}`;
 };
 
+export const scheduleLine = (entry: ScheduleEntry) =>
+  [
+    entry.name,
+    `${entry.cron} ${entry.tz}`,
+    entry.workflow,
+    entry.checkout,
+    entry.paused ? "paused" : `next ${entry.next ?? "when its Run ends"}`,
+    `last ${lastLine(entry.last)}`,
+  ].join("\t");
+
+export const scheduleLines = (listing: ScheduleListing) =>
+  [
+    `schedules on ${listing.machine.hostname} (${listing.machine.installation}), as \`collie schedule list\` lists them:`,
+    ...(listing.schedules.length === 0 ? ["- (none)"] : listing.schedules.map(scheduleLine)),
+  ].join("\n");
+
 /** The one write: add (paused or not), pause, resume or remove. */
 export const ScheduleChange = Schema.Union([
   Schema.Struct({

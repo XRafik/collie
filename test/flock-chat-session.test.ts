@@ -178,6 +178,8 @@ test("the Machine rule goes with every message, in the human's words, beside the
 test("the system prompt tells the chat to start where the rule says, and how to keep to it", () => {
   const prompt = options.systemPrompt.replace(/\s+/g, " ");
   expect(prompt).toContain("Machine rule: their own instruction");
+  expect(prompt).toContain("When you start work or add a Schedule");
+  expect(prompt).toContain("Name each Schedule as <machine>:<name>");
   expect(prompt).toContain("name its Machine from the rule, unless the human's message names one");
   expect(prompt).toContain("not among those reachable, say so and start nothing elsewhere");
   expect(prompt).toContain("When the rule does not cover the work, ask");

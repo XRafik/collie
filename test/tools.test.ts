@@ -3,12 +3,22 @@
 // of it. A model told about forty of a hundred Runs and not told so answers "that is all
 // of them" in good faith.
 
-import { Crypto, Deferred, Effect, Fiber, FileSystem, Option, Schema, type Scope } from "effect";
+import {
+  Clock,
+  Crypto,
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Option,
+  Schema,
+  type Scope,
+} from "effect";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { expect, setDefaultTimeout, test } from "bun:test";
 import { readEnv, type PluginEnv } from "../src/env";
 import { readIntent } from "../src/intent";
-import { runView } from "../src/lifecycle";
+import { changeSchedule, runView, scheduleListing } from "../src/lifecycle";
 import { listRuns } from "../src/runs";
 import { latest, readDispositions } from "../src/disposition";
 import { TOOLS, toolNamed } from "../src/tools";
@@ -26,6 +36,7 @@ import type { JsonObject } from "../src/schema";
 import {
   confirm as confirmProposal,
   proposalsPath,
+  pendingHerdWide,
   read as readProposals,
   record as recordProposal,
   type Actor,
@@ -1011,6 +1022,106 @@ const chatting = Effect.fn("test.chatting")(function* () {
 const hookInput = (session: string, prompt: string) =>
   encodeJson({ session_id: session, hook_event_name: "UserPromptSubmit", prompt });
 const stopInput = (session: string) => encodeJson({ session_id: session, hook_event_name: "Stop" });
+
+test("chat manages Schedules at once through the host, with the conversation and human's words", () =>
+  inWorld(
+    Effect.gen(function* () {
+      yield* chatting();
+      const words = "schedule the proof daily, then pause it";
+      yield* hear(env, hookInput("s-1", words));
+      const add = {
+        kind: "schedule_add",
+        name: "daily-proof",
+        cron: "0 7 * * *",
+        tz: "UTC",
+        start: { workflow: "proof", workspace: project, inputs: { note: "daily" } },
+      };
+      const request = { interpretation: words, actions: [add], request_id: "schedule-chat-add" };
+      const added = yield* call("collie_propose", request);
+      expect(added).toContain("schedule_add: applied");
+      expect(yield* call("collie_propose", request)).toBe(added);
+      const list = () => scheduleListing(env, { origin: "chat" });
+      const first = yield* list();
+      expect(first).toMatchObject({
+        ok: true,
+        value: {
+          schedules: [{ name: "daily-proof", paused: false, start: { verify: [] }, last: null }],
+        },
+      });
+      if (!first.ok) throw new Error(first.error.message);
+      const machine = first.value.machine;
+      expect(added).toContain(machine.hostname);
+      const installation = yield* call("collie_installation");
+      expect(installation).toContain(`schedules on ${machine.hostname} (${machine.installation})`);
+      expect(installation).toContain("daily-proof\t0 7 * * * UTC\tproof");
+      expect(installation).toContain(first.value.schedules[0]?.next ?? "missing next occurrence");
+      expect(installation).toContain("last nothing yet");
+      expect((yield* readAudit(`${stateDir}/schedules/daily-proof`))[0]?.actor).toMatchObject({
+        origin: "chat",
+        conversation: NATIVE,
+        said: words,
+      });
+      for (const change of ["pause", "resume", "remove"]) {
+        const said = yield* call("collie_propose", {
+          interpretation: change,
+          actions: [{ kind: `schedule_${change}`, name: "daily-proof" }],
+        });
+        expect(said).toContain(`schedule_${change}: applied`);
+        expect(said).toContain(machine.hostname);
+        const now = yield* list();
+        expect(now.ok).toBe(true);
+        if (!now.ok) throw new Error(now.error.message);
+        if (change === "remove") expect(now.value.schedules).toEqual([]);
+        else {
+          expect(now.value.schedules[0]?.paused).toBe(change === "pause");
+          if (change === "pause")
+            expect(yield* call("collie_installation", {})).toMatch(/daily-proof\t.*\tpaused\t/);
+          expect(now.value.schedules[0]?.last).toBeNull();
+          if (change === "resume") expect(now.value.schedules[0]?.next).not.toBeNull();
+        }
+      }
+      const missing = yield* call("collie_propose", {
+        interpretation: "schedule one without its Input",
+        actions: [{ ...add, start: { workflow: "proof", workspace: project, inputs: {} } }],
+      });
+      expect(missing).toContain("schedule_add: failed");
+      expect(missing).toContain("note");
+      const direct = yield* changeSchedule(env, {
+        door: { origin: "chat" },
+        request: "schedule-missing-input",
+        change: {
+          change: "add",
+          name: add.name,
+          cron: add.cron,
+          paused: false,
+          start: { workflow: "proof", workspace: project, inputs: {}, verify: [] },
+        },
+      });
+      expect(direct.ok).toBe(false);
+      if (!direct.ok) expect(missing).toContain(direct.error.message);
+      expect(
+        yield* call("collie_propose", {
+          interpretation: "schedule on a different Machine",
+          actions: [{ ...add, machine: "another-machine" }],
+        }),
+      ).toContain("Native chat acts on");
+      for (const action of [
+        { ...add, start: { ...add.start, here: true } },
+        { kind: "schedule_pause", name: 42 },
+        { kind: "schedule_destroy", name: add.name },
+      ])
+        expect(
+          yield* call("collie_propose", { interpretation: "bad request", actions: [action] }),
+        ).toContain("InvalidInput");
+      expect(yield* list()).toMatchObject({ ok: true, value: { schedules: [] } });
+      expect(
+        pendingHerdWide(
+          yield* readProposals(yield* proposalsPath(stateDir, KEY)),
+          yield* Clock.currentTimeMillis,
+        ),
+      ).toEqual([]);
+    }),
+  ));
 
 test("what collie_do does is recorded with the human's words from that turn", () =>
   inWorld(

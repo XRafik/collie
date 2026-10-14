@@ -167,6 +167,9 @@ herdr actions, and the `collie` CLI.
   Desktop and the CLI run, with `test/schedule-move.test.ts`, and the CLI's `--machine`
   over two paired hosts is `test/schedule-remote.test.ts`; Desktop's Machines page draws
   them from `desktop/src/shared/schedules.ts`, with `test/desktop-schedules.test.ts`.
+  Chat changes one through the `schedule_*` actions in `src/actions.ts` and their
+  executors in `src/run-actions.ts`; the Flock chat reads them with `collie_schedules` in
+  `desktop/src/bun/flock-tools.ts`, with `test/tools.test.ts` and `test/flock-tools.test.ts`.
 - **Changing `self-improve`, or the `retro` skill it vendors** →
   [ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md) and
   [`docs/using.md`](docs/using.md#self-improve), alongside
