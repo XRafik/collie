@@ -1710,7 +1710,7 @@ const SCHEDULED: readonly Check[] = [
       kind: "test",
       layer: "ui",
       file: "test/desktop-schedules.test.ts",
-      name: "it lists a Machine's Schedules, and its pause, resume and removal are recorded as Desktop's|a paused Schedule offers resume, remove and move",
+      name: "it lists a Machine's Schedules, and its pause, resume and removal are recorded as Desktop's|a paused Schedule offers resume, remove and move|a row's pause, resume and remove ask its Machine's host for that change",
     },
   },
   {
