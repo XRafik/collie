@@ -1,6 +1,3 @@
-// `collie schedule` as an operator types it: what `add` refuses, the envelope each command
-// returns, the Machine each names, and a request id replayed.
-
 import { expect, test } from "bun:test";
 import { hostname } from "node:os";
 import { Effect, FileSystem } from "effect";
