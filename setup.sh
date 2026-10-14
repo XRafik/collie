@@ -62,7 +62,7 @@ case "$(od -An -tx1 -N4 "$work/collie" | tr -d ' \n')" in
 esac
 
 # A clone there is an install from before releases were placed: upgrade migrates it.
-if [ -d "$COLLIE_DIR/.git" ]; then plugin_root="$COLLIE_DIR"; else plugin_root="$COLLIE_DIR/release"; fi
+if [ -e "$COLLIE_DIR/.git" ]; then plugin_root="$COLLIE_DIR"; else plugin_root="$COLLIE_DIR/release"; fi
 say "Placing Collie into $COLLIE_DIR"
 COLLIE_DIR="$COLLIE_DIR" HERDR_PLUGIN_ROOT="$plugin_root" COLLIE_RELEASES="$RELEASES" \
   "$work/collie" upgrade ${VERSION:+--to "$VERSION"} || die "the runner did not place its release"
