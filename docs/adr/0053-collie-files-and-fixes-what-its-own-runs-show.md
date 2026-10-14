@@ -146,3 +146,21 @@ A person can ask for this too: "plan this and build it, don't ask me."
   `self-improve` Run waits on it, and so does the next day's occurrence.
 - Not decided here: reading the Flock chat's transcripts, reading other Machines' Runs from
   one place, and retrying a failed Improvement by itself.
+
+## Amended 2026-10-12: the triage follows the `retro` skill
+
+The human asked for Matt Pocock's `retro` skill in this flow, to find recurring problems
+and optimizations in the day's agent Outputs and logs, not only failed Runs.
+
+- It is kept byte for byte under `.collie/skills/`, with `writing-for-agents`, which it
+  reads, and their licence, from `mattpocock/skills` at a pinned commit.
+  `.collie/skills/pin.json` records each file's upstream path and SHA-256, and a Run whose
+  checkout differs fails before any agent starts. Moving the pin copies every file again
+  and changes `pin.json` in the same merge request.
+- Upstream marks it user-invoked. This flow invokes it on that explicit request, by its
+  path in the Run's checkout, never a Machine's installed copy.
+- The Workflow's Markdown adapts it and wins where the two differ: the session is the
+  day's Runs (D2), its categories become each finding's, a `defect` category covers Collie
+  misbehaving, its presentation becomes the Output, and what it would change becomes
+  issues and Improvements. A finding other than a `defect` must recur, in two Runs or on
+  an issue already open, to be filed.

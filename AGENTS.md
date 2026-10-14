@@ -166,6 +166,13 @@ herdr actions, and the `collie` CLI.
   `test/schedule-command.test.ts`. Moving one is `src/schedule-move.ts`, the one sequence
   Desktop and the CLI run, with `test/schedule-move.test.ts`; Desktop's Machines page draws
   them from `desktop/src/shared/schedules.ts`, with `test/desktop-schedules.test.ts`.
+- **Changing `self-improve`, or the `retro` skill it vendors** →
+  [ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md) and
+  [`docs/using.md`](docs/using.md#self-improve), alongside
+  `.collie/workflows/self-improve.workflow.ts` (and its Markdown),
+  `.collie/workflows/retrospective.ts` (what it decides, pure), the `retrospective` Persona
+  in `.collie/personas/`, and `.collie/skills/pin.json` (the pin; move it by copying every
+  file again), with `test/self-improve.test.ts`.
 - **Adding a setting, or changing how settings are shared across a Flock** →
   [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), alongside
   `src/settings.ts` (the one list the TUI, Desktop and the host read), `setSetting` and

@@ -2363,6 +2363,49 @@ without doing any step twice. Desktop's **Move to…** and the Flock chat's
 A Run a Schedule started says so on its record: "Started by schedule `nightly-review` for
 2026-10-14T05:00:00.000Z".
 
+## Self-improve
+
+`self-improve` is a Workflow of Collie's own repository, in its `.collie/workflows/`, so
+it is found only in a checkout of Collie
+([ADR-0053](adr/0053-collie-files-and-fixes-what-its-own-runs-show.md)):
+
+```sh
+collie run start self-improve --input improvements=3
+```
+
+It reads the Runs its Machine admitted in the 24 hours before it started, leaving out its
+own children; an earlier `self-improve` Run and its Improvements are read like any other.
+A day with none ends at once, starting no agent. Otherwise one `retrospective` agent reads
+those Runs' records with the vendored `retro` skill and reports what they show is wrong
+with Collie, at most ten findings, most severe first. A finding seen in only one Run is
+left out unless it is a `defect` or matches an open issue. Each finding that is left gets
+one "seen again" comment on the open issue it matches, or the open issue carrying its key,
+or is filed as a new issue on Collie's forge. Up to `improvements` groups of newly filed
+issues then start as Improvements, each a `plan` of its own card that builds itself
+(`then=implement`) and ends at a reviewed merge request that closes its issues. Nobody is
+asked anything, and nothing is merged. `improvements=0` files without building.
+
+It waits for its Improvements, then writes `summary.md` in its Run directory: each issue
+filed or commented, by category; each Improvement's Run and how it ended; and each finding
+left out, with why. An Improvement that fails is listed there, and the Run still succeeds.
+
+Run it daily with a Schedule on each Machine whose Runs should be read, since it reads only
+its own Machine's:
+
+```sh
+collie schedule add self-improve-daily --cron "0 7 * * *" self-improve \
+  --input improvements=3 --workspace <Collie checkout>
+```
+
+**The `retro` skill** is Matt Pocock's, kept byte for byte under `.collie/skills/` with
+`writing-for-agents`, which it reads, and their MIT `LICENSE`. `.collie/skills/pin.json`
+names the upstream repository, the commit, and each file's upstream path, path here and
+SHA-256. Before any agent starts, the Run hashes those files in its checkout and fails,
+naming the file, if one is missing or changed. The triage reads them by their path in the
+checkout, never a Machine's installed skills, and its Markdown adapts `retro` to the day's
+Runs. To move the pin, copy every file again from upstream at the new commit and change
+`pin.json` in the same merge request.
+
 ## Cleanup
 
 Collie removes what it made once nothing needs it, and only what it can show it made
