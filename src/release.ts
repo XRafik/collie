@@ -34,9 +34,8 @@ export const isCheckout = Effect.fn("release.isCheckout")(function* (
 });
 
 /**
- * Not a checkout is a release, and so is a clone at the Collie directory: an install from
- * before ADR-draft-an-installation-is-the-release-its-runner-carries, which its next upgrade
- * migrates. Any other checkout is a development checkout, whatever its git state.
+ * Not a checkout is a release, and so is a clone at the Collie directory, which its next
+ * upgrade migrates. Any other checkout is a development checkout.
  */
 export const installation = Effect.fn("release.installation")(function* (
   root: string,

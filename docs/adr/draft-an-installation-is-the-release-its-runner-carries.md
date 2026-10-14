@@ -31,7 +31,7 @@ human's own definitions and settings stay in `~/.collie/user/`, which no upgrade
 - **Staleness.** The board and doctor counted commits behind the clone's upstream.
 - **Development.** The maintainer developed Collie in `~/.collie` itself, and plan Runs
   wrote `CONTEXT.md` and ADRs there. So the installation was dirty most of the time, and an
-  upgrade was `git stash push`, `collie upgrade`, `git stash pop`, by hand, on each Machine.
+  upgrade meant setting that work aside by hand, on each Machine.
 
 ## Decision
 
@@ -133,7 +133,7 @@ checkout to plan or build in.
 - An upgrade is never blocked by anything a human or an agent wrote, and Desktop and peers
   can upgrade every release install.
 - A Machine on 0.49.0 or older upgrades through git once more. A clone whose pull conflicts
-  needs one last stash, or the new `setup.sh`. From then on, no upgrade touches git.
+  takes the new `setup.sh` instead. From then on, no upgrade touches git.
 - A clone with work in it stays a checkout at `~/.collie`, with `release/` and `user/`
   inside it and ignored by it. Its `workflows/` and `personas/` are no longer what runs.
 - Running unreleased Collie means linking a development checkout. The maintainer's
