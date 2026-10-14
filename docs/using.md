@@ -80,13 +80,18 @@ Without any token, a machine with bun builds the runner from source instead — 
 a checkout does anyway, because its own source is what a release is cut from. A machine
 with neither a token nor bun says so and stops rather than installing whatever came back.
 
-`collie upgrade` does the same thing later. On a release it places the release its runner
-carries into `~/.collie/release/` ([the Collie directory](#the-collie-directory)); where the
-installation is a checkout it pulls instead (`--ff-only`, so it never quietly merges local
-work). Either way it then runs the same `prepare.sh` steps and reports what each of them did. A pull it cannot do is reported
-rather than installed over. The Control Plane says when this installation is behind its
-remote, so you upgrade because you know you are stale rather than because you remembered
-to.
+`collie upgrade` does the same thing later. On a release it moves to the newest release,
+or to exactly `--to <version>`, without git: the target's runner is downloaded, verified
+against Collie's release key and places its release into `~/.collie/release/`
+([the Collie directory](#the-collie-directory)). A
+[development checkout](#running-a-checkout-of-collie) is pulled instead (`--ff-only
+--autostash`, so it never quietly merges local work and its uncommitted work rides
+through). Either way it then runs the same `prepare.sh` steps and reports what each of them did. A pull it cannot do is reported
+rather than installed over. The Control Plane and `collie doctor` say when a newer release
+is out (`Collie <version> is out — collie upgrade`), or for a checkout how far it is behind
+its remote, so you upgrade because you know you are stale rather than because you
+remembered to. The board reads the newest release in the background at most every five
+minutes, and says nothing when it cannot.
 
 ### The Collie directory
 
@@ -102,6 +107,15 @@ to.
   `kept/<when>/` with their paths in the release. The upgrade names each one. A kept edit is
   no longer in force: to keep a change, fork the workflow or persona into `user/`
   (`collie workflow fork`, `collie persona fork`) and make it there.
+
+### Running a checkout of Collie
+
+Collie is developed in a checkout like any other project. To run your checkout's build as
+this Machine's plugin, run its own `prepare.sh`: it links the plugin from the checkout,
+builds the runner from source and points the `collie` shim at it. That checkout is then a
+**development checkout**: `collie upgrade` pulls it with `git pull --ff-only --autostash`,
+`upgrade --to` refuses it, and Desktop and paired Machines never upgrade it. To go back to
+the release, run `~/.collie/release/prepare.sh`.
 
 ### Onboarding a Machine
 
@@ -212,6 +226,7 @@ Run ended, `bodil remote down <name>` takes the instance down once you are done 
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `COLLIE_DIR`          | The [Collie directory](#the-collie-directory), holding `release/`, `user/` and `kept/`; defaults to `~/.collie`.                             |
 | `COLLIE_REPO`         | Git URL cloned by `setup.sh`.                                                                                                                |
+| `COLLIE_RELEASES`     | Where releases are published, for a mirror; defaults to `https://github.com/cego/collie/releases`.                                           |
 | `COLLIE_TOKEN`        | Token used to download a release asset. Optional where `glab` or `gh` is already logged in to the release host.                              |
 | `COLLIE_BIN_DIR`      | Where `install.sh` writes the `collie` on your PATH; defaults to `~/.local/bin`. `collie doctor` looks there for a shim that is not on PATH. |
 | `CLAUDE_SKILLS_DIR`   | Claude Code's skill store, where `prepare.sh` links the operator skill beside `~/.agents/skills`; defaults to `~/.claude/skills`.            |

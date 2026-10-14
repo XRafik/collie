@@ -193,6 +193,8 @@ const environmentKeys = [
   "HERDR_CONFIG_PATH",
   "HERDR_PLUGIN_ROOT",
   "COLLIE_DIR",
+  // Where releases are published, for a mirror or a test's fake.
+  "COLLIE_RELEASES",
   "COLLIE_USER_DIR",
   "COLLIE_CLAUDE_MANAGED_DIR",
   "HERDR_PLUGIN_STATE_DIR",

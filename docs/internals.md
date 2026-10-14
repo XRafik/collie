@@ -892,8 +892,9 @@ Every release asset is published with two detached signatures beside it
 release job signs with `tools/sign.ts`, which reads the private keys from the
 `COLLIE_SIGNING_KEY` and `COLLIE_SIGNING_KEY_P256` secrets (PKCS#8 PEM). It refuses to run
 without either key, and refuses a key that does not match its public key built into
-`src/signing.ts`: `release.pub` and `release-p256.pub`. Desktop checks a runner it downloads
-with `verifyRelease` against `release.pub`. `install.sh` checks one with
+`src/signing.ts`: `release.pub` and `release-p256.pub`. Desktop's onboarding and `collie upgrade`
+download a runner through one function, `verifiedRunner` in `src/releases.ts`, which checks
+it with `verifyRelease` against `release.pub` before it is used. `install.sh` checks one with
 `openssl dgst -sha256 -verify` against `release-p256.pub`, which any OpenSSL or LibreSSL can
 do, fetching `<asset>.p256.sig` with the same token as the asset, before it replaces
 `bin/collie`. A download that is unsigned, does not match, or whose signature cannot be

@@ -1527,16 +1527,35 @@ endpoint refusing — with the last good windows kept where there were any.
 collie upgrade
 ```
 
-On a release — an installation that is not a checkout — it places the release its runner
-carries into the [Collie directory](using.md#the-collie-directory)'s `release/`, replacing
-it whole, so it also repairs a damaged one. Each file there that differs from what the last
-placement recorded is first copied into `kept/<when>/`, and the report names each one with
-how to fork it into `user/`. A runner that was not built as a release places nothing and is
-refused as `invalid_state`. Where the installation is a checkout, it pulls instead
-(`--ff-only`). Either way it then runs `prepare.sh` —
+What it does depends on where the installation is, never on its git state
+([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)):
+
+- **A release** — an installation that is not a checkout — goes to the newest release, read
+  from `<releases>/latest` (`COLLIE_RELEASES`, else
+  `https://github.com/cego/collie/releases`). Where that is the runner's own version, the
+  runner places the release it carries into the
+  [Collie directory](using.md#the-collie-directory)'s `release/`, replacing it whole, so it
+  also repairs a damaged one. Each file there that differs from what the last placement
+  recorded is first copied into `kept/<when>/`, and the report names each one with how to
+  fork it into `user/`. Another version's runner is downloaded with its `.sig`, verified
+  against Collie's Ed25519 release key, and handed the upgrade (`upgrade --to <version>`
+  against the same Collie directory); what it reports is this upgrade's report. No git is
+  involved, so nothing anyone wrote can block it. A newest release that cannot be read, a
+  download that fails or a runner that does not verify is `operation_failed` with the
+  reason, a version with no release is `invalid_input`, and in each case `release/` is left
+  exactly as it was. A runner that was not built as a release places nothing and is refused
+  as `invalid_state`.
+- **A development checkout** — a clone linked as the plugin from anywhere but the Collie
+  directory — is pulled with `git pull --ff-only --autostash`, so uncommitted work rides
+  through a pull that touches other files. A pull it cannot do, a conflict included, is
+  reported in git's words rather than installed over.
+- **A clone at the Collie directory**, an install from before ADR-0060, is pulled with
+  `--ff-only` as before.
+
+Then it runs `prepare.sh` —
 the one routine every entry point ends in, so this brings the plugin link, the runner and
 shim, the operator skill and the skills up to date together rather than replacing the
-runner alone. A pull it cannot do is reported rather than installed over. In a checkout, a
+runner alone. In a checkout, a
 runner `install.sh` downloads replaces the one there only once its signature checks out
 ([Build and release](internals.md)). Otherwise an install with bun builds the runner from
 source, and one without keeps the runner already there and the `runner` step fails. In a
@@ -1569,11 +1588,14 @@ it does on any platform; `upgrade` stages nothing for it.
 collie upgrade --to 0.27.0
 ```
 
-Moves a released install to exactly that version (fetching tags and resetting a checkout
-to the tag; a release is placed only at its runner's own version for now), and reports the same way, with `data.version`. A development checkout — on a branch
-other than `master`, detached on a commit that is not a release, with uncommitted changes,
-or ahead of its remote — is refused as `invalid_state` with the reason, and its checkout is left as it was.
-A host's `identity` names such a checkout's build as `development: "<version>+<sha>"`.
+Moves a release to exactly that version, older or newer, through the same download and
+hand-off, and reports the same way, with `data.version`. `--to` the runner's own version
+places it again, which repairs a damaged `release/`. A development checkout is refused as
+`invalid_state` and left as it was: only `git` moves it, and Desktop and paired Machines
+never upgrade it. A host's `identity` names a development checkout's build as
+`development: "<version>+<sha>"`. A clone at the Collie directory is moved to the release
+tag as before, unless it is on another branch, has uncommitted changes or is ahead of its
+remote.
 
 ## Onboarding a Machine
 

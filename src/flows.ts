@@ -2,6 +2,7 @@
 // interactive work happens in the pane entrypoints. Every question a human answers goes
 // through `InputPrompts`, so the same flow draws in a popup pane and inline in the tab.
 
+import { releasesOf } from "./releases";
 import {
   Cause,
   Clock,
@@ -126,6 +127,8 @@ export interface ControlSession extends BoardSession {
   herdr: Herdr;
   /** This installation, so the board can say when it is behind its remote. */
   pluginRoot: string;
+  /** Where releases are published, so the board can say when a newer one is out. */
+  releases?: string;
   /** Where the board's Runs come from: the host's, unless a test hands over its own. */
   runsOf?: RunsOf;
   /** Where the board's Tasks come from: one read of the host's board, unless followed. */
@@ -841,6 +844,7 @@ export const workspaceFlow = Effect.fn("Flows.workspaceFlow")(function* (
     stateDir: env.stateDir,
     paneId: env.paneId,
     pluginRoot: env.pluginRoot,
+    releases: releasesOf(env.raw),
     userDir: env.userDir,
     // The Control Plane runs its actions on one fiber, one at a time, so a hand-off to
     // an agent over the threshold must not hold that queue while a compaction runs. It
@@ -1799,6 +1803,7 @@ const boardOf = Effect.fn("Flows.boardOf")(function* (
     alive: live.alive,
     worktrees: yield* reportedWorktrees(session.stateDir),
     pluginRoot: session.pluginRoot,
+    ...(session.releases && { releases: session.releases }),
     quietMs: yield* boardQuietMs(session.userDir),
     ...scanned,
   });

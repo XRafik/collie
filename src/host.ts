@@ -2247,7 +2247,7 @@ const own = (dir: string) =>
       )
       .pipe(Effect.orDie);
     const installation = yield* installationOf(dir).pipe(Effect.orDie);
-    const installed = yield* installedRelease(env.pluginRoot, BUILD);
+    const installed = yield* installedRelease(env.pluginRoot, env.collieDir, BUILD);
     const development: Development = installed.release ? {} : { development: installed.build };
     // One reader of this Machine's usage, so every door and every choice of agent paces as one.
     const usage = yield* Usage;

@@ -14,12 +14,30 @@ export type Installation =
 
 const RELEASED: Installation = { release: true };
 
-/** A plain install, not a checkout, is a release: it is what `install.sh` fetched. */
+/** Whether `root` is the Collie directory itself, however either is spelled. */
+export const atCollieDir = Effect.fn("release.atCollieDir")(function* (
+  root: string,
+  collieDir: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const real = (dir: string) => fs.realPath(dir).pipe(Effect.orElseSucceed(() => dir));
+  return (yield* real(root)) === (yield* real(collieDir));
+});
+
+/**
+ * Not a checkout is a release. A checkout anywhere but the Collie directory is a development
+ * checkout, whatever its git state.
+ */
 export const installation = Effect.fn("release.installation")(function* (
   root: string,
+  collieDir: string,
   version: string,
   run: Runner<ChildProcessSpawner.ChildProcessSpawner> = shell,
-): Effect.fn.Return<Installation, never, ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.fn.Return<
+  Installation,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+> {
   const git = (...args: string[]) => run("git", args, root);
   if ((yield* git("rev-parse", "--git-dir")).code !== 0) return RELEASED;
   const sha = (yield* git("rev-parse", "--short", "HEAD")).stdout.trim();
@@ -28,6 +46,7 @@ export const installation = Effect.fn("release.installation")(function* (
     build: `${version}+${sha}`,
     reason,
   });
+  if (!(yield* atCollieDir(root, collieDir))) return development("it is a development checkout");
 
   const status = yield* git("status", "--porcelain");
   if (status.code !== 0 || status.stdout.trim() !== "") {

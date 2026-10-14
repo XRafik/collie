@@ -92,13 +92,15 @@ wait
 # The release path: the runner places the release it carries, at its own version. A stub
 # `sh` stands in for `prepare.sh`, which links herdr and fetches skills.
 PLACE="$STATE/place"
+own=$("$BIN" --version | sed 's/^collie v//')
 mkdir -p "$PLACE/stubs"
 printf '#!/bin/sh\necho "prepare: runner: already in place"\n' > "$PLACE/stubs/sh"
 chmod +x "$PLACE/stubs/sh"
 COLLIE_DIR="$PLACE/dir" HERDR_PLUGIN_ROOT="$PLACE/dir/release" XDG_DATA_HOME="$PLACE/data" \
-  PATH="$PLACE/stubs:$PATH" "$BIN" --json upgrade >/dev/null 2>&1 || fail "the runner did not place its release"
+  COLLIE_RELEASES="http://127.0.0.1:9" PATH="$PLACE/stubs:$PATH" \
+  "$BIN" --json upgrade --to "$own" >/dev/null 2>&1 || fail "the runner did not place its release"
 placed=$(sed -n 's/^version = "\(.*\)"/\1/p' "$PLACE/dir/release/herdr-plugin.toml")
-[ "collie v$placed" = "$("$BIN" --version)" ] || fail "the placed release is $placed, not the runner's own version"
+[ "$placed" = "$own" ] || fail "the placed release is $placed, not the runner's own $own"
 [ -x "$PLACE/dir/release/bin/collie" ] || fail "the placed release has no runner"
 
 echo "smoke: $BIN answered --help, one JSON success and two typed failures, served its own compaction helper and placed its release"

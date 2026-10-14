@@ -71,6 +71,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `authoring.ts`      | What a module says about itself, how it is checked, and the file an author starts from                   |
 | `store.ts`          | Rows beside Effect's: request claims, run identity, generations, questions                               |
 | `release.ts`        | Whether an installation is a release or a development checkout, and placing the release a runner carries |
+| `releases.ts`       | The newest published release, and a release's runner downloaded and verified against the release key     |
 | `onboard.ts`        | A Machine from bare to a working host, one streamed step at a time, never with sudo                      |
 | `in-terminal.ts`    | A login or a question in a terminal Bun gives it, on Linux and macOS alike, never through `script`       |
 | `run-actions.ts`    | What a confirmed action does to a Run, and the one place each kind is carried out                        |

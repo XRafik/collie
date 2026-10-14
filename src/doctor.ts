@@ -21,6 +21,8 @@ import { HARNESSES } from "./harness";
 import { Herdr } from "./herdr";
 import { shell, type Runner } from "./mr";
 import { manifestField } from "./release";
+import { isNewer, newestRelease, releasesOf } from "./releases";
+import manifest from "../herdr-plugin.toml";
 import { err } from "./operations";
 import { probeHelle, probeLinearMcp, type Probe } from "./optional";
 import { projectsRoot } from "./projects";
@@ -420,17 +422,28 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
   });
 
   const gitDir = yield* onPath(search, "git");
-  const behind = gitDir ? yield* refreshBehind(root, run) : null;
+  const checkout =
+    gitDir !== null && (yield* run("git", ["rev-parse", "--git-dir"], root)).code === 0;
+  const behind = checkout ? yield* refreshBehind(root, run) : null;
+  const newest = checkout ? null : yield* newestRelease(releasesOf(env.raw));
   checks.push({
     name: "up to date",
-    // Passing even when it is behind: a checkout a few commits back is a thing to
-    // say, not a missing prerequisite, and the same line on the Control Plane is
+    // Passing even when it is behind: an installation a release or a few commits back is
+    // a thing to say, not a missing prerequisite, and the same line on the Control Plane is
     // shown rather than sent for the same reason. It still carries the command.
-    ...(behind === null
-      ? passed("not a checkout with a remote, so there is nothing to compare")
-      : behind === 0
-        ? passed("level with its remote")
-        : noted(`${behind} commit${behind === 1 ? "" : "s"} behind its remote`, "collie upgrade")),
+    ...(checkout
+      ? behind === null
+        ? passed("a checkout with no remote, so there is nothing to compare")
+        : behind === 0
+          ? passed("level with its remote")
+          : noted(`${behind} commit${behind === 1 ? "" : "s"} behind its remote`, "collie upgrade")
+      : isNewer(newest, manifest.version)
+        ? noted(`Collie ${newest} is out`, "collie upgrade")
+        : passed(
+            newest === null
+              ? "the newest release could not be read, so there is nothing to compare"
+              : `Collie ${manifest.version} is the newest release`,
+          )),
   });
 
   checks.push({ name: "workflows", ...(yield* overrides(env)) });

@@ -1,12 +1,17 @@
 // `collie upgrade` on a release: the runner places the release it carries into the Collie
-// directory's `release/`, keeping any edit it finds there, and never writes `user/`.
+// directory's `release/`, keeping any edit it finds there, and never writes `user/`. Another
+// version is handed to that version's runner, downloaded from a served fake release and
+// verified first.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
 import { upgrade } from "../src/operations";
-import type { Ran } from "../src/mr";
+import { shell, type Ran } from "../src/mr";
+import { ownPlatform } from "../src/releases";
+import { signRelease } from "../src/signing";
+import { generateKeyPairSync } from "node:crypto";
 import manifest from "../herdr-plugin.toml";
 
 let rig: Rig;
@@ -14,6 +19,20 @@ let collieDir: string;
 let tree: string;
 let runner: string;
 let prepared: string[];
+let served: ReturnType<typeof Bun.serve>;
+/** What the fake release source answers: the newest version, and each published file. */
+let latest: string;
+let published: Map<string, Uint8Array | string>;
+
+const pair = () => {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  return {
+    publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+  };
+};
+const KEY = pair();
+const ASSET = `collie-${ownPlatform()}`;
 
 const write = (file: string, text: string) => Effect.promise(() => Bun.write(file, text));
 const read = (file: string) =>
@@ -39,36 +58,70 @@ beforeEach(() =>
       yield* write(`${tree}/workflows/plan.workflow.ts`, "export default 1;\n");
       yield* write(runner, "#!/bin/sh\necho runner\n");
       yield* write(`${collieDir}/user/config.json`, `{"mine":true}\n`);
+      latest = manifest.version;
+      published = new Map();
+      served = Bun.serve({
+        port: 0,
+        fetch: (request) => {
+          const path = new URL(request.url).pathname;
+          if (path === "/latest") {
+            return new Response(null, { status: 302, headers: { location: `/tag/${latest}` } });
+          }
+          const body = published.get(path);
+          return body === undefined ? new Response("no", { status: 404 }) : new Response(body);
+        },
+      });
     }),
   ),
 );
 
-afterEach(() => runEffect(rig.close()));
+afterEach(() =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* Effect.promise(() => served.stop(true));
+      yield* rig.close();
+    }),
+  ),
+);
 
-/** Not a checkout to git, and a `prepare.sh` whose directory is recorded. */
-const run = (cmd: string, args: string[], cwd: string) =>
-  Effect.sync((): Ran => {
-    if (cmd === "git") return { code: 128, stdout: "", stderr: "not a git repository" };
+/** Publishes `version`'s runner: it records how it was run and answers as an upgrade. */
+const publish = (version: string, signedBy = KEY.privateKey) => {
+  const bytes = new TextEncoder().encode(`#!/bin/sh
+echo "$COLLIE_DIR $*" > "${rig.root}/handed-off"
+echo '{"ok":true,"data":{"root":"'"$COLLIE_DIR"'/release","checkout":false,"release":"${version}","kept":["kept/then/personas/planner.md"],"steps":[{"step":"runner","state":"already in place","detail":""}],"version":"${version}"}}'
+`);
+  published.set(`/download/${version}/${ASSET}`, bytes);
+  published.set(`/download/${version}/${ASSET}.sig`, signRelease(bytes, signedBy));
+};
+
+/** Not a checkout to git, a `prepare.sh` whose directory is recorded, and anything else run. */
+const run = (cmd: string, args: string[], cwd: string) => {
+  if (cmd === "git") return Effect.succeed<Ran>({ code: 128, stdout: "", stderr: "not a git" });
+  if (cmd !== "sh") return shell(cmd, args, cwd);
+  return Effect.sync((): Ran => {
     prepared.push(`${cmd} ${args.join(" ")} in ${cwd}`);
     return { code: 0, stdout: "prepare: runner: already in place\n" };
   });
+};
 
 /** The files an upgrade said it kept, relative to their `kept/<when>/`. */
 const keptOf = (result: Effect.Success<ReturnType<typeof upgrade>>) =>
   result.ok && "kept" in result.data ? result.data.kept : [];
 const shipped = (file: string) => file.replace(/^kept\/[^/]+\//, "");
 
-const place = () =>
-  upgrade(
-    {
-      ...rig.pluginEnv(),
-      pluginRoot: `${collieDir}/release`,
-      collieDir,
-      userDir: `${collieDir}/user`,
-    },
-    { carried: { tree, runner } },
-    run,
-  );
+const releaseEnv = () => {
+  const env = rig.pluginEnv();
+  return {
+    ...env,
+    pluginRoot: `${collieDir}/release`,
+    collieDir,
+    userDir: `${collieDir}/user`,
+    raw: { ...env.raw, COLLIE_RELEASES: `http://127.0.0.1:${served.port}` },
+  };
+};
+
+const place = (to?: string) =>
+  upgrade(releaseEnv(), { carried: { tree, runner }, key: KEY.publicKey, ...(to && { to }) }, run);
 
 test("a release is placed into an empty Collie directory, and prepared from there", () =>
   runEffect(
@@ -145,14 +198,91 @@ test("placing the same version twice changes nothing and keeps nothing", () =>
 test("a runner that carries no release places nothing", () =>
   runEffect(
     Effect.gen(function* () {
-      const refused = yield* upgrade(
-        { ...rig.pluginEnv(), pluginRoot: `${collieDir}/release`, collieDir },
-        { carried: null },
-        run,
-      );
+      const refused = yield* upgrade(releaseEnv(), { carried: null }, run);
 
       expect(refused).toMatchObject({ ok: false, error: { code: "invalid_state" } });
       expect(yield* exists(`${collieDir}/release`)).toBe(false);
       expect(prepared).toEqual([]);
+    }),
+  ));
+
+test("a newer release is downloaded, verified and handed the upgrade, whose report is this one's", () =>
+  runEffect(
+    Effect.gen(function* () {
+      latest = "99.0.0";
+      publish("99.0.0");
+
+      const upgraded = yield* place();
+
+      expect(upgraded).toMatchObject({
+        ok: true,
+        data: { release: "99.0.0", version: "99.0.0", kept: ["kept/then/personas/planner.md"] },
+      });
+      expect(yield* read(`${rig.root}/handed-off`)).toBe(
+        `${collieDir} --json upgrade --to 99.0.0\n`,
+      );
+      expect(upgraded.ok && upgraded.human).toContain("Placed Collie 99.0.0");
+      expect(upgraded.ok && upgraded.human).toContain(`${collieDir}/kept/then/personas/planner.md`);
+      expect(upgraded.ok && upgraded.human).toMatch(/runner\s+already in place/);
+      expect(prepared).toEqual([]);
+    }),
+  ));
+
+test("--to an older release moves to exactly it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      latest = "99.0.0";
+      publish("0.1.0");
+
+      const upgraded = yield* place("0.1.0");
+
+      expect(upgraded).toMatchObject({ ok: true, data: { release: "0.1.0" } });
+      expect(yield* read(`${rig.root}/handed-off`)).toContain("upgrade --to 0.1.0");
+    }),
+  ));
+
+/** The release as it was placed, so a refused upgrade can be shown to have left it alone. */
+const placedRecord = () => read(`${collieDir}/release/placed.json`);
+
+test("a version with no release is refused, and the release is left as it was", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* place();
+      const before = yield* placedRecord();
+
+      const refused = yield* place("98.0.0");
+
+      expect(refused).toMatchObject({ ok: false, error: { code: "invalid_input" } });
+      expect(yield* placedRecord()).toBe(before);
+    }),
+  ));
+
+test("a runner that does not verify is never run, and the release is left as it was", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* place();
+      const before = yield* placedRecord();
+      publish("99.0.0", pair().privateKey);
+
+      const refused = yield* place("99.0.0");
+
+      expect(refused).toMatchObject({ ok: false, error: { code: "operation_failed" } });
+      expect(!refused.ok && refused.error.message).toContain("does not match its signature");
+      expect(yield* exists(`${rig.root}/handed-off`)).toBe(false);
+      expect(yield* placedRecord()).toBe(before);
+    }),
+  ));
+
+test("a release source that cannot be reached changes nothing, and says so", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* place();
+      const before = yield* placedRecord();
+      yield* Effect.promise(() => served.stop(true));
+
+      const refused = yield* place();
+
+      expect(refused).toMatchObject({ ok: false, error: { code: "operation_failed" } });
+      expect(yield* placedRecord()).toBe(before);
     }),
   ));

@@ -3,10 +3,8 @@
 // verifies; and `collie onboard` runs with it, each step told as it comes.
 
 import { Clock, Crypto, Effect, FileSystem, Option, Schema, Stream } from "effect";
-import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import * as HttpClient from "effect/http/HttpClient";
 import { inTerminal } from "../../../src/in-terminal";
-import { RELEASE_PUBLIC_KEY, SIGNATURE_SUFFIX, verifyRelease } from "../../../src/signing";
+import { verifiedRunner as sharedVerifiedRunner } from "../../../src/releases";
 import { type OnboardRun, type OnboardStep, SETTLED, type Skippable } from "../shared/flock";
 import { quoted, type Route, type ShellRoute, spawned } from "./machine";
 import { CHILD_CWD, childEnv } from "./login-env";
@@ -31,63 +29,9 @@ export const platformOf = (uname: string) => {
   return named !== undefined && cpu !== undefined ? `${named}-${cpu}` : null;
 };
 
-const fetched = (url: string) =>
-  HttpClient.get(url).pipe(
-    Effect.flatMap((response) =>
-      response.status === 200
-        ? Effect.map(response.arrayBuffer, (body) => new Uint8Array(body))
-        : Effect.succeed(null),
-    ),
-    Effect.mapError((error) => `could not download ${url}: ${error.message}`),
-    Effect.provide(FetchHttpClient.layer),
-  );
-
-/**
- * The runner of `version` for `platform`, downloaded into `dir` once and verified against
- * the release key every time it is used, so a kept copy changed since is refused too.
- */
-export const verifiedRunner = Effect.fn("Desktop.verifiedRunner")(function* (
-  releases: string,
-  version: string,
-  platform: string,
-  dir: string,
-  key: string = RELEASE_PUBLIC_KEY,
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const asset = `collie-${platform}`;
-  const file = `${dir}/${version}/${asset}`;
-  const kept = yield* Effect.all([
-    fs.readFile(file),
-    fs.readFileString(`${file}${SIGNATURE_SUFFIX}`),
-  ]).pipe(Effect.option);
-  let bytes: Uint8Array;
-  let signature: string | null;
-  if (Option.isSome(kept)) [bytes, signature] = kept.value;
-  else {
-    const url = `${releases}/${version}/${asset}`;
-    const got = yield* fetched(url);
-    if (got === null) return yield* Effect.fail(`Collie ${version} has no ${asset}`);
-    const signed = yield* fetched(`${url}${SIGNATURE_SUFFIX}`);
-    bytes = got;
-    signature = signed === null ? null : new TextDecoder().decode(signed);
-  }
-  const verified = verifyRelease(bytes, signature, key);
-  if (!verified.ok) {
-    if (Option.isSome(kept)) yield* fs.remove(file, { force: true }).pipe(Effect.ignore);
-    return yield* Effect.fail(`${asset} ${version}: ${verified.reason}`);
-  }
-  if (Option.isNone(kept)) {
-    yield* Effect.all([
-      fs.makeDirectory(`${dir}/${version}`, { recursive: true }),
-      fs.writeFile(file, bytes),
-      fs.writeFileString(`${file}${SIGNATURE_SUFFIX}`, signature ?? ""),
-    ]).pipe(Effect.mapError((error) => `could not keep ${asset}: ${error.message}`));
-  }
-  const digest = yield* (yield* Crypto.Crypto)
-    .digest("SHA-256", bytes)
-    .pipe(Effect.mapError((error) => `could not hash ${asset}: ${error.message}`));
-  return { asset, bytes, sha256: Buffer.from(digest).toString("hex") };
-});
+/** The shared download, refusing with the reason Desktop shows. */
+export const verifiedRunner = (...args: Parameters<typeof sharedVerifiedRunner>) =>
+  sharedVerifiedRunner(...args).pipe(Effect.mapError((refused) => refused.reason));
 
 /** What a command said and how it exited, `stdin` given to it whole. */
 export const ranWith = (command: ReadonlyArray<string>, stdin?: Uint8Array) =>

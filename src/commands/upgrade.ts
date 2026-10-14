@@ -5,7 +5,7 @@ import { attempt } from "../envelope";
 import { context, root } from "./shared";
 
 const toFlag = Flag.String("to").pipe(
-  Flag.withDescription("Move a released install to exactly this version"),
+  Flag.withDescription("Move a release to exactly this version, older or newer"),
   Flag.optional,
 );
 
@@ -29,11 +29,11 @@ export const upgrade = Command.make("upgrade", { to: toFlag }, ({ to }) =>
     {
       command: "collie upgrade",
       description:
-        "Place the release this runner carries, or pull a checkout, then bring every prerequisite up to date",
+        "Move a release to the newest release, or pull a development checkout, then bring every prerequisite up to date",
     },
     {
       command: "collie upgrade --to 0.27.0",
-      description: "Move a released install to 0.27.0; a development checkout is never moved",
+      description: "Move a release to exactly 0.27.0; a development checkout is never moved",
     },
   ]),
 );

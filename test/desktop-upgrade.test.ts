@@ -345,7 +345,7 @@ test("collie upgrade shows the Desktop step in its text and steps, and stages no
 
       const upgraded = yield* upgrade(
         { ...rig.pluginEnv(), pluginRoot: `${collieDir}/release`, collieDir },
-        { carried: { tree, runner: `${tree}/prepare.sh` } },
+        { carried: { tree, runner: `${tree}/prepare.sh` }, to: manifest.version },
       );
 
       expect(upgraded.ok && upgraded.data.steps.at(-1)).toMatchObject({

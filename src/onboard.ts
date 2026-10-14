@@ -263,7 +263,12 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
       if (!(yield* fs.exists(`${root}/.git`))) {
         return failed(`${root} is there and is not a checkout of Collie`);
       }
-      const current = yield* installation(root, yield* manifestField(root, "version"), exec);
+      const current = yield* installation(
+        root,
+        env.collieDir,
+        yield* manifestField(root, "version"),
+        exec,
+      );
       if (!current.release) {
         development = true;
         return {

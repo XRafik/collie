@@ -30,6 +30,8 @@ process.env[MARKER] = root;
 for (const key of Object.keys(process.env))
   if (key.startsWith("HERDR_") && key !== "HERDR_API_SCHEMA") delete process.env[key];
 delete process.env.COLLIE_USER_DIR;
+// Never GitHub's: a release source nothing listens on, refused at once.
+process.env.COLLIE_RELEASES = "http://127.0.0.1:9";
 delete process.env.COLLIE_CWD;
 delete process.env.XDG_CONFIG_HOME;
 process.env.HOME = join(root, "home");
