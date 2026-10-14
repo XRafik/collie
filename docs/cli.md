@@ -1595,7 +1595,7 @@ collie upgrade
 ```
 
 What it does depends on where the installation is, never on its git state
-([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)):
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)):
 
 - **A release** — an installation that is not a checkout — goes to the newest release, read
   from `<releases>/latest` (`COLLIE_RELEASES`, else
@@ -1618,7 +1618,7 @@ What it does depends on where the installation is, never on its git state
   directory — is pulled with `git pull --ff-only --autostash`, so uncommitted work rides
   through a pull that touches other files. A pull it cannot do, a conflict included, is
   reported in git's words rather than installed over.
-- **A clone at the Collie directory**, an install from before ADR-0060, becomes a release.
+- **A clone at the Collie directory**, an install from before ADR-draft-an-installation-is-the-release-its-runner-carries, becomes a release.
   `release/` and `kept/` are added to the clone's `.git/info/exclude` first, so the release
   never shows as a change in it. The target release's runner (the newest, or `--to`) is
   downloaded, verified and handed the upgrade with `HERDR_PLUGIN_ROOT` at `release/`: it

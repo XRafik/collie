@@ -1,6 +1,6 @@
 # 0001 — Runner is a Bun-compiled binary fetched from a release
 
-**Status:** accepted, 2026-08-27. Amended by [ADR-0060](0060-an-installation-is-the-release-its-runner-carries.md): an install is no longer a clone, and the runner carries the shipped definitions and writes them out.
+**Status:** accepted, 2026-08-27. Amended by [ADR-draft-an-installation-is-the-release-its-runner-carries](draft-an-installation-is-the-release-its-runner-carries.md): an install is no longer a clone, and the runner carries the shipped definitions and writes them out.
 
 ## Context
 

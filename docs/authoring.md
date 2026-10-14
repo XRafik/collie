@@ -70,7 +70,7 @@ The project's `.collie/` and your `~/.collie/user/` have the same shape, and hol
 of what is yours beside them: `verify.json` in each, and your `config.json` in
 `~/.collie/user/`. Your layer sits beside the installation rather than in it, because every
 upgrade replaces `release/` whole and never writes `user/`
-([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)). An edit made
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)). An edit made
 inside `release/` is copied to `~/.collie/kept/` by the next upgrade and is no longer in
 force, so fork instead. What Collie itself keeps — runs, the
 host's database, tasks — is state, and stays in herdr's state directory for the plugin.

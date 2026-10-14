@@ -103,7 +103,7 @@ minutes, and says nothing when it cannot.
 ### The Collie directory
 
 `~/.collie`, or `COLLIE_DIR`, holds three things
-([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)):
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)):
 
 - `release/` is the installation: the runner at `bin/collie`, the plugin manifest, the
   shipped workflows, personas, prompts and operator skill. The runner writes it, and every
@@ -118,7 +118,7 @@ minutes, and says nothing when it cannot.
 ### A clone install
 
 A Machine installed before
-[ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md) has a git clone of
+[ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md) has a git clone of
 Collie at `~/.collie`. Its next `collie upgrade` places the release inside the clone, at
 `~/.collie/release/`, and switches the plugin, the `collie` shim, the operator skill and the
 host over to it. It then removes the clone, leaving `release/` and `user/`, unless the clone

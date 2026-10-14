@@ -94,7 +94,7 @@ imports it, not because it was found.
 
 `~/.collie/user/` is yours whichever installation runs: every upgrade replaces `release/`
 whole and never writes `user/`
-([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)).
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)).
 
 The file name is what shadows. A project's `review.workflow.ts` overrides the user's, which
 overrides the shipped one; the `id` inside is the public name an operator types. Two files

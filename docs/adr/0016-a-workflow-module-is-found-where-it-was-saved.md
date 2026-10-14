@@ -66,7 +66,7 @@ addition, an edit and a deletion all the same thing.
 
 ## Amended 2026-10-14: the installation is no longer a checkout
 
-[ADR-0060](0060-an-installation-is-the-release-its-runner-carries.md) makes the installation
+[ADR-draft-an-installation-is-the-release-its-runner-carries](draft-an-installation-is-the-release-its-runner-carries.md) makes the installation
 `~/.collie/release/`, which every upgrade replaces whole, rather than a clone that an upgrade
 fast-forwards. D6's conclusion stands: the author's directory, `~/.collie/user/`, is outside
 the shipped assets. The reason is now that nothing in `release/` is the human's. It is also

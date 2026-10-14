@@ -111,9 +111,8 @@ https://github.com/cego/collie/releases/latest/download/setup.sh | sh`.
 when a newer release is out, with `collie upgrade`. They read the newest release at most
 every few minutes. A development checkout keeps the commit count.
 
-**D9. Collie is developed in a checkout like any project's.** That includes `self-improve`
-(ADR-0053), whose Schedule names a
-checkout of cego/collie. An installation is never a checkout to plan or build in.
+**D9. Collie is developed in a checkout like any project's.** An installation is never a
+checkout to plan or build in.
 
 ## Alternatives
 

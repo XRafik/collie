@@ -69,12 +69,12 @@ Machines, for the CLI as for Desktop: adding a Machine there is all it takes to 
 and an upgrade replaces it whole without git. A **development checkout** is a clone of
 Collie that a developer linked as the plugin, built from source. Only git upgrades it;
 Desktop and peers never do. A clone at the Collie directory itself is an install from before
-ADR-0060, and its next upgrade migrates it to a release.
+ADR-draft-an-installation-is-the-release-its-runner-carries, and its next upgrade migrates it to a release.
 
 **Collie directory** — `~/.collie`, or `COLLIE_DIR`: Collie's folder on a computer. Its
 `release/` is the **Installation**. Its `user/` is the human's: the user **Layer**,
 `config.json` and settings. No upgrade writes `user/`. Its `kept/` holds edits found in a
-release before an upgrade replaced it (ADR-0060).
+release before an upgrade replaced it (ADR-draft-an-installation-is-the-release-its-runner-carries).
 
 **Flock** — Every Herd on every Machine paired with this one, or reached by **Desktop**.
 

@@ -52,7 +52,10 @@ const outfile = Bun.argv[3] ?? "bin/collie";
 // this is the load-bearing half of being able to upgrade at all.
 const staging = `${outfile}.new`;
 
-/** What an Installation reads at runtime (ADR-0060), placed by the runner as `release/`. */
+/**
+ * What an Installation reads at runtime, placed by the runner as `release/`
+ * (ADR-draft-an-installation-is-the-release-its-runner-carries).
+ */
 const RELEASE_TREE = [
   "herdr-plugin.toml",
   "install.sh",

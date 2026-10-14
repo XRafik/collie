@@ -21,7 +21,10 @@ export interface PluginEnv {
   pluginRoot: string;
   /** The human's home, where a harness keeps what it remembers between sessions. */
   home: string;
-  /** `COLLIE_DIR`, else `~/.collie`: `release/`, `user/` and `kept/` (ADR-0060). */
+  /**
+   * `COLLIE_DIR`, else `~/.collie`: `release/`, `user/` and `kept/`
+   * (ADR-draft-an-installation-is-the-release-its-runner-carries).
+   */
   collieDir: string;
   /**
    * This person's own layer, which no upgrade writes: their `config.json`, `verify.json`,

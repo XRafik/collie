@@ -877,7 +877,7 @@ in CI on tag and downloaded from the GitHub release by `install.sh`
 definitions stay plain files in the repo and never require a rebuild.
 
 The build also embeds the release tree, everything an installation reads at runtime
-([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)): the plugin
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)): the plugin
 manifest, `install.sh`, `prepare.sh`, the shipped workflows, personas, prompts, the operator
 skill, the notification logo and `release-p256.pub`. `tools/build.ts` stages that list as
 one directory and passes it to Bun's compile `assets`, so a compiled runner reads it at

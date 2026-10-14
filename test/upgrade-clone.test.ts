@@ -1,7 +1,7 @@
-// `collie upgrade` on a clone at the Collie directory, an install from before ADR-0060: the
-// release is placed inside it by the target release's own runner, and the clone is deleted
-// only when nothing in it is the human's. Real git, because what is the human's is git's
-// answer, and a served fake release.
+// `collie upgrade` on a clone at the Collie directory, an install from before
+// ADR-draft-an-installation-is-the-release-its-runner-carries: the release is placed inside it by the
+// target release's own runner, and the clone is deleted only when nothing in it is the
+// human's. Real git, because what is the human's is git's answer, and a served fake release.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
