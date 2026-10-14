@@ -177,8 +177,13 @@ test("work that conflicts with the pull is reported in git's words, and nothing 
 
       const refused = yield* upgrade(development());
 
-      expect(refused).toMatchObject({ ok: false, error: { code: "operation_failed" } });
-      expect(!refused.ok && JSON.stringify(refused.error.details)).toMatch(/conflict/i);
+      expect(refused).toMatchObject({
+        ok: false,
+        error: {
+          code: "operation_failed",
+          details: { output: expect.stringMatching(/conflict/i) },
+        },
+      });
       expect(yield* Effect.promise(() => Bun.file(`${rig.root}/prepared`).exists())).toBe(false);
     }),
   ));
