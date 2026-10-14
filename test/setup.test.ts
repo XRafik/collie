@@ -31,10 +31,7 @@ test("the installer checks with the key release-p256.pub holds", () =>
     }),
   ));
 
-/**
- * A Machine with herdr, and a release source in `dir` publishing `runner` under `at`
- * (`latest/download` or `download/<version>`), signed by `sign` or not at all.
- */
+/** A Machine with herdr, and `runner` published under `dir/releases/<at>`, signed by `sign` or not. */
 const machine = (
   dir: string,
   runner: Uint8Array,
