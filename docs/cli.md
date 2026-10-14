@@ -1527,19 +1527,27 @@ endpoint refusing — with the last good windows kept where there were any.
 collie upgrade
 ```
 
-Pulls first where the installation is a checkout (`--ff-only`), then runs `prepare.sh` —
+On a release — an installation that is not a checkout — it places the release its runner
+carries into the [Collie directory](using.md#the-collie-directory)'s `release/`, replacing
+it whole, so it also repairs a damaged one. Each file there that differs from what the last
+placement recorded is first copied into `kept/<when>/`, and the report names each one with
+how to fork it into `user/`. A runner that was not built as a release places nothing and is
+refused as `invalid_state`. Where the installation is a checkout, it pulls instead
+(`--ff-only`). Either way it then runs `prepare.sh` —
 the one routine every entry point ends in, so this brings the plugin link, the runner and
 shim, the operator skill and the skills up to date together rather than replacing the
-runner alone. A pull it cannot do is reported rather than installed over. A runner
-`install.sh` downloads replaces the one there only once its signature checks out
+runner alone. A pull it cannot do is reported rather than installed over. In a checkout, a
+runner `install.sh` downloads replaces the one there only once its signature checks out
 ([Build and release](internals.md)). Otherwise an install with bun builds the runner from
-source, and one without keeps the runner already there and the `runner` step fails.
+source, and one without keeps the runner already there and the `runner` step fails. In a
+release, the runner is the one placed, and nothing is downloaded or built.
 
 The report names what moved: the commit range where the checkout advanced, and one line
 per preparation step saying whether it was done, was already in place, or was skipped —
 so "nothing to do" reads differently from "the runner updated but the skills step could
 not run". A skipped step is not a failure: `upgrade` still succeeds. Under `--json` the
-same steps are in `data.steps`.
+same steps are in `data.steps`; a release adds `data.release`, the version placed, and
+`data.kept`, each file copied aside, relative to the Collie directory.
 
 The last step, `desktop`, brings [Collie Desktop](using.md#collie-desktop) on this computer
 to the version `upgrade` moved to, where this user has a released Desktop installed that
@@ -1562,7 +1570,7 @@ collie upgrade --to 0.27.0
 ```
 
 Moves a released install to exactly that version (fetching tags and resetting a checkout
-to the tag, or fetching the signed runner for a plain install), and reports the same way, with `data.version`. A development checkout — on a branch
+to the tag; a release is placed only at its runner's own version for now), and reports the same way, with `data.version`. A development checkout — on a branch
 other than `master`, detached on a commit that is not a release, with uncommitted changes,
 or ahead of its remote — is refused as `invalid_state` with the reason, and its checkout is left as it was.
 A host's `identity` names such a checkout's build as `development: "<version>+<sha>"`.

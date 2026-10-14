@@ -21,10 +21,11 @@ export interface PluginEnv {
   pluginRoot: string;
   /** The human's home, where a harness keeps what it remembers between sessions. */
   home: string;
+  /** `COLLIE_DIR`, else `~/.collie`: `release/`, `user/` and `kept/` (ADR-0060). */
+  collieDir: string;
   /**
-   * This person's own layer, beside the installation and never inside what an upgrade
-   * replaces: their `config.json`, `verify.json`, personas and workflows, in the same
-   * shape a project's `.collie/` has.
+   * This person's own layer, which no upgrade writes: their `config.json`, `verify.json`,
+   * personas and workflows, in the same shape a project's `.collie/` has.
    */
   userDir: string;
   /** Where Claude Code's managed settings live: an organisation's, beyond any flag. */
@@ -111,6 +112,7 @@ export function readEnv(
 
   const home = env.HOME ?? "/tmp";
   const pluginRoot = first(env, "HERDR_PLUGIN_ROOT") ?? installRoot ?? env.PWD ?? ".";
+  const collieDir = first(env, "COLLIE_DIR") ?? `${home}/.collie`;
   // `PWD` goes stale whenever something chdir'd; the real directory never does.
   const explicitCwd = first(env, "COLLIE_CWD");
   const cwd = explicitCwd ?? context.workspace_cwd ?? process.cwd();
@@ -123,7 +125,8 @@ export function readEnv(
   return {
     pluginRoot,
     home,
-    userDir: first(env, "COLLIE_USER_DIR") ?? `${pluginRoot}/user`,
+    collieDir,
+    userDir: first(env, "COLLIE_USER_DIR") ?? `${collieDir}/user`,
     claudeManagedDir:
       first(env, "COLLIE_CLAUDE_MANAGED_DIR") ??
       (process.platform === "darwin"
@@ -189,6 +192,7 @@ const environmentKeys = [
   // repository's worktrees go.
   "HERDR_CONFIG_PATH",
   "HERDR_PLUGIN_ROOT",
+  "COLLIE_DIR",
   "COLLIE_USER_DIR",
   "COLLIE_CLAUDE_MANAGED_DIR",
   "HERDR_PLUGIN_STATE_DIR",

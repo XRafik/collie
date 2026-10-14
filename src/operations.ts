@@ -30,7 +30,14 @@ import { carriedBefore, carryOutProposal } from "./run-actions";
 export { carryOutProposal, registerRunExecutors } from "./run-actions";
 import { shell, whatItSaid, type Runner } from "./mr";
 import { checkoutsUnder, projectsRoot } from "./projects";
-import { installation, manifestField, RELEASE_TAG } from "./release";
+import {
+  carriedRelease,
+  installation,
+  manifestField,
+  placeRelease,
+  RELEASE_TAG,
+  type Carried,
+} from "./release";
 import manifest from "../herdr-plugin.toml";
 import { everyRegistered, type AgentEntry } from "./registry";
 import { listRuns, type Asked, type RunFacts } from "./runs";
@@ -344,34 +351,35 @@ export const moveToRelease = Effect.fn("operations.moveToRelease")(function* (
 });
 
 /**
- * Everything a start needs before anyone is asked anything: the Workflow resolved,
- * proven runnable, and its Inputs inferred. What fills the gaps afterwards — prompts
- * in a pane, flags on a command line — is the caller's business.
+ * Brings this installation up to date. A release is replaced by the one this runner carries;
+ * a checkout is pulled, or moved to a release tag.
  */
 export const upgrade = Effect.fn("operations.upgrade")(function* (
   env: PluginEnv,
-  options: { readonly to?: string } = {},
+  options: { readonly to?: string; readonly carried?: Carried | null } = {},
   run: Runner<ChildProcessSpawner.ChildProcessSpawner> = shell,
 ) {
+  const { to } = options;
+  if (to !== undefined && !RELEASE_TAG.test(to)) {
+    return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
+  }
+  const checkout = (yield* run("git", ["rev-parse", "--git-dir"], env.pluginRoot)).code === 0;
+  if (!checkout) {
+    return yield* upgradeRelease(
+      env,
+      to ?? manifest.version,
+      options.carried === undefined ? carriedRelease() : options.carried,
+      run,
+    );
+  }
+
   const root = env.pluginRoot;
   const head = () => run("git", ["rev-parse", "--short", "HEAD"], root).pipe(Effect.map(short));
-  const checkout = (yield* run("git", ["rev-parse", "--git-dir"], root)).code === 0;
-  const { to } = options;
-
-  let before = "";
-  let after = "";
+  const before = yield* head();
   if (to !== undefined) {
-    if (!RELEASE_TAG.test(to)) {
-      return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
-    }
-    if (checkout) {
-      before = yield* head();
-      const refused = yield* moveToRelease(root, to, run);
-      if (refused) return refused;
-      after = yield* head();
-    }
-  } else if (checkout) {
-    before = yield* head();
+    const refused = yield* moveToRelease(root, to, run);
+    if (refused) return refused;
+  } else {
     // `--ff-only`: an upgrade that quietly merged or rebased someone's local work
     // would be a surprise nobody asked this command for.
     const pulled = yield* run("git", ["pull", "--ff-only"], root);
@@ -381,42 +389,107 @@ export const upgrade = Effect.fn("operations.upgrade")(function* (
         output: whatItSaid(pulled),
       });
     }
-    after = yield* head();
   }
+  const after = yield* head();
+  const moved = before !== after;
+  const prepared = yield* prepareAndDesktop(env, root, to, run);
+  if (!prepared.ok) return prepared;
+  return {
+    ok: true as const,
+    data: {
+      root,
+      checkout,
+      before,
+      after,
+      updated: moved,
+      steps: prepared.steps,
+      ...(to && { version: to }),
+    },
+    human: [
+      moved
+        ? `Updated ${root} from ${before} to ${after}.`
+        : `${root} was already up to date at ${before}.`,
+      ...prepared.lines,
+    ].join("\n"),
+  };
+});
 
-  const installed = yield* to !== undefined && !checkout
-    ? run("env", [`COLLIE_VERSION=${to}`, "sh", "prepare.sh"], root)
-    : run("sh", ["prepare.sh"], root);
+/** Places the release this runner carries, then prepares it. */
+const upgradeRelease = Effect.fn("operations.upgradeRelease")(function* (
+  env: PluginEnv,
+  target: string,
+  carried: Carried | null,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  if (target !== manifest.version) {
+    return err(
+      "invalid_state",
+      `This runner is Collie ${manifest.version}, and moving a release to ${target} is not built yet.`,
+      { to: target },
+    );
+  }
+  if (carried === null) {
+    return err(
+      "invalid_state",
+      `${env.pluginRoot} is not a checkout, and this runner was not built as a release, so it has none to place.`,
+      { root: env.pluginRoot },
+    );
+  }
+  const placed = yield* Effect.result(placeRelease(carried, env.collieDir, manifest.version));
+  if (placed._tag === "Failure") {
+    return err("operation_failed", `Could not place the release in ${env.collieDir}.`, {
+      root: env.collieDir,
+      output: placed.failure.message,
+    });
+  }
+  const { root, kept } = placed.success;
+  const prepared = yield* prepareAndDesktop(env, root, target, run);
+  if (!prepared.ok) return prepared;
+  return {
+    ok: true as const,
+    data: { root, checkout: false, release: manifest.version, kept, steps: prepared.steps },
+    human: [
+      `Placed Collie ${manifest.version} in ${root}.`,
+      ...(kept.length === 0
+        ? []
+        : [
+            `Edits found in the release were copied aside, and are no longer in force:`,
+            ...kept.map((file) => `  ${env.collieDir}/${file}`),
+            `To keep one, fork it into ${env.userDir} with \`collie workflow fork\` or \`collie persona fork\`, and make the change there.`,
+          ]),
+      ...prepared.lines,
+    ].join("\n"),
+  };
+});
+
+/** `prepare.sh` in `root`, then the Desktop step, as report lines. */
+const prepareAndDesktop = Effect.fn("operations.prepareAndDesktop")(function* (
+  env: PluginEnv,
+  root: string,
+  to: string | undefined,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const installed = yield* run("sh", ["prepare.sh"], root);
   if (installed.code !== 0) {
     return err("operation_failed", `Could not prepare ${root}.`, {
       root,
       output: whatItSaid(installed),
     });
   }
-
   // Loaded here: of every front door, only an upgrade reaches Desktop.
   const { dataHomeOf, updateDesktop } = yield* Effect.promise(() => import("./desktop"));
   const desktop = yield* updateDesktop(to ?? (yield* manifestField(root, "version")), {
     dataHome: dataHomeOf(env.home, env.raw.XDG_DATA_HOME),
   });
-  const moved = checkout && before !== after;
   const steps = [...prepareSteps(installed.stdout), ...(desktop === null ? [] : [desktop])];
   return {
     ok: true as const,
-    data: { root, checkout, before, after, updated: moved, steps, ...(to && { version: to }) },
-    human: [
-      checkout
-        ? moved
-          ? `Updated ${root} from ${before} to ${after}.`
-          : `${root} was already up to date at ${before}.`
-        : `${root} is not a checkout, so the release was fetched.`,
-      // What each preparation step did, rather than the install's own output: a
-      // step that was skipped is the thing a reader most needs to see, and `bun
-      // install` has a great deal to say about packages it did not have to touch.
-      ...steps.map(
-        (step) => `  ${step.step.padEnd(16)}${step.state}${step.detail ? ` — ${step.detail}` : ""}`,
-      ),
-    ].join("\n"),
+    steps,
+    // What each preparation step did, rather than the install's own output: a step that
+    // was skipped is the thing a reader most needs to see.
+    lines: steps.map(
+      (step) => `  ${step.step.padEnd(16)}${step.state}${step.detail ? ` — ${step.detail}` : ""}`,
+    ),
   };
 });
 

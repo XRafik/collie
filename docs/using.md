@@ -80,12 +80,28 @@ Without any token, a machine with bun builds the runner from source instead — 
 a checkout does anyway, because its own source is what a release is cut from. A machine
 with neither a token nor bun says so and stops rather than installing whatever came back.
 
-`collie upgrade` does the same thing later: it pulls first where the installation is a
-checkout (`--ff-only`, so it never quietly merges local work), then runs the same
-`prepare.sh` steps and reports what each of them did. A pull it cannot do is reported
+`collie upgrade` does the same thing later. On a release it places the release its runner
+carries into `~/.collie/release/` ([the Collie directory](#the-collie-directory)); where the
+installation is a checkout it pulls instead (`--ff-only`, so it never quietly merges local
+work). Either way it then runs the same `prepare.sh` steps and reports what each of them did. A pull it cannot do is reported
 rather than installed over. The Control Plane says when this installation is behind its
 remote, so you upgrade because you know you are stale rather than because you remembered
 to.
+
+### The Collie directory
+
+`~/.collie`, or `COLLIE_DIR`, holds three things
+([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)):
+
+- `release/` is the installation: the runner at `bin/collie`, the plugin manifest, the
+  shipped workflows, personas, prompts and operator skill. The runner writes it, and every
+  upgrade replaces it whole, which also repairs anything missing or damaged in it.
+- `user/` is yours: your workflows and personas, `config.json`, settings and `verify.json`.
+  No upgrade writes it. `COLLIE_USER_DIR` moves it.
+- `kept/` holds edits an upgrade found inside `release/` before replacing it, under
+  `kept/<when>/` with their paths in the release. The upgrade names each one. A kept edit is
+  no longer in force: to keep a change, fork the workflow or persona into `user/`
+  (`collie workflow fork`, `collie persona fork`) and make it there.
 
 ### Onboarding a Machine
 
@@ -194,7 +210,7 @@ Run ended, `bodil remote down <name>` takes the instance down once you are done 
 
 | Variable              | Contract                                                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COLLIE_DIR`          | Checkout used by `setup.sh` when it is run outside a checkout; defaults to `~/.collie`.                                                      |
+| `COLLIE_DIR`          | The [Collie directory](#the-collie-directory), holding `release/`, `user/` and `kept/`; defaults to `~/.collie`.                             |
 | `COLLIE_REPO`         | Git URL cloned by `setup.sh`.                                                                                                                |
 | `COLLIE_TOKEN`        | Token used to download a release asset. Optional where `glab` or `gh` is already logged in to the release host.                              |
 | `COLLIE_BIN_DIR`      | Where `install.sh` writes the `collie` on your PATH; defaults to `~/.local/bin`. `collie doctor` looks there for a shim that is not on PATH. |

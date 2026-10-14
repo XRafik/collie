@@ -3,7 +3,9 @@
 // [outfile]`. Every release artifact and the local `bun run build` come through here,
 // so the plugin, the libc pin and the renderer gate below cannot drift apart.
 
-import { readFileSync, renameSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import solidPlugin from "@opentui/solid/bun-plugin";
 
 /**
@@ -50,6 +52,25 @@ const outfile = Bun.argv[3] ?? "bin/collie";
 // this is the load-bearing half of being able to upgrade at all.
 const staging = `${outfile}.new`;
 
+/** What an Installation reads at runtime (ADR-0060), placed by the runner as `release/`. */
+const RELEASE_TREE = [
+  "herdr-plugin.toml",
+  "install.sh",
+  "prepare.sh",
+  "release-p256.pub",
+  "workflows",
+  "personas",
+  "prompts",
+  "skills/collie",
+  "assets/brand/logos/collie-horizontal-light-512.png",
+];
+// Named `release` because the embedded directory keeps its basename: `/$bunfs/root/release`.
+const tree = `${mkdtempSync(`${tmpdir()}/collie-build-`)}/release`;
+for (const entry of RELEASE_TREE) cpSync(entry, `${tree}/${entry}`, { recursive: true });
+const carried = readdirSync(tree, { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile())
+  .map((entry) => `release/${relative(tree, join(entry.parentPath, entry.name))}`);
+
 await Bun.build({
   entrypoints: ["src/main.ts"],
   target: "bun",
@@ -60,15 +81,20 @@ await Bun.build({
   // because `@opentui/core` awaits at its top level, which bytecode's default CJS cannot.
   bytecode: true,
   format: "esm",
-  compile: { target, outfile: staging },
+  compile: { target, outfile: staging, assets: [tree] },
 });
+rmSync(`${tree}/..`, { recursive: true });
 
 const marker = nativeMarker(target);
-if (!readFileSync(staging).includes(marker)) {
+const artifact = readFileSync(staging);
+const missing = [marker, ...carried].filter((name) => !artifact.includes(name));
+if (missing.length > 0) {
   rmSync(staging);
-  throw new Error(`${target}: the artifact does not embed ${marker}; not shipping it`);
+  throw new Error(`${target}: the artifact does not embed ${missing.join(", ")}; not shipping it`);
 }
 
 // `renameSync`, not a copy: it is atomic and it keeps the executable bit compile set on it.
 renameSync(staging, outfile);
-console.log(`built ${outfile} for ${target}, embedding ${marker}`);
+console.log(
+  `built ${outfile} for ${target}, embedding ${marker} and ${carried.length} release files`,
+);

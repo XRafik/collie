@@ -28,7 +28,8 @@ export const upgrade = Command.make("upgrade", { to: toFlag }, ({ to }) =>
   Command.withExamples([
     {
       command: "collie upgrade",
-      description: "Pull if this is a checkout, then bring every prerequisite up to date",
+      description:
+        "Place the release this runner carries, or pull a checkout, then bring every prerequisite up to date",
     },
     {
       command: "collie upgrade --to 0.27.0",

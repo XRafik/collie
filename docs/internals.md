@@ -867,6 +867,19 @@ in CI on tag and downloaded from the GitHub release by `install.sh`
 ([ADR-0001](adr/0001-compiled-runner-fetched-from-release.md)). Workflow and persona
 definitions stay plain files in the repo and never require a rebuild.
 
+The build also embeds the release tree, everything an installation reads at runtime
+([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)): the plugin
+manifest, `install.sh`, `prepare.sh`, the shipped workflows, personas, prompts, the operator
+skill, the notification logo and `release-p256.pub`. `tools/build.ts` stages that list as
+one directory and passes it to Bun's compile `assets`, so a compiled runner reads it at
+`/$bunfs/root/release`. The build refuses an artifact that does not carry every staged file,
+as it refuses one without its native renderer. `placeRelease` in `src/release.ts` writes the
+tree and the runner into `<Collie directory>/release.new` with `placed.json`, each file's
+sha256, copies every file of the current `release/` that differs from its own record into
+`kept/`, then swaps the two. In a placed release `install.sh` and `prepare.sh` leave
+`bin/collie` as it was placed. `tools/smoke.sh` checks the built runner places its release
+at its own version.
+
 `install.sh` authenticates that download with `COLLIE_TOKEN` where it is set, and otherwise
 borrows the token `glab` or `gh` already holds for the release host — see
 [Using Collie](using.md#install). A private project answers an unauthenticated download

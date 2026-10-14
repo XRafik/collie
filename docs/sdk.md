@@ -80,17 +80,21 @@ is settled before any Layer of yours has been built, and `InputFields` says so i
 
 Three directories, nearest first:
 
-| Layer   | Where                                             |
-| ------- | ------------------------------------------------- |
-| project | `.collie/workflows/*.workflow.ts`                 |
-| user    | `~/.collie/user/workflows/*.workflow.ts`          |
-| shipped | `workflows/*.workflow.ts` inside the installation |
+| Layer   | Where                                       |
+| ------- | ------------------------------------------- |
+| project | `.collie/workflows/*.workflow.ts`           |
+| user    | `~/.collie/user/workflows/*.workflow.ts`    |
+| shipped | `~/.collie/release/workflows/*.workflow.ts` |
 
 Save `echo.workflow.ts` in one of them and it is found: nothing to register it in, nothing
 to rebuild, no host to restart. `collie workflow create <id>` writes one there for you, and
 `collie workflow fork <id> --name <yours>` writes one that keeps what it forked. Only entry
 files take part — a `helper.ts` or a `notes.md` beside one is reached because your entry
 imports it, not because it was found.
+
+`~/.collie/user/` is yours whichever installation runs: every upgrade replaces `release/`
+whole and never writes `user/`
+([ADR-0060](adr/0060-an-installation-is-the-release-its-runner-carries.md)).
 
 The file name is what shadows. A project's `review.workflow.ts` overrides the user's, which
 overrides the shipped one; the `id` inside is the public name an operator types. Two files

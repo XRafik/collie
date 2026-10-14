@@ -64,6 +64,18 @@ host there reports an installation id. Not the plugin installation a host serves
 `identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
 Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
 
+**Installation** — What a Machine runs Collie from, which `identity` calls `root`. A
+**release** is placed in the Collie directory's `release/` by the runner that carries it,
+and an upgrade replaces it whole without git. A **development checkout** is a clone of
+Collie that a developer linked as the plugin, built from source. Only git upgrades it;
+Desktop and peers never do. A clone at the Collie directory itself is an install from before
+ADR-0060, and its next upgrade migrates it to a release.
+
+**Collie directory** — `~/.collie`, or `COLLIE_DIR`: Collie's folder on a computer. Its
+`release/` is the **Installation**. Its `user/` is the human's: the user **Layer**,
+`config.json` and settings. No upgrade writes `user/`. Its `kept/` holds edits found in a
+release before an upgrade replaced it (ADR-0060).
+
 **Flock** — Every Herd on every Machine paired with this one, or reached by **Desktop**.
 
 **Peer** — A Machine paired with this one, known by its installation id and named by

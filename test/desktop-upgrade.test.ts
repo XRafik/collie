@@ -13,6 +13,7 @@ import { signRelease } from "../src/signing";
 import { FakeBin } from "./support/bin";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
+import manifest from "../herdr-plugin.toml";
 
 const pair = () => {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -34,7 +35,7 @@ interface Release {
 }
 
 /** Serves release 0.34.0 under `/download/0.34.0/`, its tar signed `signature`. */
-const serveRelease = (signature: string | null, tar: Uint8Array = TAR) =>
+const serveRelease = (signature: string | null, tar: Uint8Array = TAR, version = "0.34.0") =>
   Effect.acquireRelease(
     Effect.sync(() => {
       const asked: string[] = [];
@@ -45,7 +46,7 @@ const serveRelease = (signature: string | null, tar: Uint8Array = TAR) =>
             schemaVersion: 1,
             identifier: "dk.cego.collie.desktop",
             channel: "stable",
-            version: "0.34.0",
+            version,
             hash: "new34",
             platform: "linux",
             arch: "x64",
@@ -58,7 +59,7 @@ const serveRelease = (signature: string | null, tar: Uint8Array = TAR) =>
       const server = Bun.serve({
         port: 0,
         fetch: (request) => {
-          const name = new URL(request.url).pathname.replace("/download/0.34.0/", "");
+          const name = new URL(request.url).pathname.replace(`/download/${version}/`, "");
           asked.push(name);
           const body = files.get(name);
           return body === undefined ? new Response("", { status: 404 }) : new Response(body);
@@ -329,23 +330,32 @@ test("collie upgrade shows the Desktop step in its text and steps, and stages no
       const bin = yield* FakeBin.make(`${rig.root}/bin`);
       yield* bin.add("git", `exit 1`);
       yield* bin.add("sh", `echo "prepare: runner: done"`);
-      const release = yield* serveRelease(signRelease(TAR, other.privateKey));
+      const release = yield* serveRelease(
+        signRelease(TAR, other.privateKey),
+        TAR,
+        manifest.version,
+      );
       const data = `${rig.root}/.local/share`;
       yield* install(data, release.base, "0.33.0");
 
-      // A plain install, whose manifest names the version it was moved to.
-      yield* Effect.promise(() =>
-        Bun.write(`${rig.projectDir}/herdr-plugin.toml`, 'version = "0.34.0"\n'),
-      );
+      // A release, placed from the one this runner carries.
+      const tree = `${rig.root}/carried`;
+      yield* Effect.promise(() => Bun.write(`${tree}/prepare.sh`, ""));
+      const collieDir = `${rig.root}/collie-dir`;
 
-      const upgraded = yield* upgrade({ ...rig.pluginEnv(), pluginRoot: rig.projectDir });
+      const upgraded = yield* upgrade(
+        { ...rig.pluginEnv(), pluginRoot: `${collieDir}/release`, collieDir },
+        { carried: { tree, runner: `${tree}/prepare.sh` } },
+      );
 
       expect(upgraded.ok && upgraded.data.steps.at(-1)).toMatchObject({
         step: "desktop",
         state: "failed",
       });
       expect(upgraded.ok && upgraded.human).toMatch(
-        /desktop\s+failed — Desktop 0.34.0 was not staged: .*does not match/,
+        new RegExp(
+          `desktop\\s+failed — Desktop ${manifest.version} was not staged: .*does not match`,
+        ),
       );
       expect(yield* staged(data)).toBeNull();
       yield* bin.restore();

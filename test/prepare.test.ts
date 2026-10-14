@@ -519,6 +519,28 @@ test("setup configures Claude Code's status line; prepare never touches it", () 
     }),
   ));
 
+test("in a release, prepare keeps the placed runner and downloads nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* remove(`${root}/.git`);
+      yield* fs.writeFileString(`${root}/placed.json`, `{"version":"0.1.0","files":{}}`);
+      yield* fs.makeDirectory(`${root}/bin`, { recursive: true });
+      yield* fs.writeFileString(`${root}/bin/collie`, "#!/bin/sh\n# the placed runner\n");
+      yield* fs.chmod(`${root}/bin/collie`, 0o755);
+      yield* bin.add("curl", `echo "$*" >> "${home}/downloads"; exit 1`);
+
+      const done = yield* prepare();
+
+      expect(done.code).toBe(0);
+      expect(done.out).toContain("prepare: runner: already in place");
+      expect(yield* read(`${root}/bin/collie`)).toBe("#!/bin/sh\n# the placed runner\n");
+      expect(yield* exists(`${home}/downloads`)).toBe(false);
+      expect(yield* exists(`${home}/builds`)).toBe(false);
+      expect(yield* read(`${home}/.local/bin/collie`)).toContain(`"${root}/bin/collie"`);
+    }),
+  ));
+
 const p256 = () => generateKeyPairSync("ec", { namedCurve: "prime256v1" });
 
 /**

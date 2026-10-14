@@ -89,4 +89,16 @@ wait
 [ "$(grep -c '"kind":"usage"' "$TOGETHER/events.jsonl")" = "12" ] ||
   fail "concurrent compaction helpers lost an event"
 
-echo "smoke: $BIN answered --help, one JSON success and two typed failures, and served its own compaction helper"
+# The release path: the runner places the release it carries, at its own version. A stub
+# `sh` stands in for `prepare.sh`, which links herdr and fetches skills.
+PLACE="$STATE/place"
+mkdir -p "$PLACE/stubs"
+printf '#!/bin/sh\necho "prepare: runner: already in place"\n' > "$PLACE/stubs/sh"
+chmod +x "$PLACE/stubs/sh"
+COLLIE_DIR="$PLACE/dir" HERDR_PLUGIN_ROOT="$PLACE/dir/release" XDG_DATA_HOME="$PLACE/data" \
+  PATH="$PLACE/stubs:$PATH" "$BIN" --json upgrade >/dev/null 2>&1 || fail "the runner did not place its release"
+placed=$(sed -n 's/^version = "\(.*\)"/\1/p' "$PLACE/dir/release/herdr-plugin.toml")
+[ "collie v$placed" = "$("$BIN" --version)" ] || fail "the placed release is $placed, not the runner's own version"
+[ -x "$PLACE/dir/release/bin/collie" ] || fail "the placed release has no runner"
+
+echo "smoke: $BIN answered --help, one JSON success and two typed failures, served its own compaction helper and placed its release"

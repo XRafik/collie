@@ -2656,9 +2656,9 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
   const command = yield* hostCommand;
-  // Which installation's workflows this host serves, decided by the client that needed
-  // it rather than guessed from wherever the host process happens to start.
-  const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
+  // Which installation's and user's workflows this host serves, decided by the client that
+  // needed it rather than guessed from wherever the host process happens to start.
+  const { pluginRoot, userDir } = yield* currentEnv.pipe(Effect.orDie);
   return yield* Effect.gen(function* () {
     yield* fs.makeDirectory(named, { recursive: true });
     // The host starts in it, so a relative one would name somewhere else from there.
@@ -2668,7 +2668,12 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
         cwd: dir,
         // A client started by Desktop may carry its launcher's LD_PRELOAD.
         // oxlint-disable-next-line effecttsgo/process-env
-        env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+        env: withoutLauncher({
+          ...process.env,
+          ...hostEnv,
+          HERDR_PLUGIN_ROOT: pluginRoot,
+          COLLIE_USER_DIR: userDir,
+        }),
         extendEnv: false,
         detached: true,
         stdin: "ignore",

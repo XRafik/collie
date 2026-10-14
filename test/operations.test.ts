@@ -162,35 +162,3 @@ OUT`,
       expect(moved.ok && moved.human).toMatch(/skills\s+skipped/);
     }),
   ));
-
-test("upgrade of a plain install fetches the release without asking git anything", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const env = { ...rig.pluginEnv(), pluginRoot: rig.projectDir };
-      // Not a checkout: `git rev-parse --git-dir` fails, and there is nothing to pull.
-      yield* bin.add("git", `exit 1`);
-      yield* bin.add("sh", `echo installed collie-linux-x64; exit 0`);
-
-      const fetched = yield* upgrade(env);
-
-      expect(fetched).toMatchObject({
-        ok: true,
-        data: { checkout: false, updated: false },
-      });
-      expect(fetched.ok && fetched.human).toContain("not a checkout");
-    }),
-  ));
-
-test("a plain install upgrades to the exact release through the signed installer", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const env = { ...rig.pluginEnv(), pluginRoot: rig.projectDir };
-      yield* bin.add("git", `exit 1`);
-      yield* bin.add("sh", `echo "prepare: runner: done"; echo "$COLLIE_VERSION" > version`);
-      const fetched = yield* upgrade(env, { to: "0.2.0" });
-      expect(fetched).toMatchObject({ ok: true, data: { checkout: false, version: "0.2.0" } });
-      expect(
-        yield* (yield* FileSystem.FileSystem).readFileString(`${rig.projectDir}/version`),
-      ).toBe("0.2.0\n");
-    }),
-  ));

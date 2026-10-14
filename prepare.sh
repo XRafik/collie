@@ -51,7 +51,7 @@ else
   step plugin-link "done"
   # The build hook that link just fired is what builds the runner, so building it
   # again below would be a second compile reported as a change that did not happen.
-  if [ -x "$ROOT/bin/collie" ]; then runner_built=1; fi
+  if [ -x "$ROOT/bin/collie" ] && [ ! -f "$ROOT/placed.json" ]; then runner_built=1; fi
 fi
 
 if [ -n "$runner_built" ]; then
