@@ -1501,7 +1501,9 @@ closing the record, and sends to no host until you send it. While a Run has draf
 Plan and Diff tabs show them in one list, where you can edit or remove each, choose who
 gets them — **The agent at work** by default (the agent whose step is active, else the
 builder), a role the Run has a live agent in, or one of its live agents, labelled as the
-Terminal tab labels them — and **Send**. The line it leaves says whether the agent was
+Terminal tab labels them; a Run on a Machine whose Collie predates addressed deliveries
+(board protocol 3, or a saved board) offers only its live agents, the newest by default —
+and **Send**. The line it leaves says whether the agent was
 seen to take it. Every draft goes as one message, word
 for word, each item naming the plan file, or `path:line` with `(as it was)` for removed
 lines, quoting what you selected and giving your words;

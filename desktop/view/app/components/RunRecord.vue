@@ -14,7 +14,7 @@ const { value: read, trouble } = useHeld(() =>
   ),
 );
 const detail = computed(() => read.value ?? null);
-const { notLive } = useFlock();
+const { notLive, protocolOf } = useFlock();
 const away = computed(() => notLive(props.placed.installation));
 
 /** The location last followed: opened in the diff, or read-only in Review where there is none. */
@@ -122,6 +122,7 @@ const locationOf = (file: string, line: number | null) =>
             :run-id="detail.id"
             :launches="detail.agents"
             :live="placed.task.agents"
+            :protocol="protocolOf(placed.installation)"
           />
           <PlanTab
             v-if="tab === 'plan' && detail.plan"

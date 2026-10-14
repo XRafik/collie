@@ -86,15 +86,23 @@ export const addressOf = (who: Readonly<Address>): Address => {
   return address;
 };
 
+/** The first board protocol whose hosts take a delivery to a role or to no agent: both shipped together. */
+export const ADDRESSED_DELIVERY = 4;
+
 /**
- * Who review comments may go to: the agent whose step is active (else the builder), which
- * is first and the default, then each role the Run has a live agent in, then each agent.
+ * Who review comments may go to, the first being the default. A Machine on
+ * `ADDRESSED_DELIVERY` or later: the agent whose step is active (else the builder), then
+ * each role the Run has a live agent in, then each agent. An older or unknown one: each
+ * agent, newest first.
  */
 export const deliveryChoices = (
   launches: ReadonlyArray<{ readonly agent: string }> | undefined,
   live: ReadonlyArray<BoardAgent>,
+  protocol: number | null,
 ): DeliveryChoice[] => {
   const tabs = recipients(launches, live);
+  const byName = tabs.map((tab) => ({ key: tab.name, label: tab.label, agent: tab.name }));
+  if (protocol === null || protocol < ADDRESSED_DELIVERY) return byName.reverse();
   if (tabs.length === 0) return [];
   const roles = new Set(
     tabs.flatMap((tab) => live.find((one) => one.name === tab.name)?.role ?? []),
@@ -108,7 +116,7 @@ export const deliveryChoices = (
         label: `The ${to}`,
         to,
       })),
-    ...tabs.map((tab) => ({ key: tab.name, label: tab.label, agent: tab.name })),
+    ...byName,
   ];
 };
 

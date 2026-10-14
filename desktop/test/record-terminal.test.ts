@@ -240,19 +240,32 @@ test.each([
   );
 });
 
+const choicesOf = (protocol: number | null) =>
+  deliveryChoices(
+    launched("build-1", "review-1"),
+    [live("build-1", "implementer", "working"), live("review-1", "reviewer")],
+    protocol,
+  ).map(({ key, to, agent }) => [key, to ?? agent ?? null]);
+
 test("review comments go by default to the agent at work, and may name a role the Run has or an agent", () => {
-  const agents = [live("build-1", "implementer", "working"), live("review-1", "reviewer")];
-  expect(
-    deliveryChoices(launched("build-1", "review-1"), agents).map(({ key, to, agent }) => [
-      key,
-      to ?? agent ?? null,
-    ]),
-  ).toEqual([
+  const offered = [
     ["@work", null],
     ["@builder", "builder"],
     ["@reviewer", "reviewer"],
     ["build-1", "build-1"],
     ["review-1", "review-1"],
-  ]);
-  expect(deliveryChoices(launched("gone"), agents)).toEqual([]);
+  ];
+  expect(choicesOf(4)).toEqual(offered);
+  expect(choicesOf(5)).toEqual(offered);
+  expect(deliveryChoices(launched("gone"), [live("build-1", "implementer")], 4)).toEqual([]);
 });
+
+test.each([3, null])(
+  "a Machine on protocol %p is offered only the live agents by name, the newest first",
+  (protocol) => {
+    expect(choicesOf(protocol)).toEqual([
+      ["review-1", "review-1"],
+      ["build-1", "build-1"],
+    ]);
+  },
+);
