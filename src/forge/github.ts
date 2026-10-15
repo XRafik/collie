@@ -14,6 +14,7 @@ import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import { epochMs } from "../time";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
+import { Issue, filedIssueOf } from "./issues";
 
 const HOST = "github.com";
 
@@ -409,8 +410,73 @@ function clone<R>(
   });
 }
 
+const IssuesJson = Schema.fromJsonString(Schema.Array(Issue));
+
 export const github: Forge = {
   name: "github",
+  issues: (project, cwd, run) =>
+    Effect.gen(function* () {
+      const answer = yield* run(
+        "gh",
+        [
+          "issue",
+          "list",
+          "--repo",
+          mrPath({ project, iid: "" }),
+          "--state",
+          "open",
+          "--limit",
+          String(2 ** 31 - 1),
+          "--json",
+          "number,title,body,url",
+        ],
+        cwd,
+      );
+      if (answer.code !== 0)
+        return { ok: false, reason: whatItSaid(answer) || "issue listing failed" };
+      const decoded = Schema.decodeUnknownOption(IssuesJson)(answer.stdout);
+      return Option.isSome(decoded)
+        ? { ok: true, issues: decoded.value }
+        : { ok: false, reason: "issue listing returned invalid JSON" };
+    }),
+  fileIssue: (project, title, body, cwd, run) =>
+    Effect.map(
+      run(
+        "gh",
+        [
+          "issue",
+          "create",
+          "--repo",
+          mrPath({ project, iid: "" }),
+          "--title",
+          title,
+          "--body",
+          body,
+        ],
+        cwd,
+      ),
+      (answer) => filedIssueOf(answer, project, false),
+    ),
+  commentIssue: (project, number, body, cwd, run) =>
+    Effect.map(
+      run(
+        "gh",
+        [
+          "issue",
+          "comment",
+          String(number),
+          "--repo",
+          mrPath({ project, iid: "" }),
+          "--body",
+          body,
+        ],
+        cwd,
+      ),
+      (answer) => ({
+        ok: answer.code === 0,
+        reason: answer.code === 0 ? "" : whatItSaid(answer) || "issue comment failed",
+      }),
+    ),
   clone,
   display: "GitHub",
   cli: "gh",

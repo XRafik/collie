@@ -86,6 +86,7 @@ const REVIEW_COMMENTS = "review comments in Desktop (this MR)";
 const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
+const SCHEDULES = "Schedules, and Collie fixing what its own Runs show (this MR)";
 const QUIET = "a stopped Codex agent is Quiet before anything replaces it (this MR)";
 const MERGE_WATCH = "the board knows a Task's merge request without being told (this MR)";
 
@@ -1747,10 +1748,63 @@ const OPERATOR_CHECKS: readonly Check[] = [
   },
 ];
 
+/** A Schedule's host fires it, and `self-improve` files and fixes what a day shows. */
+const SCHEDULED: readonly Check[] = [
+  {
+    id: "backend/a-schedule-fires-one-run-per-occurrence",
+    statement:
+      "A Schedule fires one Run per occurrence, collapses the occurrences missed while no host ran into one, and waits for its last Run before the next.",
+    owner: SCHEDULES,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/schedules.test.ts",
+      name: "a due Schedule admits one Run per occurrence|occurrences missed while no host ran start once|a Run still going holds the next occurrence",
+    },
+  },
+  {
+    id: "desktop/the-machines-page-lists-pauses-and-resumes-schedules",
+    statement:
+      "Desktop's Machines page lists a Machine's Schedules, and pauses and resumes one there as Desktop.",
+    owner: SCHEDULES,
+    needs: "ui",
+    proof: {
+      kind: "test",
+      layer: "ui",
+      file: "test/desktop-schedules.test.ts",
+      name: "it lists a Machine's Schedules, and its pause, resume and removal are recorded as Desktop's|a paused Schedule offers resume, remove and move|a row's pause, resume and remove ask its Machine's host for that change",
+    },
+  },
+  {
+    id: "operator/a-schedule-on-a-real-machine-starts-a-run",
+    statement:
+      "A Schedule on a real Machine starts a Run whose card says it was started by that Schedule.",
+    owner: SCHEDULES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: 'On a real Machine, add a Schedule every two minutes on a quick Workflow; record that each occurrence starts one Run whose card says "Started by schedule `<name>`", that no second Run starts while one is held at a question, and that with the host stopped over two occurrences exactly one late Run starts once it is up. Record the Run ids and the revision.',
+    },
+  },
+  {
+    id: "operator/a-self-improve-day-files-issues-and-opens-a-pull-request",
+    statement:
+      "A real `self-improve` day files deduplicated issues on cego/collie and an Improvement opens a pull request that closes them, with nobody asked.",
+    owner: SCHEDULES,
+    needs: "operator",
+    proof: {
+      kind: "operator",
+      how: "In a Collie checkout, start `self-improve` with `improvements=0` against a real day; record the issues it filed on cego/collie, that they cite Run ids and name no other repository, and that starting it again the same day files nothing new. Then start it with `improvements=1`; record that one Improvement card plans and builds without asking and opens a pull request that says `Closes #<n>`. Record the Run ids, the pull request and the revision.",
+    },
+  },
+];
+
 export const CHECKS: readonly Check[] = [
   ...FRONT_DOOR,
   ...BACKEND,
   ...WORKFLOWS,
+  ...SCHEDULED,
   ...OPERATOR_CHECKS,
 ];
 

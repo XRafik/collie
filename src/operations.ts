@@ -23,7 +23,6 @@ import {
   herdrFailureReason,
   type AgentInfo,
   type PaneInfo,
-  type TabInfo,
   type WorkspaceInfo,
 } from "./herdr";
 import { carriedBefore, carryOutProposal } from "./run-actions";
@@ -45,7 +44,7 @@ import manifest from "../herdr-plugin.toml";
 import { everyRegistered, type AgentEntry } from "./registry";
 import { listRuns, liveCheckouts, type Asked, type RunFacts } from "./runs";
 import { newTask, taskOfWorkspace, writeTask, type TaskChoice, type TaskRecord } from "./task";
-import { nameTask, type LiveNames } from "./tasknames";
+import { freshTaskLabel } from "./tasknames";
 import { readIntent, type Authority, type Intent } from "./intent";
 import {
   appendLine,
@@ -59,7 +58,6 @@ import {
 } from "./steering";
 import { append, conversationPath, tail, type NewTurn } from "./conversation";
 import {
-  budgetedDeps,
   evaluate,
   validate,
   type CallLimits as EvaluatorLimits,
@@ -79,7 +77,6 @@ import { openReports, readDrift } from "./drift";
 import { readCards } from "./cards";
 import { describeAction } from "./lines";
 import { MAX_DELIVERY_BYTES } from "./dispatcher";
-import { taskWorkspaceLabel } from "./naming";
 import { YamlMapSchema, type YamlMap } from "./yaml";
 
 const ErrorCode = Schema.Literals([
@@ -692,38 +689,6 @@ function short(result: { code: number; stdout: string }): string {
 }
 
 /**
- * The names this person already has on their own workspaces, tabs and panes. Read-only,
- * and best effort: a herdr that will not answer costs the namer its vocabulary, not the
- * Run its start.
- */
-const liveNames = Effect.fn("operations.liveNames")(function* (herdr: Herdr, everything: boolean) {
-  const workspaces = yield* herdr
-    .workspaceList()
-    .pipe(Effect.catch(() => Effect.succeed<WorkspaceInfo[]>([])));
-  // Tabs and panes are vocabulary for the namer alone. Without one to ask, they are two
-  // herdr calls whose answer nothing would read.
-  const [tabs, panes] = everything
-    ? yield* Effect.all([
-        herdr.tabList().pipe(Effect.catch(() => Effect.succeed<TabInfo[]>([]))),
-        herdr.paneList().pipe(Effect.catch(() => Effect.succeed<PaneInfo[]>([]))),
-      ])
-    : [[], []];
-  return {
-    workspaces: workspaces.map((workspace) => workspace.label),
-    tabs: tabs.map((tab) => tab.label),
-    panes: panes.flatMap((pane) => (pane.label === null ? [] : [pane.label])),
-  } satisfies LiveNames;
-});
-
-/**
- * What naming one Task may cost, or null where it cannot be asked at all. A tighter clock
- * than a steer's: somebody is waiting on this to see their workspace
- * open, and the stand-in name is already to hand.
- */
-const namingDeps = (env: PluginEnv) =>
-  budgetedDeps(env, "namer.md", { maxSeconds: 30, maxOutputBytes: 4 * 1024 });
-
-/**
  * The Task a start belongs to, and the herdr workspace its Runs and agents live in.
  *
  * A fresh start gets a workspace of its own, whatever workspace it was launched from:
@@ -767,18 +732,9 @@ export const taskFor = Effect.fn("operations.taskFor")(function* (
     env.asker?.from?.machine === undefined
   )
     return kept(choice.mode === "continue" ? choice.task : null);
-  const herdr = new Herdr(env);
   // A workspace cleanup closed is reopened on the Run's checkout when its first agent starts.
   if (choice.mode === "continue") return kept(choice.task);
-  const naming = yield* namingDeps(env);
-  const label = taskWorkspaceLabel(
-    yield* nameTask(
-      naming,
-      { workflow: about.workflow, named: about.named, short: "", goal: null, cwd: env.cwd },
-      yield* liveNames(herdr, naming !== null),
-    ),
-  );
-  return kept(null, label);
+  return kept(null, yield* freshTaskLabel(env, about));
 });
 
 /**

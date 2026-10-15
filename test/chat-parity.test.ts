@@ -247,6 +247,29 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["cleanup", { route: "read", tool: "collie_installation" }],
   ["cleanup --apply", { route: "propose", kind: "cleanup", action: { kind: "cleanup" } }],
   ["usage", { route: "shell" }],
+  [
+    "schedule add",
+    {
+      route: "propose",
+      kind: "schedule_add",
+      action: {
+        kind: "schedule_add",
+        name: "daily",
+        cron: "0 7 * * *",
+        start: { workflow: "review", inputs: {} },
+      },
+    },
+  ],
+  ["schedule list", { route: "read", tool: "collie_installation" }],
+  ...(["pause", "resume", "remove"] as const).map((change): readonly [string, Route] => [
+    `schedule ${change}`,
+    {
+      route: "propose",
+      kind: `schedule_${change}`,
+      action: { kind: `schedule_${change}`, name: "daily" },
+    },
+  ]),
+  ["schedule move", { route: "shell" }],
   ["chat status", { route: "read", tool: "collie_installation" }],
   ["chat harness", { route: "shell" }],
   ["chat news", { route: "read", tool: "collie_news" }],

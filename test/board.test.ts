@@ -1299,6 +1299,27 @@ test("a fan-out's card lists its Repo runs and every repository still to come, b
     }),
   ));
 
+test("a child that is work of its own is its own card, and its parent's card lists no child", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const parent = yield* madeRun(dir, { id: "r-self", task: "task-1" });
+      const own = yield* madeRun(dir, {
+        id: "r-self.improve",
+        task: "task-2",
+        parent: "r-self",
+        repo: ".",
+      });
+
+      const views = yield* board(env, [own, parent]);
+
+      expect(views.map((view) => [view.run, view.children])).toEqual([
+        ["r-self.improve", []],
+        ["r-self", []],
+      ]);
+    }),
+  ));
+
 /**
  * A fan-out started from a plan's end menu: its `plan` input names the plan Run's own plan,
  * with no kind recorded, over three repositories in two waves.

@@ -658,6 +658,32 @@ before every ticket after the first, before every review round and before the ga
 review, and goes on only from `unchanged` or `merged`.
 The shipped `renovate` workflow still requires GitLab for its merge and release commands.
 
+`host.report(since)` reads this Machine's Runs admitted at or after an ISO moment. It
+returns the same report as `collie --json run report --since`: workflow tallies, metrics,
+failed and completed results, stopped Runs, and a `runs` list. Each list entry has
+`runId`, `workflow`, `parent`, `project`, `created`, and `status`. An invalid date fails with
+`WorkflowError`. Read it inside an Activity when its answer decides subsequent work.
+
+`host.skill(name)` answers the installed `SKILL.md` that `{{skill:name}}` would name to an
+agent, or `null` where this Machine has none. Check it in an Activity to fail before any
+agent starts on a skill the work cannot do without.
+
+`host.issues(runId)` lists the open issues of that Run's checkout, each with `number`,
+`title`, `body`, and `url`. The checkout's remote decides its forge.
+`host.fileIssue({ runId, title, body })` returns the filed issue's `number` and `url`.
+`host.commentIssue({ runId, number, body })` comments on one there.
+
+Before filing or commenting, the host redacts credential-shaped values with the
+Conversation's redaction. It refuses text naming another checkout under the Projects
+root, by absolute path or remote path, and names the checkout in `WorkflowError`.
+Both safeguards cover the title and body when filing. A refusal sends nothing to the
+forge. The Run's own checkout and repository remain valid references.
+
+These operations fail with `WorkflowError` when the forge refuses or returns an
+unreadable answer. If creation returns no issue URL, inspect the repository before
+retrying; the issue might already exist. Workflows call these methods directly and
+never construct forge CLI commands.
+
 `host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on
 the repository it works in, and answers `null` where that repository has none. Waiting here
 costs wall clock and no model tokens, which is the point of claiming before an agent starts
@@ -732,6 +758,12 @@ purpose: the file decides, and no lookup happens at all.
   it shows up in `run list` beside you, and interrupting you reaches it. It does not belong
   to whatever client asked for your Run — that can go, and neither of you notices.
 - **It prefers the agents you do** where you start it, unless its options say otherwise.
+- **`ownTask: true` makes it work of its own.** It is admitted as a fresh start is: its
+  Task's name is inferred from its work, it joins the open Task already working its
+  branch, or a Task workspace is opened on its checkout. So it has its own card and is
+  released on its own merge request. It is still yours: its parent is your Run, you wait
+  on it, a stop of yours reaches it, a replay reuses it, and it is in your Lineage. Your
+  card does not list it.
 
 How many children there are, and in what order, is TypeScript:
 

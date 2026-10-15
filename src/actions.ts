@@ -3,6 +3,7 @@
 
 import { Effect, Schema, Struct } from "effect";
 import { VerifySpecSchema } from "./verify-spec";
+import { SavedStart } from "./schedule-model";
 
 /** Files the work is given, as paths on the Machine of the host that carries it out. */
 const Attachments = Schema.Array(Schema.String).annotate({
@@ -139,6 +140,25 @@ export const ActionSchema = Schema.Union([
   }),
   Schema.Struct({ kind: Schema.Literal("home_cleanup") }),
   Schema.Struct({ kind: Schema.Literal("cleanup") }),
+  Schema.Struct({
+    kind: Schema.Literal("schedule_add"),
+    machine: Schema.optionalKey(Schema.String),
+    name: Schema.String,
+    cron: Schema.String,
+    tz: Schema.optionalKey(Schema.String),
+    start: SavedStart.mapFields((fields) => ({
+      ...fields,
+      workspace: Schema.optionalKey(fields.workspace),
+      verify: Schema.optionalKey(fields.verify),
+    })),
+  }),
+  ...(["schedule_pause", "schedule_resume", "schedule_remove"] as const).map((kind) =>
+    Schema.Struct({
+      kind: Schema.Literal(kind),
+      machine: Schema.optionalKey(Schema.String),
+      name: Schema.String,
+    }),
+  ),
   Schema.Struct({ kind: Schema.Literal("upgrade") }),
   Schema.Struct({
     kind: Schema.Literal("onboard"),

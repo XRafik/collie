@@ -562,6 +562,10 @@ const NOT_ABOUT_A_RUN: ReadonlySet<ActionKind> = new Set([
   "fork_definition",
   "home_cleanup",
   "cleanup",
+  "schedule_add",
+  "schedule_pause",
+  "schedule_resume",
+  "schedule_remove",
   "upgrade",
   "onboard",
 ]);

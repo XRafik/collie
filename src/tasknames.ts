@@ -10,8 +10,10 @@
 // display label — never a path component, an agent name or a command.
 
 import { Effect } from "effect";
-import { askOnce, type BudgetedDeps, type TaskName } from "./evaluator";
-import { oneLine } from "./naming";
+import type { PluginEnv } from "./env";
+import { askOnce, budgetedDeps, type BudgetedDeps, type TaskName } from "./evaluator";
+import { Herdr, type PaneInfo, type TabInfo, type WorkspaceInfo } from "./herdr";
+import { oneLine, taskWorkspaceLabel } from "./naming";
 
 /** The names this person already has, as herdr reports them. Read-only context. */
 export interface LiveNames {
@@ -178,4 +180,40 @@ export const nameTask = Effect.fn("tasknames.nameTask")(function* (
   const answer = yield* askOnce(deps, "naming", namePack(context, live));
   if (answer === null || !("project" in answer)) return fallbackName(context, live);
   return cleanName(answer, context, live);
+});
+
+/** Live labels are naming context; a failed read must not prevent a start. */
+const liveNames = Effect.fn("tasknames.liveNames")(function* (herdr: Herdr, everything: boolean) {
+  const workspaces = yield* herdr
+    .workspaceList()
+    .pipe(Effect.catch(() => Effect.succeed<WorkspaceInfo[]>([])));
+  const [tabs, panes] = everything
+    ? yield* Effect.all([
+        herdr.tabList().pipe(Effect.catch(() => Effect.succeed<TabInfo[]>([]))),
+        herdr.paneList().pipe(Effect.catch(() => Effect.succeed<PaneInfo[]>([]))),
+      ])
+    : [[], []];
+  return {
+    workspaces: workspaces.map((workspace) => workspace.label),
+    tabs: tabs.map((tab) => tab.label),
+    panes: panes.flatMap((pane) => (pane.label === null ? [] : [pane.label])),
+  } satisfies LiveNames;
+});
+
+/** Infer a fresh Task's label from its work; `asking: false` uses the stand-in. */
+export const freshTaskLabel = Effect.fn("tasknames.freshTaskLabel")(function* (
+  env: PluginEnv,
+  about: { readonly workflow: string; readonly named: string },
+  asking = true,
+) {
+  const naming = asking
+    ? yield* budgetedDeps(env, "namer.md", { maxSeconds: 30, maxOutputBytes: 4 * 1024 })
+    : null;
+  return taskWorkspaceLabel(
+    yield* nameTask(
+      naming,
+      { workflow: about.workflow, named: about.named, short: "", goal: null, cwd: env.cwd },
+      yield* liveNames(new Herdr(env), naming !== null),
+    ),
+  );
 });

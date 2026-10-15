@@ -1,7 +1,7 @@
 // The child: a workflow of its own that consumes the shared contract its project selected.
 // Nothing here knows it is a child — it is started by id, like anything else.
 
-import { Host, Run, defineWorkflow } from "collie";
+import { Host, Run, ask, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 import * as Activity from "effect/workflow/Activity";
 import { reviewLayer, reviewed } from "./capability.ts";
@@ -15,6 +15,7 @@ export default defineWorkflow({
     note: Schema.String,
     /** Narrower than the parent's own field, which is what makes the child the authority. */
     grade: Schema.Literals(["pass", "fail"]),
+    wait: Schema.optionalKey(Schema.Boolean),
   }),
   hints: { note: "goal" },
   output: Schema.String,
@@ -23,6 +24,7 @@ export default defineWorkflow({
     Effect.gen(function* () {
       const host = yield* Host;
       const runId = (yield* Run).id;
+      if (input.wait) yield* ask({ name: "ready", prompt: "Ready to grade?" });
       return yield* Activity.make({
         name: "grade",
         success: Schema.String,
