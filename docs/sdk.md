@@ -320,7 +320,8 @@ const verdict =
 - **The Output budget is idle time.** The agent has two hours to write its Output, counted
   only while herdr reports it `idle`, `done` or `unknown`, or cannot say. While it is
   `working` or `blocked` the clock stops, so a long suite is never parked for being slow.
-  Past the budget the Run parks saying how many minutes it sat idle, and `collie run resume`
+  It stops too while a question the agent asked is open on the Run
+  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and `collie run resume`
   collects what it writes late.
 - **`cwd` is where the host placed the Run** unless you name another checkout.
 - **`role`** defaults to the operation's name. The role is injected as a persona, and where

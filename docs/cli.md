@@ -316,6 +316,15 @@ collie --json run steer <run-id> "check the migration too" [--to builder] [--req
   one it takes is taken in any case, so `YES` answers `yes`.
 - **One answer settles it.** A second is refused with what the Run already has; the same
   `--request-id` again is the same answer rather than another.
+- **An agent's question is answered the same way.** A Claude agent Collie launched that
+  calls `AskUserQuestion` is told its question is on its Run and ends its turn. Each
+  question is a decision named `ask-<operation>-<n>`, numbered from 1 in the order asked,
+  whose prompt lists its options. It takes any words, an option's label among them. Once
+  every question of that one call is answered, from here, the card or chat, the answers
+  go to the agent together as its next message. While one is open, the step's Output
+  budget is paused. One still open when the step's Output comes is closed with
+  `closed: <operation> finished before it was answered`, and nothing is sent
+  ([ADR-draft-an-agents-question-is-asked-on-its-run](adr/draft-an-agents-question-is-asked-on-its-run.md)).
 - **A control reaches one Run.** Its siblings and the host carry on. A control over a Run
   whose module is not loaded here is recorded and says so, naming the file to repair,
   rather than reporting a success nothing can stand behind.

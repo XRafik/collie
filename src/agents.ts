@@ -49,7 +49,13 @@ import {
   type CompactionDeps,
   type CompactionPorts,
 } from "./compaction";
-import { COMPACTION_PORTS, ranOutSince, submittedDelivery } from "./compactors";
+import {
+  COMPACTION_PORTS,
+  questionsSince,
+  ranOutSince,
+  submittedDelivery,
+  type AgentQuestion,
+} from "./compactors";
 import { kindForRole } from "./cards";
 import { Oversight } from "./oversight";
 import {
@@ -112,6 +118,8 @@ import {
   Template,
   WorkflowError,
   panelOf,
+  type AskedQuestion,
+  type DecisionSpec,
   type HostApi,
   type Projection,
   type Seat,
@@ -206,6 +214,36 @@ export class AgentParked extends Schema.TaggedError<AgentParked>()("AgentParked"
   reason: Schema.String,
 }) {}
 
+/** The Run's own questions, which a collection puts an agent's question on. */
+export interface Questions {
+  readonly ask: (question: DecisionSpec) => Effect.Effect<void>;
+  readonly asked: Effect.Effect<ReadonlyArray<AskedQuestion>>;
+  readonly close: (decision: string, value: string) => Effect.Effect<void>;
+}
+
+/** An agent's question on its Run, numbered from 1 in the order its step asked them. */
+export const agentQuestionName = (operation: string, n: number) => `ask-${operation}-${n}`;
+// ponytail: told apart by its name, so a workflow's own `ask` named like one would be read as an agent's.
+export const isAgentQuestion = (name: string) => /^ask-.+-\d+$/.test(name);
+
+/** What collecting this step's Output answers a question still open when it arrives. */
+const closedAnswer = (operation: string) => `closed: ${operation} finished before it was answered`;
+
+/**
+ * The header and the question, then its options. A question takes no fixed options, so
+ * any words answer it.
+ */
+// ponytail: no option buttons; they need a Decision taking both options and words, worth it once typing a label is a burden.
+const questionPrompt = (question: AgentQuestion) =>
+  [
+    question.header ? `${question.header}: ${question.question}` : question.question,
+    ...question.options.map((option) =>
+      option.description ? `${option.label} — ${option.description}` : option.label,
+    ),
+    ...(question.multiSelect ? ["(choose any)"] : []),
+    "Answer with an option or in your own words.",
+  ].join("\n");
+
 /** What a host lends a workflow that needs an agent. */
 export interface AgentsApi {
   /** Where this operation's Output goes — known before anything starts, so a prompt can name it. */
@@ -293,6 +331,7 @@ export interface AgentsApi {
   readonly collect: (
     launched: Launched,
     unless?: string | null,
+    questions?: Questions,
   ) => Effect.Effect<string | null, AgentUncertain | AgentParked>;
   /**
    * Hands one unusable Output back to the agent that wrote it. True where it was asked, or
@@ -631,6 +670,11 @@ export const agentWork = <
                   `${on.agent} has written nothing to ${output} after ${Math.round(agents.collectMs / 60_000)} minutes idle. If it is still working, resume once it has written it; if it has stopped, ask it to write it and resume.`,
               }),
             );
+    const questions: Questions = {
+      ask: (question) => host.asking(runId, question),
+      asked: host.asked(runId),
+      close: (decision, value) => host.close(runId, decision, value),
+    };
     /** Stops an agent started as a stop landed; one that is not Quiet is what the Run says. */
     const haltLate = agents
       .halt(runId)
@@ -650,7 +694,9 @@ export const agentWork = <
       );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
     const collecting = (on: Launched, from: AgentAsk, waiting?: string) => {
-      const output = watching(agents.collect(on)).pipe(Effect.flatMap(written(on, waiting)));
+      const output = watching(agents.collect(on, null, questions)).pipe(
+        Effect.flatMap(written(on, waiting)),
+      );
       return stoppable(
         parkedWhenStuck(
           reviving(from).pipe(
@@ -815,7 +861,7 @@ export const agentWork = <
             // has had its one chance at, so it ends the work rather than parking it.
             parkedWhenStuck(
               reviving(currentAsk, first).pipe(
-                Effect.andThen(watching(agents.collect(current, first))),
+                Effect.andThen(watching(agents.collect(current, first, questions))),
               ),
               host,
               work.runId,
@@ -1996,19 +2042,89 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
       ),
     );
 
-  const collect = (launched: Launched, unless?: string | null) =>
+  /**
+   * Puts each question the agent asked since it was given this work on its Run, and sends
+   * the answers to one call as one Delivery once all of them are answered. True while any
+   * is open. `ending` records and closes instead: the Output has come, so nothing is sent.
+   */
+  const questionsOf = (launched: Launched, questions: Questions) =>
+    Effect.gen(function* () {
+      const dir = yield* controlDir(host.env.stateDir, launched.agent);
+      const stem = stemOf(launched);
+      const closed = closedAnswer(launched.operation);
+      const refused = new Set<string>();
+      return (ending: boolean) =>
+        Effect.gen(function* () {
+          let n = 0;
+          const calls = (yield* questionsSince(dir, launched.at ?? 0)).map((call) => ({
+            call,
+            names: call.questions.map(() => agentQuestionName(stem, ++n)),
+          }));
+          const answers = new Map((yield* questions.asked).map((one) => [one.name, one.answer]));
+          let open = false;
+          for (const { call, names } of calls) {
+            for (const [at, question] of call.questions.entries()) {
+              const name = names[at] ?? "";
+              if (answers.has(name)) continue;
+              yield* questions.ask({ name, prompt: questionPrompt(question), options: [] });
+              answers.set(name, null);
+            }
+            const given = names.map((name) => answers.get(name) ?? null);
+            if (ending) {
+              for (const [at, name] of names.entries())
+                if (given[at] === null) yield* questions.close(name, closed);
+              continue;
+            }
+            if (given.some((answer) => answer === null)) {
+              open = true;
+              continue;
+            }
+            if (given.includes(closed) || refused.has(call.id)) continue;
+            // The ledger refuses a second copy, so a replay sends nothing again.
+            const sent = yield* deliver(
+              launched,
+              [
+                "Your question has been answered on your Run.",
+                ...call.questions.map(
+                  (question, at) =>
+                    `\n${question.header ? `${question.header}: ` : ""}${question.question}\nAnswer: ${given[at]}`,
+                ),
+              ].join("\n"),
+              { kind: "steer", ref: names[0] ?? stem },
+            );
+            if (sent.refused) {
+              refused.add(call.id);
+              yield* log(
+                launched.runId,
+                `${launched.agent}: was not sent the answers to ${names.join(", ")} (${sent.why})`,
+              );
+            }
+          }
+          return open;
+        }).pipe(Effect.orElseSucceed(() => false));
+    });
+
+  const collect = (launched: Launched, unless?: string | null, questions?: Questions) =>
     under(
-      Effect.raceFirst(
-        waitForOutput(launched.output, unless ?? null, {
-          pollMs: host.pollMs ?? DEFAULT_POLL_MS,
-          budgetMs: host.collectMs ?? DEFAULT_COLLECT_MS,
-          counts: host.herdr.agentStatus(launched.agent).pipe(
-            Effect.map((status) => status !== "working" && status !== "blocked"),
-            Effect.orElseSucceed(() => true),
-          ),
-        }),
-        confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
-      ),
+      Effect.gen(function* () {
+        const asking = questions === undefined ? null : yield* questionsOf(launched, questions);
+        const text = yield* Effect.raceFirst(
+          waitForOutput(launched.output, unless ?? null, {
+            pollMs: host.pollMs ?? DEFAULT_POLL_MS,
+            budgetMs: host.collectMs ?? DEFAULT_COLLECT_MS,
+            counts: Effect.gen(function* () {
+              if (asking !== null && (yield* asking(false))) return false;
+              const status = yield* host.herdr
+                .agentStatus(launched.agent)
+                .pipe(Effect.orElseSucceed(() => null));
+              return status !== "working" && status !== "blocked";
+            }),
+          }),
+          confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
+        );
+        if (text !== null && asking !== null) yield* asking(true);
+        return text;
+      }),
     );
 
   const repair = (launched: Launched, problem: string, unusable: string) =>

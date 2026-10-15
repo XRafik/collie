@@ -11,7 +11,17 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { ConfigProvider, Duration, Effect, Fiber, FileSystem, Layer, Path, Schema } from "effect";
+import {
+  Clock,
+  ConfigProvider,
+  Duration,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Path,
+  Schema,
+} from "effect";
 import { TestClock } from "effect/testing";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
@@ -188,7 +198,7 @@ const session = <A, E>(
   run: Effect.Effect<
     A,
     E,
-    WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem | Path.Path
+    WorkflowEngine.WorkflowEngine | Agents | Store | BunServices.BunServices
   >,
   over?: Partial<AgentHost>,
 ) =>
@@ -723,6 +733,173 @@ for (const [what, herdr] of [
       ),
     60_000,
   );
+
+/** Claude's `PreToolUse` for one `AskUserQuestion` call of two questions. */
+const askedTwo = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+  session_id: "s-1",
+  hook_event_name: "PreToolUse",
+  tool_name: "AskUserQuestion",
+  tool_use_id: "toolu_1",
+  tool_input: {
+    questions: [
+      {
+        question: "Which database?",
+        header: "Database",
+        options: [
+          { label: "Postgres", description: "the one ops runs" },
+          { label: "SQLite", description: "a file beside the app" },
+        ],
+        multiSelect: false,
+      },
+      {
+        question: "Which checks?",
+        header: "Checks",
+        options: [{ label: "lint", description: "oxlint" }],
+        multiSelect: true,
+      },
+    ],
+  },
+});
+
+const ANSWERED = "Your question has been answered on your Run.";
+
+/** Once `r1`'s agent has its work, it calls `AskUserQuestion` with two questions. */
+const asksTwo = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  while (!(yield* fs.exists(`${dir}/agents/r1/review.launch.json`)))
+    yield* TestClock.withLive(Effect.sleep("10 millis"));
+  yield* recordClaudeEvent(yield* controlDir(rig.pluginEnv().stateDir, agentFor("r1")), askedTwo);
+}).pipe(Effect.orDie);
+
+/** `r1`'s questions once there are `count` of them, by name. */
+const questionsOf = (count: number) =>
+  Effect.gen(function* () {
+    const store = yield* Store;
+    for (;;) {
+      const asked = yield* store.asked("r1");
+      if (asked.length >= count) return asked;
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+    }
+  });
+
+const answer = (decision: string, value: string) =>
+  Store.pipe(
+    Effect.flatMap((store) =>
+      store.settle({ run: "r1", decision, value, request: `answer-${decision}` }),
+    ),
+  );
+
+/** Waits out `ms` on the run's own clock. */
+const spend = (ms: number) =>
+  Effect.gen(function* () {
+    const until = (yield* Clock.currentTimeMillis) + ms;
+    while ((yield* Clock.currentTimeMillis) < until)
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+  });
+
+test(
+  "an agent's two questions are open Decisions on its Run, and both answers go back as one Delivery",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* asksTwo;
+            const asked = yield* questionsOf(2);
+            expect(asked.map((one) => [one.decision, one.answer])).toEqual([
+              ["ask-review-1", null],
+              ["ask-review-2", null],
+            ]);
+            expect(asked[0]?.prompt).toBe(
+              "Database: Which database?\nPostgres — the one ops runs\nSQLite — a file beside the app\nAnswer with an option or in your own words.",
+            );
+            expect(asked[1]?.prompt).toBe(
+              "Checks: Which checks?\nlint — oxlint\n(choose any)\nAnswer with an option or in your own words.",
+            );
+
+            yield* answer("ask-review-1", "SQLite, it is a demo");
+            yield* spend(5_000);
+            expect(sent(yield* rig.calls(), ANSWERED)).toBe(0);
+
+            yield* answer("ask-review-2", "lint");
+            while (!(yield* prompted(ANSWERED)))
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            yield* spend(5_000);
+            const calls = yield* rig.calls();
+            expect(sent(calls, ANSWERED)).toBe(1);
+            const delivered = calls.find((call) => (call.argv?.[3] ?? "").includes(ANSWERED));
+            expect(delivered?.argv?.[3]).toContain(
+              "Database: Which database?\nAnswer: SQLite, it is a demo",
+            );
+            expect(delivered?.argv?.[3]).toContain("Checks: Which checks?\nAnswer: lint");
+          }),
+          { collectMs: 120_000, pollMs: 1_000 },
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "an open question pauses an idle agent's Output budget, which runs again once it is answered",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* asksTwo;
+            yield* questionsOf(2);
+            yield* spend(150_000);
+            expect(yield* parked("r1")).toBe(false);
+
+            yield* answer("ask-review-1", "Postgres");
+            yield* answer("ask-review-2", "lint");
+            while (!(yield* parked("r1"))) yield* TestClock.withLive(Effect.sleep("10 millis"));
+          }),
+          { collectMs: 60_000, pollMs: 1_000 },
+        );
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain("after 1 minutes idle");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a question still open when the Output comes is closed, and nothing is sent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* asksTwo;
+            yield* questionsOf(2);
+            yield* answer("ask-review-1", "Postgres");
+            yield* (yield* FileSystem.FileSystem).writeFileString(
+              outputPath("r1"),
+              `{"verdict":"clean","note":"decided for itself"}`,
+            );
+            const done = yield* Fiber.join(fiber);
+            const asked = yield* (yield* Store).asked("r1");
+            expect(asked.map((one) => [one.decision, one.answer])).toEqual([
+              ["ask-review-1", "Postgres"],
+              ["ask-review-2", "closed: review finished before it was answered"],
+            ]);
+            return done;
+          }),
+          { collectMs: 120_000, pollMs: 1_000 },
+        );
+        expect(result._tag).toBe("Success");
+        expect(sent(yield* rig.calls(), ANSWERED)).toBe(0);
+      }),
+    ),
+  120_000,
+);
 
 test(
   "a restart between the attempts hands out no second repair",
@@ -3844,7 +4021,9 @@ test("a Claude overlay is merged into Collie's settings file, and Collie's hooks
       )(yield* read(args[args.indexOf("--settings") + 1] ?? ""));
       expect(settings.enabledPlugins).toEqual({ "ponytail@market": false });
       expect(settings.disableClaudeAiConnectors).toBe(true);
-      expect(settings.hooks.PreToolUse).toEqual([guard]);
+      expect(settings.hooks.PreToolUse).toHaveLength(2);
+      expect(settings.hooks.PreToolUse?.[0]).toMatchObject({ matcher: "AskUserQuestion" });
+      expect(settings.hooks.PreToolUse?.[1]).toEqual(guard);
       expect(settings.hooks.UserPromptSubmit).toHaveLength(2);
       expect(settings.hooks.UserPromptSubmit?.[1]).toEqual(guard);
       expect(Object.keys(settings.hooks)).toEqual(

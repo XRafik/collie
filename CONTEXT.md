@@ -337,14 +337,16 @@ host reports, the live agents and what each Run left in its directory, so the Ho
 to no Task is a TaskView of its own.
 
 **Decision** — What a Task is waiting on a human for, and one of the two things that put
-it in **Needs you**: a **question** a Run asked, or a **Proposal** Collie made. Any of a
+it in **Needs you**: a **question** a Run asked, or a **Proposal** Collie made. A question
+is the Workflow's, asked with `ask`, or one a Run's agent asked with its harness's own
+question tool, which Collie puts on the Run and whose answer it delivers to that agent. Any of a
 Task's Runs can be waiting on one, a fan-out's Repo runs included, and each is answered on
 the Run that asked. Both are answered on the card, from the CLI or from chat, and survive
 the board closing. A Run's **Checks** are never one: nobody approves them (ADR-0055).
 
 **Stalled** — The other way into **Needs you**, and the one with nothing on the card to
-answer: an agent is waiting for a human in its own pane — at its harness's own dialog,
-which herdr reports as a `blocked` agent — or a Run parked because its agent's pane would
+answer: an agent is waiting for a human in its own pane — at a dialog of its harness's
+that Collie could not put on the Run, which herdr reports as a `blocked` agent — or a Run parked because its agent's pane would
 not take a prompt. Either way the work has stopped, so the card says which pane to go to
 rather than what the step was doing.
 

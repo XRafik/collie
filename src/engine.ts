@@ -416,6 +416,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     /** Why this Run parked its own work, shown beside its status; null clears it. */
     readonly parked: (runId: string, why: string | null) => Effect.Effect<void>;
     readonly asking: (runId: string, question: DecisionSpec) => Effect.Effect<void>;
+    /** Every question this run has been asked, oldest first, with its answer once it has one. */
+    readonly asked: (
+      runId: string,
+    ) => Effect.Effect<ReadonlyArray<{ readonly name: string; readonly answer: string | null }>>;
+    /** Answers an open question with \`value\` as Collie, waking nothing that waits on it. */
+    readonly close: (runId: string, decision: string, value: string) => Effect.Effect<void>;
     /** What has been verified for this run, and the tree in front of it now. */
     readonly evidence: (runId: string, cwd: string) => Effect.Effect<CheckEvidence>;
     /** Runs one of this Run's checks and records it. A name not among them is refused. */
@@ -2776,6 +2782,16 @@ export const hostLayer = (options: {
                 }),
               ),
             ),
+        asked: (runId) =>
+          store
+            .asked(runId)
+            .pipe(
+              Effect.map((rows) => rows.map((row) => ({ name: row.decision, answer: row.answer }))),
+            ),
+        close: (runId, decision, value) =>
+          store
+            .settle({ run: runId, decision, value, request: `${runId}-${decision}-closed` })
+            .pipe(Effect.asVoid),
         evidence: (runId, cwd) =>
           under(
             Effect.gen(function* () {
@@ -4905,7 +4921,9 @@ const makeRegistry: (
     for (const row of yield* store.runs) {
       const generation = live.get(row.generation);
       if (generation === undefined) continue;
-      const answered = (yield* store.asked(row.run)).filter((one) => one.answer !== null);
+      const answered = (yield* store.asked(row.run)).filter(
+        (one) => one.answer !== null && !AgentsSdk.isAgentQuestion(one.decision),
+      );
       if (answered.length === 0) continue;
       const state = pollStatus(
         yield* engine.poll(generation.registration.workflow, row.execution),
@@ -5762,11 +5780,14 @@ const makeRegistry: (
       }
       if (settled._tag === "accepted") yield* crash("answered");
       // Completed again on a repeat: the recording host may have died before the run was told.
-      yield* answerDecision(found.generation.registration, {
-        name,
-        executionId: found.execution,
-        value,
-      });
+      // An agent's question is read by the collection that asked it; waking the workflow
+      // would replay it.
+      if (!AgentsSdk.isAgentQuestion(name))
+        yield* answerDecision(found.generation.registration, {
+          name,
+          executionId: found.execution,
+          value,
+        });
 
       return { runId: options.runId, decision: name, value, fresh: settled._tag === "accepted" };
     }, waking.withPermits(1)),
