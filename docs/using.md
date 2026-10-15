@@ -694,9 +694,16 @@ reads it from this checkout's history rather than carding every Run Collie has e
 
 Collie learns a merge by itself, whether or not a pane is open: the host asks the merge
 request's own forge, through that forge's adapter — GitLab with `glab`, GitHub with `gh` —
-about each merge request in Waiting on you every 5 minutes; one
+about each Task's merge request every 5 minutes, whatever section its card is in, so a
+merge while a Run is busy or parked is noticed too; one
 that merged gets its `merged` disposition recorded as that forge's word and its card moves
-to Finished. One that was closed without merging only changes its card's sentence: closing
+to Finished. A Task whose Runs recorded no merge request takes the one opened from its
+branch, whoever opened it — you on the forge, or a builder you told to in its pane — and
+it is recorded as the newest Run on that branch's own, so the drawer, offers, Ready to
+release and Cleanup all see it. The forge is the one the branch's checkout pushes to, and
+it is asked about each branch at most once every 5 minutes. A merge request that merged or
+closed before the Task's first Run began is an older branch's and is ignored; of several,
+the newest is the Task's. One that was closed without merging only changes its card's sentence: closing
 can mean superseded as easily as abandoned, and only you know which. The same answer
 carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup — and the
 revision they ran at, which is the one Collie's own checks are counted at too: a failing

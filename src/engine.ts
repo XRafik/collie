@@ -3851,6 +3851,8 @@ export interface RegistryApi {
   readonly view: (runId: string) => Effect.Effect<RunView | null>;
   /** Every run this host has rows for, newest last, narrowed to one Task where named. */
   readonly views: (task: string | null) => Effect.Effect<ReadonlyArray<RunView>>;
+  /** Records `url` as the merge request `runId` opened, as the MR step does, without its notice. */
+  readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
   /**
    * Forgets these Runs' rows, and what the engine keeps of their executions, in one
    * transaction (ADR-0045 D5). Answers with the Runs it forgot; a row the engine never
@@ -5506,6 +5508,14 @@ const makeRegistry: (
           Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf),
         ),
       ),
+    mergeRequest: (runId: string, url: string) =>
+      fs
+        .makeDirectory(runDir(dir, runId), { recursive: true })
+        .pipe(
+          Effect.andThen(fs.writeFileString(mergeRequestPath(dir, runId), `${url}\n`)),
+          Effect.andThen(store.announce),
+          Effect.orDie,
+        ),
     watch: (runId: string) =>
       store
         .watching(view(runId))

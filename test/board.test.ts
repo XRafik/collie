@@ -986,14 +986,10 @@ test("a Task's card reads its Task: the latest Disposition on any of its Runs", 
 
       yield* disposed(implement, "2026-09-14T09:00:00Z", "cego/collie#114");
       yield* disposed(plan, "2026-09-14T09:30:00Z", "cego/collie#115");
-      expect((yield* board(env, [plan, implement]))[0]!.disposition).toBe(
-        "merged cego/collie#115",
-      );
+      expect((yield* board(env, [plan, implement]))[0]!.disposition).toBe("merged cego/collie#115");
 
       yield* disposed(implement, "2026-09-14T09:45:00Z", "cego/collie#116");
-      expect((yield* board(env, [plan, implement]))[0]!.disposition).toBe(
-        "merged cego/collie#116",
-      );
+      expect((yield* board(env, [plan, implement]))[0]!.disposition).toBe("merged cego/collie#116");
     }),
   ));
 

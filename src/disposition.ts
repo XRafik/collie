@@ -7,8 +7,9 @@
 // beside the status and never over it — append-only, in the Run's own directory, with the
 // reference that backs it up.
 //
-// Nothing here is inferred. Collie does not decide that an MR it did not open was this
-// Run's work; a person says so, and the record says who and when.
+// Nothing here is guessed. A person records one, or the merge watch does when the Task's
+// merge request merged — the one a Run recorded, else the one opened from the Task's own
+// branch, whoever opened it — and the record says who and when.
 
 import { Effect, Path, Schema } from "effect";
 import { Disposition } from "./board-model";

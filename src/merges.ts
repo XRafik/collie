@@ -10,16 +10,16 @@ import {
   Mergeability,
   mrLabel,
   mrRefOf,
-  sectionOf,
   type MrPanel,
   type MrState,
   type TaskView,
 } from "./board-model";
 import { latest, readDispositions, recordDisposition } from "./disposition";
 import { forgeOf } from "./forge/forge";
-import type { Runner } from "./mr";
+import { forgeHere, type Runner } from "./mr";
 import { runDir } from "./engine";
-import { nowIso } from "./time";
+import type { RunFacts } from "./runs";
+import { epochMs, nowIso } from "./time";
 
 /** How long one merge request's answer stands before its forge is asked again. */
 export const MERGE_POLL_MS = 5 * 60_000;
@@ -73,16 +73,22 @@ function stateOf(state: string): MrState {
 }
 
 /**
- * One round: every Task waiting on a merge request whose answer is stale is asked about,
- * a merged one gets its `merged` disposition recorded as its forge's word, and what was
- * learned is written where `collie --json board` reads it. `checked` and `states` are the
- * caller's memory between rounds; the file is everyone else's.
+ * One round: a Task with a branch and no merge request takes the one opened from its
+ * branch, every Task with a merge request whose answer is stale is asked about, a merged
+ * one gets its `merged` disposition recorded as its forge's word, and what was learned is
+ * written where `collie --json board` reads it. `checked` and `states` are the caller's
+ * memory between rounds; the file is everyone else's.
  */
 export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
   stateDir: string;
   cwd: string;
   run: Runner<R>;
   views: ReadonlyArray<TaskView>;
+  /** The Runs the views were built from, which say where each branch was checked out. */
+  runs: ReadonlyArray<RunFacts>;
+  /** Records a merge request found from a branch as that Run's own. */
+  record: (runId: string, url: string) => Effect.Effect<void>;
+  gitlabHost?: string;
   now: number;
   checked: Map<string, number>;
   states: Map<string, MrState>;
@@ -96,19 +102,18 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
   const forge = new Map(yield* readForge(opts.stateDir));
   let learned = false;
   for (const view of opts.views) {
-    // Anything that ended and nobody disposed of: the waiting cards, and a card that
-    // already reads as landed from an earlier answer but has no disposition saying so.
-    const section = sectionOf(view);
-    if (view.mr === null || section === "working" || section === "needs-you") continue;
+    const found = view.mr === null ? yield* fromBranch(view, opts) : null;
+    const mr = view.mr ?? found?.url ?? null;
+    if (mr === null) continue;
     // A merged one is still followed to its deploy jobs, until production has it.
     if (view.disposition !== null && !view.disposition.startsWith("merged")) continue;
-    const label = mrLabel(view.mr);
+    const label = mrLabel(mr);
     if (opts.states.get(label) === "in-prod") continue;
     if ((opts.checked.get(label) ?? 0) + MERGE_POLL_MS > opts.now) continue;
-    if (mrRefOf(view.mr) === null) continue;
+    if (mrRefOf(mr) === null) continue;
     // Stamped before asking: a forge that cannot be asked is not asked again every tick.
     opts.checked.set(label, opts.now);
-    const answered = yield* forgeAnswer(view.mr, opts.cwd, opts.run, (panel) =>
+    const answered = yield* forgeAnswer(mr, opts.cwd, opts.run, (panel) =>
       opts.panels.set(label, { at: opts.now, panel }),
     );
     if (answered === null) continue;
@@ -118,7 +123,7 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     opts.states.set(label, state);
     forge.set(label, facts);
     if (state === "open" || state === "closed") continue;
-    const dir = runDir(opts.stateDir, view.run);
+    const dir = runDir(opts.stateDir, found?.run ?? view.run);
     const already = latest(
       yield* readDispositions(dir).pipe(Effect.catch(() => Effect.succeed([]))),
     );
@@ -132,6 +137,44 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     });
   }
   if (learned) yield* writeMrStates(opts.stateDir, opts.states, forge);
+});
+
+/**
+ * The merge request opened from a Task's branch, by whoever opened it, recorded as the
+ * newest Run's on that branch; null for none, or where the forge cannot say. A merge
+ * request that merged or closed before the Task's first Run is an older branch's.
+ */
+const fromBranch = Effect.fn("Merges.fromBranch")(function* <R>(
+  view: TaskView,
+  opts: {
+    readonly runs: ReadonlyArray<RunFacts>;
+    readonly run: Runner<R>;
+    readonly record: (runId: string, url: string) => Effect.Effect<void>;
+    readonly gitlabHost?: string;
+    readonly checked: Map<string, number>;
+    readonly now: number;
+  },
+) {
+  if (view.branch === null || view.disposition !== null) return null;
+  const runs = opts.runs.filter((run) => view.runs.includes(run.id));
+  const newest = runs
+    .filter((run) => run.branch === view.branch)
+    .sort((a, b) => epochMs(b.created) - epochMs(a.created))[0];
+  if (newest === undefined) return null;
+  const key = `branch:${newest.project}:${view.branch}`;
+  if ((opts.checked.get(key) ?? 0) + MERGE_POLL_MS > opts.now) return null;
+  opts.checked.set(key, opts.now);
+  const here = yield* forgeHere(newest.project, opts.run, opts.gitlabHost);
+  if (!here.ok) return null;
+  const listed = yield* here.forge.fromBranch(here.project, view.branch, newest.project, opts.run);
+  if (!listed.ok) return null;
+  const began = Math.min(...runs.map((run) => epochMs(run.created)));
+  const mr = listed.mrs
+    .filter((one) => one.ended === null || epochMs(one.ended) >= began)
+    .sort((a, b) => epochMs(b.created) - epochMs(a.created))[0];
+  if (mr === undefined) return null;
+  yield* opts.record(newest.id, mr.url);
+  return { run: newest.id, url: mr.url };
 });
 
 const sameFacts = (a: ForgeFacts | undefined, b: ForgeFacts) =>

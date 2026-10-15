@@ -4,7 +4,7 @@
 import { Clock, Effect, Schedule, type Duration } from "effect";
 import type { TaskView, MrState, Reopened } from "./board-model";
 import { readyRuns } from "./board";
-import { loadDefaults } from "./config";
+import { gitlabHostOf, loadDefaults } from "./config";
 import { currentReports, readDrift } from "./drift";
 import type { PluginEnv } from "./env";
 import type { Herdr } from "./herdr";
@@ -162,6 +162,8 @@ export const sideJobs = <E, R>(opts: {
   /** The board with herdr's live agents, which says what a Reopened Run's agent is doing. */
   readonly liveBoard: Effect.Effect<ReadonlyArray<TaskView>, E, R>;
   readonly panels: MrPanels;
+  /** Records a merge request the watch found from a branch as that Run's own. */
+  readonly record: (runId: string, url: string) => Effect.Effect<void>;
   readonly sweepers: Effect.Effect<ReadonlyArray<Sweeper>, E, R>;
 }) => {
   const { env, herdr } = opts;
@@ -182,6 +184,9 @@ export const sideJobs = <E, R>(opts: {
             cwd: env.cwd,
             run: shell,
             views: yield* opts.board,
+            runs: yield* opts.runs,
+            record: opts.record,
+            gitlabHost: yield* gitlabHostOf(env),
             now: yield* Clock.currentTimeMillis,
             checked,
             states,

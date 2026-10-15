@@ -13,7 +13,7 @@ import {
 import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
-import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
+import type { DeployTier, Forge, ForBranch, FromBranch, FromBranchList, Readiness } from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
 
 export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
@@ -375,6 +375,55 @@ function forBranch<R>(
   });
 }
 
+const BranchMrsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      iid: Schema.Union([Schema.String, Schema.Number]),
+      web_url: optionalText,
+      state: Schema.String,
+      created_at: Schema.String,
+      merged_at: optionalText,
+      closed_at: optionalText,
+    }),
+  ),
+);
+
+/** Every merge request from `branch`, read with `glab mr list --all`; a failed read is not "none". */
+function fromBranch<R>(
+  project: string,
+  branch: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<FromBranchList, never, R> {
+  return Effect.gen(function* () {
+    const listed = yield* run(
+      "glab",
+      ["mr", "list", "--source-branch", branch, "--all", ...repoArgs(project), "--output", "json"],
+      cwd,
+    );
+    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, mrs: [] };
+    const decoded = Schema.decodeUnknownOption(BranchMrsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(decoded))
+      return {
+        ok: false,
+        reason: `glab could not list ${project}'s merge requests from ${branch}`,
+      };
+    return {
+      ok: true,
+      mrs: decoded.value.map((mr): FromBranch => {
+        const iid = String(mr.iid);
+        return {
+          iid,
+          url: mr.web_url ?? `https://${project}/-/merge_requests/${iid}`,
+          state: mr.state === "merged" ? "merged" : mr.state === "opened" ? "open" : "closed",
+          created: mr.created_at,
+          ended: mr.merged_at ?? mr.closed_at ?? null,
+        };
+      }),
+    };
+  });
+}
+
 function template(cwd: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -522,6 +571,7 @@ export const gitlab: Forge = {
   runStatus: pipelineStatus,
   noun: "merge request",
   forBranch,
+  fromBranch,
   template,
   // `glab mr create` and `glab mr note` take text only, so a file goes through the API,
   // which reads `@<file>` itself: no command substitution (CrowdStrike flags it).

@@ -890,18 +890,26 @@ const hostBoard = (dir: string) =>
         }),
       ];
     });
-    return { env, herdr, bun, runs, build, unattended, sweepers };
+    return { env, herdr, bun, runs, build, unattended, sweepers, registry };
   });
 
 /** The merge watch, News, the cleanup sweep and the Home's tokens, for as long as this host runs. */
 const sideJobsLayer = (dir: string, panels: MrPanels) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
-      const { env, herdr, bun, runs, build, unattended, sweepers } = yield* hostBoard(dir);
+      const { env, herdr, bun, runs, build, unattended, sweepers, registry } =
+        yield* hostBoard(dir);
       yield* Effect.forkScoped(
-        sideJobs({ env, herdr, runs, board: unattended, liveBoard: build, panels, sweepers }).pipe(
-          Effect.provideContext(bun),
-        ),
+        sideJobs({
+          env,
+          herdr,
+          runs,
+          board: unattended,
+          liveBoard: build,
+          panels,
+          record: registry.mergeRequest,
+          sweepers,
+        }).pipe(Effect.provideContext(bun)),
       );
     }),
   );

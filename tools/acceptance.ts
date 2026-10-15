@@ -1681,6 +1681,19 @@ const OPERATOR_CHECKS: readonly Check[] = [
     },
   },
   {
+    id: "backend/a-merge-request-from-a-tasks-branch-is-followed",
+    statement:
+      "A merge request opened from a Task's branch by anyone is found and followed, whatever the card's section.",
+    owner: MERGE_WATCH,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/merges.test.ts",
+      name: "a merge request opened from a Task's branch",
+    },
+  },
+  {
     id: "machines/a-vm-investigation-reports-from-the-laptop",
     statement:
       "A VM implementer asks the laptop to investigate Desktop on its branch, receives the findings and sees the laptop workspace close.",
