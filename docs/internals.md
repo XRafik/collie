@@ -1127,9 +1127,14 @@ One whole suite runs at a time on a Machine, per user. `bun run test` takes a lo
 holds the lock — the pid, its command line and when it started — and then, every 30
 seconds, how long it has waited (`tools/suite-lock.ts`). Which forms take the lock:
 
-- `bun run check`, `bun run test`, and `bun run test <args>`, whose arguments go to
-  `bun test` inside the lock: a focused run through the script still waits for a whole
-  suite.
+- `bun run check`, `bun run test`, and `bun run test <args>` whose arguments name no
+  existing file or directory and no `--changed` — `-t <name>` alone, or a filter that is
+  not a path — run the whole suite and take the lock.
+- A targeted `bun run test`, one naming an existing file or directory or passing
+  `--changed[=<ref>]`, does not (`tools/test-run.ts`). The lock guards the cores and the
+  executables in `.scratch/test-bin/`; a run of a few files needs few cores, builds into a
+  temporary directory of its own that it removes when it ends, and reads
+  `.scratch/test-timings.json` without updating it.
 - `bun test <file>`, `bun test -t <name>` and `bun run test:live` do not: they run the
   sources directly, beside whatever suite is running.
 

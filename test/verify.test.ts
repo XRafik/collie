@@ -14,7 +14,7 @@ import {
   readVerifications,
   resolveExecutable,
   resultOf,
-  reusableFor,
+  reliedFor,
   runApproved,
   staleAgainst,
 } from "../src/verify";
@@ -474,7 +474,7 @@ test("every record carries the environment it ran in, which moves with the tool 
     }),
   ));
 
-test("a Collie pass is reused only while its tree, its command and its environment are unchanged", () =>
+test("a pass is relied on only while its tree, its command and its environment are unchanged, whoever asked", () =>
   runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -483,39 +483,39 @@ test("a Collie pass is reused only while its tree, its command and its environme
       const executable = yield* tool(runDir, "exit 0");
       const spec: VerifySpec = { name: "unit", executable, argv: [], cwd: "." };
       const run = { id: "r1", cwd: repo, worktree: null };
-      const reused = () => reusableFor(runDir, run, spec);
+      const since = "2000-01-01T00:00:00.000Z";
+      const relied = () => reliedFor(runDir, run, spec, since);
 
-      expect(yield* reused()).toBeNull();
-      const passed = yield* runApproved(runDir, run, [spec], spec);
-      expect((yield* reused())?.id).toBe(passed.id);
-
-      // An agent's record is never what the gate relies on, and does not hide Collie's.
-      yield* collect(runDir, {
+      expect(yield* relied()).toBeNull();
+      // An agent's pass of exactly the check's command, under a name of its own.
+      const agents = yield* collect(runDir, {
         run: "r1",
-        name: "unit",
+        name: "test",
         executable,
         argv: [],
         cwd: repo,
         by: "agent",
       });
-      expect((yield* reused())?.id).toBe(passed.id);
+      expect((yield* relied())?.id).toBe(agents.id);
+      const collies = yield* runApproved(runDir, run, [spec], spec);
+      expect((yield* relied())?.id).toBe(collies.id);
 
       // Another command under the same name.
-      expect(yield* reusableFor(runDir, run, { ...spec, argv: ["--bail"] })).toBeNull();
+      expect(yield* reliedFor(runDir, run, { ...spec, argv: ["--bail"] }, since)).toBeNull();
 
       // The tree moved.
       yield* fs.writeFileString(path.join(repo, "tracked.txt"), "two\n");
-      expect(yield* reused()).toBeNull();
+      expect(yield* relied()).toBeNull();
       yield* git(["checkout", "-q", "--", "."]);
-      expect((yield* reused())?.id).toBe(passed.id);
+      expect((yield* relied())?.id).toBe(collies.id);
 
       // The tool changed.
       yield* tool(runDir, "exit 0 # upgraded");
-      expect(yield* reused()).toBeNull();
+      expect(yield* relied()).toBeNull();
     }),
   ));
 
-test("the latest Collie result decides, and a record from before environments is never reused", () =>
+test("the latest record of that command on the tree decides, whoever asked", () =>
   runEffect(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -524,15 +524,41 @@ test("the latest Collie result decides, and a record from before environments is
       const executable = yield* tool(runDir, `[ ! -f ${flag} ]`);
       const spec: VerifySpec = { name: "unit", executable, argv: [], cwd: "." };
       const run = { id: "r1", cwd: repo, worktree: null };
+      const since = "2000-01-01T00:00:00.000Z";
       const passed = yield* runApproved(runDir, run, [spec], spec);
 
+      // An agent's later failure of the same command on this tree.
       yield* fs.writeFileString(flag, "");
-      yield* runApproved(runDir, run, [spec], spec);
+      yield* collect(runDir, {
+        run: "r1",
+        name: "t",
+        executable,
+        argv: [],
+        cwd: repo,
+        by: "agent",
+      });
       yield* fs.remove(flag);
-      expect(yield* reusableFor(runDir, run, spec)).toBeNull();
+      expect(yield* reliedFor(runDir, run, spec, since)).toBeNull();
+
+      // Expecting a failure is never a pass of the check.
+      yield* collect(runDir, {
+        run: "r1",
+        name: "t",
+        executable,
+        argv: [],
+        cwd: repo,
+        by: "agent",
+        expect: "fail",
+      });
+      expect(yield* reliedFor(runDir, run, spec, since)).toBeNull();
+
+      yield* appendVerification(runDir, { ...passed, id: "again" });
+      expect((yield* reliedFor(runDir, run, spec, since))?.id).toBe("again");
+      // Collected before this host started.
+      expect(yield* reliedFor(runDir, run, spec, "2999-01-01T00:00:00.000Z")).toBeNull();
 
       const { environment: _, ...older } = passed;
       yield* appendVerification(runDir, { ...older, id: "older" });
-      expect(yield* reusableFor(runDir, run, spec)).toBeNull();
+      expect(yield* reliedFor(runDir, run, spec, since)).toBeNull();
     }),
   ));

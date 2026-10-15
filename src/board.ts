@@ -21,7 +21,14 @@ import { listRuns, newestFirst, settled as ended, type RunFacts, type RunState }
 import type { PluginEnv } from "./env";
 import { listTasks, type TaskRecord } from "./task";
 import { ago, agoMs, agoShort, spanned, epochMs } from "./time";
-import { commandOf, readVerifications, sameCommand, type Verification } from "./verify";
+import {
+  commandOf,
+  ranCommand,
+  passed,
+  readVerifications,
+  type CheckCommand,
+  type Verification,
+} from "./verify";
 import { approvedFor, approvedIn } from "./verify-spec";
 import { readIntent } from "./intent";
 import { findingsIn, isBlocking } from "./output";
@@ -559,42 +566,33 @@ export function lastFailure(
 }
 
 /**
- * What Collie's own checks say at one revision: the branch's head where it could be read,
- * else the newest revision Collie checked. An agent's record is a claim and never counts.
+ * What a Run's checks say at one revision: the branch's head where it could be read, else
+ * the newest revision checked. A record counts for the check whose command it ran exactly,
+ * whoever asked; with no checks named, only what Collie ran counts.
  */
 export function checksAt(
   records: ReadonlyArray<Verification>,
   head: string | null,
-  /**
-   * The Run's checks as they stand: each must have passed at that revision, as the command
-   * it names now. With none, something Collie ran must have.
-   */
+  /** The Run's checks as they stand, each of which must have passed at that revision. */
   approved: ReadonlyArray<CheckCommand> = [],
 ): Checks {
-  const wanted = (record: Verification) => {
-    if (approved.length === 0) return true;
-    const spec = approved.find((one) => one.name === record.name);
-    return spec !== undefined && ranCommand(record, spec);
-  };
-  const collie = records.filter((record) => record.by === "collie");
-  const at = head ?? collie.at(-1)?.end.head_sha ?? "";
+  const checksOf = (record: Verification) =>
+    approved.length === 0
+      ? record.by === "collie"
+        ? [record.name]
+        : []
+      : approved.filter((spec) => ranCommand(record, spec)).map((spec) => spec.name);
+  const counted = records.flatMap((record) => checksOf(record).map((name) => ({ name, record })));
+  const at = head ?? counted.at(-1)?.record.end.head_sha ?? "";
   const newest = new Map<string, Verification>();
-  for (const record of collie)
-    if (at !== "" && record.end.head_sha === at && wanted(record)) newest.set(record.name, record);
-  const red = [...newest.values()].find((record) => record.result !== record.expect);
-  if (red !== undefined) return { state: "failed", name: red.name, at };
+  for (const { name, record } of counted)
+    if (at !== "" && record.end.head_sha === at) newest.set(name, record);
+  const red = [...newest.entries()].find(([, record]) => !passed(record));
+  if (red !== undefined) return { state: "failed", name: red[0], at };
   const unrun =
     approved.length === 0 ? newest.size === 0 : approved.some((spec) => !newest.has(spec.name));
   return unrun ? { state: "unchecked" } : { state: "passed", at };
 }
-
-/** A check's command resolved for its Run; one whose executable is not found matches no record. */
-export type CheckCommand = Pick<Verification, "name" | "argv" | "cwd"> & {
-  readonly executable: string | null;
-};
-
-const ranCommand = (record: Verification, spec: CheckCommand) =>
-  spec.executable !== null && sameCommand(record, { ...spec, executable: spec.executable });
 
 /** The commit the Run's branch is at now in its checkout, or null where that cannot be read. */
 const branchHead = Effect.fn("Board.branchHead")(function* (run: RunFacts, now: number) {
