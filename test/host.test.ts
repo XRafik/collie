@@ -573,6 +573,31 @@ test(
 );
 
 test(
+  "a newer client of the release placed inside a clone install replaces that clone's host",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const { state } = yield* workspace("collie-host-clone-");
+        const old = yield* Effect.scoped(
+          connect(state).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.orDie);
+
+        yield* Effect.scoped(connect(state, { build: "999.0.0" })).pipe(
+          Effect.flip,
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({ HERDR_PLUGIN_ROOT: `${old.root}/release` }),
+            ),
+          ),
+        );
+        expect(yield* signalProcess(old.pid)).toBe(false);
+        yield* stopHost(state).pipe(Effect.ignore);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a newer client replaces a host that does not stop when asked, within seconds",
   () =>
     proves(

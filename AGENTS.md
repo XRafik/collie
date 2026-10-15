@@ -207,7 +207,8 @@ herdr actions, and the `collie` CLI.
   [ADR-0016](docs/adr/0016-a-workflow-module-is-found-where-it-was-saved.md) and
   [`docs/sdk.md`](docs/sdk.md#where-a-module-lives), alongside `src/discovery.ts`,
   `test/discovery.test.ts` and `test/autoload.test.ts`. The user's own directory is
-  ignored by this checkout on purpose: `collie upgrade` fast-forwards it.
+  `~/.collie/user/`, which no upgrade writes; `collie upgrade` replaces `~/.collie/release/`
+  whole ([ADR-draft-an-installation-is-the-release-its-runner-carries](docs/adr/draft-an-installation-is-the-release-its-runner-carries.md)).
 - **Adding a file a project keeps for Collie** →
   [ADR-0031](docs/adr/0031-what-collie-provides-lives-under-collie.md): it goes in the
   project's `.collie/`, never in herdr's `.herdr/`.

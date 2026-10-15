@@ -1,7 +1,8 @@
 #!/bin/sh
-# Puts the runner in bin/collie and a `collie` on PATH. Prefers the prebuilt release
-# so consumers do not need bun — except in a git checkout, which is a machine
-# developing the plugin and whose own source is newer than any release by definition.
+# Puts the runner in bin/collie and a `collie` on PATH. A placed release already has its
+# runner. Otherwise it prefers the prebuilt release so consumers do not need bun — except
+# in a git checkout, which is a machine developing the plugin and whose own source is newer
+# than any release by definition.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -187,7 +188,11 @@ EOF
 
 mkdir -p bin
 unavailable="no release asset at ${BASE}/${ASSET}"
-if [ -d .git ] && command -v bun >/dev/null 2>&1; then
+fresh=1
+if [ -f placed.json ]; then
+  echo "bin/collie is the runner this release was placed with"
+  fresh=
+elif [ -e .git ] && command -v bun >/dev/null 2>&1; then
   if needs_build; then
     echo "building from source: $ROOT is a checkout, and its source is what a release is cut from"
     build_from_source
@@ -219,5 +224,5 @@ install_shim
 # a fresh binary. Skipped when this is already running inside `prepare.sh`, which is
 # what stops the two from calling each other round in a circle.
 if [ "${COLLIE_PREPARING:-}" != "1" ]; then
-  COLLIE_RUNNER_FRESH=1 sh "$ROOT/prepare.sh"
+  COLLIE_RUNNER_FRESH=$fresh sh "$ROOT/prepare.sh"
 fi

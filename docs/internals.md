@@ -876,6 +876,19 @@ in CI on tag and downloaded from the GitHub release by `install.sh`
 ([ADR-0001](adr/0001-compiled-runner-fetched-from-release.md)). Workflow and persona
 definitions stay plain files in the repo and never require a rebuild.
 
+The build also embeds the release tree, everything an installation reads at runtime
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)): the plugin
+manifest, `install.sh`, `prepare.sh`, the shipped workflows, personas, prompts, the operator
+skill, the notification logo and `release-p256.pub`. `tools/build.ts` stages that list as
+one directory and passes it to Bun's compile `assets`, so a compiled runner reads it at
+`/$bunfs/root/release`. The build refuses an artifact that does not carry every staged file,
+as it refuses one without its native renderer. `placeRelease` in `src/release.ts` writes the
+tree and the runner into `<Collie directory>/release.new` with `placed.json`, each file's
+sha256, copies every file of the current `release/` that differs from its own record into
+`kept/`, then swaps the two. In a placed release `install.sh` and `prepare.sh` leave
+`bin/collie` as it was placed. `tools/smoke.sh` checks the built runner places its release
+at its own version.
+
 `install.sh` authenticates that download with `COLLIE_TOKEN` where it is set, and otherwise
 borrows the token `glab` or `gh` already holds for the release host — see
 [Using Collie](using.md#install). A private project answers an unauthenticated download
@@ -888,8 +901,9 @@ Every release asset is published with two detached signatures beside it
 release job signs with `tools/sign.ts`, which reads the private keys from the
 `COLLIE_SIGNING_KEY` and `COLLIE_SIGNING_KEY_P256` secrets (PKCS#8 PEM). It refuses to run
 without either key, and refuses a key that does not match its public key built into
-`src/signing.ts`: `release.pub` and `release-p256.pub`. Desktop checks a runner it downloads
-with `verifyRelease` against `release.pub`. `install.sh` checks one with
+`src/signing.ts`: `release.pub` and `release-p256.pub`. Desktop's onboarding and `collie upgrade`
+download a runner through one function, `verifiedRunner` in `src/releases.ts`, which checks
+it with `verifyRelease` against `release.pub` before it is used. `install.sh` checks one with
 `openssl dgst -sha256 -verify` against `release-p256.pub`, which any OpenSSL or LibreSSL can
 do, fetching `<asset>.p256.sig` with the same token as the asset, before it replaces
 `bin/collie`. A download that is unsigned, does not match, or whose signature cannot be
@@ -947,8 +961,9 @@ build and gate on every push. Electrobun keeps its prepared-update record at
 Desktop asks Electrobun for that folder, so the record is found on macOS as on Linux. Electrobun's self-extractor cannot read a GNU long-name tar entry,
 so `tools/check-payload.ts` fails the job when any path in the installer's payload is over
 100 characters. The release job signs Desktop's installer, its update manifest, its update
-archive, any delta patch and `install-desktop.sh`, each as `<asset>.sig` and `<asset>.p256.sig`;
-`install-desktop.sh` checks the installer's `.p256.sig` with `openssl dgst`. It also signs the archive as the
+archive, any delta patch, `install-desktop.sh` and Collie's installer `setup.sh`, each as
+`<asset>.sig` and `<asset>.p256.sig`; `install-desktop.sh` checks the installer's
+`.p256.sig`, and `setup.sh` the runner's, with `openssl dgst`. It also signs the archive as the
 tar it is applied as, `<name>.tar.sig` beside `<name>.tar.zst` (`appliedSignatureOf` in
 `src/signing.ts`). Desktop verifies that tar before it installs an update, whether
 Electrobun built it from the archive or from a delta patch

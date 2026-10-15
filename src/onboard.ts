@@ -15,11 +15,12 @@ import { glabHosts, pushCheck } from "./forge/gitlab-checks";
 import { gitlabHostOf } from "./config";
 import { tokenPage } from "./gitlab-token";
 import type { PluginEnv } from "./env";
-import { err, moveToRelease, prepareSteps, type OpResult } from "./operations";
+import { err, prepareSteps, upgrade, type OpResult } from "./operations";
 import { whatItSaid } from "./mr";
 import { HELLE_TOKEN_STEPS, helleUrlOf } from "./helle-url";
 import { helleEnvPath, LINEAR_MCP_ADD, LINEAR_MCP_FIX, probeLinearMcp } from "./optional";
-import { installation, manifestField, RELEASE_TAG } from "./release";
+import { installation, manifestField, RELEASE_TAG, type Carried } from "./release";
+import manifest from "../herdr-plugin.toml";
 
 export type StepStatus = "done" | "in_place" | "skipped" | "needs_root" | "needs_human" | "failed";
 
@@ -49,6 +50,8 @@ export type Skippable = "helle" | "linear";
 
 export interface OnboardOptions {
   readonly to: string;
+  /** The release this runner carries; the compiled runner's own unless a test says. */
+  readonly carried?: Carried | null;
   readonly skip?: ReadonlyArray<Skippable>;
   /** `GITLAB_TOKEN` and `HELLE_API_TOKEN`, from stdin: never an argument. */
   readonly secrets?: Readonly<Record<string, string>>;
@@ -60,12 +63,11 @@ export interface OnboardOptions {
 
 const HERDR_INSTALL = "curl -fsSL https://herdr.dev/install.sh | sh";
 const CLAUDE_INSTALL = "curl -fsSL https://claude.ai/install.sh | bash";
-const COLLIE_REPO = "https://github.com/cego/collie.git";
 const PROFILE_MARKER = "# added by collie onboard";
 const LINEAR_LOGIN = "claude mcp login linear-server";
 const CLAUDE_LOGIN = "claude auth login";
 const LOGIN_LIMIT = "10 minutes";
-/** Long enough for an installer or a clone; a network that never answers still ends. */
+/** Long enough for an installer or a download; a network that never answers still ends. */
 const COMMAND_LIMIT = "15 minutes";
 const SETTLED: ReadonlyArray<StepStatus> = ["done", "in_place", "skipped"];
 /** A URL's own characters (RFC 3986), so the terminal escapes around it are not part of it. */
@@ -142,11 +144,9 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
   // Where the installers put herdr, Claude Code and `collie`, ahead of the PATH this
   // process was started with, which a fresh SSH session's may not include yet.
   const search = [...new Set([binDir, localBin, ...inherited])].join(":");
-  const root =
-    env.raw["COLLIE_DIR"] ??
-    ((yield* fs.exists(`${env.pluginRoot}/herdr-plugin.toml`))
-      ? env.pluginRoot
-      : `${env.home}/.collie`);
+  const release = `${env.collieDir}/release`;
+  // Where the plugin is prepared and doctor looks: a development checkout's own root.
+  let root = release;
 
   const childEnv = { ...env.raw, PATH: search };
   const piped = (
@@ -246,35 +246,25 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
   let development = false;
   const collie = yield* step(
     "collie",
-    `Collie ${to} in ${root}`,
+    `Collie ${to} in ${env.collieDir}`,
     Effect.gen(function* () {
-      if (!(yield* fs.exists(root))) {
-        const repo = env.raw["COLLIE_REPO"] ?? COLLIE_REPO;
-        const cloned = yield* exec("git", ["clone", "--quiet", repo, root], env.home);
-        if (cloned.code !== 0) {
-          return failed(`could not clone ${repo}: ${lastWords(whatItSaid(cloned))}`);
-        }
-        // On its branch rather than detached, so a plain `collie upgrade` can still pull.
-        const atTag = yield* exec("git", ["reset", "--quiet", "--hard", `refs/tags/${to}`], root);
-        return atTag.code === 0
-          ? done(`cloned ${repo} at ${to}`)
-          : failed(`${repo} has no release ${to}: ${lastWords(whatItSaid(atTag))}`);
-      }
-      if (!(yield* fs.exists(`${root}/.git`))) {
-        return failed(`${root} is there and is not a checkout of Collie`);
-      }
-      const current = yield* installation(root, yield* manifestField(root, "version"), exec);
-      if (!current.release) {
+      const own = yield* installation(env.pluginRoot, env.collieDir, manifest.version, exec);
+      if (!own.release) {
         development = true;
+        root = env.pluginRoot;
         return {
           status: "skipped",
-          detail: `development build ${current.build} (${current.reason}): checks and logins only, nothing installed or moved`,
+          detail: `development build ${own.build} (${own.reason}): checks and logins only, nothing installed or moved`,
         } satisfies Outcome;
       }
-      const tags = yield* exec("git", ["tag", "--points-at", "HEAD"], root);
-      if (tags.stdout.split("\n").some((tag) => tag.trim() === to)) return inPlace(`at ${to}`);
-      const refused = yield* moveToRelease(root, to, exec);
-      return refused ? failed(refused.error.message) : done(`moved to ${to}`);
+      const clone = yield* fs.exists(`${env.collieDir}/.git`);
+      if (!clone && (yield* manifestField(release, "version")) === to) return inPlace(`at ${to}`);
+      const placed = yield* upgrade(
+        { ...env, pluginRoot: clone ? env.collieDir : release, raw: childEnv },
+        { to, ...(options.carried !== undefined && { carried: options.carried }) },
+        exec,
+      );
+      return placed.ok ? done(placed.human.split("\n")[0] ?? "") : failed(placed.error.message);
     }),
   );
   if (collie.status === "failed") return finish(false);
@@ -335,13 +325,11 @@ export const onboard = Effect.fn("Onboard.onboard")(function* (
     );
   }
 
-  const userDir = env.raw["COLLIE_USER_DIR"] ?? `${root}/user`;
-  const host = yield* gitlabHostOf({ raw: childEnv, userDir });
+  const host = yield* gitlabHostOf({ raw: childEnv, userDir: env.userDir });
   // Named to doctor, so it checks the host this run logged in to.
   const here: PluginEnv = {
     ...env,
     pluginRoot: root,
-    userDir,
     raw: { ...childEnv, GITLAB_HOST: host },
   };
   const secrets = options.secrets ?? {};
