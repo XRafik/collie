@@ -12,3 +12,7 @@ advisor-plans/
 SPEC.md
 docs/WORKFLOWS-DESIGN.md
 node_modules
+
+# The Installation and the edits an upgrade set aside, when a checkout is the Collie directory.
+release/
+kept/

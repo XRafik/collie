@@ -156,3 +156,18 @@ export const findRun = (
 /** Whether a Run has ended, which a question it is waiting on is not. */
 export const settled = (run: Pick<RunFacts, "state">): boolean =>
   run.state === "succeeded" || run.state === "failed" || run.state === "stopped";
+
+/** Where this Machine's live Runs work, or null where the host could not be asked. */
+export const liveCheckouts = (
+  env: PluginEnv,
+): Effect.Effect<ReadonlyArray<string> | null, never, Client> =>
+  runViews(env, null).pipe(
+    Effect.map(({ runs, unreadable }) =>
+      unreadable !== null
+        ? null
+        : runs
+            .map((view) => factsOfView(env.stateDir, view))
+            .filter((run) => !settled(run))
+            .map((run) => run.cwd),
+    ),
+  );

@@ -17,6 +17,7 @@ import { shellQuote } from "../src/script";
 import type { OpResult } from "../src/operations";
 import { writeConfigValue } from "../src/config";
 import { withGitlabHost } from "../src/commands/shared";
+import manifest from "../herdr-plugin.toml";
 
 let rig: Rig;
 let bin: FakeBin;
@@ -487,7 +488,7 @@ test("a git that warns while answering is still answering", () =>
     }),
   ));
 
-test("an installation that is not a checkout says nothing about being behind", () =>
+test("a release whose newest release cannot be read says nothing about being behind", () =>
   runEffect(
     Effect.gen(function* () {
       yield* healthy();
@@ -495,7 +496,50 @@ test("an installation that is not a checkout says nothing about being behind", (
 
       const result = yield* report();
 
-      expect(check(result, "up to date").ok).toBe(true);
+      expect(check(result, "up to date")).toMatchObject({ ok: true });
+      expect(check(result, "up to date").fix).toBe("");
+    }),
+  ));
+
+/** A release source whose newest release is `latest`. */
+const releasesAt = (latest: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() =>
+      Bun.serve({
+        port: 0,
+        fetch: () => new Response(null, { status: 302, headers: { location: `/tag/${latest}` } }),
+      }),
+    ),
+    (server) => Effect.promise(() => server.stop(true)),
+  ).pipe(Effect.map((server) => ({ COLLIE_RELEASES: `http://127.0.0.1:${server.port}` })));
+
+test("a release older than the newest says which is out, with the command", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      yield* bin.add("git", `exit 1`);
+      const source = yield* releasesAt("99.0.0");
+
+      const result = yield* report(source);
+
+      const stale = check(result, "up to date");
+      expect(stale.detail).toContain("Collie 99.0.0 is out");
+      expect(stale.fix).toBe("collie upgrade");
+      expect(stale.ok).toBe(true);
+    }),
+  ));
+
+test("a release at the newest is up to date", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      yield* bin.add("git", `exit 1`);
+      const source = yield* releasesAt(manifest.version);
+
+      const result = yield* report(source);
+
+      expect(check(result, "up to date").fix).toBe("");
+      expect(check(result, "up to date").detail).toContain(manifest.version);
     }),
   ));
 

@@ -9,22 +9,29 @@ vocabulary — Run, operation, host, Choice, Hand-off — see [`CONTEXT.md`](../
 One command, safe to re-run:
 
 ```sh
-git clone https://github.com/cego/collie.git ~/.collie && ~/.collie/setup.sh
+curl -fsSL https://github.com/cego/collie/releases/latest/download/setup.sh | sh
 ```
 
-`setup.sh` does its own work — clone the checkout or pull it, add the four keybindings
-below to `~/.config/herdr/config.toml` if they are missing, configure Claude Code's status
-line unless you have one of your own, reload a running herdr — and calls `prepare.sh` for
-everything else. That is the one routine that prepares a
-machine, and `collie upgrade` and herdr's plugin build hook end in it too, so a prerequisite
-is added in one place:
+It needs herdr, `curl` and `openssl`, and no git. `setup.sh` downloads the runner for this
+platform (`collie-<os>-<arch>`) from the latest release, or from `COLLIE_VERSION`'s, and runs
+it only once its `.p256.sig` checks out against Collie's release key, which is written into
+the script; a tampered, unsigned or non-program download is refused before anything in
+`~/.collie` changes. The runner then places the release it carries into
+[the Collie directory](#the-collie-directory), `~/.collie` or `COLLIE_DIR`, through the same
+path as `collie upgrade`, so a [clone install](#a-clone-install) there is migrated. Then
+`setup.sh` does its own work — add the four keybindings below to
+`~/.config/herdr/config.toml` if they are missing, configure Claude Code's status line unless
+you have one of your own, reload a running herdr. Run from inside a checkout it does the same,
+and never links that checkout. Placing the release ends in `prepare.sh`, the one routine that
+prepares a machine; `collie upgrade` and herdr's plugin build hook end in it too, so a
+prerequisite is added in one place:
 
-| Step             | What it does                                                                                        |
-| ---------------- | --------------------------------------------------------------------------------------------------- |
-| `plugin-link`    | `herdr plugin link` from this checkout, if it is not already linked from it and herdr is new enough |
-| `runner`         | `install.sh`: the runner in `bin/collie`, and a `collie` shim on your PATH                          |
-| `operator-skill` | Links the Collie operator skill into `~/.claude/skills/collie` and `~/.agents/skills/collie`        |
-| `skills`         | Installs and updates the skills the workflows require (below)                                       |
+| Step             | What it does                                                                                            |
+| ---------------- | ------------------------------------------------------------------------------------------------------- |
+| `plugin-link`    | `herdr plugin link` from this installation, if it is not already linked from it and herdr is new enough |
+| `runner`         | `install.sh`: the runner in `bin/collie`, and a `collie` shim on your PATH                              |
+| `operator-skill` | Links the Collie operator skill into `~/.claude/skills/collie` and `~/.agents/skills/collie`            |
+| `skills`         | Installs and updates the skills the workflows require (below)                                           |
 
 Every step skips what is already in place, so re-running is a reflex rather than a
 decision. `install.sh` writes the shim without changing PATH itself. Keybindings are the
@@ -63,7 +70,7 @@ For one of those, the install finds a token in this order:
 1. `COLLIE_TOKEN`, if you set it — a token that can read the repository:
 
    ```sh
-   COLLIE_TOKEN=ghp_… ~/.collie/setup.sh
+   COLLIE_TOKEN=ghp_… sh prepare.sh
    ```
 
 2. The login the host's own CLI already holds. For a GitHub release that is
@@ -80,18 +87,67 @@ Without any token, a machine with bun builds the runner from source instead — 
 a checkout does anyway, because its own source is what a release is cut from. A machine
 with neither a token nor bun says so and stops rather than installing whatever came back.
 
-`collie upgrade` does the same thing later: it pulls first where the installation is a
-checkout (`--ff-only`, so it never quietly merges local work), then runs the same
-`prepare.sh` steps and reports what each of them did. A pull it cannot do is reported
-rather than installed over. The Control Plane says when this installation is behind its
-remote, so you upgrade because you know you are stale rather than because you remembered
-to.
+`collie upgrade` does the same thing later. On a release it moves to the newest release,
+or to exactly `--to <version>`, without git: the target's runner is downloaded, verified
+against Collie's release key and places its release into `~/.collie/release/`
+([the Collie directory](#the-collie-directory)). A
+[development checkout](#running-a-checkout-of-collie) is pulled instead (`--ff-only
+--autostash`, so it never quietly merges local work and its uncommitted work rides
+through). Either way it then runs the same `prepare.sh` steps and reports what each of them did. A pull it cannot do is reported
+rather than installed over. The Control Plane and `collie doctor` say when a newer release
+is out (`Collie <version> is out — collie upgrade`), or for a checkout how far it is behind
+its remote, so you upgrade because you know you are stale rather than because you
+remembered to. The board reads the newest release in the background at most every five
+minutes, and says nothing when it cannot.
+
+### The Collie directory
+
+`~/.collie`, or `COLLIE_DIR`, holds three things
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)):
+
+- `release/` is the installation: the runner at `bin/collie`, the plugin manifest, the
+  shipped workflows, personas, prompts and operator skill. The runner writes it, and every
+  upgrade replaces it whole, which also repairs anything missing or damaged in it.
+- `user/` is yours: your workflows and personas, `config.json`, settings and `verify.json`.
+  The first placement creates it empty, and no upgrade writes it. `COLLIE_USER_DIR` moves it.
+- `kept/` holds edits an upgrade found inside `release/` before replacing it, under
+  `kept/<when>/` with their paths in the release. The upgrade names each one. A kept edit is
+  no longer in force: to keep a change, fork the workflow or persona into `user/`
+  (`collie workflow fork`, `collie persona fork`) and make it there.
+
+### A clone install
+
+A Machine installed before
+[ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md) has a git clone of
+Collie at `~/.collie`. Its next `collie upgrade` places the release inside the clone, at
+`~/.collie/release/`, and switches the plugin, the `collie` shim, the operator skill and the
+host over to it. It then removes the clone, leaving `release/` and `user/`, unless the clone
+holds anything of yours — changes, files git ignores beyond what an install made, commits on
+no remote, a stash, a worktree, or a live Run working in it. A clone kept for any of those is
+left exactly as it was and named in the report; delete it yourself once you have what you
+need from it.
+
+A clone on Collie 0.49.0 or older pulls before it runs the new upgrade, and that pull can
+stop on a conflict with a change of yours. Run the [install line](#install) instead: it
+migrates the clone the same way, without pulling it.
+
+### Running a checkout of Collie
+
+Collie is developed in a checkout like any other project: clone cego/collie anywhere but the
+Collie directory. To run your checkout's build as
+this Machine's plugin, run its own `prepare.sh`: it links the plugin from the checkout,
+builds the runner from source and points the `collie` shim at it. That checkout is then a
+**development checkout**: `collie upgrade` pulls it with `git pull --ff-only --autostash`,
+`upgrade --to` refuses it, and Desktop and paired Machines never upgrade it. To go back to
+the release, run `~/.collie/release/prepare.sh`.
 
 ### Onboarding a Machine
 
 `collie onboard` installs everything instead, herdr and Claude Code included, from a runner
-alone: it clones Collie at the runner's own release (or `--to`) over HTTPS, prepares it the
-way `setup.sh` does, puts `~/.local/bin` on PATH in your shell profile. It never runs sudo: a missing `git`, `curl` or `openssl` stops it with the command to run.
+alone: it places the release that runner carries into the Collie directory, as `collie
+upgrade` does — migrating a clone it finds there, and downloading and verifying another
+release's runner for a `--to` other than its own — then prepares it, and puts `~/.local/bin`
+on PATH in your shell profile. Nothing it does clones the repository. It never runs sudo: a missing `git`, `curl` or `openssl` stops it with the command to run.
 It then sets up what a Machine needs to work unattended: Claude Code logged in, glab logged in with a GitLab
 token, a key of the Machine's own for pushing unless it can already push, Helle's
 credentials and the Linear MCP — the last two unless `--skip` names them. Secrets come on
@@ -194,8 +250,8 @@ Run ended, `bodil remote down <name>` takes the instance down once you are done 
 
 | Variable              | Contract                                                                                                                                     |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `COLLIE_DIR`          | Checkout used by `setup.sh` when it is run outside a checkout; defaults to `~/.collie`.                                                      |
-| `COLLIE_REPO`         | Git URL cloned by `setup.sh`.                                                                                                                |
+| `COLLIE_DIR`          | The [Collie directory](#the-collie-directory), holding `release/`, `user/` and `kept/`; defaults to `~/.collie`.                             |
+| `COLLIE_RELEASES`     | Where releases are published, for a mirror; defaults to `https://github.com/cego/collie/releases`.                                           |
 | `COLLIE_TOKEN`        | Token used to download a release asset. Optional where `glab` or `gh` is already logged in to the release host.                              |
 | `COLLIE_BIN_DIR`      | Where `install.sh` writes the `collie` on your PATH; defaults to `~/.local/bin`. `collie doctor` looks there for a shim that is not on PATH. |
 | `CLAUDE_SKILLS_DIR`   | Claude Code's skill store, where `prepare.sh` links the operator skill beside `~/.agents/skills`; defaults to `~/.claude/skills`.            |
@@ -2523,12 +2579,11 @@ Usage is data: it never refuses, holds or delays work.
 
 ## Troubleshooting
 
-**A change to Collie has not taken effect.** Run `collie upgrade`, or `~/.collie/setup.sh`
-again — either one. Both pull the checkout (`--ff-only`, and a pull they cannot do is
-reported rather than forced) and both end in the same `prepare.sh`, so both bring the
-plugin link, the runner and shim, the operator skill and the skills up to date. Every step
-skips what is already in place, so re-running is cheap: an unchanged checkout is not even
-rebuilt. The one difference is the keybindings, which `setup.sh` writes and nothing else
+**A change to Collie has not taken effect.** Run `collie upgrade`, or the
+[install line](#install) again — either one. Both place the release into `~/.collie/release/`
+and both end in the same `prepare.sh`, so both bring the plugin link, the runner and shim,
+the operator skill and the skills up to date. Every step skips what is already in place, so
+re-running is cheap. The one difference is the keybindings, which `setup.sh` writes and nothing else
 touches — if a binding you expect is missing, `setup.sh` is the one to run.
 
 Nothing already running has to be restarted by hand. The host is replaced by the first

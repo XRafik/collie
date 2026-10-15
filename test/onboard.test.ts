@@ -1,6 +1,6 @@
-// `collie onboard`: its step stream against scripted Machines. Real git against a local
-// origin, so "a release" is git's answer; every installer and system tool that would
-// reach the network or need root is a stub on PATH.
+// `collie onboard`: its step stream against scripted Machines. The release is placed from a
+// carried tree on disk; every installer and system tool that would reach the network or need
+// root is a stub on PATH.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
@@ -12,10 +12,11 @@ import { eventText } from "../src/commands/onboard";
 import { onboard, type OnboardEvent, type OnboardOptions } from "../src/onboard";
 import { err, type OpResult } from "../src/operations";
 import { writeConfigValue } from "../src/config";
+import manifest from "../herdr-plugin.toml";
 
 let home: string;
-let origin: string;
 let root: string;
+let carried: { tree: string; runner: string };
 let bin: FakeBin;
 
 const git = (cwd: string, ...args: string[]) =>
@@ -37,18 +38,18 @@ const git = (cwd: string, ...args: string[]) =>
     ),
   );
 
-const release = Effect.fn("test.release")(function* (version: string) {
-  yield* exec(
-    [
-      "sh",
-      "-c",
-      `printf 'echo ran >> "$HOME/prepared"\\necho "prepare: runner: done"\\necho "prepare: skills: done"\\n' > prepare.sh; echo 'version = "${version}"' > herdr-plugin.toml`,
-    ],
-    { cwd: origin },
+/** The release this runner carries, whose `prepare.sh` records each time it ran. */
+const carry = Effect.fn("test.carry")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const tree = `${home}/carried/release`;
+  yield* fs.makeDirectory(tree, { recursive: true });
+  yield* fs.writeFileString(`${tree}/herdr-plugin.toml`, `version = "${manifest.version}"\n`);
+  yield* fs.writeFileString(
+    `${tree}/prepare.sh`,
+    `echo ran >> "$HOME/prepared"\necho "prepare: runner: done"\necho "prepare: skills: done"\n`,
   );
-  yield* git(origin, "add", ".");
-  yield* git(origin, "commit", "--quiet", "-m", version);
-  yield* git(origin, "tag", version);
+  yield* fs.writeFileString(`${home}/carried/collie`, "#!/bin/sh\n", { mode: 0o755 });
+  return { tree, runner: `${home}/carried/collie` };
 });
 
 const read = (file: string) =>
@@ -103,13 +104,12 @@ const onboarded = (overrides: Record<string, string> = {}, options: Partial<Onbo
       HOME: home,
       PATH: `${home}/stubs:/usr/bin:/bin`,
       SHELL: "/bin/bash",
-      COLLIE_REPO: origin,
       HERDR_PLUGIN_ROOT: `${home}/nowhere`,
       ...overrides,
     });
     const result = yield* onboard(
       env,
-      { to: "0.2.0", skip: ["helle", "linear"], ...options },
+      { to: manifest.version, carried, skip: ["helle", "linear"], ...options },
       (event) => Effect.sync(() => events.push(event)),
       (checked) =>
         Effect.sync(() => (doctorRan++, (doctoredAs = checked.raw["GITLAB_HOST"]), READY)),
@@ -128,13 +128,9 @@ beforeEach(() =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       home = yield* fs.makeTempDirectory({ prefix: "collie-onboard-" });
-      origin = `${home}/origin`;
       root = `${home}/.collie`;
       doctorRan = 0;
-      yield* fs.makeDirectory(origin);
-      yield* git(origin, "init", "--quiet", "-b", "master");
-      yield* release("0.1.0");
-      yield* release("0.2.0");
+      carried = yield* carry();
       bin = yield* FakeBin.make(`${home}/stubs`);
       yield* fs.writeFileString(`${home}/herdr-installer`, installer("herdr"));
       yield* fs.writeFileString(`${home}/claude-installer`, installer("claude", LOGGED_IN));
@@ -168,7 +164,7 @@ afterEach(() =>
   ),
 );
 
-test("a bare Machine gets herdr, Claude Code, Collie at the tag, the plugin and PATH", () =>
+test("a bare Machine gets herdr, Claude Code, the release placed, the plugin and PATH", () =>
   runEffect(
     Effect.gen(function* () {
       const { result, events } = yield* onboarded();
@@ -202,12 +198,12 @@ test("a bare Machine gets herdr, Claude Code, Collie at the tag, the plugin and 
       for (const step of ["system", "claude-login", "gitlab", "push"])
         expect(statusOf(events, step)).toBe("in_place");
       for (const step of ["helle", "linear"]) expect(statusOf(events, step)).toBe("skipped");
-      expect(yield* git(root, "describe", "--exact-match", "--tags", "HEAD")).toBe("0.2.0");
-      // On its branch, so a plain `collie upgrade` can pull.
-      expect(yield* git(root, "symbolic-ref", "--short", "HEAD")).toBe("master");
+      expect(yield* read(`${root}/release/herdr-plugin.toml`)).toContain(manifest.version);
+      expect(yield* (yield* FileSystem.FileSystem).exists(`${root}/.git`)).toBe(false);
       expect(yield* read(`${home}/curl-calls`)).toContain("https://herdr.dev/install.sh");
       expect(yield* read(`${home}/curl-calls`)).toContain("https://claude.ai/install.sh");
-      expect(yield* read(`${home}/prepared`)).toBe("ran\n");
+      // Once as the release is placed, and once more with herdr installed.
+      expect(yield* read(`${home}/prepared`)).toBe("ran\nran\n");
       expect(yield* read(`${home}/.bashrc`)).toContain(`export PATH="${home}/.local/bin:$PATH"`);
       expect(doctorRan).toBe(1);
     }),
@@ -231,15 +227,17 @@ test("a re-run is a repair: everything already in place is left alone", () =>
     }),
   ));
 
-test("a released checkout on an older version is moved to the one asked for", () =>
+test("a release at another version is replaced by the one asked for", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* git(home, "clone", "--quiet", "--branch", "0.1.0", origin, root);
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${root}/release`, { recursive: true });
+      yield* fs.writeFileString(`${root}/release/herdr-plugin.toml`, `version = "0.1.0"\n`);
 
       const { events } = yield* onboarded();
 
       expect(statusOf(events, "collie")).toBe("done");
-      expect(yield* git(root, "describe", "--exact-match", "--tags", "HEAD")).toBe("0.2.0");
+      expect(yield* read(`${root}/release/herdr-plugin.toml`)).toContain(manifest.version);
     }),
   ));
 
@@ -320,33 +318,17 @@ test("a missing openssl stops with the package manager's command", () =>
     }),
   ));
 
-test("a released checkout whose git warns on stderr is a release at its tag", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* git(home, "clone", "--quiet", "--branch", "0.2.0", origin, root);
-      yield* git(root, "checkout", "--quiet", "master");
-      const realGit = Bun.which("git", { PATH: "/usr/bin:/bin" });
-      yield* bin.add("git", `echo "warning: something git wants said" >&2; exec ${realGit} "$@"`);
-
-      const { result, events } = yield* onboarded();
-
-      expect(result).toMatchObject({ ok: true, data: { development: false } });
-      expect(results(events).find((event) => event.step === "collie")).toMatchObject({
-        status: "in_place",
-        detail: "at 0.2.0",
-      });
-    }),
-  ));
-
 test("a development checkout gets the checks, and nothing installed or moved", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* git(home, "clone", "--quiet", origin, root);
-      yield* git(root, "checkout", "--quiet", "-b", "feature");
-      const head = yield* git(root, "rev-parse", "HEAD");
+      const dev = `${home}/dev`;
+      yield* (yield* FileSystem.FileSystem).makeDirectory(dev);
+      yield* git(dev, "init", "--quiet", "-b", "feature");
+      yield* git(dev, "commit", "--quiet", "--allow-empty", "-m", "work");
+      const head = yield* git(dev, "rev-parse", "HEAD");
       yield* claudeAt(`case "$*" in "auth status --json") ${LOGGED_IN} ;; esac`);
 
-      const { result, events } = yield* onboarded({ HERDR_PLUGIN_ROOT: root });
+      const { result, events } = yield* onboarded({ HERDR_PLUGIN_ROOT: dev });
 
       expect(result).toMatchObject({ ok: true, data: { ready: true, development: true } });
       expect(statusOf(events, "collie")).toBe("skipped");
@@ -360,8 +342,8 @@ test("a development checkout gets the checks, and nothing installed or moved", (
         "linear",
         "doctor",
       ]);
-      expect(yield* git(root, "rev-parse", "HEAD")).toBe(head);
-      expect(yield* git(root, "symbolic-ref", "--short", "HEAD")).toBe("feature");
+      expect(yield* git(dev, "rev-parse", "HEAD")).toBe(head);
+      expect(yield* (yield* FileSystem.FileSystem).exists(root)).toBe(false);
       expect(yield* read(`${home}/curl-calls`)).toBe("");
       expect(yield* read(`${home}/prepared`)).toBe("");
       expect(doctorRan).toBe(1);
@@ -375,7 +357,6 @@ test("onboarded means doctor is ready", () =>
       const env = readEnv({
         HOME: home,
         PATH: `${home}/stubs:/usr/bin:/bin`,
-        COLLIE_REPO: origin,
         HERDR_PLUGIN_ROOT: `${home}/nowhere`,
       });
       const notReady = err("operation_failed", "1 of 2 checks failed.", {
@@ -385,7 +366,7 @@ test("onboarded means doctor is ready", () =>
 
       const result = yield* onboard(
         env,
-        { to: "0.2.0", skip: ["helle", "linear"] },
+        { to: manifest.version, carried, skip: ["helle", "linear"] },
         (event) => Effect.sync(() => events.push(event)),
         () => Effect.succeed(notReady),
       );

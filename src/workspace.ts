@@ -4,6 +4,8 @@
 
 import { Clock, Effect, FileSystem, Option, Path } from "effect";
 import { behindRemote } from "./doctor";
+import { newerRelease, RELEASES } from "./releases";
+import manifest from "../herdr-plugin.toml";
 import { COLLIE_TAB, displayName, GLYPH, runTitle } from "./naming";
 import { diffTargetOf } from "./strategies";
 import type { Live } from "./live";
@@ -139,6 +141,8 @@ export interface WorkspaceView {
    * behind is worth seeing, not worth interrupting for.
    */
   behind: number | null;
+  /** A release newer than this one, where this installation is a release. Shown, never notified. */
+  newer?: string | null;
   /** When this view was built, so a row's `at` can be read as a relative time. */
   now: number;
   agents: AgentRow[];
@@ -390,6 +394,8 @@ export const buildView = Effect.fn("buildView")(function* (
     worktrees?: string[];
     /** The installation, when the caller has one to compare against its remote. */
     pluginRoot?: string;
+    /** Where releases are published, for a release to compare against the newest. */
+    releases?: string;
     /** How long a running run may write nothing before its row says so. */
     quietMs?: number;
     /**
@@ -490,6 +496,10 @@ export const buildView = Effect.fn("buildView")(function* (
     cwd: opts.cwd,
     worktrees: opts.worktrees ?? [],
     behind: opts.pluginRoot ? yield* behindRemote(opts.pluginRoot, undefined, now) : null,
+    newer:
+      opts.pluginRoot && !(yield* (yield* FileSystem.FileSystem).exists(`${opts.pluginRoot}/.git`))
+        ? yield* newerRelease(opts.releases ?? RELEASES, manifest.version, now)
+        : null,
     now,
     agents,
     extraAgents: rows.length - agents.length,
@@ -721,6 +731,9 @@ export function askingRun(view: WorkspaceView): RunRow | null {
 }
 
 /** Plain lists, one screen, no boxes: this is a status board, not an application. */
+/** What every board says of a newer release. */
+export const newerLine = (version: string) => `Collie ${version} is out — collie upgrade`;
+
 export function renderWorkspace(
   view: WorkspaceView,
   note?: string,
@@ -732,6 +745,7 @@ export function renderWorkspace(
   if (view.behind !== null && view.behind > 0) {
     lines.push(`Collie is ${commitsBehind(view.behind)} its remote — \`collie upgrade\``);
   }
+  if (view.newer) lines.push(newerLine(view.newer));
 
   const agents = view.agents.map(
     (a) => `  ${a.key}  ${a.name.padEnd(22)}${a.status.padEnd(9)}${a.now ?? a.run}`,
