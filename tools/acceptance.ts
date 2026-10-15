@@ -87,6 +87,7 @@ const CHECKS_UNASKED = "checks run without asking (this MR)";
 const GENERAL = "the general workflow (this MR)";
 const AUTO_COMPACT = "Claude Code's auto-compact window as a setting (this MR)";
 const QUIET = "a stopped Codex agent is Quiet before anything replaces it (this MR)";
+const MERGE_WATCH = "the board knows a Task's merge request without being told (this MR)";
 
 /** What the front door owes a person, and cannot be settled below the front door. */
 const FRONT_DOOR: readonly Check[] = [
@@ -1663,6 +1664,19 @@ const OPERATOR_CHECKS: readonly Check[] = [
       layer: "backend",
       file: "test/reports.test.ts",
       name: "a Run started by an agent on another Machine reports back and closes",
+    },
+  },
+  {
+    id: "backend/a-tasks-card-reads-its-task",
+    statement:
+      "A Task's card shows the latest Disposition on any of its Runs, and a Run waiting on ended children does not lead it.",
+    owner: MERGE_WATCH,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/board.test.ts",
+      name: "a Task's card reads its Task",
     },
   },
   {
