@@ -1989,12 +1989,13 @@ development checkout — `protocol`, the `herds` — every running herdr session
 `id` and herdr's `name` — and every TaskView), then an `Upsert` or a `Remove` keyed by Task
 id for each change, each with a `seq` higher than the last. A client that reconnects gets a
 fresh snapshot. The host builds one board, from when it starts, for every client and for
-its own merge watch and News, so a client that subscribes is told the latest at once (or
-once the first build is done). It builds again when a Run is recorded, from any door, when
+its own merge watch and News. A client that subscribes is told the latest board that
+covers every change seen before it subscribed, so it reads its own writes: at once when no
+build is owed, or once the build under way or owed is done. It builds again when a Run is recorded, from any door, when
 anything under its state directory is written, when herdr pushes an event from any of its
 sessions (a pane opening or closing, or an agent's status changing), and every five
 seconds: one build at a time, with what changes meanwhile folded into the next. The other
-operations, `runs` and `run` among them, read fresh, so a client reads its own writes. The
+operations, `runs` and `run` among them, read fresh. The
 installation id is written once, by the first host to own the directory, and survives
 restarts and upgrades.
 

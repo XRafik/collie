@@ -9,6 +9,7 @@ import {
   Fiber,
   FileSystem,
   Logger,
+  Option,
   Queue,
   Schedule,
   Schema,
@@ -500,3 +501,22 @@ test(
     ),
   120_000,
 );
+
+test("a reader that arrives after a change reads a board built after it, not the one before", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        let runs = 0;
+        const changed = yield* Queue.unbounded<void>();
+        const boards = yield* shareBoard({
+          build: Effect.sleep("1 second").pipe(Effect.map(() => runs)),
+          changed: Stream.fromQueue(changed),
+        });
+        expect(Option.getOrThrow(yield* Stream.runHead(boards))).toBe(0);
+        runs = 1;
+        yield* Queue.offer(changed, undefined);
+        yield* Effect.yieldNow;
+        expect(Option.getOrThrow(yield* Stream.runHead(boards))).toBe(1);
+      }),
+    ).pipe(fastForward),
+  ));

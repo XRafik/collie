@@ -12,14 +12,18 @@ const SLOW_BUILD_MS = 2_000;
  * One board for everything that reads it: built at once and again whenever `changed` says
  * something may have moved, one build at a time, with the changes that arrive during a
  * build folded into the next. It keeps building for as long as `Scope` lasts. Its stream
- * is the latest board, then each one built after it.
+ * is the latest board that covers every change seen before it was read, then each one
+ * built after it, so a reader reads its own writes.
  */
 export const shareBoard = <A, E, R, R2>(options: {
   readonly build: Effect.Effect<A, E, R>;
   readonly changed: Stream.Stream<unknown, never, R2>;
 }): Effect.Effect<Stream.Stream<A>, never, Scope.Scope | R | R2> =>
   Effect.gen(function* () {
-    const latest = yield* SubscriptionRef.make(Option.none<A>());
+    let seen = 0;
+    const latest = yield* SubscriptionRef.make(
+      Option.none<{ readonly covers: number; readonly board: A }>(),
+    );
     const timed = Effect.gen(function* () {
       const started = yield* Clock.currentTimeMillis;
       const built = yield* options.build;
@@ -28,11 +32,12 @@ export const shareBoard = <A, E, R, R2>(options: {
       return built;
     });
     yield* Stream.concat(Stream.make(undefined), options.changed).pipe(
+      Stream.map(() => ++seen),
       Stream.buffer({ capacity: 1, strategy: "sliding" }),
       // A build that fails is skipped: the last board stands until a change builds again.
-      Stream.mapEffect(() =>
+      Stream.mapEffect((covers) =>
         timed.pipe(
-          Effect.map(Option.some),
+          Effect.map((board) => Option.some({ covers, board })),
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.interrupt
@@ -47,11 +52,18 @@ export const shareBoard = <A, E, R, R2>(options: {
       ),
       Effect.forkScoped,
     );
-    return SubscriptionRef.changes(latest).pipe(
-      // A reader that reads slowly skips to the latest board; a client is told by diff.
-      Stream.buffer({ capacity: 1, strategy: "sliding" }),
-      Stream.filter(Option.isSome),
-      Stream.map((built) => built.value),
+    return Stream.unwrap(
+      Effect.sync(() => {
+        const since = seen;
+        return SubscriptionRef.changes(latest).pipe(
+          // A reader that reads slowly skips to the latest board; a client is told by diff.
+          Stream.buffer({ capacity: 1, strategy: "sliding" }),
+          Stream.filter(Option.isSome),
+          Stream.map((built) => built.value),
+          Stream.filter((built) => built.covers >= since),
+          Stream.map((built) => built.board),
+        );
+      }),
     );
   });
 
