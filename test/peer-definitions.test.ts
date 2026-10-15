@@ -4,6 +4,7 @@
 import { expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { readAudit } from "../src/audit";
+import { withLock } from "../src/lock";
 import { fileTime } from "../src/time";
 import { runEffect } from "./support/effect";
 import { until } from "./support/host";
@@ -43,6 +44,30 @@ test(
               (has) => has === "forked\n",
             );
 
+            // A directory replaced by hand is watched again, and a save made while its catch-up waits
+            // on the other host reaches it without another save.
+            yield* fs.writeFileString(file(first, "personas/kept.md"), "kept\n");
+            yield* until(
+              () => text(second, "personas/kept.md"),
+              (has) => has === "kept\n",
+            );
+            yield* fs.makeDirectory(file(first, "personas-new"));
+            yield* save(first, "personas-new/kept.md", "older\n", "2000-01-01T00:00:00.000Z");
+            yield* Effect.sleep("2 seconds");
+            yield* withLock(
+              file(second, "definitions.lock"),
+              Effect.die("the other host holds its definitions"),
+              Effect.gen(function* () {
+                yield* fs.rename(file(first, "personas"), file(first, "personas-old"));
+                yield* fs.rename(file(first, "personas-new"), file(first, "personas"));
+                yield* Effect.sleep("250 millis");
+                yield* fs.writeFileString(file(first, "personas/after.md"), "after\n");
+                yield* Effect.sleep("250 millis");
+              }),
+            );
+            yield* Effect.sleep("2 seconds");
+            expect(yield* text(second, "personas/after.md")).toBe("after\n");
+
             yield* fs.writeFileString(file(second, "workflows/forked.workflow.ts"), "edited\n");
             yield* until(
               () => text(first, "workflows/forked.workflow.ts"),
@@ -71,16 +96,6 @@ test(
                 file(first, "replaced/2099-10-14T10:00:00.000Z/personas/both.md"),
               ),
             ).toBe("first's\n");
-
-            // A directory replaced by hand is still watched.
-            yield* fs.remove(file(first, "personas"), { recursive: true });
-            yield* fs.makeDirectory(file(first, "personas"));
-            yield* Effect.sleep("1 second");
-            yield* fs.writeFileString(file(first, "personas/after.md"), "after\n");
-            yield* until(
-              () => text(second, "personas/after.md"),
-              (has) => has === "after\n",
-            );
 
             for (const side of [first, second])
               expect(yield* text(side, "workflows/package.json")).toBe(

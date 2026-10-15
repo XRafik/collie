@@ -1158,7 +1158,6 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     Effect.gen(function* () {
       for (const kind of definitionKinds)
         yield* fs.makeDirectory(`${link.userDir}/${kind}`, { recursive: true });
-      yield* syncHeldDefinitions;
       yield* Stream.mergeAll(
         [
           ...definitionKinds.map((kind) =>
@@ -1169,6 +1168,8 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
             Stream.filter((event) => definitionKinds.includes(event.path)),
             Stream.as(true),
           ),
+          // The catch-up starts behind the watches, so a save during it is still seen.
+          Stream.make(false),
         ],
         { concurrency: "unbounded" },
       ).pipe(
