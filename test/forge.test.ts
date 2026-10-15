@@ -160,7 +160,7 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
-    test("reads a merge request open, merged or closed, with its head and merge commit", () =>
+    test("reads a merge request open, merged or closed, with its head, merge commit and merge time", () =>
       runEffect(
         Effect.gen(function* () {
           const read = (over: Partial<FakeMr>) =>
@@ -179,9 +179,12 @@ for (const name of ["gitlab", "github"] as const) {
             headSha: "1a2b3c4",
             mergedSha: "",
           });
-          expect(yield* read({ state: "merged", mergedSha: MERGED })).toMatchObject({
+          expect(
+            yield* read({ state: "merged", mergedSha: MERGED, mergedAt: "2026-10-15T08:00:00Z" }),
+          ).toMatchObject({
             state: "merged",
             mergedSha: MERGED,
+            mergedAt: "2026-10-15T08:00:00Z",
           });
           expect(yield* read({ state: "closed" })).toMatchObject({ state: "closed" });
           expect(yield* read({ state: "closed", draft: true })).toMatchObject({ state: "closed" });

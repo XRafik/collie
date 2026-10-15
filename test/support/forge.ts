@@ -240,6 +240,7 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       assignees: (mr.assignees ?? []).map((username) => ({ username })),
       sha: mr.head ?? null,
       merge_commit_sha: mr.mergedSha ?? null,
+      merged_at: mr.mergedAt ?? null,
       head_pipeline:
         pipeline === null ? null : { status: pipeline, sha: mr.pipelineAt ?? mr.head ?? null },
       source_branch: mr.sourceBranch ?? null,
@@ -429,6 +430,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       headRefOid: pull.head ?? null,
       ...GITHUB_MERGE_STATE[pull.mergeable ?? "yes"],
       mergeCommit: pull.mergedSha === undefined ? null : { oid: pull.mergedSha },
+      mergedAt: pull.mergedAt ?? null,
       statusCheckRollup: (pull.checks ?? []).map((check) => ({
         __typename: "CheckRun",
         name: check.name,

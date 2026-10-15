@@ -164,6 +164,8 @@ export const sideJobs = <E, R>(opts: {
   readonly panels: MrPanels;
   /** Records a merge request the watch found from a branch as that Run's own. */
   readonly record: (runId: string, url: string) => Effect.Effect<void>;
+  /** The host's audited stop, for what a merge settled. */
+  readonly stop: (runId: string, reason: string) => Effect.Effect<void>;
   readonly sweepers: Effect.Effect<ReadonlyArray<Sweeper>, E, R>;
 }) => {
   const { env, herdr } = opts;
@@ -186,6 +188,7 @@ export const sideJobs = <E, R>(opts: {
             views: yield* opts.board,
             runs: yield* opts.runs,
             record: opts.record,
+            stop: opts.stop,
             gitlabHost: yield* gitlabHostOf(env),
             now: yield* Clock.currentTimeMillis,
             checked,

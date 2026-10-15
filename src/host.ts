@@ -62,6 +62,7 @@ import {
   Reliance,
   runDir,
   evidenceDir,
+  STOP,
   type HostServices,
   type Locate,
 } from "./engine";
@@ -891,14 +892,32 @@ const hostBoard = (dir: string) =>
         }),
       ];
     });
-    return { env, herdr, bun, runs, build, unattended, sweepers, registry };
+    /** The host's own stop, audited as the host's and asked once per Run. */
+    const stop = (runId: string, reason: string) =>
+      once(
+        runDir(env.stateDir, runId),
+        {
+          operation: STOP,
+          request: `merged-${runId}`,
+          origin: "host",
+          reason,
+          asked: { reason },
+          result: Controlled,
+        },
+        registry.control({ runId, control: STOP, set: true }),
+      ).pipe(
+        Effect.provideContext(hosted),
+        Effect.provideContext(bun),
+        Effect.catchCause((cause) => Effect.logWarning(`could not stop ${runId}`, cause)),
+      );
+    return { env, herdr, bun, runs, build, unattended, sweepers, registry, stop };
   });
 
 /** The merge watch, News, the cleanup sweep and the Home's tokens, for as long as this host runs. */
 const sideJobsLayer = (dir: string, panels: MrPanels) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
-      const { env, herdr, bun, runs, build, unattended, sweepers, registry } =
+      const { env, herdr, bun, runs, build, unattended, sweepers, registry, stop } =
         yield* hostBoard(dir);
       yield* Effect.forkScoped(
         sideJobs({
@@ -909,6 +928,7 @@ const sideJobsLayer = (dir: string, panels: MrPanels) =>
           liveBoard: build,
           panels,
           record: registry.mergeRequest,
+          stop,
           sweepers,
         }).pipe(Effect.provideContext(bun)),
       );

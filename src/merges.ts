@@ -88,6 +88,8 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
   runs: ReadonlyArray<RunFacts>;
   /** Records a merge request found from a branch as that Run's own. */
   record: (runId: string, url: string) => Effect.Effect<void>;
+  /** The host's own audited stop of a Run, for what a merge settled. */
+  stop: (runId: string, reason: string) => Effect.Effect<void>;
   gitlabHost?: string;
   now: number;
   checked: Map<string, number>;
@@ -117,7 +119,7 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
       opts.panels.set(label, { at: opts.now, panel }),
     );
     if (answered === null) continue;
-    const { state, facts, by } = answered;
+    const { state, facts, by, mergedAt } = answered;
     const before = forge.get(label);
     if (opts.states.get(label) !== state || !sameFacts(before, facts)) learned = true;
     opts.states.set(label, state);
@@ -127,14 +129,23 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     const already = latest(
       yield* readDispositions(dir).pipe(Effect.catch(() => Effect.succeed([]))),
     );
-    if (already !== null) continue;
-    yield* recordDisposition(dir, {
-      at: yield* nowIso(),
-      by,
-      kind: "merged",
-      ref: label,
-      note: null,
-    });
+    if (already === null)
+      yield* recordDisposition(dir, {
+        at: yield* nowIso(),
+        by,
+        kind: "merged",
+        ref: label,
+        note: null,
+      });
+    // Where the forge gives no merge time, the first time the watch read it merged.
+    const merged = epochMs(mergedAt ?? already?.at ?? "") || opts.now;
+    for (const run of opts.runs)
+      if (
+        view.runs.includes(run.id) &&
+        (run.state === "running" || run.state === "waiting") &&
+        epochMs(run.created) < merged
+      )
+        yield* opts.stop(run.id, `${label} merged`);
   }
   if (learned) yield* writeMrStates(opts.stateDir, opts.states, forge);
 });
@@ -217,6 +228,7 @@ const forgeAnswer = Effect.fn("Merges.forgeAnswer")(function* <R>(
     state,
     facts: panel.mergeable === undefined ? facts : { ...facts, mergeable: panel.mergeable },
     by: forge.name,
+    mergedAt: panel.mergedAt,
   };
 });
 

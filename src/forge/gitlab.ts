@@ -67,6 +67,7 @@ const MrDetailsJson = Schema.fromJsonString(
     sha: optionalText,
     merge_commit_sha: optionalText,
     squash_commit_sha: optionalText,
+    merged_at: optionalText,
     updated_at: optionalText,
     web_url: optionalText,
     head_pipeline: optionalStatus,
@@ -172,7 +173,8 @@ export function mrDetails<R>(
       url: mr.web_url ?? "",
       autoMerge: mr.merge_when_pipeline_succeeds === true,
     } satisfies MrDetails;
-    return mergeable === undefined ? details : { ...details, mergeable };
+    const merged = mr.merged_at ? { ...details, mergedAt: mr.merged_at } : details;
+    return mergeable === undefined ? merged : { ...merged, mergeable };
   });
 }
 

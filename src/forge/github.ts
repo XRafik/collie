@@ -33,6 +33,7 @@ const PullJson = Schema.fromJsonString(
     baseRefName: optionalText,
     headRefOid: optionalText,
     mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
+    mergedAt: optionalText,
     statusCheckRollup: Schema.optionalKey(
       Schema.NullOr(
         Schema.Array(
@@ -111,6 +112,7 @@ const FIELDS = [
   "baseRefName",
   "headRefOid",
   "mergeCommit",
+  "mergedAt",
   "statusCheckRollup",
   "reviewDecision",
   "comments",
@@ -169,7 +171,8 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       url: pull.url ?? mrWords(ref).url ?? "",
       autoMerge: pull.autoMergeRequest != null,
     } satisfies MrDetails;
-    return mergeable === undefined ? details : { ...details, mergeable };
+    const merged = pull.mergedAt ? { ...details, mergedAt: pull.mergedAt } : details;
+    return mergeable === undefined ? merged : { ...merged, mergeable };
   });
 }
 

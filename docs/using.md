@@ -703,7 +703,12 @@ it is recorded as the newest Run on that branch's own, so the drawer, offers, Re
 release and Cleanup all see it. The forge is the one the branch's checkout pushes to, and
 it is asked about each branch at most once every 5 minutes. A merge request that merged or
 closed before the Task's first Run began is an older branch's and is ignored; of several,
-the newest is the Task's. One that was closed without merging only changes its card's sentence: closing
+the newest is the Task's. A merge also settles its Task: whatever in it is still going —
+running, waiting, parked or asking, a plan waiting on its builder included — and began
+before the forge says it merged, is stopped by the host, with `<label> merged` as the
+reason in its trail, and the card reads `Merged as cego/collie#114.`, never "Stopped by
+you". A Run started after the merge, such as a follow-up on the same branch, is left
+alone. One that was closed without merging only changes its card's sentence: closing
 can mean superseded as easily as abandoned, and only you know which. The same answer
 carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup — and the
 revision they ran at, which is the one Collie's own checks are counted at too: a failing

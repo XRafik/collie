@@ -743,6 +743,13 @@ function over(run: RunFacts, runs: ReadonlyArray<RunFacts>): boolean {
   return children.length > 0 && children.every((child) => over(child, runs));
 }
 
+/** Who made a Run's latest stop, from its audit trail (ADR-0039). */
+const lastStopBy = (run: RunFacts) =>
+  readAudit(run.dir).pipe(
+    Effect.map((lines) => lines.findLast((line) => line.operation === "stop")?.actor.origin),
+    Effect.orElseSucceed(() => undefined),
+  );
+
 /** The Run a card is about: the newest still going, else the newest. */
 function leaderOf(runs: ReadonlyArray<RunFacts>): RunFacts {
   return runs.find((run) => !over(run, runs)) ?? runs[0]!;
@@ -1063,13 +1070,18 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
       sentence: sentenceFor({
         mr,
         mrState,
+        // A stop the host made for a merge is the merge, never the human's stop.
+        ...(state === "stopped" &&
+        disposition?.kind === "merged" &&
+        (yield* lastStopBy(leader)) === "host"
+          ? { state: "done" as const }
+          : { state }),
         checks,
         readiness,
         summary: leader.summary,
         agent: agents.find((one) => one.run === leader.id)?.name ?? null,
         planReady,
         abandoned: abandoned && at > 0 ? agoMs(at, now) : null,
-        state,
         decision,
         step: doing?.step ?? null,
         // Never the pane's title: a terminal names its harness or file, not the work.

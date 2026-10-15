@@ -2,6 +2,7 @@
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Schedule, Schema, Stream } from "effect";
+import { readAudit } from "../src/audit";
 import { readDispositions } from "../src/disposition";
 import { currentEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
@@ -74,6 +75,45 @@ test(
           ]);
         }),
       ["targeted.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a merge the host's watch reads stops what in its Task is still going, as the host and saying why",
+  () =>
+    proves(
+      "collie-side-settle-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* writeTask(world.state, {
+            id: "task-1",
+            workspace: "w1",
+            label: "project | Targeted",
+            cwd: world.project,
+            created_at: "2026-10-01T09:00:00Z",
+          }).pipe(Effect.orDie);
+          const PATH = yield* mergedGlab(`${world.home}/bin`).pipe(Effect.orDie);
+          const started = yield* collie(
+            world,
+            ["run", "start", "targeted-parks", "--task", "task-1", "--input", `target=${MR}`],
+            { PATH },
+          );
+          expect(started.envelope.ok).toBe(true);
+          const runId = yield* runIdOf(started.envelope);
+          const stops = yield* until(
+            readAudit(`${world.state}/runs/${runId}`).pipe(
+              Effect.map((lines) => lines.filter((line) => line.operation === "stop")),
+              Effect.orElseSucceed(() => []),
+            ),
+            (lines) => lines.length > 0,
+          );
+          yield* stopHost(world.state);
+          expect(stops.map((line) => [line.actor.origin, line.reason])).toEqual([
+            ["host", "mk/project!7 merged"],
+          ]);
+        }),
+      ["targeted-parks.workflow.ts"],
     ),
   120_000,
 );
