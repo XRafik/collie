@@ -68,7 +68,6 @@ export const PersonaView = Schema.Struct({
 });
 export type PersonaView = typeof PersonaView.Type;
 
-/** A file of a module's own, as text. */
 export const ModuleFile = Schema.Struct({ path: Schema.String, text: Schema.String });
 
 /** Every Workflow and Persona in a host's shipped and user Layers. */

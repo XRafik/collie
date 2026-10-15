@@ -570,7 +570,6 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         Effect.provideContext(services),
       );
 
-  /** This Machine's and a peer's shared definitions, each given the other's later edits. */
   /** Per peer, the edit of each path it is known to hold, so a watch gives it only newer ones. */
   const holds = new Map<string, Map<string, string>>();
   const unsynced = (peer: Peer, held: ReadonlyArray<SharedDefinition>) =>

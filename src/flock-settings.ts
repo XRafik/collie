@@ -33,11 +33,7 @@ const same = (a: Schema.Json | null, b: Schema.Json | null) =>
 /** Desktop's own, given to every Machine and never taken from one: its token is made for it. */
 const GIVEN_ONLY = "gitlab_host";
 
-/**
- * The latest edit of each key: `take` is each of `has` later than what is held or not held,
- * and `give` is each held one later than `has`'s or missing from it. A tie keeps what is
- * held, and a removal is an edit like any other.
- */
+/** Each side's edits the other lacks or holds older; a tie keeps what is held, and a removal is an edit. */
 export const latestEdits = <
   Held extends { readonly at: string },
   Has extends { readonly at: string },
