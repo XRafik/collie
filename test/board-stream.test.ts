@@ -363,7 +363,6 @@ test("the board is built with nobody subscribed, and every reader of one interva
     ),
   ));
 
-/** The warnings logged while `effect` runs. */
 const warnedDuring = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const warned: string[] = [];
