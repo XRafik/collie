@@ -313,6 +313,7 @@ const collectedOf = (options: EvidenceAsk) => ({
   verifications: options.evidence.verifications,
   final: options.evidence.final,
   approved: options.approved,
+  commands: options.evidence.commands,
   outputs: new Map(Object.entries(options.outputs)),
   reviewed: new Set(options.reviewed),
   insideRun: (ref: string) => refInside(options.roots, ref),
@@ -581,7 +582,9 @@ export interface HostApi {
   readonly evidence: (runId: string, cwd: string) => Effect.Effect<CheckEvidence>;
   /**
    * Runs one of this Run's checks, and records what it did against the tree it ran on. A
-   * name that is not among them is refused.
+   * name that is not among them is refused. Where the latest record of exactly its command
+   * on this tree is a pass this host collected in the same environment, whoever asked for
+   * it, that record answers and nothing runs; never for `expect: "fail"` or `at`.
    */
   readonly verify: (options: {
     readonly runId: string;
@@ -602,11 +605,6 @@ export interface HostApi {
      */
     readonly pass?: "gate" | "recheck" | "fix";
     readonly round?: number;
-    /**
-     * Answer with its latest pass on this tree in this environment instead of running it.
-     * Only where nothing since, such as a resume, could change the answer.
-     */
-    readonly reuse?: boolean;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
    * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt

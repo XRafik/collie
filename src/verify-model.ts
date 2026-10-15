@@ -51,5 +51,10 @@ export const VerifyEvent = Schema.Union([
     stream: Schema.Literals(["stdout", "stderr"]),
     text: Schema.String,
   }),
-  Schema.Struct({ _tag: Schema.Literal("Result"), verification: VerificationSchema }),
+  Schema.Struct({
+    _tag: Schema.Literal("Result"),
+    verification: VerificationSchema,
+    /** False where an earlier pass answered and nothing ran. */
+    ran: Schema.optionalKey(Schema.Boolean),
+  }),
 ]);

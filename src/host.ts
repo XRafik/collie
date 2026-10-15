@@ -62,6 +62,7 @@ import {
   foundationLayer,
   registryLayer,
   Registry,
+  Reliance,
   runDir,
   evidenceDir,
   type HostServices,
@@ -1019,6 +1020,7 @@ const frontDoorHandlers = (
       const fs = yield* FileSystem.FileSystem;
       const registry = yield* Registry;
       const hosted = yield* Effect.context<HostServices>();
+      const reliance = yield* Reliance;
       const { env, herdr, bun, sweepers, changed, ...shared } = yield* SharedBoard;
       const boards = shared.boards.pipe(Stream.map((built) => built.views));
       const usage = yield* Usage;
@@ -1721,6 +1723,19 @@ const frontDoorHandlers = (
                 return yield* new HostRefused({
                   reason: `${REFUSED_INPUT}: "${where}" is not inside run ${runId}; a verification names the tree it ran on.`,
                 });
+              const kept =
+                expect === "fail"
+                  ? null
+                  : yield* reliance.relied(runId, { executable, argv, cwd: where });
+              if (kept !== null)
+                return Stream.make(
+                  {
+                    _tag: "Output" as const,
+                    stream: "stderr" as const,
+                    text: `not run again: verification ${kept.id} already passed on this tree\n`,
+                  },
+                  { _tag: "Result" as const, verification: kept, ran: false },
+                );
               return Stream.callback<typeof import("./verify-model").VerifyEvent.Type, HostRefused>(
                 (queue) =>
                   Effect.gen(function* () {
@@ -1749,7 +1764,11 @@ const frontDoorHandlers = (
                       result: Schema.Json,
                       value: fromText(toText(collected.success)),
                     }).pipe(Effect.orDie);
-                    yield* Queue.offer(queue, { _tag: "Result", verification: collected.success });
+                    yield* Queue.offer(queue, {
+                      _tag: "Result",
+                      verification: collected.success,
+                      ran: true,
+                    });
                     yield* Queue.end(queue);
                   }).pipe(Effect.provideContext(hosted)),
                 { bufferSize: 16 },
