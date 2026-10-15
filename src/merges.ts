@@ -3,7 +3,7 @@
 // strongest signal that the work landed, so Collie records the disposition itself. The
 // forge's own checks are kept beside the state, for the card to say whether it is ready.
 
-import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { DateTime, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { type ForgeFacts } from "./board";
 import {
   ForgeChecks,
@@ -14,12 +14,12 @@ import {
   type MrState,
   type TaskView,
 } from "./board-model";
-import { latest, readDispositions, recordDisposition } from "./disposition";
+import { readDispositions, recordDisposition } from "./disposition";
 import { forgeOf } from "./forge/forge";
 import { forgeHere, type Runner } from "./mr";
 import { runDir } from "./engine";
 import type { RunFacts } from "./runs";
-import { epochMs, nowIso } from "./time";
+import { epochMs } from "./time";
 
 /** How long one merge request's answer stands before its forge is asked again. */
 export const MERGE_POLL_MS = 5 * 60_000;
@@ -110,35 +110,37 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     // A merged one is still followed to its deploy jobs, until production has it.
     if (view.disposition !== null && !view.disposition.startsWith("merged")) continue;
     const label = mrLabel(mr);
-    if (opts.states.get(label) === "in-prod") continue;
-    if ((opts.checked.get(label) ?? 0) + MERGE_POLL_MS > opts.now) continue;
     if (mrRefOf(mr) === null) continue;
-    // Stamped before asking: a forge that cannot be asked is not asked again every tick.
-    opts.checked.set(label, opts.now);
-    const answered = yield* forgeAnswer(mr, opts.cwd, opts.run, (panel) =>
-      opts.panels.set(label, { at: opts.now, panel }),
-    );
-    if (answered === null) continue;
-    const { state, facts, by, mergedAt } = answered;
-    const before = forge.get(label);
-    if (opts.states.get(label) !== state || !sameFacts(before, facts)) learned = true;
-    opts.states.set(label, state);
-    forge.set(label, facts);
-    if (state === "open" || state === "closed") continue;
-    const dir = runDir(opts.stateDir, found?.run ?? view.run);
-    const already = latest(
-      yield* readDispositions(dir).pipe(Effect.catch(() => Effect.succeed([]))),
-    );
-    if (already === null)
-      yield* recordDisposition(dir, {
-        at: yield* nowIso(),
-        by,
-        kind: "merged",
-        ref: label,
-        note: null,
-      });
-    // Where the forge gives no merge time, the first time the watch read it merged.
-    const merged = epochMs(mergedAt ?? already?.at ?? "") || opts.now;
+    const dirs = view.runs.map((run) => runDir(opts.stateDir, run));
+    if (
+      opts.states.get(label) !== "in-prod" &&
+      (opts.checked.get(label) ?? 0) + MERGE_POLL_MS <= opts.now
+    ) {
+      // Stamped before asking: a forge that cannot be asked is not asked again every tick.
+      opts.checked.set(label, opts.now);
+      const answered = yield* forgeAnswer(mr, opts.cwd, opts.run, (panel) =>
+        opts.panels.set(label, { at: opts.now, panel }),
+      );
+      if (answered !== null) {
+        const { state, facts, by, mergedAt } = answered;
+        if (opts.states.get(label) !== state || !sameFacts(forge.get(label), facts)) learned = true;
+        opts.states.set(label, state);
+        forge.set(label, facts);
+        if (state !== "open" && state !== "closed" && (yield* firstMerged(dirs, label)) === null)
+          yield* recordDisposition(runDir(opts.stateDir, found?.run ?? view.run), {
+            at: mergedAt ?? DateTime.formatIso(DateTime.makeUnsafe(opts.now)),
+            by,
+            kind: "merged",
+            ref: label,
+            note: null,
+          });
+      }
+    }
+    // Every round, not only when the forge is asked: a stop that did not take is asked again.
+    const state = opts.states.get(label);
+    if (state === undefined || state === "open" || state === "closed") continue;
+    const merged = yield* firstMerged(dirs, label);
+    if (merged === null) continue;
     for (const run of opts.runs)
       if (
         view.runs.includes(run.id) &&
@@ -148,6 +150,23 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
         yield* opts.stop(run.id, `${label} merged`);
   }
   if (learned) yield* writeMrStates(opts.stateDir, opts.states, forge);
+});
+
+/** When the Task's merge request merged, as its first `merged` Disposition says; null for none. */
+const firstMerged = Effect.fn("Merges.firstMerged")(function* (
+  dirs: ReadonlyArray<string>,
+  label: string,
+) {
+  let first: number | null = null;
+  for (const dir of dirs)
+    for (const line of yield* readDispositions(dir).pipe(Effect.catch(() => Effect.succeed([]))))
+      if (
+        line.kind === "merged" &&
+        line.ref === label &&
+        (first === null || epochMs(line.at) < first)
+      )
+        first = epochMs(line.at);
+  return first;
 });
 
 /**

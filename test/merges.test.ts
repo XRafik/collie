@@ -3,8 +3,15 @@ import { Effect, FileSystem, Schema } from "effect";
 import { recordAudit } from "../src/audit";
 import { buildBoard } from "../src/board";
 import { sectionOf } from "../src/board-model";
-import { readDispositions } from "../src/disposition";
-import { MERGE_POLL_MS, readForge, readMrStates, settleMerges, watchedMr } from "../src/merges";
+import { readDispositions, recordDisposition } from "../src/disposition";
+import {
+  MERGE_POLL_MS,
+  readForge,
+  readMrStates,
+  settleMerges,
+  watchedMr,
+  writeMrStates,
+} from "../src/merges";
 import { runDir } from "../src/engine";
 import type { RunFacts } from "../src/runs";
 import { sinceReview } from "../src/mr";
@@ -281,10 +288,7 @@ const fromBranch = (name: "gitlab" | "github", over: Partial<FakeMr> = {}): Fake
   ...over,
 });
 
-/**
- * A Task on `BRANCH` whose Run recorded no merge request, and rounds of the watch over it,
- * each built from the Run as the host would read it after what the watch recorded.
- */
+/** A Task on `BRANCH` with no merge request recorded, and rounds of the watch over it. */
 const onBranch = Effect.fn("merges.onBranch")(function* (
   name: "gitlab" | "github",
   mrs: ReadonlyArray<FakeMr>,
@@ -425,11 +429,7 @@ test("a merge request opened from a Task's branch is looked for once a round at 
 
 const MERGED_AT = "2026-10-15T09:00:00Z";
 
-/**
- * A Task whose plan Run waits on its parked implement Run, whose merge request the forge
- * reads as merged at `MERGED_AT`, with `others` beside them, and rounds of the watch over
- * it that keep each stop the host was handed.
- */
+/** A plan Run waiting on its parked builder, whose merge request merged, and rounds of the watch. */
 const merging = Effect.fn("merges.merging")(function* (
   others: ReadonlyArray<Partial<RunFacts>> = [],
   mergedAt: string | null = MERGED_AT,
@@ -479,7 +479,8 @@ const merging = Effect.fn("merges.merging")(function* (
     const ids = new Set(stops.map(([run]) => run));
     runs = runs.map((run) => (ids.has(run.id) ? { ...run, state: "stopped" as const } : run));
   };
-  return { stateDir, env, stops, round, stopped, runs: () => runs };
+  const join = (over: Partial<RunFacts>) => Effect.map(of(over), (run) => void runs.push(run));
+  return { stateDir, env, stops, round, stopped, join, runs: () => runs };
 });
 
 test("a merge stops what in its Task is still going: the parked builder and the plan waiting on it, once", () =>
@@ -535,6 +536,45 @@ test("where the forge gives no merge time, the time the watch first read it merg
       );
       yield* round(TEN);
       expect(stops.map(([run]) => run).sort()).toEqual(["r-before", "r-plan", "r-plan.implement"]);
+    }),
+  ));
+
+test("a Run that follows the merge is not stopped when it leads the Task, however the forge dates the merge", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { stops, round, stopped, join } = yield* merging([], null);
+      yield* round(TEN);
+      stopped();
+      yield* join({ id: "r-follow-up", workflow: "implement", created: "2026-10-15T10:01:00Z" });
+      yield* round(TEN + MERGE_POLL_MS);
+      expect(stops.map(([run]) => run).sort()).toEqual(["r-plan", "r-plan.implement"]);
+    }),
+  ));
+
+test("a stop that did not take is asked again next round, before the forge is due and once it is in production", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { stops, round } = yield* merging();
+      yield* round(TEN);
+      yield* round(TEN + 60_000);
+      expect(stops.map(([run]) => run).sort()).toEqual([
+        "r-plan",
+        "r-plan",
+        "r-plan.implement",
+        "r-plan.implement",
+      ]);
+
+      const restored = yield* merging();
+      yield* writeMrStates(restored.stateDir, new Map([["mk/collie!65", "in-prod"]]));
+      yield* recordDisposition(runDir(restored.stateDir, "r-plan.implement"), {
+        at: MERGED_AT,
+        by: "gitlab",
+        kind: "merged",
+        ref: "mk/collie!65",
+        note: null,
+      });
+      yield* restored.round(TEN);
+      expect(restored.stops.map(([run]) => run).sort()).toEqual(["r-plan", "r-plan.implement"]);
     }),
   ));
 

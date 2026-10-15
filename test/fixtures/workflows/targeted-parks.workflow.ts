@@ -1,6 +1,3 @@
-// A module pointed at a change that parks and waits, as a builder that could not open its
-// merge request does.
-
 import { Host, Run, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 import { WorkflowInstance } from "effect/workflow/WorkflowEngine";
