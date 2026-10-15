@@ -72,6 +72,16 @@ test(
               ),
             ).toBe("first's\n");
 
+            // A directory replaced by hand is still watched.
+            yield* fs.remove(file(first, "personas"), { recursive: true });
+            yield* fs.makeDirectory(file(first, "personas"));
+            yield* Effect.sleep("1 second");
+            yield* fs.writeFileString(file(first, "personas/after.md"), "after\n");
+            yield* until(
+              () => text(second, "personas/after.md"),
+              (has) => has === "after\n",
+            );
+
             for (const side of [first, second])
               expect(yield* text(side, "workflows/package.json")).toBe(
                 `{ "name": "${side.name}" }\n`,

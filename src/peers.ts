@@ -1144,33 +1144,44 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     ),
     scope,
   );
-  const definitionDirs = [`${link.userDir}/workflows`, `${link.userDir}/personas`];
+  const definitionKinds = ["workflows", "personas"];
+  const syncHeldDefinitions = Effect.gen(function* () {
+    const live = peers.filter((peer) => standings.get(peer.installation)?.state === "live");
+    if (live.length === 0) return;
+    const held = yield* sharedDefinitions(link.userDir, yield* nowIso());
+    yield* Effect.forEach(
+      live.filter((peer) => unsynced(peer, held)),
+      syncDefinitions,
+      { discard: true },
+    );
+  });
   yield* Effect.forkIn(
     Effect.gen(function* () {
-      for (const dir of definitionDirs) yield* fs.makeDirectory(dir, { recursive: true });
+      for (const kind of definitionKinds)
+        yield* fs.makeDirectory(`${link.userDir}/${kind}`, { recursive: true });
+      yield* syncHeldDefinitions;
       yield* Stream.mergeAll(
-        definitionDirs.map((dir) => fs.watch(dir)),
+        [
+          ...definitionKinds.map((kind) =>
+            fs.watch(`${link.userDir}/${kind}`).pipe(Stream.as(false)),
+          ),
+          // A watch stays on the directory it was given, so one replaced is watched again.
+          fs.watch(link.userDir).pipe(
+            Stream.filter((event) => definitionKinds.includes(event.path)),
+            Stream.as(true),
+          ),
+        ],
         { concurrency: "unbounded" },
       ).pipe(
-        Stream.runForEach(() =>
-          Effect.gen(function* () {
-            const live = peers.filter((peer) => standings.get(peer.installation)?.state === "live");
-            if (live.length === 0) return;
-            const held = yield* sharedDefinitions(link.userDir, yield* nowIso());
-            yield* Effect.forEach(
-              live.filter((peer) => unsynced(peer, held)),
-              syncDefinitions,
-              { discard: true },
-            );
-          }),
-        ),
+        Stream.takeWhile((replaced) => !replaced),
+        Stream.runForEach(() => syncHeldDefinitions),
       );
     }).pipe(
-      // A watch ends with its directory; watching again recreates it.
       Effect.catch((cause) =>
-        Effect.logWarning(`could not watch shared definitions: ${reason(cause)}`),
+        Effect.logWarning(`could not watch shared definitions: ${reason(cause)}`).pipe(
+          Effect.andThen(Effect.sleep("10 seconds")),
+        ),
       ),
-      Effect.andThen(Effect.sleep("10 seconds")),
       Effect.forever,
     ),
     scope,
