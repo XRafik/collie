@@ -1,14 +1,12 @@
 // Where Runs end, across all of them: the numbers a change to Collie is judged by.
 // Data only: nothing here is a threshold, and nothing refuses anything.
 
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 import { STOP, type RunView } from "./engine";
-import { asksRun, runViews } from "./lifecycle";
-import type { PluginEnv } from "./env";
 import type { Metrics } from "./board-model";
 import { epochMs } from "./time";
 import { measuresOf, type Measures, type OutcomeRecords } from "./outcomes";
-import { metricsOf, type Metric } from "./metrics";
+import type { Metric } from "./metrics";
 
 const asJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 const isText = Schema.is(Schema.String);
@@ -145,35 +143,6 @@ export function reportOf(
   );
   return { since, total: kept.length, runs, workflows, failed, completed, stopped, measures };
 }
-
-/**
- * The report over every Run this Machine's host has, for whichever door asks: a Run
- * whose metrics cannot be read fails it, and one whose records cannot be read is
- * measured without them.
- */
-export const reportFor = Effect.fn("Report.for")(function* (env: PluginEnv, since: string | null) {
-  const hosted = yield* runViews(env, null);
-  const metrics = new Map<string, Metrics>();
-  const recorded = new Map<string, Recorded>();
-  for (const view of hosted.runs) {
-    const asked = yield* asksRun(env, view.runId, (client) =>
-      Effect.all({
-        metrics: client.runMetrics({ runId: view.runId }),
-        records: client
-          .runOutcomes({ runId: view.runId })
-          .pipe(Effect.orElseSucceed((): OutcomeRecords | null => null)),
-      }),
-    );
-    if (!asked.ok) return asked;
-    metrics.set(view.runId, metricsOf(asked.value.metrics, view.created));
-    recorded.set(view.runId, asked.value);
-  }
-  return {
-    ok: true as const,
-    report: reportOf(hosted.runs, metrics, since, recorded),
-    unreadable: hosted.unreadable,
-  };
-});
 
 const capped = (lines: ReadonlyArray<string>, cap = 20): string[] =>
   lines.length > cap ? [...lines.slice(0, cap), `  …and ${lines.length - cap} more`] : [...lines];

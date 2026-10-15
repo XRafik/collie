@@ -26,6 +26,7 @@ import {
   watchRun,
   runShown,
   runProgress,
+  reportFor,
 } from "../lifecycle";
 import { unsafePathComponent } from "../naming";
 import type { RunView } from "../engine";
@@ -69,7 +70,7 @@ import {
   type Followed,
   type Until,
 } from "../following";
-import { reportFor, reportLines } from "../report";
+import { reportLines } from "../report";
 import { latest, statusLine } from "../disposition";
 import { epochMs } from "../time";
 import type { PluginEnv } from "../env";

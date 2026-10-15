@@ -49,6 +49,7 @@ import {
   cleanupListing,
   scheduleListing,
   runProgress,
+  reportFor,
   type Door,
 } from "./lifecycle";
 import { peersOf } from "./peers";
@@ -59,7 +60,7 @@ import { statusLine } from "./disposition";
 import { Herdr } from "./herdr";
 import { ASKED_KINDS, type FLOCK_READS } from "./board-model";
 import { asText as newsText, NATIVE } from "./news";
-import { reportFor, reportLines } from "./report";
+import { reportLines } from "./report";
 import { epochMs } from "./time";
 import { findRun, listRuns, type RunFacts } from "./runs";
 import { readyLines } from "./following";
