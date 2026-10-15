@@ -39,6 +39,15 @@ export const FakeMr = Schema.Struct({
 });
 export type FakeMr = typeof FakeMr.Type;
 
+const FakeIssue = Schema.Struct({
+  project: Schema.String,
+  number: Schema.Int,
+  title: Schema.String,
+  body: Schema.String,
+  state: Schema.Literals(["open", "closed"]),
+});
+type FakeIssue = typeof FakeIssue.Type;
+
 const GITLAB_MERGE_STATUS = {
   yes: "mergeable",
   conflict: "conflict",
@@ -59,6 +68,8 @@ export const ForgeModel = Schema.Struct({
   loggedIn: Schema.Array(Schema.String),
   login: Schema.NullOr(Schema.String),
   mrs: Schema.Array(FakeMr),
+  issues: Schema.optionalKey(Schema.Array(FakeIssue)),
+  issueNotes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   /** The checkout's `origin` and `upstream` remote URLs, and the branch it is on. */
   origin: Schema.optionalKey(Schema.String),
   upstream: Schema.optionalKey(Schema.String),
@@ -111,6 +122,8 @@ export const CLI = { gitlab: "glab", github: "gh" } as const;
 /** One answer, and the note it posted where it posted one. */
 interface Answer {
   readonly ran: Ran;
+  readonly filedIssue?: FakeIssue;
+  readonly issueNoted?: { readonly key: string; readonly body: string };
   readonly cloned?: string;
   readonly noted?: { readonly key: string; readonly body: string };
   readonly approved?: string;
@@ -125,6 +138,55 @@ const flag = (args: ReadonlyArray<string>, name: string) => {
   const at = args.indexOf(name);
   return at === -1 ? undefined : args[at + 1];
 };
+
+function issueAnswer(forge: MrForge, model: ForgeModel, args: ReadonlyArray<string>): Answer {
+  const project = `${forge === "github" ? "github.com/" : ""}${flag(args, "--repo") ?? ""}`;
+  const issues = (model.issues ?? []).filter((one) => one.project === project);
+  const url = (number: number) =>
+    `https://${project}/${forge === "gitlab" ? "-/issues" : "issues"}/${number}`;
+  if (args[1] === "list") {
+    const open = issues.filter((one) => one.state === "open");
+    const page = Number(flag(args, "--page") ?? "1");
+    const size = Number(flag(args, "--per-page") ?? flag(args, "--limit") ?? "30");
+    return json(
+      open.slice((page - 1) * size, page * size).map((one): Schema.Json =>
+        forge === "github"
+          ? { number: one.number, title: one.title, body: one.body, url: url(one.number) }
+          : {
+              iid: one.number,
+              title: one.title,
+              description: one.body,
+              web_url: url(one.number),
+            },
+      ),
+    );
+  }
+  if (args[1] === "create") {
+    const number = Math.max(0, ...issues.map((one) => one.number)) + 1;
+    return {
+      ...ok(`${url(number)}\n`),
+      filedIssue: {
+        project,
+        number,
+        title: flag(args, "--title") ?? "",
+        body: flag(args, forge === "github" ? "--body" : "--description") ?? "",
+        state: "open",
+      },
+    };
+  }
+  if (args[1] === "comment" || args[1] === "note") {
+    const number = Number(args[2]);
+    if (!issues.some((one) => one.number === number)) return no();
+    return {
+      ...ok(),
+      issueNoted: {
+        key: `${project}#${number}`,
+        body: flag(args, forge === "github" ? "--body" : "--message") ?? "",
+      },
+    };
+  }
+  return no();
+}
 
 const keyOf = (forge: MrForge, mr: FakeMr) =>
   `${mr.project}${forge === "github" ? "#" : "!"}${mr.iid}`;
@@ -150,6 +212,7 @@ function pipelineOf(checks: ReadonlyArray<Check> | undefined): string | null {
 function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (!model.installed) return no(127);
   const [verb, sub] = args;
+  if (verb === "issue") return issueAnswer("gitlab", model, args);
   if (verb === "--version") return ok("glab 1.0.0");
   if (verb === "auth" && sub === "status") {
     const host = flag(args, "--hostname");
@@ -313,6 +376,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (verb === "auth" && sub === "status")
     return model.loggedIn.includes(flag(args, "--hostname") ?? FORGE_HOST.github) ? ok() : no();
   if (!model.loggedIn.includes(FORGE_HOST.github)) return no(4);
+  if (verb === "issue") return issueAnswer("github", model, args);
   if (verb === "api" && sub === "user")
     return model.login === null ? no() : json({ login: model.login });
   if (verb === "repo" && sub === "clone")
@@ -440,6 +504,13 @@ export function answer(
   if (cmd !== CLI[forge]) return { ran: no(127).ran, model };
   const said = forge === "gitlab" ? glab(model, args) : gh(model, args);
   let after = model;
+  if (said.filedIssue !== undefined)
+    after = { ...after, issues: [...(after.issues ?? []), said.filedIssue] };
+  if (said.issueNoted !== undefined) {
+    const { key, body } = said.issueNoted;
+    const notes = after.issueNotes ?? {};
+    after = { ...after, issueNotes: { ...notes, [key]: [...(notes[key] ?? []), body] } };
+  }
   if (said.noted !== undefined) {
     const { key, body } = said.noted;
     const notes = after.notes ?? {};

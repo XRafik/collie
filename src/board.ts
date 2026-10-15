@@ -887,10 +887,10 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
       ));
 
   // A Repo run is its fan-out's card's child rather than a card of its own.
-  const present = new Set(all.map((run) => run.id));
+  const present = new Map(all.map((run) => [run.id, run.task]));
   const repoRunsOf = new Map<string, RunFacts[]>();
   for (const run of all)
-    if (run.repo !== null && run.parent !== null && present.has(run.parent))
+    if (run.repo !== null && run.parent !== null && present.get(run.parent) === run.task)
       repoRunsOf.set(run.parent, [...(repoRunsOf.get(run.parent) ?? []), run]);
   const groups = new Map<string, RunFacts[]>();
   for (const run of all) {

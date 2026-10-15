@@ -12,10 +12,7 @@ as the Run is.
 
 {{rooting}}
 
-When I say proceed, implement, build or go, I am answering this run's end menu: run
-`collie run answer {{run.id}} "Implement now"` and change nothing else — the run starts the
-implementation itself. If the menu is not pending yet, finish the step you are in first
-and it will be.
+{{attendance}}
 
 ## grill
 
@@ -120,6 +117,19 @@ I want changes to the plan. Ask me what, one question at a time, then rewrite
 
 Then write your Output. The `changelog` is sent to an implementer already building from
 this plan, with the diff, so write it for that reader.
+
+## attended
+
+When I say proceed, implement, build or go, I am answering this run's end menu: run
+`collie run answer {{run.id}} "Implement now"` and change nothing else — the run starts the
+implementation itself. If the menu is not pending yet, finish the step you are in first
+and it will be.
+
+## unattended
+
+Nobody is watching this Run. Do not ask questions and do not wait. Decide each open
+question yourself, the way the goal most plausibly means it, and record each decision
+under `decided` in your Output. The plan is built as soon as its tickets are written.
 
 ## projects-root
 

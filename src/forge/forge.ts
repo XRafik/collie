@@ -10,6 +10,7 @@ import type { Ran, Runner } from "../mr";
 import type { Posted } from "../sdk";
 import { github } from "./github";
 import { gitlab } from "./gitlab";
+import type { FiledIssue, IssueList } from "./issues";
 
 export interface Readiness {
   readonly ok: boolean;
@@ -51,6 +52,25 @@ export interface Commands {
 /** What Collie asks a forge. Every answer is a value: a forge that cannot be asked says why. */
 export interface Forge {
   readonly name: MrForge;
+  readonly issues: <R>(
+    project: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<IssueList, never, R>;
+  readonly fileIssue: <R>(
+    project: string,
+    title: string,
+    body: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<FiledIssue, never, R>;
+  readonly commentIssue: <R>(
+    project: string,
+    number: number,
+    body: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
   /** The CLI is installed and logged in to `project`'s host; a null project asks the checkout at `cwd`. */
   readonly ready: <R>(
     project: string | null,

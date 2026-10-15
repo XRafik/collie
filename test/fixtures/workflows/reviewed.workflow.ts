@@ -20,6 +20,8 @@ export default defineWorkflow({
     notes: Schema.String,
     /** Any string here; the child takes two of them, and the child is what decides. */
     grade: Schema.String,
+    own: Schema.optionalKey(Schema.Boolean),
+    wait: Schema.optionalKey(Schema.Boolean),
   }),
   hints: { notes: "goal" },
   output: Schema.String,
@@ -41,7 +43,8 @@ export default defineWorkflow({
         child({
           invocation: `grade-${note}`,
           workflow: "graded",
-          input: { note, grade: input.grade },
+          input: { grade: input.grade, note, ...(input.wait ? { wait: true } : {}) },
+          ownTask: input.own === true,
         }),
       );
 

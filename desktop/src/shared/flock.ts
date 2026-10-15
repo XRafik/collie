@@ -10,6 +10,7 @@ import { Staged, StagedOrRefused } from "./attachments";
 import { About, Answers, ChatMessage, Conversations, DesktopTurn } from "./chat-view";
 import { Drawn } from "./scale";
 import { FlockSettings } from "./flock-settings";
+import { MachineSchedules } from "./schedules";
 import { MachineUsage } from "./usage";
 import {
   BoardMessage,
@@ -511,6 +512,31 @@ export const DesktopRpcs = RpcGroup.make(
   }),
   /** What each connected Machine's host read of its Usage. */
   Rpc.make("usage", { success: Schema.Array(MachineUsage) }),
+  /** What each connected Machine's host listed of its Schedules. */
+  Rpc.make("schedules", { success: Schema.Array(MachineSchedules) }),
+  /** Pauses, resumes or removes one of a Machine's Schedules; what came of it in a line. */
+  Rpc.make("changeSchedule", {
+    payload: {
+      installation: Schema.String,
+      change: Schema.Literals(["pause", "resume", "remove"]),
+      name: Schema.String,
+      request: Schema.optional(Schema.String),
+    },
+    success: Schema.String,
+    error: ActionFailed,
+  }),
+  /** Moves a Schedule to another Machine, with its checkout there where that is another path. */
+  Rpc.make("moveSchedule", {
+    payload: {
+      from: Schema.String,
+      to: Schema.String,
+      name: Schema.String,
+      checkout: Schema.optional(Schema.String),
+      request: Schema.optional(Schema.String),
+    },
+    success: Schema.String,
+    error: ActionFailed,
+  }),
   /** One Run's details while its record is open, with its log's tail, again as they change. */
   Rpc.make("runDetail", {
     payload: { installation: Schema.String, runId: Schema.String },

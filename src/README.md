@@ -53,6 +53,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `metrics.ts`        | What a Run produced and when: evidence, slices, rework, context — never pane activity                     |
 | `report.ts`         | Where Runs end across every Run: per workflow, and each that failed, finished or stopped                  |
 | `outcomes.ts`       | The report's measures: rounds, dispositions, steering, verifications, parks, context — each with its Runs |
+| `issue-privacy.ts`  | All checkouts and directory aliases inspected before publishing issue text                                |
 | `cards.ts`          | One slice of work as a human wants it handed over, with its readiness and significance                    |
 | `disposition.ts`    | What became of a Run's work, recorded beside its status and never over it                                 |
 | `conversation.ts`   | What the human and Collie have said about this Herd, redacted and reference-checked                       |
@@ -105,6 +106,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `helle.ts`          | Helle as a client, and the gate a Step blocks on until it holds the project                               |
 | `mr.ts`             | What a merge request step needs: assignee, template, the Linear tickets a branch answers                  |
 | `forge/forge.ts`    | The forge interface, and which adapter a merge request is on (ADR-0050)                                   |
+| `forge/issues.ts`   | Shared issue values and the created issue URL decoded from an adapter's answer                            |
 | `forge/gitlab.ts`   | The GitLab adapter: everything Collie asks GitLab, through `glab`                                         |
 | `forge/github.ts`   | The GitHub adapter: everything Collie asks GitHub, through `gh`                                           |
 | `forge/*-checks.ts` | Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                     |
@@ -117,6 +119,8 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `processes.ts`      | A process's command, start time and session, proven before anything signals it                            |
 | `usage-model.ts`    | A Subscription's Usage reading: Schemas, parsing, Exhausted; pure, so Desktop and a module share it       |
 | `usage.ts`          | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                        |
+| `schedule-model.ts` | A Schedule as every door reads it, and when an occurrence starts and which comes next (pure)              |
+| `schedules.ts`      | This Machine's Schedules: their records, the one write, and the `Schedule` workflow that fires them       |
 | `run-record.ts`     | Run records served by their owning host, including Outputs confined to the Run directory                  |
 | `verify-model.ts`   | Verification and stream Schemas shared with front doors without loading the collector                     |
 

@@ -26,10 +26,10 @@ import {
   watchRun,
   runShown,
   runProgress,
+  reportFor,
 } from "../lifecycle";
 import { unsafePathComponent } from "../naming";
-import type { Given, RunView } from "../engine";
-import { RESERVED_INPUTS } from "../sdk";
+import type { RunView } from "../engine";
 import {
   EMPTY_DEFAULTS,
   defaultsPath,
@@ -48,7 +48,7 @@ import { scopeFor, scopeKey } from "../registry";
 import { readTask, taskOfWorkspace, type TaskChoice } from "../task";
 import { runDeliveries } from "./steer";
 import { givenVerifications } from "../verify-spec";
-import { agentStartRefusal, CLI_CHECKOUT_FIX, insideCheckout } from "../agent-start";
+import { agentStartRefusal, CLI_CHECKOUT_FIX, hostOptions, insideCheckout } from "../agent-start";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "../projects";
 import { currentReports } from "../drift";
 import { newest } from "../cards";
@@ -70,7 +70,7 @@ import {
   type Followed,
   type Until,
 } from "../following";
-import { reportFor, reportLines } from "../report";
+import { reportLines } from "../report";
 import { latest, statusLine } from "../disposition";
 import { epochMs } from "../time";
 import type { PluginEnv } from "../env";
@@ -167,33 +167,6 @@ const chosenTask = Effect.fn("collie.chosenTask")(function* (
     );
   return taken({ mode: "continue", task: kept });
 });
-
-/**
- * What the host supplies at launch, split from what the author declared. A module may not
- * declare one of these names — `checkEntry` refuses that at load — so a value under one is
- * the host's option and never an input, and nothing of the host's reaches the payload.
- */
-function hostOptions(given: Given) {
-  return {
-    input: {
-      json: Object.fromEntries(Object.entries(given.json).filter(([name]) => !isOption(name))),
-      text: Object.fromEntries(Object.entries(given.text).filter(([name]) => !isOption(name))),
-    },
-    options: Object.fromEntries([
-      ...Object.entries(given.text).filter(([name]) => isOption(name)),
-      ...Object.entries(given.json)
-        .filter(([name]) => isOption(name))
-        .map(([name, value]) => [name, asOptionText(value)]),
-    ]),
-  };
-}
-
-const isOption = (name: string) => name in RESERVED_INPUTS;
-
-/** A host option is text; one that arrived as typed JSON is written back down as it came. */
-const asOptionText = (value: Schema.Json) => (isText(value) ? value : asJsonText(value));
-const isText = Schema.is(Schema.String);
-const asJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 
 /**
  * `--decide` answers a question before it is asked, which a module never does: its
@@ -410,6 +383,10 @@ const runStart = Command.make(
       command: "collie run start implement --input plan=ENG-123",
       description: "Build from a Linear issue, a plan directory, or a description",
     },
+    {
+      command: 'collie run start plan --input goal="one registry" --input then=implement',
+      description: "Plan and build it with nobody asked anything; then= to be asked what next",
+    },
   ]),
 );
 
@@ -487,7 +464,7 @@ const runShow = Command.make(
             return err("run_not_found", `Run "${runId}" was not found.`, { run: runId });
           const shown = yield* runShown(resolved.env, runId);
           if (!shown.ok) return shown;
-          const { view, agents, disposition, children, machine, handoffs = [] } = shown;
+          const { view, agents, disposition, children, machine, startedBy, handoffs = [] } = shown;
           // A Task is this Machine's, so a Run on another is never outside it.
           const task = yield* selectedTask(global);
           if (machine === null && task !== null && view.task !== task)
@@ -502,6 +479,7 @@ const runShow = Command.make(
               run: view,
               agents,
               disposition,
+              startedBy: startedBy ?? null,
               outcome: view.outcome,
               waiting: view.waiting,
               next_action: view.waiting[0]?.name ?? null,
@@ -517,6 +495,7 @@ const runShow = Command.make(
                 ([name, value]) =>
                   `  ${name} = ${textOf(value)} (${view.provenance[name] ?? GIVEN})`,
               ),
+              ...(startedBy === undefined ? [] : [`  ${startedBy}`]),
               ...(view.requestedBy === undefined ? [] : [`  ${requestedByLine(view.requestedBy)}`]),
               ...(view.report === undefined
                 ? []

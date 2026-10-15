@@ -143,6 +143,47 @@ const machine = (
         note("read", payload);
         return `${payload.tool} answered by ${name}`;
       }),
+    schedules: () =>
+      Effect.sync(() => {
+        note("schedules", {});
+        const host = { installation: `i-${name}`, hostname: name };
+        const vm = name === "vm-mk";
+        return {
+          machine: host,
+          schedules: [
+            {
+              machine: host,
+              name: vm ? "daily" : "nightly",
+              workflow: "proof",
+              checkout: "/src/collie",
+              cron: "0 7 * * *",
+              tz: "UTC",
+              paused: !vm,
+              start: {
+                workflow: "proof",
+                inputs: { note: "daily" },
+                workspace: "/src/collie",
+                verify: [],
+              },
+              next: "2026-10-14T07:00:00.000Z",
+              last: {
+                occurrence: "2026-10-13T07:00:00.000Z",
+                outcome: { kind: "run" as const, run: "r-2", status: "complete" },
+              },
+            },
+          ],
+        };
+      }),
+    changeSchedule: (payload) =>
+      Effect.sync(() => {
+        note("changeSchedule", payload);
+        return {
+          machine: { installation: `i-${name}`, hostname: name },
+          change: payload.change.change,
+          name: payload.change.name,
+          schedule: null,
+        };
+      }),
   };
   return {
     name,
@@ -294,6 +335,110 @@ test("a proposal's actions go to the one Machine they name, with their own ids",
           request: "req-1",
         },
       });
+    }),
+  ));
+
+test("the Flock lists each Machine's Schedules and pauses a remote one by its qualified name", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const listed = yield* call(asked, "collie_schedules", {});
+      expect(listed).toContain("vm-mk:daily");
+      expect(listed).toContain("mk-pc:nightly");
+      expect(listed).toContain("UTC\tproof\t/src/collie\tpaused");
+      expect(listed).toContain("2026-10-14T07:00:00.000Z");
+      expect(listed).toContain("r-2 complete");
+      asked.length = 0;
+      const said = yield* call(asked, "collie_propose", {
+        interpretation: "pause the vm's daily run",
+        actions: [{ kind: "schedule_pause", name: "vm-mk:daily" }],
+      });
+      expect(said).toContain("vm-mk:daily");
+      expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+        "vm-mk declare",
+        "vm-mk propose",
+      ]);
+      expect(asked.at(-1)?.payload).toMatchObject({
+        actions: [{ kind: "schedule_pause", name: "daily" }],
+      });
+    }),
+  ));
+
+test("a Schedule add names its Machine, and an unnamed or conflicting target changes nothing", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const add = {
+        kind: "schedule_add",
+        name: "daily",
+        cron: "0 7 * * *",
+        start: { workflow: "proof", inputs: { note: "daily" }, workspace: "/src/collie" },
+      };
+      const proposing = (action: JsonObject) =>
+        call(asked, "collie_propose", {
+          interpretation: "schedule a daily proof on the vm",
+          actions: [action],
+        });
+      expect(yield* proposing(add)).toContain("Name the Machine");
+      expect(asked).toEqual([]);
+      expect(
+        yield* call(asked, "collie_propose", {
+          interpretation: "add one and pause the vm's daily Schedule",
+          actions: [add, { kind: "schedule_pause", name: "vm-mk:daily" }],
+        }),
+      ).toContain("Name the Machine");
+      expect(asked).toEqual([]);
+      expect(yield* proposing({ ...add, machine: "vm-mk" })).toContain("vm-mk:daily");
+      expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+        "vm-mk declare",
+        "vm-mk propose",
+      ]);
+      expect(asked.at(-1)?.payload).toMatchObject({ actions: [add] });
+      expect(asked[0]?.payload).toMatchObject({
+        frontDoor: "chat",
+        conversation: "flock@mk-pc",
+        said: "stop the board bugs one",
+      });
+      asked.length = 0;
+      const qualified = { ...add, start: { ...add.start, workspace: "vm-mk:/src/collie" } };
+      yield* proposing(qualified);
+      expect(asked.at(-1)?.payload).toMatchObject({ actions: [add] });
+      expect(asked.every(({ machine }) => machine === "vm-mk")).toBe(true);
+      asked.length = 0;
+      expect(yield* proposing({ ...qualified, machine: "mk-pc" })).toContain("different Machines");
+      expect(asked).toEqual([]);
+      expect(yield* proposing({ ...add, machine: "unknown" })).toContain('No Machine "unknown"');
+      expect(asked).toEqual([]);
+      expect(
+        yield* proposing({ ...add, machine: "vm-mk", start: { ...add.start, here: true } }),
+      ).toContain("refused");
+      expect(asked).toEqual([]);
+    }),
+  ));
+
+test("a Machine whose Schedules cannot be read is named, with no empty list claimed", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const live = machine("vm-mk", [], asked);
+      const flock = {
+        ...flockOf(asked),
+        machines: () => [
+          machine("mk-pc", [], asked),
+          {
+            ...live,
+            door: { ...live.door, schedules: () => Effect.die("host has no schedules RPC") },
+          },
+          unread("away", { _tag: "Lost", state: "unreachable", reason: "asleep" }),
+        ],
+      };
+      const said = yield* callFlockTool(flock, "collie_schedules", {}).pipe(
+        Effect.provide(BunServices.layer),
+      );
+      expect(said).toContain("mk-pc:nightly");
+      expect(said).toContain("upgrade Collie on vm-mk");
+      expect(said).toContain("## away");
+      expect(said).not.toContain("- (none)");
     }),
   ));
 
@@ -969,4 +1114,53 @@ test("a Machine whose Collie has no such operation is told to upgrade, and the r
       expect(said).toContain("upgrade Collie on vm-mk");
       expect(said).toContain("collie_workspaces answered by mk-pc");
     }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("the Flock chat moves a Schedule between two Machines through the shared sequence", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const said = yield* call(asked, "collie_move_schedule", {
+        schedule: "vm-mk:daily",
+        to: "mk-pc",
+        checkout: "/home/mk/collie",
+      });
+      expect(said).toContain('Moved "daily" from vm-mk to mk-pc');
+      const changes = asked
+        .filter(({ op }) => op === "changeSchedule")
+        .map(({ machine, payload }) => [machine, payload]);
+      expect(changes).toMatchObject([
+        [
+          "mk-pc",
+          {
+            change: { change: "add", paused: true, start: { workspace: "/home/mk/collie" } },
+          },
+        ],
+        ["vm-mk", { change: { change: "remove", name: "daily" } }],
+        ["mk-pc", { change: { change: "resume", name: "daily" } }],
+      ]);
+      // Each Machine records the human's words with what it was asked.
+      for (const on of ["mk-pc", "vm-mk"])
+        expect(asked.some(({ machine, op }) => machine === on && op === "declare")).toBe(true);
+    }),
+  ));
+
+test("a Flock chat move to a Machine it cannot reach is refused, and nothing is changed", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const said = yield* callFlockTool(
+        {
+          ...flockOf(asked),
+          machines: () => [
+            machine("vm-mk", [], asked),
+            unread("mk-pc", { _tag: "Lost", state: "unreachable", reason: "ssh timed out" }),
+          ],
+        },
+        "collie_move_schedule",
+        { schedule: "vm-mk:daily", to: "mk-pc" },
+      ).pipe(Effect.provide(BunServices.layer));
+      expect(said).toContain("machine_unreachable");
+      expect(asked.filter(({ op }) => op === "changeSchedule")).toEqual([]);
+    }),
   ));
