@@ -3473,6 +3473,9 @@ const SWEEP_INTERVAL = "500 millis";
 const WAKE_INTERVAL = "250 millis";
 const WAKE_TRIES = 8;
 
+/** How many Run views a listing builds at once. */
+const VIEW_CONCURRENCY = 8;
+
 /** What a host is holding, as a caller may see it: live names and unloadable ones. */
 export const Registrations = Schema.Struct({
   live: Schema.Array(Schema.String),
@@ -4564,6 +4567,20 @@ const makeRegistry: (
   const claimOf = (runId: string) =>
     recordedClaim(claimPath(dir, runId)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
+  /** A finished execution's status: it is never resumed, so it cannot change. */
+  const finished = new Map<string, typeof RunStatus.Type>();
+  const polled = Effect.fn("Engine.polled")(function* (generation: Generation, execution: string) {
+    const workflow = generation.registration.workflow;
+    const status = pollStatus(
+      yield* engine.poll(workflow, execution),
+      generation.entry,
+      workflow.successSchema,
+      workflow.errorSchema,
+    );
+    if (status.status === "complete" || status.status === "failed") finished.set(execution, status);
+    return status;
+  });
+
   const viewOf = Effect.fn("Engine.viewOf")(function* (row: RunRow) {
     const input = yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({})));
     const placing = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
@@ -4622,13 +4639,7 @@ const makeRegistry: (
           unavailable.get(row.generation) ?? `${row.generation} is not registered in this host`,
       };
     }
-    const result = yield* engine.poll(generation.registration.workflow, row.execution);
-    const status = pollStatus(
-      result,
-      generation.entry,
-      generation.registration.workflow.successSchema,
-      generation.registration.workflow.errorSchema,
-    );
+    const status = finished.get(row.execution) ?? (yield* polled(generation, row.execution));
     // A failed Run keeps a claim it may have left shared work half-done under.
     const kept = status.status === "failed" ? yield* claimOf(row.run) : null;
     return {
@@ -5221,7 +5232,9 @@ const makeRegistry: (
     views: (task: string | null) =>
       store.runs.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf),
+          Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf, {
+            concurrency: VIEW_CONCURRENCY,
+          }),
         ),
       ),
     watch: (runId: string) =>
