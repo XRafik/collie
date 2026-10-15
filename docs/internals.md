@@ -341,7 +341,9 @@ with its time and reason. Each host keeps running its local Runs while its peer 
 a WebSocket, as does the dial-back. The client side is `connectPeer` in `src/host.ts`, which opens the relay, asks
 `identity` and refuses a far host of another build, naming both, without ever starting or
 stopping it; and `asksRun` in `src/lifecycle.ts`, which asks this host, then each peer, then
-each herdr machine not paired yet, for the Run a command names.
+each herdr machine not paired yet, for the Run a command names. `test/peers.test.ts` proves
+the link with `test/support/peers.ts`: two real hosts, each with its own fake herdr, paired
+through a fake `ssh`.
 
 **Pairing.** `pairWith` resolves the herdr machine's `HostName` with `ssh -G` and runs
 `collie --json machine invite --for <installation> --name <this Machine> --address <HostName>`

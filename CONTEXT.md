@@ -478,6 +478,11 @@ branch of its own and moves across the Renovate Bot branches it merges, pushing 
 an explicit refspec — so the operator's own checkout is never touched. A Renovate branch
 another registered Worktree holds is reported and left alone, never taken and never reached
 around with a detached remote-tracking ref.
+The one branch it does bind, for an application, is the batch branch the Renovate Bot
+branches are merged into: `deps/batch-<YYYY-MM-DD>`, or `collie/batch-<YYYY-MM-DD>` where
+the repository's `branchPrefix` covers `deps/`. It is Collie's, so it is never named under
+Renovate Bot's `branchPrefix` (`renovate/` by default): the Bot owns every branch there and
+marks a request from one it did not make as abandoned.
 
 **Renovate issue** — The one Linear issue a team renovates against: a checklist with one
 entry per repository, unchecked when that repository's Renovate Run starts and checked off
