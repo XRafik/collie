@@ -7,6 +7,9 @@ import { voiceOf, type Voice } from "./proposals";
 import { appendJournal, readJournal } from "./journal";
 import { nowIso } from "./time";
 
+export const ScheduledBy = Schema.Struct({ name: Schema.String, occurrence: Schema.String });
+export type ScheduledBy = typeof ScheduledBy.Type;
+
 export const AuditLine = Schema.Struct({
   at: Schema.String,
   operation: Schema.String,
@@ -18,6 +21,8 @@ export const AuditLine = Schema.Struct({
     conversation: Schema.optionalKey(Schema.String),
     said: Schema.optionalKey(Schema.String),
     attachments: Schema.optionalKey(Schema.Array(Schema.String)),
+    /** The Schedule, and the occurrence it was for, where the host started a Run for one. */
+    schedule: Schema.optionalKey(ScheduledBy),
   }),
   /** Why, in the asker's own words, where they gave one. */
   reason: Schema.optionalKey(Schema.String),
@@ -26,6 +31,31 @@ export const AuditLine = Schema.Struct({
   result: Schema.Json,
 });
 export type AuditLine = typeof AuditLine.Type;
+
+const STARTED_FROM: Partial<Record<FrontDoor, string>> = {
+  chat: "chat",
+  desktop: "Desktop",
+  board: "the board",
+  cli: "the CLI",
+  "cli-tty": "the CLI",
+};
+
+/** Who started a Run, from its start line, else from its parent; undefined where neither says. */
+export const startedBy = (
+  lines: ReadonlyArray<AuditLine>,
+  run: { readonly id: string; readonly parent: string | null },
+): string | undefined => {
+  const actor = lines.find((line) => line.operation === "start")?.actor;
+  if (actor?.schedule !== undefined)
+    return `Started by schedule \`${actor.schedule.name}\` for ${actor.schedule.occurrence}`;
+  const door = actor === undefined ? undefined : STARTED_FROM[actor.origin];
+  if (door !== undefined) return `Started from ${door}`;
+  if (run.parent === null) return undefined;
+  const invocation = run.id.startsWith(`${run.parent}.`)
+    ? run.id.slice(run.parent.length + 1)
+    : run.id;
+  return `Started by ${run.parent} as ${invocation}`;
+};
 
 const AuditJson = Schema.fromJsonString(AuditLine);
 const sameJson = Schema.toEquivalence(Schema.Json);
@@ -59,13 +89,15 @@ export const recordAudit = Effect.fn("Audit.record")(function* <A, I extends Sch
     readonly request: string;
     readonly origin: FrontDoor;
     readonly from?: Where | undefined;
+    readonly schedule?: ScheduledBy | undefined;
     readonly reason?: string | undefined;
     readonly asked?: Schema.Json | undefined;
     readonly result: Schema.Codec<A, I>;
     readonly value: A;
   },
 ) {
-  const spoken = { origin: line.origin, requestId: line.request, ...voiceOf(line) };
+  const voiced = { origin: line.origin, requestId: line.request, ...voiceOf(line) };
+  const spoken = line.schedule === undefined ? voiced : { ...voiced, schedule: line.schedule };
   const written: AuditLine = {
     at: yield* nowIso(),
     operation: line.operation,
@@ -91,6 +123,7 @@ export const once = Effect.fn("Audit.once")(function* <A, I extends Schema.Json,
     readonly request: string;
     readonly origin: FrontDoor;
     readonly from?: Where | undefined;
+    readonly schedule?: ScheduledBy | undefined;
     readonly reason?: string | undefined;
     readonly asked?: Schema.Json | undefined;
     readonly result: Schema.Codec<A, I>;

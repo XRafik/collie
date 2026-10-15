@@ -336,14 +336,15 @@ export function bodySections(body: string): BodySections {
   return { preamble: preamble.join("\n").trim(), sections };
 }
 
-export const skillInstalled = Effect.fn("Definitions.skillInstalled")(function* (
-  dirs: string[],
+export const skillFile = Effect.fn("Definitions.skillFile")(function* (
+  dirs: ReadonlyArray<string>,
   name: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   for (const dir of dirs) {
-    if (yield* fs.exists(path.join(dir, name, "SKILL.md"))) return true;
+    const file = path.join(dir, name, "SKILL.md");
+    if (yield* fs.exists(file)) return file;
   }
-  return false;
+  return null;
 });

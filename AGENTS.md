@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate`, `general`, `investigate` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `general`, `investigate`, `self-improve` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -56,6 +56,14 @@ here are in [`src/README.md`](src/README.md).
   `test/usage.test.ts`, `test/fallback.test.ts`.
 - **Review comments** → [ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md),
   `desktop/src/shared/review-comments.ts`. **Desktop Zoom** → [ADR-0047](docs/adr/0047-desktop-draws-at-its-monitors-own-scale.md).
+- **Schedules** → [ADR-0052](docs/adr/0052-a-schedule-is-a-saved-start-its-host-fires.md),
+  [`docs/using.md`](docs/using.md#schedules), `src/schedule-model.ts`, `src/schedules.ts`,
+  `src/schedule-move.ts`, `src/commands/schedule.ts`, the `schedule_*` actions in `src/actions.ts`,
+  `desktop/src/shared/schedules.ts`, `test/schedule*.test.ts`, `test/desktop-schedules.test.ts`.
+- **`self-improve`** → [ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md),
+  [`docs/using.md`](docs/using.md#self-improve), `workflows/self-improve.workflow.ts`,
+  `workflows/retrospective.ts`, `personas/retrospective.md`, `test/support/baseline.ts`.
+  Its triage uses the installed `retro` skill.
 - **Settings** → [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), `src/settings.ts`,
   `setSetting` and `takeShared` in `src/config.ts`. The user Layer's files are shared by the same rule:
   [ADR-draft-a-users-definitions-are-the-flocks](docs/adr/draft-a-users-definitions-are-the-flocks.md),

@@ -284,6 +284,7 @@ test(
           ]);
         expect(inputsOf((yield* cli(["--json", "workflow", "show", "plan"])).stdout)).toEqual([
           ["goal", "goal"],
+          ["then", null],
         ]);
         expect(
           inputsOf((yield* cli(["--json", "workflow", "show", "architecture"])).stdout),
@@ -296,6 +297,8 @@ test(
           "plan",
           "--input",
           "goal=one registry",
+          "--input",
+          "then=",
           "--input",
           "ticket=ENG-1",
         ]);
@@ -386,6 +389,12 @@ test(
         )(envelope.error?.details["inputs"]);
         expect(missing.map((one) => one.name)).toEqual(["plan", "proves"]);
         for (const one of missing) expect(one.meaning).not.toBe("");
+
+        const plan = yield* cli(["--json", "run", "start", "plan", "--input", "goal=one registry"]);
+        expect(yield* parseEnvelope(plan.stdout)).toMatchObject({
+          ok: false,
+          error: { code: "needs_input", details: { inputs: [{ name: "then" }] } },
+        });
       }),
     ),
   60_000,

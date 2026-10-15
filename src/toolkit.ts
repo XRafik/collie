@@ -296,9 +296,11 @@ export const CollieTools = Toolkit.make(
       "Everything that is not about a Run: what Collie needs and whether it is there, " +
       "which workspace this Herd's Home is and what proves it, the panes an older " +
       "release left that a cleanup would close, what a cleanup sweep would remove and keep, " +
+      "this Machine's Schedules — when each fires next, whether it is paused and what its " +
+      "last occurrence became — " +
       "the constraints every new Run begins " +
       "with, and which harness this conversation is running in. Read this before " +
-      "proposing an upgrade, an onboarding, a cleanup or a change to the defaults.",
+      "proposing an upgrade, an onboarding, a cleanup, a change to the defaults or to a Schedule.",
     parameters: Tool.EmptyParams,
   }),
   collieTool("collie_hold", {
@@ -335,7 +337,12 @@ export const CollieTools = Toolkit.make(
     description:
       "Carry out the human's requested actions and return their results, including the " +
       "kinds `collie_do` does not take: amending an Intent, forking a definition, changing " +
-      "a workspace's defaults, a cleanup, an upgrade, onboarding this Machine. No separate " +
+      "a workspace's defaults, a cleanup, an upgrade, onboarding this Machine, " +
+      "or schedule_add, schedule_pause, schedule_resume and schedule_remove. " +
+      "A schedule_add names its cron, optional tz and start (workflow, every Input, " +
+      "workspace and optional verify); the others name the Schedule. In Desktop's Flock " +
+      "chat name machine, or qualify the Schedule's name or start.workspace with <machine>:. " +
+      "Native chat acts on its own Machine and reports which. No separate " +
       "confirmation: they asked. " +
       "Reuse request_id when retrying the same request. Use reads for questions, not this. " +
       "Name every Run by the id `collie_herd` lists — a Run that does not exist is refused " +

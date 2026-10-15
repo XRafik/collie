@@ -78,6 +78,7 @@ import {
 } from "./flock-settings";
 import { DEFAULT_CHAT_HARNESS, editSetting } from "../shared/flock-settings";
 import { nowIso } from "../../../src/time";
+import { changedLine } from "../../../src/schedule-model";
 import { SettingValue, settingText } from "../../../src/settings";
 import { isString } from "../../../src/schema";
 import {
@@ -89,6 +90,9 @@ import {
   offersOn,
   runDetailOn,
   usageOn,
+  schedulesOn,
+  changeScheduleOn,
+  moveScheduleOn,
   runFileOn,
   definitionsIn,
   endChildren,
@@ -1045,6 +1049,42 @@ const main = Effect.gen(function* () {
     usage: () =>
       Effect.forEach(doors.values(), (door) => usageOn(door.machine, door.desktop), {
         concurrency: "unbounded",
+      }),
+    schedules: () =>
+      Effect.forEach(
+        doors.entries(),
+        ([installation, door]) => schedulesOn({ ...door.machine, installation }, door.desktop),
+        { concurrency: "unbounded" },
+      ),
+    changeSchedule: ({ installation, change, name, request: again }) =>
+      Effect.gen(function* () {
+        const request = again ?? (yield* uuid);
+        const door = yield* doorTo(doors, installation);
+        const changed = yield* changeScheduleOn(door, { change, name }, request);
+        return changedLine(changed);
+      }),
+    moveSchedule: ({ from, to, name, checkout, request: again }) =>
+      Effect.gen(function* () {
+        const request = again ?? (yield* uuid);
+        const unreachable = (installation: string) =>
+          doorTo(doors, installation).pipe(
+            Effect.mapError(
+              () =>
+                new ActionFailed({
+                  request,
+                  reason: `machine_unreachable: ${installation} is not connected. Nothing was moved.`,
+                }),
+            ),
+          );
+        return yield* moveScheduleOn(
+          {
+            from: yield* unreachable(from),
+            to: yield* unreachable(to),
+            name,
+            checkout,
+          },
+          request,
+        );
       }),
     runFile: ({ installation, runId, ref, offset }) =>
       doorTo(doors, installation).pipe(

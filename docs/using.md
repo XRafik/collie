@@ -906,7 +906,9 @@ it, never instead of it, because reading one task must not cost the overview of 
 other. `close` or Esc puts it away. Under the name and the buttons are five tabs, and one
 is showing at a time:
 
-- **Summary** — what it is for and where it has got to: the intent (its goal, and each
+- **Summary** — what it is for and where it has got to: who started it ("Started from
+  chat", "Started by schedule `nightly-review` for …", "Started by run-1 as review"), the
+  intent (its goal, and each
   constraint marked `¬`), the files the Run was given, each with its size and its path
   in the Run's directory where its agents read it, the steps with a duration each, the live agents — each saying
   what it is doing right now, from the terminal title its harness publishes, so progress is
@@ -2511,6 +2513,146 @@ Settings, where you would put it right, and starts agents in `auto` until you do
 Trust is unaffected and still answered first: it decides whether the harness will work in
 the directory at all, and permissions only decide what it asks about once it does.
 
+## Schedules
+
+A **Schedule** is a start your Machine's host makes by itself, whenever a cron expression
+falls due ([ADR-0052](adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)). It is saved
+with what an agent's start names — the Workflow, every Input, the checkout — and checked
+when it is added, so one that could never start is refused then rather than at seven the
+next morning:
+
+```sh
+collie schedule add nightly-review --cron "0 7 * * *" review \
+  --input target=branch:main --input plan= --input proves= --workspace ~/src/app
+collie schedule list
+collie schedule pause nightly-review
+collie schedule resume nightly-review
+collie schedule remove nightly-review
+```
+
+The cron expression is read in your Machine's time zone unless `--tz` names another, so
+`0 7 * * *` is your seven o'clock across a change of daylight saving time. A workspace named
+by its id or label is saved as its checkout's path, because the workspace may be gone by
+the time the Schedule fires.
+
+Each occurrence starts an ordinary Run, placed as a fresh start is — its own Task and
+workspace, unless an open Task already works its branch — and recorded as started by the
+Schedule. A Schedule fires only on the Machine it was added on, and only while that
+Machine's host runs: the host is a process a client starts, not a service, so a Machine
+that is off or whose host nothing has started fires nothing. When the host is next up, the
+occurrences it missed start once, late, for the latest of them. A Schedule runs one Run at a
+time: an occurrence that falls while its last Run is still going, asking, parked or stalled
+waits, and starts as soon as that Run ends, so a stuck Run becomes one card to look at
+rather than a pile of them. While herdr does not answer, the start waits and tries again
+each minute; any other refusal is recorded against that occurrence, and the next one is
+tried as usual.
+
+Pausing stops it firing and leaves any Run it started going. Resuming fires it from its
+next occurrence, with no catch-up. Removing it keeps every Run it started. `collie schedule
+list` shows each Schedule's Workflow, checkout, cron expression and time zone, its next
+occurrence, whether it is paused, and what became of its last occurrence: its Run and that
+Run's status, that it is waiting for herdr, or why it was refused. Every change and every
+occurrence is recorded with who asked in `schedules/<name>/operations.jsonl` under the state
+directory.
+
+You can ask chat to manage Schedules: “Schedule a review of `/src/app` on `vm` every morning
+at seven,” “Pause `vm:nightly-review`,” or “Remove `vm:nightly-review`.” Chat carries out
+your request at once through the same host operations as the CLI, and reports any refusal.
+Adding one requires every Input, just as starting a Workflow does.
+
+The Flock chat reads each Machine's Schedules with `collie_schedules` and names them
+`<machine>:<name>`. Your **Machine rule** covers Schedules as well as starts, unless your
+message names a Machine. With several Machines reachable, an add that names none is
+refused. An unreachable Machine is reported; chat never schedules the work somewhere else.
+Native chat reads and manages its own Machine's Schedules and says which Machine it acted on;
+for another Machine it runs `collie --machine <machine> schedule`.
+
+In Desktop, the Machines page has a **Schedules on <machine>** section for each Machine,
+beside its Usage, with the same facts as `collie schedule list` and the cron expression put
+in words where it is a common one ("every day at 07:00"). Each row can be paused, resumed,
+removed, or moved with **Move to…**. A Machine Desktop cannot reach says so: its Schedules
+still fire there while its host runs. One whose Collie is too old to list them asks for an
+upgrade. There is no add form: ask the Flock chat to add one.
+
+**Moving** a Schedule takes three steps over the two Machines' hosts: it is added on the
+other Machine, paused, with the same start; removed from this one; then resumed there. It
+starts fresh there, with no catch-up, and the Runs it already started stay where they ran.
+Name its checkout on the other Machine where the path differs. Both Machines must be
+reachable, or nothing is moved (`machine_unreachable`). A move that stops after the first
+step leaves the new copy paused and says so, and the same move asked again finishes it
+without doing any step twice. Desktop's **Move to…** and the Flock chat's
+`collie_move_schedule` run this one sequence.
+
+From a terminal, `--machine` puts a Schedule on another paired Machine, and pauses,
+resumes or removes one there:
+
+```sh
+collie --machine vm schedule add nightly-review --cron "0 7 * * *" review \
+  --input target=branch:main --input plan= --input proves= --workspace /home/me/src/app
+collie schedule list
+collie schedule move nightly-review --to laptop --workspace /Users/me/src/app
+```
+
+That Machine decides the add: its own saved Workflows and its own checkout, so name the
+checkout by its absolute path there. `collie schedule list` lists every Machine's Schedules,
+and names a Machine that did not answer. `collie schedule move` moves one from this Machine,
+or the one `--machine` names, to `--to`, as Desktop's **Move to…** does.
+
+A Run a Schedule started says so on its record: "Started by schedule `nightly-review` for
+2026-10-14T05:00:00.000Z".
+
+## Self-improve
+
+`self-improve` is a shipped Workflow for any project: it files, and starts to fix, what a
+day of Runs shows is wrong with the project it runs in
+([ADR-0053](adr/0053-collie-files-and-fixes-what-its-own-runs-show.md)):
+
+```sh
+collie run start self-improve --input runs=checkout --input improvements=2
+```
+
+`runs` is required and nothing infers it. `checkout` reads the Runs whose project is the
+checkout it runs in; `machine` reads every Run its Machine admitted, and alone files
+`defect`s, Collie misbehaving. It reads the 24 hours before it started, leaving out its
+own children; an earlier `self-improve` Run and its Improvements are read like any other.
+A day with none ends at once, starting no agent. Otherwise one `retrospective` agent reads
+those Runs' records with the installed `retro` skill and reports what they show is wrong,
+at most ten findings, most severe first. A finding seen in only one Run is left out unless
+it is a `defect` or matches an open issue; with `runs=checkout`, one about Collie itself is
+left out as "about Collie". Each finding that is left gets one "seen again" comment on the
+open issue it matches, or the open issue carrying its key, or is filed as a new issue on
+the forge of the checkout it runs in. Up to `improvements` groups of newly filed issues
+then start there as Improvements, each a `plan` of its own card that builds itself
+(`then=implement`) and ends at a reviewed merge request that closes its issues. Nobody is
+asked anything, and nothing is merged. `improvements=0` files without building.
+
+It waits for its Improvements, then writes `summary.md` in its Run directory: each issue
+filed or commented, by category; each Improvement's Run and how it ended; and each finding
+left out, with why. An Improvement that fails is listed there, and the Run still succeeds.
+
+Run it daily with a Schedule. For a project:
+
+```sh
+collie schedule add project-daily --cron "0 7 * * *" self-improve \
+  --input runs=checkout --input improvements=2 --workspace <its checkout>
+```
+
+Collie improves itself the same way, with `runs=machine` in a Collie checkout, one
+Schedule per Machine whose Runs should be read, since a Run reads only its own Machine's:
+Collie's bugs seen in any project's Runs are filed on Collie's tracker.
+
+```sh
+collie schedule add collie-daily --cron "0 7 * * *" self-improve \
+  --input runs=machine --input improvements=2 --workspace <Collie checkout>
+```
+
+**The `retro` skill** is Matt Pocock's, installed like every skill: `prepare.sh` and every
+`collie upgrade` put `mattpocock/skills` in `~/.agents/skills`, and it floats with them
+([ADR-0005](adr/0005-skills-float-and-are-not-pinned.md)). The `retrospective` Persona names
+it, and `retro` reads `writing-for-agents` itself. A Machine without it fails the Run,
+naming the repair, before any agent starts and before anything is filed. The Workflow's
+Markdown adapts `retro` to the day's Runs, and wins where the two differ.
+
 ## Cleanup
 
 Collie removes what it made once nothing needs it, and only what it can show it made
@@ -2556,7 +2698,7 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   — a workspace, an agent, a checkout, another Run — needs them.
 
 An entry of the state directory that is no kind Collie knows is listed as kept and never
-removed.
+removed. [Schedules](#schedules) under `schedules/` are the host's own: listed as kept, and never swept.
 
 `collie cleanup` lists what a sweep would remove now, with each item's size and the total,
 and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.

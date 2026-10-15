@@ -63,6 +63,8 @@ test(
         yield* aged(`${state}/agents/def456`, 2);
         yield* written(`${state}/requests/run-start/old.json`, "{}", 31);
         yield* written(`${state}/requests/run-start/new.json`, "{}", 1);
+        yield* written(`${state}/schedules/daily/schedule.json`, "{}", 2);
+        yield* aged(`${state}/schedules`, 2);
 
         const listed = Listed((yield* collie(world, ["cleanup"])).envelope.data);
         const removable = listed.remove
@@ -88,6 +90,11 @@ test(
           target: `${state}/notes.txt`,
           reason: "not a kind Collie knows",
         });
+        expect(listed.keep).toContainEqual({
+          kind: "state",
+          target: `${state}/schedules`,
+          reason: "the Schedules this host fires",
+        });
 
         const swept = yield* collie(world, ["cleanup", "--apply"]);
         expect(swept.envelope).toMatchObject({ ok: true });
@@ -99,6 +106,7 @@ test(
           `stop.${real.id}`,
           "agents/def456",
           "requests/run-start/new.json",
+          "schedules/daily/schedule.json",
           `runs/${real.id}`,
           "host.db",
         ])

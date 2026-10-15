@@ -47,7 +47,9 @@ import {
   settleNewsFor,
   anyRuns,
   cleanupListing,
+  scheduleListing,
   runProgress,
+  reportFor,
   type Door,
 } from "./lifecycle";
 import { peersOf } from "./peers";
@@ -58,7 +60,7 @@ import { statusLine } from "./disposition";
 import { Herdr } from "./herdr";
 import { ASKED_KINDS, type FLOCK_READS } from "./board-model";
 import { asText as newsText, NATIVE } from "./news";
-import { reportFor, reportLines } from "./report";
+import { reportLines } from "./report";
 import { epochMs } from "./time";
 import { findRun, listRuns, type RunFacts } from "./runs";
 import { readyLines } from "./following";
@@ -73,6 +75,7 @@ import { scopeKey } from "./registry";
 import { readSelection, selectionPath } from "./selection";
 import { listTasks } from "./task";
 import { isString, type JsonObject } from "./schema";
+import { scheduleLines } from "./schedule-model";
 import { checkModule, readModule, type Checked as ModuleCheck, type Described } from "./authoring";
 import { savedModules } from "./discovery";
 import {
@@ -692,7 +695,9 @@ const installationFacts = Effect.fn("Tools.installation")(function* (env: Plugin
   const harness = yield* chatHarnessOf(env.userDir);
   const chat = key === null ? null : yield* readChat(yield* chatPath(env.stateDir, key));
   // Only where a host has served this directory: reading is no reason to start one.
-  const sweepable = (yield* anyRuns(env)) ? yield* cleanupListing(env, "chat") : null;
+  const served = yield* anyRuns(env);
+  const sweepable = served ? yield* cleanupListing(env, "chat") : null;
+  const scheduled = served ? yield* scheduleListing(env, "chat") : null;
   return [
     `health: ${health === null ? "could not be checked" : health.ok ? health.human : health.error.message}`,
     "",
@@ -710,6 +715,11 @@ const installationFacts = Effect.fn("Tools.installation")(function* (env: Plugin
       : sweepable.ok
         ? `cleanup, as \`collie cleanup\` lists it:\n${shortened(cleanupLines(sweepable.value, false), CLEANUP_LINES)}`
         : `cleanup: ${sweepable.error.message}`,
+    scheduled === null
+      ? "schedules: none"
+      : scheduled.ok
+        ? scheduleLines(scheduled.value)
+        : `schedules: ${scheduled.error.message}`,
     "",
     "every new Run begins with, by the workspace it is started in:",
     ...(defaults.length > 0 ? defaults : ["- (no workspaces)"]),

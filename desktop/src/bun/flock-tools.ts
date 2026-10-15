@@ -17,6 +17,7 @@ import {
   type TaskView,
 } from "../../../src/board-model";
 import { isString, type JsonObject } from "../../../src/schema";
+import { scheduleLines } from "../../../src/schedule-model";
 import {
   answerWith,
   CollieTools,
@@ -31,6 +32,7 @@ import {
 } from "../../../src/toolkit";
 import type { Staged } from "../shared/attachments";
 import { type ChatBoard, unreadBecause } from "../shared/flock";
+import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { carriedPaths } from "./carried";
 import type { Door } from "./machine";
 
@@ -51,6 +53,8 @@ export const chatDoor = (door: Door) => ({
   editFile: (asked: Parameters<Door["editFile"]>[0]) => door.editFile(asked),
   upload: (asked: Parameters<Door["upload"]>[0]) => door.upload(asked),
   read: (asked: Parameters<Door["read"]>[0]) => door.read(asked),
+  schedules: () => door.schedules(),
+  changeSchedule: (asked: Parameters<Door["changeSchedule"]>[0]) => door.changeSchedule(asked),
 });
 
 export type ChatDoor = ReturnType<typeof chatDoor>;
@@ -117,6 +121,36 @@ const MachineRuleTool = Tool.make("collie_machine_rule", {
   .annotate(Tool.Title, "The Machine rule")
   .annotate(Tool.Readonly, false);
 
+/** Desktop's own: moving needs two Machines, which a Herd's chat never has. */
+const MoveScheduleTool = Tool.make("collie_move_schedule", {
+  description:
+    "Move a Schedule to another Machine, when the human asks: it is added there paused, " +
+    "removed here, then resumed there, and starts fresh with no catch-up. Name it as " +
+    "<machine>:<name> and the Machine by name. `checkout` is its checkout's absolute path " +
+    "on that Machine, where it is not the same path. Both Machines must be reachable.",
+  parameters: Schema.Struct({
+    schedule: Schema.String,
+    to: Schema.String,
+    checkout: Schema.optionalKey(Schema.String),
+  }),
+  success: Schema.String,
+  failureMode: "return",
+  needsApproval: false,
+})
+  .annotate(Tool.Title, "Move a Schedule")
+  .annotate(Tool.Readonly, false);
+
+const SchedulesTool = Tool.make("collie_schedules", {
+  description:
+    "Each Machine's Schedules, named <machine>:<name>, with their Workflow, checkout, cron, time zone, next occurrence, paused state and last outcome. A Machine that cannot be read says why; its list is never reported as empty.",
+  parameters: Tool.EmptyParams,
+  success: Schema.String,
+  failureMode: "return",
+  needsApproval: false,
+})
+  .annotate(Tool.Title, "The Flock's Schedules")
+  .annotate(Tool.Readonly, true);
+
 /** Desktop's own: a Herd's chat runs on the Home's harness. */
 const ChatHarnessTool = Tool.make("collie_chat_harness", {
   description:
@@ -165,6 +199,8 @@ export const FlockTools = Toolkit.make(
   CollieTools.tools.collie_do,
   CollieTools.tools.collie_propose,
   MachineRuleTool,
+  MoveScheduleTool,
+  SchedulesTool,
   ChatHarnessTool,
   InSyncTool,
 );
@@ -388,6 +424,37 @@ const workspaces = Effect.fn("FlockTools.workspaces")(function* (flock: FlockCha
   ].join("\n\n");
 });
 
+const schedules = Effect.fn("FlockTools.schedules")(function* (flock: FlockChat) {
+  const sections = yield* Effect.forEach(
+    flock.machines(),
+    (machine) =>
+      reach(machine).pipe(
+        Effect.flatMap(({ door }) => door.schedules()),
+        Effect.map((listing) =>
+          scheduleLines({
+            ...listing,
+            schedules: listing.schedules.map((entry) => ({
+              ...entry,
+              name: `${machine.name}:${entry.name}`,
+            })),
+          }),
+        ),
+        Effect.timeout(ANSWER_WITHIN),
+        Effect.catch((error) => Effect.succeed(`Schedules could not be read: ${reasonOf(error)}`)),
+        Effect.catchCause((cause) =>
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.interrupt
+            : Effect.succeed(
+                `Schedules could not be read; upgrade Collie on ${machine.name}, whose host may have no Schedules operation.`,
+              ),
+        ),
+        Effect.map((text) => `## ${machine.name}\n\n${text}`),
+      ),
+    { concurrency: "unbounded" },
+  );
+  return sections.length === 0 ? "No Machines to read Schedules from." : sections.join("\n\n");
+});
+
 type NewsItem = (typeof NewsBatch.Type)["items"][number];
 
 /** One Herd's pending News on one Machine. */
@@ -592,6 +659,43 @@ interface Localized {
 }
 
 const placeOne = (action: JsonObject, known: Boards): Result.Result<Localized, string> => {
+  if (textAt(action, "kind").startsWith("schedule_")) {
+    const explicit = textAt(action, "machine");
+    let machine =
+      explicit === ""
+        ? null
+        : (known.find((one) => one.machine.name === explicit)?.machine ?? null);
+    if (explicit !== "" && machine === null)
+      return Result.fail(`No Machine "${explicit}". Nothing was done.`);
+    const savedStart = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json))(
+      action.start,
+    );
+    const start = Option.isSome(savedStart) ? { ...savedStart.value } : null;
+    const local = { ...action };
+    delete local.machine;
+    const refs = [
+      { field: "name", value: action.name },
+      { field: "workspace", value: start?.workspace },
+    ];
+    for (const { field, value } of refs) {
+      if (!isString(value) || !value.includes(":")) continue;
+      const placed = place(
+        value,
+        owning(known, () => new Set()),
+        field === "name" ? "Schedule" : "workspace",
+      );
+      if (Result.isFailure(placed)) return Result.fail(placed.failure);
+      if (machine !== null && machine !== placed.success.machine)
+        return Result.fail("The Schedule names different Machines. Nothing was done.");
+      machine = placed.success.machine;
+      if (field === "name") local.name = placed.success.id;
+      else if (start !== null) start.workspace = placed.success.id;
+    }
+    if (machine === null && action.kind === "schedule_add" && known.length > 1)
+      return Result.fail("Name the Machine this Schedule is for. Nothing was done.");
+    if (start !== null) local.start = start;
+    return Result.succeed({ machine, action: local });
+  }
   const about = machineRef(action);
   if (about === null) return Result.succeed({ machine: null, action });
   const where =
@@ -744,12 +848,53 @@ const propose = Effect.fn("FlockTools.propose")(
       actions: carrying,
       request,
     });
-    return `Request: ${request}\n${done.human}`;
+    const schedules = placed.flatMap(({ action }) =>
+      textAt(action, "kind").startsWith("schedule_")
+        ? [`${machine.name}:${textAt(action, "name")}`]
+        : [],
+    );
+    return `Request: ${request}\n${schedules.length === 0 ? "" : `Schedules: ${schedules.join(", ")}\n`}${done.human}`;
   },
   Effect.catch((error) =>
     Effect.succeed(`collie_propose could not carry it out: ${reasonOf(error)}`),
   ),
 );
+
+const moveScheduleBetween = Effect.fn("FlockTools.moveSchedule")(function* (
+  flock: FlockChat,
+  input: { readonly schedule: string; readonly to: string; readonly checkout?: string },
+) {
+  const colon = input.schedule.indexOf(":");
+  const named = (name: string) => flock.machines().find((one) => one.name === name);
+  const from = colon > 0 ? named(input.schedule.slice(0, colon)) : undefined;
+  const to = named(input.to);
+  if (from === undefined || to === undefined)
+    return `Name the Schedule as <machine>:<name> and the Machine it goes to by name; Machines: ${flock
+      .machines()
+      .map((one) => one.name)
+      .join(", ")}. Nothing was moved.`;
+  const reached = yield* Effect.forEach([from, to], (machine) =>
+    writable(machine).pipe(Effect.result),
+  );
+  const away = reached.flatMap((one) => (one._tag === "Failure" ? [reasonOf(one.failure)] : []));
+  if (away.length > 0) return `machine_unreachable: ${away.join("; ")}`;
+  const [source, target] = reached.flatMap((one) => (one._tag === "Success" ? [one.success] : []));
+  yield* declareVoice(flock, source!);
+  yield* declareVoice(flock, target!);
+  const door = (machine: Reached): ScheduleDoor => ({
+    name: machine.name,
+    schedules: () => machine.door.schedules(),
+    changeSchedule: (asked) => machine.door.changeSchedule(asked),
+  });
+  const moved = yield* moveSchedule({
+    from: door(source!),
+    to: door(target!),
+    name: input.schedule.slice(colon + 1),
+    request: yield* newRequest,
+    checkout: input.checkout,
+  });
+  return moved.ok ? moved.said : `${moved.code}: ${moved.message}`;
+});
 
 const machineRule = (flock: FlockChat, asked: string | undefined) => {
   if (asked !== undefined) {
@@ -805,12 +950,14 @@ const handlersFor = (flock: FlockChat, sent: JsonObject) =>
       collie_herd: () => answer(herd(flock)),
       collie_run: (input) => answer(run(flock, input)),
       collie_workspaces: () => answer(workspaces(flock)),
+      collie_schedules: () => answer(schedules(flock)),
       collie_receipts: (input) => answer(receipts(flock, input)),
       collie_news: () => answer(news(flock)),
       collie_hold: (input) => answer(hold(flock, input)),
       collie_do: () => answer(carryOut(flock, sent)),
       collie_propose: () => answer(propose(flock, sent)),
       collie_machine_rule: ({ rule }) => answer(machineRule(flock, rule)),
+      collie_move_schedule: (input) => answer(moveScheduleBetween(flock, input)),
       collie_chat_harness: (change) => answer(chatHarness(flock, change)),
       collie_in_sync: ({ sync }) => answer(flock.inSync(sync)),
     });

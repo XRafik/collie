@@ -177,6 +177,9 @@ extension by Pi, and by `collie tools call` from a terminal. Desktop's Flock cha
 the same Toolkit's tools that a host's front door can answer, in-process, each answered by
 the host of the Machine it names (`desktop/src/bun/flock-tools.ts`); `collie_run`,
 `collie_receipts` and `collie_workspaces` with that Machine's Native chat's own reading.
+Native chat's `collie_installation` reads its Machine's Schedules through their shared list shape;
+the Flock chat's own `collie_schedules` names each `<machine>:<name>`. Schedule changes are `collie_propose` actions
+over the same host operation the CLI uses.
 It also has five file tools of its own that are not the Toolkit's, so Native chat's reach
 is unchanged.
 
@@ -210,7 +213,8 @@ the `host` front door, which is never a human. An `agent` is never a human eithe
 its `from.run` and `from.agent` name the launch or the registered pane. A chat's
 `collie_do` also names its conversation and carries the human's message from that turn,
 with the names of the **Attachments** it carried, attached by the tool host and never by
-the model.
+the model. A Run a **Schedule** starts is the host's own doing, recorded as `schedule` with
+the Schedule's name and the occurrence it was for; it is not a human.
 
 **Confirmation** — A command naming a Proposal's id **and** its content hash. A yes to a
 summary is not consent to a payload nobody read. Anyone may give one — a human at a
@@ -307,7 +311,9 @@ of a label — two Tasks may share a project prefix, and a workspace renamed by 
 still its Task's. A Run started fresh is a new Task, unless it is about a branch an open
 Task's checkout has out — the branch it is placed on, or the one its diff target names —
 and then it is that Task's: one workspace per Task. Anything else joins a Task only by an
-explicit **Continue task**.
+explicit **Continue task**. A child Run is its parent's Task's, unless it was started as work of
+its own (`ownTask`): then it is placed as a fresh start is, and is still its parent's
+child.
 
 **Task workspace** — The herdr workspace a Task's Runs, tabs and agents live in. One per
 Task, made when its first Run is admitted, on the checkout that Run is given. It is never
@@ -540,7 +546,7 @@ takes, and where its output is being written (ADR-0042).
 
 **Choice** — A question a Run asks the human with `ask`, from a closed set of options: what the answer does next — start another Workflow, prompt an agent, post a review, stop — is the Workflow's own code. An answer outside the options, or a second answer to one already answered, is refused and starts nothing.
 
-**Chain** — Starting another Workflow from a Run, with `child`: typed input decoded against the child's schema before it is admitted, a stable invocation name, and the child recorded as this Run's. Replaying the parent reuses the child it already has. A fan-out chains several at once, one per repository a plan touches; see Repo run.
+**Chain** — Starting another Workflow from a Run, with `child`: typed input decoded against the child's schema before it is admitted, a stable invocation name, and the child recorded as this Run's. Replaying the parent reuses the child it already has. A child started as work of its own is a Task of its own, and still this Run's. A fan-out chains several at once, one per repository a plan touches; see Repo run.
 
 **Plan directory** — The `plan/` folder inside a Run: SPEC.md and the ticket files. It is the hand-off from `plan` to `implement` and never lives in the repository. Every ticket names the repository it changes with a `Repo:` line: a path under the Run's root, `.` for the root itself, never absolute and never containing `..`.
 
@@ -629,6 +635,23 @@ does with each outcome, and what a five-minute unresolved attempt stops:
 **Notification** — The only channel from an unattended Run to the person who started it, so what is not worth interrupting for is not sent at all. One title shape — `<repo> · <slug> <what happened>` — one taxonomy in `src/notify.ts`, once per `(run, kind, step)`, and never a reason for a Run to fail.
 
 **Host** — The one background process that runs work for a state directory. CLI, board and chat all reach it over the same local RPC, and closing any of them leaves its work running. It owns the directory under `host.lock`, keeps its Runs in SQLite until **Cleanup** forgets them, and on restart hands every accepted Run back to the engine, so completed work is reused rather than repeated. A client of another build is told to restart it before `HostRpcs` (ADR-0015); `FrontDoorRpcs` serves any build (ADR-0038).
+
+**Schedule** — A start saved with when to make it: a name, a cron expression read in a
+time zone, and the start as an agent's start gives one — the Workflow, every Input, the
+checkout. A Machine's, kept by its **Host** and fired by no other: that host's engine
+sleeps a durable workflow execution until each occurrence, one after another. Whoever adds it
+chooses that Machine, every listing names it, and moving it to another Machine adds it
+there paused, removes it here and resumes it there, with both Machines reachable. No other
+Machine fires it in its place. Checked when it is added as such a start is. Missed occurrences — the Machine off, or its host not started — collapse into
+one, started late. An occurrence that falls due while the Run the Schedule last started has
+not settled waits for it, so a Schedule has one Run going at a time. Pausing stops it
+without catching up. A Run it starts is any Run, placed as a fresh start, and its record
+says which Schedule started it ([ADR-0052](docs/adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)).
+
+**Self-improve Run** — One execution of the shipped `self-improve` Workflow, in a project's checkout: one day of Runs, that project's (`runs=checkout`) or its whole Machine's (`runs=machine`, which alone files Collie's own `defect`s), read with the installed `retro` skill, what they show is wrong filed or commented on that checkout's forge, and up to `improvements` **Improvements** started and waited on ([ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md)).
+
+**Improvement** — One merge request's worth of issues a **Self-improve Run** filed new: a `plan` child that is a Task of its own, started with `then=implement`, whose goal is those issues and whose merge request closes them. Nobody is asked anything until the merge.
+Not a shared setting: its checkout is a path on one Machine.
 
 **Ownership** — Who holds something that must have one owner. A claim stands while its process answers and is still the one that wrote it, and one whose process answers but whose identity cannot be read stands too: "I could not tell" is not permission to take over. It decides which process may be the host for a state directory; canonical in `src/lock.ts`.
 

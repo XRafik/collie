@@ -23,10 +23,11 @@ Put these before the subcommand:
 | `--log-level <lvl>` | `all`, `trace`, `debug`, `info`, `warn`, `error`, `fatal`, `none`. |
 
 ```sh
-collie --json --workspace wT run start plan --input goal="ship it"
+collie --json --workspace wT run start plan --input goal="ship it" --input then=
 ```
 
-`--machine` is for a command that names no Run: `board`, `run start` and `run list`. A
+`--machine` is for a command that names no Run: `board`, `run start`, `run list` and
+`schedule`. A
 command that names a Run needs none (see [Another Machine's Runs](#another-machines-runs)).
 A start on another Machine opens its own Task there, so `--task`, `--continue-task` and
 `--here` are refused with it, and the module is the one that Machine has saved.
@@ -212,7 +213,7 @@ work](sdk.md#which-agent-does-the-work) is the whole order.
 ### Attachments
 
 ```sh
-collie --json run start plan --input goal="the picker is cut off" --attach shot.png
+collie --json run start plan --input goal="the picker is cut off" --input then= --attach shot.png
 collie --json run steer <run-id> "this is what it does now" --attach after.png
 collie --json run action <run-id> carry-on --input work="still cut off" --attach log.txt
 ```
@@ -491,8 +492,12 @@ collie run start review --input target=https://gitlab.example.com/acme/app/-/mer
 collie run start review --input target=https://github.com/acme/app/pull/30 --input plan= --input proves=
 collie run start review --input target=worktree --input plan= --input proves=
 collie run start implement --input plan=ENG-123
-collie run start plan --input goal="one registry" --input workspace=projects-root
+collie run start plan --input goal="one registry" --input then= --input workspace=projects-root
 ```
+
+`plan` takes `goal` and `then`. `then=implement` builds the plan as soon as its tickets are
+written, with nothing asked of anyone; empty, its end menu is asked
+([`plan`](workflows.md#plan)).
 
 A start that leaves anything out comes back as `needs_input`, one entry per missing field:
 what it means (the field's own description, else what its strategy is) and the facts that
@@ -605,7 +610,13 @@ does not lead its Task's card is never ready. Its `run` object carries:
 | `parked`                                 | Why it parked its own work and what picks it up again, or `null`.                                                                                                                                    |
 | `diagnostic`                             | Why the engine could not be asked about it — a module that is missing, with the file named — or `null`.                                                                                              |
 
-Beside `run`, `data.agents` lists every agent the Run started, in launch order: `operation`,
+Beside `run`, `data.startedBy` says who started it, as the Run's record says it: "Started by
+schedule `<name>` for <occurrence>", "Started from chat", "Started from Desktop", "Started
+from the board", "Started from the CLI", or, for a child, "Started by <parent run> as
+<invocation>". It is `null` where nothing recorded who did, and the human output prints it
+under the Run's inputs.
+
+`data.agents` lists every agent the Run started, in launch order: `operation`,
 `agent` (its herdr name), and the `harness`, `model` and `effort` it ran on, read from the
 launch records (`model` and `effort` are `null` where a launch recorded none). The human
 lines say the same, one per agent: `  review  claude/opus xhigh`. An operation that reused a
@@ -1245,6 +1256,9 @@ open, and the rework and verifications summed from each Run's metrics. Then each
 failed, with its reason, each that completed, with its result, and each that was stopped.
 `--since` keeps only Runs admitted at or after that date.
 
+The JSON report's `runs` list includes each Run's `runId`, `workflow`, `parent`,
+`project`, `created`, and `status`, in admission order.
+
 Then the measures a change to Collie is judged by, under `measures` in `--json`. Each one is
 counted from what the Runs in the window recorded, and each names the Run ids it counts
 (`runs`), so an issue can cite them. Chat reads the same report through `collie_report`.
@@ -1588,6 +1602,107 @@ never its email. `source` is `claude-usage`, `claude-status-line` or `codex-app-
 endpoint refusing — with the last good windows kept where there were any.
 [Usage](using.md#usage) says where the numbers come from and how fresh they are.
 
+## Schedules
+
+```sh
+collie schedule add <name> <workflow> --cron <expr> [--tz <zone>] [--paused] \
+  --input <k=v>… [--workspace <checkout>] [--verify <check>…] [--request-id <id>]
+collie schedule list
+collie schedule pause|resume|remove <name> [--request-id <id>]
+collie schedule move <name> --to <machine> [--workspace <checkout there>] [--request-id <id>]
+```
+
+A **Schedule** is a start this Machine's host makes by itself whenever a cron expression
+falls due ([ADR-0052](adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)). `add`,
+`pause`, `resume` and `remove` act on the Machine they run on, or on the paired Machine
+`--machine` names, and name it: its hostname and its installation id. That Machine's host
+records who asked as `cli` or `cli-tty`, with `from.machine` naming the Machine the command
+ran on.
+
+`add` saves a start as an agent's start gives one — the Workflow, every Input (an optional
+one as `""`), the checkout, and `--verify` checks — with a name of lowercase letters, digits
+and hyphens, at most 40 long, that no other Schedule on this Machine has. `--workspace`
+names the checkout: an absolute path, a workspace's id or label, which is saved as that
+workspace's checkout path, or `projects-root`; without it, the checkout the command runs
+in. `--cron` is five fields — minute, hour, day of month, month, day of week — read in
+`--tz`, an IANA time zone, this Machine's own by default. The start is checked as it would
+be now: a missing checkout or Input is `needs_input`, naming it; an Input the Workflow will
+not take, a cron expression or time zone that does not parse, and a name already used are
+`invalid_input`; a Workflow nobody saved is `workflow_not_found`. `--paused` adds it paused,
+so it fires only once it is resumed. With `--machine`, nothing here is read to decide it:
+the start is sent as given, `--workspace` as an absolute path on that Machine or
+`projects-root`, and that Machine's host checks it against the modules it has saved and the
+checkouts it has, refusing it with its own reason (`invalid_input` or `needs_input`).
+
+`pause` stops it firing; a Run it started that is still going goes on. `resume` fires it
+again from its next occurrence after now, never catching up on what fell while it was
+paused; resuming one that is not paused is `invalid_state`. `remove` removes it, and every
+Run it started stays. There is no edit: remove it and add it again.
+
+The host starts each occurrence as a fresh start is placed, in a Task of its own unless an
+open Task works its branch, under the request id `schedule:<name>:<occurrence>` and the
+Actor `schedule`, whose `schedule` field names the Schedule and the occurrence. It never
+starts a second Run while the last one it started is going, asking, parked or stalled; the
+occurrence that fell meanwhile starts as soon as that Run ends. Occurrences missed while no
+host ran start once, late, for the latest of them. While herdr does not answer, the start
+waits and tries again each minute; any other refusal is recorded against its occurrence,
+and the next occurrence is tried as usual.
+
+`list` lists this Machine's Schedules and every paired Machine's, each entry naming its
+Machine; a paired Machine that does not answer is named in `machines` as away, with what was
+seen, as `run list` names one. With `--machine` it lists only that Machine's.
+
+`move` moves a Schedule from this Machine, or the one `--machine` names, to `--to`: a
+paired Machine's name, or this Machine's own as `run list` shows it. It adds the same start
+on the target, paused, in the checkout `--workspace` names there or the same path; removes
+it from the source; then resumes it on the target, where it fires from its next occurrence
+with no catch-up. The Runs it already started stay where they ran. Both Machines must answer
+before anything changes, or it is `machine_unreachable` and neither changes. A name on
+neither Machine is `invalid_input`. A target that refuses the start is `operation_failed`
+with its reason and nothing moved; a move that stops after the first step is
+`operation_failed`, leaves the copy paused and says so, and the same request id finishes it
+without repeating a step. It answers with the target's `resume`, as `resume` does.
+
+Under `--json`, `list`'s `data` is the Machine asked, every Schedule listed, and the
+Machines that did not answer:
+
+```json
+{
+  "machine": { "installation": "6f0c…", "hostname": "laptop" },
+  "schedules": [
+    {
+      "machine": { "installation": "6f0c…", "hostname": "laptop" },
+      "name": "self-improve-daily",
+      "workflow": "self-improve",
+      "checkout": "/home/me/collie",
+      "cron": "0 7 * * *",
+      "tz": "Europe/Copenhagen",
+      "paused": false,
+      "start": {
+        "workflow": "self-improve",
+        "inputs": { "improvements": "3" },
+        "workspace": "/home/me/collie",
+        "verify": []
+      },
+      "next": "2026-10-13T05:00:00.000Z",
+      "last": {
+        "occurrence": "2026-10-12T05:00:00.000Z",
+        "outcome": { "kind": "run", "run": "run-1a2b3c4d", "status": "complete" }
+      }
+    }
+  ],
+  "machines": [{ "machine": "vm", "state": "away", "note": "vm did not answer: …" }]
+}
+```
+
+`start` is the saved start, enough to add the same Schedule elsewhere. `next` is null while
+it is paused, and while it waits for its last Run to end. `last.outcome` is one of `run`
+(the Run and its status), `waiting-for-run` (the same, still going), `waiting-for-herdr`,
+or `refused` with the `reason`. `add`, `pause`, `resume` and `remove` answer with
+`{ "machine", "change", "name", "schedule" }`, where `schedule` is the entry as `list` shows
+it, and null once removed. Each change and each occurrence is recorded, with who asked, in
+the state directory's `schedules/<name>/operations.jsonl`.
+
 ## Upgrading
 
 ```sh
@@ -1898,6 +2013,8 @@ and the Markdown beside it named `<stem>.md` or `<stem>.<anything>.md`, the modu
 would not load, each Persona as `persona show` gives it, and the Persona files that would
 not load. It typechecks nothing. `start` then takes what a human typed in `text`, and the host settles it
 against the workflow's own schema. `usage` reads this Machine's [Usage readings](#usage).
+`schedules` reads this Machine's [Schedules](#schedules), and `changeSchedule` adds one,
+paused or not, or pauses, resumes or removes one, under a request id and the asker's Actor.
 `cleanup` reads what a sweep would remove and keep, and
 `sweep` sweeps now, recorded with its Actor in the state directory's `cleanup/operations.jsonl`
 as well as in `cleanup.jsonl`. `grant` and `steer` stay on `HostRpcs`. Each takes a request id, and the same id twice is one operation. A
@@ -1925,7 +2042,8 @@ and the host's socket. Whatever came before that line is a login shell's and is 
 The declaration is the bridge's: a `declare` of another front door on the channel is
 refused, and the client at the other end never starts, stops or signals a process.
 `desktop` is a human, as `board` and `cli-tty` are, and its Actor carries `from`: the
-`--client` name and the SSH client address the bridge saw.
+`--client` name and the SSH client address the bridge saw. `schedule` is the host itself
+starting a Schedule's Run: no channel may declare it, and it is not a human.
 
 So are the ones that write anything else: `confirm` (a proposal's id and content hash) and
 `decline` (its id and content hash too), recorded in its Herd's proposals journal under the Actor; `dispose`,
