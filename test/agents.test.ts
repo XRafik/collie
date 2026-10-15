@@ -642,6 +642,81 @@ test(
   120_000,
 );
 
+/** Ends once the Run parks, with that as its result. */
+const untilParked = (runId: string) =>
+  Effect.gen(function* () {
+    while (!(yield* parked(runId))) yield* TestClock.withLive(Effect.sleep("10 millis"));
+    return "parked" as const;
+  });
+
+/** An agent herdr reports busy until its Output is written. */
+class BusyUntilWritten extends FakeHerdr {
+  reads = 0;
+  written = false;
+  constructor(private readonly busy: "working" | "blocked") {
+    super(rig.pluginEnv());
+  }
+  override agentStatus() {
+    this.reads += 1;
+    return Effect.succeed(this.written ? ("idle" as const) : this.busy);
+  }
+}
+
+for (const busy of ["working", "blocked"] as const)
+  test(
+    `an agent herdr reports ${busy} far past the budget is collected, never parked`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          yield* rig.queueOutputs([null]);
+          const herdr = new BusyUntilWritten(busy);
+          // Five budgets' worth of polls at 20ms against 400ms, then the Output.
+          const writes = Effect.gen(function* () {
+            while (herdr.reads < 100) yield* TestClock.withLive(Effect.sleep("10 millis"));
+            yield* (yield* FileSystem.FileSystem).writeFileString(
+              outputPath("r1"),
+              `{"verdict":"clean","note":"after the suite"}`,
+            );
+            herdr.written = true;
+          });
+          const result = yield* session(
+            Effect.forkChild(writes).pipe(
+              Effect.andThen(Effect.raceFirst(started("r1"), untilParked("r1"))),
+            ),
+            { herdr, collectMs: 400 },
+          );
+          expect(result).not.toBe("parked");
+          expect(result !== "parked" && result._tag === "Success" && result.success.note).toBe(
+            "after the suite",
+          );
+        }),
+      ),
+    60_000,
+  );
+
+for (const [what, herdr] of [
+  ["idle", () => new FakeHerdr(rig.pluginEnv())],
+  ["unreadable", () => new Unreadable(rig.pluginEnv())],
+] as const)
+  test(
+    `an agent whose status is ${what} and that writes nothing parks once the budget is spent idle`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          yield* rig.queueOutputs([null]);
+          yield* interrupted("r1", parked("r1"), {
+            herdr: herdr(),
+            pollMs: 1_000,
+            collectMs: 120_000,
+          });
+          expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
+            `has written nothing to ${outputPath("r1")} after 2 minutes idle. If it is still working,`,
+          );
+        }),
+      ),
+    60_000,
+  );
+
 test(
   "a restart between the attempts hands out no second repair",
   () =>

@@ -317,6 +317,11 @@ const verdict =
   tried again, under the same delivery, for up to ten minutes. Past that the Run is
   `suspended` rather than failed, `run show` says what held and for how long, and
   `collie run resume` hands the same prompt to the same agent.
+- **The Output budget is idle time.** The agent has two hours to write its Output, counted
+  only while herdr reports it `idle`, `done` or `unknown`, or cannot say. While it is
+  `working` or `blocked` the clock stops, so a long suite is never parked for being slow.
+  Past the budget the Run parks saying how many minutes it sat idle, and `collie run resume`
+  collects what it writes late.
 - **`cwd` is where the host placed the Run** unless you name another checkout.
 - **`role`** defaults to the operation's name. The role is injected as a persona, and where
   `personas/<role>.md` exists in the project, on this machine or in the installation, that

@@ -225,6 +225,8 @@ export interface AgentsApi {
   readonly askRoute: (role: string, lineage: ReadonlyArray<string>) => Effect.Effect<string>;
   /** How often anything here looks again, which a workflow's own watch for a stop shares. */
   readonly pollMs: number;
+  /** How long an agent may sit idle without writing its Output. */
+  readonly collectMs: number;
   /**
    * The agent these preferences come to over the operator's configuration, lowest first,
    * moved on to one with room where its Subscription is spent.
@@ -620,7 +622,7 @@ export const agentWork = <
                 operation: work.operation,
                 reason:
                   why ||
-                  `${on.agent} has written nothing to ${output} yet. If it is still working, resume once it has written it; if it has stopped, ask it to write it and resume.`,
+                  `${on.agent} has written nothing to ${output} after ${Math.round(agents.collectMs / 60_000)} minutes idle. If it is still working, resume once it has written it; if it has stopped, ask it to write it and resume.`,
               }),
             );
     /** Stops an agent started as a stop landed; one that is not Quiet is what the Run says. */
@@ -1101,7 +1103,7 @@ export interface AgentHost {
   readonly trust?: Defaults["trust"];
   readonly compactAtTokens: number;
   readonly pollMs?: number;
-  /** How long an Output may take. Past it the work is uncertain, never finished. */
+  /** Idle time an agent has to write its Output; past it the work is uncertain, not finished. */
   readonly collectMs?: number;
   /** How long a new agent's harness has to show it can take its first prompt. */
   readonly readyMs?: number;
@@ -1955,6 +1957,10 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         waitForOutput(launched.output, unless ?? null, {
           pollMs: host.pollMs ?? DEFAULT_POLL_MS,
           budgetMs: host.collectMs ?? DEFAULT_COLLECT_MS,
+          counts: host.herdr.agentStatus(launched.agent).pipe(
+            Effect.map((status) => status !== "working" && status !== "blocked"),
+            Effect.orElseSucceed(() => true),
+          ),
         }),
         confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
       ),
@@ -2334,6 +2340,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         }).pipe(Effect.orElseSucceed(() => askRouteTo(null))),
       ),
     pollMs: host.pollMs ?? DEFAULT_POLL_MS,
+    collectMs: host.collectMs ?? DEFAULT_COLLECT_MS,
     choose: (layers, { runId, operation }, spent = []) =>
       under(
         Effect.gen(function* () {
@@ -2524,29 +2531,30 @@ const undeliverable = (cause: unknown) => ({
  * is a write that has not happened — or one caught half done — not an empty answer, and
  * `unless` is the same again: an Output already known to be unusable is the file not
  * having been rewritten. Null where nothing arrived in the time allowed, which says the
- * work is uncertain and never that it did not happen.
+ * work is uncertain and never that it did not happen. Only polls `counts` answers true for use
+ * up that time, so a caller pauses the budget by answering false.
  */
-const waitForOutput = (
+const waitForOutput = <R>(
   path: string,
   unless: string | null,
-  every: { readonly pollMs: number; readonly budgetMs: number },
+  every: {
+    readonly pollMs: number;
+    readonly budgetMs: number;
+    readonly counts: Effect.Effect<boolean, never, R>;
+  },
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const read = fs.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
-    const tries = Math.max(1, Math.ceil(every.budgetMs / Math.max(1, every.pollMs)));
-    return yield* read.pipe(
-      Effect.flatMap((text) =>
-        text.trim() === "" || text === unless
-          ? Effect.fail(new Error("not yet"))
-          : Effect.succeed(text),
-      ),
-      Effect.retry({
-        times: tries,
-        schedule: Schedule.spaced(Duration.millis(every.pollMs)),
-      }),
-      Effect.orElseSucceed(() => null),
-    );
+    let spent = 0;
+    for (;;) {
+      const text = yield* read;
+      if (text.trim() !== "" && text !== unless) return text;
+      if (spent >= every.budgetMs) return null;
+      const before = yield* Clock.currentTimeMillis;
+      yield* Effect.sleep(Duration.millis(every.pollMs));
+      if (yield* every.counts) spent += (yield* Clock.currentTimeMillis) - before;
+    }
   }).pipe(Effect.orDie);
 
 const write = (path: string, text: string) =>
