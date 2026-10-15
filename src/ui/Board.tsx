@@ -18,6 +18,7 @@ import {
   type Section as SectionId,
 } from "../board-model";
 import type { UsagePhrase } from "../usage-model";
+import { newerLine } from "../workspace";
 import { ALL_KEYS, type Command, type MenuItem, type Older, primaryFor } from "./state";
 import { C, cardEdge, sentenceColour, stateGlyph, stepGlyph } from "./sections";
 
@@ -41,6 +42,7 @@ export interface BoardProps {
   columns: number;
   header: HeaderSentence;
   usage: UsagePhrase;
+  newer: string | null;
   query: string;
   /** Whether the search field has the keyboard, so the board says where typing goes. */
   searching: boolean;
@@ -272,6 +274,12 @@ export function Board(props: BoardProps) {
         onNewRun={props.onNewRun}
         onOverflow={props.onOverflow}
       />
+      {/* A row of its own, so it is said whole however little the header leaves. */}
+      <Show when={props.newer !== null}>
+        <text fg={C.amber} wrapMode="none" style={{ paddingLeft: SIDE, flexShrink: 0 }}>
+          {newerLine(props.newer ?? "")}
+        </text>
+      </Show>
       {/* Nothing in this column may shrink: yoga would otherwise fit a tall board into the
           viewport by compressing every card, which drew sentences over names and folds
           over borders the moment the content outgrew the pane. The scroll area is what

@@ -28,11 +28,21 @@ import {
 import { carriedBefore, carryOutProposal } from "./run-actions";
 export { carryOutProposal, registerRunExecutors } from "./run-actions";
 import { shell, whatItSaid, type Runner } from "./mr";
+import { ensureLockDir, withLock } from "./lock";
 import { checkoutsUnder, projectsRoot } from "./projects";
-import { installation, manifestField, RELEASE_TAG } from "./release";
+import { newestRelease, ownPlatform, releasesOf, verifiedRunner } from "./releases";
+import {
+  atCollieDir,
+  isCheckout,
+  carriedRelease,
+  manifestField,
+  placeRelease,
+  RELEASE_TAG,
+  type Carried,
+} from "./release";
 import manifest from "../herdr-plugin.toml";
 import { everyRegistered, type AgentEntry } from "./registry";
-import { listRuns, type Asked, type RunFacts } from "./runs";
+import { listRuns, liveCheckouts, type Asked, type RunFacts } from "./runs";
 import { newTask, taskOfWorkspace, writeTask, type TaskChoice, type TaskRecord } from "./task";
 import { freshTaskLabel } from "./tasknames";
 import { readIntent, type Authority, type Intent } from "./intent";
@@ -301,120 +311,356 @@ export function workspaceCwdFromPanes(
   return panes.find((pane) => pane.workspaceId === workspaceId && pane.cwd)?.cwd ?? "";
 }
 
-/** Moves a released checkout to the release `to`, or says why it did not: nothing else changes. */
-export const moveToRelease = Effect.fn("operations.moveToRelease")(function* (
-  root: string,
-  to: string,
-  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
-) {
-  const fetched = yield* run("git", ["fetch", "--quiet", "--tags"], root);
-  if (fetched.code !== 0) {
-    return err("operation_failed", `Could not fetch releases into ${root}.`, {
-      root,
-      output: whatItSaid(fetched),
-    });
-  }
-  // After the fetch, so "ahead of its remote" is judged against the remote as it is now.
-  const current = yield* installation(root, manifest.version, run);
-  if (!current.release) {
-    return err(
-      "invalid_state",
-      `${root} is a development build (${current.build}): ${current.reason}, so it is never upgraded.`,
-      { root, build: current.build },
-    );
-  }
-  const tag = `refs/tags/${to}`;
-  if (
-    (yield* run("git", ["rev-parse", "--verify", "--quiet", `${tag}^{commit}`], root)).code !== 0
-  ) {
-    return err("invalid_input", `There is no release ${to}.`, { to });
-  }
-  // Safe to reset: the checkout is clean and holds no commit its remote lacks.
-  const moved = yield* run("git", ["reset", "--quiet", "--hard", tag], root);
-  if (moved.code !== 0) {
-    return err("operation_failed", `Could not move ${root} to ${to}.`, {
-      root,
-      output: whatItSaid(moved),
-    });
-  }
-  return null;
-});
-
 /**
- * Everything a start needs before anyone is asked anything: the Workflow resolved,
- * proven runnable, and its Inputs inferred. What fills the gaps afterwards — prompts
- * in a pane, flags on a command line — is the caller's business.
+ * Brings this installation up to date. A release is replaced by the target release's, which
+ * this runner places itself or hands to that release's runner. A development checkout is
+ * pulled. A clone at the Collie directory has a release placed inside it, and is removed
+ * where nothing in it is the human's.
  */
 export const upgrade = Effect.fn("operations.upgrade")(function* (
   env: PluginEnv,
-  options: { readonly to?: string } = {},
+  options: {
+    readonly to?: string;
+    readonly carried?: Carried | null;
+    /** The key a downloaded runner must verify against; Collie's own unless a test says. */
+    readonly key?: string;
+    /** Where live Runs work, or null where that cannot be asked; the host's answer by default. */
+    readonly liveCheckouts?: Effect.Effect<ReadonlyArray<string> | null, never, BunServices>;
+  } = {},
   run: Runner<ChildProcessSpawner.ChildProcessSpawner> = shell,
 ) {
-  const root = env.pluginRoot;
-  const head = () => run("git", ["rev-parse", "--short", "HEAD"], root).pipe(Effect.map(short));
-  const checkout = (yield* run("git", ["rev-parse", "--git-dir"], root)).code === 0;
   const { to } = options;
-
-  let before = "";
-  let after = "";
-  if (to !== undefined) {
-    if (!RELEASE_TAG.test(to)) {
-      return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
+  if (to !== undefined && !RELEASE_TAG.test(to)) {
+    return err("invalid_input", `"${to}" is not a Collie version, such as 0.27.0.`, { to });
+  }
+  const root = env.pluginRoot;
+  const checkout = yield* isCheckout(root, run);
+  if (!checkout) {
+    const source = releasesOf(env.raw);
+    const target = to ?? (yield* newestRelease(source));
+    if (target === null) {
+      return err(
+        "operation_failed",
+        `Could not read the newest release from ${source}, so ${root} was left as it was.`,
+        { root, source },
+      );
     }
-    if (checkout) {
-      before = yield* head();
-      const refused = yield* moveToRelease(root, to, run);
-      if (refused) return refused;
-      after = yield* head();
-    }
-  } else if (checkout) {
-    before = yield* head();
-    // `--ff-only`: an upgrade that quietly merged or rebased someone's local work
-    // would be a surprise nobody asked this command for.
-    const pulled = yield* run("git", ["pull", "--ff-only"], root);
-    if (pulled.code !== 0) {
-      return err("operation_failed", `Could not update ${root}.`, {
-        root,
-        output: whatItSaid(pulled),
-      });
-    }
-    after = yield* head();
+    if (target !== manifest.version) return yield* handOff(env, target, source, options.key, run);
+    return yield* placeOwn(
+      env,
+      options.carried === undefined ? carriedRelease() : options.carried,
+      to,
+      run,
+    );
   }
 
-  const installed = yield* to !== undefined && !checkout
-    ? run("env", [`COLLIE_VERSION=${to}`, "sh", "prepare.sh"], root)
-    : run("sh", ["prepare.sh"], root);
+  if (yield* atCollieDir(root, env.collieDir)) {
+    return yield* migrate(env, to, options.key, options.liveCheckouts ?? liveCheckouts(env), run);
+  }
+  if (to !== undefined) {
+    return err(
+      "invalid_state",
+      `${root} is a development checkout, so it is never moved to a release; \`collie upgrade\` pulls it.`,
+      { root },
+    );
+  }
+  const head = () => run("git", ["rev-parse", "--short", "HEAD"], root).pipe(Effect.map(short));
+  const before = yield* head();
+  // `--ff-only`: an upgrade that quietly merged or rebased someone's local work would be a
+  // surprise nobody asked this command for. Uncommitted work rides through the pull.
+  const pulled = yield* run("git", ["pull", "--ff-only", "--autostash"], root);
+  // A conflicting autostash still exits 0, leaving the work unmerged.
+  const unmerged = (yield* run("git", ["ls-files", "--unmerged"], root)).stdout.trim();
+  if (pulled.code !== 0 || unmerged !== "") {
+    return err("operation_failed", `Could not update ${root}.`, {
+      root,
+      output: whatItSaid(pulled),
+    });
+  }
+  const after = yield* head();
+  const moved = before !== after;
+  const prepared = yield* prepareAndDesktop(env, root, undefined, run);
+  if (!prepared.ok) return prepared;
+  return {
+    ok: true as const,
+    data: { root, checkout, before, after, updated: moved, steps: prepared.steps },
+    human: [
+      moved
+        ? `Updated ${root} from ${before} to ${after}.`
+        : `${root} was already up to date at ${before}.`,
+      ...stepLines(prepared.steps),
+    ].join("\n"),
+  };
+});
+
+/** Places a release inside a clone install, and removes the clone where nothing in it is the human's. */
+const migrate = Effect.fn("operations.migrate")(function* (
+  env: PluginEnv,
+  to: string | undefined,
+  key: string | undefined,
+  live: Effect.Effect<ReadonlyArray<string> | null, never, BunServices>,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = env.pluginRoot;
+  const exclude = path.resolve(
+    root,
+    (yield* run("git", ["rev-parse", "--git-path", "info/exclude"], root)).stdout.trim(),
+  );
+  const excluded = yield* fs.readFileString(exclude).pipe(Effect.orElseSucceed(() => ""));
+  const adding = MIGRATION_EXCLUDES.filter((line) => !excluded.split("\n").includes(line));
+  if (adding.length > 0) {
+    yield* fs.makeDirectory(path.dirname(exclude), { recursive: true });
+    const separator = excluded === "" || excluded.endsWith("\n") ? "" : "\n";
+    yield* fs.writeFileString(exclude, `${excluded}${separator}${adding.join("\n")}\n`);
+  }
+
+  const source = releasesOf(env.raw);
+  const target = to ?? (yield* newestRelease(source));
+  if (target === null) {
+    return err(
+      "operation_failed",
+      `Could not read the newest release from ${source}, so ${root} was left as it was.`,
+      { root, source },
+    );
+  }
+  // Always the release's own runner: one built from this clone would place the clone's source.
+  const placed = yield* handOff(env, target, source, key, run, path.join(env.collieDir, "release"));
+  if (!placed.ok) return placed;
+
+  const found = yield* humansIn(root, live, run);
+  if (found.length === 0) {
+    for (const entry of yield* fs.readDirectory(env.collieDir)) {
+      if (!COLLIE_DIR_ENTRIES.includes(entry)) {
+        yield* fs.remove(path.join(env.collieDir, entry), { recursive: true });
+      }
+    }
+  }
+  return {
+    ok: true as const,
+    data: { ...placed.data, clone: found.length === 0 ? ("removed" as const) : { kept: found } },
+    human: [
+      placed.human,
+      found.length === 0
+        ? `Removed the clone that was installed at ${root}: nothing in it was yours.`
+        : [
+            `Kept the clone at ${root} as it was, because it holds:`,
+            ...found.map((what) => `  ${what}`),
+            `It is an ordinary checkout now; Collie runs from ${placed.data.root}.`,
+          ].join("\n"),
+    ].join("\n"),
+  };
+});
+
+const MIGRATION_EXCLUDES = ["/release/", "/kept/"];
+const COLLIE_DIR_ENTRIES = ["release", "user", "kept"];
+/** What an install leaves ignored in its clone that is Collie's, or `user/`. */
+const INSTALL_IGNORED = ["bin/", "node_modules/", "user/", "release/", "kept/"];
+
+/** What in a clone is the human's, one line per kind; empty where nothing is. */
+const humansIn = Effect.fn("operations.humansIn")(function* (
+  root: string,
+  live: Effect.Effect<ReadonlyArray<string> | null, never, BunServices>,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const git = (...args: string[]) => run("git", args, root);
+  const said = (result: { code: number; stdout: string }) =>
+    result.code === 0 ? result.stdout.trim() : null;
+  const found: string[] = [];
+
+  const status = said(yield* git("status", "--porcelain"));
+  if (status !== "") found.push("changed or untracked files");
+  const ignored = (said(yield* git("status", "--porcelain", "--ignored")) ?? "")
+    .split("\n")
+    .filter((line) => line.startsWith("!! "))
+    .map((line) => line.slice(3))
+    .filter((entry) => !INSTALL_IGNORED.includes(entry));
+  if (ignored.length > 0) found.push(`ignored files of yours: ${ignored.join(", ")}`);
+  if (said(yield* git("log", "--branches", "--not", "--remotes", "--oneline")) !== "") {
+    found.push("commits no remote branch contains");
+  }
+  if (said(yield* git("stash", "list")) !== "") found.push("a stash");
+  const worktrees = said(yield* git("worktree", "list", "--porcelain"));
+  if (
+    worktrees === null ||
+    worktrees.split("\n").filter((line) => line.startsWith("worktree ")).length > 1
+  ) {
+    found.push("linked worktrees");
+  }
+  const checkouts = yield* live;
+  if (checkouts === null) found.push("live Runs on this Machine, which could not be asked about");
+  else if (checkouts.some((cwd) => cwd === root || cwd.startsWith(`${root}/`))) {
+    found.push("a live Run working in it");
+  }
+  return found;
+});
+
+/** Long enough for another placement to finish; claims are 25ms apart. */
+const PLACING_CLAIMS = 2_400;
+
+/** `placeRelease`, one placement at a time per Collie directory. */
+export const placeLocked = Effect.fn("operations.placeLocked")(function* (
+  carried: Carried,
+  collieDir: string,
+  version: string,
+) {
+  const lock = `${collieDir}/placing.lock`;
+  yield* ensureLockDir(lock);
+  return yield* withLock(
+    lock,
+    Effect.fail(new Error(`another placement held ${lock} for over a minute`)),
+    placeRelease(carried, collieDir, version),
+    PLACING_CLAIMS,
+  );
+});
+
+/** Places the release this runner carries, then prepares it. */
+const placeOwn = Effect.fn("operations.placeOwn")(function* (
+  env: PluginEnv,
+  carried: Carried | null,
+  to: string | undefined,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  if (carried === null) {
+    return err(
+      "invalid_state",
+      `${env.pluginRoot} is not a checkout, and this runner was not built as a release, so it has none to place.`,
+      { root: env.pluginRoot },
+    );
+  }
+  const placed = yield* Effect.result(placeLocked(carried, env.collieDir, manifest.version));
+  if (placed._tag === "Failure") {
+    return err("operation_failed", `Could not place the release in ${env.collieDir}.`, {
+      root: env.collieDir,
+      output: placed.failure.message,
+    });
+  }
+  const { root, kept } = placed.success;
+  yield* (yield* FileSystem.FileSystem).makeDirectory(env.userDir, { recursive: true });
+  const prepared = yield* prepareAndDesktop(env, root, manifest.version, run);
+  if (!prepared.ok) return prepared;
+  const data = {
+    root,
+    checkout: false,
+    release: manifest.version,
+    kept,
+    steps: prepared.steps,
+    ...(to && { version: to }),
+  };
+  return { ok: true as const, data, human: placedReport(env, data) };
+});
+
+const Placed = Schema.Struct({
+  root: Schema.String,
+  release: Schema.String,
+  kept: Schema.Array(Schema.String),
+  steps: Schema.Array(
+    Schema.Struct({ step: Schema.String, state: Schema.String, detail: Schema.String }),
+  ),
+});
+
+/** What placing a release did, as a human reads it. */
+const placedReport = (env: PluginEnv, placed: typeof Placed.Type) =>
+  [
+    `Placed Collie ${placed.release} in ${placed.root}.`,
+    ...(placed.kept.length === 0
+      ? []
+      : [
+          `Edits found in the release were copied aside, and are no longer in force:`,
+          ...placed.kept.map((file) => `  ${env.collieDir}/${file}`),
+          `To keep one, fork it into ${env.userDir} with \`collie workflow fork\` or \`collie persona fork\`, and make the change there.`,
+        ]),
+    ...stepLines(placed.steps),
+  ].join("\n");
+
+const HandedOff = Schema.fromJsonString(
+  Schema.Union([
+    Schema.Struct({ ok: Schema.Literal(true), data: Placed }),
+    Schema.Struct({ ok: Schema.Literal(false), error: ExpectedError }),
+  ]),
+);
+
+/**
+ * Hands the upgrade to `target`'s runner, once it verifies, and reports what it did as this
+ * upgrade's own. Nothing is replaced unless that runner runs.
+ */
+const handOff = Effect.fn("operations.handOff")(function* (
+  env: PluginEnv,
+  target: string,
+  source: string,
+  key: string | undefined,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+  /** The installation the release's runner upgrades, where it is not this one. */
+  pluginRoot: string = env.pluginRoot,
+) {
+  const got = yield* Effect.result(
+    verifiedRunner(`${source}/download`, target, ownPlatform(), `${env.stateDir}/runners`, key),
+  );
+  if (got._tag === "Failure") {
+    const { reason, missing } = got.failure;
+    return missing
+      ? err("invalid_input", `There is no release ${target}: ${reason}.`, { to: target })
+      : err("operation_failed", `Could not use Collie ${target}'s runner: ${reason}.`, {
+          to: target,
+          output: reason,
+        });
+  }
+  yield* (yield* FileSystem.FileSystem).chmod(got.success.file, 0o755);
+  const ran = yield* run(
+    "env",
+    [
+      `COLLIE_DIR=${env.collieDir}`,
+      `COLLIE_USER_DIR=${env.userDir}`,
+      `HERDR_PLUGIN_ROOT=${pluginRoot}`,
+      `COLLIE_RELEASES=${source}`,
+      got.success.file,
+      "--json",
+      "upgrade",
+      "--to",
+      target,
+    ],
+    env.home,
+  );
+  const answer = Schema.decodeUnknownOption(HandedOff)(ran.stdout.trim().split("\n").at(-1));
+  if (answer._tag === "None") {
+    return err("operation_failed", `Collie ${target}'s runner did not say what its upgrade did.`, {
+      to: target,
+      output: whatItSaid(ran),
+    });
+  }
+  if (!answer.value.ok) return { ok: false as const, error: answer.value.error };
+  const data = { ...answer.value.data, checkout: false, version: target };
+  return { ok: true as const, data, human: placedReport(env, data) };
+});
+
+/** What each preparation step did, rather than the install's own output. */
+const stepLines = (steps: ReadonlyArray<{ step: string; state: string; detail: string }>) =>
+  steps.map(
+    (step) => `  ${step.step.padEnd(16)}${step.state}${step.detail ? ` — ${step.detail}` : ""}`,
+  );
+
+/** `prepare.sh` in `root`, then the Desktop step, as report lines. */
+const prepareAndDesktop = Effect.fn("operations.prepareAndDesktop")(function* (
+  env: PluginEnv,
+  root: string,
+  to: string | undefined,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const installed = yield* run("sh", ["prepare.sh"], root);
   if (installed.code !== 0) {
     return err("operation_failed", `Could not prepare ${root}.`, {
       root,
       output: whatItSaid(installed),
     });
   }
-
   // Loaded here: of every front door, only an upgrade reaches Desktop.
   const { dataHomeOf, updateDesktop } = yield* Effect.promise(() => import("./desktop"));
   const desktop = yield* updateDesktop(to ?? (yield* manifestField(root, "version")), {
     dataHome: dataHomeOf(env.home, env.raw.XDG_DATA_HOME),
   });
-  const moved = checkout && before !== after;
   const steps = [...prepareSteps(installed.stdout), ...(desktop === null ? [] : [desktop])];
-  return {
-    ok: true as const,
-    data: { root, checkout, before, after, updated: moved, steps, ...(to && { version: to }) },
-    human: [
-      checkout
-        ? moved
-          ? `Updated ${root} from ${before} to ${after}.`
-          : `${root} was already up to date at ${before}.`
-        : `${root} is not a checkout, so the release was fetched.`,
-      // What each preparation step did, rather than the install's own output: a
-      // step that was skipped is the thing a reader most needs to see, and `bun
-      // install` has a great deal to say about packages it did not have to touch.
-      ...steps.map(
-        (step) => `  ${step.step.padEnd(16)}${step.state}${step.detail ? ` — ${step.detail}` : ""}`,
-      ),
-    ].join("\n"),
-  };
+  return { ok: true as const, steps };
 });
 
 /**

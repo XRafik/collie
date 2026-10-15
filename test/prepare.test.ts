@@ -1,5 +1,5 @@
 // The one thing the shell scripts have never had a test for: that running them
-// actually leaves a prepared machine behind. The real `prepare.sh` and `setup.sh`
+// actually leaves a prepared machine behind. The real `prepare.sh` and `install.sh`
 // run in a temporary HOME with the fake-PATH rig in front of the outside world, and
 // what is asserted is the state left behind rather than the steps taken to get there.
 
@@ -34,7 +34,6 @@ const run = (
   }).pipe(Effect.map((result) => ({ code: result.exitCode, out: result.stdout + result.stderr })));
 
 const prepare = () => run("prepare.sh");
-const setup = () => run("setup.sh");
 
 /**
  * The host's tools, minus `npx`. `command -v npx` has to fail for the missing-CLI
@@ -77,13 +76,7 @@ beforeEach(() =>
       // A checkout, so install.sh builds from source rather than reaching the network.
       yield* fs.makeDirectory(`${root}/.git`, { recursive: true });
       const repo = yield* repoRoot;
-      for (const file of [
-        "prepare.sh",
-        "install.sh",
-        "setup.sh",
-        "herdr-plugin.toml",
-        "release-p256.pub",
-      ]) {
+      for (const file of ["prepare.sh", "install.sh", "herdr-plugin.toml", "release-p256.pub"]) {
         yield* fs.copyFile(`${repo}/${file}`, `${root}/${file}`);
       }
       // A source tree, because whether there is anything to build is answered by
@@ -311,6 +304,23 @@ test("prepare leaves a skill link that is not ours alone", () =>
     }),
   ));
 
+test("prepare repoints a skill link to another Collie installation, as a clone install's is", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const clone = `${home}/old-clone`;
+      yield* fs.makeDirectory(`${clone}/skills/collie`, { recursive: true });
+      yield* fs.writeFileString(`${clone}/herdr-plugin.toml`, `id = "cego.collie"\n`);
+      yield* fs.makeDirectory(`${home}/.claude/skills`, { recursive: true });
+      yield* fs.symlink(`${clone}/skills/collie`, `${home}/.claude/skills/collie`);
+
+      const run = yield* prepare();
+
+      expect(run.out).toContain("prepare: operator-skill: done");
+      expect(yield* fs.readLink(`${home}/.claude/skills/collie`)).toBe(`${root}/skills/collie`);
+    }),
+  ));
+
 /**
  * The skills.sh CLI as the runner's own Bun runs it (`BUN_BE_BUN=1 bin/collie x`): it
  * records what it was asked and populates the global store.
@@ -455,67 +465,36 @@ test("a skills CLI that fails is a reported skip, not a failed install", () =>
     }),
   ));
 
-test("re-running setup from the checkout updates it, and keeps the keybindings", () =>
+test("prepare never configures Claude Code's status line; that is setup.sh's", () =>
   runEffect(
     Effect.gen(function* () {
-      // The documented install is a clone followed by this script, so running the
-      // same command again has to be how a teammate gets newer — the checkout is
-      // where the workflows, personas and skills live, not just the runner.
-      const first = yield* setup();
-      const again = yield* setup();
-
-      const asked = yield* read(`${home}/git-calls`);
-      expect(asked).toContain("-C " + root + " pull --ff-only");
-      expect(asked.split("\n").filter((line) => line.includes("pull")).length).toBe(2);
-      expect(first.code).toBe(0);
-      expect(again.code).toBe(0);
-
-      // Its own first-time-only work, and nothing about it repeated.
-      const config = yield* read(`${home}/.config/herdr/config.toml`);
-      expect(config.split("cego.collie.pick").length - 1).toBe(1);
-      expect(again.out).toContain("Keybinding for pick already present");
-      // And it ends in doctor, which is the runner this fixture built.
-      expect(again.out).toContain("runner");
-    }),
-  ));
-
-test("a pull it cannot do does not end the install", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* bin.add(
-        "git",
-        `case "$*" in
-          *pull*) echo "would clobber local changes" >&2; exit 1 ;;
-          *) exit 0 ;;
-        esac`,
-      );
-
-      const done = yield* setup();
-
-      expect(done.out).toContain("Could not update");
-      // Someone with work in progress here still wants the rest of the run.
-      expect(done.out).toContain("prepare: runner:");
-      expect(done.code).toBe(0);
-    }),
-  ));
-
-test("setup configures Claude Code's status line; prepare never touches it", () =>
-  runEffect(
-    Effect.gen(function* () {
-      // The human's own Claude Code config, like the keybindings: asked for once, by the
-      // script a teammate runs on purpose, and never by the routine that rebuilds a
-      // runner. The runner is what edits the file, so the step is a call rather than a
-      // shell script writing JSON.
       yield* prepare();
-      // Whatever else prepare asks of the runner, it never asks for this.
-      const afterPrepare = (yield* exists(`${home}/collie-calls`))
+      const asked = (yield* exists(`${home}/collie-calls`))
         ? yield* read(`${home}/collie-calls`)
         : "";
-      expect(afterPrepare).not.toContain("chat status-line");
+      expect(asked).not.toContain("chat status-line");
+    }),
+  ));
 
-      yield* setup();
+test("in a release, prepare keeps the placed runner and downloads nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* remove(`${root}/.git`);
+      yield* fs.writeFileString(`${root}/placed.json`, `{"version":"0.1.0","files":{}}`);
+      yield* fs.makeDirectory(`${root}/bin`, { recursive: true });
+      yield* fs.writeFileString(`${root}/bin/collie`, "#!/bin/sh\n# the placed runner\n");
+      yield* fs.chmod(`${root}/bin/collie`, 0o755);
+      yield* bin.add("curl", `echo "$*" >> "${home}/downloads"; exit 1`);
 
-      expect(yield* read(`${home}/collie-calls`)).toContain("chat status-line --install");
+      const done = yield* prepare();
+
+      expect(done.code).toBe(0);
+      expect(done.out).toContain("prepare: runner: already in place");
+      expect(yield* read(`${root}/bin/collie`)).toBe("#!/bin/sh\n# the placed runner\n");
+      expect(yield* exists(`${home}/downloads`)).toBe(false);
+      expect(yield* exists(`${home}/builds`)).toBe(false);
+      expect(yield* read(`${home}/.local/bin/collie`)).toContain(`"${root}/bin/collie"`);
     }),
   ));
 
@@ -657,5 +636,21 @@ test("no openssl is named, not taken for a tampered download", () =>
       expect(done.out).toContain("was refused");
       expect(done.code).not.toBe(0);
       expect(yield* read(`${root}/bin/collie`)).toBe("the runner already here");
+    }),
+  ));
+
+test("a linked worktree builds its runner from its own source, as any checkout does", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* remove(`${root}/.git`);
+      yield* fs.writeFileString(`${root}/.git`, `gitdir: ${home}/main/.git/worktrees/collie\n`);
+      yield* bin.add("curl", `echo "$*" >> "${home}/downloads"; exit 1`);
+
+      const done = yield* prepare();
+
+      expect(done.out).toContain("prepare: runner: done");
+      expect(yield* read(`${home}/builds`)).toBe("build\n");
+      expect(yield* exists(`${home}/downloads`)).toBe(false);
     }),
   ));

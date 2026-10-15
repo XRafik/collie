@@ -55,8 +55,20 @@ test("cwd and ids fall back to the invocation context", () => {
   expect(env.paneId).toBe("3-1");
   expect(env.cwd).toBe("/ws");
   expect(env.binPath).toBe("herdr");
-  // The user's own layer sits beside the installation, whatever herdr would configure.
-  expect(env.userDir).toBe(`${env.pluginRoot}/user`);
+  expect(env.collieDir).toBe("/home/x/.collie");
+  expect(env.userDir).toBe("/home/x/.collie/user");
+});
+
+test("the user directory is the Collie directory's, wherever the plugin root is", () => {
+  const env = readEnv({
+    HOME: "/home/x",
+    HERDR_PLUGIN_ROOT: "/home/x/.collie/release",
+    COLLIE_DIR: "/srv/collie",
+  });
+
+  expect(env.collieDir).toBe("/srv/collie");
+  expect(env.userDir).toBe("/srv/collie/user");
+  expect(readEnv({ HOME: "/home/x", COLLIE_USER_DIR: "/mine" }).userDir).toBe("/mine");
 });
 
 test("a malformed context json does not throw", () => {

@@ -64,13 +64,15 @@ Three directories, nearest first. The same id in a nearer one wins:
 | ------- | ------------------------- | ------------------------- | ----------- |
 | project | `.collie/` in the project | `workflows/*.workflow.ts` | `personas/` |
 | user    | `~/.collie/user/`         | `workflows/*.workflow.ts` | `personas/` |
-| shipped | the install, `~/.collie/` | `workflows/*.workflow.ts` | `personas/` |
+| shipped | `~/.collie/release/`      | `workflows/*.workflow.ts` | `personas/` |
 
 The project's `.collie/` and your `~/.collie/user/` have the same shape, and hold the rest
 of what is yours beside them: `verify.json` in each, and your `config.json` in
-`~/.collie/user/`. Your layer sits beside the installation's shipped assets rather than
-among them, because those are a git checkout an upgrade fast-forwards — `user/` is ignored
-by it, so nothing of yours is somebody else's to move. What Collie itself keeps — runs, the
+`~/.collie/user/`. Your layer sits beside the installation rather than in it, because every
+upgrade replaces `release/` whole and never writes `user/`
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)). An edit made
+inside `release/` is copied to `~/.collie/kept/` by the next upgrade and is no longer in
+force, so fork instead. What Collie itself keeps — runs, the
 host's database, tasks — is state, and stays in herdr's state directory for the plugin.
 
 Only entry files take part. A helper or a Markdown prompt beside one is reached because

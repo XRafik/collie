@@ -1709,19 +1709,61 @@ the state directory's `schedules/<name>/operations.jsonl`.
 collie upgrade
 ```
 
-Pulls first where the installation is a checkout (`--ff-only`), then runs `prepare.sh` —
+What it does depends on where the installation is, never on its git state
+([ADR-draft-an-installation-is-the-release-its-runner-carries](adr/draft-an-installation-is-the-release-its-runner-carries.md)):
+
+- **A release** — an installation that is not a checkout — goes to the newest release, read
+  from `<releases>/latest` (`COLLIE_RELEASES`, else
+  `https://github.com/cego/collie/releases`). Where that is the runner's own version, the
+  runner places the release it carries into the
+  [Collie directory](using.md#the-collie-directory)'s `release/`, replacing it whole, so it
+  also repairs a damaged one. Each file there that differs from what the last placement
+  recorded is first copied into `kept/<when>/`, and the report names each one with how to
+  fork it into `user/`. Placements into one Collie directory take turns under its
+  `placing.lock`, so a CLI, Desktop and a peer upgrading at once never mix two releases.
+  Another version's runner is downloaded with its `.sig`, verified
+  against Collie's Ed25519 release key, and handed the upgrade (`upgrade --to <version>`
+  against the same Collie directory); what it reports is this upgrade's report. No git is
+  involved, so nothing anyone wrote can block it. A newest release that cannot be read, a
+  download that fails or a runner that does not verify is `operation_failed` with the
+  reason, a version with no release is `invalid_input`, and in each case `release/` is left
+  exactly as it was. A runner that was not built as a release places nothing and is refused
+  as `invalid_state`.
+- **A development checkout** — a clone linked as the plugin from anywhere but the Collie
+  directory — is pulled with `git pull --ff-only --autostash`, so uncommitted work rides
+  through a pull that touches other files. A pull it cannot do, a conflict included, is
+  reported in git's words rather than installed over.
+- **A clone at the Collie directory**, an install from before ADR-draft-an-installation-is-the-release-its-runner-carries, becomes a release.
+  `release/` and `kept/` are added to the clone's `.git/info/exclude` first, so the release
+  never shows as a change in it. The target release's runner (the newest, or `--to`) is
+  downloaded, verified and handed the upgrade with `HERDR_PLUGIN_ROOT` at `release/`: it
+  places the release there, links it as the plugin (herdr replaces the clone's link of the
+  same plugin id), points the operator skill at it, and the host the clone served is replaced
+  by the release's. The runner is downloaded even at this runner's own version, because a
+  clone's runner may have been built from its source. Then the clone is removed — everything
+  in the Collie directory but `release/`, `user/` and `kept/` — only where nothing in it is
+  yours: no changed or untracked file, no ignored file beyond `bin/`, `node_modules/` and
+  `user/`, no commit that no remote branch contains, no stash, no linked worktree, and no live
+  Run working in it. Where any of those is found, or the host cannot be asked about live
+  Runs, the clone is kept exactly as it was and the report names what kept it; it is an
+  ordinary checkout from then on. Under `--json`, `data.clone` is `"removed"` or
+  `{ "kept": ["<what kept it>", …] }`.
+
+Then it runs `prepare.sh` —
 the one routine every entry point ends in, so this brings the plugin link, the runner and
 shim, the operator skill and the skills up to date together rather than replacing the
-runner alone. A pull it cannot do is reported rather than installed over. A runner
-`install.sh` downloads replaces the one there only once its signature checks out
+runner alone. In a checkout, a
+runner `install.sh` downloads replaces the one there only once its signature checks out
 ([Build and release](internals.md)). Otherwise an install with bun builds the runner from
-source, and one without keeps the runner already there and the `runner` step fails.
+source, and one without keeps the runner already there and the `runner` step fails. In a
+release, the runner is the one placed, and nothing is downloaded or built.
 
 The report names what moved: the commit range where the checkout advanced, and one line
 per preparation step saying whether it was done, was already in place, or was skipped —
 so "nothing to do" reads differently from "the runner updated but the skills step could
 not run". A skipped step is not a failure: `upgrade` still succeeds. Under `--json` the
-same steps are in `data.steps`.
+same steps are in `data.steps`; a release adds `data.release`, the version placed, and
+`data.kept`, each file copied aside, relative to the Collie directory.
 
 The last step, `desktop`, brings [Collie Desktop](using.md#collie-desktop) on this computer
 to the version `upgrade` moved to, where this user has a released Desktop installed that
@@ -1743,11 +1785,13 @@ it does on any platform; `upgrade` stages nothing for it.
 collie upgrade --to 0.27.0
 ```
 
-Moves a released install to exactly that version (fetching tags and resetting a checkout
-to the tag, or fetching the signed runner for a plain install), and reports the same way, with `data.version`. A development checkout — on a branch
-other than `master`, detached on a commit that is not a release, with uncommitted changes,
-or ahead of its remote — is refused as `invalid_state` with the reason, and its checkout is left as it was.
-A host's `identity` names such a checkout's build as `development: "<version>+<sha>"`.
+Moves a release to exactly that version, older or newer, through the same download and
+hand-off, and reports the same way, with `data.version`. `--to` the runner's own version
+places it again, which repairs a damaged `release/`. A development checkout is refused as
+`invalid_state` and left as it was: only `git` moves it, and Desktop and paired Machines
+never upgrade it. A host's `identity` names a development checkout's build as
+`development: "<version>+<sha>"`. A clone at the Collie directory becomes exactly that
+release, as above.
 
 ## Onboarding a Machine
 
@@ -1763,24 +1807,24 @@ Its GitLab is one host: `--gitlab-host`, else `GITLAB_HOST`, else the
 [`gitlab_host` setting](using.md#your-defaults), `gitlab.cego.dk` by default. The token
 page, the glab login, the push and the closing doctor all name that host.
 
-| Step           | What it does                                                                                                                                                                                                                                                                       |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `system`       | Checks for `git`, `curl` and `openssl`, or the one `COLLIE_OPENSSL` names (which checks a downloaded runner's signature; any version, LibreSSL included, will do). Any missing stops here with `needs_root` and the exact command                                                  |
-| `collie`       | Clones `https://github.com/cego/collie.git` (or `COLLIE_REPO`) into `~/.collie` (or `COLLIE_DIR`) and resets `master` to the tag, so a plain `collie upgrade` can still pull; or moves a released checkout to the tag as `upgrade --to` does                                       |
-| `herdr`        | `curl -fsSL https://herdr.dev/install.sh \| sh`, if there is no `herdr`                                                                                                                                                                                                            |
-| `claude`       | Anthropic's user-level installer, `curl -fsSL https://claude.ai/install.sh \| bash`, if there is no `claude`                                                                                                                                                                       |
-| `path`         | Adds `~/.local/bin` (and `COLLIE_BIN_DIR`) to PATH in the shell's profile (`~/.bashrc`, `~/.zshrc` or `~/.profile`)                                                                                                                                                                |
-| `plugin`       | `prepare.sh`: the plugin link, the runner and shim, the operator skill and the skills. A runner `install.sh` downloads is installed only once the release key's signature (`<asset>.p256.sig`) checks out                                                                          |
-| `claude-login` | `claude auth login` in this terminal, if `claude auth status --json` says Claude Code is not logged in; without a terminal, `needs_human` with that command                                                                                                                        |
-| `gitlab`       | `glab auth login --hostname <host> --stdin` with `GITLAB_TOKEN`, if glab is not already logged in there, or is logged in with another token than the one given. Without a token: `needs_human`, with the token page and its `api` and `write_repository` scopes as `url`           |
-| `push`         | Generates `~/.ssh/id_ed25519` if there is none and registers it with `glab ssh-key add`, unless the Machine can already push (over HTTPS with glab's login, or with its own key). GitLab's host key is trusted on first use, and a key GitLab already has counts as registered     |
-| `helle`        | Writes `HELLE_API_TOKEN`, and `HELLE_API_URL=https://helle.cego.dk` for other Helle clients, to Helle's credentials file, owner-only; with no token given and no file, `needs_human`, saying how Slack's `/helle token` makes one                                                  |
-| `linear`       | `claude mcp add --transport http --scope user linear-server https://mcp.linear.app/mcp`, then `claude mcp login linear-server` in a terminal of its own, whose URL is streamed: the one it prints, or the one with its callback port it hands `$BROWSER`, which a shim writes down |
-| `doctor`       | [`collie doctor`](#checking-an-installation); onboarded means it is ready                                                                                                                                                                                                          |
+| Step           | What it does                                                                                                                                                                                                                                                                                                                                                                        |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `system`       | Checks for `git`, `curl` and `openssl`, or the one `COLLIE_OPENSSL` names (which checks a downloaded runner's signature; any version, LibreSSL included, will do). Any missing stops here with `needs_root` and the exact command                                                                                                                                                   |
+| `collie`       | Places the release this runner carries into the [Collie directory](using.md#the-collie-directory) (`COLLIE_DIR`, else `~/.collie`) as [`upgrade --to`](#upgrading) does: `done` when it placed, migrating a clone found there, and `in_place` when `release/` is already at the version. Another version's runner is downloaded, verified and handed the upgrade. Nothing is cloned |
+| `herdr`        | `curl -fsSL https://herdr.dev/install.sh \| sh`, if there is no `herdr`                                                                                                                                                                                                                                                                                                             |
+| `claude`       | Anthropic's user-level installer, `curl -fsSL https://claude.ai/install.sh \| bash`, if there is no `claude`                                                                                                                                                                                                                                                                        |
+| `path`         | Adds `~/.local/bin` (and `COLLIE_BIN_DIR`) to PATH in the shell's profile (`~/.bashrc`, `~/.zshrc` or `~/.profile`)                                                                                                                                                                                                                                                                 |
+| `plugin`       | `prepare.sh`: the plugin link, the runner and shim, the operator skill and the skills. A runner `install.sh` downloads is installed only once the release key's signature (`<asset>.p256.sig`) checks out                                                                                                                                                                           |
+| `claude-login` | `claude auth login` in this terminal, if `claude auth status --json` says Claude Code is not logged in; without a terminal, `needs_human` with that command                                                                                                                                                                                                                         |
+| `gitlab`       | `glab auth login --hostname <host> --stdin` with `GITLAB_TOKEN`, if glab is not already logged in there, or is logged in with another token than the one given. Without a token: `needs_human`, with the token page and its `api` and `write_repository` scopes as `url`                                                                                                            |
+| `push`         | Generates `~/.ssh/id_ed25519` if there is none and registers it with `glab ssh-key add`, unless the Machine can already push (over HTTPS with glab's login, or with its own key). GitLab's host key is trusted on first use, and a key GitLab already has counts as registered                                                                                                      |
+| `helle`        | Writes `HELLE_API_TOKEN`, and `HELLE_API_URL=https://helle.cego.dk` for other Helle clients, to Helle's credentials file, owner-only; with no token given and no file, `needs_human`, saying how Slack's `/helle token` makes one                                                                                                                                                   |
+| `linear`       | `claude mcp add --transport http --scope user linear-server https://mcp.linear.app/mcp`, then `claude mcp login linear-server` in a terminal of its own, whose URL is streamed: the one it prints, or the one with its callback port it hands `$BROWSER`, which a shim writes down                                                                                                  |
+| `doctor`       | [`collie doctor`](#checking-an-installation); onboarded means it is ready                                                                                                                                                                                                                                                                                                           |
 
-A development checkout — the one this runner belongs to when that is a checkout, or
-`COLLIE_DIR` — is judged as [`upgrade --to`](#upgrading) judges one, and gets the checks
-only and the logins: nothing is installed and its checkout is not moved.
+A runner from a [development checkout](using.md#running-a-checkout-of-collie) — one that is
+not at the Collie directory — gets the checks only and the logins: nothing is installed and
+its checkout is not moved.
 
 Secrets are never arguments. `--secrets-stdin` reads `KEY=value` lines from stdin —
 `GITLAB_TOKEN` and `HELLE_API_TOKEN` — and the token reaches glab on its

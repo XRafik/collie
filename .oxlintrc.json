@@ -137,7 +137,10 @@
         "test/desktop-upgrade.test.ts",
         "test/install-desktop.test.ts",
         "test/prepare.test.ts",
-        "test/signing.test.ts"
+        "test/signing.test.ts",
+        "test/upgrade-release.test.ts",
+        "test/setup.test.ts",
+        "test/upgrade-clone.test.ts"
       ],
       "rules": { "effecttsgo/node-builtin-import": "off" }
     },
