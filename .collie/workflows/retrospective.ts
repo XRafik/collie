@@ -130,32 +130,6 @@ export const goalOf = (
     "Quote nothing from anywhere else: no Run's goal, no person's words, no transcript and no other repository.",
   ].join("\n\n");
 
-export const PinFile = Schema.Struct({
-  upstream: Schema.String,
-  path: Schema.String,
-  sha256: Schema.String,
-});
-export const Pin = Schema.Struct({
-  repository: Schema.String,
-  commit: Schema.String,
-  files: Schema.Array(PinFile),
-});
-export type Pin = typeof Pin.Type;
-
-export const sha256 = (bytes: Uint8Array) =>
-  new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
-
-/** What is wrong with the vendored files, by their hashes (null where missing), or null. */
-export const pinProblem = (pin: Pin, hashes: ReadonlyMap<string, string | null>): string | null => {
-  for (const file of pin.files) {
-    const hash = hashes.get(file.path) ?? null;
-    if (hash === null) return `.collie/skills/${file.path} is missing`;
-    if (hash !== file.sha256)
-      return `.collie/skills/${file.path} is not ${pin.repository}'s ${file.upstream} at ${pin.commit}`;
-  }
-  return null;
-};
-
 export interface Ended {
   readonly name: string;
   readonly runId: string | null;

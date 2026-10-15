@@ -8,10 +8,7 @@ The window: the Runs admitted since {{since}}.
 
 ## triage
 
-Use the `retro` skill: read `{{checkout}}/.collie/skills/retro/SKILL.md` and follow it.
-Where it calls for the `writing-for-agents` skill, read
-`{{checkout}}/.collie/skills/writing-for-agents/SKILL.md`. Read those two files, and no
-installed copy of either skill on this Machine.
+Use {{skill:retro}}.
 
 Where `retro` and this page differ, this page wins:
 

@@ -152,13 +152,14 @@ A person can ask for this too: "plan this and build it, don't ask me."
 The human asked for Matt Pocock's `retro` skill in this flow, to find recurring problems
 and optimizations in the day's agent Outputs and logs, not only failed Runs.
 
-- It is kept byte for byte under `.collie/skills/`, with `writing-for-agents`, which it
-  reads, and their licence, from `mattpocock/skills` at a pinned commit.
-  `.collie/skills/pin.json` records each file's upstream path and SHA-256, and a Run whose
-  checkout differs fails before any agent starts. Moving the pin copies every file again
-  and changes `pin.json` in the same merge request.
-- Upstream marks it user-invoked. This flow invokes it on that explicit request, by its
-  path in the Run's checkout, never a Machine's installed copy.
+- Installed, like every skill
+  ([ADR-0005](0005-skills-float-and-are-not-pinned.md)): `retro` and the
+  `writing-for-agents` skill it reads come from `mattpocock/skills` through `prepare.sh`
+  and `collie upgrade`, and float with them. Nothing is copied into the repository, and
+  nothing pins them. The `retrospective` Persona names `{{skill:retro}}`, which Collie
+  renders as the installed `SKILL.md` to read and follow, so upstream marking it
+  user-invoked does not matter: this flow invokes it on the human's explicit request.
+  A Machine without it fails the Run before any agent starts.
 - The Workflow's Markdown adapts it and wins where the two differ: the session is the
   day's Runs (D2), its categories become each finding's, a `defect` category covers Collie
   misbehaving, its presentation becomes the Output, and what it would change becomes

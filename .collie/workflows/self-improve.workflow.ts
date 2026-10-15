@@ -12,14 +12,11 @@ import {
   type Improvement,
   type Outcome,
   MAX_FINDINGS,
-  Pin,
   Triage,
   chosen,
   goalOf,
   keysIn,
   markerOf,
-  pinProblem,
-  sha256,
   sortOut,
   summaryOf,
   targetOf,
@@ -70,7 +67,7 @@ export default defineWorkflow({
   id: "self-improve",
   title: "self-improve — file and fix what a day of Runs shows is wrong with Collie",
   description:
-    "Reads this Machine's Runs of the last 24 hours with the vendored retro skill, files or comments on Collie's issues, and starts up to `improvements` plans that build themselves.",
+    "Reads this Machine's Runs of the last 24 hours with the installed retro skill, files or comments on Collie's issues, and starts up to `improvements` plans that build themselves.",
   input: Schema.Struct({
     improvements: Schema.optionalKey(
       Count.annotate({ description: "how many Improvements to start; 0 files without building" }),
@@ -103,31 +100,19 @@ export default defineWorkflow({
       if (window.runs.length === 0) return `No Runs since ${window.since}`;
 
       yield* Activity.make({
-        name: "pin",
+        name: "retro",
         success: Schema.Void,
         error: WorkflowError,
-        execute: Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const skills = `${place.cwd}/.collie/skills`;
-          const pin = yield* fs.readFileString(`${skills}/pin.json`).pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Pin))),
-            Effect.mapError(
-              () =>
-                new WorkflowError({ reason: ".collie/skills/pin.json is missing or unreadable" }),
-            ),
-          );
-          const hashes = new Map<string, string | null>();
-          for (const file of pin.files)
-            hashes.set(
-              file.path,
-              yield* fs.readFile(`${skills}/${file.path}`).pipe(
-                Effect.map(sha256),
-                Effect.orElseSucceed(() => null),
-              ),
-            );
-          const problem = pinProblem(pin, hashes);
-          if (problem !== null) return yield* new WorkflowError({ reason: problem });
-        }),
+        execute: host.skill("retro").pipe(
+          Effect.flatMap((file) =>
+            file === null
+              ? new WorkflowError({
+                  reason:
+                    "the retro skill is not installed on this Machine: run prepare.sh, or collie upgrade",
+                })
+              : Effect.void,
+          ),
+        ),
       });
 
       const open = yield* Activity.make({

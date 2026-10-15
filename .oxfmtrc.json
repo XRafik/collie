@@ -17,9 +17,6 @@
     "plans/**",
     // Exported brand assets stay byte-identical to the kit and its checksum manifest.
     "assets/brand/**",
-    // Vendored byte for byte from upstream; `.collie/skills/pin.json` hashes them.
-    ".collie/skills/*/**",
-    ".collie/skills/LICENSE",
     // herdr prints this; `bun run contract:regen` writes it verbatim and CI diffs it.
     "herdr-api-schema.json",
     "tools/oxlint/anti-slop/**"

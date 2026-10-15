@@ -94,7 +94,7 @@ import {
 } from "./helle";
 import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
-import type { CheckoutKind, InputStrategy } from "./definitions";
+import { skillDirs, skillFile, type CheckoutKind, type InputStrategy } from "./definitions";
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
 import {
@@ -130,7 +130,7 @@ import { evaluationDeps } from "./evaluator";
 import { budgetPath, herdOf } from "./steering";
 import type { JudgementDeps } from "./drift";
 import { finishedOnRecord, type Card } from "./cards";
-import { reason } from "./naming";
+import { reason, unsafePathComponent } from "./naming";
 import { freshTaskLabel } from "./tasknames";
 import { attachmentRefusal, attachmentsDir, copyInto, listAttachments } from "./attachments";
 import {
@@ -379,6 +379,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
      * the workflow's own where it branches on it, so a replay takes the same branch.
      */
     readonly usage: () => Effect.Effect<ReadonlyArray<UsageReading>>;
+    /** The installed \`SKILL.md\` an agent's \`{{skill:name}}\` would name, or null. */
+    readonly skill: (name: string) => Effect.Effect<string | null>;
     /** This Run as the host admitted it; its directory is made as this is answered. */
     readonly place: (runId: string) => Effect.Effect<Place>;
     /** The checkout of the branch this Run's diff target names, recorded as the Run's own. */
@@ -2605,6 +2607,15 @@ export const hostLayer = (options: {
             }),
           ),
         usage: () => options.readings ?? Effect.succeed([]),
+        skill: (name) =>
+          unsafePathComponent(name) !== null
+            ? Effect.succeed(null)
+            : placing.pipe(
+                Effect.flatMap(({ env }) => skillDirs(env)),
+                Effect.flatMap((dirs) => skillFile(dirs, name)),
+                Effect.orElseSucceed(() => null),
+                Effect.provideContext(bun),
+              ),
         place: (runId) =>
           under(
             Effect.zipWith(

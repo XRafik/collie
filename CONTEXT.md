@@ -648,7 +648,7 @@ not settled waits for it, so a Schedule has one Run going at a time. Pausing sto
 without catching up. A Run it starts is any Run, placed as a fresh start, and its record
 says which Schedule started it ([ADR-0052](docs/adr/0052-a-schedule-is-a-saved-start-its-host-fires.md)).
 
-**Self-improve Run** — One execution of Collie's own `self-improve` Workflow, in a checkout of Collie: one day of its Machine's Runs read with the vendored `retro` skill, what they show is wrong with Collie filed or commented on Collie's forge, and up to `improvements` **Improvements** started and waited on ([ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md)).
+**Self-improve Run** — One execution of Collie's own `self-improve` Workflow, in a checkout of Collie: one day of its Machine's Runs read with the installed `retro` skill, what they show is wrong with Collie filed or commented on Collie's forge, and up to `improvements` **Improvements** started and waited on ([ADR-0053](docs/adr/0053-collie-files-and-fixes-what-its-own-runs-show.md)).
 
 **Improvement** — One merge request's worth of issues a **Self-improve Run** filed new: a `plan` child that is a Task of its own, started with `then=implement`, whose goal is those issues and whose merge request closes them. Nobody is asked anything until the merge.
 Not a shared setting: its checkout is a path on one Machine.

@@ -62,7 +62,7 @@ import { RanOn } from "./board-model";
 import type { Asker } from "./proposals";
 import * as dispatch from "./dispatcher";
 import type * as Types from "effect/Types";
-import { bodySections, layers, personaHoles, skillDirs } from "./definitions";
+import { bodySections, layers, personaHoles, skillDirs, skillFile } from "./definitions";
 import { currentEnv, selfCommand, type PluginEnv } from "./env";
 import {
   HARNESSES,
@@ -1202,17 +1202,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
   const skills = Effect.fn("Agents.skills")(function* (names: ReadonlyArray<string>) {
     const found = new Map<string, string>();
     if (names.length === 0) return found;
-    const fs = yield* FileSystem.FileSystem;
     const dirs = yield* skillDirs(host.env);
     for (const name of names) {
       if (unsafePathComponent(name) !== null) continue;
-      for (const dir of dirs) {
-        const file = `${dir}/${name}/SKILL.md`;
-        if (yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false))) {
-          found.set(name, file);
-          break;
-        }
-      }
+      const file = yield* skillFile(dirs, name).pipe(Effect.orElseSucceed(() => null));
+      if (file !== null) found.set(name, file);
     }
     return found;
   });

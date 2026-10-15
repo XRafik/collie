@@ -2577,7 +2577,7 @@ collie run start self-improve --input improvements=3
 It reads the Runs its Machine admitted in the 24 hours before it started, leaving out its
 own children; an earlier `self-improve` Run and its Improvements are read like any other.
 A day with none ends at once, starting no agent. Otherwise one `retrospective` agent reads
-those Runs' records with the vendored `retro` skill and reports what they show is wrong
+those Runs' records with the installed `retro` skill and reports what they show is wrong
 with Collie, at most ten findings, most severe first. A finding seen in only one Run is
 left out unless it is a `defect` or matches an open issue. Each finding that is left gets
 one "seen again" comment on the open issue it matches, or the open issue carrying its key,
@@ -2598,14 +2598,12 @@ collie schedule add self-improve-daily --cron "0 7 * * *" self-improve \
   --input improvements=3 --workspace <Collie checkout>
 ```
 
-**The `retro` skill** is Matt Pocock's, kept byte for byte under `.collie/skills/` with
-`writing-for-agents`, which it reads, and their MIT `LICENSE`. `.collie/skills/pin.json`
-names the upstream repository, the commit, and each file's upstream path, path here and
-SHA-256. Before any agent starts, the Run hashes those files in its checkout and fails,
-naming the file, if one is missing or changed. The triage reads them by their path in the
-checkout, never a Machine's installed skills, and its Markdown adapts `retro` to the day's
-Runs. To move the pin, copy every file again from upstream at the new commit and change
-`pin.json` in the same merge request.
+**The `retro` skill** is Matt Pocock's, installed like every skill: `prepare.sh` and every
+`collie upgrade` put `mattpocock/skills` in `~/.agents/skills`, and it floats with them
+([ADR-0005](adr/0005-skills-float-and-are-not-pinned.md)). The `retrospective` Persona names
+it, and `retro` reads `writing-for-agents` itself. A Machine without it fails the Run,
+naming the repair, before any agent starts and before anything is filed. The Workflow's
+Markdown adapts `retro` to the day's Runs, and wins where the two differ.
 
 ## Cleanup
 

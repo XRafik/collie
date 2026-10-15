@@ -18,11 +18,8 @@ import selfImprove from "../.collie/workflows/self-improve.workflow";
 import {
   type Finding,
   type Improvement,
-  Pin,
   keysIn,
   markerOf,
-  pinProblem,
-  sha256,
   sortOut,
 } from "../.collie/workflows/retrospective";
 
@@ -50,6 +47,8 @@ beforeEach(() =>
       yield* fs.makeDirectory(dir, { recursive: true });
       yield* fs.makeDirectory(rig.projectDir, { recursive: true });
       expect((yield* exec(["cp", "-r", `${ROOT}.collie`, rig.projectDir])).exitCode).toBe(0);
+      yield* fs.makeDirectory(`${rig.root}/.agents/skills/retro`, { recursive: true });
+      yield* fs.writeFileString(retro(), "---\nname: retro\n---\n");
       windowRuns = [
         { runId: "r-a", parent: null },
         { runId: "r-b", parent: null },
@@ -66,6 +65,7 @@ beforeEach(() =>
 );
 afterEach(() => runEffect(rig.close()));
 
+const retro = () => `${rig.root}/.agents/skills/retro/SKILL.md`;
 const entry = () => `${rig.projectDir}/.collie/workflows/self-improve.workflow.ts`;
 
 const hostOf = (): AgentHost => ({
@@ -219,47 +219,6 @@ const triage = (
   left_out: [{ what: "a test in another project failed", why: "a project's own code" }],
 });
 
-test("the committed retro skill is upstream's bytes at the pinned commit", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const pin = Schema.decodeUnknownSync(Schema.fromJsonString(Pin))(
-        yield* fs.readFileString(`${ROOT}.collie/skills/pin.json`),
-      );
-      expect(pin).toEqual({
-        repository: "mattpocock/skills",
-        commit: "49dd158d1076134a641b33efb035946536778336",
-        files: [
-          {
-            upstream: "skills/engineering/retro/SKILL.md",
-            path: "retro/SKILL.md",
-            sha256: "33fbc28568e3146f20fd908b12998bc0ab30aa4f4c87288199a40793efa94696",
-          },
-          {
-            upstream: "skills/productivity/writing-for-agents/SKILL.md",
-            path: "writing-for-agents/SKILL.md",
-            sha256: "551adca942227b44192edba88acd4e8db911f0121ce58ad16944ccf6a896a74a",
-          },
-          {
-            upstream: "LICENSE",
-            path: "LICENSE",
-            sha256: "0e7ac423bf2c6e223b7c5b156f8cf72da49d748e56a1641402c31f22ad07dbb5",
-          },
-        ],
-      });
-      const hashes = new Map<string, string | null>();
-      for (const file of pin.files)
-        hashes.set(file.path, sha256(yield* fs.readFile(`${ROOT}.collie/skills/${file.path}`)));
-      expect(pinProblem(pin, hashes)).toBeNull();
-      expect(pinProblem(pin, new Map([...hashes, ["LICENSE", null]]))).toBe(
-        ".collie/skills/LICENSE is missing",
-      );
-      expect(
-        pinProblem(pin, new Map([...hashes, ["retro/SKILL.md", sha256(new Uint8Array())]])),
-      ).toContain(".collie/skills/retro/SKILL.md is not");
-    }),
-  ));
-
 test("improvements is a whole number, as the CLI's text or as a number", () => {
   const decode = Schema.decodeUnknownSync(selfImprove.input ?? Schema.Never);
   expect(decode({ improvements: "3" })).toEqual({ improvements: 3 });
@@ -303,21 +262,15 @@ test(
 );
 
 test(
-  "a checkout whose vendored skill is changed or missing fails, naming it, before any agent or issue",
+  "a Machine without the retro skill fails, naming the repair, before any agent or issue",
   () =>
     runEffect(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(`${rig.projectDir}/.collie/skills/retro/SKILL.md`, "changed\n");
-        const changed = yield* ran("r-changed", {});
-        expect(reasonOf(changed)).toContain(".collie/skills/retro/SKILL.md");
-        yield* fs.remove(`${rig.projectDir}/.collie/skills/LICENSE`);
-        yield* fs.writeFileString(
-          `${rig.projectDir}/.collie/skills/retro/SKILL.md`,
-          yield* read(`${ROOT}.collie/skills/retro/SKILL.md`),
-        );
-        const missing = yield* ran("r-missing", {});
-        expect(reasonOf(missing)).toContain(".collie/skills/LICENSE is missing");
+        yield* fs.remove(retro());
+        const result = yield* ran("r-unskilled", {});
+        expect(reasonOf(result)).toContain("retro");
+        expect(reasonOf(result)).toContain("prepare.sh");
         expect(yield* launches()).toEqual([]);
         expect([filed, commented]).toEqual([[], []]);
       }),
@@ -365,11 +318,11 @@ test(
 
         expect(said(result)).toContain("Filed 3, commented 2, refused 1; 2 Improvements, 1 failed");
         const prompt = yield* read(`${dir}/agents/r-day/triage.prompt.md`);
-        expect(prompt).toContain(`${rig.projectDir}/.collie/skills/retro/SKILL.md`);
-        expect(prompt).toContain(`${rig.projectDir}/.collie/skills/writing-for-agents/SKILL.md`);
+        expect(prompt).toContain(`read \`${retro()}\` and follow it`);
         expect(prompt).toContain("this page wins");
-        expect(prompt).not.toMatch(/\.(claude|agents|codex)\/skills/);
-        expect(yield* read(`${dir}/agents/r-day/triage.persona.md`)).toContain("retrospective");
+        const persona = yield* read(`${dir}/agents/r-day/triage.persona.md`);
+        expect(persona).toContain("retrospective");
+        expect(persona).toContain(`read \`${retro()}\` and follow it`);
 
         expect(filed.map(({ title }) => title)).toEqual([
           "Collie host-crash",

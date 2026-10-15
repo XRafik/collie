@@ -547,6 +547,8 @@ export interface HostApi {
    * the same branch.
    */
   readonly usage: () => Effect.Effect<ReadonlyArray<UsageReading>>;
+  /** The installed `SKILL.md` an agent's `{{skill:name}}` would name, or null. */
+  readonly skill: (name: string) => Effect.Effect<string | null>;
   /**
    * This Run as the host admitted it. The checkout is the one it was started for — its
    * own workspace where a caller named one — the directory is this Run's, where a plan, a

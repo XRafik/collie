@@ -664,6 +664,10 @@ failed and completed results, stopped Runs, and a `runs` list. Each list entry h
 `runId`, `workflow`, `parent`, `created`, and `status`. An invalid date fails with
 `WorkflowError`. Read it inside an Activity when its answer decides subsequent work.
 
+`host.skill(name)` answers the installed `SKILL.md` that `{{skill:name}}` would name to an
+agent, or `null` where this Machine has none. Check it in an Activity to fail before any
+agent starts on a skill the work cannot do without.
+
 `host.issues(runId)` lists the open issues of that Run's checkout, each with `number`,
 `title`, `body`, and `url`. The checkout's remote decides its forge.
 `host.fileIssue({ runId, title, body })` returns the filed issue's `number` and `url`.
