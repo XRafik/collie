@@ -106,7 +106,8 @@ import {
   shell as runShell,
 } from "./mr";
 import { redact } from "./redact";
-import { reportOf } from "./report";
+import { reportOf, type Recorded } from "./report";
+import { outcomeRecordsOf, type OutcomeRecords } from "./outcomes";
 import type { Metrics } from "./board-model";
 import { parseMrTarget, parseMrUrl } from "./board-model";
 import { integrateDefault, integratedLine } from "./integrate";
@@ -4180,15 +4181,19 @@ const makeRegistry: (
     const rows = (yield* store.runs).filter((row) => epochMs(row.admitted) >= from);
     const views = yield* Effect.forEach(rows, viewOf);
     const metrics = new Map<string, Metrics>();
-    for (const view of views)
-      metrics.set(
-        view.runId,
-        metricsOf(
-          yield* readMetrics(evidenceDir(dir, view.runId)).pipe(Effect.provideContext(bun)),
-          view.created,
-        ),
+    const recorded = new Map<string, Recorded>();
+    for (const view of views) {
+      const lines = yield* readMetrics(evidenceDir(dir, view.runId)).pipe(
+        Effect.provideContext(bun),
       );
-    return reportOf(views, metrics, since);
+      const records = yield* outcomeRecordsOf(dir, view.runId).pipe(
+        Effect.orElseSucceed((): OutcomeRecords | null => null),
+        Effect.provideContext(bun),
+      );
+      metrics.set(view.runId, metricsOf(lines, view.created));
+      recorded.set(view.runId, { records, metrics: lines });
+    }
+    return reportOf(views, metrics, since, recorded);
   });
   const lending = <A, E>(effect: Effect.Effect<A, E, HostServices>): Effect.Effect<A, E> =>
     Effect.updateContext(effect, (caller: Context.Context<never>) =>

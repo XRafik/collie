@@ -5,7 +5,9 @@ import { runEffect } from "./support/effect";
 import { exec } from "./support/command";
 import { FakeBin } from "./support/bin";
 import { forgeOnPath, PROJECT, FORGE_HOST } from "./support/forge";
-import { foundationLayer, registryLayer, Registry } from "../src/engine";
+import { foundationLayer, registryLayer, Registry, evidenceDir, runDir } from "../src/engine";
+import { recordAudit } from "../src/audit";
+import { noteContext } from "../src/metrics";
 import { until } from "./support/host";
 import { nowIso } from "../src/time";
 import { agentsLayer } from "../src/agents";
@@ -114,6 +116,61 @@ test(
             { runId: "reader", workflow: "issues", parent: null, status: "pending" },
           ],
           workflows: [{ workflow: "issues", total: 2, pending: 2 }],
+        });
+      }).pipe(withMachine),
+    ),
+  30_000,
+);
+
+test(
+  "a Workflow's report measures what each Run recorded, as the CLI's does",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const registry = yield* Registry;
+        const generation = yield* registry.load(
+          new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+        );
+        const subject = yield* registry.start({
+          generation,
+          runId: "subject",
+          request: "subject",
+          project: rig.projectDir,
+          input: { operation: "report", text: "2000-01-01T00:00:00Z" },
+          handsOver: true,
+        });
+        yield* recordAudit(runDir(rig.stateDir, subject.runId), {
+          operation: "steer",
+          request: "s-1",
+          origin: "chat",
+          result: Schema.String,
+          value: "steered",
+        });
+        yield* noteContext(
+          evidenceDir(rig.stateDir, subject.runId),
+          yield* nowIso(),
+          "subject-build",
+          123_456,
+        );
+        const reading = yield* registry.start({
+          generation,
+          runId: "reader",
+          request: "reader",
+          project: rig.projectDir,
+          input: { operation: "report", text: "2000-01-01T00:00:00Z" },
+          handsOver: true,
+        });
+        expect(yield* registry.result(reading.runId)).toMatchObject({
+          measures: {
+            steering: {
+              runs: expect.arrayContaining([
+                expect.objectContaining({ runId: "subject", steer: 1 }),
+              ]),
+            },
+            peakContext: expect.arrayContaining([
+              { runId: "subject", tokens: 123_456, agent: "subject-build" },
+            ]),
+          },
         });
       }).pipe(withMachine),
     ),
