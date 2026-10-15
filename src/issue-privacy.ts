@@ -15,7 +15,7 @@ export function remoteOf(url: string): { project: string; path: string } | null 
   return host && path ? { project: `${host}/${path}`, path } : null;
 }
 
-/** All working repositories, including hidden, nested and linked ones; inspection errors propagate. */
+/** Working repositories under `root`, including hidden, nested and linked ones; inspection errors propagate. */
 export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(function* (
   root: string,
 ) {
@@ -24,6 +24,7 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
   const visited = new Set<string>();
   const checkouts = new Set<string>();
   const aliases: DirectoryAlias[] = [];
+  const canonicalRoot = yield* fs.realPath(root);
   const visit = (dir: string): Effect.Effect<void, PlatformError> =>
     Effect.gen(function* () {
       const canonical = yield* fs.realPath(dir);
@@ -32,6 +33,8 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
         checkouts.add(dir);
         checkouts.add(canonical);
       }
+      const fromRoot = path.relative(canonicalRoot, canonical);
+      if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`)) return;
       if (visited.has(canonical)) return;
       visited.add(canonical);
       for (const name of yield* fs.readDirectory(canonical)) {
