@@ -175,6 +175,22 @@ test(
             .act({ actions: [{ kind: "rm-rf" }], request: "q-3" })
             .pipe(Effect.flip);
           expect(acted._tag).toBe("HostRefused");
+          expect(acted).toMatchObject({
+            reason: 'invalid_input: actions[0] has kind "rm-rf", which is not a kind Collie takes',
+          });
+          expect(unknown.human).toContain('actions[0] has kind "rm-rf"');
+          const textless = [
+            { kind: "stop", run: "r-1" },
+            { kind: "deliver", run: "r-1" },
+          ];
+          const untold = yield* client.act({ actions: textless, request: "q-7" }).pipe(Effect.flip);
+          expect(untold).toMatchObject({
+            _tag: "HostRefused",
+            reason: 'invalid_input: actions[1] (kind "deliver"): Missing key at ["text"]',
+          });
+          const proposed = yield* client.propose({ ...asked, actions: textless, request: "q-8" });
+          expect(proposed).toMatchObject({ ok: false, code: "invalid_input" });
+          expect(proposed.human).toContain('actions[1] (kind "deliver"): Missing key at ["text"]');
           const nobody = yield* client
             .reconcile({ proposal: "p-none", index: 0, as: "applied", request: "q-4" })
             .pipe(Effect.flip);

@@ -138,6 +138,7 @@ const machine = (
         note("editFile", payload);
         return { path: payload.path, replaced: 1 };
       }),
+    progress: () => Effect.succeed(null),
     read: (payload) =>
       Effect.sync(() => {
         note("read", payload);
@@ -824,15 +825,17 @@ test("where work can start is every Machine's own answer, a section each, and a 
     }),
   ));
 
-test("a Machine whose host cannot answer a read is told to upgrade, and the rest still answer", () =>
+test("a Machine whose host cannot answer a read is told to upgrade, one that is slow that it timed out, and the rest still answer", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const asked: Asked[] = [];
       const old = machine("vm-mk", [], asked);
+      const slow = machine("vm-slow", [], asked);
       const flock = {
         machines: () => [
           machine("mk-pc", [], asked),
-          { ...old, door: { ...old.door, read: () => Effect.never } },
+          { ...old, door: { ...old.door, read: () => Effect.die("no read") } },
+          { ...slow, door: { ...slow.door, read: () => Effect.never } },
         ],
         conversation: "flock@mk-pc",
         said: () => undefined,
@@ -847,7 +850,11 @@ test("a Machine whose host cannot answer a read is told to upgrade, and the rest
       const reading = yield* callFlockTool(flock, "collie_workspaces", {}).pipe(Effect.forkChild);
       yield* TestClock.adjust("1 minute");
       const said = yield* Fiber.join(reading);
-      expect(said).toContain("upgrade Collie on vm-mk");
+      expect(said).toContain(
+        "## vm-mk\n\nvm-mk did not answer; its Collie may be older than Desktop's; upgrade Collie on vm-mk.",
+      );
+      expect(said).toContain("## vm-slow\n\nvm-slow did not answer within 10 s.");
+      expect(said).not.toContain("upgrade Collie on vm-slow");
       expect(said).toContain("collie_workspaces answered by mk-pc");
     }).pipe(Effect.provide([BunServices.layer, TestClock.layer()])),
   ));
@@ -1163,4 +1170,123 @@ test("a Flock chat move to a Machine it cannot reach is refused, and nothing is 
       expect(said).toContain("machine_unreachable");
       expect(asked.filter(({ op }) => op === "changeSchedule")).toEqual([]);
     }),
+  ));
+
+test("a deliver to a Machine whose board speaks an older protocol is refused before anything is sent", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const flock = {
+        ...flockOf(asked),
+        machines: () => [
+          machine("old-pc", [task({ id: "t-a", run: "r-1", runs: ["r-1"] })], asked, PROTOCOL - 1),
+          machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked),
+        ],
+      };
+      const deliver = (run: string) => ({
+        actions: [{ kind: "deliver", run, text: "look again" }],
+      });
+      expect(yield* callFlockTool(flock, "collie_do", deliver("r-1"))).toBe(
+        "deliver: failed — its Collie is older than Desktop's chat; upgrade Collie on old-pc. Nothing was done there.",
+      );
+      expect(asked).toEqual([]);
+      expect(yield* callFlockTool(flock, "collie_do", deliver("r-2"))).toBe("deliver: applied");
+      expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+        "vm-mk declare",
+        "vm-mk act",
+      ]);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+/** A Machine whose host has `runs` though its board lists none of them, or whose `progress` is `answer`. */
+const holding = (
+  name: string,
+  asked: Asked[],
+  runs: ReadonlyArray<string>,
+  answer?: ChatDoor["progress"],
+): Reached => {
+  const reached = machine(name, [], asked);
+  const progress: ChatDoor["progress"] =
+    answer ??
+    (({ runId }) =>
+      Effect.succeed(
+        runs.includes(runId) ? { ready: { ready: false, missing: [] }, ci: null, steps: [] } : null,
+      ));
+  return { ...reached, door: { ...reached.door, progress } };
+};
+
+const flockOn = (asked: Asked[], machines: ReadonlyArray<ChatMachine>) => ({
+  ...flockOf(asked),
+  machines: () => machines,
+});
+
+test("a bare id no board lists yet is read on the one Machine whose host has it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const flock = flockOn(asked, [
+        holding("mk-pc", asked, []),
+        holding("vm-mk", asked, ["r-new"]),
+      ]);
+      expect(yield* callFlockTool(flock, "collie_run", { run: "r-new" })).toBe(
+        "## vm-mk\n\ncollie_run answered by vm-mk",
+      );
+      expect(reads(asked)).toEqual([
+        { machine: "vm-mk", payload: { tool: "collie_run", input: { run: "r-new" } } },
+      ]);
+      const nowhere: Asked[] = [];
+      const none = flockOn(nowhere, [holding("mk-pc", nowhere, []), holding("vm-mk", nowhere, [])]);
+      expect(yield* callFlockTool(none, "collie_run", { run: "r-new" })).toBe(
+        'No Run "r-new" on any Machine. Nothing was done; collie_herd lists them as <machine>:<id>.',
+      );
+      expect(nowhere).toEqual([]);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+for (const [why, answer, said] of [
+  ["fails", () => Effect.die("no progress"), "upgrade Collie on mk-pc"],
+  ["does not answer", () => Effect.never, "mk-pc did not answer within 10 s"],
+] as const)
+  test(`a Machine whose host ${why} when asked about a bare id is unread, and nothing is done`, () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const asked: Asked[] = [];
+        const flock = flockOn(asked, [
+          holding("mk-pc", asked, [], answer),
+          holding("vm-mk", asked, ["r-new"]),
+        ]);
+        const reading = yield* callFlockTool(flock, "collie_run", { run: "r-new" }).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("1 minute");
+        const refused = yield* Fiber.join(reading);
+        expect(refused).toStartWith(
+          'Run "r-new" is on vm-mk, and mk-pc could not be checked for one too (',
+        );
+        expect(refused).toContain(said);
+        expect(refused).toContain("name it as vm-mk:r-new");
+        expect(asked).toEqual([]);
+      }).pipe(Effect.provide([BunServices.layer, TestClock.layer()])),
+    ));
+
+test("a hold and a run-scoped action on a bare id no board lists go to the Machine whose host has it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const flock = flockOn(asked, [
+        holding("mk-pc", asked, []),
+        holding("vm-mk", asked, ["r-new"]),
+      ]);
+      expect(yield* callFlockTool(flock, "collie_hold", { run: "r-new" })).toBe("Held r-new");
+      expect(
+        yield* callFlockTool(flock, "collie_do", { actions: [{ kind: "stop", run: "r-new" }] }),
+      ).toBe("stop: applied");
+      expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+        "vm-mk declare",
+        "vm-mk control",
+        "vm-mk declare",
+        "vm-mk act",
+      ]);
+      expect(asked[3]!.payload).toMatchObject({ actions: [{ kind: "stop", run: "r-new" }] });
+    }).pipe(Effect.provide(BunServices.layer)),
   ));

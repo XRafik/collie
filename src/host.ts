@@ -180,7 +180,7 @@ import {
   settle as settleNews,
 } from "./news";
 import { evaluationDeps } from "./evaluator";
-import { ActionSchema } from "./actions";
+import { ActionSchema, refusedAction } from "./actions";
 import { clearOverride, err, request, steer, type OpResult } from "./operations";
 import { REJECTED } from "./envelope";
 import {
@@ -1602,9 +1602,7 @@ const frontDoorHandlers = (
             const asker = askerEnv(client);
             const decoded = Schema.decodeUnknownOption(Schema.Array(ActionSchema))(actions);
             if (Option.isNone(decoded))
-              return outcomeOf(
-                err("invalid_input", "An action is not one of the kinds Collie takes."),
-              );
+              return outcomeOf(err("invalid_input", `${refusedAction(actions)}.`));
             if (herd !== null && !isHerdName(herd))
               return outcomeOf(err("invalid_input", `"${herd}" is not a Herd.`));
             const key = herd ?? (yield* askersHerd(client));
@@ -1651,10 +1649,7 @@ const frontDoorHandlers = (
           return plainly(
             Schema.decodeUnknownEffect(Schema.Array(ActionSchema))(actions).pipe(
               Effect.mapError(
-                () =>
-                  new HostRefused({
-                    reason: `${REFUSED_INPUT}: an action is not one of the kinds Collie takes`,
-                  }),
+                () => new HostRefused({ reason: `${REFUSED_INPUT}: ${refusedAction(actions)}` }),
               ),
               Effect.flatMap((decoded) => {
                 const proposed = decoded.filter((action) => !ACTED_KINDS.has(action.kind));

@@ -1721,7 +1721,9 @@ said to be unread rather than holding up the rest.
 
 The chat reads each Machine's board from the one the window draws: `collie_herd`, where a
 bare id is, the Herds a News look asks and whether a Machine's Collie can take a write all
-come from the board Desktop already follows, so no tool call has a host build one. Run
+come from the board Desktop already follows, so no tool call has a host build one. A bare
+Run id no board lists yet, such as one started a moment ago, is asked of each Machine's
+host, within ten seconds; one that does not answer counts as not checked. Run
 details, News and every write still go to the Machine's host. Every Machine the window
 shows is one the chat knows by name, and one with no live board is named with why: still
 connecting, and how long Desktop has waited for its first board; out of reach, waiting
@@ -1729,7 +1731,10 @@ for SSO, without Collie or needing a newer Desktop, in its connection's own word
 a board Desktop saved, and when. That reason is what `collie_herd`, `collie_workspaces` and
 `collie_news` say of it, and what a write to it is refused with ("… Nothing was done on
 vm-mk."); a bare id another Machine has is refused while that one cannot be checked. A
-Machine whose Collie is older than Desktop's chat is written to by nothing.
+Machine whose board speaks an older protocol than Desktop's is written to by nothing: the
+write is refused with "its Collie is older than Desktop's chat; upgrade Collie on
+<machine>. Nothing was done there." A read a host does not answer within ten seconds says
+so; one its host cannot take says its Collie may be older than Desktop's.
 
 The bell turns Desktop's own turns off (and on again); it is on by default, and kept in
 `settings.json` beside the session.
