@@ -32,7 +32,9 @@ import {
   criteriaIn,
   defineWorkflow,
   evidenceGapsOf,
+  failedNamingNoTests,
   findingKey,
+  flakesOf,
   formatFindings,
   identityProblem,
   isBlocking,
@@ -43,6 +45,7 @@ import {
   renderApproved,
   renderEvidence,
   renderProgress,
+  rerunsOwed,
   settleFinalFix,
   leaveOutstanding,
   findingsIn,
@@ -191,6 +194,7 @@ const failingNow = (evidence: CheckEvidence, names: ReadonlyArray<string>) =>
           (v) =>
             v.name === name &&
             v.by === "collie" &&
+            v.pass !== "rerun" &&
             v.end.head_sha === evidence.final.head_sha &&
             v.end.fingerprint === evidence.final.fingerprint,
         )
@@ -542,6 +546,7 @@ export default defineWorkflow({
       // checks that may come out differently. The host runs nothing that already passed on
       // this tree.
       let passes = 0;
+      let reruns = 0;
       let passed: ReadonlyArray<string> = [];
       let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
       const readGaps = Effect.fn("implement.readGaps")(function* (
@@ -576,8 +581,14 @@ export default defineWorkflow({
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
             const now = [...passed];
+            // A failure that named its tests had them run again alone instead.
+            const whole =
+              why.pass === "recheck"
+                ? failedNamingNoTests({ ...(yield* host.evidence(runId, cwd)), approved: checks })
+                : null;
             for (const spec of checks) {
               if (now.includes(spec.name)) continue;
+              if (whole !== null && !whole.includes(spec.name)) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
@@ -587,7 +598,30 @@ export default defineWorkflow({
         passed = pass.passed;
         return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps };
       });
-      let gaps = yield* gapsNow({ pass: "gate" });
+      // Each test a failed check named, run again alone once on the same tree: one that passes
+      // is a Flake, neither a gap nor a pass (ADR-0034, amended 2026-10-15).
+      const rerunFailed = Effect.fn("implement.rerunFailed")(function* (gaps: {
+        readonly gaps: ReadonlyArray<string>;
+        readonly fixable: ReadonlyArray<string>;
+      }) {
+        if (gaps.fixable.length === 0) return gaps;
+        reruns += 1;
+        return yield* Activity.make({
+          name: `rerun.${reruns}`,
+          success: Schema.Struct({
+            gaps: Schema.Array(Schema.String),
+            fixable: Schema.Array(Schema.String),
+          }),
+          execute: Effect.gen(function* () {
+            const checks = yield* host.approved(runId);
+            const owed = rerunsOwed({ ...(yield* host.evidence(runId, cwd)), approved: checks });
+            for (const { check, test } of owed)
+              yield* host.verify({ runId, name: check, cwd, pass: "rerun", test });
+            return yield* readGaps(checks, rallied.reviewed);
+          }).pipe(Effect.orDie),
+        });
+      });
+      let gaps = yield* rerunFailed(yield* gapsNow({ pass: "gate" }));
       if (gaps.fixable.length > 0) {
         // A baseline failure is context, never proof that this tree passes.
         baseline = yield* Activity.make({
@@ -608,8 +642,8 @@ export default defineWorkflow({
             return failed;
           }),
         });
-        // Once more before a fix: a check that fails and then passes on the same tree is a
-        // flake, and a Run that ends on one has proved nothing about the change.
+        // Once more before a fix, where a failure named no tests: a check that fails and then
+        // passes on the same tree is a flake, and a Run that ends on one has proved nothing.
         gaps = yield* gapsNow({ pass: "recheck" });
       }
       // A gate fix lands after the last review, so the merge request says it was not re-reviewed.
@@ -640,7 +674,7 @@ export default defineWorkflow({
           },
           output: FixOutputSchema,
         });
-        gaps = yield* gapsNow({ pass: "fix", round: at });
+        gaps = yield* rerunFailed(yield* gapsNow({ pass: "fix", round: at }));
         const settled = settleFinalFix(findings, fixed, yield* host.evidence(runId, cwd));
         unreviewed = [
           unreviewed,
@@ -666,22 +700,30 @@ export default defineWorkflow({
           const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
           const reading = Effect.suspend(() => readGaps(approved, reviewed));
-          const rely = Effect.forEach(
-            approved,
-            (spec) =>
-              Effect.gen(function* () {
-                const relied = yield* host.verify({
-                  runId,
-                  name: spec.name,
-                  cwd,
-                  pass: "recheck",
-                });
-                yield* host.record(
-                  runId,
-                  `proof: ${spec.name} relies on verification ${relied.id}`,
-                );
-              }),
-            { discard: true },
+          // A check whose every failure on this tree was a Flake is settled; running it again proves nothing.
+          const rely = Effect.gen(function* () {
+            const flaked = flakesOf({ ...(yield* host.evidence(runId, cwd)), approved });
+            return approved.filter((spec) => !flaked.some((one) => one.check === spec.name));
+          }).pipe(
+            Effect.flatMap((unsettled) =>
+              Effect.forEach(
+                unsettled,
+                (spec) =>
+                  Effect.gen(function* () {
+                    const relied = yield* host.verify({
+                      runId,
+                      name: spec.name,
+                      cwd,
+                      pass: "recheck",
+                    });
+                    yield* host.record(
+                      runId,
+                      `proof: ${spec.name} relies on verification ${relied.id}`,
+                    );
+                  }),
+                { discard: true },
+              ),
+            ),
           );
           yield* rely;
           let missing = yield* reading;
@@ -738,9 +780,14 @@ export default defineWorkflow({
         checks.map((spec) => spec.name),
       );
       const preexisting = baseline.filter((one) => failing.includes(one.name));
+      const flakes = flakesOf({ ...(yield* host.evidence(runId, cwd)), approved: checks });
       const unsettled = [
         ...assumed,
         ...rallied.unsettled,
+        ...flakes.map(
+          ({ check, name, file }) =>
+            `${check}: ${name} (${file}) failed, then passed when run again alone on the same tree — a Flake, so this Run has not settled it.`,
+        ),
         ...preexisting.map(
           ({ name, at }) =>
             `${name} also fails at ${at.slice(0, 12)}, where this branch leaves the default branch, so it failed before this Run's changes and still fails (by exit code only: a dependency this branch changed can make that comparison wrong)`,

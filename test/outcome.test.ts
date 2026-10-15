@@ -7,6 +7,7 @@ import {
   checkGaps,
   evidenceGaps,
   endsWithoutPatch,
+  flakesOf,
   isOutcome,
   KINDS,
   noCheckNamed,
@@ -559,4 +560,91 @@ test("a promised check is proved by a pass of its command under any name, and ne
     '01-a.md promised check "tests", which has no passing verification on this tree',
   ]);
   expect(gaps([agents(), reproduced])).toHaveLength(2);
+});
+
+const QUICK = { file: "test/one.test.ts", name: "the quick one" };
+const NESTED = { file: "test/two.test.ts", name: "outer > the nested one" };
+/** Collie's gate run of `tests`, failing on `failed`, and a rerun of each of `reran`. */
+const gateThenReruns = (
+  failed: ReadonlyArray<typeof QUICK>,
+  reran: ReadonlyArray<readonly [typeof QUICK, "pass" | "fail"]>,
+) => [
+  record({ name: "tests", pass: "gate", result: "fail", exit: 1, failed: [...failed] }),
+  ...reran.map(([test, result], at) =>
+    record({
+      name: "tests",
+      id: `rerun-${at}`,
+      pass: "rerun",
+      executable: "/usr/bin/bun",
+      argv: ["test", test.file, "-t", test.name],
+      test,
+      result,
+      exit: result === "pass" ? 0 : 1,
+      at: "2026-09-11T10:05:00.000Z",
+    }),
+  ),
+];
+
+test("a check whose failed tests all passed their rerun on this tree is not a gap, and each is a Flake", () => {
+  const got = collected({
+    verifications: gateThenReruns(
+      [QUICK, NESTED],
+      [
+        [QUICK, "pass"],
+        [NESTED, "pass"],
+      ],
+    ),
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([]);
+  expect(flakesOf(got)).toEqual([
+    { check: "tests", ...QUICK },
+    { check: "tests", ...NESTED },
+  ]);
+  // A ticket that promised the check is not owed a pass the Flake never was.
+  expect(
+    checkGaps("feature", { ...got, tickets: [{ file: "01-a.md", checks: ["tests"] }] }),
+  ).toEqual([]);
+});
+
+test("a check with a test still failing after its rerun is a gap naming that test", () => {
+  const got = collected({
+    verifications: gateThenReruns(
+      [QUICK, NESTED],
+      [
+        [QUICK, "pass"],
+        [NESTED, "fail"],
+      ],
+    ),
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([
+    "tests failed: outer > the nested one (test/two.test.ts)",
+  ]);
+  expect(flakesOf(got)).toEqual([]);
+  // A rerun on another tree says nothing about this one.
+  const moved = gateThenReruns([QUICK], [[QUICK, "pass"]]).map((one, at) =>
+    at === 0 ? one : { ...one, end: EARLIER },
+  );
+  expect(evidenceGaps("unspecified", collected({ verifications: moved }))).toEqual([
+    "tests failed: the quick one (test/one.test.ts)",
+  ]);
+});
+
+test("a passing rerun record never counts as the check's pass", () => {
+  const rerun = gateThenReruns([], [[QUICK, "pass"]]).slice(1);
+  const tests = { name: "tests", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  for (const commands of [undefined, [tests]]) {
+    expect(evidenceGaps("unspecified", collected({ verifications: rerun, commands }))).toEqual([
+      "tests was never run",
+    ]);
+    expect(
+      evidenceGaps(
+        "unspecified",
+        collected({
+          verifications: [record({ ...tests, result: "fail", exit: 1, argv: ["test"] }), ...rerun],
+          commands,
+        }),
+      ),
+    ).toEqual(["tests failed"]);
+  }
+  expect(renderEvidence({ verifications: rerun, final: FINAL })).toBe("(nothing was verified)");
 });

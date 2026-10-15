@@ -17,7 +17,7 @@
 
 import { Context, Effect, FileSystem, Layer, Path, Predicate, Schema } from "effect";
 import type { CheckEvidence } from "./output";
-import type { Verification } from "./verify";
+import type { FailedTest, Verification } from "./verify";
 import type { Issue, IssueRef } from "./forge/issues";
 export type { Issue, IssueRef } from "./forge/issues";
 import type { Report } from "./report";
@@ -124,7 +124,7 @@ export {
   riskLine,
 } from "./output";
 
-export type { Snapshot, Verification } from "./verify";
+export type { FailedTest, Snapshot, Verification } from "./verify";
 export type { VerifySpec } from "./verify-spec";
 
 /** This Run's checks as a human would type them, for a prompt to name what it faces. */
@@ -134,7 +134,15 @@ export { renderApproved } from "./verify-spec";
  * What kind of result a Run is for, and what the journal says it actually collected —
  * for a merge request to say what was proved rather than what an Output claimed.
  */
-export { isOutcome, renderEvidence, renderRecordedChecks, type Outcome } from "./outcome";
+export {
+  failedNamingNoTests,
+  flakesOf,
+  isOutcome,
+  renderEvidence,
+  renderRecordedChecks,
+  rerunsOwed,
+  type Outcome,
+} from "./outcome";
 
 /**
  * Which of the five kinds of work a work source is. A workflow that reads a plan
@@ -600,11 +608,17 @@ export interface HostApi {
     readonly at?: "default-base";
     /**
      * Why it is run, which every door shows while it runs (ADR-0042): `gate` on the branch,
-     * `recheck` on the same tree for a flake, or `fix` after gate fix `round`. Absent is a
-     * plain `check`.
+     * `rerun` of one failed `test` alone, `recheck` of the whole check on the same tree for a
+     * flake, or `fix` after gate fix `round`. Absent is a plain `check`.
      */
-    readonly pass?: "gate" | "recheck" | "fix";
+    readonly pass?: "gate" | "rerun" | "recheck" | "fix";
     readonly round?: number;
+    /**
+     * The failed test a `rerun` runs: `bun test <file> -t <its whole name>` in the check's
+     * directory, from the sources, recorded under the check's name. It passed only where
+     * exactly one test ran and passed.
+     */
+    readonly test?: FailedTest;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
    * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt

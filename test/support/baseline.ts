@@ -3540,6 +3540,157 @@ scenario(
   120_000,
 );
 
+/** bun's output for a run whose one failure is `the flaky one` in test/one.test.ts. */
+const FLAKY_OUTPUT = [
+  "test/one.test.ts:",
+  "(pass) the steady one [1.00ms]",
+  "(fail) the flaky one [2.00ms]",
+  "",
+  "1 tests failed:",
+  "(fail) the flaky one [2.00ms]",
+  "",
+  " 1 pass",
+  " 1 fail",
+].join("\n");
+
+/**
+ * `unit` counts its runs in `counter` and, while `fails` holds for run `$n`, prints
+ * `printed` and exits 1; a `bun` on PATH stands in for each rerun of one of its tests.
+ */
+const failingThen = (
+  runId: string,
+  options: { readonly fails: string; readonly printed: string; readonly rerun: string },
+) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* bin.add("bun", options.rerun);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(`${rig.root}/printed`, `${options.printed}\n`);
+    yield* approve(runId, ["unit"]);
+    yield* fs.writeFileString(
+      `${evidenceDir(dir, runId)}/approved.json`,
+      asApproved([
+        counting(
+          "unit",
+          `${rig.root}/unit-runs`,
+          `! { ${options.fails}; } || { cat ${rig.root}/printed >&2; exit 1; }`,
+        ),
+      ]),
+    );
+    return bin;
+  });
+
+const passesOf = (runId: string) =>
+  readVerifications(evidenceDir(dir, runId)).pipe(
+    Effect.map((records) =>
+      records.filter((one) => one.by === "collie").map((one) => one.pass ?? "check"),
+    ),
+  );
+
+const gateFixed = (runId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.exists(`${dir}/agents/${runId}/gate-fix-1.prompt.md`)),
+  );
+
+scenario(
+  "a check failing only on a test that passes alone reaches the merge request with that Flake, and no fix",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-flake";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: FLAKY_OUTPUT,
+          rerun: `printf ' 1 pass\\n 0 fail\\n' >&2`,
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "mr")).toContain(
+          "- unit: the flaky one (test/one.test.ts) failed, then passed when run again alone on the same tree — a Flake, so this Run has not settled it.",
+        );
+        expect(yield* gateFixed(runId)).toBe(false);
+        // Neither the recheck nor the proof runs the whole check again.
+        expect(yield* passesOf(runId)).toEqual(["gate", "rerun"]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a test that fails when run again alone goes to gate fix 1, whose finding names it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-flake-not";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        // Red at the gate, green at the base and after the fix.
+        const bin = yield* failingThen(runId, {
+          fails: "[ $n -eq 1 ]",
+          printed: FLAKY_OUTPUT,
+          rerun: `printf ' 0 pass\\n 1 fail\\n' >&2; exit 1`,
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-1")).toContain(
+          "unit failed: the flaky one (test/one.test.ts)",
+        );
+        expect(yield* passesOf(runId)).toEqual(["gate", "rerun", "baseline", "fix"]);
+        expect(yield* asked(runId, "mr")).not.toContain("a Flake");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a failed check that names no tests is run again whole, as before",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-flake-whole";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "[ $n -eq 1 ]",
+          printed: "something broke",
+          rerun: "exit 1",
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* gateFixed(runId)).toBe(false);
+        expect(yield* passesOf(runId)).toEqual(["gate", "baseline", "recheck"]);
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "after a restart the host runs again a check it collected before it started",
   () =>

@@ -1130,16 +1130,18 @@ What kind of result a run has to prove, and so what evidence closes it:
 The gate runs before the merge request, which is where the claim is made. Collie runs the
 run's own checks itself at the tree as it stands, reading them again at every pass, then
 says what is missing. A check
-that failed runs once more; gaps a check could still close go to the implementer for up to
-four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
+that failed and named its failing tests has each of them run once more alone (`rerun`); one
+that passes is a Flake, which is neither a gap nor a pass and is named in the merge request.
+A check that failed naming no tests runs once more whole (`recheck`). Gaps a check could
+still close go to the implementer for up to four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
 Repair the checks and resume the Run: a check whose latest record on the tree failed runs
 again, and so does one whose pass was collected in another environment or before this host
-started. Every pass — gate, recheck, fix, finish and the proof — runs a check only where
+started. Every pass but a `rerun`, which always runs — gate, recheck, fix, finish and the proof — runs a check only where
 nothing already answers for it: it relies on the latest record of exactly that check's
 command on the same tree, where it is a pass collected in the same environment by this
 host, whoever asked for it, and logs `<pass>: <check> relies on verification <id>`. So a
 check that passed on a tree, an agent's `collie verify` of it included, is not run again
-on that tree. A changed tree or set of checks also gets fresh proof while
+on that tree, and nor is one whose every failed test there was a Flake. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
@@ -1223,8 +1225,8 @@ collie --json run checks <run-id>
 
 Every check Collie ran for the Run, oldest first, and the one it is running now
 ([ADR-0042](adr/0042-a-check-collie-runs-is-seen-while-it-runs.md)). Each says its pass —
-`gate`, `baseline`, `recheck`, `fix` with its round, `finish`, or a plain `check` — so
-three runs of the same suite read as what each was for.
+`gate`, `rerun` of one failed test alone, `baseline`, `recheck`, `fix` with its round,
+`finish`, or a plain `check` — so three runs of the same suite read as what each was for.
 
 | Field     | What it says                                                                                                                                                                                                                                                                                                                                                         |
 | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

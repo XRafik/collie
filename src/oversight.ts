@@ -70,7 +70,7 @@ import { capabilitiesOf } from "./steering-caps";
 import { externalSubmissions } from "./compactors";
 import { controlDir } from "./compaction";
 import { nowIso } from "./time";
-import { fingerprint, readVerifications } from "./verify";
+import { fingerprint, isRerun, readVerifications } from "./verify";
 
 /** One Run as the host has placed it: where it works, and where its records are. */
 export interface Watched {
@@ -271,7 +271,8 @@ export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched
   }
   const verifications: Record<string, { exit: number; ref: string }> = {};
   const verified = yield* readVerifications(at.evidenceDir).pipe(Effect.orElseSucceed(() => []));
-  for (const one of verified) verifications[one.name] = { exit: one.exit, ref: one.id };
+  for (const one of verified)
+    if (!isRerun(one)) verifications[one.name] = { exit: one.exit, ref: one.id };
   const mr = parseMrUrl(at.mr ?? "");
   return {
     changedFiles: [...new Set(lines(`${committed}\n${dirty}\n${untracked}`))],

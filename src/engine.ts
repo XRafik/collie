@@ -174,6 +174,7 @@ import {
   VerifySpecSchema,
   type VerifySpec,
 } from "./verify-spec";
+import { rerunArgv } from "./bun-tests";
 import {
   commandOf,
   encodeVerifying,
@@ -182,6 +183,7 @@ import {
   ranCommand,
   readVerifications,
   reliedFor,
+  rerunTest,
   resolveExecutable,
   runApproved,
   VERIFYING_FILE,
@@ -274,6 +276,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly fingerprint: string;
   }
 
+  /** One test of a check, as its runner named it: the file, and the name with \` > \` between describes. */
+  export interface FailedTest {
+    readonly file: string;
+    readonly name: string;
+  }
+
   /** A command Collie watched, bound to the tree it ran on. Never an Output's claim. */
   export interface Verification {
     /** What a log line or a merge request names it by. */
@@ -292,6 +300,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly by: "agent" | "collie";
     /** What it ran with outside the tree; absent on a record from before environments were. */
     readonly environment?: string;
+    /** Why Collie ran it; absent on an agent's. A \`rerun\` is never its check's own run. */
+    readonly pass?: "gate" | "rerun" | "recheck" | "fix" | "baseline" | "finish" | "check";
+    /** The tests a failing check's output names, where it could be read whole. */
+    readonly failed?: ReadonlyArray<FailedTest>;
+    /** The one test a \`rerun\` ran. */
+    readonly test?: FailedTest;
   }
 
   /** What the journal holds and the tree in front of you, for checks to be read against. */
@@ -412,9 +426,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly expect?: "pass" | "fail";
       /** Run it where this checkout left the default branch, then put the checkout back. */
       readonly at?: "default-base";
-      /** Why it is run: the gate on the branch, a recheck for a flake, or a fix after gate fix \`round\`. */
-      readonly pass?: "gate" | "recheck" | "fix";
+      /** Why it is run: the gate on the branch, a rerun of one failed \`test\`, a recheck for a flake, or a fix after gate fix \`round\`. */
+      readonly pass?: "gate" | "rerun" | "recheck" | "fix";
       readonly round?: number;
+      readonly test?: FailedTest;
     }) => Effect.Effect<Verification, WorkflowError>;
     /**
      * Puts a file on the merge request a Run was pointed at, as one note Collie sends.
@@ -1432,6 +1447,17 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     options: Parameters<typeof evidenceGapsOf>[0],
   ): ReadonlyArray<string>;
 
+  /** A Run's checks read against its journal, for which tests failed and how each rerun went. */
+  type FailedChecks = CheckEvidence & { readonly approved: ReadonlyArray<VerifySpec> };
+  /** Each failed test of a check's latest run on this tree that has not been run again alone yet. */
+  export function rerunsOwed(
+    got: FailedChecks,
+  ): Array<{ readonly check: string; readonly test: FailedTest }>;
+  /** The checks whose latest run on this tree failed without naming its tests. */
+  export function failedNamingNoTests(got: FailedChecks): string[];
+  /** Each Flake on this tree, by the check it failed in: never a pass. */
+  export function flakesOf(got: FailedChecks): Array<FailedTest & { readonly check: string }>;
+
   /** Where the work to be done was described. */
   export interface WorkSource {
     readonly kind: "plan-dir" | "linear" | "text" | "review" | "followup" | "mr" | "branch" | "worktree";
@@ -2385,7 +2411,10 @@ export const hostLayer = (options: {
             const marker = `${runDir(dir, asked.runId)}/${VERIFYING_FILE}`;
             const away = `${runDir(dir, asked.runId)}/${AWAY_FILE}`;
             yield* restoreCheckout(asked.cwd, away);
-            if (asked.at === undefined && asked.expect !== "fail") {
+            const rerun = asked.pass === "rerun" ? asked.test : undefined;
+            if (asked.pass === "rerun" && rerun === undefined)
+              return yield* new WorkflowError({ reason: "a rerun names the one test it runs" });
+            if (asked.at === undefined && asked.expect !== "fail" && rerun === undefined) {
               const kept = yield* relyOn(asked.runId, { ...own, cwd: asked.cwd }, spec, recorded);
               if (kept !== null) return kept;
             }
@@ -2401,8 +2430,8 @@ export const hostLayer = (options: {
                     marker,
                     encodeVerifying({
                       name: spec.name,
-                      executable: spec.executable,
-                      argv: spec.argv,
+                      executable: rerun === undefined ? spec.executable : "bun",
+                      argv: rerun === undefined ? spec.argv : rerunArgv(rerun),
                       pass: recorded.pass,
                       round: recorded.round ?? null,
                       revision: head.code === 0 ? head.stdout.trim() : "",
@@ -2412,14 +2441,18 @@ export const hostLayer = (options: {
                     }),
                   )
                   .pipe(Effect.ignore);
-                return yield* runApproved(
-                  journal,
-                  { ...own, cwd: asked.cwd },
-                  approved,
-                  spec,
-                  asked.expect ?? "pass",
-                  recorded,
-                  log,
+                return yield* (
+                  rerun === undefined
+                    ? runApproved(
+                        journal,
+                        { ...own, cwd: asked.cwd },
+                        approved,
+                        spec,
+                        asked.expect ?? "pass",
+                        recorded,
+                        log,
+                      )
+                    : rerunTest(journal, { ...own, cwd: asked.cwd }, spec, rerun, log)
                 ).pipe(
                   Effect.tap((record) => noteVerification(journal, record)),
                   Effect.mapError((refused) => new WorkflowError({ reason: refused.why })),

@@ -23,6 +23,7 @@ import { listTasks, type TaskRecord } from "./task";
 import { ago, agoMs, agoShort, spanned, epochMs } from "./time";
 import {
   commandOf,
+  isRerun,
   ranCommand,
   passed,
   readVerifications,
@@ -577,11 +578,13 @@ export function checksAt(
   approved: ReadonlyArray<CheckCommand> = [],
 ): Checks {
   const checksOf = (record: Verification) =>
-    approved.length === 0
-      ? record.by === "collie"
-        ? [record.name]
-        : []
-      : approved.filter((spec) => ranCommand(record, spec)).map((spec) => spec.name);
+    isRerun(record)
+      ? []
+      : approved.length === 0
+        ? record.by === "collie"
+          ? [record.name]
+          : []
+        : approved.filter((spec) => ranCommand(record, spec)).map((spec) => spec.name);
   const counted = records.flatMap((record) => checksOf(record).map((name) => ({ name, record })));
   const at = head ?? counted.at(-1)?.record.end.head_sha ?? "";
   const newest = new Map<string, Verification>();

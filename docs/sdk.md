@@ -1043,8 +1043,9 @@ With `at: "default-base"` it runs at the merge-base of the checkout and its defa
 in that same checkout so what the build installed is there, and then puts the checkout back;
 a checkout with changes of its own, or no default branch to compare with, is refused.
 
-Say why a check runs with `pass`: `"gate"` on the branch, `"recheck"` on the same tree to
-rule out a flake, or `"fix"` with `round: N` after gate fix N. Every door shows it while
+Say why a check runs with `pass`: `"gate"` on the branch, `"rerun"` with one `test` it
+failed on, `"recheck"` of the whole check on the same tree to rule out a flake, or `"fix"`
+with `round: N` after gate fix N. Every door shows it while
 the check runs — the card says `Running test again on the same tree to rule out a flake,
 12 min of a usual 20.` — and the record keeps it after
 ([ADR-0042](adr/0042-a-check-collie-runs-is-seen-while-it-runs.md)). A check at
@@ -1054,6 +1055,19 @@ Collie never works a pass out from your workflow's id.
 
 ```ts
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
+```
+
+A check's failed record names its failing tests as `failed` where its output is bun test's
+and could be read whole: 20 or fewer, its fail count agreeing, and no error outside a test.
+A `rerun` runs `bun test <file> -t <its whole name>` in the check's directory, from the
+sources, and records it under the check's name. It passes only where exactly one test ran
+and passed, and it is never the check's own pass. `rerunsOwed` says which tests are still
+to be rerun, `failedNamingNoTests` which checks only a whole recheck can tell, and
+`flakesOf` which failures were Flakes (ADR-0034, amended 2026-10-15).
+
+```ts
+for (const { check, test } of rerunsOwed({ ...evidence, approved }))
+  yield * host.verify({ runId, name: check, cwd, pass: "rerun", test });
 ```
 
 A Check passes once per tree. The host answers with the latest record of exactly that

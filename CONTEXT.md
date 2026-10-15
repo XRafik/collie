@@ -533,12 +533,22 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 
 **Acceptance criterion** — One checkbox under a ticket's Acceptance criteria heading. The builder's Output answers each with how it is met (a test, a file) or `not met: <reason>`. One unanswered or not met goes back to the builder before any reviewer sees the work, and the reviewer is shown every answer.
 
-**Check pass** — One run of one of a Run's **Checks** by Collie, with why it runs: `gate` on the
-Run's branch, `baseline` where the branch left the default branch, `recheck` on the same
-tree to rule out a flake, `fix` after gate fix N, `finish` at the Run's end, or a plain
-`check`. The pass is the Workflow's declaration, never read off its id. While it runs, the
-card and chat say the check, the pass, how long it has run against how long it usually
-takes, and where its output is being written (ADR-0042).
+**Check pass** — One run of one of a Run's **Checks** by Collie, or the pass on this tree it
+relies on instead, with why it runs: `gate` on the
+Run's branch, `rerun` of only the tests that just failed, on the same tree, to tell a
+**Flake**, `baseline` where the branch left the default branch, `recheck` of a whole check
+whose failures name no tests, on the same tree, `fix` after gate fix N, `finish` at the
+Run's end, or a plain
+`check`. The pass is the Workflow's declaration, never read off its
+id. While it runs, the card and chat say the check, the pass, how long it has run against
+how long it usually takes, and where its output is being written (ADR-0042).
+
+**Flake** — A test of one of a Run's **Checks** that failed, then passed when Collie ran it
+again alone on the same tree. Collie reads which tests failed from the check's own output,
+for a runner whose output it knows (bun test first), and reruns only those, once. A flake is
+not a gap the gate fixes are handed, and never a pass: the merge request names it under
+**Not settled by the run**. A check whose failures name no tests has no flakes, only its
+whole `recheck` (ADR-0034, amended 2026-10-15).
 
 **Obstacle** — What is identifiably in a Run's way, in one sentence: a command failing several times in a row the same way. It is shown to the human and given to the next prompt so the approach can change. It stops nothing.
 
