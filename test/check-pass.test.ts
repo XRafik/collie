@@ -1,7 +1,3 @@
-// A Check passes once per tree: the host's check answers with a pass it already collected
-// for exactly that command on the tree in front of it, whoever asked for it, and runs the
-// command in every other case.
-
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
@@ -102,7 +98,6 @@ const gate = <A>(
     Effect.orDie,
   );
 
-/** That the gate ran the command itself, adding its own record. */
 const ranAgain = (got: { readonly ran: { readonly id: string; readonly by: string } }) =>
   Effect.gen(function* () {
     expect(got.ran.by).toBe("collie");
