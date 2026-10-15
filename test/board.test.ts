@@ -2328,3 +2328,21 @@ test("two checks with the same command are each passed by a record of that comma
     at: "abc",
   });
 });
+
+test("an expected failure of a check's command is not a pass, whether it failed or not", () => {
+  const unit = [{ name: "unit", executable: "/usr/bin/true", argv: [], cwd: "/project" }];
+  const expecting = (result: "pass" | "fail") => ({
+    ...checked("unit", "abc", result),
+    expect: "fail" as const,
+  });
+  expect(checksAt([expecting("fail")], "abc", unit)).toEqual({
+    state: "failed",
+    name: "unit",
+    at: "abc",
+  });
+  expect(checksAt([expecting("pass")], "abc", unit)).toEqual({
+    state: "failed",
+    name: "unit",
+    at: "abc",
+  });
+});

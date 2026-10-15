@@ -24,6 +24,7 @@ import { ago, agoMs, agoShort, spanned, epochMs } from "./time";
 import {
   commandOf,
   ranCommand,
+  passed,
   readVerifications,
   type CheckCommand,
   type Verification,
@@ -586,7 +587,7 @@ export function checksAt(
   const newest = new Map<string, Verification>();
   for (const { name, record } of counted)
     if (at !== "" && record.end.head_sha === at) newest.set(name, record);
-  const red = [...newest.entries()].find(([, record]) => record.result !== record.expect);
+  const red = [...newest.entries()].find(([, record]) => !passed(record));
   if (red !== undefined) return { state: "failed", name: red[0], at };
   const unrun =
     approved.length === 0 ? newest.size === 0 : approved.some((spec) => !newest.has(spec.name));
