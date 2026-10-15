@@ -2410,7 +2410,7 @@ const own = (dir: string) =>
       )
       .pipe(Effect.orDie);
     const installation = yield* installationOf(dir).pipe(Effect.orDie);
-    const installed = yield* installedRelease(env.pluginRoot, BUILD);
+    const installed = yield* installedRelease(env.pluginRoot, env.collieDir, BUILD);
     const development: Development = installed.release ? {} : { development: installed.build };
     // One reader of this Machine's usage, so every door and every choice of agent paces as one.
     const usage = yield* Usage;
@@ -2514,7 +2514,7 @@ export const connect = (
     let who = yield* ensureRunning(dir, hostEnv, build);
     // Only a newer copy of the same installation upgrades the host; a dev checkout is not one.
     const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
-    const ours = who.root === undefined || who.root === install;
+    const ours = who.root === undefined || sameInstallation(who.root, install);
     const replaced = ours && newer(build, who.build);
     if (replaced) {
       yield* stopOwner(dir, who.pid);
@@ -2783,8 +2783,18 @@ const olderSilentOwner = Effect.fn("Host.olderSilentOwner")(function* (dir: stri
     .pipe(Effect.flatMap(Schema.decodeUnknownEffect(HostRecord)), Effect.option);
   if (Option.isNone(recorded) || recorded.value.pid !== owner.pid) return null;
   const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
-  return recorded.value.root === install && newer(build, recorded.value.build) ? owner.pid : null;
+  return sameInstallation(recorded.value.root, install) && newer(build, recorded.value.build)
+    ? owner.pid
+    : null;
 });
+
+/**
+ * Whether a host serving `served` is this installation's: the same root, or the clone install
+ * whose release this client was placed inside.
+ * ponytail: the `/release` case goes once no host still serves a clone install.
+ */
+const sameInstallation = (served: string, install: string) =>
+  served === install || install === `${served}/release`;
 
 /**
  * A host answering at this directory, started here if there was none, and asked who it
@@ -2859,9 +2869,9 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const fs = yield* FileSystem.FileSystem;
   const command = yield* hostCommand;
-  // Which installation's workflows this host serves, decided by the client that needed
-  // it rather than guessed from wherever the host process happens to start.
-  const install = (yield* currentEnv.pipe(Effect.orDie)).pluginRoot;
+  // Which installation's and user's workflows this host serves, decided by the client that
+  // needed it rather than guessed from wherever the host process happens to start.
+  const { pluginRoot, userDir } = yield* currentEnv.pipe(Effect.orDie);
   return yield* Effect.gen(function* () {
     yield* fs.makeDirectory(named, { recursive: true });
     // The host starts in it, so a relative one would name somewhere else from there.
@@ -2884,7 +2894,12 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
           cwd: dir,
           // A client started by Desktop may carry its launcher's LD_PRELOAD.
           // oxlint-disable-next-line effecttsgo/process-env
-          env: withoutLauncher({ ...process.env, ...hostEnv, HERDR_PLUGIN_ROOT: install }),
+          env: withoutLauncher({
+            ...process.env,
+            ...hostEnv,
+            HERDR_PLUGIN_ROOT: pluginRoot,
+            COLLIE_USER_DIR: userDir,
+          }),
           extendEnv: false,
           detached: true,
           stdin: "ignore",

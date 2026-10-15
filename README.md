@@ -15,7 +15,7 @@ Run one command. It's safe to run again, and it ends by telling you whether you'
 what's still missing and how to fix it:
 
 ```sh
-git clone https://github.com/cego/collie.git ~/.collie && ~/.collie/setup.sh
+curl -fsSL https://github.com/cego/collie/releases/latest/download/setup.sh | sh
 ```
 
 Before you run it, you need:
@@ -24,8 +24,10 @@ Before you run it, you need:
 - **A `glab auth login` to `gitlab.cego.dk`**, so the workflows can open merge requests there.
 - **Claude Code**, logged in. The bundled workflows run their agents on it.
 
-Nothing from GitHub: the repository and its releases are public. `collie onboard` installs
-herdr, Claude Code and Collie at a release instead, one reported step at a time; see
+Nothing from GitHub: the repository and its releases are public, and the install needs no
+git. To work on Collie itself, clone cego/collie anywhere and run its `prepare.sh`; see
+[Running a checkout of Collie](docs/using.md#running-a-checkout-of-collie). `collie onboard`
+installs herdr, Claude Code and Collie at a release instead, one reported step at a time; see
 [Onboarding a Machine](docs/using.md#onboarding-a-machine).
 
 The install links the plugin, puts `collie` on your PATH, adds four keybindings, installs

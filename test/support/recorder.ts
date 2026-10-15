@@ -74,6 +74,8 @@ interface RigEnv {
   FAKE_HERDR_OUTPUTS: string;
 }
 
+export const UNREACHABLE_RELEASES = "http://127.0.0.1:9";
+
 export interface Call extends Schema.Schema.Type<typeof CallSchema> {}
 
 /**
@@ -610,6 +612,8 @@ export class Rig {
       // rig's one real socket, so a test that unsets the explicit path still reaches
       // it through discovery rather than through the env var it is testing the absence of.
       FAKE_HERDR_STATUS_SOCKET: this.socketPath,
+      // Refused at once: a test that wants releases serves its own.
+      COLLIE_RELEASES: UNREACHABLE_RELEASES,
       ...overrides,
     };
     if (this.gone.length > 0) environment.FAKE_HERDR_AGENTS_GONE = this.gone.join(",");

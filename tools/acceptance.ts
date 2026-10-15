@@ -1432,12 +1432,12 @@ const OPERATOR_CHECKS: readonly Check[] = [
   {
     id: "install/tui-installs-on-a-stock-mac",
     statement:
-      "On an arm64 Mac with no Homebrew OpenSSL, `git clone … ~/.collie && ~/.collie/setup.sh` installs a runner that starts and passes `codesign --verify`, and `collie onboard` reaches the Linear login.",
+      "On an arm64 Mac with no Homebrew OpenSSL, `curl -fsSL https://github.com/cego/collie/releases/latest/download/setup.sh | sh` installs a runner that starts and passes `codesign --verify`, and `collie onboard` reaches the Linear login.",
     owner: ON_A_MAC,
     needs: "operator",
     proof: {
       kind: "operator",
-      how: "On a Mac without Homebrew's OpenSSL, run `git clone https://github.com/cego/collie.git ~/.collie && ~/.collie/setup.sh` from a release carrying this work. Record that `~/.collie/bin/collie --version` runs and is not killed, that `codesign --verify ~/.collie/bin/collie` passes, and that `collie onboard --skip helle` reaches the Linear login and prints its URL. Record the revision.",
+      how: "On a Mac without Homebrew's OpenSSL, run `curl -fsSL https://github.com/cego/collie/releases/latest/download/setup.sh | sh` against a release carrying this work. Record that `~/.collie/release/bin/collie --version` runs and is not killed, that `codesign --verify ~/.collie/release/bin/collie` passes, and that `collie onboard --skip helle` reaches the Linear login and prints its URL. Record the revision.",
     },
   },
   {
@@ -1481,7 +1481,7 @@ const OPERATOR_CHECKS: readonly Check[] = [
     needs: "operator",
     proof: {
       kind: "operator",
-      how: "On a Mac still on herdr 0.7.1, with something running in a pane, run `~/.collie/setup.sh` and record that it finished, doctor's herdr line with the before-0.9.0 advice, and that the pane is still running. Run `herdr update` on its own and record whether 0.7.1's updater stopped the server by itself; if it did, doctor's wording is corrected. When nothing is running, run `herdr server stop`, then `herdr`, then `collie doctor`, and record that the herdr lines pass. Record the revision.",
+      how: "On a Mac still on herdr 0.7.1, with something running in a pane, run the install line again and record that it finished, doctor's herdr line with the before-0.9.0 advice, and that the pane is still running. Run `herdr update` on its own and record whether 0.7.1's updater stopped the server by itself; if it did, doctor's wording is corrected. When nothing is running, run `herdr server stop`, then `herdr`, then `collie doctor`, and record that the herdr lines pass. Record the revision.",
     },
   },
   {

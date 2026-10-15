@@ -64,6 +64,18 @@ host there reports an installation id. Not the plugin installation a host serves
 `identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
 Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
 
+**Installation** — What a Machine runs Collie from, which `identity` calls `root`. A
+**release** is placed in the Collie directory's `release/` by the runner that carries it,
+and an upgrade replaces it whole without git. A **development checkout** is a clone of
+Collie that a developer linked as the plugin, built from source. Only git upgrades it;
+Desktop and peers never do. A clone at the Collie directory itself is an install from before
+ADR-draft-an-installation-is-the-release-its-runner-carries, and its next upgrade migrates it to a release.
+
+**Collie directory** — `~/.collie`, or `COLLIE_DIR`: Collie's folder on a computer. Its
+`release/` is the **Installation**. Its `user/` is the human's: the user **Layer**,
+`config.json` and settings. No upgrade writes `user/`. Its `kept/` holds edits found in a
+release before an upgrade replaced it (ADR-draft-an-installation-is-the-release-its-runner-carries).
+
 **Flock** — Every Herd on every Machine paired with this one, or reached by **Desktop**.
 
 **Peer** — A Machine paired with this one, known by its installation id and named by
@@ -460,6 +472,11 @@ branch of its own and moves across the Renovate Bot branches it merges, pushing 
 an explicit refspec — so the operator's own checkout is never touched. A Renovate branch
 another registered Worktree holds is reported and left alone, never taken and never reached
 around with a detached remote-tracking ref.
+The one branch it does bind, for an application, is the batch branch the Renovate Bot
+branches are merged into: `deps/batch-<YYYY-MM-DD>`, or `collie/batch-<YYYY-MM-DD>` where
+the repository's `branchPrefix` covers `deps/`. It is Collie's, so it is never named under
+Renovate Bot's `branchPrefix` (`renovate/` by default): the Bot owns every branch there and
+marks a request from one it did not make as abandoned.
 
 **Renovate issue** — The one Linear issue a team renovates against: a checklist with one
 entry per repository, unchecked when that repository's Renovate Run starts and checked off

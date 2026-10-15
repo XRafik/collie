@@ -1809,3 +1809,32 @@ test(
     ),
   120_000,
 );
+
+test("a newer release is said in the board's header, with the command", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stale = yield* mount(appState({ board: board({ newer: "99.0.0" }) }), 200);
+      expect(stale.said()).toContain("Collie 99.0.0 is out — collie upgrade");
+
+      const current = yield* mount(appState(), 200);
+      expect(current.said()).not.toContain("is out");
+    }),
+  ));
+
+test("a newer release is said in full on a narrow pane, and hides none of the header's controls", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const width of [100, 70]) {
+        const header = (app: { frame: () => string }) =>
+          app.frame().split("\n").slice(0, 5).join("\n");
+        const current = header(yield* mount(appState(), width));
+        const stale = header(yield* mount(appState({ board: board({ newer: "99.0.0" }) }), width));
+        for (const control of ["⌕", "+ New run", "≡"]) {
+          expect(stale.includes(control)).toBe(current.includes(control));
+        }
+        expect(stale).toContain("⌕");
+        expect(stale).toContain("+ New run");
+        expect(stale).toContain("Collie 99.0.0 is out — collie upgrade");
+      }
+    }),
+  ));
