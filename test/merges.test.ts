@@ -459,6 +459,7 @@ const merging = Effect.fn("merges.merging")(function* (
   });
   const checked = new Map<string, number>();
   const states = new Map();
+  const panels = new Map();
   const round = Effect.fn("merges.settleRound")(function* (now: number) {
     yield* settleMerges({
       stateDir,
@@ -471,7 +472,7 @@ const merging = Effect.fn("merges.merging")(function* (
       now,
       checked,
       states,
-      panels: new Map(),
+      panels,
     });
   });
   /** The Runs as the host reads them once each stop it was handed took. */
@@ -548,6 +549,33 @@ test("a Run that follows the merge is not stopped when it leads the Task, howeve
       yield* join({ id: "r-follow-up", workflow: "implement", created: "2026-10-15T10:01:00Z" });
       yield* round(TEN + MERGE_POLL_MS);
       expect(stops.map(([run]) => run).sort()).toEqual(["r-plan", "r-plan.implement"]);
+    }),
+  ));
+
+test("the forge's merge time is the cutoff, not when a merge was recorded by hand", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { stateDir, stops, round } = yield* merging([
+        {
+          id: "r-follow-up",
+          workflow: "implement",
+          state: "running",
+          created: "2026-10-15T09:30:00Z",
+        },
+      ]);
+      yield* recordDisposition(runDir(stateDir, "r-plan.implement"), {
+        at: "2026-10-15T10:00:00Z",
+        by: "mk",
+        kind: "merged",
+        ref: "mk/collie!65",
+        note: null,
+      });
+      yield* round(TEN);
+      yield* round(TEN + 60_000);
+      expect([...new Set(stops.map(([run]) => run))].sort()).toEqual([
+        "r-plan",
+        "r-plan.implement",
+      ]);
     }),
   ));
 

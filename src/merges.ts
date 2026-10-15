@@ -139,7 +139,12 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     // Every round, not only when the forge is asked: a stop that did not take is asked again.
     const state = opts.states.get(label);
     if (state === undefined || state === "open" || state === "closed") continue;
-    const merged = yield* firstMerged(dirs, label);
+    const read = opts.panels.get(label)?.panel;
+    // ponytail: the forge's time lives as long as this host's panels; a new host asks again.
+    const merged =
+      read?._tag === "Details" && read.mergedAt !== undefined
+        ? epochMs(read.mergedAt)
+        : yield* firstMerged(dirs, label);
     if (merged === null) continue;
     for (const run of opts.runs)
       if (
