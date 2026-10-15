@@ -707,8 +707,9 @@ the newest is the Task's. A merge also settles its Task: whatever in it is still
 running, waiting, parked or asking, a plan waiting on its builder included — and began
 before the forge says it merged, is stopped by the host, with `<label> merged` as the
 reason in its trail, and the card reads `Merged as cego/collie#114.`, never "Stopped by
-you". A Run started after the merge, such as a follow-up on the same branch, is left
-alone. One that was closed without merging only changes its card's sentence: closing
+you". A stop that did not take is asked again on the next round. A Run started after
+the merge, such as a follow-up on the same branch, is left alone, and so is a child the
+stopped Run started in a Task of its own. One that was closed without merging only changes its card's sentence: closing
 can mean superseded as easily as abandoned, and only you know which. The same answer
 carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup — and the
 revision they ran at, which is the one Collie's own checks are counted at too: a failing
