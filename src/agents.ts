@@ -35,6 +35,8 @@ import * as Workflow from "effect/workflow/Workflow";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import {
   COMPACTION_WAIT_MS,
+  pollCompaction,
+  Unsubmitted,
   atBoundary,
   awaitReady,
   controlDir,
@@ -254,7 +256,11 @@ export interface AgentsApi {
   readonly retire: (launched: Launched, line: string) => Effect.Effect<void, AgentParked>;
   /** A line in the Run's log. */
   readonly say: (runId: string, line: string) => Effect.Effect<void>;
-  readonly launch: (ask: AgentAsk) => Effect.Effect<Launched, AgentUncertain | AgentParked>;
+  /** `note` shows, and then clears, why a launch is still waiting without parking. */
+  readonly launch: (
+    ask: AgentAsk,
+    note?: (why: string | null) => Effect.Effect<void>,
+  ) => Effect.Effect<Launched, AgentUncertain | AgentParked>;
   /**
    * Starts this work's agent again with its prompt where it is gone and its Output never
    * came, true where it did; `unless` is an unusable Output that counts as none.
@@ -664,7 +670,11 @@ export const agentWork = <
       Effect.gen(function* () {
         const instance = yield* WorkflowEngine.WorkflowInstance;
         if (yield* host.stopRequested(runId)) return yield* Workflow.suspend(instance);
-        const launched = yield* parkedWhenStuck(agents.launch(next), host, work.runId);
+        const launched = yield* parkedWhenStuck(
+          agents.launch(next, (why) => host.parked(work.runId, why)),
+          host,
+          work.runId,
+        );
         // A stop that landed while it started: that agent is stopped too, and the work waits.
         if (yield* host.stopRequested(runId)) {
           yield* haltLate;
@@ -1107,6 +1117,8 @@ export interface AgentHost {
   readonly collectMs?: number;
   /** How long a new agent's harness has to show it can take its first prompt. */
   readonly readyMs?: number;
+  /** How long a compaction may run before the Run shows it needs you; `COMPACTION_WAIT_MS` where left out. */
+  readonly compactionWaitMs?: number;
   /** How long a settled agent may show neither an unobserved prompt nor a turn from it. */
   readonly confirmGraceMs?: number;
   /** How long a steer or a correction waits to see its agent take it before saying it did not. */
@@ -1446,13 +1458,16 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
    * transaction so a steer still reaches it. A status herdr cannot give ends the wait.
    * `false` where the Run was stopped while it waited.
    */
+  const stoppedRun = (runId: string) =>
+    FileSystem.FileSystem.pipe(
+      // engine.ts's `controlPath(dir, STOP, runId)`, which this module cannot import.
+      Effect.flatMap((fs) => fs.exists(`${host.dir}/stop.${runId}`)),
+      Effect.orElseSucceed(() => false),
+    );
+
   const turnEnded = (launched: Launched) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      // engine.ts's `controlPath(dir, STOP, runId)`, which this module cannot import.
-      const stopped = fs
-        .exists(`${host.dir}/stop.${launched.runId}`)
-        .pipe(Effect.orElseSucceed(() => false));
+      const stopped = stoppedRun(launched.runId);
       let since: number | null = null;
       for (;;) {
         const status = yield* host.herdr
@@ -1476,22 +1491,50 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
       return true;
     });
 
-  /** A reused agent's work boundary: compacted past the limit, held while a compaction is unresolved. */
-  const boundary = (launched: Launched) =>
+  /**
+   * A reused agent's work boundary: compacted past the limit, held while a compaction is
+   * unresolved. Only the request takes the Dispatcher's transaction, so a steer is never
+   * refused behind a poll. Past its budget the wait goes on with `note` shown. Null where
+   * the Run was stopped.
+   */
+  const boundary = (launched: Launched, note: (why: string | null) => Effect.Effect<void>) =>
     Effect.gen(function* () {
       const found = yield* entryFor(launched, launched.agent, null);
       if (found.entry === null) return { dispatch: true as const };
-      return yield* dispatch.transaction(deps, found.entry, (channel) =>
-        atBoundary(
-          compactionDeps(host, launched.runId),
-          {
-            agent: launched.agent,
-            run: launched.runId,
-            step: launched.operation,
-          },
-          channel,
-        ),
+      const entry = found.entry;
+      const compaction = compactionDeps(host, launched.runId);
+      const due = yield* atBoundary(
+        compaction,
+        { agent: launched.agent, run: launched.runId, step: launched.operation },
+        (body) =>
+          Effect.gen(function* () {
+            let ran = false;
+            const done = yield* dispatch
+              .transaction(deps, entry, (channel) =>
+                Effect.sync(() => (ran = true)).pipe(Effect.andThen(Effect.result(body(channel)))),
+              )
+              .pipe(
+                // Refused before the request was submitted, so nothing left.
+                Effect.mapError((cause) =>
+                  ran ? new Error(reason(cause)) : new Unsubmitted({ message: reason(cause) }),
+                ),
+              );
+            return yield* Effect.fromResult(done);
+          }),
       );
+      if (due.dispatch || due.waiting !== true) return due;
+      yield* note(due.reason);
+      for (;;) {
+        if (yield* stoppedRun(launched.runId)) return null;
+        yield* Effect.sleep(compaction.pollMs);
+        const now = yield* pollCompaction(compaction, launched.agent).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (now !== null) {
+          yield* note(null);
+          return now;
+        }
+      }
     }).pipe(Effect.catch(() => Effect.succeed({ dispatch: true as const })));
 
   const checkedTrust = new Set<string>();
@@ -1723,6 +1766,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
   const launch = (
     ask: AgentAsk,
     fresh = false,
+    note: (why: string | null) => Effect.Effect<void> = () => Effect.void,
   ): Effect.Effect<Launched, AgentUncertain | AgentParked> =>
     under(
       Effect.gen(function* () {
@@ -1806,7 +1850,8 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         if (alive && !replayed) {
           // Stopped while it waited: nothing is sent, and the caller sees the stop.
           if (!(yield* turnEnded(launched))) return launched;
-          const due = yield* boundary(launched);
+          const due = yield* boundary(launched, note);
+          if (due === null) return launched;
           if (!due.dispatch) {
             return yield* new AgentParked({
               operation: ask.operation,
@@ -2407,7 +2452,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           return running;
         }),
       ),
-    launch,
+    launch: (ask, note) => launch(ask, false, note),
     revive,
     ranOut,
     retire,
@@ -2514,7 +2559,7 @@ const compactionDeps = (host: AgentHost, runId: string): CompactionDeps => ({
     Effect.flatMap(nowIso(), (now) =>
       noteContext(`${host.dir}/evidence/${at.run}`, now, at.agent, tokens),
     ),
-  waitMs: COMPACTION_WAIT_MS,
+  waitMs: host.compactionWaitMs ?? COMPACTION_WAIT_MS,
   pollMs: host.pollMs ?? DEFAULT_POLL_MS,
   stopMs: host.stopMs ?? STOP_WAIT_MS,
 });

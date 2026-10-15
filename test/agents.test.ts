@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { ConfigProvider, Duration, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { ConfigProvider, Duration, Effect, Fiber, FileSystem, Layer, Path, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
@@ -30,6 +30,7 @@ import { Children, Host, Run, jsonSchemaFor, withAgents } from "../src/sdk";
 import { asRun, enveloped } from "./support/enveloped";
 import {
   PARKED,
+  STOP,
   controlPath,
   evidenceDir,
   foundationLayer,
@@ -53,7 +54,13 @@ import { taskFor } from "../src/operations";
 import { lineageAgent, readRegistry, registerAgent, registryPath, scopeFor } from "../src/registry";
 import { HerdrError } from "../src/herdr";
 import { agentName, shellQuote } from "../src/naming";
-import { controlDir, withControlLock, type CompactionPorts } from "../src/compaction";
+import {
+  controlDir,
+  withControlLock,
+  type AgentContext,
+  type CompactionOutcome,
+  type CompactionPorts,
+} from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
 import { FALLBACK_DEFAULTS } from "../src/settings";
@@ -2688,6 +2695,221 @@ test("by default a reused agent past 150,000 tokens compacts between tickets", (
 
 test("by default a reused agent under 150,000 tokens is not compacted", () =>
   runEffect(compactionsAtDefault(140_000).pipe(Effect.map((asked) => expect(asked).toBe(0)))));
+
+/**
+ * A compaction that has not finished until the test says how it ended. Each poll also tries
+ * to send through the channel it was given, and keeps what that channel answered.
+ */
+interface SlowCompaction {
+  ended: CompactionOutcome | null;
+  readonly asked: string[];
+  readonly pollSent: boolean[];
+}
+
+const slowCompaction = () => {
+  const state: SlowCompaction = { ended: null, asked: [], pollSent: [] };
+  const full = fullContext(state.asked).claude!;
+  const submit = (ctx: AgentContext, id: string, text: string, requestId: string) =>
+    ctx.channel.submit(text, {
+      run: ctx.run,
+      cause: { kind: "compaction", ref: id },
+      mode: "boundary",
+      intentVersion: 0,
+      attempt: 1,
+      requestId,
+    });
+  const ports: CompactionPorts = {
+    claude: {
+      ...full,
+      request: (ctx, id) =>
+        submit(ctx, id, "/compact", id).pipe(Effect.andThen(full.request(ctx, id))),
+      poll: (ctx, id) =>
+        submit(ctx, id, "from a poll", `${id}-poll`).pipe(
+          Effect.map((outcome) => {
+            state.pollSent.push(outcome.ok);
+            return state.ended;
+          }),
+        ),
+    },
+  };
+  return { state, ports };
+};
+
+const until = (reached: Reached) =>
+  Effect.gen(function* () {
+    for (let tries = 0; !(yield* reached); tries++) {
+      if (tries === 3_000) return yield* Effect.die(new Error("never got that far"));
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+    }
+  });
+
+const parkedSays = (about: string): Reached =>
+  read(controlPath(dir, PARKED, "r1")).pipe(Effect.map((why) => why.includes(about)));
+
+const listingSuspended: Reached = Effect.gen(function* () {
+  const engine = yield* WorkflowEngine.WorkflowEngine;
+  const id = yield* listing.executionId({ runId: "r1", input: ITEMS });
+  return pollStatus(yield* engine.poll(listing, id), "agent-listing").status === "suspended";
+});
+
+/**
+ * The two-item list, its boundary's compaction still running past a shortened wait while
+ * `during` runs. The list's result, or null where `stops` and it suspended instead.
+ */
+const pastTheWait = <A, E>(
+  ports: CompactionPorts,
+  during: Effect.Effect<A, E, Agents | FileSystem.FileSystem | WorkflowEngine.WorkflowEngine>,
+  stops = false,
+) =>
+  Effect.gen(function* () {
+    yield* rig.queueOutputs([
+      { verdict: "clean", note: "first" },
+      { verdict: "clean", note: "second" },
+    ]);
+    const fiber = yield* Effect.forkChild(
+      listing.execute({ runId: "r1", input: ITEMS }).pipe(Effect.result),
+    );
+    const what = yield* during;
+    if (stops) {
+      yield* until(listingSuspended);
+      return { what, result: null };
+    }
+    return { what, result: yield* Fiber.join(fiber) };
+  }).pipe(
+    Effect.provide(listingBody),
+    Effect.provide(
+      agentsLayer({ ...hostOf(), compactAtTokens: 1000, ports, compactionWaitMs: 60_000 }),
+    ),
+    Effect.provide(foundationLayer({ dir })),
+    Effect.scoped,
+    Effect.orDie,
+  );
+
+const NOT_FINISHED = "has not finished after 1 minutes; Collie keeps waiting and sends 02-ui";
+
+test(
+  "a compaction past its wait keeps the Run waiting, says so, and sends the work once it completes",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        const { result } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            expect(yield* parkedSays("Check its pane")).toBe(true);
+            expect(sent(yield* rig.calls(), "02-ui")).toBe(0);
+            state.ended = { kind: "success" };
+          }),
+        );
+        expect(result?._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toBe("");
+        expect(yield* read(`${dir}/agents/r1/agents.log`)).toMatch(
+          /native compaction \S+ completed/,
+        );
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a compaction that fails past its wait clears the note and sends the work with the warning",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        const { result } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            state.ended = { kind: "failure", reason: "the window is full" };
+          }),
+        );
+        expect(result?._tag).toBe("Success");
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toBe("");
+        expect(yield* read(`${dir}/agents/r1/agents.log`)).toContain(
+          "native compaction failed (the window is full) — sending the work anyway",
+        );
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a steer reaches the agent before and after a compaction's wait while it is unresolved",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        const { what } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(Effect.sync(() => state.asked.length === 1));
+            const before = yield* say("r1", "mind the schema", "steer-1");
+            const early = yield* parkedSays(NOT_FINISHED);
+            yield* until(parkedSays(NOT_FINISHED));
+            const after = yield* say("r1", "mind the migration", "steer-2");
+            const unresolved = state.ended === null;
+            state.ended = { kind: "success" };
+            return { before, early, after, unresolved };
+          }),
+        );
+        expect(what.early).toBe(false);
+        expect(what.unresolved).toBe(true);
+        expect([what.before.delivered, what.after.delivered]).toEqual([true, true]);
+        expect(sent(yield* rig.calls(), "mind the schema")).toBe(1);
+        expect(sent(yield* rig.calls(), "mind the migration")).toBe(1);
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a compaction's polls are given a channel that sends nothing, and only its request is sent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            state.ended = { kind: "success" };
+          }),
+        );
+        expect(state.pollSent.length).toBeGreaterThan(1);
+        expect(state.pollSent.every((ok) => !ok)).toBe(true);
+        const compactions = (yield* deliveriesOf(rig.pluginEnv().stateDir, "r1")).filter(
+          ({ delivery }) => delivery.cause.kind === "compaction",
+        );
+        expect(compactions).toHaveLength(1);
+        expect(sent(yield* rig.calls(), "from a poll")).toBe(0);
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a stop while a compaction is past its wait ends the wait and types nothing",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { ports } = slowCompaction();
+        const fs = yield* FileSystem.FileSystem;
+        const { result } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            yield* fs.writeFileString(controlPath(dir, STOP, "r1"), "").pipe(Effect.orDie);
+          }),
+          true,
+        );
+        expect(result).toBe(null);
+        expect(sent(yield* rig.calls(), "02-ui")).toBe(0);
+      }),
+    ),
+  60_000,
+);
 
 test("a boundary whose context cannot be sampled records no context line, never a zero", () =>
   runEffect(
