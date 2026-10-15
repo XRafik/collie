@@ -10,9 +10,11 @@
 // A suite that was killed left its files' roots, and maybe processes carrying their marker:
 // those whose pid is dead are removed before this one starts.
 //
-// One suite runs at a time on a machine; the next waits for its turn. Several Runs each
+// One whole suite runs at a time on a machine; the next waits for its turn. Several Runs each
 // running the whole suite at once loaded vm-mk past 50 on 16 cores, and every one of them
-// took longer than it would have in a queue.
+// took longer than it would have in a queue. A targeted run — one naming an existing path, or
+// `--changed` — takes no turn: it needs few cores, builds into a directory of its own that it
+// removes, and reads the shared timings without updating them (`tools/test-run.ts`).
 //
 // One worker per available core. Load averages include this suite's previous run and IO
 // waits, so subtracting them makes a repeat needlessly slower even after the CPU is free.
@@ -23,14 +25,11 @@ import { resolve } from "node:path";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import solidPlugin from "@opentui/solid/bun-plugin";
 import { Effect } from "effect";
-import { inTurn } from "./suite-lock";
+import { binDirectory, isTargeted, timingFlags, turnFor } from "./test-run";
 import { sweepDeadRoots } from "../test/support/sweep";
 import { LIVE_HARNESSES } from "../test/support/live-switch";
 
-const out = resolve(".scratch/test-bin");
-const collie = `${out}/collie`;
-const herdr = `${out}/fake-herdr`;
-const forge = `${out}/fake-forge`;
+const args = Bun.argv.slice(2);
 
 /** This environment, less the switch for live-harness tests, which only `test:live` sets. */
 const suiteEnv = () => {
@@ -38,7 +37,10 @@ const suiteEnv = () => {
   return rest;
 };
 
-const suite = Effect.promise(async () => {
+const run = (targeted: boolean, out: string, flags: ReadonlyArray<string>) => async () => {
+  const collie = `${out}/collie`;
+  const herdr = `${out}/fake-herdr`;
+  const forge = `${out}/fake-forge`;
   const started = performance.now();
   sweepDeadRoots(tmpdir());
   const built = await Promise.all([
@@ -68,21 +70,10 @@ const suite = Effect.promise(async () => {
   }
   // A fresh checkout must start its longest files first too. These are durations, never
   // results: Bun still discovers every test, and replaces the estimates after this run.
-  const timings = ".scratch/test-timings.json";
-  if (!(await Bun.file(timings).exists())) {
-    await Bun.write(timings, Bun.file(new URL("./test-timings.json", import.meta.url)));
-  }
+  if (!targeted && !(await Bun.file(timings).exists())) await Bun.write(timings, Bun.file(seed));
   const workers = availableParallelism();
   const exit = await Bun.spawn(
-    [
-      "bun",
-      "test",
-      `--parallel=${workers}`,
-      "--timeout=30000",
-      `--timings=${timings}`,
-      "--update-timings",
-      ...Bun.argv.slice(2),
-    ],
+    ["bun", "test", `--parallel=${workers}`, "--timeout=30000", ...flags, ...args],
     {
       env: {
         ...suiteEnv(),
@@ -95,13 +86,26 @@ const suite = Effect.promise(async () => {
   ).exited;
   console.error(`test: ${((performance.now() - started) / 1_000).toFixed(2)} s including builds`);
   return exit;
-});
+};
+
+const timings = ".scratch/test-timings.json";
+const seed = resolve(import.meta.dir, "test-timings.json");
+
+const suite = (targeted: boolean) =>
+  Effect.gen(function* () {
+    const out = yield* binDirectory(targeted);
+    const flags = yield* timingFlags(targeted, timings, seed);
+    return yield* Effect.promise(run(targeted, out, flags));
+  }).pipe(Effect.scoped);
 
 // Per user, so one user's suite never waits on a lock it cannot break.
 const lock = `${tmpdir()}/collie-test-suite-${process.getuid?.() ?? "user"}.lock`;
 
 BunRuntime.runMain(
-  inTurn(lock, suite, (line) => Effect.sync(() => console.error(line))).pipe(
+  isTargeted(args).pipe(
+    Effect.flatMap((targeted) =>
+      turnFor(targeted, lock, suite(targeted), (line) => Effect.sync(() => console.error(line))),
+    ),
     Effect.flatMap((code) => Effect.sync(() => process.exit(code))),
     Effect.provide(BunServices.layer),
   ),

@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { processStartTime } from "../src/lock";
 import { inTurn } from "../tools/suite-lock";
+import { binDirectory, isTargeted, timingFlags, turnFor } from "../tools/test-run";
 import { runEffect } from "./support/effect";
 
 /** A claim as `src/lock.ts` writes one. */
@@ -59,5 +60,84 @@ test("a held lock names its holder once, then the wait as it grows, and falls qu
       expect(waited.length).toBeGreaterThanOrEqual(2);
       for (const line of waited) expect(line).toMatch(STILL);
       expect(said).toHaveLength(atStart);
+    }).pipe(Effect.scoped),
+  ));
+
+const heldLock = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "suite-lock-" });
+  const lock = `${dir}/suite.lock`;
+  const holder = Bun.spawn(["sleep", "30"]);
+  yield* Effect.addFinalizer(() => Effect.sync(() => holder.kill()));
+  const start = yield* processStartTime(holder.pid);
+  yield* fs.writeFileString(lock, `${asClaim({ pid: holder.pid, start })}\n`);
+  return { lock, holder };
+});
+
+test("a run naming an existing path or --changed is targeted, anything else is the whole suite", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const targeted = (...args: string[]) => isTargeted(args);
+      expect(yield* targeted("test/suite-lock.test.ts")).toBe(true);
+      expect(yield* targeted("test/support")).toBe(true);
+      expect(yield* targeted("--changed")).toBe(true);
+      expect(yield* targeted("--changed=origin/master")).toBe(true);
+      expect(yield* targeted()).toBe(false);
+      expect(yield* targeted("-t", "foo")).toBe(false);
+      expect(yield* targeted("-t", "test")).toBe(false);
+      expect(yield* targeted("lock")).toBe(false);
+    }),
+  ));
+
+test("a targeted run goes ahead at once while a suite holds the lock, and a whole one waits for it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { lock, holder } = yield* heldLock;
+      const said: string[] = [];
+      const say = (line: string) =>
+        Effect.sync(() => void said.push(line)).pipe(Effect.andThen(fs.remove(lock)), Effect.orDie);
+
+      expect(yield* turnFor(true, lock, Effect.succeed("now"), say)).toBe("now");
+      expect(said).toEqual([]);
+
+      expect(yield* turnFor(false, lock, Effect.succeed("later"), say, "100 millis")).toBe("later");
+      expect(said[0]).toContain(`process ${holder.pid}`);
+    }).pipe(Effect.scoped),
+  ));
+
+test("a targeted run builds into a directory of its own and removes it, and a whole one into the checkout's", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const shared = (yield* Path.Path).resolve(".scratch/test-bin");
+      expect(yield* binDirectory(false)).toBe(shared);
+
+      const own = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const dir = yield* binDirectory(true);
+          expect(dir).not.toBe(shared);
+          expect(yield* fs.exists(dir)).toBe(true);
+          return dir;
+        }),
+      );
+      expect(yield* fs.exists(own)).toBe(false);
+    }).pipe(Effect.scoped),
+  ));
+
+test("a targeted run reads the timings and never updates them", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "suite-timings-" });
+      const timings = `${dir}/test-timings.json`;
+      const seed = "tools/test-timings.json";
+      expect(yield* timingFlags(false, timings, seed)).toEqual([
+        `--timings=${timings}`,
+        "--update-timings",
+      ]);
+      expect(yield* timingFlags(true, timings, seed)).toEqual([`--timings=${seed}`]);
+      yield* fs.writeFileString(timings, "{}");
+      expect(yield* timingFlags(true, timings, seed)).toEqual([`--timings=${timings}`]);
     }).pipe(Effect.scoped),
   ));
