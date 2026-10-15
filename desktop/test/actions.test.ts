@@ -23,7 +23,7 @@ test("a successful toast retry clears the original sent drafts and preserves lat
           calls.push(payload);
           return Promise.resolve(
             calls.length === 1
-              ? Exit.fail(new ActionFailed({ reason: "connection lost", request: "same-request" }))
+              ? Exit.fail(new ActionFailed({ reason: "connection lost", request: payload.request }))
               : Exit.succeed("Delivered"),
           );
         },
@@ -46,6 +46,30 @@ test("a successful toast retry clears the original sent drafts and preserves lat
       drafts = [...editDraft(drafts, "b", "edited meanwhile"), { ...sent[0]!, id: "c" }];
       expect(yield* Effect.promise(() => notices[0]!.actions![0]!.onClick())).toBe(true);
       expect(drafts.map((draft) => draft.id)).toEqual(["b", "c"]);
-      expect(calls[1]).toEqual({ installation: "local", action, request: "same-request" });
+      expect(calls[1]).toEqual({ installation: "local", action, request: calls[0]!.request });
+    }),
+  ));
+
+test("a failure on the view's own channel offers Try again under the request the first call carried", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const requests: Array<string | undefined> = [];
+      const notices: ActionNotice[] = [];
+      const run = actionRunner(
+        ({ payload }) => {
+          requests.push(payload.request);
+          return Promise.resolve(
+            requests.length === 1
+              ? Exit.die(new Error("the view's channel closed"))
+              : Exit.succeed("Held r"),
+          );
+        },
+        (notice) => notices.push(notice),
+      );
+      const action: DesktopAction = { _tag: "Control", runId: "r", control: "hold", set: true };
+      expect(yield* Effect.promise(() => run("local", action))).toBe(false);
+      expect(yield* Effect.promise(() => notices[0]!.actions![0]!.onClick())).toBe(true);
+      expect(requests[0]).toBeString();
+      expect(requests[1]).toBe(requests[0]);
     }),
   ));

@@ -19,6 +19,7 @@ import {
 import type { ChatBoard, DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import { changeSettings } from "../desktop/src/bun/settings";
+import { fastForward } from "./support/effect";
 import { task } from "./support/task";
 
 interface Asked {
@@ -1288,5 +1289,40 @@ test("a hold and a run-scoped action on a bare id no board lists go to the Machi
         "vm-mk act",
       ]);
       expect(asked[3]!.payload).toMatchObject({ actions: [{ kind: "stop", run: "r-new" }] });
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("an answer its Machine never confirms is said as not confirmed, and nothing after it is sent", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const silent = machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked);
+      const flock = flockOn(asked, [
+        {
+          ...silent,
+          door: {
+            ...silent.door,
+            act: (payload) =>
+              Effect.sync(() => asked.push({ machine: "vm-mk", op: "act", payload })).pipe(
+                Effect.andThen(Effect.never),
+              ),
+          },
+        },
+      ]);
+      const said = yield* fastForward(
+        callFlockTool(flock, "collie_do", {
+          actions: [
+            { kind: "answer", run: "r-2", choiceId: "next-1", answer: "yes" },
+            { kind: "stop", run: "r-2" },
+          ],
+        }),
+        1_000,
+      );
+      expect(said).toBe(
+        "answer: not confirmed — vm-mk did not confirm the answer to r-2 within 30 s, 3 times. It may still land; Try again sends the same request, which vm-mk takes at most once.",
+      );
+      const acts = asked.filter(({ op }) => op === "act");
+      expect(acts).toHaveLength(3);
+      expect(new Set(acts.map(({ payload }) => JSON.stringify(payload))).size).toBe(1);
     }).pipe(Effect.provide(BunServices.layer)),
   ));

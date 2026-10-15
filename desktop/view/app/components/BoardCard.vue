@@ -7,11 +7,13 @@ import {
   openMrLabel,
   type Proposal,
   primaryAction,
+  type Question,
   type TaskView,
 } from "../../../../src/board-model";
 import { DateTime } from "effect";
 import type { DesktopAction } from "../../../src/shared/flock";
 import type { Gesture } from "../../../src/shared/board-clicks";
+import { answerShown, type PendingAnswer } from "../../../src/shared/pending-answer";
 
 const props = defineProps<{
   task: TaskView;
@@ -27,7 +29,25 @@ const toast = useToast();
 const gesture = inject<(done: Gesture, tab?: string) => void>("gesture")!;
 // A dialog opened before its Machine dropped is outside the card's disabled controls.
 const act = (action: DesktopAction) =>
-  props.asOf === null ? run(props.installation, action) : Promise.resolve(false);
+  run(props.installation, action, undefined, undefined, () =>
+    props.asOf === null ? undefined : `its board is a saved one, ${asOfLabel.value}`,
+  );
+
+const pending = ref<PendingAnswer | null>(null);
+const answerSaid = computed(() => answerShown(pending.value, props.task.decision));
+const answer = (question: Question, value: string, shown: string) => {
+  const sending: PendingAnswer = {
+    runId: question.run,
+    decision: question.id,
+    shown,
+    machine: props.machine,
+    confirmed: false,
+  };
+  pending.value = sending;
+  return act({ _tag: "Answer", runId: question.run, decision: question.id, value }).then((done) => {
+    if (pending.value === sending) pending.value = done ? { ...sending, confirmed: true } : null;
+  });
+};
 
 const asOfLabel = computed(() => {
   if (props.asOf === null) return null;
@@ -211,35 +231,23 @@ const menu = computed(() =>
         data-testid="question"
       >
         <p class="text-sm font-medium">{{ task.decision.text }}</p>
-        <div v-if="task.decision.options.length > 0" class="flex flex-wrap gap-2">
+        <p v-if="answerSaid !== null" class="text-sm text-muted" data-testid="pending-answer">
+          {{ answerSaid }}
+        </p>
+        <div v-else-if="task.decision.options.length > 0" class="flex flex-wrap gap-2">
           <UButton
             v-for="option in task.decision.options"
             :key="option.id"
             :data-testid="`option-${option.id}`"
             size="sm"
             :label="option.title"
-            @click="
-              act({
-                _tag: 'Answer',
-                runId: task.decision.run,
-                decision: task.decision.id,
-                value: option.id,
-              })
-            "
+            @click="answer(task.decision, option.id, option.title)"
           />
         </div>
         <form
           v-else
           class="flex gap-2"
-          @submit.prevent="
-            typed.trim() !== '' &&
-            act({
-              _tag: 'Answer',
-              runId: task.decision.run,
-              decision: task.decision.id,
-              value: typed.trim(),
-            })
-          "
+          @submit.prevent="typed.trim() !== '' && answer(task.decision, typed.trim(), typed.trim())"
         >
           <UInput v-model="typed" class="flex-1" size="sm" data-testid="answer" />
           <UButton type="submit" size="sm" label="Send" data-testid="send-answer" />

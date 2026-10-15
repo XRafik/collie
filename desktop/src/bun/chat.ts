@@ -54,6 +54,7 @@ import {
   newsKey,
   worthSpeaking,
 } from "./flock-tools";
+import { actionsLog } from "./sent";
 
 /** The current conversation and the harness it is held on; a file without one is claude's. */
 const SessionFile = Schema.fromJsonString(
@@ -261,6 +262,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   const flock: FlockChat = {
     machines: opts.machines,
     conversation: opts.conversation,
+    actionsLog: yield* actionsLog(opts.dir),
     said: () => said,
     attachments: () => carried,
     uploaded: new Map(),
