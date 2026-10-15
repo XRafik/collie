@@ -35,7 +35,7 @@ import type { Staged } from "../shared/attachments";
 import { type ChatBoard, unreadBecause } from "../shared/flock";
 import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { carriedPaths } from "./carried";
-import { type ActionsLog, confirmed, reasonOf, unlogged } from "./sent";
+import { type ActionsLog, confirmed, reasonOf, unlogged, withheldOf } from "./sent";
 import type { Door } from "./machine";
 
 /** What the Flock chat asks of a Machine's host, over the channel the bridge declared `chat`. */
@@ -402,27 +402,39 @@ export const newRequest = Effect.flatMap(Crypto.Crypto, (crypto) => crypto.rando
 
 export { reasonOf };
 
-/** A chat write to `machine` under `request`, confirmed and logged as `confirmed` does. */
+/**
+ * A chat write to `machine` under `request`: refused before sending where it is not
+ * `writable`, else declared and `call`ed, confirmed and logged as `confirmed` does.
+ */
 const sentOn = <A, E extends { readonly _tag: string; readonly message: string }, R>(
   flock: FlockChat,
-  machine: Reached,
+  machine: ChatMachine,
   request: string,
   kind: string,
   about: string,
-  call: Effect.Effect<A, E, R>,
-) =>
-  confirmed(
-    {
-      log: flock.actionsLog ?? unlogged,
-      door: "chat",
-      machine: machine.name,
-      request,
-      kind,
-      about: about === "" ? null : about,
-      what: `the ${kind} to ${about}`,
-    },
-    call,
+  action: Schema.Json,
+  call: (reached: Reached) => Effect.Effect<A, E, R>,
+) => {
+  const log = flock.actionsLog ?? unlogged;
+  const sending = {
+    door: "chat" as const,
+    machine: machine.name,
+    request,
+    kind,
+    about: about === "" ? null : about,
+  };
+  return writable(machine).pipe(
+    Effect.tapError((refused) =>
+      log({ ...sending, attempt: 0, ended: "not-sent", reason: reasonOf(refused) }),
+    ),
+    Effect.flatMap((reached) =>
+      confirmed(
+        { ...sending, log, withheld: withheldOf(action), what: `the ${kind} to ${about}` },
+        declareVoice(flock, reached).pipe(Effect.andThen(call(reached))),
+      ),
+    ),
   );
+};
 
 /** What a write's outcome is called in the chat: one no reply confirmed is not a failure. */
 const endedAs = (error: { readonly _tag: string; readonly message: string }) => ({
@@ -685,21 +697,16 @@ const hold = Effect.fn("FlockTools.hold")(
     const placed = place(input.run, yield* runOwners(known, input.run), "Run");
     if (Result.isFailure(placed)) return placed.failure;
     const { machine, id } = placed.success;
-    const reached = yield* speaking(flock, machine);
     const request = yield* newRequest;
-    const done = yield* sentOn(
-      flock,
-      reached,
+    const holding = {
+      runId: id,
+      control: "hold" as const,
+      set: true,
       request,
-      "hold",
-      id,
-      reached.door.control({
-        runId: id,
-        control: "hold",
-        set: true,
-        request,
-        reason: input.reason ?? "asked in chat",
-      }),
+      reason: input.reason ?? "asked in chat",
+    };
+    const done = yield* sentOn(flock, machine, request, "hold", id, holding, (reached) =>
+      reached.door.control(holding),
     );
     return done.detail || `Held ${machine.name}:${id}`;
   },
@@ -822,29 +829,22 @@ const carryOut = Effect.fn("FlockTools.do")(function* (flock: FlockChat, input: 
       break;
     }
     const step = `${request}-${index}`;
-    const done = yield* writable(machine).pipe(
-      Effect.flatMap((reached) =>
+    const done = yield* sentOn(
+      flock,
+      machine,
+      step,
+      kind,
+      textAt(local, "run") || textAt(local, "proposal"),
+      local,
+      (reached) =>
         withFiles(flock, reached, local).pipe(
-          Effect.tap(() => declareVoice(flock, reached)),
-          Effect.flatMap((sent) =>
-            sentOn(
-              flock,
-              reached,
-              step,
-              kind,
-              textAt(sent, "run") || textAt(sent, "proposal"),
-              doOne(reached, kind, sent, step).pipe(
-                Effect.filterOrFail(
-                  (done) => done.state !== "failed",
-                  (done) => new HostRefused({ reason: done.note }),
-                ),
-              ),
-            ),
+          Effect.flatMap((sent) => doOne(reached, kind, sent, step)),
+          Effect.filterOrFail(
+            (done) => done.state !== "failed",
+            (done) => new HostRefused({ reason: done.note }),
           ),
         ),
-      ),
-      Effect.catch((error) => Effect.succeed(endedAs(error))),
-    );
+    ).pipe(Effect.catch((error) => Effect.succeed(endedAs(error))));
     said.push(`${kind}: ${done.state}${done.note ? ` — ${done.note}` : ""}`);
     // What follows a failure was asked for on the assumption that it did not happen.
     if (done.state === "failed" || done.state === "not confirmed") break;

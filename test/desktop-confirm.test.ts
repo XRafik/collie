@@ -20,7 +20,6 @@ const answer: DesktopAction = {
 const UNCONFIRMED =
   "vm-mk did not confirm the answer to r-1 within 30 s, 3 times. It may still land; Try again sends the same request, which vm-mk takes at most once.";
 
-/** What the log was given, in order. */
 const logged = () => {
   const lines: Attempted[] = [];
   return { lines, log: (line: Attempted) => Effect.sync(() => void lines.push(line)) };
@@ -190,5 +189,48 @@ test("a log that cannot be written leaves the action's outcome as it was", () =>
       expect(yield* act(answering([accepted(true)]).reached, "ask-10", answer, log)).toBe(
         "Answered r-1",
       );
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+test("a refusal that quotes the answer is logged without its value", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { lines, log } = logged();
+      const door = answering([
+        Effect.fail(new HostRefused({ reason: '"The-Answer-Value" is not one of A, B' })),
+      ]);
+      const failed = yield* act(door.reached, "ask-11", answer, log).pipe(Effect.flip);
+      expect(failed.reason).toContain("The-Answer-Value");
+      expect(lines[0]!.reason).toContain("is not one of A, B");
+      expect(lines[0]!.reason!.toLowerCase()).not.toContain("the-answer-value");
+    }),
+  ));
+
+test("board and chat writers ending at once at the rotation boundary keep every line", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-actions-log-" });
+      const line = (request: string): Attempted => ({
+        door: "board",
+        machine: "vm-mk",
+        request,
+        kind: "Answer",
+        about: "r-1",
+        attempt: 1,
+        ended: "accepted",
+      });
+      const first = yield* actionsLog(dir, 350);
+      for (const request of ["ask-a", "ask-b"]) yield* first(line(request));
+      const second = yield* actionsLog(dir, 350);
+      yield* Effect.all([first(line("ask-c")), second(line("ask-d"))], {
+        concurrency: "unbounded",
+      });
+      const kept = [
+        yield* fs.readFileString(`${dir}/actions.log.1`),
+        yield* fs.readFileString(`${dir}/actions.log`),
+      ].join("");
+      for (const request of ["ask-a", "ask-b", "ask-c", "ask-d"])
+        expect(kept).toContain(`"${request}"`);
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));

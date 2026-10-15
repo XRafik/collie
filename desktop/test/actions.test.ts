@@ -73,3 +73,27 @@ test("a failure on the view's own channel offers Try again under the request the
       expect(requests[1]).toBe(requests[0]);
     }),
   ));
+
+test("every try, Try again's too, says when it starts and how it ended", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const tries: Array<boolean | null> = [];
+      const notices: ActionNotice[] = [];
+      let calls = 0;
+      const run = actionRunner(
+        () =>
+          Promise.resolve(
+            ++calls === 1
+              ? Exit.fail(new ActionFailed({ reason: "not confirmed", request: undefined }))
+              : Exit.succeed("Answered r"),
+          ),
+        (notice) => notices.push(notice),
+      );
+      const action: DesktopAction = { _tag: "Answer", runId: "r", decision: "d", value: "v" };
+      yield* Effect.promise(() =>
+        run("local", action, undefined, undefined, undefined, (done) => tries.push(done)),
+      );
+      yield* Effect.promise(() => notices[0]!.actions![0]!.onClick());
+      expect(tries).toEqual([null, false, null, true]);
+    }),
+  ));

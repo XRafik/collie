@@ -13,7 +13,7 @@ import {
 import { DateTime } from "effect";
 import type { DesktopAction } from "../../../src/shared/flock";
 import type { Gesture } from "../../../src/shared/board-clicks";
-import { answerShown, type PendingAnswer } from "../../../src/shared/pending-answer";
+import { answerShown, answerTried, type PendingAnswer } from "../../../src/shared/pending-answer";
 
 const props = defineProps<{
   task: TaskView;
@@ -28,9 +28,14 @@ const toast = useToast();
 // SAFETY: FlockBoard provides it to every card it draws.
 const gesture = inject<(done: Gesture, tab?: string) => void>("gesture")!;
 // A dialog opened before its Machine dropped is outside the card's disabled controls.
-const act = (action: DesktopAction) =>
-  run(props.installation, action, undefined, undefined, () =>
-    props.asOf === null ? undefined : `its board is a saved one, ${asOfLabel.value}`,
+const act = (action: DesktopAction, tried?: (done: boolean | null) => void) =>
+  run(
+    props.installation,
+    action,
+    undefined,
+    undefined,
+    () => (props.asOf === null ? undefined : `its board is a saved one, ${asOfLabel.value}`),
+    tried,
   );
 
 const pending = ref<PendingAnswer | null>(null);
@@ -43,10 +48,10 @@ const answer = (question: Question, value: string, shown: string) => {
     machine: props.machine,
     confirmed: false,
   };
-  pending.value = sending;
-  return act({ _tag: "Answer", runId: question.run, decision: question.id, value }).then((done) => {
-    if (pending.value === sending) pending.value = done ? { ...sending, confirmed: true } : null;
-  });
+  return act(
+    { _tag: "Answer", runId: question.run, decision: question.id, value },
+    (done) => (pending.value = answerTried(sending, done)),
+  );
 };
 
 const asOfLabel = computed(() => {

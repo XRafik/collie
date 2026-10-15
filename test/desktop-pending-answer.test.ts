@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import type { Decision } from "../src/board-model";
-import { answerShown, type PendingAnswer } from "../desktop/src/shared/pending-answer";
+import { answerShown, answerTried, type PendingAnswer } from "../desktop/src/shared/pending-answer";
 
 const question = (id: string, run = "r-1"): Decision => ({
   kind: "question",
@@ -38,4 +38,10 @@ test("no pending answer, as after a refusal, offers the question's controls", ()
 test("another question on the same Run, or the same id on another Run, clears it", () => {
   expect(answerShown(sending, question("next-2"))).toBeNull();
   expect(answerShown(sending, question("next-1", "r-2"))).toBeNull();
+});
+
+test("each try sends the answer again, a reply confirms it, and a failure gives the controls back", () => {
+  expect(answerTried(sending, null)).toEqual(sending);
+  expect(answerTried(sending, true)).toEqual({ ...sending, confirmed: true });
+  expect(answerTried(sending, false)).toBeNull();
 });

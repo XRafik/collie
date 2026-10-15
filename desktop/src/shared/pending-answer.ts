@@ -27,3 +27,7 @@ export const answerShown = (pending: PendingAnswer | null, decision: Decision | 
     : pending.confirmed
       ? `Answered ${pending.shown}; waiting for ${pending.machine}'s board`
       : `Sending ${pending.shown} to ${pending.machine}…`;
+
+/** The pending answer as a try of `sending` starts (null), is confirmed, or fails. */
+export const answerTried = (sending: PendingAnswer, done: boolean | null) =>
+  done === null ? sending : done ? { ...sending, confirmed: true } : null;

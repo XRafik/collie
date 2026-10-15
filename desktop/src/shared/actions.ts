@@ -37,7 +37,8 @@ export const actionRunner = (
 ) => {
   /**
    * One gesture is one request, minted here so every Try again sends it again, whatever
-   * failed: the host takes it once. `unsent` says, at each try, why not to send it.
+   * failed: the host takes it once. `unsent` says, at each try, why not to send it;
+   * `tried` hears each try start (null) and end.
    */
   const run = (
     installation: string,
@@ -45,9 +46,11 @@ export const actionRunner = (
     again?: string,
     applied?: () => void,
     unsent?: () => string | undefined,
+    tried?: (done: boolean | null) => void,
   ): Promise<boolean> => {
     const request = again ?? Effect.runSync(viewCrypto.randomUUIDv4);
     const why = unsent?.();
+    tried?.(null);
     return act({
       payload:
         why === undefined
@@ -56,16 +59,18 @@ export const actionRunner = (
     }).then((exit) => {
       if (Exit.isSuccess(exit)) {
         applied?.();
+        tried?.(true);
         tell({ title: exit.value, color: "success" });
         return true;
       }
+      tried?.(false);
       tell({
         title: failureOf(exit.cause).reason,
         color: "error",
         actions: [
           {
             label: "Try again",
-            onClick: () => run(installation, action, request, applied, unsent),
+            onClick: () => run(installation, action, request, applied, unsent, tried),
           },
         ],
       });

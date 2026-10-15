@@ -64,7 +64,7 @@ import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 import { addressOf } from "../shared/record-terminal";
 import { withNotice } from "../../../src/redact";
-import { type ActionsLog, confirmed, type Unconfirmed, unlogged } from "./sent";
+import { type ActionsLog, confirmed, type Unconfirmed, unlogged, withheldOf } from "./sent";
 
 const children = new Set<Bun.Subprocess>();
 export const endChildren = () => {
@@ -1237,6 +1237,7 @@ export const act = (
     machine: reached.machine.name,
     request,
     kind: action._tag,
+    withheld: withheldOf(action),
   };
   return over(
     reached,

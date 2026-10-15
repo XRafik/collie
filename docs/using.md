@@ -1261,7 +1261,8 @@ with this computer's name, and on this computer in `actions.log` beside `flock-c
 (`$XDG_STATE_HOME/collie-desktop/`): a JSON line per attempt with when, the board or the
 chat, the Machine, the request, the kind, the Run or proposal and the attempt, ending
 `accepted`, `repeat`, `refused`, `timed-out`, `failed` or `not-sent` with the reason. It
-holds ids and kinds only, never an answer's value, a message's text or a file, and past
+holds ids and kinds only, never an answer's value, a message's text or a file: a reason
+that quotes one has it replaced by `…`. Past
 1 MiB it starts again, keeping the last as `actions.log.1`.
 
 **Machines** is a page that lists every Machine Desktop reaches — this computer first, then
@@ -1741,7 +1742,8 @@ come from the board Desktop already follows, so no tool call has a host build on
 Run id no board lists yet, such as one started a moment ago, is asked of each Machine's
 host, within ten seconds; one that does not answer counts as not checked. Run
 details, News and every write still go to the Machine's host. A write is sent as the
-board's actions are: waited for 30 s, 3 times under one request, and kept in `actions.log`.
+board's actions are: waited for 30 s, 3 times under one request, and kept in `actions.log`,
+as `not-sent` where the Machine was not written to at all.
 One its host never confirms is said as not confirmed ("answer: not confirmed — vm-mk did
 not confirm …"), and nothing after it in the same call is sent. Every Machine the window
 shows is one the chat knows by name, and one with no live board is named with why: still

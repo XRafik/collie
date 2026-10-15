@@ -1,8 +1,8 @@
 // Every write Desktop sends a host: done only on the host's reply, sent again under the same
 // request when none comes, and each attempt's end kept in `actions.log` on this computer.
 
-import { Cause, Data, Effect, FileSystem, Option, Schema } from "effect";
-import { isString } from "../../../src/schema";
+import { Cause, Data, Effect, FileSystem, Option, Schema, Semaphore } from "effect";
+import { isJsonObject, isString } from "../../../src/schema";
 import { nowIso } from "../../../src/time";
 
 /** How long an attempt waits for the host's reply, and how many are made. */
@@ -32,10 +32,15 @@ export type ActionsLog = (line: Attempted) => Effect.Effect<void>;
 
 export const unlogged: ActionsLog = () => Effect.void;
 
+// One per file, shared by every writer of it: a rotation is a stat, a rename and an append.
+const writing = new Map<string, Semaphore.Semaphore>();
+
 /** `actions.log` in `dir`, kept once as `actions.log.1` past `maxBytes`; a write that fails is dropped. */
 export const actionsLog = (dir: string, maxBytes = LOG_BYTES) =>
   Effect.map(FileSystem.FileSystem, (fs): ActionsLog => {
     const file = `${dir}/actions.log`;
+    const lock = writing.get(file) ?? Semaphore.makeUnsafe(1);
+    writing.set(file, lock);
     return (line) =>
       Effect.gen(function* () {
         const at = yield* nowIso();
@@ -46,7 +51,7 @@ export const actionsLog = (dir: string, maxBytes = LOG_BYTES) =>
         );
         if (size > 0 && size + bytes.length > maxBytes) yield* fs.rename(file, `${file}.1`);
         yield* fs.writeFile(file, bytes, { flag: "a" });
-      }).pipe(Effect.ignoreCause);
+      }).pipe(lock.withPermits(1), Effect.ignoreCause);
   });
 
 /** Why a host said no, in its own words. */
@@ -63,8 +68,50 @@ export class Unconfirmed extends Data.TaggedError("Unconfirmed")<{
   readonly reason: string;
 }> {}
 
+const IDS = new Set([
+  "_tag",
+  "kind",
+  "run",
+  "runId",
+  "proposal",
+  "hash",
+  "decision",
+  "choiceId",
+  "machine",
+  "workspace",
+  "project",
+  "id",
+  "control",
+  "became",
+  "ref",
+  "agent",
+  "offer",
+]);
+
+/** Every string an action carries but its ids and kinds: what a log line never holds. */
+export const withheldOf = (action: Schema.Json, key = ""): ReadonlyArray<string> =>
+  IDS.has(key)
+    ? []
+    : isString(action)
+      ? action === ""
+        ? []
+        : [action]
+      : Array.isArray(action)
+        ? action.flatMap((value) => withheldOf(value))
+        : isJsonObject(action)
+          ? Object.entries(action).flatMap(([at, value]) => withheldOf(value, at))
+          : [];
+
+const without = (reason: string, withheld: ReadonlyArray<string>) =>
+  withheld.reduce(
+    (left, secret) => left.replace(new RegExp(RegExp.escape(secret), "gi"), "…"),
+    reason,
+  );
+
 export interface Sending extends Omit<Attempted, "attempt" | "ended" | "reason"> {
   readonly log: ActionsLog;
+  /** The action's own words, kept out of the log's reasons. */
+  readonly withheld: ReadonlyArray<string>;
   /** The write as a sentence names it, as "the answer to r-1". */
   readonly what: string;
 }
@@ -75,7 +122,7 @@ export interface Sending extends Omit<Attempted, "attempt" | "ended" | "reason">
  * again, `TRIES` times in all, which the host takes once by its request.
  */
 export const confirmed = <A, E extends { readonly _tag: string; readonly message: string }, R>(
-  { log, what, ...sending }: Sending,
+  { log, what, withheld, ...sending }: Sending,
   call: Effect.Effect<A, E, R>,
   repeat: (reply: A) => boolean = () => false,
 ): Effect.Effect<A, E | Unconfirmed, R> => {
@@ -83,7 +130,7 @@ export const confirmed = <A, E extends { readonly _tag: string; readonly message
     log(
       reason === undefined
         ? { ...sending, attempt, ended }
-        : { ...sending, attempt, ended, reason },
+        : { ...sending, attempt, ended, reason: without(reason, withheld) },
     );
   const tried = (attempt: number): Effect.Effect<A, E | Unconfirmed, R> =>
     call.pipe(

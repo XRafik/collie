@@ -18,6 +18,7 @@ import {
 } from "../desktop/src/bun/flock-tools";
 import type { ChatBoard, DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
+import type { Attempted } from "../desktop/src/bun/sent";
 import { changeSettings } from "../desktop/src/bun/settings";
 import { fastForward } from "./support/effect";
 import { task } from "./support/task";
@@ -1324,5 +1325,111 @@ test("an answer its Machine never confirms is said as not confirmed, and nothing
       const acts = asked.filter(({ op }) => op === "act");
       expect(acts).toHaveLength(3);
       expect(new Set(acts.map(({ payload }) => JSON.stringify(payload))).size).toBe(1);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+const keeping = () => {
+  const lines: Attempted[] = [];
+  return { lines, log: (line: Attempted) => Effect.sync(() => void lines.push(line)) };
+};
+
+test("a host that never takes the chat's declaration ends the write as not confirmed, logged each try", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const mute = machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked);
+      const flock = {
+        ...flockOn(asked, [{ ...mute, door: { ...mute.door, declare: () => Effect.never } }]),
+        actionsLog: log,
+      };
+      const stop = yield* fastForward(
+        callFlockTool(flock, "collie_do", { actions: [{ kind: "stop", run: "r-2" }] }),
+        1_000,
+      );
+      expect(stop).toStartWith("stop: not confirmed — vm-mk did not confirm the stop to r-2");
+      const held = yield* fastForward(callFlockTool(flock, "collie_hold", { run: "r-2" }), 1_000);
+      expect(held).toStartWith("hold: not confirmed — vm-mk did not confirm the hold to r-2");
+      expect(lines.map(({ kind, ended }) => `${kind} ${ended}`)).toEqual([
+        "stop timed-out",
+        "stop timed-out",
+        "stop timed-out",
+        "hold timed-out",
+        "hold timed-out",
+        "hold timed-out",
+      ]);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("a chat write refused before it is sent is logged as not sent, with Desktop's reason", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const flock = {
+        ...flockOn(asked, [
+          machine("old-pc", [task({ id: "t-a", run: "r-1", runs: ["r-1"] })], asked, PROTOCOL - 1),
+        ]),
+        actionsLog: log,
+      };
+      yield* callFlockTool(flock, "collie_do", { actions: [{ kind: "stop", run: "r-1" }] });
+      yield* callFlockTool(flock, "collie_hold", { run: "r-1" });
+      expect(asked).toEqual([]);
+      expect(lines).toMatchObject([
+        {
+          door: "chat",
+          machine: "old-pc",
+          kind: "stop",
+          about: "r-1",
+          attempt: 0,
+          ended: "not-sent",
+        },
+        {
+          door: "chat",
+          machine: "old-pc",
+          kind: "hold",
+          about: "r-1",
+          attempt: 0,
+          ended: "not-sent",
+        },
+      ]);
+      expect(lines[0]!.reason).toContain("its Collie is older than Desktop's chat");
+      expect(lines[0]!.request).toBeString();
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("a refusal that quotes what the chat sent is logged without it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const quoting = machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked);
+      const flock = {
+        ...flockOn(asked, [
+          {
+            ...quoting,
+            door: {
+              ...quoting.door,
+              act: () =>
+                Effect.succeed([
+                  {
+                    kind: "answer",
+                    state: "failed",
+                    note: '"PRIVATE_ANSWER_123" is not one of A, B',
+                  },
+                ]),
+            },
+          },
+        ]),
+        actionsLog: log,
+      };
+      const said = yield* callFlockTool(flock, "collie_do", {
+        actions: [{ kind: "answer", run: "r-2", choiceId: "next-1", answer: "PRIVATE_ANSWER_123" }],
+      });
+      expect(said).toContain("PRIVATE_ANSWER_123");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.ended).toBe("refused");
+      expect(lines[0]!.reason).toContain("is not one of A, B");
+      expect(lines[0]!.reason).not.toContain("PRIVATE_ANSWER_123");
     }).pipe(Effect.provide(BunServices.layer)),
   ));
