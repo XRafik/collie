@@ -57,7 +57,8 @@ nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host ke
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
 whether the grace ran out, every warning the engine and the registry log, and a board build
-that took over 2 s, with how long it took. Lines are flushed
+or an RPC answer that took over 2 s, with which RPC and how long it took. A stream, such as
+the board's, is never timed: it is meant to stay open. Lines are flushed
 every 100 ms, so a host killed outright can lose its last few. Past 1 MiB the file starts
 again and the previous one is kept as `host.log.1`. Look there first when a host stops
 answering. What a host started by a client writes to its stdout and stderr, a stack trace

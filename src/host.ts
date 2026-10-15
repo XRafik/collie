@@ -47,6 +47,8 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type * as RpcClientError from "effect/rpc/RpcClientError";
 import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import manifest from "../herdr-plugin.toml";
@@ -458,6 +460,29 @@ export const HostRpcs = RpcGroup.make(
 
 /** Everything this build serves; a client of another build uses `FrontDoorRpcs` alone. */
 const AllRpcs = HostRpcs.merge(FrontDoorRpcs);
+
+/** How long an RPC may take to answer before the host log says so. */
+const SLOW_RPC_MS = 2_000;
+
+/** Logs an RPC slow to answer. A stream is meant to stay open, so it is never timed. */
+export class SlowRpcs extends RpcMiddleware.Service<SlowRpcs>()("collie/SlowRpcs") {}
+
+export const slowRpcsLayer = Layer.succeed(SlowRpcs)((effect, { rpc }) =>
+  RpcSchema.isStreamSchema(rpc.successSchema)
+    ? effect
+    : Effect.gen(function* () {
+        const started = yield* Clock.currentTimeMillis;
+        return yield* effect.pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const took = (yield* Clock.currentTimeMillis) - started;
+              if (took > SLOW_RPC_MS)
+                yield* Effect.logWarning(`the ${rpc._tag} RPC took ${took} ms to answer`);
+            }),
+          ),
+        );
+      }),
+);
 
 export type HostClient = RpcClient.RpcClient<
   RpcGroup.Rpcs<typeof AllRpcs>,
@@ -2445,12 +2470,13 @@ const own = (dir: string) =>
         ),
     });
     return yield* Layer.launch(
-      RpcServer.layer(AllRpcs).pipe(
+      RpcServer.layer(AllRpcs.middleware(SlowRpcs)).pipe(
         Layer.provide(
           Layer.mergeAll(
             handlers(dir, installation, development, declared, peers),
             frontDoorHandlers(dir, installation, development, panels, declared, stamp),
             sideJobsLayer(panels),
+            slowRpcsLayer,
             Layer.effectDiscard(
               Effect.gen(function* () {
                 const { reportsLayer } = yield* Effect.promise(() => import("./reports"));
