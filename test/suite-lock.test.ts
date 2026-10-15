@@ -86,6 +86,8 @@ test("a run naming an existing path or --changed is targeted, anything else is t
       expect(yield* targeted("-t", "foo")).toBe(false);
       expect(yield* targeted("-t", "test")).toBe(false);
       expect(yield* targeted("lock")).toBe(false);
+      expect(yield* targeted("--timings", "tools/test-timings.json")).toBe(false);
+      expect(yield* targeted("--preload", "test/support")).toBe(false);
     }),
   ));
 

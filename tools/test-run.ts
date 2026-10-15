@@ -5,18 +5,20 @@
 import { type Duration, Effect, FileSystem, Path } from "effect";
 import { inTurn } from "./suite-lock";
 
-const VALUED = new Set(["-t", "--test-name-pattern"]);
-
 const exists = (path: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => fs.exists(path)).pipe(
     Effect.orElseSucceed(() => false),
   );
 
+// ponytail: any word after an option is taken as its value, so `--bail <file>` waits its turn too.
+const isOptionValue = (before: string | undefined) =>
+  before !== undefined && before.startsWith("-") && !before.includes("=");
+
 export const isTargeted = (args: ReadonlyArray<string>) =>
   Effect.forEach(args, (arg, at) =>
     arg === "--changed" || arg.startsWith("--changed=")
       ? Effect.succeed(true)
-      : arg.startsWith("-") || VALUED.has(args[at - 1] ?? "")
+      : arg.startsWith("-") || isOptionValue(args[at - 1])
         ? Effect.succeed(false)
         : exists(arg),
   ).pipe(Effect.map((each) => each.includes(true)));
