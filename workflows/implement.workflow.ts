@@ -283,9 +283,17 @@ export default defineWorkflow({
           });
         }
       }
-      // A repository's share that did not build fails, so no wave waits on work that is not there.
+      // A Run that stops short of its merge request fails, so no wave waits on work that is
+      // not there and its card is not told as done.
       const unbuilt = (reason: string) =>
-        share === "" ? Effect.succeed(reason) : Effect.fail(new WorkflowError({ reason }));
+        Effect.fail(
+          new WorkflowError({
+            reason:
+              share === ""
+                ? `${reason}. Continue with a follow-up Run to finish delivery.`
+                : reason,
+          }),
+        );
       const checksNow = Effect.map(host.approved(runId), renderApproved);
 
       let input: typeof Implementing.Type = {

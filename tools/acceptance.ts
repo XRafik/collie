@@ -1694,6 +1694,18 @@ const OPERATOR_CHECKS: readonly Check[] = [
     },
   },
   {
+    id: "backend/an-implement-run-that-stops-short-fails",
+    statement: "An implement Run that stops short of its merge request fails with the reason",
+    owner: MERGE_WATCH,
+    needs: "backend",
+    proof: {
+      kind: "test",
+      layer: "backend",
+      file: "test/baseline.test.ts",
+      name: "an implement Run that stops short of its merge request fails with the reason",
+    },
+  },
+  {
     id: "machines/a-vm-investigation-reports-from-the-laptop",
     statement:
       "A VM implementer asks the laptop to investigate Desktop on its branch, receives the findings and sees the laptop workspace close.",
