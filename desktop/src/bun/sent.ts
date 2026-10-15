@@ -62,6 +62,12 @@ export const reasonOf = (error: { readonly message: string }) =>
       ? error.detail
       : error.message;
 
+/** A host's refusal whose words may quote content: the log gets `logged` in their place. */
+export class Outlined extends Data.TaggedError("Outlined")<{
+  readonly reason: string;
+  readonly logged: string;
+}> {}
+
 /** A write no reply confirmed, after every attempt. */
 export class Unconfirmed extends Data.TaggedError("Unconfirmed")<{
   readonly request: string;
@@ -136,7 +142,11 @@ export const confirmed = <A, E extends { readonly _tag: string; readonly message
     call.pipe(
       Effect.timeoutOption(WAIT),
       Effect.tapError((error) =>
-        note(attempt, error._tag === "RpcClientError" ? "failed" : "refused", reasonOf(error)),
+        note(
+          attempt,
+          error._tag === "RpcClientError" ? "failed" : "refused",
+          error instanceof Outlined ? error.logged : reasonOf(error),
+        ),
       ),
       Effect.tapCause((cause) =>
         Cause.hasInterruptsOnly(cause)

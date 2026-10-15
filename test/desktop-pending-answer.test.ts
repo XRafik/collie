@@ -3,7 +3,12 @@
 
 import { expect, test } from "bun:test";
 import type { Decision } from "../src/board-model";
-import { answerShown, answerTried, type PendingAnswer } from "../desktop/src/shared/pending-answer";
+import {
+  answerShown,
+  answerTried,
+  pendingAnswers,
+  type PendingAnswer,
+} from "../desktop/src/shared/pending-answer";
 
 const question = (id: string, run = "r-1"): Decision => ({
   kind: "question",
@@ -44,4 +49,18 @@ test("each try sends the answer again, a reply confirms it, and a failure gives 
   expect(answerTried(sending, null)).toEqual(sending);
   expect(answerTried(sending, true)).toEqual({ ...sending, confirmed: true });
   expect(answerTried(sending, false)).toBeNull();
+});
+
+test("a try of an earlier answer, as its Try again after a newer one is sent, leaves the newer one shown", () => {
+  const shown: Array<PendingAnswer | null> = [];
+  const begin = pendingAnswers((pending) => shown.push(pending));
+  const first = begin(sending);
+  first(null);
+  first(false);
+  expect(shown.at(-1)).toBeNull();
+  const newer = { ...sending, shown: "Hold it" };
+  begin(newer)(null);
+  first(null);
+  first(true);
+  expect(shown.at(-1)).toEqual(newer);
 });

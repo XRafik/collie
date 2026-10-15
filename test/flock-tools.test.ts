@@ -1433,3 +1433,57 @@ test("a refusal that quotes what the chat sent is logged without it", () =>
       expect(lines[0]!.reason).not.toContain("PRIVATE_ANSWER_123");
     }).pipe(Effect.provide(BunServices.layer)),
   ));
+
+test("a confirmation whose proposed action fails is logged with its kinds and states only", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const proposing = machine(
+        "vm-mk",
+        [
+          task({
+            id: "t-b",
+            run: "r-2",
+            runs: ["r-2"],
+            decision: { kind: "proposal", id: "p-1", hash: "h", text: "Answer it", actions: [] },
+          }),
+        ],
+        asked,
+      );
+      const flock = {
+        ...flockOn(asked, [
+          {
+            ...proposing,
+            door: {
+              ...proposing.door,
+              confirm: ({ proposal }) =>
+                Effect.succeed({
+                  proposal,
+                  results: [
+                    {
+                      index: 0,
+                      kind: "answer",
+                      state: "failed",
+                      note: '"PRIVATE_CONFIRM_ANSWER_123" is not one of A, B',
+                      run: "r-2",
+                    },
+                  ],
+                }),
+            },
+          },
+        ]),
+        actionsLog: log,
+      };
+      const said = yield* callFlockTool(flock, "collie_do", {
+        actions: [{ kind: "confirm", proposal: "p-1", hash: "h" }],
+      });
+      expect(said).toContain("PRIVATE_CONFIRM_ANSWER_123");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        kind: "confirm",
+        ended: "refused",
+        reason: "answer failed",
+      });
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));

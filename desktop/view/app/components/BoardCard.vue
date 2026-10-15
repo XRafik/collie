@@ -13,7 +13,11 @@ import {
 import { DateTime } from "effect";
 import type { DesktopAction } from "../../../src/shared/flock";
 import type { Gesture } from "../../../src/shared/board-clicks";
-import { answerShown, answerTried, type PendingAnswer } from "../../../src/shared/pending-answer";
+import {
+  answerShown,
+  type PendingAnswer,
+  pendingAnswers,
+} from "../../../src/shared/pending-answer";
 
 const props = defineProps<{
   task: TaskView;
@@ -39,6 +43,7 @@ const act = (action: DesktopAction, tried?: (done: boolean | null) => void) =>
   );
 
 const pending = ref<PendingAnswer | null>(null);
+const beginAnswer = pendingAnswers((shown) => (pending.value = shown));
 const answerSaid = computed(() => answerShown(pending.value, props.task.decision));
 const answer = (question: Question, value: string, shown: string) => {
   const sending: PendingAnswer = {
@@ -50,7 +55,7 @@ const answer = (question: Question, value: string, shown: string) => {
   };
   return act(
     { _tag: "Answer", runId: question.run, decision: question.id, value },
-    (done) => (pending.value = answerTried(sending, done)),
+    beginAnswer(sending),
   );
 };
 

@@ -35,7 +35,7 @@ import type { Staged } from "../shared/attachments";
 import { type ChatBoard, unreadBecause } from "../shared/flock";
 import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { carriedPaths } from "./carried";
-import { type ActionsLog, confirmed, reasonOf, unlogged, withheldOf } from "./sent";
+import { type ActionsLog, confirmed, Outlined, reasonOf, unlogged, withheldOf } from "./sent";
 import type { Door } from "./machine";
 
 /** What the Flock chat asks of a Machine's host, over the channel the bridge declared `chat`. */
@@ -402,10 +402,7 @@ export const newRequest = Effect.flatMap(Crypto.Crypto, (crypto) => crypto.rando
 
 export { reasonOf };
 
-/**
- * A chat write to `machine` under `request`: refused before sending where it is not
- * `writable`, else declared and `call`ed, confirmed and logged as `confirmed` does.
- */
+/** A chat write to `machine` under `request`, logged and confirmed as a board action is. */
 const sentOn = <A, E extends { readonly _tag: string; readonly message: string }, R>(
   flock: FlockChat,
   machine: ChatMachine,
@@ -841,7 +838,10 @@ const carryOut = Effect.fn("FlockTools.do")(function* (flock: FlockChat, input: 
           Effect.flatMap((sent) => doOne(reached, kind, sent, step)),
           Effect.filterOrFail(
             (done) => done.state !== "failed",
-            (done) => new HostRefused({ reason: done.note }),
+            (done) =>
+              "outline" in done && isString(done.outline)
+                ? new Outlined({ reason: done.note, logged: done.outline })
+                : new HostRefused({ reason: done.note }),
           ),
         ),
     ).pipe(Effect.catch((error) => Effect.succeed(endedAs(error))));
@@ -878,6 +878,7 @@ const doOne = (machine: Reached, kind: string, action: JsonObject, request: stri
           note: results
             .map((one) => `${one.kind} ${one.state}${one.note ? ` (${one.note})` : ""}`)
             .join("; "),
+          outline: results.map((one) => `${one.kind} ${one.state}`).join("; "),
         })),
       );
     case "decline":

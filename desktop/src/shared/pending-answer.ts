@@ -31,3 +31,14 @@ export const answerShown = (pending: PendingAnswer | null, decision: Decision | 
 /** The pending answer as a try of `sending` starts (null), is confirmed, or fails. */
 export const answerTried = (sending: PendingAnswer, done: boolean | null) =>
   done === null ? sending : done ? { ...sending, confirmed: true } : null;
+
+/** Starts showing an answer; a try of one that a newer answer replaced changes nothing. */
+export const pendingAnswers = (show: (pending: PendingAnswer | null) => void) => {
+  let latest: PendingAnswer | null = null;
+  return (sending: PendingAnswer) => {
+    latest = sending;
+    return (done: boolean | null) => {
+      if (latest === sending) show(answerTried(sending, done));
+    };
+  };
+};
