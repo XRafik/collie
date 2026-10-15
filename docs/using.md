@@ -2589,6 +2589,13 @@ then start there as Improvements, each a `plan` of its own card that builds itse
 (`then=implement`) and ends at a reviewed merge request that closes its issues. Nobody is
 asked anything, and nothing is merged. `improvements=0` files without building.
 
+It works in a worktree of its own, cut from the checkout it was started in and detached at
+`origin`'s default branch as just fetched, so a shared, dirty or stale checkout is neither
+touched nor read. The triage, the filing and the Improvements' `plan` Runs work there; the
+Runs it reads are still that checkout's. Another Run holding that repository's roaming
+checkout, such as a `renovate`, refuses the start. The [cleanup](#cleanup) sweep removes
+the worktree once the Run has ended, however it ended, and nothing works in it any longer.
+
 It waits for its Improvements, then writes `summary.md` in its Run directory: each issue
 filed or commented, by category; each Improvement's Run and how it ended; and each finding
 left out, with why. An Improvement that fails is listed there, and the Run still succeeds.

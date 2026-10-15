@@ -1076,6 +1076,39 @@ test(
 );
 
 test(
+  "self-improve started on a checkout works in a fresh worktree detached at its default branch, leaving the checkout alone",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(`${rig.projectDir}/other-work.txt`, "someone else's");
+        const view = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [improve] = yield* loaded(registry, [shipped("self-improve")]);
+            const started = yield* start(improve!, {
+              request: "r1",
+              text: { runs: "checkout" },
+              options: { workspace: rig.projectDir },
+            });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            return yield* finished(started.success.runId);
+          }),
+        );
+
+        expect(view?.status.status).toBe("complete");
+        expect(view?.worktree?.path).toBe(roaming);
+        const head = yield* exec(["git", "symbolic-ref", "-q", "HEAD"], { cwd: roaming });
+        expect(head.exitCode).not.toBe(0);
+        expect(yield* fs.exists(`${roaming}/other-work.txt`)).toBe(false);
+        expect(yield* fs.readFileString(`${rig.projectDir}/other-work.txt`)).toBe("someone else's");
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a roaming start is refused the checkout of a Run that may still go on, stopped or waiting, and of one that left changes",
   () =>
     runEffect(
