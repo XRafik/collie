@@ -1235,6 +1235,8 @@ scenario(
         expect(fix).toContain(`Project root: ${rig.root}/.herdr/worktrees/project/fix-the-guard`);
         expect(fix).toContain("the checkout of `fix-the-guard`");
         expect(fix).not.toContain("glab mr checkout");
+        expect(fix).toContain("never the whole suite");
+        expect(fix).not.toContain("Run the project's checks");
         expect(yield* persona("r-review-mr", "fix")).toContain("You are an implementer");
         // Nothing is left to fix after a clean review, so fixing is not offered again.
         const rows2 = yield* parked({
@@ -2803,6 +2805,10 @@ scenario(
         expect(yield* asked("r-impl-build-findings", "01-first.md.review-2-1")).toContain(
           `${dir}/agents/r-impl-build-findings/01-first.md.fix-1.json`,
         );
+        const build = yield* asked("r-impl-build-findings", "01-first.md");
+        expect(build).not.toContain("from the checks above");
+        expect(build).toContain("the gate proves it on the final tree");
+        expect(build).toContain("never the whole suite");
         expect(yield* asked("r-impl-build-findings", "02-second.md")).toContain("the first one");
         expect(yield* asked("r-impl-build-findings", "review-1")).toContain("Iteration 1");
         expect(yield* prompts()).toHaveLength(7);
@@ -2986,7 +2992,7 @@ scenario(
           expect(text).toMatch(
             /run the typecheck and the test files you touched, each through `collie verify`/i,
           );
-          expect(text).toContain("do not run the whole suite yourself");
+          expect(text).toContain("and never the whole suite");
           expect(text).toMatch(/Commit (to this branch|each fix to this branch)/);
           expect(text).toMatch(/Collie reviews this (work|fix) in its own rally/);
           expect(text).toContain(
