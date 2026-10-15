@@ -10,18 +10,40 @@ const exists = (path: string) =>
     Effect.orElseSucceed(() => false),
   );
 
-// ponytail: any word after an option is taken as its value, so `--bail <file>` waits its turn too.
-const isOptionValue = (before: string | undefined) =>
-  before !== undefined && before.startsWith("-") && !before.includes("=");
+// `bun test --help`'s options that require a value, which may come as the next word.
+const TAKES_VALUE = new Set([
+  "-t",
+  "--test-name-pattern",
+  "--timeout",
+  "--rerun-each",
+  "--retry",
+  "--seed",
+  "--coverage-reporter",
+  "--coverage-dir",
+  "--reporter",
+  "--reporter-outfile",
+  "--max-concurrency",
+  "--path-ignore-patterns",
+  "--parallel",
+  "--parallel-delay",
+  "--shard",
+  "--timings",
+  "-r",
+  "--preload",
+]);
 
-export const isTargeted = (args: ReadonlyArray<string>) =>
-  Effect.forEach(args, (arg, at) =>
-    arg === "--changed" || arg.startsWith("--changed=")
-      ? Effect.succeed(true)
-      : arg.startsWith("-") || isOptionValue(args[at - 1])
-        ? Effect.succeed(false)
-        : exists(arg),
+export const isTargeted = (args: ReadonlyArray<string>) => {
+  const operands = args.indexOf("--");
+  return Effect.forEach(args, (arg, at) =>
+    operands !== -1 && at > operands
+      ? exists(arg)
+      : arg === "--changed" || arg.startsWith("--changed=")
+        ? Effect.succeed(true)
+        : arg.startsWith("-") || TAKES_VALUE.has(args[at - 1] ?? "")
+          ? Effect.succeed(false)
+          : exists(arg),
   ).pipe(Effect.map((each) => each.includes(true)));
+};
 
 /** Runs `run` at once when targeted, and in the suite's turn otherwise. */
 export const turnFor = <A, E, R>(
