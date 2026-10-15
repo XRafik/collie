@@ -2178,12 +2178,12 @@ test("a Run's checks are its Intent's as they stand, each passed as the command 
         mr: PR,
         finished: "2026-09-14T09:30:00Z",
       });
-      const spec = (name: string, executable = "true", cwd = "worktree") => ({
-        name,
-        executable,
-        argv: [],
-        cwd,
-      });
+      const spec = (
+        name: string,
+        executable = "true",
+        cwd = "worktree",
+        argv: ReadonlyArray<string> = [],
+      ) => ({ name, executable, argv, cwd });
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(`${repo}/packages/b`, { recursive: true });
       yield* fs.writeFileString(approvedFile(run.evidence), encodeApproved([spec("test")]));
@@ -2204,7 +2204,7 @@ test("a Run's checks are its Intent's as they stand, each passed as the command 
           authority: { ...intent.authority, run_verification: verification },
         });
       // A check added after the seeded one passed has not run.
-      yield* amended([spec("test"), spec("typecheck")]);
+      yield* amended([spec("test"), spec("typecheck", "true", "worktree", ["typecheck"])]);
       expect(yield* checks).toEqual({ state: "unchecked" });
       // A pass of the command a check named before is not a pass of the one it names now.
       yield* amended([spec("test", "false")]);
@@ -2315,4 +2315,16 @@ test("chat's line for a card names its merge request as the board does", () => {
   expect(line("https://gitlab.cego.dk/mk/collie/-/merge_requests/65")).toContain(
     ", merge request mk/collie!65",
   );
+});
+
+test("two checks with the same command are each passed by a record of that command", () => {
+  const command = { executable: "/usr/bin/true", argv: [], cwd: "/project" };
+  const both = [
+    { name: "unit", ...command },
+    { name: "all", ...command },
+  ];
+  expect(checksAt([checked("unit", "abc"), checked("all", "abc")], "abc", both)).toEqual({
+    state: "passed",
+    at: "abc",
+  });
 });
