@@ -1132,18 +1132,21 @@ run's own checks itself at the tree as it stands, reading them again at every pa
 says what is missing. A check
 that failed runs once more; gaps a check could still close go to the implementer for up to
 four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
-Repair the checks and resume the Run: the pending proof reruns them even when the repair
-only changes the environment. Straight after the gate, with no resume between, the proof
-runs a check again only where the gate's own result no longer holds: it relies on the
-latest pass Collie collected for that check when that was the same command, on the same
-tree and in the same environment, and logs the verification it relied on by id. So a
-green Run runs each check once. A changed tree or set of checks also gets fresh proof while
+Repair the checks and resume the Run: a check whose latest record on the tree failed runs
+again, and so does one whose pass was collected in another environment or before this host
+started. Every pass — gate, recheck, fix, finish and the proof — runs a check only where
+nothing already answers for it: it relies on the latest record of exactly that check's
+command on the same tree, where it is a pass collected in the same environment by this
+host, whoever asked for it, and logs `<pass>: <check> relies on verification <id>`. So a
+check that passed on a tree, an agent's `collie verify` of it included, is not run again
+on that tree. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
 is reached only once the outcome is proved. Only the latest
-of Collie's results on that tree counts, so a
-pass a later fail contradicts is not one. In `implement`, a check that fails at the gate is run once more,
+record of a check's exact command on that tree counts, whoever asked for it, so a
+pass a later fail contradicts is not one, and a record that only shares the check's name
+is not the check. In `implement`, a check that fails at the gate is run once more,
 before any fix, where the branch leaves the default branch, in the run's own checkout. One that
 fails there too remains required on the Run's tree: the base's exit code cannot show
 whether the branch added different failures. If merge request handling is unavailable,
@@ -1309,6 +1312,14 @@ and content, the `node` and `bun` that `PATH` resolves to, again by path and con
 `PATH`, `NODE_ENV` and `NODE_OPTIONS`. A gate relies on an earlier pass only where this
 matches, so an upgraded toolchain is a fresh run. A record from before environments were
 recorded has none, and is never relied on.
+
+A command that is exactly one of the Run's checks — the executable as resolved, its
+arguments and its directory — is not run again where the latest record of it on this tree
+is a pass this host collected in the same environment, whoever asked for it. `collie verify`
+then says `not run again: verification <id> already passed on this tree`, exits 0, and its
+`--json` envelope is `{ "verification": <that record>, "ran": false }`; a command it did run
+has `"ran": true`. `--expect fail`, and any command that is not one of the Run's checks,
+always runs.
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command

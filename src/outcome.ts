@@ -10,7 +10,14 @@
 // this says what is missing.
 
 import type { VerifySpec } from "./verify-spec";
-import type { Snapshot, Verification } from "./verify";
+import {
+  passed,
+  ranCommand,
+  recordsNamed,
+  type CheckCommand,
+  type Snapshot,
+  type Verification,
+} from "./verify";
 import { isString, isBoolean } from "./schema";
 import { isYamlMap, type YamlValue } from "./yaml";
 
@@ -58,6 +65,11 @@ export interface Collected {
   readonly final: Snapshot;
   /** What Collie was allowed to run itself for this Run. */
   readonly approved: ReadonlyArray<VerifySpec>;
+  /**
+   * Those checks' commands as they resolve for this Run. A record of exactly one counts for
+   * that check, whoever asked; without them, only Collie's own run under its name does.
+   */
+  readonly commands?: ReadonlyArray<CheckCommand>;
   /** Step Outputs, by step id, as they were parsed. */
   readonly outputs: ReadonlyMap<string, YamlValue>;
   /**
@@ -80,26 +92,13 @@ export interface Collected {
 
 /**
  * Whether the latest result for this check, on the tree in front of us, passed: a pass a
- * later fail contradicts is not one. `by` narrows it to one collector, Collie or an agent.
+ * later fail contradicts is not one.
  */
-function lastPassedAtFinal(got: Collected, name: string, by?: Verification["by"]): boolean {
-  return lastAtFinal(got, name, by) === "pass";
-}
-
-function lastAtFinal(
-  got: Collected,
-  name: string,
-  by?: Verification["by"],
-): Verification["result"] | undefined {
-  return got.verifications
-    .filter(
-      (v) =>
-        v.name === name &&
-        (by === undefined || v.by === by) &&
-        v.end.head_sha === got.final.head_sha &&
-        v.end.fingerprint === got.final.fingerprint,
-    )
-    .at(-1)?.result;
+function lastPassedAtFinal(got: Collected, name: string): boolean {
+  const last = recordsNamed(got.verifications, name, got.commands)
+    .filter((v) => !earlierTree(v, got.final))
+    .at(-1);
+  return last !== undefined && passed(last);
 }
 
 /** Whether this kind of result is proved by Collie's own run of the Run's checks. */
@@ -119,10 +118,15 @@ function approvedSetGaps(got: Collected): string[] {
   if (got.approved.length === 0) return [noCheckNamed];
   const gaps: string[] = [];
   for (const spec of got.approved) {
-    if (lastPassedAtFinal(got, spec.name, "collie")) continue;
-    const any = got.verifications.filter((v) => v.name === spec.name);
+    const command = got.commands?.find((one) => one.name === spec.name);
+    const ran = (v: Verification) =>
+      command === undefined ? v.by === "collie" && v.name === spec.name : ranCommand(v, command);
+    const any = got.verifications.filter(ran);
+    const last = any.findLast((v) => !earlierTree(v, got.final));
+    if (last !== undefined && passed(last)) continue;
     if (any.length === 0) gaps.push(`${spec.name} was never run`);
-    else if (any.some((v) => v.result === "fail")) gaps.push(`${spec.name} failed`);
+    else if (any.some((v) => v.result === "fail" || v.expect === "fail"))
+      gaps.push(`${spec.name} failed`);
     else if (any.some((v) => v.result === "unstable"))
       gaps.push(`${spec.name} ran on a tree that moved under it`);
     else gaps.push(`${spec.name} last passed on a different tree`);

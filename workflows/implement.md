@@ -46,9 +46,12 @@ The work source above is one of five kinds. Do the one that matches
   its description as the spec. Before building, write that description word for word,
   checkboxes included, to `{{run.dir}}/plan/SPEC.md` and a short task list to `{{run.dir}}/plan/issues/NN-*.md`,
   one file per slice, so the run records what you decided to build. Every ticket you write
-  carries a `**Checks:**` line naming the `collie verify` commands that will prove it —
-  from the checks above or the ones you named. Clear work states its acceptance checks before it starts;
-  deciding afterwards what would have counted is not a check.
+  carries a `**Checks:**` line saying what proves it. Where it names one of this run's
+  checks above, the gate proves it on the final tree: it is not a command for you to run.
+  Where the ticket needs a proof of its own — a regression test, or the test files that
+  hold its behaviour — name that targeted command, and run it through `collie verify`.
+  Clear work states its acceptance checks before it starts; deciding afterwards what would
+  have counted is not a check.
 - **followup** — a finished run's outcome needs more work. `{{inputs.plan}}` names it as
   `followup:<run id>`; that run's `steering/drift.jsonl` open reports and the text in
   `{{run.dir}}/plan/SPEC.md` are the spec. Write one ticket per open report under
@@ -89,8 +92,8 @@ reviewer sees the work, and the reviewer is shown every answer and every assumpt
 
 Build it test first, with {{skill:tdd}} at the seams the spec names: the failing test,
 then the code that makes it pass. As you go, run the typecheck and the test files you
-touched, each through `collie verify` as below. The whole suite is the gate's: Collie runs
-this run's checks itself once the review is done, so do not run the whole suite yourself.
+touched, each through `collie verify` as below, and never the whole suite: it is the
+gate's, and Collie runs this run's checks itself once the review is done.
 Commit to this branch as you go — one commit per ticket. There is no separate commit step.
 
 Collie reviews this work in its own rally once you are done. Do not run a review skill,
@@ -175,8 +178,8 @@ once settles that finding: the reviewers are told about it and the loop stops ra
 
 Fix test first, with {{skill:tdd}} where a finding is a behaviour: the failing test, then
 the fix. Run the typecheck and the test files you touched, each through `collie verify` as
-below. The whole suite is the gate's: Collie runs this run's checks itself, so do not run
-the whole suite yourself. Commit each fix to this branch.
+below, and never the whole suite: it is the gate's, and Collie runs this run's checks
+itself. Commit each fix to this branch.
 
 Collie reviews this fix in its own rally. Do not run a review skill, and do not start
 review sub-agents or threads.
@@ -227,8 +230,8 @@ Meet each one, or, where it cannot be met, say plainly why. The ticket's whole l
 {{criteria}}
 
 Build what is missing test first, with {{skill:tdd}}, and run the typecheck and the test
-files you touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
-Commit to this branch and push it, as in the build: `git push -u origin HEAD -o ci.skip`
+files you touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`,
+and never the whole suite: it is the gate's. Commit to this branch and push it, as in the build: `git push -u origin HEAD -o ci.skip`
 on GitLab, or `git push -u origin HEAD` on GitHub. A push that fails is reported as
 `"pushed": false`, not fatal.
 
@@ -250,7 +253,8 @@ Settle that and nothing else. Work left uncommitted is committed as it stands. A
 progress is finished: resolve each conflicted file so both sides' intent survives, `git add`
 them, and `git commit --no-edit`. Never rebase, reset or abort it, and never force-push:
 this branch's history only grows. Run the typecheck and the test files the conflicts
-touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`.
+touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`, and
+never the whole suite: it is the gate's.
 
 Push the merge — `git push -u origin HEAD -o ci.skip` on GitLab, or
 `git push -u origin HEAD` on GitHub. A push that fails is reported as `"pushed": false`,
