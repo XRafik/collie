@@ -24,7 +24,6 @@ const TAKES_VALUE = new Set([
   "--reporter-outfile",
   "--max-concurrency",
   "--path-ignore-patterns",
-  "--parallel",
   "--parallel-delay",
   "--shard",
   "--timings",

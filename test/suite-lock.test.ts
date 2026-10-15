@@ -91,6 +91,7 @@ test("a run naming an existing path or --changed is targeted, anything else is t
       expect(yield* targeted("--coverage", "test/suite-lock.test.ts")).toBe(true);
       expect(yield* targeted("--bail", "test/suite-lock.test.ts")).toBe(true);
       expect(yield* targeted("--", "test/suite-lock.test.ts")).toBe(true);
+      expect(yield* targeted("--parallel", "test/suite-lock.test.ts")).toBe(true);
     }),
   ));
 
