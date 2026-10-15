@@ -6,333 +6,121 @@ herdr actions, and the `collie` CLI.
 
 ## Where to look
 
-- **Where this is going, and why the next thing is the next thing** → [`PRODUCT.md`](PRODUCT.md).
-- **A term you are unsure of, or one you are about to redefine** → [`CONTEXT.md`](CONTEXT.md).
-  It is canonical for vocabulary; docs pages link to it rather than restating a definition.
-- **Which file owns what** → [`src/README.md`](src/README.md).
-- **Changing persona frontmatter or layer lookup** → [`docs/authoring.md`](docs/authoring.md),
-  alongside `src/definitions.ts` for personas and `src/discovery.ts` for where a module is
-  looked for.
-- **Changing what an author is told a workflow is, or the commands that write and check
-  one** → [`docs/authoring.md`](docs/authoring.md) and [`docs/sdk.md`](docs/sdk.md),
-  alongside `src/authoring.ts` and `src/commands/workflow.ts`. One reading answers `list`,
-  `show`, `collie_definitions` and a `needs_input` refusal, and a check keeps a problem, a
-  projection limit and an absent toolchain apart.
-- **Changing Go to pane, or the terminal Desktop shows a pane in** →
-  [ADR-0044](docs/adr/0044-go-to-pane-opens-the-pane-in-desktop.md), alongside
-  `desktop/src/bun/terminal.ts` (the controller run over the Machine's route),
-  `desktop/view/app/components/TerminalTab.vue` and `desktop/src/shared/terminal-input.ts`
-  (what the human does, as herdr is told it), with `test/desktop-terminal.test.ts` and
-  `desktop/test/terminal-input.test.ts`. Desktop draws the pane and decides nothing from it.
-- **Changing where a start runs — placement from the Home, the Projects root, or what an
-  agent's start must name** → [ADR-0033](docs/adr/0033-a-run-started-from-the-home-is-placed-not-asked.md),
-  alongside `src/flows.ts`, `src/route.ts`, `src/projects.ts` and `src/agent-start.ts`.
-- **Changing the CLI surface, an error code, or a `--json` envelope** →
-  [`docs/cli.md`](docs/cli.md), alongside `src/envelope.ts` and `src/operations.ts`.
-- **Claiming a change works, or reviewing one that claims to** →
-  [`docs/acceptance.md`](docs/acceptance.md), alongside `bun run acceptance`. A green
-  suite is not evidence that a promise was kept; that gate says which are.
-- **Adding a herdr call, or a red `contract` workflow** →
-  [`docs/internals.md`](docs/internals.md#checking-the-boundary-against-herdr), alongside
-  `herdr-pin.json` and `test/herdr-contract.test.ts`.
-- **Changing the compaction threshold, the work-boundary policy, or a harness's
-  compaction controls** → [`docs/using.md`](docs/using.md#compaction-between-pieces-of-work),
-  alongside `src/compaction.ts` (the policy) and `src/compactors.ts` (the four adapters).
-  Where it is called from: [`docs/internals.md`](docs/internals.md#compaction-at-a-work-boundary).
-  What each installed harness actually supports, and what the release gate still needs:
-  [ADR-0007](docs/adr/0007-compact-a-reused-agent-at-a-work-boundary.md).
-- **Changing what a Run is steered against, how a message reaches an agent, or what a
-  harness has been shown to do about one** → [`docs/steering.md`](docs/steering.md),
-  alongside `src/intent.ts`, `src/dispatcher.ts`, `src/steering.ts` and
-  `src/steering-caps.ts`. A capability moves to `proven` only from a recorded live result
-  in the Run's `CAPABILITIES.md`. A message over the delivery cap is never split: the
-  host's `steer` in `src/host.ts` keeps it as a file in the Run and tells the agent where
+Each entry: the area you are changing, then where it is decided. Source files not named
+here are in [`src/README.md`](src/README.md).
+
+- **Direction** → [`PRODUCT.md`](PRODUCT.md). **Vocabulary** → [`CONTEXT.md`](CONTEXT.md),
+  canonical; link to it rather than restate a term. **File ownership** → [`src/README.md`](src/README.md).
+- **Personas, layers** → [`docs/authoring.md`](docs/authoring.md), `src/definitions.ts`, `src/discovery.ts`.
+- **Workflow authoring commands** (`list`, `show`, check, `needs_input`) → [`docs/authoring.md`](docs/authoring.md),
+  [`docs/sdk.md`](docs/sdk.md), `src/authoring.ts`, `src/commands/workflow.ts`.
+- **Go to pane** → [ADR-0044](docs/adr/0044-go-to-pane-opens-the-pane-in-desktop.md),
+  `desktop/src/bun/terminal.ts`, `test/desktop-terminal.test.ts`, `desktop/test/terminal-input.test.ts`.
+- **Placement** of a start → [ADR-0033](docs/adr/0033-a-run-started-from-the-home-is-placed-not-asked.md),
+  `src/flows.ts`, `src/route.ts`, `src/projects.ts`, `src/agent-start.ts`.
+- **CLI surface, error codes, `--json`** → [`docs/cli.md`](docs/cli.md), `src/envelope.ts`, `src/operations.ts`.
+- **Claiming a change works** → [`docs/acceptance.md`](docs/acceptance.md), `bun run acceptance`.
+- **herdr calls, red `contract`** → [`docs/internals.md`](docs/internals.md#checking-the-boundary-against-herdr),
+  `herdr-pin.json`, `test/herdr-contract.test.ts`.
+- **Compaction** → [`docs/using.md`](docs/using.md#compaction-between-pieces-of-work),
+  [`docs/internals.md`](docs/internals.md#compaction-at-a-work-boundary),
+  [ADR-0007](docs/adr/0007-compact-a-reused-agent-at-a-work-boundary.md), `src/compaction.ts`, `src/compactors.ts`.
+- **Steering, delivery** → [`docs/steering.md`](docs/steering.md), `src/intent.ts`, `src/dispatcher.ts`,
+  `src/steering.ts`, `src/steering-caps.ts`, the host's `steer` in `src/host.ts`
   ([ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md)).
-- **Changing whether a finished Run takes steering, or what reopening one means** →
-  [ADR-0041](docs/adr/0041-a-finished-run-still-takes-steering.md), alongside `admit` in
-  `src/proposals.ts`, the host's steer and stop in `src/engine.ts`, `steerRun` in
-  `src/lifecycle.ts` and `test/finished-steer.test.ts`. A Run's status is history; its
-  agents take steering while one is alive.
-- **Changing how a Task is named, or what a tab or pane label says** →
-  [`docs/using.md`](docs/using.md#what-a-task-workspace-is-called), alongside
-  `src/tasknames.ts` (the inference and its stand-in), `prompts/namer.md` (what the model
-  is asked, and the rule that live labels are data) and `src/naming.ts` (the labels
-  themselves, and which of them are still Collie's to write).
-- **Changing what the board draws, what it is a board of, or which workspace owns it** →
-  [`docs/using.md`](docs/using.md#the-control-plane), alongside `src/board-model.ts` (the
-  board's and drawer's Schemas), `src/board.ts` (building it, and the sentence),
-  `src/ui/Board.tsx` and `src/ui/Drawer.tsx` (the cards and the record) and `src/home.ts`
-  (ownership). One board per Herd, in the Home
-  ([ADR-0009](docs/adr/0009-the-collie-tab-is-the-herds.md)), and it is one card per Task
-  rather than a table of Runs
-  ([ADR-0013](docs/adr/0013-the-board-is-cards-of-tasks.md), which supersedes what
-  [ADR-0005](docs/adr/0005-collie-tab-is-an-application.md) says the tab draws).
-- **Changing how an agent reaches another** →
-  [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md), alongside
-  `src/harness.ts` (tool wiring), `src/tools.ts` and `asksRun` in `src/lifecycle.ts`
-  (lookup), `src/dispatcher.ts` (sender line) and `src/handoff.ts` (planner address),
-  with `test/agent-origin.test.ts` and `test/mcp.test.ts`.
-- **Changing how a Machine reaches another** →
-  [ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md) and
-  [`docs/internals.md`](docs/internals.md#reaching-another-machine), alongside `src/peers.ts`
-  (the pairing, the listener and the relay sockets), `src/peers-model.ts` (what Desktop
-  shares of it), `src/channel.ts` (the one declare-then-pipe the bridge and the link use),
-  `connectPeer` in `src/host.ts` and `asksRun` in `src/lifecycle.ts` (a Run found on the
-  Machine that has it), with `test/peers.test.ts` and `test/support/peers.ts` (two real
-  hosts, a fake herdr each and a fake `ssh`). Adding a Machine to herdr pairs it; there is
-  no command to.
-- **Changing how work an agent starts reports back or closes** →
-  [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md), alongside
-  `src/reports.ts` (report delivery and closure), `requestedBy` in `src/engine.ts`,
-  `src/agent-start.ts` (repository and branch fetch) and `workflows/investigate.workflow.ts`,
-  with `test/reports.test.ts`. Another Run's live agent or a human pane keeps the workspace.
-- **Changing Desktop** → [`docs/using.md`](docs/using.md#collie-desktop), alongside
-  `desktop/src/bun/machine.ts` (a Machine reached through `collie bridge`, never the host
-  client) and `desktop/src/shared/` (the view's RPC and the Flock it folds), with the main
-  process's behaviour tested in `test/desktop-*.test.ts`. A card's record is
-  `desktop/view/app/components/RunRecord.vue`, one of the pages `usePage` lays over the
-  board's column, with `SettingsPage.vue` and `MachinesPage.vue`; what agent
-  markdown may keep is `desktop/src/shared/markdown.ts` with `desktop/test/markdown.test.ts`; what a click,
-  a double-click, a name, a page's back button and Escape do to the selected card and
-  the open page is `afterGesture` in `desktop/src/shared/board-clicks.ts`, tested in
-  `test/desktop-view.test.ts`, with where a gesture landed read in
-  `desktop/test/board-clicks.test.ts`; whether a Machine is In sync is
-  `desktop/src/shared/in-sync.ts`, tested in `test/desktop-view.test.ts`; and the window's
-  navigation rule is in
-  `desktop/src/bun/index.ts`. Desktop has its own `package.json`; Effect is the root's, so
-  the board's Schemas exist once. The
-  Flock chat is `desktop/src/bun/chat.ts` (the session and its turns), `claude.ts` (the
-  Agent SDK it runs on, and Collie's tools served to it), `session.ts` (what it
-  runs with), `flock-tools.ts` (the Toolkit over each Machine's `chat` channel), `agui.ts`
-  (SDK messages as AG-UI), `transcript.ts` (a conversation read back) and `settings.ts`
-  (Desktop's own switches, the proactive one and the Machine rule among them), with
-  `desktop/src/shared/chat-view.ts` what the window says of a tool call and the card a
-  message is about, and `src/toolkit.ts` the Toolkit both chats share
-  ([ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-05-a-herds-chat-per-home-and-one-flock-chat-per-desktop)).
-- **Changing the Flock chat's harness or model** →
-  [ADR-0011's harness amendment](docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-09-the-flock-chat-runs-on-the-harness-settings-names),
-  alongside `desktop/src/bun/driver.ts` (the session's driver interface),
-  `claude-driver.ts` (Claude through the Agent SDK), `pi-driver.ts` (Pi over RPC),
-  `pi-agui.ts` and `pi-transcript.ts` (Pi events and session files),
-  `chat-endpoint.ts` (authenticated loopback MCP) and `tool-server.ts` (both servers' tools),
-  `chat.ts` (turns and conversation),
-  `settings.ts` and `src/harness-choice.ts` (the same model checks as a Run), and `desktop/src/shared/flock-settings.ts`
-  (the rows), with `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`,
-  `test/flock-chat-turns.test.ts`, `test/desktop-settings.test.ts` and
-  `test/flock-tools.test.ts`. A model change waits for the current turn and keeps the
-  conversation.
-- **Changing what a managed agent is launched with beyond Collie's own setup** →
-  [ADR-0060](docs/adr/0060-a-managed-agent-runs-with-the-operators-profile.md)
-  and [`docs/using.md`](docs/using.md#what-collies-agents-get), alongside `src/profile.ts`
-  (what `agent_profile` may say, its env lines and the Claude merge) and the launch in
-  `src/agents.ts`, with `test/profile.test.ts` and `test/agents.test.ts`. A secret is a 0600
-  file on each Machine, read by the pane's shell; only its path is shared.
-- **Changing what files a Run, or the Flock chat, is given** →
-  [ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md), alongside
-  `src/attachments.ts` (a Run's copies and its prompts' list), `src/uploads.ts` and
-  `src/host-files.ts` (what a host takes and reads), and in Desktop `bun/attachments.ts`
-  (its copies), `bun/carried.ts` (files to a Run's Machine), `bun/file-tools.ts` and
-  `shared/attachments.ts`, with `test/attachments.test.ts`, `test/host-files.test.ts` and
-  `test/flock-*.test.ts`.
-- **Changing how a Subscription's usage is read, or where work falls back when one is
-  Exhausted** → [ADR-0049](docs/adr/0049-work-goes-to-an-agent-with-usage-left.md) and
-  [`docs/using.md`](docs/using.md#usage), alongside `src/usage-model.ts` (the reading's
-  Schemas and every judgement made from it, pure so Desktop and a module share them),
-  `src/usage.ts` (the host's sources, their interval and back-off), `collie usage` in
-  `src/commands/usage.ts` and Desktop's `desktop/src/shared/usage.ts` (the header's entries
-  and a Machine's Usage block), with `test/usage-model.test.ts`, `test/usage.test.ts` and
-  `test/desktop-usage.test.ts`. Where work falls back is `resolveWithRoom` in
-  `src/harness.ts`, applied by `choose` in `src/agents.ts` against the `fallbacks` setting,
-  with `test/fallback.test.ts`. Usage
-  chooses where work runs, never whether it runs.
-- **Changing Review comments — drafts on a Run's plan or diff, what is sent and to whom, or
-  how the Diff tab draws** →
-  [ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md), alongside
-  `desktop/src/shared/review-comments.ts` (drafts, anchors and the composed message, with
-  `desktop/test/review-comments.test.ts`), `recipients` in
-  `desktop/src/shared/record-terminal.ts` (who may get them) and the `Deliver` action in
-  `act` in `desktop/src/bun/machine.ts` (one `deliver`, word for word, with
-  `test/desktop-deliver.test.ts`). Desktop never knows the delivery cap. The Diff tab draws
-  each file with `@pierre/diffs`' `FileDiff` in `desktop/view/app/components/DiffFile.vue`;
-  whether a line is in a hunk, and a selection's anchor, are the shared module's.
-- **Changing how large Desktop draws, or its Zoom** →
-  [ADR-0047](docs/adr/0047-desktop-draws-at-its-monitors-own-scale.md), alongside
-  `desktop/src/shared/scale.ts` (the monitor of a window from `hyprctl -j`, the zoom and the
-  "Drawn at" line) and `desktop/src/bun/scale.ts` (reading the scales and setting each
-  window's page zoom as it moves), with `test/desktop-scale.test.ts`. Page zoom, never CSS
-  `zoom`.
-- **Adding a setting, or changing how settings are shared across a Flock** →
-  [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), alongside
-  `src/settings.ts` (the one list the TUI, Desktop and the host read), `setSetting` and
-  `takeShared` in `src/config.ts`, and `desktop/src/shared/flock-settings.ts` with
-  `test/desktop-settings.test.ts`. The latest edit of a key wins.
-- **Changing what a Run must prove, or what counts as proof** →
-  [`docs/cli.md`](docs/cli.md#outcomes) and
-  [ADR-0010](docs/adr/0010-a-run-proves-its-outcome.md), alongside `src/outcome.ts` (the
-  table), `src/verify.ts` and `src/verify-spec.ts` (collection and what Collie may run),
-  and `src/metrics.ts` (what a Run produced). Evidence is collected at a revision; an
-  Output field is a claim.
-- **Changing what a human sees of a check Collie runs — its pass, its timing, its live
-  output** → [ADR-0042](docs/adr/0042-a-check-collie-runs-is-seen-while-it-runs.md),
-  alongside `src/checks.ts` (the one reading every door uses), `src/verify.ts` (the marker,
-  the pass on a record and the bounded log) and `collie run checks` in
-  `src/commands/run.ts`. A pass is the Workflow's declaration, never inferred from its id.
-- **Changing the Home's panes, the chat harness, or what native chat may read** →
-  [`docs/using.md`](docs/using.md#talking-to-collie-about-a-herd), alongside
-  `src/chat.ts` (the harness and the session), `src/toolkit.ts` (the read contract) and
-  [ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md), whose sessions and
-  model [ADR-0032](docs/adr/0032-a-chat-starts-new-on-the-latest-opus.md) replaces. What the board has
-  selected is an explicit input chat may read, never a filter over the reads
-  ([ADR-0012](docs/adr/0012-the-boards-selection-is-an-explicit-chat-input.md), alongside
-  `src/selection.ts` and `src/statusline.ts`).
-- **Changing what a workflow module exports, its metadata, or the schemas its steps
-  write** → [`docs/sdk.md`](docs/sdk.md), alongside `src/sdk.ts` (the contract and what it
-  refuses) and `src/output.ts` (the shared Output schemas, and the parsers that read
-  them). `docs/authoring.md` is where a module and a persona live and how a fork follows
-  its parent.
-- **Changing how a workflow module is loaded, which Effect it gets, or what a host may
-  assume about suspension and recovery** →
-  [ADR-0014](docs/adr/0014-native-workflows-run-on-effects-own-engine.md), alongside
-  `src/engine.ts` and `test/engine.test.ts`. The two non-default cluster settings
-  and the six upstream behaviours the proof measured are recorded there; an Effect
-  upgrade rechecks them rather than assuming them.
-- **Naming something, or writing a test that needs a real host** →
-  [ADR-0028](docs/adr/0028-names-are-the-domains-and-the-proof-drives-the-shipped-host.md),
-  alongside `test/support/host.ts`. A name says what the thing does, never which
-  implementation it replaced, and a test drives the `collie host` an installation runs.
-- **Writing a test that waits, starts `collie` or stops a host, or adding an import a front
-  door loads** → [`docs/internals.md`](docs/internals.md#keeping-the-suite-and-a-start-fast).
-- **Changing where a workflow module is looked for, which layer wins, or when an edit
-  reaches new work** →
-  [ADR-0016](docs/adr/0016-a-workflow-module-is-found-where-it-was-saved.md) and
-  [`docs/sdk.md`](docs/sdk.md#where-a-module-lives), alongside `src/discovery.ts`,
-  `test/discovery.test.ts` and `test/autoload.test.ts`. The user's own directory is
-  `~/.collie/user/`, which no upgrade writes; `collie upgrade` replaces `~/.collie/release/`
-  whole ([ADR-draft-an-installation-is-the-release-its-runner-carries](docs/adr/draft-an-installation-is-the-release-its-runner-carries.md)).
-- **Adding a file a project keeps for Collie** →
-  [ADR-0031](docs/adr/0031-what-collie-provides-lives-under-collie.md): it goes in the
-  project's `.collie/`, never in herdr's `.herdr/`.
-- **Changing who owns a state directory, how a client reaches the host, or what a
-  mismatched build is told** →
-  [ADR-0015](docs/adr/0015-one-local-host-owns-a-state-directory.md) and
-  [`docs/cli.md`](docs/cli.md#the-local-workflow-host), alongside `src/host.ts` and
-  `test/host.test.ts`. The lock is `src/lock.ts`'s, so ownership is decided the same way
-  wherever Collie needs exactly one owner.
-- **Changing what the host serves a front door, or the board protocol's version** →
-  [ADR-0038](docs/adr/0038-the-host-builds-and-serves-the-board.md) and
-  [`docs/cli.md`](docs/cli.md#the-local-workflow-host), alongside `FrontDoorRpcs` in
-  `src/board-model.ts`, `src/board-stream.ts` and `test/board-stream.test.ts`. An additive
-  change keeps `PROTOCOL`; a removal or a change of meaning bumps it. Who an operation
-  is recorded as is [ADR-0039](docs/adr/0039-every-operation-records-who-asked.md), with
-  `src/audit.ts` and `test/actor.test.ts`. Which writes a front door leaves to the host, and the receipts it
-  still makes itself, are [ADR-0040](docs/adr/0040-the-host-is-the-only-writer.md), with
-  `test/only-writer.test.ts`.
-  A drawer's details are `src/run-detail.ts` and `test/run-detail.test.ts`.
-- **Changing how a start is claimed, what a host records about a run, or how an
-  interrupted start recovers** →
-  [ADR-0017](docs/adr/0017-one-request-is-one-run.md) and
-  [`docs/cli.md`](docs/cli.md#the-local-workflow-host), alongside `src/store.ts`,
-  `test/store.test.ts` and `test/admission.test.ts`. The request id is the claim and the
-  un-receipted row is the whole of recovery; there is no outbox or queue to add to.
-- **Changing how a Run is started, shown, listed or waited on from the CLI or a
-  herdr action** →
-  [ADR-0018](docs/adr/0018-a-native-run-is-a-run.md) and
-  [`docs/cli.md`](docs/cli.md#a-workflow-saved-as-a-module), alongside `src/lifecycle.ts`,
-  `src/commands/run.ts`, `src/flows.ts` and `test/lifecycle.test.ts`. What an id runs is
-  decided by what is saved for the project, never by a flag, and a status is read from the
-  engine rather than kept anywhere of Collie's.
-- **Changing how an Input is inferred, settled or read back — or adding a strategy** →
-  [ADR-0019](docs/adr/0019-a-strategy-not-a-field-name.md) and
-  [`docs/cli.md`](docs/cli.md#a-workflow-saved-as-a-module), alongside `src/strategies.ts`,
-  `src/inputs.ts`, `src/engine.ts` and `test/strategies.test.ts`. What Collie does with an
-  Input is the strategy's, never the field's name: read one with `workSourceOf`,
-  `diffTargetOf` or `repositoryOf` rather than by looking a name up.
-- **Changing how Collie reaches a forge — GitLab or GitHub, `glab` or `gh`** →
-  [ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md) and
-  [`docs/internals.md`](docs/internals.md#the-forge-boundary), alongside the interface in
-  `src/forge/forge.ts`, the adapters `src/forge/gitlab.ts` and `src/forge/github.ts`, the
-  fakes in `test/support/forge.ts`, the contract `test/forge.test.ts` and the boundary
-  `test/forge-boundary.test.ts`. A CLI is run only by its own adapter.
-- **Changing how a workflow runs an agent, builds its prompt or collects its
-  Output** →
-  [ADR-0020](docs/adr/0020-an-agent-is-launched-once-and-its-output-is-decoded.md) and
-  [`docs/sdk.md`](docs/sdk.md#having-an-agent-do-the-work), alongside `src/agents.ts` and
-  `test/agents.test.ts`. One launch, one collection, one repair, each its own Activity;
-  herdr is reached through `src/herdr.ts` and the prompt goes out through the Dispatcher.
-- **Changing what a human can do to a Run — a decision, a hold, a stop, steering** →
-  [ADR-0021](docs/adr/0021-one-host-answers-for-a-run.md) and
-  [`docs/cli.md`](docs/cli.md#answering-holding-and-steering-one), alongside `src/engine.ts`,
-  `src/lifecycle.ts` and `test/control.test.ts`. The host settles it whichever door it came
-  in; a question is asked with `ask` so the host knows it is open, and a control says
-  whether it reached the run rather than confirming what it could not. Where a stop ends an
-  agent's work — its App Server, not its pane, for Codex — and what may replace it after:
-  [ADR-0059](docs/adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md), with
-  `stopAgent` in `src/compaction.ts`, the port's stop in `src/compactors.ts`,
-  `src/processes.ts` and `test/codex-stop.test.ts`.
-- **Changing how a workflow module reaches a service or another workflow** →
-  [ADR-0022](docs/adr/0022-a-workflow-is-made-of-workflows.md) and
-  [`docs/sdk.md`](docs/sdk.md#a-workflow-made-of-other-workflows), alongside `src/sdk.ts`,
-  `src/engine.ts` and `test/children.test.ts`. A module provides what it needs with
-  `Layer.provide` and there is nothing to look a service up in; a child is selected by its
-  public id in the parent's own project, and its invocation name is its identity.
-- **Changing how a review/fix rally converges, or what counts as proof of a Run** →
-  [ADR-0023](docs/adr/0023-a-rally-is-a-loop-and-a-claim-is-not-proof.md) and
-  [`docs/sdk.md`](docs/sdk.md#reviewing-and-fixing-until-it-converges), alongside
-  `src/output.ts`, `src/outcome.ts`, `src/verify.ts` and `test/rally.test.ts`. The engine
-  and a module make the same decision through `settleRound`; a check is a claim until the
-  verification journal has it on this revision. Nobody approves a Run's checks: a human,
-  chat or the Run's own agent names them, and Collie spawns what they name
-  ([ADR-0055](docs/adr/0055-a-run-never-asks-to-run-its-checks.md)).
-- **Changing how a list of work, a ticket slice or a repository fan-out recovers** →
-  [ADR-0024](docs/adr/0024-a-list-of-work-is-known-by-its-names.md) and
-  [`docs/sdk.md`](docs/sdk.md#a-list-of-work-one-item-at-a-time), alongside `src/slices.ts`,
-  `src/plan.ts`, `src/agents.ts` and `test/listing.test.ts`. An item is known by its own
-  name and the list is enumerated again on every pass, so a reordered or edited plan has
-  work left rather than work reassigned; a skip records a reason and opens no tab.
-- **Changing what a card says a Run became, or what it offers to do next** →
-  [ADR-0025](docs/adr/0025-a-card-is-facts-and-an-offer-is-a-declaration.md) and
-  [`docs/sdk.md`](docs/sdk.md#what-a-definition-declares), alongside `src/standing.ts`, `src/offers.ts`,
-  `src/cards.ts` and `test/actions.test.ts`. What became of the work is read from the
-  branch, the merge request, the tickets and the disposition; what to do next is the
-  workflow's own declaration, decided again — eligibility and arguments both — at the
-  moment it is invoked.
-- **Changing what a shipped workflow does** →
-  [ADR-0026](docs/adr/0026-a-shipped-workflow-is-a-module-like-any-other.md) and
-  [`docs/sdk.md`](docs/sdk.md), alongside `workflows/*.workflow.ts`, their Markdown beside
-  them and the scenarios in `test/support/baseline.ts`. All six are modules loaded through the public
-  contract: the Markdown is content, what happens is TypeScript, and what each one proves
-  and offers is its own declaration rather than its name. One that expects to be varied —
-  `renovate` — takes the varying steps as ordinary functions, so a fork supplies three and
-  keeps the rest (`test/fixtures/workflows/landing.workflow.ts`).
-- **Changing what a workflow module is, or how its agent is chosen** →
-  [ADR-0030](docs/adr/0030-a-workflow-is-one-definition-and-its-agent-is-decided-in-scope.md)
-  and [`docs/sdk.md`](docs/sdk.md), alongside `defineWorkflow`, `Run` and `withAgents` in
-  `src/sdk.ts`, the loader and `registrationOf` in `src/engine.ts`, `resolveChoice` in
-  `src/harness.ts`, and `test/definition.test.ts`, `test/agents.test.ts` and
-  `test/harness.test.ts`. A module is its default-exported definition; the Run is supplied,
-  never passed; a question is asked where the work reaches it; and harness, model and effort
-  are resolved together, layer over layer, and recorded before an agent starts.
-- **Adding anything in `src/` that looks at a workflow's id** →
+- **Steering a finished Run** → [ADR-0041](docs/adr/0041-a-finished-run-still-takes-steering.md),
+  `admit` in `src/proposals.ts`, `src/engine.ts`, `steerRun` in `src/lifecycle.ts`, `test/finished-steer.test.ts`.
+- **Task names, labels** → [`docs/using.md`](docs/using.md#what-a-task-workspace-is-called),
+  `src/tasknames.ts`, `prompts/namer.md`, `src/naming.ts`.
+- **Board** → [`docs/using.md`](docs/using.md#the-control-plane),
+  [ADR-0009](docs/adr/0009-the-collie-tab-is-the-herds.md), [ADR-0013](docs/adr/0013-the-board-is-cards-of-tasks.md)
+  (supersedes [ADR-0005](docs/adr/0005-collie-tab-is-an-application.md) on what it draws),
+  `src/board-model.ts`, `src/board.ts`, `src/ui/Board.tsx`, `src/ui/Drawer.tsx`, `src/home.ts`.
+- **Agent to agent, agent reports** → [ADR-0058](docs/adr/0058-an-agent-speaks-to-another-as-itself.md),
+  `src/harness.ts`, `src/tools.ts`, `asksRun` in `src/lifecycle.ts`, `src/dispatcher.ts`, `src/handoff.ts`,
+  `src/reports.ts`, `requestedBy` in `src/engine.ts`, `src/agent-start.ts`, `workflows/investigate.workflow.ts`,
+  `test/agent-origin.test.ts`, `test/mcp.test.ts`, `test/reports.test.ts`.
+- **Machine to Machine** → [ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md),
+  [`docs/internals.md`](docs/internals.md#reaching-another-machine), `src/peers.ts`, `src/peers-model.ts`,
+  `src/channel.ts`, `connectPeer` in `src/host.ts`, `test/peers.test.ts`, `test/support/peers.ts`.
+- **Desktop**, its Flock chat, record and Diff tab → [`desktop/README.md`](desktop/README.md),
+  [`docs/using.md`](docs/using.md#collie-desktop), `test/desktop-*.test.ts`, `test/flock-*.test.ts`.
+- **Agent launch profile** → [ADR-0060](docs/adr/0060-a-managed-agent-runs-with-the-operators-profile.md),
+  [`docs/using.md`](docs/using.md#what-collies-agents-get), `src/profile.ts`, `src/agents.ts`,
+  `test/profile.test.ts`, `test/agents.test.ts`.
+- **Attachments** → [ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md),
+  `src/attachments.ts`, `src/uploads.ts`, `src/host-files.ts`, `test/attachments.test.ts`, `test/host-files.test.ts`.
+- **Usage, fallbacks** → [ADR-0049](docs/adr/0049-work-goes-to-an-agent-with-usage-left.md),
+  [`docs/using.md`](docs/using.md#usage), `src/usage-model.ts`, `src/usage.ts`, `src/commands/usage.ts`,
+  `resolveWithRoom` in `src/harness.ts`, `choose` in `src/agents.ts`, `test/usage-model.test.ts`,
+  `test/usage.test.ts`, `test/fallback.test.ts`.
+- **Review comments** → [ADR-0051](docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md),
+  `desktop/src/shared/review-comments.ts`. **Desktop Zoom** → [ADR-0047](docs/adr/0047-desktop-draws-at-its-monitors-own-scale.md).
+- **Settings** → [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), `src/settings.ts`,
+  `setSetting` and `takeShared` in `src/config.ts`.
+- **Outcomes, proof** → [`docs/cli.md`](docs/cli.md#outcomes), [ADR-0010](docs/adr/0010-a-run-proves-its-outcome.md),
+  `src/outcome.ts`, `src/verify.ts`, `src/verify-spec.ts`, `src/metrics.ts`.
+- **Checks Collie runs, as seen** → [ADR-0042](docs/adr/0042-a-check-collie-runs-is-seen-while-it-runs.md),
+  `src/checks.ts`, `src/verify.ts`, `src/commands/run.ts`.
+- **Home chat** → [`docs/using.md`](docs/using.md#talking-to-collie-about-a-herd),
+  [ADR-0011](docs/adr/0011-the-conversation-is-a-native-harness.md), [ADR-0032](docs/adr/0032-a-chat-starts-new-on-the-latest-opus.md),
+  [ADR-0012](docs/adr/0012-the-boards-selection-is-an-explicit-chat-input.md), `src/chat.ts`, `src/toolkit.ts`,
+  `src/selection.ts`, `src/statusline.ts`.
+- **Workflow module contract** → [`docs/sdk.md`](docs/sdk.md), `src/sdk.ts`, `src/output.ts`.
+- **Engine, loading, recovery** → [ADR-0014](docs/adr/0014-native-workflows-run-on-effects-own-engine.md),
+  `src/engine.ts`, `test/engine.test.ts`.
+- **Naming, host tests** → [ADR-0028](docs/adr/0028-names-are-the-domains-and-the-proof-drives-the-shipped-host.md),
+  `test/support/host.ts`.
+- **Slow tests, front-door imports** → [`docs/internals.md`](docs/internals.md#keeping-the-suite-and-a-start-fast).
+- **Module discovery** → [ADR-0016](docs/adr/0016-a-workflow-module-is-found-where-it-was-saved.md),
+  [`docs/sdk.md`](docs/sdk.md#where-a-module-lives), `src/discovery.ts`, `test/discovery.test.ts`, `test/autoload.test.ts`;
+  the user's directory: [ADR-draft-an-installation-is-the-release-its-runner-carries](docs/adr/draft-an-installation-is-the-release-its-runner-carries.md).
+- **A project's own files** → [ADR-0031](docs/adr/0031-what-collie-provides-lives-under-collie.md).
+- **Host ownership, version mismatch** → [ADR-0015](docs/adr/0015-one-local-host-owns-a-state-directory.md),
+  [`docs/cli.md`](docs/cli.md#the-local-workflow-host), `src/host.ts`, `src/lock.ts`, `test/host.test.ts`.
+- **Board protocol, actors, only writer** → [ADR-0038](docs/adr/0038-the-host-builds-and-serves-the-board.md),
+  [ADR-0039](docs/adr/0039-every-operation-records-who-asked.md), [ADR-0040](docs/adr/0040-the-host-is-the-only-writer.md),
+  `FrontDoorRpcs` in `src/board-model.ts`, `src/board-stream.ts`, `src/audit.ts`, `src/run-detail.ts`,
+  `test/board-stream.test.ts`, `test/actor.test.ts`, `test/only-writer.test.ts`, `test/run-detail.test.ts`.
+- **Admission, recovery** → [ADR-0017](docs/adr/0017-one-request-is-one-run.md), `src/store.ts`,
+  `test/store.test.ts`, `test/admission.test.ts`.
+- **Run lifecycle** (start, show, list, wait) → [ADR-0018](docs/adr/0018-a-native-run-is-a-run.md),
+  [`docs/cli.md`](docs/cli.md#a-workflow-saved-as-a-module), `src/lifecycle.ts`, `src/commands/run.ts`,
+  `src/flows.ts`, `test/lifecycle.test.ts`.
+- **Inputs, strategies** → [ADR-0019](docs/adr/0019-a-strategy-not-a-field-name.md), `src/strategies.ts`,
+  `src/inputs.ts`, `test/strategies.test.ts`.
+- **Forge** (`glab`, `gh`) → [ADR-0050](docs/adr/0050-a-merge-request-is-its-forges.md),
+  [`docs/internals.md`](docs/internals.md#the-forge-boundary), `src/forge/`, `test/support/forge.ts`,
+  `test/forge.test.ts`, `test/forge-boundary.test.ts`.
+- **Agent launch, prompt, Output** → [ADR-0020](docs/adr/0020-an-agent-is-launched-once-and-its-output-is-decoded.md),
+  [`docs/sdk.md`](docs/sdk.md#having-an-agent-do-the-work), `src/agents.ts`, `test/agents.test.ts`.
+- **Controls** (decision, hold, stop) → [ADR-0021](docs/adr/0021-one-host-answers-for-a-run.md),
+  [`docs/cli.md`](docs/cli.md#answering-holding-and-steering-one), `src/lifecycle.ts`, `test/control.test.ts`;
+  stopping an agent: [ADR-0059](docs/adr/0059-a-stopped-agent-is-stopped-where-its-turn-runs.md),
+  `stopAgent` in `src/compaction.ts`, `src/processes.ts`, `test/codex-stop.test.ts`.
+- **Child workflows, services** → [ADR-0022](docs/adr/0022-a-workflow-is-made-of-workflows.md),
+  [`docs/sdk.md`](docs/sdk.md#a-workflow-made-of-other-workflows), `test/children.test.ts`.
+- **Rallies, checks as proof** → [ADR-0023](docs/adr/0023-a-rally-is-a-loop-and-a-claim-is-not-proof.md),
+  [ADR-0055](docs/adr/0055-a-run-never-asks-to-run-its-checks.md),
+  [`docs/sdk.md`](docs/sdk.md#reviewing-and-fixing-until-it-converges), `settleRound`, `test/rally.test.ts`.
+- **Lists of work, slices, fan-out** → [ADR-0024](docs/adr/0024-a-list-of-work-is-known-by-its-names.md),
+  [`docs/sdk.md`](docs/sdk.md#a-list-of-work-one-item-at-a-time), `src/slices.ts`, `src/plan.ts`, `test/listing.test.ts`.
+- **Cards, offers** → [ADR-0025](docs/adr/0025-a-card-is-facts-and-an-offer-is-a-declaration.md),
+  [`docs/sdk.md`](docs/sdk.md#what-a-definition-declares), `src/standing.ts`, `src/offers.ts`, `src/cards.ts`,
+  `test/actions.test.ts`.
+- **Shipped workflows** → [ADR-0026](docs/adr/0026-a-shipped-workflow-is-a-module-like-any-other.md),
+  `workflows/*.workflow.ts`, `test/support/baseline.ts`, `test/fixtures/workflows/landing.workflow.ts`.
+- **Definition, agent choice** → [ADR-0030](docs/adr/0030-a-workflow-is-one-definition-and-its-agent-is-decided-in-scope.md),
+  `defineWorkflow`, `Run`, `withAgents`, `registrationOf`, `resolveChoice`, `test/definition.test.ts`,
+  `test/harness.test.ts`.
+- **Anything in `src/` that reads a workflow id** →
   [ADR-0029](docs/adr/0029-one-host-acts-for-a-run-and-a-workflows-name-decides-nothing.md),
-  alongside `test/workflow-names.test.ts` and `test/support/baseline.ts`, whose every
-  scenario also runs under an id that shares nothing with the shipped one
-  (`test/baseline-unrelated.test.ts`). Decide from a
-  fact or a declaration; a module composing by id is fine, Collie dispatching on one is not.
-- **Changing how a run is executed, coordinated, or recorded** →
-  [`docs/internals.md`](docs/internals.md) and [`docs/adr/`](docs/adr).
-- **Changing install, keybindings or the Control Plane** →
-  [`docs/using.md`](docs/using.md).
-- **Changing how a release is signed, what an installer checks, or what Collie supports on
-  macOS** → [ADR-0048](docs/adr/0048-collie-is-released-for-macos-on-apple-silicon.md),
-  alongside `tools/sign.ts`, `src/signing.ts`, `install.sh` and `install-desktop.sh`, with
-  `test/signing.test.ts`, `test/prepare.test.ts` and `test/install-desktop.test.ts`. Every
-  asset is signed twice: the shell installers check the P-256 signature, which any
-  `openssl` can, and the runner and Desktop the Ed25519 one. What runs differently on a Mac is
-  `src/script.ts` (a login's `script`), the `ps` fallback in `src/compaction.ts`'s
-  `endpointPid` and `desktop/src/bun/login-path.ts` (Desktop's PATH from the login shell).
-  Desktop's macOS build is `desktop/scripts/mac-signing.ts` (Developer ID or ad hoc) and
-  `tools/verify-mac-app.sh`, with `test/desktop-mac-signing.test.ts` and
-  `test/desktop-build-hook.test.ts`.
+  `test/workflow-names.test.ts`, `test/baseline-unrelated.test.ts`.
+- **Execution, coordination, records** → [`docs/internals.md`](docs/internals.md), [`docs/adr/`](docs/adr).
+- **Install, keybindings, Control Plane** → [`docs/using.md`](docs/using.md).
+- **Release signing, installers, macOS** → [ADR-0048](docs/adr/0048-collie-is-released-for-macos-on-apple-silicon.md),
+  `tools/sign.ts`, `src/signing.ts`, `install.sh`, `install-desktop.sh`, `src/script.ts`,
+  `test/signing.test.ts`, `test/prepare.test.ts`.
 
 ## Commands
 
