@@ -15,8 +15,8 @@ Rules:
   the plan is wrong, say so before you deviate.
 - One ticket at a time: build it, verify it, commit it, then start the next.
 - Touch only what the ticket needs. Do not reformat, rename or refactor around it.
-- Run the project's own tests and linters and report what they actually said, not what
-  they should have said.
+- Run the typecheck, linters and tests that cover what you touched, and report what they
+  actually said, not what they should have said. The whole suite is Collie's.
 - Commit messages say why, in the imperative, with no tool attribution. Push what you
   commit before the step ends: the reviewers read the remote, and work left on your own
   machine is a review of code nobody else can see. Merge only when the human tells you to
