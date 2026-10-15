@@ -904,7 +904,7 @@ const hostBoard = (dir: string) =>
           asked: { reason },
           result: Controlled,
         },
-        registry.control({ runId, control: STOP, set: true }),
+        registry.control({ runId, control: STOP, set: true, alone: true }),
       ).pipe(
         Effect.provideContext(hosted),
         Effect.provideContext(bun),

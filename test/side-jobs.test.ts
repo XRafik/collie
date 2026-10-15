@@ -6,7 +6,7 @@ import { readAudit } from "../src/audit";
 import { readDispositions } from "../src/disposition";
 import { currentEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
-import { frontDoor, socketOf } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
 import { newsPath, pending, read as readNews } from "../src/news";
 import { herdOf } from "../src/steering";
 import { writeTask } from "../src/task";
@@ -114,6 +114,49 @@ test(
           ]);
         }),
       ["targeted-parks.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a merge stops a Run of its Task without the child it started in another Task",
+  () =>
+    proves(
+      "collie-side-settle-child-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* writeTask(world.state, {
+            id: "task-1",
+            workspace: "w1",
+            label: "project | Targeted",
+            cwd: world.project,
+            created_at: "2026-10-01T09:00:00Z",
+          }).pipe(Effect.orDie);
+          const PATH = yield* mergedGlab(`${world.home}/bin`).pipe(Effect.orDie);
+          const started = yield* collie(
+            world,
+            ["run", "start", "targeted-parent", "--task", "task-1", "--input", `target=${MR}`],
+            { PATH },
+          );
+          expect(started.envelope.ok).toBe(true);
+          const runId = yield* runIdOf(started.envelope);
+          const client = yield* connect(world.state).pipe(Effect.orDie);
+          yield* until(
+            client.run({ runId: `${runId}.aside` }).pipe(Effect.orElseSucceed(() => null)),
+            (view) => view?.parked !== null && view?.parked !== undefined,
+          );
+          yield* until(
+            readAudit(`${world.state}/runs/${runId}`).pipe(
+              Effect.map((lines) => lines.some((line) => line.operation === "stop")),
+              Effect.orElseSucceed(() => false),
+            ),
+            (stopped) => stopped,
+          );
+          const aside = yield* client.run({ runId: `${runId}.aside` }).pipe(Effect.orDie);
+          yield* stopHost(world.state);
+          expect(aside?.controls).toEqual([]);
+        }),
+      ["targeted-parent.workflow.ts", "targeted-parks.workflow.ts"],
     ),
   120_000,
 );
