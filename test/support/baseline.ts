@@ -1877,6 +1877,14 @@ const repository = () =>
     }
   });
 
+/** That repository with a commit the default branch does not have, so its base is another tree. */
+const ahead = () =>
+  repository().pipe(
+    Effect.andThen(
+      exec(["git", "commit", "-qm", "the change", "--allow-empty"], { cwd: rig.projectDir }),
+    ),
+  );
+
 /** A real repository whose `feature` branch has a checkout of its own, as a reviewed branch does. */
 const reviewedBranch = () =>
   Effect.gen(function* () {
@@ -3061,7 +3069,7 @@ scenario(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* repository();
+        yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
         // Approved, and it passes only at the default branch's base: an Output that says the
         // tests pass is a claim, and the journal is what the gate reads.
@@ -3114,9 +3122,12 @@ scenario(
           Effect.flatMap(Host, (host) => host.evidence("r-impl-gate", rig.projectDir)),
         );
         const before = (yield* evidence).final;
+        const failedRuns = yield* runsOf(count);
         yield* fs.writeFileString(`${rig.root}/repaired`, "fixed\n");
         const completed = yield* resumed(options);
         expect(said(completed)).toBe(OPENED.mr_url);
+        // The latest record on this tree failed, so the resume runs the check again.
+        expect(yield* runsOf(count)).toBeGreaterThan(failedRuns);
         expect(yield* parkedWhy("r-impl-gate")).toBe("");
         expect((yield* prompts()).filter((one) => one.includes("build-step-1"))).toHaveLength(1);
         expect((yield* evidence).final).toEqual(before);
@@ -3203,7 +3214,7 @@ scenario(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* repository();
+        yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
         // Fails at the gate, passes at the default branch's base, fails once more, then passes
         // once the fix has run.
@@ -3256,7 +3267,7 @@ scenario(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* repository();
+        yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
         const count = `${rig.root}/runs`;
         const seen = `${rig.root}/markers`;
@@ -3394,13 +3405,13 @@ scenario(
 );
 
 scenario(
-  "a check that passed at the gate runs again after a gate fix, and not again for the proof",
+  "a check that passed at the gate is not run again on that tree, by a gate fix or the proof",
   () =>
     runEffect(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* repository();
+        yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
         const runId = "r-gate-fix-reruns";
         yield* approve(runId, ["unit", "lint"]);
@@ -3423,26 +3434,29 @@ scenario(
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
-        // At the gate, and after the fix: never for the proof.
-        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(2);
+        // The fix left the tree as it was, so lint's pass at the gate still answers.
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
         expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(4);
-        const fixed = (yield* readVerifications(evidenceDir(dir, runId))).filter(
-          (one) => one.pass === "fix",
-        );
-        expect(yield* reliedOn(runId)).toEqual(fixed.map(({ name, id }) => ({ name, id })));
+        const records = yield* readVerifications(evidenceDir(dir, runId));
+        const last = (name: string, pass: string) =>
+          records.findLast((one) => one.name === name && one.pass === pass)!.id;
+        expect(yield* reliedOn(runId)).toEqual([
+          { name: "unit", id: last("unit", "fix") },
+          { name: "lint", id: last("lint", "gate") },
+        ]);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "after a resume the proof runs every check again, even one it could have reused",
+  "after a restart the host runs again a check it collected before it started",
   () =>
     runEffect(
       Effect.gen(function* () {
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         yield* bin.add("glab", `exit 0`);
-        yield* repository();
+        yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
         const runId = "r-gate-resumed";
         yield* approve(runId, ["unit", "lint"]);
@@ -3477,8 +3491,8 @@ scenario(
         );
         expect(result).toBe("suspended");
         const suspended = yield* runsOf(`${rig.root}/unit-runs`);
-        // The gate and each of the four fixes; the proof relied on the last of them.
-        expect(suspended).toBe(5);
+        // The gate's pass answered each fix, which left the tree as it was.
+        expect(suspended).toBe(1);
 
         yield* fs.writeFileString(`${rig.root}/repaired`, "");
         expect(said(yield* resumed(options))).toBe(OPENED.mr_url);

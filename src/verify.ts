@@ -441,25 +441,34 @@ export const sameCommand = (one: Command, other: Command) =>
   one.argv.length === other.argv.length &&
   one.argv.every((word, at) => word === other.argv[at]);
 
+/** A check's command resolved for its Run; one whose executable is not found matches no record. */
+export type CheckCommand = Pick<Verification, "name" | "argv" | "cwd"> & {
+  readonly executable: string | null;
+};
+
+/** Whether this record ran exactly that check's command. */
+export const ranCommand = (record: Command, check: CheckCommand) =>
+  check.executable !== null && sameCommand(record, { ...check, executable: check.executable });
+
 /**
- * The latest result Collie collected for this check, where it passed for the same command
- * on this tree in this environment. Whether nothing happened since is the caller's to know.
+ * The latest record of exactly this command on this tree, where it is a pass collected in
+ * this environment since `since`. Whoever asked for it does not matter: the host ran it.
  */
-export function reusablePass(
+export function reliedPass(
   records: ReadonlyArray<Verification>,
-  wanted: Pick<Verification, "name" | "executable" | "argv" | "cwd"> & {
+  wanted: Pick<Verification, "executable" | "argv" | "cwd"> & {
     readonly environment: string | null;
   },
   now: Snapshot,
+  since: string,
 ): Verification | null {
-  const latest = records.findLast((one) => one.by === "collie" && one.name === wanted.name);
+  const latest = records.findLast((one) => sameCommand(one, wanted) && !staleAgainst(one, now));
   if (latest === undefined || wanted.environment === null) return null;
   const holds =
     latest.result === "pass" &&
     latest.expect === "pass" &&
-    sameCommand(latest, wanted) &&
     latest.environment === wanted.environment &&
-    !staleAgainst(latest, now);
+    epochMs(latest.at) > epochMs(since);
   return holds ? latest : null;
 }
 
@@ -470,24 +479,20 @@ export const commandOf = Effect.fn("Verify.commandOf")(function* (run: CheckRun,
   return { name: spec.name, executable, argv: spec.argv, cwd };
 });
 
-/** `reusablePass` for one of a Run's checks, read from its journal against its tree now. */
-export const reusableFor = Effect.fn("Verify.reusableFor")(function* (
+/** `reliedPass` for one of a Run's checks, read from its journal against its tree now. */
+export const reliedFor = Effect.fn("Verify.reliedFor")(function* (
   runDir: string,
   run: CheckRun,
   spec: VerifySpec,
+  since: string,
 ) {
   const cwd = yield* checkCwd(run, spec);
   const executable = yield* resolveExecutable(spec.executable, cwd);
   if (executable === null) return null;
-  return reusablePass(
+  return reliedPass(
     yield* readVerifications(runDir).pipe(Effect.orElseSucceed(() => [])),
-    {
-      name: spec.name,
-      executable,
-      argv: spec.argv,
-      cwd,
-      environment: yield* environmentOf(executable),
-    },
+    { executable, argv: spec.argv, cwd, environment: yield* environmentOf(executable) },
     yield* fingerprint(cwd),
+    since,
   );
 });

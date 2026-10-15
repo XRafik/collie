@@ -840,3 +840,60 @@ test(
     ),
   240_000,
 );
+
+test(
+  "collie verify of one of a Run's Checks that already passed on this tree answers without running it",
+  () =>
+    proves("collie-lifecycle-verify-once-", (world) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const client = yield* connect(world.state).pipe(Effect.orDie);
+        const started = yield* client
+          .start({ project: world.project, id: "proof", request: "req-1", input: { note: "x" } })
+          .pipe(Effect.orDie);
+        // Outside the tree, so counting its runs moves nothing a verification is bound to.
+        const counter = `${world.home}/ran`;
+        const command = ["sh", "-c", `echo ran >> ${counter}`];
+        const runs = fs.readFileString(counter).pipe(
+          Effect.map((text) => text.split("\n").length - 1),
+          Effect.orElseSucceed(() => 0),
+        );
+        const granted = yield* collie(world, [
+          "run",
+          "intent",
+          "verification",
+          started.runId,
+          "--name",
+          "unit",
+          "--",
+          ...command,
+        ]);
+        expect(granted.envelope.ok).toBe(true);
+        const verify = (...args: ReadonlyArray<string>) =>
+          collie(world, ["verify", "--run", started.runId, ...args]);
+
+        const first = yield* verify("--", ...command);
+        expect(first.exit).toBe(0);
+        expect(first.envelope.data).toMatchObject({ ran: true });
+        expect(yield* runs).toBe(1);
+
+        const again = yield* verify("--", ...command);
+        expect(again.exit).toBe(0);
+        expect(yield* runs).toBe(1);
+        const { id } = Schema.decodeUnknownSync(
+          Schema.Struct({ verification: Schema.Struct({ id: Schema.String }) }),
+        )(first.envelope.data).verification;
+        expect(again.envelope.data).toMatchObject({ ran: false, verification: { id } });
+        expect(again.stderr).toContain(`not run again: verification ${id}`);
+
+        // Expecting a failure, or a command that is not one of the Run's Checks, always runs.
+        yield* verify("--expect", "fail", "--", ...command);
+        expect(yield* runs).toBe(2);
+        yield* verify("--", "sh", "-c", `echo ran >> ${counter}; true`);
+        yield* verify("--", "sh", "-c", `echo ran >> ${counter}; true`);
+        expect(yield* runs).toBe(4);
+        yield* stopHost(world.state);
+      }),
+    ),
+  240_000,
+);

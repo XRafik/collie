@@ -2214,8 +2214,42 @@ test("a Run's checks are its Intent's as they stand, each passed as the command 
       yield* amended([spec("test", "true", "packages/b")]);
       expect(yield* checks).toEqual({ state: "unchecked" });
       // A check withdrawn after it failed no longer holds the Run back.
-      yield* appendVerification(run.evidence, ran("lint", "fail"));
+      yield* appendVerification(run.evidence, { ...ran("lint", "fail"), argv: ["lint"] });
       yield* amended([spec("test")]);
+      expect(yield* checks).toEqual({ state: "passed", at: head });
+    }),
+  ));
+
+test("a Run whose gate relied on an agent's pass of the check's command reads as passed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const { repo, head } = yield* checkout("mk/ship");
+      const run = yield* madeRun(dir, {
+        task: "task-1",
+        state: "succeeded",
+        branch: "mk/ship",
+        cwd: repo,
+        mr: PR,
+        finished: "2026-09-14T09:30:00Z",
+      });
+      yield* (yield* FileSystem.FileSystem).writeFileString(
+        approvedFile(run.evidence),
+        encodeApproved([{ name: "test", executable: "true", argv: [], cwd: "worktree" }]),
+      );
+      const agents = (name: string, argv: ReadonlyArray<string>) => ({
+        ...checked(name, head),
+        by: "agent" as const,
+        executable: Bun.which("true")!,
+        argv: [...argv],
+        cwd: repo,
+      });
+      const checks = Effect.map(board(env, [run]), (views) => views[0]!.checks);
+      // The check's name with another command is not the check.
+      yield* appendVerification(run.evidence, agents("test", ["--other"]));
+      expect(yield* checks).toEqual({ state: "unchecked" });
+      // Exactly its command, under a name of the agent's own.
+      yield* appendVerification(run.evidence, agents("true", []));
       expect(yield* checks).toEqual({ state: "passed", at: head });
     }),
   ));

@@ -115,7 +115,7 @@ test("a Run with no check named is a gap its implementer closes by naming the ch
     expect(evidenceGaps(kind, got)).not.toContain(noCheckNamed);
 });
 
-test("the approved set has to pass here, now, and by Collie", () => {
+test("the approved set has to pass here, now, as its own command", () => {
   expect(evidenceGaps("unspecified", collected({ verifications: [] }))).toEqual([
     "tests was never run",
   ]);
@@ -138,13 +138,31 @@ test("the approved set has to pass here, now, and by Collie", () => {
       collected({ verifications: [record({ name: "tests", end: EARLIER })] }),
     ),
   ).toEqual(["tests last passed on a different tree"]);
-  // An agent may run anything; only Collie's own run of an approved spec closes this.
+  // An agent's record that only shares the check's name is not the check.
   expect(
     evidenceGaps(
       "unspecified",
       collected({ verifications: [record({ name: "tests", by: "agent" })] }),
     ),
-  ).toEqual(["tests last passed on a different tree"]);
+  ).toEqual(["tests was never run"]);
+});
+
+test("an agent's pass of exactly a check's command on this tree counts, and its name alone does not", () => {
+  const tests = { name: "tests", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  const agents = (name: string, argv: ReadonlyArray<string>) =>
+    record({ name, by: "agent", executable: "/usr/bin/bun", argv: [...argv], cwd: "/repo" });
+  expect(
+    evidenceGaps(
+      "unspecified",
+      collected({ verifications: [agents("mine", ["test"])], commands: [tests] }),
+    ),
+  ).toEqual([]);
+  expect(
+    evidenceGaps(
+      "unspecified",
+      collected({ verifications: [agents("tests", ["test", "--other"])], commands: [tests] }),
+    ),
+  ).toEqual(["tests was never run"]);
 });
 
 test("the latest of Collie's results on this tree is the one that counts", () => {

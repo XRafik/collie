@@ -3,7 +3,7 @@
 
 import { Effect, FileSystem, Schema, SchemaGetter } from "effect";
 import { isNumber, isString } from "./schema";
-import { staleAgainst, type Snapshot, type Verification } from "./verify";
+import { staleAgainst, type CheckCommand, type Snapshot, type Verification } from "./verify";
 import { isYamlMap, YamlValueJsonSchema, type YamlValue } from "./yaml";
 
 /** Present and not only whitespace: a required judgement nobody wrote is not one. */
@@ -695,6 +695,8 @@ export interface FixReport {
 export interface CheckEvidence {
   readonly verifications: ReadonlyArray<Verification>;
   readonly final: Snapshot;
+  /** The Run's checks' commands as they resolve here, so a record is read as the check it ran. */
+  readonly commands?: ReadonlyArray<CheckCommand>;
 }
 
 /**
