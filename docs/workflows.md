@@ -120,7 +120,9 @@ what a check could still prove to the implementer for up to four fixes; a review
 judgement or an Output's claim is not handed over, since no fix moves it. Before any fix, a
 check that failed is run once where the branch leaves the default branch: one that fails
 there too is named in the merge request as failing before the run's changes, and is not
-handed to the implementer. A gate fix lands after the last
+handed to the implementer. A fix that changes nothing and disputes every finding it was
+handed ends the fixes, since another would check the same tree: the outcome stays unproved,
+and the merge request names each disputed gap with the fixer's reason. A gate fix lands after the last
 review, so the merge request says it was not re-reviewed. What the Run could not settle —
 checks still unproved, blocking disputes the reviewers left unanswered, and the assumptions
 an implementer made where the spec was silent — goes into the description under **Not

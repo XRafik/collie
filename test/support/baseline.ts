@@ -3691,6 +3691,135 @@ scenario(
   120_000,
 );
 
+/** Checks red everywhere but the default branch's base until `${rig.root}/repaired` exists. */
+const stuck = (runId: string, names: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* approve(runId, [...names]);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      `${evidenceDir(dir, runId)}/approved.json`,
+      asApproved(
+        names.map((name) =>
+          counting(name, `${rig.root}/${name}-runs`, `[ $n -eq 2 ] || [ -f ${rig.root}/repaired ]`),
+        ),
+      ),
+    );
+    return bin;
+  });
+
+const disputing = (titles: ReadonlyArray<string>) => ({
+  ...GATE_FIX,
+  disputed: titles.map((title) => ({
+    severity: "blocker",
+    title,
+    reason: "the check is wrong, not the code",
+  })),
+});
+
+const repairing = () => ({
+  writes: [{ path: `${rig.root}/repaired`, text: "fixed\n" }],
+  output: GATE_FIX,
+});
+
+scenario(
+  "a gate fix that commits nothing and disputes its one finding is the last, and the merge request names the dispute",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-disputed";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit"]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, disputing(["unit failed"]), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/${runId}/gate-fix-2.prompt.md`)).toBe(false);
+        expect(yield* asked(runId, "mr")).toContain(
+          "- unit failed: gate fix 1 disputed it and changed nothing: the check is wrong, not the code",
+        );
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* fs.readFileString(`${runDir(dir, runId)}/log.txt`)).toContain(
+          "outcome unproved: unit failed; gate fix 1 disputed them and changed nothing",
+        );
+        const records = yield* readVerifications(evidenceDir(dir, runId));
+        expect(records.findLast((one) => one.name === "unit")?.result).toBe("fail");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a gate fix that disputes its finding but changes the tree is followed by another",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-disputed-moved";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit"]);
+        const moved = {
+          writes: [{ path: `${rig.projectDir}/touched`, text: "changed\n" }],
+          output: disputing(["unit failed"]),
+        };
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moved, repairing(), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-2")).toContain("unit failed");
+        expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a gate fix that changes nothing but leaves one of two findings undisputed is followed by another",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-disputed-half";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit", "lint"]);
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          disputing(["unit failed"]),
+          repairing(),
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-2")).toContain("lint failed");
+        expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "after a restart the host runs again a check it collected before it started",
   () =>

@@ -577,6 +577,9 @@ export default defineWorkflow({
             // A pass journaled before gaps were told apart handed a fix every gap.
             fixable: Schema.optionalKey(Schema.Array(Schema.String)),
             passed: Schema.Array(Schema.String),
+            tree: Schema.optionalKey(
+              Schema.Struct({ head: Schema.String, fingerprint: Schema.String }),
+            ),
           }),
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
@@ -592,21 +595,27 @@ export default defineWorkflow({
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
+            const { final } = yield* host.evidence(runId, cwd);
+            return {
+              ...(yield* readGaps(checks, rallied.reviewed)),
+              passed: now,
+              tree: { head: final.head_sha, fingerprint: final.fingerprint },
+            };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
-        return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps };
+        return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps, tree: pass.tree };
       });
       // Each test a failed check named, run again alone once on the same tree: one that passes
       // is a Flake, neither a gap nor a pass (ADR-0034, amended 2026-10-15).
       const rerunFailed = Effect.fn("implement.rerunFailed")(function* (gaps: {
         readonly gaps: ReadonlyArray<string>;
         readonly fixable: ReadonlyArray<string>;
+        readonly tree?: { readonly head: string; readonly fingerprint: string };
       }) {
         if (gaps.fixable.length === 0) return gaps;
         reruns += 1;
-        return yield* Activity.make({
+        const reread = yield* Activity.make({
           name: `rerun.${reruns}`,
           success: Schema.Struct({
             gaps: Schema.Array(Schema.String),
@@ -620,6 +629,8 @@ export default defineWorkflow({
             return yield* readGaps(checks, rallied.reviewed);
           }).pipe(Effect.orDie),
         });
+        // A rerun leaves the tree as the pass before it read it.
+        return { ...reread, tree: gaps.tree };
       });
       let gaps = yield* rerunFailed(yield* gapsNow({ pass: "gate" }));
       if (gaps.fixable.length > 0) {
@@ -651,8 +662,11 @@ export default defineWorkflow({
       // The implementer fixes what a check could still prove, bounded like the rally; the
       // human reads what is left in the merge request, before it lands.
       let fixes = 0;
-      for (; gaps.fixable.length > 0 && fixes < ROUNDS; fixes++) {
+      // A round that changed nothing and disputed every finding: another would check the same tree.
+      let stalled: { readonly at: number; readonly disputed: ReadonlyArray<Finding> } | null = null;
+      for (; gaps.fixable.length > 0 && fixes < ROUNDS && stalled === null; fixes++) {
         const at = fixes + 1;
+        const before = gaps.tree;
         passed = [];
         const findings = gaps.fixable.map((gap) => ({
           severity: "blocker",
@@ -675,6 +689,15 @@ export default defineWorkflow({
           output: FixOutputSchema,
         });
         gaps = yield* rerunFailed(yield* gapsNow({ pass: "fix", round: at }));
+        const disputed = new Set((fixed.disputed ?? []).map(findingKey));
+        if (
+          before !== undefined &&
+          gaps.tree?.head === before.head &&
+          gaps.tree.fingerprint === before.fingerprint &&
+          (fixed.fixed ?? []).length === 0 &&
+          findings.every((one) => disputed.has(findingKey(one)))
+        )
+          stalled = { at, disputed: fixed.disputed ?? [] };
         const settled = settleFinalFix(findings, fixed, yield* host.evidence(runId, cwd));
         unreviewed = [
           unreviewed,
@@ -699,7 +722,14 @@ export default defineWorkflow({
         execute: Effect.gen(function* () {
           const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
-          const reading = Effect.suspend(() => readGaps(approved, reviewed));
+          const disputed = new Set((stalled?.disputed ?? []).map(findingKey));
+          const undisputed = (gap: string) => !disputed.has(findingKey({ title: gap }));
+          const reading = Effect.suspend(() => readGaps(approved, reviewed)).pipe(
+            Effect.map(({ gaps, fixable }) => ({
+              gaps: gaps.filter(undisputed),
+              fixable: fixable.filter(undisputed),
+            })),
+          );
           // A check whose every failure on this tree was a Flake is settled; running it again proves nothing.
           const rely = Effect.gen(function* () {
             const flaked = flakesOf({ ...(yield* host.evidence(runId, cwd)), approved });
@@ -726,6 +756,16 @@ export default defineWorkflow({
             ),
           );
           yield* rely;
+          if (stalled !== null) {
+            const standing = (yield* readGaps(approved, reviewed)).fixable.filter(
+              (gap) => !undisputed(gap),
+            );
+            if (standing.length > 0)
+              yield* host.record(
+                runId,
+                `outcome unproved: ${standing.join("; ")}; gate fix ${stalled.at} disputed them and changed nothing`,
+              );
+          }
           let missing = yield* reading;
           if (missing.fixable.length > 0) {
             yield* host.parked(
@@ -784,6 +824,10 @@ export default defineWorkflow({
       const unsettled = [
         ...assumed,
         ...rallied.unsettled,
+        ...(stalled?.disputed ?? []).map(
+          (one) =>
+            `${one.title}: gate fix ${stalled!.at} disputed it and changed nothing${one.reason ? `: ${one.reason}` : ""}`,
+        ),
         ...flakes.map(
           ({ check, name, file }) =>
             `${check}: ${name} (${file}) failed, then passed when run again alone on the same tree — a Flake, so this Run has not settled it.`,
