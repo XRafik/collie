@@ -44,8 +44,8 @@ export const writeFlockSettings = Effect.fn("FlockSettings.write")(function* (
 export const FlockDefinitions = Schema.Record(
   Schema.String,
   Schema.Struct({
-    /** Null where the edit removed it. */
-    text: Schema.NullOr(Schema.String),
+    /** Its bytes in base64, or null where the edit removed it. */
+    base64: Schema.NullOr(Schema.String),
     at: Schema.String,
     /** The Machine whose edit it is. */
     from: Schema.String,
@@ -78,7 +78,7 @@ export const writeFlockDefinitions = Effect.fn("FlockDefinitions.write")(functio
 });
 
 const heldDefinitions = (flock: FlockDefinitions) =>
-  Object.entries(flock).map(([path, { text, at }]): SharedDefinition => ({ path, text, at }));
+  Object.entries(flock).map(([path, { base64, at }]): SharedDefinition => ({ path, base64, at }));
 const byPath = (definition: { readonly path: string }) => definition.path;
 
 /** What a Machine has taken in where it is the later edit, and what it should then be given. */
@@ -88,8 +88,8 @@ export const takeDefinitions = (
   has: ReadonlyArray<SharedDefinition>,
 ) => {
   const taken = { ...flock };
-  for (const { path, text, at } of latestEdits(heldDefinitions(flock), has, byPath).take)
-    taken[path] = { text, at, from: machine };
+  for (const { path, base64, at } of latestEdits(heldDefinitions(flock), has, byPath).take)
+    taken[path] = { base64, at, from: machine };
   return { flock: taken, give: latestEdits(heldDefinitions(taken), has, byPath).give };
 };
 

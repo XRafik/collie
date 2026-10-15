@@ -84,8 +84,8 @@ export type HostDefinitions = typeof HostDefinitions.Type;
 export const SharedDefinition = Schema.Struct({
   /** Where it is in the user directory, such as `workflows/plan.workflow.ts`. */
   path: Schema.String,
-  /** Its text, or null where the edit removed it. */
-  text: Schema.NullOr(Schema.String),
+  /** Its bytes in base64, or null where the edit removed it. */
+  base64: Schema.NullOr(Schema.String),
   at: Schema.String,
 });
 export type SharedDefinition = typeof SharedDefinition.Type;

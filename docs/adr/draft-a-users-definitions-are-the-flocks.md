@@ -26,10 +26,11 @@ shared:
   `tsconfig.json`, the SDK declarations, `bun.lock` and `node_modules/`), which each
   Machine provisions for itself;
 - subdirectories;
+- a symbolic link, or anything reached through one, which could reach outside the Layer;
 - the project Layer, which is the project's checkout and travels with its repository;
 - the shipped Layer, which is the release and is levelled with the version.
 
-**D2. An edit's time.** A file's edit is its text at its modification time. A removal is
+**D2. An edit's time.** A file's edit is its bytes, carried as they are, at its modification time. A removal is
 an edit too. The host records the shared definitions it last saw, beside the settings'
 stamps. A recorded file that has gone is recorded as removed at the time the host noticed.
 A hand edit is an edit, so no Collie command is needed to share one.

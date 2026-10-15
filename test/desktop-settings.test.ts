@@ -393,9 +393,9 @@ const definer = (name: string, held: ReadonlyArray<SharedDefinition>, refused?: 
 };
 type Definer = ReturnType<typeof definer>;
 
-const defined = (path: string, text: string | null, hour: number): SharedDefinition => ({
+const defined = (path: string, base64: string | null, hour: number): SharedDefinition => ({
   path,
-  text,
+  base64,
   at: at(hour),
 });
 
@@ -424,7 +424,7 @@ test("a definition taken from one Machine is given to the next connected Machine
       yield* syncOn(vmA);
       expect(vmB.asked).toEqual([[plan]]);
       expect((yield* SubscriptionRef.get(flock))["workflows/plan.workflow.ts"]).toEqual({
-        text: "export default 1",
+        base64: "export default 1",
         at: at(10),
         from: "vm-a",
       });
@@ -436,7 +436,7 @@ test("a Machine's newer edit of a definition wins over the copy Desktop holds", 
     Effect.gen(function* () {
       const path = "personas/builder.md";
       const flock = yield* SubscriptionRef.make<FlockDefinitions>({
-        [path]: { text: "held", at: at(9), from: "vm-b" },
+        [path]: { base64: "held", at: at(9), from: "vm-b" },
       });
       const vmA = definer("vm-a", [defined(path, "edited on vm-a", 11)]);
       const { syncOn } = yield* definitionsSyncer(flock, () => Effect.void, vmA);
@@ -444,7 +444,7 @@ test("a Machine's newer edit of a definition wins over the copy Desktop holds", 
       yield* syncOn(vmA);
       expect(vmA.asked).toEqual([]);
       expect((yield* SubscriptionRef.get(flock))[path]).toEqual({
-        text: "edited on vm-a",
+        base64: "edited on vm-a",
         at: at(11),
         from: "vm-a",
       });
@@ -455,7 +455,7 @@ test("a host that refuses the definitions leaves its Machine failed in its words
   Effect.runPromise(
     Effect.gen(function* () {
       const flock = yield* SubscriptionRef.make<FlockDefinitions>({
-        "workflows/plan.md": { text: "plan", at: at(8), from: "Desktop" },
+        "workflows/plan.md": { base64: "plan", at: at(8), from: "Desktop" },
       });
       const told: Array<readonly [string, string | null]> = [];
       const vmA = definer("vm-a", [], "no such operation");

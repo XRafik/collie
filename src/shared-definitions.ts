@@ -1,12 +1,12 @@
 // The user Layer's files as a Flock shares them: each decided by its latest edit, a removal
-// included, with the text an edit replaced kept under `replaced/`
+// included, with what an edit replaced kept under `replaced/`
 // (ADR-draft-a-users-definitions-are-the-flocks).
 
 import { Data, Effect, FileSystem, Option, Schema } from "effect";
 import type { SharedDefinition } from "./definitions-model";
 import { TOOLCHAIN_NAMES } from "./engine";
 import { latestEdits } from "./flock-settings";
-import { fileTime } from "./time";
+import { epochMs, fileTime } from "./time";
 import { ensureLockDir, withLock } from "./lock";
 
 const KINDS = ["workflows", "personas"] as const;
@@ -44,7 +44,21 @@ const isLink = Effect.fn("SharedDefinitions.isLink")(function* (file: string) {
     .pipe(Effect.match({ onFailure: () => false, onSuccess: () => true }));
 });
 
-/** When the file at `file` was last modified, following a link; null where there is none. */
+/** Whether a part of `path` in the user directory is a link, which could reach outside it. */
+const throughLink = Effect.fn("SharedDefinitions.throughLink")(function* (
+  userDir: string,
+  path: string,
+) {
+  const parts = path.split("/");
+  for (let at = 1; at <= parts.length; at++)
+    if (yield* isLink(`${userDir}/${parts.slice(0, at).join("/")}`)) return true;
+  return false;
+});
+
+const base64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+const isBase64 = (text: string) => base64(Buffer.from(text, "base64")) === text;
+
+/** When the file at `file` was last modified; null where there is none. */
 const modifiedAt = Effect.fn("SharedDefinitions.modifiedAt")(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
   return yield* fs.stat(file).pipe(
@@ -58,7 +72,7 @@ const onDisk = Effect.fn("SharedDefinitions.onDisk")(function* (userDir: string)
   const found: Array<SharedDefinition> = [];
   for (const kind of KINDS) {
     const dir = `${userDir}/${kind}`;
-    if (!(yield* fs.exists(dir))) continue;
+    if (!(yield* fs.exists(dir)) || (yield* isLink(dir))) continue;
     for (const name of (yield* fs.readDirectory(dir)).sort()) {
       const path = `${kind}/${name}`;
       if (!shareable(path) || (yield* isLink(`${dir}/${name}`))) continue;
@@ -67,7 +81,7 @@ const onDisk = Effect.fn("SharedDefinitions.onDisk")(function* (userDir: string)
       if (info.type !== "File" || mtime === undefined) continue;
       found.push({
         path,
-        text: yield* fs.readFileString(`${dir}/${name}`),
+        base64: base64(yield* fs.readFile(`${dir}/${name}`)),
         at: mtime.toISOString(),
       });
     }
@@ -106,10 +120,10 @@ const readShared = Effect.fn("SharedDefinitions.read")(function* (userDir: strin
   const gone = Object.entries(seen).flatMap(([path, last]): SharedDefinition[] =>
     present.some((one) => one.path === path)
       ? []
-      : [{ path, text: null, at: last.removed ? last.at : now }],
+      : [{ path, base64: null, at: last.removed ? last.at : now }],
   );
   const next: Seen = Object.fromEntries(
-    [...present, ...gone].map((one) => [one.path, { at: one.at, removed: one.text === null }]),
+    [...present, ...gone].map((one) => [one.path, { at: one.at, removed: one.base64 === null }]),
   );
   if (Schema.encodeSync(Seen)(next) !== Schema.encodeSync(Seen)(seen))
     yield* writeSeen(userDir, next);
@@ -127,8 +141,9 @@ export class DefinitionRefused extends Data.TaggedError("DefinitionRefused")<{
 
 /**
  * The Flock's edits, each written where it is later than this Machine's, with the edit's
- * own time. The text a write replaces or removes is kept under `replaced/` first. Refused
- * whole where any path is not a shared definition's.
+ * own time. The file a write replaces or removes is kept under `replaced/` first, and an
+ * edit is left unwritten where that or its own path is through a link. Refused whole where
+ * any path is not a shared definition's, or any time or content is malformed.
  */
 export const takeDefinitions = (
   userDir: string,
@@ -145,29 +160,39 @@ export const takeDefinitions = (
         return yield* new DefinitionRefused({
           reason: `${outside.path} is not a file directly in the user Layer's workflows/ or personas/`,
         });
+      const malformed = given.find(
+        (one) => Number.isNaN(epochMs(one.at)) || (one.base64 !== null && !isBase64(one.base64)),
+      );
+      if (malformed !== undefined)
+        return yield* new DefinitionRefused({
+          reason: `${malformed.path}'s edit has a malformed time or content`,
+        });
       const held = yield* readShared(userDir, now);
       let seen = yield* readSeen(userDir);
       for (const edit of latestEdits(held, given, byPath).take) {
         const file = `${userDir}/${edit.path}`;
         const had = held.find((one) => one.path === edit.path);
-        const text = had?.text ?? null;
-        // Saved by hand since it was read, or a link Collie does not write through: left alone.
-        if ((yield* modifiedAt(file)) !== (text === null ? null : had?.at)) continue;
-        if (had !== undefined && text !== null && text !== edit.text) {
-          const kept = `${userDir}/replaced/${had.at}/${edit.path}`;
+        const content = had?.base64 ?? null;
+        if (yield* throughLink(userDir, edit.path)) continue;
+        // Saved by hand since it was read: left alone.
+        if ((yield* modifiedAt(file)) !== (content === null ? null : had?.at)) continue;
+        if (had !== undefined && content !== null && content !== edit.base64) {
+          const replaced = `replaced/${had.at}/${edit.path}`;
+          if (yield* throughLink(userDir, replaced)) continue;
+          const kept = `${userDir}/${replaced}`;
           yield* fs.makeDirectory(kept.slice(0, kept.lastIndexOf("/")), { recursive: true });
-          yield* fs.writeFileString(kept, text);
+          yield* fs.writeFile(kept, Buffer.from(content, "base64"));
           yield* Effect.logWarning(
-            `${edit.path} ${edit.text === null ? "removed" : "replaced"} by a later edit from ${by}; its text is kept at ${kept}`,
+            `${edit.path} ${edit.base64 === null ? "removed" : "replaced"} by a later edit from ${by}; it is kept at ${kept}`,
           );
         }
-        if (edit.text === null) yield* fs.remove(file, { force: true });
+        if (edit.base64 === null) yield* fs.remove(file, { force: true });
         else {
           yield* fs.makeDirectory(file.slice(0, file.lastIndexOf("/")), { recursive: true });
-          yield* fs.writeFileString(file, edit.text);
+          yield* fs.writeFile(file, Buffer.from(edit.base64, "base64"));
           yield* fs.utimes(file, fileTime(edit.at), fileTime(edit.at));
         }
-        seen = { ...seen, [edit.path]: { at: edit.at, removed: edit.text === null } };
+        seen = { ...seen, [edit.path]: { at: edit.at, removed: edit.base64 === null } };
       }
       yield* writeSeen(userDir, seen);
       return yield* readShared(userDir, now);
