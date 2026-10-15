@@ -820,13 +820,37 @@ test("a failed Run's clean roaming checkout is pruned, failed Runs inside it or 
         managedBy: "git",
         workspaceId: null,
         state: "failed",
+        panes: ["1-5"],
       });
       recorded.push(
         runFacts({ id: "run-improvement", workflow: "plan", cwd: at, state: "failed" }),
       );
+      registered.push(agentIn("run-improvement", "1-6"));
+      // Both Runs' agents, idle where they were left.
+      yield* rig.addPane("1-5", "1:5", at, "claude");
+      yield* rig.addPane("1-6", "1:6", at, "claude");
       yield* settledGit({ "rev-parse --abbrev-ref --symbolic-full-name @{u}": "" });
 
       expect(yield* prune()).toEqual(["♻ removed roaming · its Run is over and it holds nothing"]);
+    }),
+  ));
+
+test("a failed Run's roaming checkout is kept while one of its agents still works", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const at = join(rig.root, "worktrees", "project", "roaming");
+      yield* collieWorktree("", {
+        workflow: "self-improve",
+        at,
+        managedBy: "git",
+        workspaceId: null,
+        state: "failed",
+        panes: ["1-5"],
+      });
+      yield* rig.addPane("1-5", "1:5", at, "claude", null, null, "working");
+      yield* settledGit({ "rev-parse --abbrev-ref --symbolic-full-name @{u}": "" });
+
+      expect(yield* prune()).toEqual(["kept roaming · an agent is working in it"]);
     }),
   ));
 

@@ -231,7 +231,9 @@ A worktree is **settled**, and only then removed, when all five hold
    moved to, or its workspace) other than the idle agents of the runs that finished there,
    no run still going there, and no stopped or failed run a resume would carry on there
    while its work has not landed — except that a failed run does not keep a roaming
-   checkout, which the next roaming start of its repository would take over anyway;
+   checkout, which the next roaming start of its repository would take over anyway, and
+   the idle agents of the runs that finished or failed inside one hold it no more than
+   their own run would;
 4. its work has landed: the merge watch read its merge request as merged or closed, on
    GitHub or GitLab (`board/mr-states.json`), a Disposition of merged, abandoned or
    superseded was recorded on a Run that recorded it, or, with neither, its branch is gone

@@ -1389,32 +1389,32 @@ function fromRuns(
   const paths = new Map<string, string>();
   /** The panes each checkout's finished Runs left their agents in. */
   const panes = new Map<string, Set<string>>();
-  const failedIn: string[] = [];
+  // The next roaming start takes a failed Run's roaming checkout over, so the sweep may too.
+  const roaming = runs.flatMap(({ worktree }) =>
+    worktree?.created_by_collie && worktree.branch === "" ? [worktree.path] : [],
+  );
   for (const run of runs) {
     const going = run.state === "running" || run.state === "waiting";
+    const worktree = run.worktree?.created_by_collie ? run.worktree : null;
+    const at = worktree?.path ?? roaming.find((path) => inside(path, run.cwd));
     // A stopped or failed Run can be resumed in its checkout, until its work lands anyway.
     const landed =
       (run.worktree !== null && settling.landedAt.has(run.worktree.path)) ||
       settling.landedOn.has(onBranch(run.project, run.branch ?? run.worktree?.branch ?? ""));
-    const resumable = (run.state === "stopped" || run.state === "failed") && !landed;
+    const resumable =
+      (run.state === "stopped" || (run.state === "failed" && !roaming.includes(at ?? ""))) &&
+      !landed;
     if (going) paths.set(run.cwd, "a run is still working in it");
-    else if (resumable && run.state === "failed") failedIn.push(run.cwd);
     else if (resumable) paths.set(run.cwd, `a ${run.state} run can resume in it`);
-    const worktree = run.worktree;
-    if (!worktree?.created_by_collie) continue;
-    mine.set(worktree.path, worktree);
-    projects.set(worktree.path, run.project);
+    if (worktree !== null) {
+      mine.set(worktree.path, worktree);
+      projects.set(worktree.path, run.project);
+    }
     // A Run that may still go keeps its checkout anyway, so its agents are nobody's leftovers.
-    if (going || resumable) continue;
-    const left = panes.get(worktree.path) ?? new Set<string>();
+    if (at === undefined || going || resumable) continue;
+    const left = panes.get(at) ?? new Set<string>();
     for (const entry of registered) if (entry.runId === run.id) left.add(entry.paneId);
-    panes.set(worktree.path, left);
-  }
-  // The next roaming start takes a failed Run's roaming checkout over, so the sweep may too.
-  const roaming = [...mine.values()].filter(({ branch }) => branch === "");
-  for (const cwd of failedIn) {
-    if (!roaming.some(({ path }) => inside(path, cwd)) && !paths.has(cwd))
-      paths.set(cwd, "a failed run can resume in it");
+    panes.set(at, left);
   }
   return { mine, paths, panes, projects };
 }
