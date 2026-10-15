@@ -714,6 +714,14 @@ loop, for a step that keeps an earlier agent, and `handoff.ts`, for a Run handin
 result to another Run's live agent. A liveness nudge and a mid-step recovery message go
 through neither, which is why neither is a boundary.
 
+A reused agent is given work only once herdr reports it `idle` or `done`. At a step's
+boundary `turnEnded` in `agents.ts` polls herdr's status first, with no budget while the
+agent is `working` or `blocked`, and only then samples its context, asks it to compact or
+sends the step. A status herdr cannot give ends the wait, and so does a stop of the Run,
+which sends nothing. The wait is outside the Dispatcher's transaction, because that holds
+the agent's ledger lock and a steer would otherwise wait for the turn to end. The Run log
+says once that the step waits, and how long it waited.
+
 An agent's controls live in `<state>/compaction/<agent>/` rather than in its Run's
 directory, because the agent outlives the Run that launched it — the same fact the
 registry exists for. That directory holds the control record, the helper the launch

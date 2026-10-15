@@ -1439,6 +1439,41 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
     return pane === undefined ? null : { tabId: pane.tabId, paneId: pane.paneId };
   });
 
+  /**
+   * Waits out a reused agent's turn before its boundary, outside the Dispatcher's
+   * transaction so a steer still reaches it. A status herdr cannot give ends the wait.
+   * `false` where the Run was stopped while it waited.
+   */
+  const turnEnded = (launched: Launched) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      // engine.ts's `controlPath(dir, STOP, runId)`, which this module cannot import.
+      const stopped = fs
+        .exists(`${host.dir}/stop.${launched.runId}`)
+        .pipe(Effect.orElseSucceed(() => false));
+      let since: number | null = null;
+      for (;;) {
+        const status = yield* host.herdr
+          .agentStatus(launched.agent)
+          .pipe(Effect.orElseSucceed(() => "unknown" as const));
+        if (status !== "working" && status !== "blocked") break;
+        if (yield* stopped) return false;
+        if (since === null) {
+          since = yield* Clock.currentTimeMillis;
+          yield* log(
+            launched.runId,
+            `${launched.agent}: still working; ${launched.operation} waits for its turn to end`,
+          );
+        }
+        yield* Effect.sleep(host.pollMs ?? DEFAULT_POLL_MS);
+      }
+      if (since !== null) {
+        const waited = Math.round(((yield* Clock.currentTimeMillis) - since) / 1000);
+        yield* log(launched.runId, `${launched.agent}: its turn ended after ${waited}s`);
+      }
+      return true;
+    });
+
   /** A reused agent's work boundary: compacted past the limit, held while a compaction is unresolved. */
   const boundary = (launched: Launched) =>
     Effect.gen(function* () {
@@ -1767,6 +1802,8 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           }
         }
         if (alive && !replayed) {
+          // Stopped while it waited: nothing is sent, and the caller sees the stop.
+          if (!(yield* turnEnded(launched))) return launched;
           const due = yield* boundary(launched);
           if (!due.dispatch) {
             return yield* new AgentParked({

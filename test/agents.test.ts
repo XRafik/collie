@@ -2637,6 +2637,166 @@ test("a boundary whose context cannot be sampled records no context line, never 
     }),
   ));
 
+/** What a reused agent was asked and told, and what herdr said of it, in order. */
+class Watched extends FakeHerdr {
+  readonly seen: string[] = [];
+  override agentStatus(target: string) {
+    return super
+      .agentStatus(target)
+      .pipe(Effect.tap((status) => Effect.sync(() => this.seen.push(status))));
+  }
+  override agentPrompt(target: string, text: string) {
+    this.seen.push(`prompt ${/([^/\s]+)\.prompt\.md/.exec(text)?.[1] ?? text}`);
+    return super.agentPrompt(target, text);
+  }
+}
+
+/** The two-item list with its agent's status scripted, over the compaction limit. */
+const listedWhile = (status: string, herdr?: FakeHerdr) =>
+  Effect.gen(function* () {
+    yield* rig.queueOutputs([
+      { verdict: "clean", note: "first" },
+      { verdict: "clean", note: "second" },
+    ]);
+    const watched = herdr ?? new Watched(rig.pluginEnv({ FAKE_HERDR_AGENT_STATUS: status }));
+    const seen = watched instanceof Watched ? watched.seen : [];
+    const full = fullContext([]).claude!;
+    const ports: CompactionPorts = {
+      claude: {
+        ...full,
+        request: (ctx, id) =>
+          Effect.sync(() => void seen.push("compact")).pipe(Effect.andThen(full.request(ctx, id))),
+      },
+    };
+    const result = yield* listing.execute({ runId: "r1", input: ITEMS }).pipe(
+      Effect.result,
+      Effect.provide(listingBody),
+      Effect.provide(
+        agentsLayer({
+          ...hostOf(),
+          herdr: watched,
+          compactAtTokens: 1000,
+          ports,
+        }),
+      ),
+      Effect.provide(foundationLayer({ dir })),
+      Effect.scoped,
+      Effect.orDie,
+    );
+    return { result, seen };
+  });
+
+for (const busy of ["working", "blocked"])
+  test(`a reused agent herdr reports ${busy} is given nothing until it is idle`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { result, seen } = yield* listedWhile(`idle,${busy},${busy},${busy},idle`);
+        expect(result._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
+        // The first read is the first prompt's own, as it went in.
+        const boundary = seen.slice(seen.indexOf("prompt 01-api") + 2);
+        expect(boundary.slice(0, 5)).toEqual([busy, busy, busy, "idle", "compact"]);
+        expect(boundary.filter((one) => one.startsWith("prompt"))).toEqual(["prompt 02-ui"]);
+        const log = yield* read(`${dir}/agents/r1/agents.log`);
+        expect(log.match(/still working; 02-ui waits for its turn to end/g)).toHaveLength(1);
+      }),
+    ));
+
+/** herdr cannot say what the agent is doing. */
+class Unreadable extends FakeHerdr {
+  override agentStatus() {
+    return Effect.fail(
+      new HerdrError({
+        message: "herdr agent get failed",
+        detail: "socket closed",
+      }),
+    );
+  }
+}
+
+for (const [what, run] of [
+  ["unknown", () => listedWhile("unknown")],
+  ["unreadable", () => listedWhile("", new Unreadable(rig.pluginEnv()))],
+] as const)
+  test(`a reused agent whose status is ${what} is given its work as before`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { result } = yield* run();
+        expect(result._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
+      }),
+    ));
+
+/** The list started with its agent busy after the first item, left at the waiting boundary. */
+const waitingAtBoundary = Effect.gen(function* () {
+  yield* rig.queueOutputs([
+    { verdict: "clean", note: "first" },
+    { verdict: "clean", note: "second" },
+  ]);
+  yield* listing.execute({ runId: "r1", input: ITEMS }, { discard: true });
+  for (let tries = 0; ; tries++) {
+    const log = yield* read(`${dir}/agents/r1/agents.log`).pipe(Effect.orElseSucceed(() => ""));
+    if (log.includes("still working; 02-ui")) return;
+    if (tries === 3_000) return yield* Effect.die(new Error("the boundary never waited"));
+    yield* TestClock.withLive(Effect.sleep("10 millis"));
+  }
+});
+
+const busyAfterFirst = <A, E>(
+  run: Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem>,
+) =>
+  run.pipe(
+    Effect.provide(listingBody),
+    Effect.provide(
+      agentsLayer({
+        ...hostOf(),
+        herdr: new FakeHerdr(rig.pluginEnv({ FAKE_HERDR_AGENT_STATUS: "idle,working" })),
+        collectMs: 30_000,
+      }),
+    ),
+    Effect.provide(foundationLayer({ dir })),
+    Effect.scoped,
+    Effect.orDie,
+  );
+
+test("a steer reaches an agent whose boundary is waiting for its turn to end", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const told = yield* busyAfterFirst(
+        Effect.gen(function* () {
+          yield* waitingAtBoundary;
+          const told = yield* say("r1", "keep going", "steer-1");
+          // Ends the wait, which would otherwise outlast the test.
+          yield* control("stop", "r1", true);
+          yield* TestClock.withLive(Effect.sleep("300 millis"));
+          return told;
+        }),
+      );
+      expect(told).toMatchObject({ agent: sweeper, delivered: true });
+      expect(prompts(yield* rig.calls())).toContain("keep going");
+    }),
+  ));
+
+test("a stop while the boundary waits ends the wait, and nothing more is typed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const reads = Effect.map(
+        rig.calls(),
+        (calls) => calls.filter((call) => call.cmd === "agent get").length,
+      );
+      const { before, after } = yield* busyAfterFirst(
+        Effect.gen(function* () {
+          yield* waitingAtBoundary;
+          yield* control("stop", "r1", true);
+          yield* TestClock.withLive(Effect.sleep("300 millis"));
+          const before = yield* reads;
+          yield* TestClock.withLive(Effect.sleep("300 millis"));
+          return { before, after: yield* reads };
+        }),
+      );
+      expect(after).toBe(before);
+      expect(sent(yield* rig.calls(), "02-ui.prompt.md")).toBe(0);
+    }),
+  ));
+
 /** A list run on the host's engine, as a host that goes and comes back runs one. */
 const listingSession = <A, E>(run: Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | Store>) =>
   run.pipe(

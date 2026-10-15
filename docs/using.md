@@ -2281,10 +2281,11 @@ runbook find tools printing tokens — a second guard against the commands that 
 ## Compaction between pieces of work
 
 Collie reuses an agent across a Workflow's operations and a fix round's iterations, so
-its context grows all day. Before it gives a reused agent the next
-piece of work, Collie reads that harness's own current-context measure and, at or above
-`compact_at_tokens`, asks it to compact natively and waits for the outcome before sending
-anything.
+its context grows all day. A reused agent is given its next piece of work only once herdr
+reports it idle: while it is working or blocked, nothing is sent, and the Run log says
+`<agent>: still working; <step> waits for its turn to end`. Then Collie reads that
+harness's own current-context measure and, at or above `compact_at_tokens`, asks it to
+compact natively and waits for the outcome before sending anything.
 
 One absolute number rather than a percentage: the four harnesses measure different
 windows, and one number is what you can reason about. **150,000 tokens** by default, so an
