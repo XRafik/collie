@@ -22,6 +22,7 @@ export function installFakeSkills(home: string) {
       "improve-codebase-architecture",
       "resolving-merge-conflicts",
       "git-workflow-and-versioning",
+      "retro",
     ]) {
       const dir = path.join(home, ".agents", "skills", skill);
       yield* fs.makeDirectory(dir, { recursive: true });

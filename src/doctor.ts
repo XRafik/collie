@@ -15,7 +15,7 @@ import { Clock, Effect, FileSystem, Option, Path, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { loadDefaults } from "./config";
 import { savedModules } from "./discovery";
-import { layers, loadDefinitions, skillDirs, skillInstalled } from "./definitions";
+import { layers, loadDefinitions, skillDirs, skillFile } from "./definitions";
 import type { PluginEnv } from "./env";
 import { HARNESSES } from "./harness";
 import { Herdr } from "./herdr";
@@ -369,7 +369,7 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
   // `prepare.sh`'s to know.
   checks.push({
     name: "skills",
-    ...((yield* skillInstalled(dirs, "collie"))
+    ...((yield* skillFile(dirs, "collie")) !== null
       ? passed(`the skill store is in place (${dirs.join(", ")})`)
       : failed("the operator skill is not installed", `sh ${root}/prepare.sh`)),
   });

@@ -439,6 +439,7 @@ export const stateSweeper = (stateDir: string, rows: ReadonlySet<string>): Sweep
           return null;
         if (top === "runs" || top === "agents" || top === "evidence" || top === "requests")
           return null;
+        if (top === "schedules") return { keep: "the Schedules this host fires" };
         if (top.startsWith(`${JOURNAL}.`)) return null;
         if (DEAD.test(top)) return yield* quiet(target, "nothing reads it any more");
         const marker = MARKER.exec(top)?.[1];

@@ -14,6 +14,7 @@ import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
+import { filedIssueOf, type Issue } from "./issues";
 
 export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
 
@@ -450,8 +451,71 @@ function clone<R>(
   });
 }
 
+const IssuesJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      iid: Schema.Int.check(Schema.isGreaterThan(0)),
+      title: Schema.String,
+      description: Schema.NullOr(Schema.String),
+      web_url: Schema.String,
+    }),
+  ),
+);
+
 export const gitlab: Forge = {
   name: "gitlab",
+  issues: (project, cwd, run) =>
+    Effect.gen(function* () {
+      const issues: Issue[] = [];
+      for (let page = 1; ; page++) {
+        const answer = yield* run(
+          "glab",
+          [
+            "issue",
+            "list",
+            ...repoArgs(project),
+            "--output",
+            "json",
+            "--page",
+            String(page),
+            "--per-page",
+            "100",
+          ],
+          cwd,
+        );
+        if (answer.code !== 0)
+          return { ok: false, reason: whatItSaid(answer) || "issue listing failed" };
+        const decoded = Schema.decodeUnknownOption(IssuesJson)(answer.stdout);
+        if (Option.isNone(decoded))
+          return { ok: false, reason: "issue listing returned invalid JSON" };
+        issues.push(
+          ...decoded.value.map((one) => ({
+            number: one.iid,
+            title: one.title,
+            body: one.description ?? "",
+            url: one.web_url,
+          })),
+        );
+        if (decoded.value.length < 100) return { ok: true, issues };
+      }
+    }),
+  fileIssue: (project, title, body, cwd, run) =>
+    Effect.map(
+      run(
+        "glab",
+        ["issue", "create", ...repoArgs(project), "--title", title, "--description", body, "--yes"],
+        cwd,
+      ),
+      (answer) => filedIssueOf(answer, project, true),
+    ),
+  commentIssue: (project, number, body, cwd, run) =>
+    Effect.map(
+      run("glab", ["issue", "note", String(number), ...repoArgs(project), "--message", body], cwd),
+      (answer) => ({
+        ok: answer.code === 0,
+        reason: answer.code === 0 ? "" : whatItSaid(answer) || "issue comment failed",
+      }),
+    ),
   clone,
   display: "GitLab",
   cli: "glab",

@@ -18,6 +18,7 @@ import {
   Context,
   Crypto,
   Data,
+  Deferred,
   DateTime,
   Duration,
   Effect,
@@ -81,7 +82,8 @@ import { unlistedServers } from "./compaction";
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
-import { PROJECTS_ROOT_OPTION } from "./projects";
+import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
+import { publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
 import {
   HelleClaimSchema,
   HelleError,
@@ -92,15 +94,21 @@ import {
 } from "./helle";
 import { helleUrlOf } from "./helle-url";
 import { currentPid, signalProcess } from "./lock";
-import type { CheckoutKind, InputStrategy } from "./definitions";
-import { appendMetric, noteVerification } from "./metrics";
+import { skillDirs, skillFile, type CheckoutKind, type InputStrategy } from "./definitions";
+import { EXCLUSIVE_STRATEGIES } from "./strategies";
+import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
 import {
   autoMergingHere,
+  forgeHere,
   prepareMergeRequest,
   postNote,
   projectHere,
   shell as runShell,
 } from "./mr";
+import { redact } from "./redact";
+import { reportOf, type Recorded } from "./report";
+import { outcomeRecordsOf, type OutcomeRecords } from "./outcomes";
+import type { Metrics } from "./board-model";
 import { parseMrTarget, parseMrUrl } from "./board-model";
 import { integrateDefault, integratedLine } from "./integrate";
 import { strategyNamed } from "./strategies";
@@ -122,7 +130,8 @@ import { evaluationDeps } from "./evaluator";
 import { budgetPath, herdOf } from "./steering";
 import type { JudgementDeps } from "./drift";
 import { finishedOnRecord, type Card } from "./cards";
-import { reason } from "./naming";
+import { reason, unsafePathComponent } from "./naming";
+import { freshTaskLabel } from "./tasknames";
 import { attachmentRefusal, attachmentsDir, copyInto, listAttachments } from "./attachments";
 import {
   fromWorkSource,
@@ -154,7 +163,7 @@ import { Herdr, herdrFailureReason } from "./herdr";
 import type { PluginEnv } from "./env";
 import { WorktreeRecordSchema } from "./run";
 import { listTasks, newTask, taskOfWorkspace, writeTask } from "./task";
-import { nowIso } from "./time";
+import { nowIso, epochMs } from "./time";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import {
@@ -189,6 +198,8 @@ export class EntryError extends Schema.TaggedError<EntryError>()("EntryError", {
 
 /** What a refusal says first where the input is why, which a front door reads back. */
 export const REFUSED_INPUT = "invalid_input";
+/** The prefix of a refusal that names what a start left unsaid. */
+export const NEEDS_INPUT = "needs_input";
 
 /** A placement that may have changed something outside, which nothing here can prove either way. */
 class PlacementUncertain extends Schema.TaggedError<PlacementUncertain>()("PlacementUncertain", {
@@ -358,12 +369,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /** What the host lends a workflow. Hold and stop are read fresh on every replay. */
   export interface HostApi {
+    readonly report: (since: string) => Effect.Effect<Report, WorkflowError>;
+    readonly issues: (runId: string) => Effect.Effect<ReadonlyArray<Issue>, WorkflowError>;
+    readonly fileIssue: (options: { readonly runId: string; readonly title: string; readonly body: string }) => Effect.Effect<IssueRef, WorkflowError>;
+    readonly commentIssue: (options: { readonly runId: string; readonly number: number; readonly body: string }) => Effect.Effect<void, WorkflowError>;
     readonly dir: string;
     /**
      * This Machine's Usage readings, one per Subscription. Read it inside an Activity of
      * the workflow's own where it branches on it, so a replay takes the same branch.
      */
     readonly usage: () => Effect.Effect<ReadonlyArray<UsageReading>>;
+    /** The installed \`SKILL.md\` an agent's \`{{skill:name}}\` would name, or null. */
+    readonly skill: (name: string) => Effect.Effect<string | null>;
     /** This Run as the host admitted it; its directory is made as this is answered. */
     readonly place: (runId: string) => Effect.Effect<Place>;
     /** The checkout of the branch this Run's diff target names, recorded as the Run's own. */
@@ -442,6 +459,51 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
   }
   export const Host: Context.Service<HostApi, HostApi>;
+  export interface IssueRef { readonly number: number; readonly url: string; }
+  export interface Issue extends IssueRef { readonly title: string; readonly body: string; }
+  export interface WorkflowTally {
+    readonly workflow: string;
+    readonly total: number;
+    readonly complete: number;
+    readonly failed: number;
+    readonly suspended: number;
+    readonly pending: number;
+    /** Carries a stop control: a human stopped it. */
+    readonly stopped: number;
+    /** Recorded a merge request (RunView.mr). */
+    readonly withMr: number;
+    readonly answered: number;
+    readonly open: number;
+    readonly rework: number;
+    readonly verifications: {
+      readonly pass: number;
+      readonly fail: number;
+      readonly unstable: number;
+    };
+  }
+
+  export interface Report {
+    readonly since: string | null;
+    readonly total: number;
+    readonly runs: ReadonlyArray<{
+      readonly runId: string;
+      readonly workflow: string;
+      readonly parent: string | null;
+      readonly project: string;
+      readonly created: string;
+      readonly status: "pending" | "suspended" | "complete" | "failed";
+    }>;
+    readonly workflows: ReadonlyArray<WorkflowTally>;
+    readonly failed: ReadonlyArray<{ runId: string; workflow: string; reason: string }>;
+    readonly completed: ReadonlyArray<{
+      runId: string;
+      workflow: string;
+      value: string;
+      mr: string | null;
+    }>;
+    readonly stopped: ReadonlyArray<{ runId: string; workflow: string }>;
+  }
+
   export type Host = HostApi;
 
   /** How every workflow reports a failure. */
@@ -639,6 +701,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly input: Readonly<Record<string, unknown>>;
     /** The host's own options for the child; only the host's own names are taken. */
     readonly options?: Readonly<Record<string, string>>;
+    /** A Task of its own, with its own workspace and card, rather than the parent's. */
+    readonly ownTask?: boolean;
   }
 
   /** A child as the host admitted it; fresh is false for one already admitted. */
@@ -1878,6 +1942,8 @@ export const clearGenerations = (dir: string): Effect.Effect<void, never, FileSy
  */
 export function engineLayer(options: {
   readonly dir: string;
+  /** How often the engine reads its storage for messages now due; upstream's default if unset. */
+  readonly messagePoll?: Duration.Input | undefined;
 }): Layer.Layer<
   | WorkflowEngine.WorkflowEngine
   | MessageStorage.MessageStorage
@@ -1892,6 +1958,19 @@ export function engineLayer(options: {
     Layer.orDie,
     Layer.provideMerge(Reactivity.layer),
   );
+  const shardingConfig = {
+    // A host told to stop must not take a running workflow down with it: the work
+    // finishes its step, and what is left is picked up by the next host.
+    preemptiveShutdown: false,
+    // A workflow whose module is missing has no entity to receive its messages. The
+    // default marks them failed after a minute, which turns "the file is not there
+    // yet" into a terminal result; waiting is what lets a repair recover the work.
+    entityRegistrationTimeout: Duration.infinity,
+  };
+  const polled =
+    options.messagePoll === undefined
+      ? shardingConfig
+      : { ...shardingConfig, entityMessagePollInterval: options.messagePoll };
   // Loaded when a host builds it, not when anything imports this file: the cluster is
   // the heaviest thing here, and every other command the binary runs is a client.
   const engine = Layer.unwrap(
@@ -1902,17 +1981,9 @@ export function engineLayer(options: {
       ]),
     ).pipe(
       Effect.map(([SingleRunner, ClusterWorkflowEngine]) => {
-        const cluster = SingleRunner.layer({
-          shardingConfig: {
-            // A host told to stop must not take a running workflow down with it: the work
-            // finishes its step, and what is left is picked up by the next host.
-            preemptiveShutdown: false,
-            // A workflow whose module is missing has no entity to receive its messages. The
-            // default marks them failed after a minute, which turns "the file is not there
-            // yet" into a terminal result; waiting is what lets a repair recover the work.
-            entityRegistrationTimeout: Duration.infinity,
-          },
-        }).pipe(Layer.provide([sql, BunCrypto.layer]));
+        const cluster = SingleRunner.layer({ shardingConfig: polled }).pipe(
+          Layer.provide([sql, BunCrypto.layer]),
+        );
         // The message storage too: forgetting a Run clears what the engine kept of it.
         return ClusterWorkflowEngine.layer.pipe(Layer.provideMerge(cluster));
       }),
@@ -1920,6 +1991,32 @@ export function engineLayer(options: {
   );
   return engine.pipe(Layer.provideMerge(sql));
 }
+
+/** What the engine kept of one execution of a workflow registered under `name`, gone. */
+export const forgetExecution = (name: string, execution: string) =>
+  Effect.gen(function* () {
+    const [cluster, entity, ids, types, shard] = yield* Effect.promise(() =>
+      Promise.all([
+        import("effect/cluster/MessageStorage"),
+        import("effect/cluster/EntityAddress"),
+        import("effect/cluster/EntityId"),
+        import("effect/cluster/EntityType"),
+        import("effect/cluster/ShardId"),
+      ]),
+    );
+    const storage = yield* cluster.MessageStorage;
+    // Messages are found by entity type and id; the shard is part of the address only.
+    const address = (entityType: string) =>
+      entity.EntityAddress.make({
+        entityType: types.make(entityType),
+        entityId: ids.make(execution),
+        shardId: shard.make("default", 0),
+      });
+    yield* Effect.all([
+      storage.clearAddress(address(`Workflow/${name}`)),
+      storage.clearAddress(address("Workflow/-/DurableClock")),
+    ]).pipe(Effect.orDie);
+  });
 
 /** How long a start waits for the engine to take its Run before it is refused. */
 const HAND_OVER_TIMEOUT = "30 seconds";
@@ -2374,9 +2471,152 @@ export const hostLayer = (options: {
           });
           return { cwd: checkout.cwd, branch: checkout.branch ?? "" };
         }).pipe(Effect.provideContext(bun));
+      const issueCheckout = Effect.fn("Host.issueCheckout")(function* (runId: string) {
+        const row = yield* store.run(runId);
+        if (row === null) return yield* new WorkflowError({ reason: `there is no Run ${runId}` });
+        const launch = yield* decodeStrings(row.options ?? "{}").pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowError({ reason: `issue checkout could not be read: ${String(cause)}` }),
+          ),
+        );
+        const cwd = placedOf(row, launch).cwd;
+        const { env } = yield* placing;
+        const defaults = yield* loadDefaults(options.userDir ?? env.userDir).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkflowError({
+                reason: `issue configuration could not be read: ${String(cause)}`,
+              }),
+          ),
+        );
+        const here = yield* forgeHere(cwd, runShell, defaults.gitlabHost);
+        if (!here.ok) return yield* new WorkflowError({ reason: here.reason });
+        return { ...here, cwd, env };
+      });
+      const checkIssueText = Effect.fn("Host.checkIssueText")(
+        function* (here: Effect.Success<ReturnType<typeof issueCheckout>>, text: string) {
+          const root = yield* projectsRoot({
+            ...here.env,
+            userDir: options.userDir ?? here.env.userDir,
+          });
+          const inventory = yield* publicationCheckouts(root.path);
+          const expanded = yield* Effect.try(() => throughAliases(text, inventory.aliases));
+          const common = yield* runShell(
+            "git",
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            here.cwd,
+          );
+          if (common.code !== 0)
+            return yield* new WorkflowError({
+              reason: "issue checkout's Git identity could not be read",
+            });
+          const own = yield* fs.realPath(common.stdout.trim());
+          const ownRemote = here.project.split("/").slice(1).join("/");
+          for (const checkout of inventory.checkouts) {
+            const canonical = yield* fs.realPath(checkout);
+            const remotes = yield* runShell("git", ["remote", "-v"], checkout);
+            if (remotes.code !== 0)
+              return yield* new WorkflowError({
+                reason: `issue privacy check could not read remotes: ${checkout}`,
+              });
+            const names = remotes.stdout.split("\n").flatMap((line) => {
+              const name = remoteOf(
+                line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
+              );
+              return name === null ? [] : [name];
+            });
+            if (
+              !(
+                text.includes(checkout) ||
+                expanded.includes(canonical) ||
+                names.some(
+                  (name) =>
+                    (name.project !== here.project &&
+                      (text.includes(name.project) ||
+                        text.includes(name.project.replace("/", ":")))) ||
+                    (name.path !== ownRemote && text.includes(name.path)),
+                )
+              )
+            )
+              continue;
+            const shared = yield* runShell(
+              "git",
+              ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+              canonical,
+            );
+            if (shared.code !== 0)
+              return yield* new WorkflowError({
+                reason: `issue privacy check could not identify checkout: ${checkout}`,
+              });
+            if ((yield* fs.realPath(shared.stdout.trim())) === own) continue;
+            return yield* new WorkflowError({
+              reason: `issue text names another checkout: ${checkout}`,
+            });
+          }
+        },
+        Effect.mapError((cause) =>
+          isWorkflowError(cause)
+            ? cause
+            : new WorkflowError({ reason: `issue privacy check failed: ${String(cause)}` }),
+        ),
+      );
       const host = Host.of({
         dir,
+        report: () =>
+          Effect.fail(
+            new WorkflowError({ reason: "Run reporting requires the host's workflow registry" }),
+          ),
+        issues: (runId) =>
+          under(
+            Effect.gen(function* () {
+              const here = yield* issueCheckout(runId);
+              const listed = yield* here.forge.issues(here.project, here.cwd, runShell);
+              if (!listed.ok) return yield* new WorkflowError({ reason: listed.reason });
+              return listed.issues;
+            }),
+          ),
+        fileIssue: (asked) =>
+          under(
+            Effect.gen(function* () {
+              const here = yield* issueCheckout(asked.runId);
+              yield* checkIssueText(here, `${asked.title}\n${asked.body}`);
+              const filed = yield* here.forge.fileIssue(
+                here.project,
+                redact(asked.title),
+                redact(asked.body),
+                here.cwd,
+                runShell,
+              );
+              if (!filed.ok) return yield* new WorkflowError({ reason: filed.reason });
+              return { number: filed.number, url: filed.url };
+            }),
+          ),
+        commentIssue: (asked) =>
+          under(
+            Effect.gen(function* () {
+              const here = yield* issueCheckout(asked.runId);
+              yield* checkIssueText(here, asked.body);
+              const commented = yield* here.forge.commentIssue(
+                here.project,
+                asked.number,
+                redact(asked.body),
+                here.cwd,
+                runShell,
+              );
+              if (!commented.ok) return yield* new WorkflowError({ reason: commented.reason });
+            }),
+          ),
         usage: () => options.readings ?? Effect.succeed([]),
+        skill: (name) =>
+          unsafePathComponent(name) !== null
+            ? Effect.succeed(null)
+            : placing.pipe(
+                Effect.flatMap(({ env }) => skillDirs(env)),
+                Effect.flatMap((dirs) => skillFile(dirs, name)),
+                Effect.orElseSucceed(() => null),
+                Effect.provideContext(bun),
+              ),
         place: (runId) =>
           under(
             Effect.zipWith(
@@ -3562,33 +3802,16 @@ export interface RegistryApi {
    * quietly becoming something else. A caller that already has an identity for the work
    * brings it; otherwise the host mints one.
    */
-  readonly start: (options: {
-    readonly requestedBy?: RequestedBy;
-    readonly branchBase?: string | undefined;
-    readonly generation: Generation;
-    readonly request: string;
-    readonly project: string;
-    readonly runId?: string;
-    /** What the caller said, in the two halves a front door keeps apart. */
-    readonly input: Readonly<Record<string, Schema.Json>>;
-    readonly text?: Readonly<Record<string, string>>;
-    readonly inferred?: ReadonlyArray<string>;
-    /** The Projects root the front door resolved, which `workspace=projects-root` names. */
-    readonly root?: string | undefined;
-    /** The host's own launch options, which never reach the author's payload. */
-    readonly options?: Readonly<Record<string, string>>;
-    /** What this work belongs to: a Task, and the run it came out of. */
-    readonly task?: string | null;
-    /** A new Task to open for it, under this label, on the checkout it is given. */
-    readonly taskLabel?: string | undefined;
-    readonly parent?: string | null;
-    /** What the front door knows of the Run's Intent. */
-    readonly intent?: IntentSeed;
-    /** The approved set given with the start, over the project's and the user's files. */
-    readonly verify?: ReadonlyArray<VerifySpec> | undefined;
-    /** Paths on this Machine, copied into the Run before its first step. */
-    readonly attachments?: ReadonlyArray<string> | undefined;
-  }) => Effect.Effect<Admitted, HostRefused | RequestConflict, HostServices>;
+  readonly start: (
+    options: StartOptions,
+  ) => Effect.Effect<Admitted, HostRefused | RequestConflict, HostServices>;
+  /** Refuses a start as `start` would, before anything is claimed, and starts nothing. */
+  readonly check: (options: StartOptions) => Effect.Effect<void, HostRefused, HostServices>;
+  /**
+   * Executes a Run admitted with `handsOver` on the caller's own fiber, as a parent
+   * executes its child: the Run's end wakes the caller's workflow.
+   */
+  readonly result: (runId: string) => Effect.Effect<unknown, WorkflowError>;
   readonly status: (
     runId: string,
   ) => Effect.Effect<typeof RunStatus.Type, HostRefused, HostServices>;
@@ -3682,6 +3905,37 @@ export interface RegistryApi {
   ) => Effect.Effect<{ readonly generation: Generation; readonly execution: string }, HostRefused>;
 }
 
+/** What a start is given. */
+export interface StartOptions {
+  readonly requestedBy?: RequestedBy;
+  readonly branchBase?: string | undefined;
+  readonly generation: Generation;
+  readonly request: string;
+  readonly project: string;
+  readonly runId?: string;
+  /** What the caller said, in the two halves a front door keeps apart. */
+  readonly input: Readonly<Record<string, Schema.Json>>;
+  readonly text?: Readonly<Record<string, string>>;
+  readonly inferred?: ReadonlyArray<string>;
+  /** The Projects root the front door resolved, which `workspace=projects-root` names. */
+  readonly root?: string | undefined;
+  /** The host's own launch options, which never reach the author's payload. */
+  readonly options?: Readonly<Record<string, string>>;
+  /** What this work belongs to: a Task, and the run it came out of. */
+  readonly task?: string | null;
+  /** A new Task to open for it, under this label, on the checkout it is given. */
+  readonly taskLabel?: string | undefined;
+  readonly parent?: string | null;
+  /** What the front door knows of the Run's Intent. */
+  readonly intent?: IntentSeed;
+  /** The approved set given with the start, over the project's and the user's files. */
+  readonly verify?: ReadonlyArray<VerifySpec> | undefined;
+  /** Paths on this Machine, copied into the Run before its first step. */
+  readonly attachments?: ReadonlyArray<string> | undefined;
+  /** The caller executes the Run itself with `result`, so the engine is not handed it. */
+  readonly handsOver?: boolean;
+}
+
 /** What a start records and returns: the run it is, and whether this call is what made it. */
 export interface Admitted {
   readonly runId: string;
@@ -3725,6 +3979,8 @@ export interface RegistryOptions {
   readonly userDir?: string;
   /** The herdr checkouts and Task workspaces are made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
+  /** Whether a child's own Task is named by the namer's model, or by the stand-in. */
+  readonly namesTasks?: boolean;
 }
 
 export const registryLayer = (
@@ -3751,6 +4007,7 @@ export const foundationLayer = (options: {
   readonly herd?: Herd;
   /** This Machine's Usage readings; none where left out. */
   readonly readings?: Effect.Effect<ReadonlyArray<UsageReading>>;
+  readonly messagePoll?: Duration.Input | undefined;
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
 }): Layer.Layer<
@@ -3882,7 +4139,13 @@ const makeRegistry: (
     yield* Layer.buildWithScope(
       registration.layer.pipe(
         Layer.provide(
-          Layer.mergeAll(Layer.succeed(Children)(children), Layer.succeed(Executions)(executions)),
+          Layer.mergeAll(
+            Layer.succeed(Children)(children),
+            Layer.succeed(Executions)(executions),
+            Layer.succeed(Host)(
+              Host.of({ ...Context.get(hostServices, Host), report: machineReport }),
+            ),
+          ),
         ),
       ),
       hostScope,
@@ -3931,6 +4194,29 @@ const makeRegistry: (
    * instance and scope in place — which is the whole linkage between the two.
    */
   const hostServices = yield* Effect.context<HostServices>();
+  const reportsReady = yield* Deferred.make<void>();
+  const machineReport = Effect.fn("Host.report")(function* (since: string) {
+    yield* Deferred.await(reportsReady);
+    const from = epochMs(since);
+    if (!Number.isFinite(from))
+      return yield* new WorkflowError({ reason: `since is not a date: ${since}` });
+    const rows = (yield* store.runs).filter((row) => epochMs(row.admitted) >= from);
+    const views = yield* Effect.forEach(rows, viewOf);
+    const metrics = new Map<string, Metrics>();
+    const recorded = new Map<string, Recorded>();
+    for (const view of views) {
+      const lines = yield* readMetrics(evidenceDir(dir, view.runId)).pipe(
+        Effect.provideContext(bun),
+      );
+      const records = yield* outcomeRecordsOf(dir, view.runId).pipe(
+        Effect.orElseSucceed((): OutcomeRecords | null => null),
+        Effect.provideContext(bun),
+      );
+      metrics.set(view.runId, metricsOf(lines, view.created));
+      recorded.set(view.runId, { records, metrics: lines });
+    }
+    return reportOf(views, metrics, since, recorded);
+  });
   const lending = <A, E>(effect: Effect.Effect<A, E, HostServices>): Effect.Effect<A, E> =>
     Effect.updateContext(effect, (caller: Context.Context<never>) =>
       Context.merge(hostServices, caller),
@@ -4333,6 +4619,25 @@ const makeRegistry: (
     )({ runId, input: settled.input }).pipe(
       Effect.mapError((cause) => refused(`${REFUSED_INPUT}: ${cause.message}`)),
     );
+    const launch = Object.entries(generation.hints).find(([, strategy]) =>
+      EXCLUSIVE_STRATEGIES.includes(strategy),
+    )?.[0];
+    const named = launch === undefined ? "" : settled.input[launch];
+    // An admitted child's saved placement also covers replay and crash recovery.
+    const taskLabel =
+      ask.ownTask === true && (yield* store.run(runId)) === null
+        ? yield* freshTaskLabel(
+            { ...placing.env, cwd: from },
+            {
+              workflow: generation.id,
+              named: isText(named) ? named : "",
+            },
+            options?.namesTasks === true,
+          ).pipe(
+            Effect.provideContext(bun),
+            Effect.mapError((cause) => refused(`no Task could be named: ${cause.message}`)),
+          )
+        : null;
     const claimed = yield* claimAndPlace({
       // The invocation is the claim, so replaying the parent admits nothing new and
       // changing what an invocation is given is refused rather than run twice.
@@ -4343,10 +4648,10 @@ const makeRegistry: (
       input: settled.input,
       provenance: settled.provenance,
       options: launchOptions(generation, asked),
-      placing: encodePlacing({ from, taskLabel: null, root, closes: generation.closes }),
+      placing: encodePlacing({ from, taskLabel, root, closes: generation.closes }),
       generation: generation.name,
       execution: yield* generation.registration.workflow.executionId(payload),
-      task: parent.task,
+      task: ask.ownTask === true ? null : parent.task,
       parent: ask.runId,
     }).pipe(Effect.mapError((failure) => refused(failure.reason)));
     // A child is a Run, so what it may verify is frozen with it rather than read when
@@ -4411,17 +4716,6 @@ const makeRegistry: (
       }),
     );
   });
-
-  // What was registered before this host existed, rebuilt from the modules as they are
-  // now. A file that has gone leaves its generation unavailable and every other one
-  // registered, which is what keeps one broken module from stopping the rest.
-  for (const route of known) {
-    yield* register(route).pipe(
-      Effect.catchTag("EntryError", (failure) =>
-        Effect.sync(() => unavailable.set(route.name, `${failure.file}: ${failure.message}`)),
-      ),
-    );
-  }
 
   /** A host dying where the proof needs one to; nothing else ever sets this. */
   const crash = (point: CrashPoint) =>
@@ -4558,15 +4852,6 @@ const makeRegistry: (
     }
     return woken;
   }).pipe(waking.withPermits(1));
-
-  // What a host admitted and did not live to hand over. Every crash window ends here.
-  // Forked, so a hand-over that stalls does not keep the host from serving.
-  yield* Effect.forkScoped(
-    Effect.gen(function* () {
-      for (const row of yield* store.pending) yield* recoverAdmission(row);
-      yield* reconcileAnswers;
-    }),
-  );
 
   /** The file a generation was built from, which a row keeps naming after it has gone. */
   const entryOf = (name: string) => known.find((route) => route.name === name)?.entry ?? "";
@@ -5055,28 +5340,12 @@ const makeRegistry: (
     return { row, generation, facts, where, refused, input };
   });
 
-  const startWork = Effect.fn("Engine.Registry.start")(function* (options: {
-    readonly generation: Generation;
-    readonly request: string;
-    readonly project: string;
-    readonly runId?: string;
-    readonly input: Readonly<Record<string, Schema.Json>>;
-    readonly text?: Readonly<Record<string, string>>;
-    readonly inferred?: ReadonlyArray<string>;
-    readonly root?: string | undefined;
-    readonly options?: Readonly<Record<string, string>>;
-    readonly task?: string | null;
-    readonly taskLabel?: string | undefined;
-    readonly parent?: string | null;
-    readonly requestedBy?: RequestedBy;
-    readonly branchBase?: string | undefined;
-    readonly intent?: IntentSeed;
-    readonly verify?: ReadonlyArray<VerifySpec> | undefined;
-    readonly attachments?: ReadonlyArray<string> | undefined;
-  }) {
+  /** What a start is checked against before anything exists to clean up. */
+  const settleStart = Effect.fn("Engine.Registry.settleStart")(function* (
+    options: StartOptions,
+    runId: string,
+  ) {
     const generation = options.generation;
-    const runId =
-      options.runId ?? `run-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`;
     const asked = options.options ?? {};
     yield* refuseOptions(generation, asked);
     yield* refuseAgent(generation, asked);
@@ -5123,6 +5392,15 @@ const makeRegistry: (
             userDir,
           }).pipe(Effect.provideContext(bun))
         : verify;
+    return { request, launch, settled, payload, approved };
+  });
+
+  const startWork = Effect.fn("Engine.Registry.start")(function* (options: StartOptions) {
+    const generation = options.generation;
+    const runId =
+      options.runId ?? `run-${(yield* crypto.randomUUIDv4.pipe(Effect.orDie)).slice(0, 8)}`;
+    const asked = options.options ?? {};
+    const { request, launch, settled, payload, approved } = yield* settleStart(options, runId);
     const claimed = yield* claimAndPlace({
       request: options.request,
       run: runId,
@@ -5168,7 +5446,9 @@ const makeRegistry: (
     }).pipe(Effect.provideContext(bun), Effect.ignore);
     // A retry of work the engine already has is nothing more to do; one that crashed
     // before it heard is handed over now, under the identity it was admitted with.
-    if (claimed.row.accepted === null) yield* handOver(claimed.row);
+    // A caller that executes the Run itself has the receipt first, as a parent does.
+    if (claimed.row.accepted === null)
+      yield* options.handsOver === true ? store.accepted(claimed.row.run) : handOver(claimed.row);
     return {
       runId: claimed.row.run,
       registration: claimed.row.generation,
@@ -5200,6 +5480,28 @@ const makeRegistry: (
       return { registrations: yield* held, takenUp: recovered };
     });
 
+  // What was registered before this host existed, rebuilt from the modules as they are
+  // now. A file that has gone leaves its generation unavailable and every other one
+  // registered, which is what keeps one broken module from stopping the rest.
+  for (const route of known) {
+    yield* register(route).pipe(
+      Effect.catchTag("EntryError", (failure) =>
+        Effect.sync(() => unavailable.set(route.name, `${failure.file}: ${failure.message}`)),
+      ),
+    );
+  }
+
+  yield* Deferred.succeed(reportsReady, undefined);
+
+  // What a host admitted and did not live to hand over. Every crash window ends here.
+  // Forked, so a hand-over that stalls does not keep the host from serving.
+  yield* Effect.forkScoped(
+    Effect.gen(function* () {
+      for (const row of yield* store.pending) yield* recoverAdmission(row);
+      yield* reconcileAnswers;
+    }),
+  );
+
   return {
     load: (file: string) => registering.withPermits(1)(mint(file)),
 
@@ -5211,31 +5513,11 @@ const makeRegistry: (
     waiting: asked,
     view,
     retire: (runs) =>
-      Effect.gen(function* () {
-        const [cluster, entity, ids, types, shard] = yield* Effect.promise(() =>
-          Promise.all([
-            import("effect/cluster/MessageStorage"),
-            import("effect/cluster/EntityAddress"),
-            import("effect/cluster/EntityId"),
-            import("effect/cluster/EntityType"),
-            import("effect/cluster/ShardId"),
-          ]),
-        );
-        const storage = yield* cluster.MessageStorage;
-        // Messages are found by entity type and id; the shard is part of the address only.
-        const address = (entityType: string, execution: string) =>
-          entity.EntityAddress.make({
-            entityType: types.make(entityType),
-            entityId: ids.make(execution),
-            shardId: shard.make("default", 0),
-          });
-        return yield* store.retire(runs, (row) =>
-          Effect.all([
-            storage.clearAddress(address(`Workflow/${row.generation}`, row.execution)),
-            storage.clearAddress(address("Workflow/-/DurableClock", row.execution)),
-          ]).pipe(Effect.orDie, Effect.asVoid),
-        );
-      }),
+      Effect.flatMap(Effect.context<MessageStorage.MessageStorage>(), (storage) =>
+        store.retire(runs, (row) =>
+          forgetExecution(row.generation, row.execution).pipe(Effect.provideContext(storage)),
+        ),
+      ),
     views: (task: string | null) =>
       store.runs.pipe(
         Effect.flatMap((rows) =>
@@ -5351,6 +5633,13 @@ const makeRegistry: (
     }),
 
     start: startWork,
+    check: (options) => settleStart(options, "run-check").pipe(Effect.asVoid),
+    result: (runId) =>
+      lending(
+        Effect.flatMap(store.run(runId), (row) =>
+          runChild({ runId, workflow: row?.workflow ?? "", invocation: runId, fresh: false }),
+        ),
+      ),
 
     status: Effect.fn("Engine.Registry.status")(function* (runId: string) {
       const found = yield* routed(runId);

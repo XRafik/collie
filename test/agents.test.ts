@@ -11,7 +11,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { Duration, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { ConfigProvider, Duration, Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
@@ -21,6 +21,7 @@ import {
   Agents,
   agentWork,
   agentsLayer,
+  configuredAgents,
   decodeOutput,
   promptFor,
   type AgentHost,
@@ -121,6 +122,55 @@ const hostOf = (): AgentHost => ({
   collectMs: 400,
   help: () => Effect.succeed(CLAUDE_HELP),
 });
+
+test(
+  "configured agents open in the Task kept by their host's state directory",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const inherited = rig.pluginEnv().raw;
+        yield* configured('{ "compact_at_tokens": 0, "trust": "never" }');
+        yield* rig.startSocket();
+        yield* rig.queueOutputs([null]);
+        yield* rig.addWorkspace("wT", "Project | Own task", rig.projectDir);
+        yield* writeTask(dir, {
+          id: "task-own",
+          workspace: "wT",
+          label: "Project | Own task",
+          cwd: rig.projectDir,
+          created_at: "2026-10-12T00:00:00.000Z",
+        });
+        const launched = yield* Effect.gen(function* () {
+          yield* (yield* Agents).launch({
+            runId: "r-own",
+            operation: "build",
+            role: "implementer",
+            workflow: "builds",
+            task: "task-own",
+            agent: null,
+            cwd: rig.projectDir,
+            prompt: "Build it.",
+            output: `${dir}/output.json`,
+            skill: null,
+            harness: "codex",
+            model: null,
+            effort: null,
+            permissions: null,
+          });
+        }).pipe(
+          Effect.result,
+          Effect.provide(Layer.unwrap(configuredAgents(dir, Effect.succeed([])))),
+          Effect.provide(foundationLayer({ dir })),
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(inherited))),
+          Effect.scoped,
+        );
+        const tab = (yield* rig.calls()).find((call) => call.cmd === "tab create");
+        expect(tab?.argv).toEqual(expect.arrayContaining(["--workspace", "wT"]));
+        expect(launched._tag).toBe("Success");
+      }),
+    ),
+  30_000,
+);
 
 /** Every wait in here is on a clock that moves many times faster than the wall's. */
 const runEffect = <A, E>(effect: Effect.Effect<A, E, BunServices.BunServices>) =>

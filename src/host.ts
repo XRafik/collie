@@ -98,6 +98,7 @@ import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
 import { sideJobs } from "./side-jobs";
 import { Usage, usageLayer } from "./usage";
+import { Schedules, schedulesLayer } from "./schedules";
 import { dataHomeOf, desktopRootOf } from "./desktop";
 import type * as MessageStorage from "effect/cluster/MessageStorage";
 import {
@@ -119,7 +120,7 @@ import {
   worktreesSweeper,
   type SweptBy,
 } from "./cleanup";
-import { once, readAudit, recordAudit, trimAudit } from "./audit";
+import { once, readAudit, recordAudit, startedBy, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
@@ -296,6 +297,7 @@ const RunShown = Schema.Struct({
   agents: Schema.Array(RunAgent),
   disposition: Schema.NullOr(Disposition),
   children: Schema.Array(RunView),
+  startedBy: Schema.optional(Schema.String),
   /** The handoff notes its agents left, where they are on the host's Machine. Absent from an older host. */
   handoffs: Schema.optionalKey(
     Schema.Array(Schema.Struct({ path: Schema.String, bytes: Schema.Int })),
@@ -616,6 +618,10 @@ const handlers = (
                 yield* readDispositions(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
               ),
               children: all.filter((one) => one.parent === runId),
+              startedBy: startedBy(
+                yield* readAudit(runDir(dir, runId)).pipe(Effect.orElseSucceed(() => [])),
+                { id: runId, parent: view.parent },
+              ),
               handoffs: (yield* handoffsIn(runDir(dir, runId))).map((file) => ({
                 path: `${handoffsDir(runDir(dir, runId))}/${file.name}`,
                 bytes: file.bytes,
@@ -991,6 +997,7 @@ const frontDoorHandlers = (
       const { env, herdr, bun, sweepers, changed, ...shared } = yield* SharedBoard;
       const boards = shared.boards.pipe(Stream.map((built) => built.views));
       const usage = yield* Usage;
+      const schedules = yield* Schedules;
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
       const recordingUsage = yield* Semaphore.make(1);
       const recordingShell = yield* Semaphore.make(1);
@@ -1184,6 +1191,10 @@ const frontDoorHandlers = (
           if (frontDoor === "host" && stamped !== stamp)
             return Effect.fail(new HostRefused({ reason: "only a host's own link is host" }));
           const already = declared.get(client.id);
+          if (frontDoor === "schedule")
+            return Effect.fail(
+              new HostRefused({ reason: "only the host starts a Run as a Schedule" }),
+            );
           if (already !== undefined && already.frontDoor !== frontDoor) {
             return Effect.fail(
               new HostRefused({ reason: `this channel is already ${already.frontDoor}` }),
@@ -1427,6 +1438,9 @@ const frontDoorHandlers = (
             }),
           ),
         cleanup: () => plainly(Effect.flatMap(sweepers, judge)),
+        schedules: () => schedules.list,
+        changeSchedule: ({ change, request }, { client }) =>
+          schedules.change(change, request, whoOf(client)),
         sweep: ({ request }, { client }) =>
           plainly(
             Effect.gen(function* () {
@@ -2370,11 +2384,21 @@ const crashPoint = Config.option(Config.String("COLLIE_HOST_CRASH_AT")).pipe(
   Effect.orDie,
 );
 
+/**
+ * Whether a test has this host take a seconds field in a Schedule's cron, and read the
+ * engine's storage each second so such an occurrence is not late; unset everywhere else.
+ */
+const scheduleSeconds = Config.option(Config.String("COLLIE_HOST_SCHEDULE_SECONDS")).pipe(
+  Effect.map((set) => Option.getOrUndefined(set) === "1"),
+  Effect.orDie,
+);
+
 const own = (dir: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const env = yield* currentEnv.pipe(Effect.orDie);
     const crashAt = yield* crashPoint;
+    const seconds = yield* scheduleSeconds;
     const bun = yield* Effect.context<BunServices>();
     const herdr = new Herdr(env);
     // Under the lock, so anything at this path belongs to a host that is gone: a unix
@@ -2437,11 +2461,17 @@ const own = (dir: string) =>
             Layer.provide(sharedBoardLayer(dir)),
             Layer.provide(
               Layer.mergeAll(
-                registryLayer(dir, {
-                  locate: locateIn(env),
-                  userDir: env.userDir,
-                  crashAt,
-                }),
+                schedulesLayer({ dir, env: { ...env, stateDir: dir }, installation, seconds }).pipe(
+                  Layer.provideMerge(
+                    registryLayer(dir, {
+                      locate: locateIn(env),
+                      userDir: env.userDir,
+                      crashAt,
+                      namesTasks: true,
+                      placing: { herdr, env: { ...env, stateDir: dir } },
+                    }),
+                  ),
+                ),
                 Layer.succeed(Usage, usage),
               ),
             ),
@@ -2458,6 +2488,7 @@ const own = (dir: string) =>
               herdr.notify(title, body, sound).pipe(Effect.provideContext(bun), Effect.ignore),
             herd: { socketPath: env.socketPath, pluginRoot: env.pluginRoot },
             readings: usage.readings,
+            messagePoll: seconds ? "1 second" : undefined,
           }),
         ),
         Layer.provide(yield* configuredAgents(dir, usage.readings)),

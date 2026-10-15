@@ -15,6 +15,7 @@
 import { expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { connect } from "../src/host";
+import { readTask } from "../src/task";
 import { events, stopHost, until } from "./support/host";
 import { proves, save, type World } from "./support/world";
 
@@ -208,6 +209,134 @@ test(
             ]);
           }
           expect((yield* client.runs({ task: "task-9" }).pipe(Effect.orDie)).length).toBe(3);
+          yield* stopHost(world.state);
+        }),
+      [],
+    ),
+  300_000,
+);
+
+test(
+  "a child that is work of its own keeps its Task on replay, and still returns its result to its parent",
+  () =>
+    proves(
+      "collie-children-own-",
+      (world) =>
+        Effect.gen(function* () {
+          const project = yield* projectOf(world, "one-project", "strict");
+          const client = yield* connect(world.state).pipe(Effect.orDie);
+          const started = yield* client
+            .start({
+              project,
+              id: "reviewed",
+              request: "req-1",
+              input: { notes: "one", grade: "pass", own: true },
+              task: "task-9",
+            })
+            .pipe(Effect.orDie);
+          yield* until(
+            () => client.run({ runId: started.runId }).pipe(Effect.orDie),
+            (view) => (view?.waiting ?? []).some((one) => one.name === "sign-off"),
+          );
+
+          const childId = `${started.runId}.grade-one`;
+          const child = yield* client.run({ runId: childId }).pipe(Effect.orDie);
+          expect(child?.parent).toBe(started.runId);
+          expect(child?.task).not.toBeNull();
+          expect(child?.task).not.toBe("task-9");
+          expect((yield* readTask(world.state, child?.task ?? ""))?.label).toBe(
+            "One project | One",
+          );
+
+          yield* client
+            .answer({ runId: started.runId, decision: "sign-off", value: "ok", request: "a-1" })
+            .pipe(Effect.orDie);
+          const done = yield* until(
+            () => client.run({ runId: started.runId }).pipe(Effect.orDie),
+            (view) => view?.status.status === "complete",
+          );
+          expect(done?.status).toEqual({
+            status: "complete",
+            value: "strict:one+strict:one/pass+ok",
+          });
+          expect(graded(yield* events(world.state, childId))).toEqual(["graded strict:one/pass"]);
+          const runs = yield* client.runs({ task: null }).pipe(Effect.orDie);
+          expect(sorted(runs.map((one) => one.runId))).toEqual([started.runId, childId]);
+          expect((yield* client.run({ runId: childId }).pipe(Effect.orDie))?.task).toBe(
+            child?.task,
+          );
+          yield* stopHost(world.state);
+        }),
+      [],
+    ),
+  300_000,
+);
+
+test(
+  "stopping and resuming the parent reaches its own-Task child while the parent waits for it",
+  () =>
+    proves(
+      "collie-children-own-stop-",
+      (world) =>
+        Effect.gen(function* () {
+          const project = yield* projectOf(world, "one-project", "strict");
+          const client = yield* connect(world.state).pipe(Effect.orDie);
+          const started = yield* client
+            .start({
+              project,
+              id: "reviewed",
+              request: "req-1",
+              input: { notes: "one", grade: "pass", own: true, wait: true },
+            })
+            .pipe(Effect.orDie);
+          yield* until(
+            () => client.run({ runId: `${started.runId}.grade-one` }).pipe(Effect.orDie),
+            (view) =>
+              view?.status.status === "suspended" &&
+              view.waiting.some((one) => one.name === "ready"),
+          );
+
+          expect(
+            (yield* client.run({ runId: started.runId }).pipe(Effect.orDie))?.status.status,
+          ).not.toBe("complete");
+
+          yield* client
+            .control({ runId: started.runId, control: "stop", set: true, request: "stop-1" })
+            .pipe(Effect.orDie);
+
+          const child = yield* client
+            .run({ runId: `${started.runId}.grade-one` })
+            .pipe(Effect.orDie);
+          expect(child?.task).not.toBe(
+            (yield* client.run({ runId: started.runId }).pipe(Effect.orDie))?.task,
+          );
+          expect(child?.controls).toContain("stop");
+          yield* client
+            .control({ runId: started.runId, control: "stop", set: false, request: "resume-1" })
+            .pipe(Effect.orDie);
+          expect((yield* client.run({ runId: child!.runId }).pipe(Effect.orDie))?.controls).toEqual(
+            [],
+          );
+          yield* client
+            .answer({ runId: child!.runId, decision: "ready", value: "yes", request: "ready-1" })
+            .pipe(Effect.orDie);
+          yield* until(
+            () => client.run({ runId: started.runId }).pipe(Effect.orDie),
+            (view) =>
+              view?.status.status === "suspended" &&
+              view.waiting.some((one) => one.name === "sign-off"),
+          );
+          yield* client
+            .answer({ runId: started.runId, decision: "sign-off", value: "ok", request: "sign-1" })
+            .pipe(Effect.orDie);
+          const done = yield* until(
+            () => client.run({ runId: started.runId }).pipe(Effect.orDie),
+            (view) => view?.status.status === "complete",
+          );
+          expect(done?.status).toEqual({
+            status: "complete",
+            value: "strict:one+strict:one/pass+ok",
+          });
           yield* stopHost(world.state);
         }),
       [],

@@ -1,6 +1,6 @@
 # Workflows
 
-Collie ships six workflows. This page is the "which one do I want" level: what each is
+Collie ships eight workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
@@ -30,6 +30,12 @@ can build from.
 issue id or URL goes in the goal, alone or with your words around it: the planner fetches
 it first. The goal is the only launch question, and the end menu is asked when the plan is
 written rather than before it exists.
+
+`then` is `implement` or empty. The Launch flow leaves it empty; an agent's start gives it,
+`--input then=` where unused. With `then=implement` nobody is asked anything: each prompt
+tells the planner that nobody is watching, so it decides what is open and records it under
+`decided`, and the end menu is skipped for **Implement now** at once. A plan whose tickets
+cannot be built then fails with why, rather than asking again.
 
 **What happens:** a planner reads the goal and repository, asks only when a missing
 decision changes the work, then writes `SPEC.md` and one ticket per slice into the run's
@@ -367,6 +373,7 @@ prompt in [`workflows/general.md`](../workflows/general.md).
 - `review` → `implement`, from **Fix findings in a full implement run**. See
   [Hand-offs](using.md#hand-offs-between-runs).
 - `general` chains into nothing.
+- `self-improve` → `plan` with `then=implement`, once per Improvement, each its own card.
 
 A chained run is a child of the one that started it, its input decoded against the child's
 own schema before it is admitted. It has a card of its own, the parent waits for it and
@@ -388,3 +395,26 @@ workspace unless another Run or a human pane needs it (`closes: "reported"`).
 
 Module: [`workflows/investigate.workflow.ts`](../workflows/investigate.workflow.ts),
 with its prompt in [`workflows/investigate.md`](../workflows/investigate.md).
+
+## `self-improve`
+
+**For:** filing, and starting to fix, what a day of Runs shows is wrong with a project:
+what its agents kept tripping over, what its checks and instructions missed. Usually run
+daily from a Schedule.
+
+**Inputs:** `runs`, which nothing infers: `checkout` reads the Runs of the project it runs
+in, and `machine` reads every Run on its Machine and also files Collie's own `defect`s.
+`improvements`, a whole number, bounds how many fixes it starts; `0` files without
+building.
+
+**What happens:** it reads the 24 hours of Runs before it started. A `retrospective`
+agent triages their records with the installed `retro` skill, and each finding that
+recurs is filed on the forge of the checkout it runs in, or commented on the open issue it
+matches. Up to `improvements` groups of newly filed issues start as `plan` Runs that build
+themselves. Nobody is asked anything, and nothing is merged. See
+[Self-improve](using.md#self-improve).
+
+**Ends:** once its Improvements have, with `summary.md` in its Run directory.
+
+Module: [`workflows/self-improve.workflow.ts`](../workflows/self-improve.workflow.ts),
+with its prompt in [`workflows/self-improve.md`](../workflows/self-improve.md).

@@ -11,6 +11,7 @@ const agents = computed(() => agentRows(props.detail?.agents ?? []));
 
 <template>
   <div data-testid="facts" class="flex flex-col gap-4 text-sm">
+    <p v-if="detail?.startedBy">{{ detail.startedBy }}</p>
     <p v-if="detail?.requestedBy">{{ requestedByLine(detail.requestedBy) }}</p>
     <p v-if="detail?.report">
       Report {{ detail.report.state }}: {{ detail.report.note }} {{ detail.report.closure }}
