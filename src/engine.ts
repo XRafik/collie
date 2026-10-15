@@ -3720,7 +3720,6 @@ const SWEEP_INTERVAL = "500 millis";
 const WAKE_INTERVAL = "250 millis";
 const WAKE_TRIES = 8;
 
-/** How many Run views a listing builds at once. */
 const VIEW_CONCURRENCY = 8;
 
 /** What a host is holding, as a caller may see it: live names and unloadable ones. */
