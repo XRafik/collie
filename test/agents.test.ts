@@ -3308,6 +3308,9 @@ test(
   120_000,
 );
 
+/** An Output budget a resend's real IO cannot outrun on the fast clock. */
+const OUTLASTS_IO = 300_000;
+
 /** What the park's own instructions say to run, done as the command does it. */
 const reconciled = (runId: string, as: "sent" | "not-sent") =>
   Effect.gen(function* () {
@@ -3328,11 +3331,12 @@ test(
         yield* interrupted("r1", parked("r1"), {
           herdr: promptNotTaken("text"),
           confirmGraceMs: 300,
+          collectMs: OUTLASTS_IO,
         });
         yield* reconciled("r1", "not-sent");
 
         yield* rig.queueOutputs([{ verdict: "clean", note: "sent again" }]);
-        const result = yield* releasedInto("r1");
+        const result = yield* releasedInto("r1", { collectMs: OUTLASTS_IO });
         expect(result._tag === "Success" && result.success.note).toBe("sent again");
         expect(sent(yield* rig.calls(), "Your task for this step")).toBe(2);
         expect(new Set((yield* steps("r1")).map((one) => one.delivery.id)).size).toBe(2);
@@ -3395,6 +3399,7 @@ test(
         yield* interrupted("r1", parked("r1"), {
           herdr: promptNotTaken("text"),
           confirmGraceMs: 300,
+          collectMs: OUTLASTS_IO,
         });
         yield* reconciled("r1", "not-sent");
 
@@ -3406,14 +3411,15 @@ test(
             const payload = { runId: "r1", input: { skip: false } };
             yield* engine.resume(work, yield* work.executionId(payload));
             yield* work.execute(payload, { discard: true });
-            yield* Effect.sleep(Duration.millis(3_000));
+            while (!(yield* read(controlPath(dir, PARKED, "r1"))).includes("tries again"))
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
           }),
-          { herdr: refusing, collectMs: 30_000 },
+          { herdr: refusing, collectMs: OUTLASTS_IO },
         );
         expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain("collie run resume r1");
 
         yield* rig.queueOutputs([{ verdict: "clean", note: "third time" }]);
-        const result = yield* releasedInto("r1");
+        const result = yield* releasedInto("r1", { collectMs: OUTLASTS_IO });
         expect(result._tag === "Success" && result.success.note).toBe("third time");
       }),
     ),
