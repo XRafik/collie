@@ -735,12 +735,17 @@ const fanOf = Effect.fn("Board.fanOf")(function* (
 
 /**
  * Whether a Run's work is over: it ended, or it waits only on children of its own on the
- * card that are over. A stop suspends a Run, so its parent waits on it forever.
+ * card that are over, one of them stopped. A stop suspends a Run, so its parent waits on
+ * it forever; a child that finished hands the parent back its own work.
  */
 function over(run: RunFacts, runs: ReadonlyArray<RunFacts>): boolean {
   if (ended(run)) return true;
+  if (run.asking.length > 0 || run.parked !== null) return false;
   const children = runs.filter((one) => one.parent === run.id);
-  return children.length > 0 && children.every((child) => over(child, runs));
+  return (
+    children.some((child) => child.state === "stopped" || !ended(child)) &&
+    children.every((child) => over(child, runs))
+  );
 }
 
 /** Who made a Run's latest stop, from its audit trail (ADR-0039). */

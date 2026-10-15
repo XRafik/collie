@@ -1053,6 +1053,57 @@ test("a Task's card reads its Task: a going child leads its going parent", () =>
     }),
   ));
 
+test("a Task's card reads its Task: a parent that went on to its own question still leads it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const parent = yield* madeRun(dir, {
+        id: "r-reviewed",
+        task: "task-1",
+        state: "waiting",
+        asking: [{ name: "sign-off", prompt: "Sign this review off?", options: [] }],
+        created: "2026-09-12T08:00:00Z",
+      });
+      const child = yield* madeRun(dir, {
+        id: "r-reviewed.grade-one",
+        task: "task-1",
+        parent: "r-reviewed",
+        state: "succeeded",
+        created: "2026-09-12T08:10:00Z",
+        finished: "2026-09-12T08:30:00Z",
+      });
+
+      const [card] = yield* board(env, [parent, child]);
+      expect(card!.run).toBe("r-reviewed");
+      expect(sectionOf(card!)).toBe("needs-you");
+    }),
+  ));
+
+test("a Task's card reads its Task: a parent going on after its children succeeded still leads it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const parent = yield* madeRun(dir, {
+        id: "r-reviewed",
+        task: "task-1",
+        summary: "Writing the review",
+        created: "2026-09-14T08:00:00Z",
+      });
+      const child = yield* madeRun(dir, {
+        id: "r-reviewed.grade-one",
+        task: "task-1",
+        parent: "r-reviewed",
+        state: "succeeded",
+        created: "2026-09-14T08:10:00Z",
+        finished: "2026-09-14T08:30:00Z",
+      });
+
+      const [card] = yield* board(env, [parent, child], { quietMs: Infinity });
+      expect(card!.run).toBe("r-reviewed");
+      expect(card!.state).toBe("active");
+    }),
+  ));
+
 test("landed is a disposition, a merge the forge reports, or work with nothing to land", () =>
   runEffect(
     Effect.gen(function* () {
