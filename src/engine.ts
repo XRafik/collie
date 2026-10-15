@@ -3194,6 +3194,13 @@ const PlacingJson = Schema.fromJsonString(Placing);
 const decodePlacing = Schema.decodeUnknownOption(PlacingJson);
 const encodePlacing = Schema.encodeSync(PlacingJson);
 
+/** Whether a Run's report is owed: an agent started it, or its Task closes once it is reported. */
+export const owesReport = (row: RunRow) =>
+  Option.match(decodePlacing(row.placing ?? ""), {
+    onNone: () => false,
+    onSome: (placing) => placing.requestedBy !== undefined || placing.closes === "reported",
+  });
+
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 

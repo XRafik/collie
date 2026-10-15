@@ -3,7 +3,7 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { Effect, FileSystem, Layer, type Schema } from "effect";
+import { Effect, FileSystem, Layer, type Schema, type Scope } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./support/recorder";
 import { fastForward, runEffect as runLive } from "./support/effect";
@@ -20,8 +20,11 @@ import {
   type Generation,
   type HostServices,
 } from "../src/engine";
+import type { RequestedBy } from "../src/board-model";
 import { Store } from "../src/store";
 import { writeTask } from "../src/task";
+import { socketOf } from "../src/host";
+import { reportsLayer } from "../src/reports";
 
 const ROOT = new URL("../", import.meta.url).pathname;
 
@@ -61,7 +64,9 @@ const counted = Layer.effect(WorkflowEngine.WorkflowEngine)(
   })),
 );
 
-const hosted = <A, E>(run: Effect.Effect<A, E, Registry | Store | HostServices>) =>
+const hosted = <A, E>(
+  run: Effect.Effect<A, E, Registry | Store | HostServices | BunServices.BunServices | Scope.Scope>,
+) =>
   Effect.suspend(() => {
     polls = new Map();
     return run;
@@ -95,9 +100,11 @@ const started = Effect.fn("FinishedPoll.started")(function* (
   request: string,
   input: Readonly<Record<string, Schema.Json>>,
   task: string | null = null,
+  requestedBy?: RequestedBy,
 ) {
   const registry = yield* Registry;
   const { runId } = yield* registry.start({
+    requestedBy,
     generation,
     request,
     project: rig.projectDir,
@@ -264,6 +271,97 @@ test(
             rows.filter((row) => row.task === "task-1").map((row) => row.run),
           );
           expect(ofTask).toHaveLength(2);
+        }),
+      ),
+    ),
+  120_000,
+);
+
+/** Each view the reports sweep builds: a Run's id, or the Task a listing was asked for. */
+let built: Array<string | null>;
+
+const sweeping = Effect.gen(function* () {
+  built = [];
+  const registry = yield* Registry;
+  yield* write(socketOf(dir()), "");
+  yield* Layer.build(
+    reportsLayer({ env: env(), installation: "this-machine", stamp: "test" }).pipe(
+      Layer.provide(
+        Layer.succeed(Registry)({
+          ...registry,
+          view: (runId) =>
+            Effect.sync(() => built.push(runId)).pipe(Effect.andThen(registry.view(runId))),
+          views: (task) =>
+            Effect.sync(() => built.push(task)).pipe(Effect.andThen(registry.views(task))),
+        }),
+      ),
+    ),
+  );
+});
+
+const asker: RequestedBy = {
+  run: "asker-run",
+  agent: "asker",
+  machine: { installation: "this-machine", name: "here" },
+};
+
+const CLOSED = '{"state":"delivered","at":"2026-10-15T00:00:00.000Z","note":"done","closed":true}';
+
+test(
+  "the reports sweep builds a view only for the Run an agent started, and never delivers its closed report again",
+  () =>
+    runEffect(
+      hosted(
+        Effect.gen(function* () {
+          const quiet = yield* loaded("quiet");
+          const asked = yield* started(quiet, "r0", {}, null, asker);
+          yield* settled(asked.runId, "complete");
+          for (const request of ["r1", "r2"])
+            yield* settled((yield* started(quiet, request, {})).runId, "complete");
+          const report = `${runDir(dir(), asked.runId)}/report.json`;
+          yield* write(report, CLOSED);
+
+          yield* sweeping;
+          yield* until(
+            () => Effect.succeed(built),
+            (views) => views.length >= 2,
+          );
+
+          expect(new Set(built)).toEqual(new Set([asked.runId]));
+          const fs = yield* FileSystem.FileSystem;
+          expect(yield* fs.readFileString(report)).toBe(CLOSED);
+        }),
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "the reports sweep closing a Task lists that Task's Runs only",
+  () =>
+    runEffect(
+      hosted(
+        Effect.gen(function* () {
+          yield* rig.addWorkspace("wT", "Project | Picker", rig.projectDir);
+          yield* writeTask(dir(), {
+            id: "task-1",
+            workspace: "wT",
+            label: "Project | Picker",
+            cwd: rig.projectDir,
+            created_at: "2026-10-15T00:00:00.000Z",
+          });
+          const run = yield* started(yield* loaded("reported"), "r1", {}, "task-1");
+          yield* settled(run.runId, "complete");
+          const report = `${runDir(dir(), run.runId)}/report.json`;
+          yield* write(report, CLOSED.replace('"closed":true', '"closed":false'));
+
+          yield* sweeping;
+          yield* until(
+            () => Effect.succeed(built),
+            (views) => views.includes("task-1"),
+          );
+
+          expect(built.filter((one) => one !== run.runId)).toEqual(["task-1"]);
         }),
       ),
     ),
