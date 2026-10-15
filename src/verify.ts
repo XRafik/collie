@@ -450,6 +450,19 @@ export type CheckCommand = Pick<Verification, "name" | "argv" | "cwd"> & {
 export const ranCommand = (record: Command, check: CheckCommand) =>
   check.executable !== null && sameCommand(record, { ...check, executable: check.executable });
 
+/** A named check's records: those of its command where it is one of the Run's, else by name. */
+export const recordsNamed = (
+  records: ReadonlyArray<Verification>,
+  name: string,
+  commands: ReadonlyArray<CheckCommand> = [],
+) => {
+  const command = commands.find((one) => one.name === name);
+  return records.filter((v) => (command === undefined ? v.name === name : ranCommand(v, command)));
+};
+
+/** A pass that expected one: a reproduced failure is not. */
+export const passed = (v: Verification) => v.result === "pass" && v.expect === "pass";
+
 /**
  * The latest record of exactly this command on this tree, where it is a pass collected in
  * this environment since `since`. Whoever asked for it does not matter: the host ran it.

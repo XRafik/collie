@@ -538,3 +538,25 @@ test("a judgement only a reviewer can give is not accepted from the implementer'
     "the review did not report compatible: true",
   );
 });
+
+test("a promised check is proved by a pass of its command under any name, and never by an expected failure", () => {
+  const tests = { name: "tests", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  const agents = (over: Partial<Verification> = {}) =>
+    record({ name: "mine", by: "agent", executable: "/usr/bin/bun", argv: ["test"], ...over });
+  const gaps = (verifications: Verification[]) =>
+    checkGaps(
+      "feature",
+      collected({
+        verifications,
+        commands: [tests],
+        tickets: [{ file: "01-a.md", checks: ["tests"] }],
+      }),
+    );
+  expect(gaps([agents()])).toEqual([]);
+  const reproduced = agents({ expect: "fail", exit: 1 });
+  expect(gaps([reproduced])).toEqual([
+    "tests failed",
+    '01-a.md promised check "tests", which has no passing verification on this tree',
+  ]);
+  expect(gaps([agents(), reproduced])).toHaveLength(2);
+});

@@ -3,7 +3,14 @@
 
 import { Effect, FileSystem, Schema, SchemaGetter } from "effect";
 import { isNumber, isString } from "./schema";
-import { staleAgainst, type CheckCommand, type Snapshot, type Verification } from "./verify";
+import {
+  passed,
+  recordsNamed,
+  staleAgainst,
+  type CheckCommand,
+  type Snapshot,
+  type Verification,
+} from "./verify";
 import { isYamlMap, YamlValueJsonSchema, type YamlValue } from "./yaml";
 
 /** Present and not only whitespace: a required judgement nobody wrote is not one. */
@@ -704,12 +711,12 @@ export interface CheckEvidence {
  * counts: what binds it is the collector, not who called it.
  */
 function checkGap(name: string, evidence: CheckEvidence): string | null {
-  const records = evidence.verifications.filter((v) => v.name === name);
+  const records = recordsNamed(evidence.verifications, name, evidence.commands);
   if (records.length === 0)
     return `check "${name}" has no verification record — run it through collie verify`;
-  if (records.some((v) => v.result === "pass" && !staleAgainst(v, evidence.final))) return null;
+  if (records.some((v) => passed(v) && !staleAgainst(v, evidence.final))) return null;
   const last = records[records.length - 1]!;
-  if (last.result === "fail") return `check failed: ${name}`;
+  if (last.result === "fail" || last.expect === "fail") return `check failed: ${name}`;
   if (last.result === "unstable") return `check "${name}" ran on a tree that moved under it`;
   return `check "${name}" last passed on an earlier tree`;
 }

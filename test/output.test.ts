@@ -633,3 +633,18 @@ test("the message names the findings that cannot be acted on, and says nothing w
   expect(said).toContain('"vague two"');
   expect(said).toContain("need not be one the change touched");
 });
+
+test("the last fix's check is proved by a pass of the check's command under another name, never by an expected failure", () => {
+  const unit = { name: "unit", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  const fix = {
+    verdict: "clean" as const,
+    findings: [],
+    fixed: [{ file: "cli.js", title: "no exit code" }],
+    disputed: [],
+    checks: [{ name: "unit" }],
+  };
+  const settled = (verifications: Verification[]) =>
+    settleFinalFix([BLOCKER], fix, { verifications, final: FINAL, commands: [unit] }).ok;
+  expect(settled([record({ name: "mine" })])).toBe(true);
+  expect(settled([record({ name: "mine", expect: "fail", exit: 1 })])).toBe(false);
+});

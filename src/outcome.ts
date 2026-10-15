@@ -10,7 +10,14 @@
 // this says what is missing.
 
 import type { VerifySpec } from "./verify-spec";
-import { ranCommand, type CheckCommand, type Snapshot, type Verification } from "./verify";
+import {
+  passed,
+  ranCommand,
+  recordsNamed,
+  type CheckCommand,
+  type Snapshot,
+  type Verification,
+} from "./verify";
 import { isString, isBoolean } from "./schema";
 import { isYamlMap, type YamlValue } from "./yaml";
 
@@ -88,10 +95,10 @@ export interface Collected {
  * later fail contradicts is not one.
  */
 function lastPassedAtFinal(got: Collected, name: string): boolean {
-  return (
-    got.verifications.filter((v) => v.name === name && !earlierTree(v, got.final)).at(-1)
-      ?.result === "pass"
-  );
+  const last = recordsNamed(got.verifications, name, got.commands)
+    .filter((v) => !earlierTree(v, got.final))
+    .at(-1);
+  return last !== undefined && passed(last);
 }
 
 /** Whether this kind of result is proved by Collie's own run of the Run's checks. */
@@ -115,9 +122,11 @@ function approvedSetGaps(got: Collected): string[] {
     const ran = (v: Verification) =>
       command === undefined ? v.by === "collie" && v.name === spec.name : ranCommand(v, command);
     const any = got.verifications.filter(ran);
-    if (any.findLast((v) => !earlierTree(v, got.final))?.result === "pass") continue;
+    const last = any.findLast((v) => !earlierTree(v, got.final));
+    if (last !== undefined && passed(last)) continue;
     if (any.length === 0) gaps.push(`${spec.name} was never run`);
-    else if (any.some((v) => v.result === "fail")) gaps.push(`${spec.name} failed`);
+    else if (any.some((v) => v.result === "fail" || v.expect === "fail"))
+      gaps.push(`${spec.name} failed`);
     else if (any.some((v) => v.result === "unstable"))
       gaps.push(`${spec.name} ran on a tree that moved under it`);
     else gaps.push(`${spec.name} last passed on a different tree`);
