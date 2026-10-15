@@ -1,5 +1,5 @@
-// One day of this Machine's Runs, read for what is wrong with Collie (ADR-0053): filed on
-// Collie's forge, and up to `improvements` of it planned and built, with nobody asked.
+// One day of Runs, read for what is wrong with the project it runs in (ADR-0053): filed on
+// that project's forge, and up to `improvements` of it planned and built, with nobody asked.
 
 import { Children, Host, Run, WorkflowError, agentWork, contentOf, defineWorkflow } from "collie";
 import { hostname } from "node:os";
@@ -31,6 +31,7 @@ const triage = content.template("triage", {
   report: Schema.String,
   issues: Schema.String,
   bound: Schema.String,
+  scope: Schema.String,
 });
 
 const DAY = Duration.hours(24);
@@ -45,6 +46,11 @@ const Window = Schema.Struct({
   machine: Schema.String,
   runs: Schema.Array(Schema.String),
   report: Schema.Unknown,
+});
+
+const Scope = Schema.Literals(["checkout", "machine"]).annotate({
+  description:
+    "checkout reads this project's Runs; machine reads every Run on the Machine and also files Collie's defects",
 });
 
 const Opened = Schema.Array(
@@ -65,10 +71,11 @@ const OutcomeSchema = Schema.Union([
 
 export default defineWorkflow({
   id: "self-improve",
-  title: "self-improve — file and fix what a day of Runs shows is wrong with Collie",
+  title: "self-improve — file and fix what a day of Runs shows is wrong with a project",
   description:
-    "Reads this Machine's Runs of the last 24 hours with the installed retro skill, files or comments on Collie's issues, and starts up to `improvements` plans that build themselves.",
+    "Reads the last 24 hours of Runs, this project's or the whole Machine's, with the installed retro skill, files or comments on this project's issues, and starts up to `improvements` plans that build themselves.",
   input: Schema.Struct({
+    runs: Scope,
     improvements: Schema.optionalKey(
       Count.annotate({ description: "how many Improvements to start; 0 files without building" }),
     ),
@@ -91,10 +98,34 @@ export default defineWorkflow({
         execute: Effect.gen(function* () {
           const since = DateTime.formatIso(DateTime.subtractDuration(yield* DateTime.now, DAY));
           const report = yield* host.report(since);
-          const runs = report.runs
-            .filter(({ runId, parent }) => runId !== run.id && parent !== run.id)
-            .map(({ runId }) => runId);
-          return { since, machine: hostname(), runs, report };
+          const own = report.runs.find(({ runId }) => runId === run.id);
+          if (own === undefined)
+            return yield* new WorkflowError({ reason: `${run.id} is not in its Machine's report` });
+          const kept = report.runs.filter(
+            ({ runId, parent, project }) =>
+              runId !== run.id &&
+              parent !== run.id &&
+              (input.runs === "machine" || project === own.project),
+          );
+          const ids = new Set(kept.map(({ runId }) => runId));
+          const read = <A extends { readonly runId: string }>(list: ReadonlyArray<A>) =>
+            list.filter(({ runId }) => ids.has(runId));
+          return {
+            since,
+            machine: hostname(),
+            runs: [...ids],
+            // Another project's tallies and measures are not this one's to read.
+            report:
+              input.runs === "machine"
+                ? report
+                : {
+                    since,
+                    runs: kept,
+                    failed: read(report.failed),
+                    completed: read(report.completed),
+                    stopped: read(report.stopped),
+                  },
+          };
         }),
       });
       if (window.runs.length === 0) return `No Runs since ${window.since}`;
@@ -146,11 +177,17 @@ export default defineWorkflow({
                   )
                   .join("\n\n"),
           bound: String(bound),
+          scope: content.sections.get(input.runs) ?? "",
         },
         output: Triage,
       });
 
-      const sorted = sortOut(triaged.findings, new Set(window.runs), open);
+      const sorted = sortOut(
+        triaged.findings,
+        new Set(window.runs),
+        open,
+        input.runs === "machine",
+      );
       const acted: Array<{ finding: Finding; outcome: Outcome }> = [];
       for (const finding of sorted.kept.slice(0, MAX_FINDINGS)) {
         const target = targetOf(finding, open);

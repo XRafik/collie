@@ -11,7 +11,8 @@
 
 import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, Fiber, FileSystem, Layer, Option, Path, Schedule, Schema } from "effect";
+import { hostname } from "node:os";
+import { Effect, Fiber, FileSystem, Layer, Option, Path, Result, Schedule, Schema } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./recorder";
 import { exec } from "./command";
@@ -22,7 +23,25 @@ import { readCheckpoints } from "../../src/cards";
 import { mrTarget, type MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
-import { Children, Host, Run, WorkflowError, type ActionFacts, type ChildAsk } from "../../src/sdk";
+import {
+  Children,
+  Host,
+  Run,
+  WorkflowError,
+  type ActionFacts,
+  type ChildAsk,
+  type Issue,
+} from "../../src/sdk";
+import { measuresOf } from "../../src/outcomes";
+import { redact } from "../../src/redact";
+import selfImprove from "../../workflows/self-improve.workflow";
+import {
+  type Finding,
+  type Improvement,
+  keysIn,
+  markerOf,
+  sortOut,
+} from "../../workflows/retrospective";
 import {
   PARKED,
   answerDecision,
@@ -53,6 +72,7 @@ const UNRELATED = {
   renovate: "keep-current",
   investigate: "find-the-cause",
   general: "odd-job",
+  "self-improve": "look-back",
 } as const;
 type Shipped = keyof typeof UNRELATED;
 
@@ -5293,6 +5313,414 @@ scenario("a general Run declares no checkout, no gate, no outcome and offers not
       expect(declaredByModule(described.metadata)).toEqual([]);
     }),
   ),
+);
+
+/** The window a `self-improve` Run reads, and what its forge was asked, as a scenario sets them. */
+let windowRuns: Array<{ runId: string; parent: string | null; project?: string }> = [];
+let openIssues: Issue[] = [];
+let filed: Array<{ title: string; body: string }> = [];
+let commented: Array<{ number: number; body: string }> = [];
+let refusing = new Set<string>();
+let unlisted = false;
+
+/** The Machine's report and this checkout's forge, as `self-improve` reads and writes them. */
+const improving: HostOverride = Layer.effect(Host)(
+  Effect.gen(function* () {
+    const host = yield* Host;
+    return Host.of({
+      ...host,
+      report: (since) =>
+        Effect.gen(function* () {
+          const own = Option.getOrUndefined(yield* Effect.serviceOption(Run))?.id ?? "";
+          const runs = [{ runId: own, parent: null }, ...windowRuns].map(
+            ({ runId, parent, ...rest }) => ({
+              runId,
+              workflow: "implement",
+              parent,
+              project: "project" in rest && rest.project ? rest.project : rig.projectDir,
+              created: since,
+              status: "failed" as const,
+            }),
+          );
+          return {
+            since,
+            total: runs.length,
+            runs,
+            workflows: [],
+            failed: runs.map(({ runId }) => ({
+              runId,
+              workflow: "implement",
+              reason: `${runId} broke`,
+            })),
+            completed: [],
+            stopped: [],
+            measures: measuresOf([]),
+          };
+        }),
+      issues: () =>
+        unlisted && filed.length > 0
+          ? Effect.fail(new WorkflowError({ reason: "the forge did not answer" }))
+          : Effect.succeed([
+              ...openIssues,
+              ...filed.map(({ title, body }, at) => ({
+                number: 101 + at,
+                title,
+                body,
+                url: `https://forge.example/project/issues/${101 + at}`,
+              })),
+            ]),
+      fileIssue: ({ title, body }) =>
+        refusing.has(title)
+          ? Effect.fail(new WorkflowError({ reason: "it names another checkout" }))
+          : Effect.sync(() => {
+              filed.push({ title: redact(title), body: redact(body) });
+              const number = 100 + filed.length;
+              return { number, url: `https://forge.example/project/issues/${number}` };
+            }),
+      commentIssue: ({ number, body }) => Effect.sync(() => void commented.push({ number, body })),
+    });
+  }),
+);
+
+/** A `self-improve` Run, executed to its end. */
+const improved = (runId: string, input: Readonly<Record<string, Schema.Json>>) =>
+  session(
+    Effect.gen(function* () {
+      const made = yield* loaded(shipped("self-improve"), runId);
+      yield* admit({ runId, workflow: made.workflow.name, input });
+      return yield* made.workflow
+        .execute({ runId, input })
+        .pipe(Effect.result, Effect.provide(made.layer));
+    }),
+    improving,
+  );
+
+const freshDay = () => {
+  windowRuns = [
+    { runId: "r-a", parent: null },
+    { runId: "r-b", parent: null },
+  ];
+  openIssues = [];
+  filed = [];
+  commented = [];
+  refusing = new Set();
+  unlisted = false;
+};
+
+const readText = (file: string) =>
+  FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.readFileString(file)));
+
+const LEAKED = `ghp_${"x".repeat(24)}`;
+const saidBy = (result: Result.Result<unknown, unknown>) =>
+  Result.isSuccess(result) ? String(result.success) : "";
+const refusedWith = (result: Result.Result<unknown, unknown>) =>
+  Result.isFailure(result) && Schema.is(WorkflowError)(result.failure) ? result.failure.reason : "";
+
+const finding = (over: Partial<Finding> & Pick<Finding, "key">): Finding => ({
+  category: "navigation",
+  title: `Project ${over.key}`,
+  body: `What the Runs did: ${over.key}.`,
+  severity: "high",
+  runs: ["r-a", "r-b"],
+  records: ["runs/r-a/audit.jsonl"],
+  issue: null,
+  ...over,
+});
+
+const triaged = (
+  findings: ReadonlyArray<Finding>,
+  improvements: ReadonlyArray<Improvement> = [],
+) => ({
+  findings,
+  improvements,
+  left_out: [{ what: "an outage of the package registry", why: "a service nobody here runs" }],
+});
+
+const agentPrompts = () =>
+  rig.calls().pipe(Effect.map((calls) => calls.filter((call) => call.cmd === "agent prompt")));
+
+once("self-improve takes improvements as a whole number and runs as checkout or machine", () => {
+  const decode = Schema.decodeUnknownSync(selfImprove.input ?? Schema.Never);
+  expect(decode({ runs: "checkout", improvements: "3" })).toEqual({
+    runs: "checkout",
+    improvements: 3,
+  });
+  expect(decode({ runs: "machine", improvements: 0 })).toEqual({
+    runs: "machine",
+    improvements: 0,
+  });
+  for (const wrong of ["-1", "x", 1.5])
+    expect(() => decode({ runs: "checkout", improvements: wrong })).toThrow();
+  expect(() => decode({ improvements: 2 })).toThrow();
+  expect(() => decode({ runs: "everything", improvements: 2 })).toThrow();
+  return Promise.resolve();
+});
+
+once(
+  "a finding recurs in two of the window's Runs or on an open issue, and a defect in one",
+  () => {
+    const window = new Set(["r-a", "r-b"]);
+    const issues = [{ number: 8, title: "", url: "", keys: keysIn(`x\n${markerOf("known")}`) }];
+    const findings = [
+      finding({ key: "crash", category: "defect", runs: ["r-a"] }),
+      finding({ key: "once", runs: ["r-a"] }),
+      finding({ key: "twice" }),
+      finding({ key: "known", runs: ["r-a"] }),
+      finding({ key: "elsewhere", runs: ["r-z"] }),
+    ];
+    const machine = sortOut(findings, window, issues, true);
+    expect(machine.kept.map(({ key }) => key)).toEqual(["crash", "twice", "known"]);
+    expect(machine.leftOut.map(({ why }) => why)).toEqual(["seen once", "no Run of the window"]);
+    const checkout = sortOut(findings, window, issues, false);
+    expect(checkout.kept.map(({ key }) => key)).toEqual(["twice", "known"]);
+    expect(checkout.leftOut.map(({ why }) => why)).toEqual([
+      "about Collie",
+      "seen once",
+      "no Run of the window",
+    ]);
+    return Promise.resolve();
+  },
+);
+
+scenario(
+  "with no Runs in the window, self-improve says so and starts no agent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        windowRuns = [
+          { runId: "r-none-improvement-x", parent: "r-none" },
+          { runId: "r-other", parent: null, project: "/elsewhere/other" },
+        ];
+        const result = yield* improved("r-none", { runs: "checkout" });
+        expect(saidBy(result)).toStartWith("No Runs since ");
+        expect(yield* agentPrompts()).toEqual([]);
+      }),
+    ),
+  60_000,
+);
+
+scenario(
+  "a Machine without the retro skill fails self-improve, naming the repair, before any agent or issue",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(`${rig.root}/.agents/skills/retro`, { recursive: true });
+        const result = yield* improved("r-unskilled", { runs: "machine" });
+        expect(refusedWith(result)).toContain("retro");
+        expect(refusedWith(result)).toContain("prepare.sh");
+        expect(yield* agentPrompts()).toEqual([]);
+        expect([filed, commented]).toEqual([[], []]);
+      }),
+    ),
+  60_000,
+);
+
+scenario(
+  "self-improve over a checkout reads only that project's Runs and leaves Collie's defects out",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        windowRuns = [
+          ...windowRuns,
+          { runId: "r-other", parent: null, project: "/elsewhere/other" },
+        ];
+        yield* rig.queueOutputs([
+          triaged([
+            finding({ key: "host-crash", category: "defect", runs: ["r-a"] }),
+            finding({ key: "lost-docs" }),
+          ]),
+        ]);
+
+        const result = yield* improved("r-checkout", { runs: "checkout", improvements: 0 });
+
+        expect(saidBy(result)).toContain("Filed 1, commented 0, refused 0");
+        const prompt = yield* readText(`${dir}/agents/r-checkout/triage.prompt.md`);
+        expect(prompt).toContain("r-a");
+        expect(prompt).not.toContain("r-other");
+        expect(prompt).not.toContain("/elsewhere/other");
+        expect(prompt).toContain('"about Collie"');
+        expect(filed.map(({ title }) => title)).toEqual(["Project lost-docs"]);
+        expect(yield* readText(`${runDir(dir, "r-checkout")}/summary.md`)).toContain(
+          "Project host-crash: about Collie",
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "self-improve over a Machine reads every Run and files a defect seen once",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        windowRuns = [
+          ...windowRuns,
+          { runId: "r-other", parent: null, project: "/elsewhere/other" },
+        ];
+        yield* rig.queueOutputs([
+          triaged([finding({ key: "host-crash", category: "defect", runs: ["r-other"] })]),
+        ]);
+
+        const result = yield* improved("r-machine", { runs: "machine", improvements: 0 });
+
+        expect(saidBy(result)).toContain("Filed 1, commented 0, refused 0");
+        const prompt = yield* readText(`${dir}/agents/r-machine/triage.prompt.md`);
+        expect(prompt).toContain("r-other");
+        expect(prompt).toContain("`defect` is one more");
+        expect(filed.map(({ title }) => title)).toEqual(["Project host-crash"]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a day's findings are filed or commented, all-new Improvements start, and the summary says so",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        openIssues = [
+          { number: 7, title: "Reads are slow", body: "Slow.", url: "https://x/issues/7" },
+          {
+            number: 8,
+            title: "Checks unwired",
+            body: `Unwired.\n\n${markerOf("unwired-checks")}`,
+            url: "https://x/issues/8",
+          },
+        ];
+        refusing = new Set(["Project refused-text"]);
+        failing = new Set(["improvement-second"]);
+        yield* rig.queueOutputs([
+          triaged(
+            [
+              finding({
+                key: "host-crash",
+                category: "defect",
+                runs: ["r-a"],
+                body: `Leaked ${LEAKED} in its log.`,
+              }),
+              finding({ key: "once", runs: ["r-a"] }),
+              finding({ key: "costly-reads", category: "tool-economy" }),
+              finding({ key: "slow-reads", runs: ["r-a"], issue: 7 }),
+              finding({ key: "unwired-checks", category: "automated-checks", runs: ["r-a"] }),
+              finding({ key: "refused-text" }),
+              finding({ key: "third", severity: "low" }),
+            ],
+            [
+              { name: "first", keys: ["host-crash"], why: "one crash" },
+              { name: "with-open", keys: ["third", "slow-reads"], why: "related" },
+              { name: "second", keys: ["costly-reads"], why: "one read" },
+              { name: "beyond", keys: ["third"], why: "over the bound" },
+            ],
+          ),
+        ]);
+
+        const result = yield* improved("r-day", { runs: "machine", improvements: 2 });
+
+        expect(saidBy(result)).toContain(
+          "Filed 3, commented 2, refused 1; 2 Improvements, 1 failed",
+        );
+        const retro = `${rig.root}/.agents/skills/retro/SKILL.md`;
+        const prompt = yield* readText(`${dir}/agents/r-day/triage.prompt.md`);
+        expect(prompt).toContain(`read \`${retro}\` and follow it`);
+        expect(prompt).toContain("this page wins");
+        const persona = yield* readText(`${dir}/agents/r-day/triage.persona.md`);
+        expect(persona).toContain("retrospective");
+        expect(persona).toContain(`read \`${retro}\` and follow it`);
+
+        expect(filed.map(({ title }) => title)).toEqual([
+          "Project host-crash",
+          "Project costly-reads",
+          "Project third",
+        ]);
+        expect(filed[0]?.body).toEndWith(
+          `${markerOf("host-crash")}\n\nFiled by Collie's self-improve Run r-day on ${hostname()}.`,
+        );
+        expect(commented.map(({ number }) => number)).toEqual([7, 8]);
+        expect(commented[0]?.body).toStartWith("Seen again in r-a ");
+
+        expect(
+          started.map(({ invocation, workflow, ownTask }) => [invocation, workflow, ownTask]),
+        ).toEqual([
+          ["improvement-first", "plan", true],
+          ["improvement-second", "plan", true],
+        ]);
+        expect(started[0]?.input.then).toBe("implement");
+        expect(started[0]?.input.goal).toContain("`Closes #101`");
+        expect(started[0]?.input.goal).toContain("Leaked <github token> in its log.");
+        expect(asJson(started)).not.toContain(LEAKED);
+        expect(started[1]?.input.goal).toContain("`Closes #102`");
+
+        const summary = yield* readText(`${runDir(dir, "r-day")}/summary.md`);
+        expect(summary.indexOf("### defect")).toBeLessThan(summary.indexOf("### tool-economy"));
+        expect(summary).toContain("refused, it names another checkout");
+        expect(summary).toContain("commented #7");
+        expect(summary).toContain("r-day-improvement-second, failed: improvement-second failed");
+        expect(summary).toContain("Project once: seen once");
+        expect(summary).toContain("a service nobody here runs");
+
+        yield* improved("r-day", { runs: "machine", improvements: 2 });
+        expect([filed.length, commented.length, started.length]).toEqual([3, 2, 2]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a self-improve Improvement whose issues cannot be read back fails to start, and the day still ends with its summary",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        unlisted = true;
+        yield* rig.queueOutputs([
+          triaged(
+            [finding({ key: "lost-docs" })],
+            [{ name: "first", keys: ["lost-docs"], why: "one gap" }],
+          ),
+        ]);
+        const result = yield* improved("r-unlisted", { runs: "checkout", improvements: 1 });
+        expect(saidBy(result)).toContain(
+          "Filed 1, commented 0, refused 0; 1 Improvements, 1 failed",
+        );
+        expect(started).toEqual([]);
+        expect(yield* readText(`${runDir(dir, "r-unlisted")}/summary.md`)).toContain(
+          "the forge did not answer",
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a self-improve triage with an unknown category, or more than ten findings, gets its one repair",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        yield* rig.queueOutputs([
+          { ...triaged([]), findings: [{ ...finding({ key: "odd" }), category: "vibes" }] },
+          triaged([finding({ key: "fixed" })]),
+          triaged(Array.from({ length: 11 }, (_, at) => finding({ key: `many-${at}` }))),
+          triaged([finding({ key: "fewer" })]),
+        ]);
+        expect(saidBy(yield* improved("r-odd", { runs: "checkout", improvements: 0 }))).toContain(
+          "Filed 1",
+        );
+        expect(saidBy(yield* improved("r-many", { runs: "checkout", improvements: 0 }))).toContain(
+          "Filed 1",
+        );
+        expect(filed.map(({ title }) => title)).toEqual(["Project fixed", "Project fewer"]);
+        expect((yield* agentPrompts()).length).toBe(4);
+        expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
 );
 
 /**

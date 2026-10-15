@@ -489,6 +489,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly runId: string;
       readonly workflow: string;
       readonly parent: string | null;
+      readonly project: string;
       readonly created: string;
       readonly status: "pending" | "suspended" | "complete" | "failed";
     }>;

@@ -1,4 +1,4 @@
-// What `self-improve` decides, as pure functions its module and its test share.
+// What `self-improve` decides, as pure functions its module and its tests share.
 
 import { Schema } from "effect";
 
@@ -77,12 +77,13 @@ export const targetOf = (finding: Finding, open: ReadonlyArray<OpenIssue>): Open
 
 /**
  * The findings worth acting on. Recurring means two of the window's Runs, or an issue
- * already open; a `defect` needs only one Run.
+ * already open; a `defect` needs only one Run, and is filed only where `defects` allows.
  */
 export const sortOut = (
   findings: ReadonlyArray<Finding>,
   window: ReadonlySet<string>,
   open: ReadonlyArray<OpenIssue>,
+  defects: boolean,
 ) => {
   const kept: Finding[] = [];
   const leftOut: LeftOut[] = [];
@@ -91,6 +92,8 @@ export const sortOut = (
     if (kept.some((one) => one.key === finding.key))
       leftOut.push({ what: finding.title, why: `the same key as another finding, ${finding.key}` });
     else if (runs.size === 0) leftOut.push({ what: finding.title, why: "no Run of the window" });
+    else if (finding.category === "defect" && !defects)
+      leftOut.push({ what: finding.title, why: "about Collie" });
     else if (finding.category !== "defect" && runs.size < 2 && targetOf(finding, open) === null)
       leftOut.push({ what: finding.title, why: "seen once" });
     else kept.push({ ...finding, runs: [...runs] });

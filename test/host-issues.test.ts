@@ -110,10 +110,17 @@ test(
               runId: "child",
               workflow: "issues",
               parent: "old",
+              project: rig.projectDir,
               status: "pending",
               created: since,
             },
-            { runId: "reader", workflow: "issues", parent: null, status: "pending" },
+            {
+              runId: "reader",
+              workflow: "issues",
+              parent: null,
+              project: rig.projectDir,
+              status: "pending",
+            },
           ],
           workflows: [{ workflow: "issues", total: 2, pending: 2 }],
         });

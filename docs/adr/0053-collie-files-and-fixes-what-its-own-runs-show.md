@@ -165,3 +165,20 @@ and optimizations in the day's agent Outputs and logs, not only failed Runs.
   misbehaving, its presentation becomes the Output, and what it would change becomes
   issues and Improvements. A finding other than a `defect` must recur, in two Runs or on
   an issue already open, to be filed.
+
+## Amended 2026-10-15: a shipped Workflow for any project
+
+The human asked for `self-improve` to serve every project, not only Collie's.
+
+- **D1 becomes: `self-improve` is a shipped Workflow for any project.** It lives in the
+  installation's `workflows/`, with the `retrospective` Persona in `personas/`, and files
+  and builds in the checkout it runs in. The reasoning that it is not shipped to every
+  installation is withdrawn: any repository can take fixes for what its own Runs show.
+  Like every shipped Workflow, it decides nothing from the project's name or remote.
+- **D2's scope is the `runs` Input**, which is required and never inferred:
+  - `checkout` reads the Runs whose project is the checkout it runs in. Nothing about
+    another project reaches its triage, and Collie misbehaving is left out as "about
+    Collie".
+  - `machine` reads every Run on its Machine, and alone files `defect`s.
+- **Collie's own daily Schedule is the `runs=machine` one**, in a Collie checkout, so
+  Collie's bugs seen in any project's Runs are filed on Collie's tracker.

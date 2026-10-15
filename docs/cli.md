@@ -1257,7 +1257,7 @@ failed, with its reason, each that completed, with its result, and each that was
 `--since` keeps only Runs admitted at or after that date.
 
 The JSON report's `runs` list includes each Run's `runId`, `workflow`, `parent`,
-`created`, and `status`, in admission order.
+`project`, `created`, and `status`, in admission order.
 
 Then the measures a change to Collie is judged by, under `measures` in `--json`. Each one is
 counted from what the Runs in the window recorded, and each names the Run ids it counts

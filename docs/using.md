@@ -2566,23 +2566,26 @@ A Run a Schedule started says so on its record: "Started by schedule `nightly-re
 
 ## Self-improve
 
-`self-improve` is a Workflow of Collie's own repository, in its `.collie/workflows/`, so
-it is found only in a checkout of Collie
+`self-improve` is a shipped Workflow for any project: it files, and starts to fix, what a
+day of Runs shows is wrong with the project it runs in
 ([ADR-0053](adr/0053-collie-files-and-fixes-what-its-own-runs-show.md)):
 
 ```sh
-collie run start self-improve --input improvements=3
+collie run start self-improve --input runs=checkout --input improvements=2
 ```
 
-It reads the Runs its Machine admitted in the 24 hours before it started, leaving out its
+`runs` is required and nothing infers it. `checkout` reads the Runs whose project is the
+checkout it runs in; `machine` reads every Run its Machine admitted, and alone files
+`defect`s, Collie misbehaving. It reads the 24 hours before it started, leaving out its
 own children; an earlier `self-improve` Run and its Improvements are read like any other.
 A day with none ends at once, starting no agent. Otherwise one `retrospective` agent reads
-those Runs' records with the installed `retro` skill and reports what they show is wrong
-with Collie, at most ten findings, most severe first. A finding seen in only one Run is
-left out unless it is a `defect` or matches an open issue. Each finding that is left gets
-one "seen again" comment on the open issue it matches, or the open issue carrying its key,
-or is filed as a new issue on Collie's forge. Up to `improvements` groups of newly filed
-issues then start as Improvements, each a `plan` of its own card that builds itself
+those Runs' records with the installed `retro` skill and reports what they show is wrong,
+at most ten findings, most severe first. A finding seen in only one Run is left out unless
+it is a `defect` or matches an open issue; with `runs=checkout`, one about Collie itself is
+left out as "about Collie". Each finding that is left gets one "seen again" comment on the
+open issue it matches, or the open issue carrying its key, or is filed as a new issue on
+the forge of the checkout it runs in. Up to `improvements` groups of newly filed issues
+then start there as Improvements, each a `plan` of its own card that builds itself
 (`then=implement`) and ends at a reviewed merge request that closes its issues. Nobody is
 asked anything, and nothing is merged. `improvements=0` files without building.
 
@@ -2590,12 +2593,20 @@ It waits for its Improvements, then writes `summary.md` in its Run directory: ea
 filed or commented, by category; each Improvement's Run and how it ended; and each finding
 left out, with why. An Improvement that fails is listed there, and the Run still succeeds.
 
-Run it daily with a Schedule on each Machine whose Runs should be read, since it reads only
-its own Machine's:
+Run it daily with a Schedule. For a project:
 
 ```sh
-collie schedule add self-improve-daily --cron "0 7 * * *" self-improve \
-  --input improvements=3 --workspace <Collie checkout>
+collie schedule add project-daily --cron "0 7 * * *" self-improve \
+  --input runs=checkout --input improvements=2 --workspace <its checkout>
+```
+
+Collie improves itself the same way, with `runs=machine` in a Collie checkout, one
+Schedule per Machine whose Runs should be read, since a Run reads only its own Machine's:
+Collie's bugs seen in any project's Runs are filed on Collie's tracker.
+
+```sh
+collie schedule add collie-daily --cron "0 7 * * *" self-improve \
+  --input runs=machine --input improvements=2 --workspace <Collie checkout>
 ```
 
 **The `retro` skill** is Matt Pocock's, installed like every skill: `prepare.sh` and every

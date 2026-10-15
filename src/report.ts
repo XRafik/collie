@@ -41,6 +41,7 @@ export interface Report {
     readonly runId: string;
     readonly workflow: string;
     readonly parent: string | null;
+    readonly project: string;
     readonly created: string;
     readonly status: RunView["status"]["status"];
   }>;
@@ -127,10 +128,11 @@ export function reportOf(
   const workflows = [...tallies.values()].toSorted(
     (a, b) => b.total - a.total || a.workflow.localeCompare(b.workflow),
   );
-  const runs = kept.map(({ runId, workflow, parent, created, status }) => ({
+  const runs = kept.map(({ runId, workflow, parent, project, created, status }) => ({
     runId,
     workflow,
     parent,
+    project,
     created,
     status: status.status,
   }));
