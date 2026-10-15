@@ -228,6 +228,39 @@ test("what is working, or already disposed of, is not asked about", () =>
     }),
   ));
 
+test("a card whose Run ended is still followed while its Reopened agent works or waits", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-merges-" });
+      const log: string[] = [];
+      const reopened = (status: string) => ({ delivery: "d1", agent: "a1", told: null, status });
+      yield* settleMerges({
+        stateDir,
+        cwd: "/project",
+        run: gitlab("open", log),
+        views: [task({ id: "reopened", state: "active", mr: MR, reopened: reopened("working") })],
+        now: epochMs("2026-09-17T10:00:00Z"),
+        checked: new Map(),
+        states: new Map(),
+        panels: new Map(),
+      });
+      expect(log).not.toEqual([]);
+      const asked = log.length;
+      yield* settleMerges({
+        stateDir,
+        cwd: "/project",
+        run: gitlab("open", log),
+        views: [task({ id: "reopened", state: "blocked", mr: MR, reopened: reopened("blocked") })],
+        now: epochMs("2026-09-17T11:00:00Z"),
+        checked: new Map(),
+        states: new Map(),
+        panels: new Map(),
+      });
+      expect(log.length).toBeGreaterThan(asked);
+    }),
+  ));
+
 // The forge's own checks, beside the state: what the card says about whether it is ready.
 
 const HEAD = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b";

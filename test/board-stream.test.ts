@@ -2,15 +2,28 @@
 // reads, over the same socket every client uses.
 
 import { expect, test } from "bun:test";
-import { Deferred, Effect, Fiber, Queue, Schedule, Schema, Stream } from "effect";
+import {
+  Deferred,
+  type Duration,
+  Effect,
+  Fiber,
+  FileSystem,
+  Logger,
+  Queue,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { BoardMessage, PaneAt, PROTOCOL, TaskView, type BoardSnapshot } from "../src/board-model";
 import { boardMessages, shareBoard } from "../src/board-stream";
 import { recordDisposition } from "../src/disposition";
 import { currentEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
 import { BUILD, frontDoor, socketOf } from "../src/host";
+import { foundationLayer } from "../src/engine";
+import { Store } from "../src/store";
 import { readTask, writeTask } from "../src/task";
-import { runEffect } from "./support/effect";
+import { fastForward, runEffect } from "./support/effect";
 import { stopHost } from "./support/host";
 import { task } from "./support/task";
 import { collie, proves } from "./support/world";
@@ -233,7 +246,7 @@ const handBuilt = Effect.gen(function* () {
         }),
       ),
     );
-  return { builds, changed, follow, built, calls: () => calls };
+  return { builds, changed, boards, follow, built, calls: () => calls };
 });
 
 const one = task({ id: "a" });
@@ -330,6 +343,93 @@ test("a build that fails leaves the last board, and the next change builds again
         expect(hand.calls()).toBe(3);
       }),
     ),
+  ));
+
+test("the board is built with nobody subscribed, and every reader of one interval costs one build", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const hand = yield* handBuilt;
+        yield* hand.built([one]);
+        expect(hand.calls()).toBe(1);
+        const clients = [yield* hand.follow(1), yield* hand.follow(1)];
+        // News and the merge watch each read the latest board.
+        const latest = [yield* Stream.runHead(hand.boards), yield* Stream.runHead(hand.boards)];
+        for (const client of clients) expect(tags(yield* Fiber.join(client))).toEqual(["Snapshot"]);
+        expect(latest.map((read) => read._tag === "Some" && read.value)).toEqual([[one], [one]]);
+        expect(hand.calls()).toBe(1);
+      }),
+    ),
+  ));
+
+/** The warnings logged while `effect` runs. */
+const warnedDuring = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const warned: string[] = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warned.push(String(message));
+    });
+    yield* effect.pipe(Effect.provide(Logger.layer([logger])));
+    return warned;
+  });
+
+const builtIn = (took: Duration.Input) =>
+  warnedDuring(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const boards = yield* shareBoard({
+          build: Effect.sleep(took).pipe(Effect.as([one])),
+          changed: Stream.never,
+        });
+        yield* Stream.runHead(boards);
+      }),
+    ).pipe(fastForward),
+  );
+
+test("a build over 2 s is logged at warn with how long it took, and a faster one is not", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const slow = yield* builtIn("3 seconds");
+      expect(slow).toHaveLength(1);
+      expect(slow[0]).toMatch(/the board took \d+ ms to build/);
+      expect(yield* builtIn("1 second")).toEqual([]);
+    }),
+  ));
+
+test("a Run recorded in the store is on the board at once, with no tick and no file event", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-board-commit-" });
+      yield* Effect.gen(function* () {
+        const store = yield* Store;
+        const boards = yield* shareBoard({
+          build: store.runs.pipe(Effect.map((rows) => rows.map((row) => task({ id: row.run })))),
+          changed: store.changes,
+        });
+        yield* Stream.runHead(boards);
+        yield* store.admit({
+          request: "r1",
+          run: "run-new",
+          workflow: "quiet",
+          project: dir,
+          input: {},
+          provenance: {},
+          options: {},
+          generation: "quiet-1",
+          execution: "e1",
+          task: null,
+          parent: null,
+        });
+        const seen = yield* boards.pipe(
+          Stream.filter((views) => views.some((view) => view.id === "run-new")),
+          Stream.runHead,
+          // Well inside the 5 s tick, which this board does not have.
+          Effect.timeout("3 seconds"),
+        );
+        expect(seen._tag).toBe("Some");
+      }).pipe(Effect.provide(foundationLayer({ dir })), Effect.scoped, Effect.orDie);
+    }),
   ));
 
 test(

@@ -1873,11 +1873,13 @@ any front door uses whatever its build or computer, declared with its Schemas in
 development checkout — `protocol`, the `herds` — every running herdr session, by Herd
 `id` and herdr's `name` — and every TaskView), then an `Upsert` or a `Remove` keyed by Task
 id for each change, each with a `seq` higher than the last. A client that reconnects gets a
-fresh snapshot. The host builds one board for every client, so a client that subscribes is
-told the latest at once (or once the first build is done), and it builds again when
+fresh snapshot. The host builds one board, from when it starts, for every client and for
+its own merge watch and News, so a client that subscribes is told the latest at once (or
+once the first build is done). It builds again when a Run is recorded, from any door, when
 anything under its state directory is written, when herdr pushes an event from any of its
 sessions (a pane opening or closing, or an agent's status changing), and every five
-seconds: one build at a time, with what changes meanwhile folded into the next. The
+seconds: one build at a time, with what changes meanwhile folded into the next. The other
+operations, `runs` and `run` among them, read fresh, so a client reads its own writes. The
 installation id is written once, by the first host to own the directory, and survives
 restarts and upgrades.
 

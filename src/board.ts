@@ -834,6 +834,9 @@ function asProposal(line: Extract<ProposalLine, { kind: "proposal" }>): Proposal
 const proposalsOf = (stateDir: string) =>
   everyJournal(stateDir).pipe(Effect.map((journals) => journals.flatMap(({ lines }) => lines)));
 
+/** How many Tasks a build reads at once. */
+const READS_AT_ONCE = 8;
+
 /** How long a Run has been going by default before silence is worth saying. */
 const DEFAULT_QUIET_MS = 5 * 60_000;
 
@@ -899,232 +902,244 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
     groups.set(key, [...(groups.get(key) ?? []), run]);
   }
 
-  const views: TaskView[] = [];
-  for (const [id, runs] of groups) {
-    const children = runs.flatMap((run) => repoRunsOf.get(run.id) ?? []);
-    // What a card answers for and who works on it includes its Repo runs'.
-    const everyRun = [...runs, ...children];
-    const pending = everyRun.flatMap((run) => pendingFor(proposals, run.id, now));
-    const touched = new Map<string, number>();
-    for (const run of everyRun) touched.set(run.id, yield* lastActivityAt(stateDir, run));
-    // A Run records no end of its own: its last activity is when it ended, and a Run
-    // that wrote nothing ended no later than it began.
-    const endedAt = (run: RunFacts) =>
-      run.finished === null ? touched.get(run.id) || epochMs(run.created) : epochMs(run.finished);
-    const last = Math.max(0, ...runs.map(endedAt).filter(Number.isFinite));
-    // Finished work older than a day is History's, behind `older…` — landed work only:
-    // an unmerged branch from last week is still waiting on you, however old.
-    if (
-      runs.every(ended) &&
-      last < now - FINISHED_FOR_MS &&
-      pending.length === 0 &&
-      (yield* landedByRecord(runs))
-    )
-      continue;
-    const leader = leaderOf(runs);
-    const fanned = runs.find((run) => repoRunsOf.has(run.id));
-    const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
-    const proposed = pending[0];
-    const decision: Decision | null = proposed ? asProposal(proposed) : questionOf(everyRun);
+  const views = yield* Effect.forEach(
+    groups,
+    ([id, runs]) =>
+      Effect.gen(function* () {
+        const children = runs.flatMap((run) => repoRunsOf.get(run.id) ?? []);
+        // What a card answers for and who works on it includes its Repo runs'.
+        const everyRun = [...runs, ...children];
+        const pending = everyRun.flatMap((run) => pendingFor(proposals, run.id, now));
+        const touched = new Map<string, number>();
+        for (const run of everyRun) touched.set(run.id, yield* lastActivityAt(stateDir, run));
+        // A Run records no end of its own: its last activity is when it ended, and a Run
+        // that wrote nothing ended no later than it began.
+        const endedAt = (run: RunFacts) =>
+          run.finished === null
+            ? touched.get(run.id) || epochMs(run.created)
+            : epochMs(run.finished);
+        const last = Math.max(0, ...runs.map(endedAt).filter(Number.isFinite));
+        // Finished work older than a day is History's, behind `older…` — landed work only:
+        // an unmerged branch from last week is still waiting on you, however old.
+        if (
+          runs.every(ended) &&
+          last < now - FINISHED_FOR_MS &&
+          pending.length === 0 &&
+          (yield* landedByRecord(runs))
+        )
+          return null;
+        const leader = leaderOf(runs);
+        const fanned = runs.find((run) => repoRunsOf.has(run.id));
+        const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
+        const proposed = pending[0];
+        const decision: Decision | null = proposed ? asProposal(proposed) : questionOf(everyRun);
 
-    const status = leader.state;
-    // A fan-out waiting on its Repo runs writes nothing itself: their work is its work.
-    const working = [leader, ...children];
-    const ownsAgent = (agent: { readonly run: string }) =>
-      working.some((run) => run.id === agent.run);
-    const at = Math.max(...working.map((run) => touched.get(run.id) ?? 0));
-    const agents = agentsOf(everyRun, registered, live);
-    const check = yield* runningCheck(leader, all, markers, now);
-    // An agent mid-turn or a check Collie is running is work, however little it writes.
-    const busy =
-      check !== null || agents.some((agent) => ownsAgent(agent) && agent.status === "working");
-    const going = !ended(leader);
-    const silentFor = going && !busy && at > 0 ? now - at : 0;
-    // Under a minute has no span to name, and is not silence worth a card saying.
-    const span = silentFor > quietMs ? spanned(silentFor) : "";
-    const silent = span === "" ? null : span;
-    const operation = yield* lastLaunched(stateDir, leader.id);
-    const doing = operation === null ? null : stepOfOperation(operation);
-    // Stopped for a human with no Decision to answer: herdr reports `blocked` for an agent
-    // sitting at its harness's own dialog, and a Run parks where its pane will not take a
-    // prompt. herdr's name for the pane first: it is the one a human has to go to.
-    const blocked = agents.find((agent) => agent.status === "blocked");
-    const stalled =
-      (blocked ? `${blocked.name}'s pane` : null) ??
-      (leader.state === "waiting" && leader.asking.length === 0 ? "its pane" : null);
-    // Nothing drives it and nobody works on it: the host could not take it up again. A
-    // Decision outranks it, because answering is still what moves the work.
-    const abandoned = decision === null && going && leader.undriven && !agents.some(ownsAgent);
-    const reopened = ended(leader) ? yield* reopenedOf(stateDir, leader, deliveries, live) : null;
-    // A Reopened Run is the work its agent is doing now, while it does it; then its facts.
-    const state = abandoned
-      ? "abandoned"
-      : decision === null && reopened?.status === "working"
-        ? "active"
-        : decision === null && reopened?.status === "blocked"
-          ? "blocked"
-          : stateOf(status, silent !== null, decision, stalled !== null);
+        const status = leader.state;
+        // A fan-out waiting on its Repo runs writes nothing itself: their work is its work.
+        const working = [leader, ...children];
+        const ownsAgent = (agent: { readonly run: string }) =>
+          working.some((run) => run.id === agent.run);
+        const at = Math.max(...working.map((run) => touched.get(run.id) ?? 0));
+        const agents = agentsOf(everyRun, registered, live);
+        const check = yield* runningCheck(leader, all, markers, now);
+        // An agent mid-turn or a check Collie is running is work, however little it writes.
+        const busy =
+          check !== null || agents.some((agent) => ownsAgent(agent) && agent.status === "working");
+        const going = !ended(leader);
+        const silentFor = going && !busy && at > 0 ? now - at : 0;
+        // Under a minute has no span to name, and is not silence worth a card saying.
+        const span = silentFor > quietMs ? spanned(silentFor) : "";
+        const silent = span === "" ? null : span;
+        const operation = yield* lastLaunched(stateDir, leader.id);
+        const doing = operation === null ? null : stepOfOperation(operation);
+        // Stopped for a human with no Decision to answer: herdr reports `blocked` for an agent
+        // sitting at its harness's own dialog, and a Run parks where its pane will not take a
+        // prompt. herdr's name for the pane first: it is the one a human has to go to.
+        const blocked = agents.find((agent) => agent.status === "blocked");
+        const stalled =
+          (blocked ? `${blocked.name}'s pane` : null) ??
+          (leader.state === "waiting" && leader.asking.length === 0 ? "its pane" : null);
+        // Nothing drives it and nobody works on it: the host could not take it up again. A
+        // Decision outranks it, because answering is still what moves the work.
+        const abandoned = decision === null && going && leader.undriven && !agents.some(ownsAgent);
+        const reopened = ended(leader)
+          ? yield* reopenedOf(stateDir, leader, deliveries, live)
+          : null;
+        // A Reopened Run is the work its agent is doing now, while it does it; then its facts.
+        const state = abandoned
+          ? "abandoned"
+          : decision === null && reopened?.status === "working"
+            ? "active"
+            : decision === null && reopened?.status === "blocked"
+              ? "blocked"
+              : stateOf(status, silent !== null, decision, stalled !== null);
 
-    // A hold left on a Run that ended holds nothing, and a finished Run refuses its release.
-    const held = runs.find((run) => run.held && !ended(run));
-    const settledNow =
-      state === "done" || state === "failed" || state === "stopped" || state === "abandoned";
-    // Read whatever the state: a merge GitLab reported lands the work even while the Run
-    // is still going, and the card must say so.
-    const disposition = latest(
-      yield* readDispositions(leader.dir).pipe(Effect.catch(() => Effect.succeed([]))),
-    );
-    const failure =
-      state === "failed"
-        ? lastFailure(
-            yield* readVerifications(leader.evidence).pipe(Effect.catch(() => Effect.succeed([]))),
-          )
-        : null;
-    const open = openReports(
-      yield* readDrift(leader.dir).pipe(Effect.catch(() => Effect.succeed([]))),
-    );
-    const task = leader.task === null ? null : (tasks.get(leader.task) ?? null);
-    const { name, project } = namesOf(task?.label ?? "", leader);
-    const started = runs.map((run) => epochMs(run.created)).filter(Number.isFinite);
-    // A Task is as old as its first Run; a Run with no readable stamp has no age.
-    const first = started.length === 0 ? 0 : Math.min(...started);
+        // A hold left on a Run that ended holds nothing, and a finished Run refuses its release.
+        const held = runs.find((run) => run.held && !ended(run));
+        const settledNow =
+          state === "done" || state === "failed" || state === "stopped" || state === "abandoned";
+        // Read whatever the state: a merge GitLab reported lands the work even while the Run
+        // is still going, and the card must say so.
+        const disposition = latest(
+          yield* readDispositions(leader.dir).pipe(Effect.catch(() => Effect.succeed([]))),
+        );
+        const failure =
+          state === "failed"
+            ? lastFailure(
+                yield* readVerifications(leader.evidence).pipe(
+                  Effect.catch(() => Effect.succeed([])),
+                ),
+              )
+            : null;
+        const open = openReports(
+          yield* readDrift(leader.dir).pipe(Effect.catch(() => Effect.succeed([]))),
+        );
+        const task = leader.task === null ? null : (tasks.get(leader.task) ?? null);
+        const { name, project } = namesOf(task?.label ?? "", leader);
+        const started = runs.map((run) => epochMs(run.created)).filter(Number.isFinite);
+        // A Task is as old as its first Run; a Run with no readable stamp has no age.
+        const first = started.length === 0 ? 0 : Math.min(...started);
 
-    const mr = runs.map(mrOf).find((one) => one !== null) ?? null;
-    const mrState = mr === null ? null : (mrStates.get(mrLabel(mr)) ?? null);
-    const branch = runs.map((run) => run.branch).find((b) => b !== null) ?? null;
-    // What the Task left behind: the tickets are whichever of its Runs wrote any.
-    let issues = 0;
-    for (const run of runs) issues = Math.max(issues, yield* planIssuesIn(run.dir));
-    const { planReady, landed } = standingOf({
-      settled: settledNow,
-      succeeded: status === "succeeded",
-      branch,
-      mr,
-      mrLanded: mrState !== null && LANDED_STATES.has(mrState),
-      planIssues: issues,
-      disposed: disposition !== null,
-      asking: decision !== null,
-    });
-    const awaitingMerge =
-      state === "done" &&
-      mr !== null &&
-      disposition === null &&
-      !landed &&
-      (mrState === null || mrState === "open");
-    // Collie's own evidence counts at the head the forge reported, where it reported one.
-    const forged = mr === null ? null : (forge.get(mrLabel(mr)) ?? null);
-    const verified = awaitingMerge
-      ? {
-          records: yield* readVerifications(leader.evidence).pipe(
-            Effect.catch(() => Effect.succeed([])),
-          ),
-          head: forged?.head ?? (yield* branchHead(leader, now)),
-          approved: yield* Effect.forEach(
-            approvedFor(
-              yield* approvedIn(leader.evidence),
-              yield* readIntent(leader.dir).pipe(Effect.orElseSucceed(() => null)),
-            ),
-            (spec) =>
-              commandOf(
-                { id: leader.id, cwd: leader.cwd, worktree: leader.worktree?.path ?? null },
-                spec,
+        const mr = runs.map(mrOf).find((one) => one !== null) ?? null;
+        const mrState = mr === null ? null : (mrStates.get(mrLabel(mr)) ?? null);
+        const branch = runs.map((run) => run.branch).find((b) => b !== null) ?? null;
+        // What the Task left behind: the tickets are whichever of its Runs wrote any.
+        let issues = 0;
+        for (const run of runs) issues = Math.max(issues, yield* planIssuesIn(run.dir));
+        const { planReady, landed } = standingOf({
+          settled: settledNow,
+          succeeded: status === "succeeded",
+          branch,
+          mr,
+          mrLanded: mrState !== null && LANDED_STATES.has(mrState),
+          planIssues: issues,
+          disposed: disposition !== null,
+          asking: decision !== null,
+        });
+        const awaitingMerge =
+          state === "done" &&
+          mr !== null &&
+          disposition === null &&
+          !landed &&
+          (mrState === null || mrState === "open");
+        // Collie's own evidence counts at the head the forge reported, where it reported one.
+        const forged = mr === null ? null : (forge.get(mrLabel(mr)) ?? null);
+        const verified = awaitingMerge
+          ? {
+              records: yield* readVerifications(leader.evidence).pipe(
+                Effect.catch(() => Effect.succeed([])),
               ),
-          ),
-        }
-      : null;
-    const checks =
-      verified === null
-        ? null
-        : withForge(checksAt(verified.records, verified.head, verified.approved), forged);
-    const readiness = readyToRelease({
-      succeeded: leader.state === "succeeded",
-      mr,
-      mrState,
-      draft: forged?.draft ?? false,
-      checks: check !== null && checks?.state !== "failed" ? { state: "running" } : checks,
-      ci: forged?.checks ?? null,
-      blocking:
-        mr === null ? 0 : (yield* findingsIn(leader.dir)).filter((one) => isBlocking(one)).length,
-      mergeable: forged?.mergeable ?? null,
-    });
-    const finishedAt = settledNow ? endedAt(leader) : 0;
-    const view: TaskView = {
-      id,
-      name,
-      project,
-      state,
-      steps: stepsOf(runs),
-      sentence: sentenceFor({
-        mr,
-        mrState,
-        checks,
-        readiness,
-        summary: leader.summary,
-        agent: agents.find((one) => one.run === leader.id)?.name ?? null,
-        planReady,
-        abandoned: abandoned && at > 0 ? agoMs(at, now) : null,
-        state,
-        decision,
-        step: doing?.step ?? null,
-        // Never the pane's title: a terminal names its harness or file, not the work.
-        verb: doing?.verb ?? null,
-        checking: check?.sentence ?? null,
-        reopened: state === "active" ? reopened : null,
-        silent,
-        wave: fan !== null && fanned === leader ? fan.wave : null,
-        failure,
-        note: leader.note,
-        resumed: going ? yield* resumedWith(stateDir, leader) : null,
-        stalled,
-        disposition:
-          disposition === null
+              head: forged?.head ?? (yield* branchHead(leader, now)),
+              approved: yield* Effect.forEach(
+                approvedFor(
+                  yield* approvedIn(leader.evidence),
+                  yield* readIntent(leader.dir).pipe(Effect.orElseSucceed(() => null)),
+                ),
+                (spec) =>
+                  commandOf(
+                    { id: leader.id, cwd: leader.cwd, worktree: leader.worktree?.path ?? null },
+                    spec,
+                  ),
+              ),
+            }
+          : null;
+        const checks =
+          verified === null
             ? null
-            : {
-                kind: disposition.kind,
-                // Recorded refs vary in shape; the card reads them all the one way.
-                ref: disposition.ref === "" ? "" : mrLabel(disposition.ref),
-                ago: ago(disposition.at, now),
-                by: disposition.by,
-              },
+            : withForge(checksAt(verified.records, verified.head, verified.approved), forged);
+        const readiness = readyToRelease({
+          succeeded: leader.state === "succeeded",
+          mr,
+          mrState,
+          draft: forged?.draft ?? false,
+          checks: check !== null && checks?.state !== "failed" ? { state: "running" } : checks,
+          ci: forged?.checks ?? null,
+          blocking:
+            mr === null
+              ? 0
+              : (yield* findingsIn(leader.dir)).filter((one) => isBlocking(one)).length,
+          mergeable: forged?.mergeable ?? null,
+        });
+        const finishedAt = settledNow ? endedAt(leader) : 0;
+        const view: TaskView = {
+          id,
+          name,
+          project,
+          state,
+          steps: stepsOf(runs),
+          sentence: sentenceFor({
+            mr,
+            mrState,
+            checks,
+            readiness,
+            summary: leader.summary,
+            agent: agents.find((one) => one.run === leader.id)?.name ?? null,
+            planReady,
+            abandoned: abandoned && at > 0 ? agoMs(at, now) : null,
+            state,
+            decision,
+            step: doing?.step ?? null,
+            // Never the pane's title: a terminal names its harness or file, not the work.
+            verb: doing?.verb ?? null,
+            checking: check?.sentence ?? null,
+            reopened: state === "active" ? reopened : null,
+            silent,
+            wave: fan !== null && fanned === leader ? fan.wave : null,
+            failure,
+            note: leader.note,
+            resumed: going ? yield* resumedWith(stateDir, leader) : null,
+            stalled,
+            disposition:
+              disposition === null
+                ? null
+                : {
+                    kind: disposition.kind,
+                    // Recorded refs vary in shape; the card reads them all the one way.
+                    ref: disposition.ref === "" ? "" : mrLabel(disposition.ref),
+                    ago: ago(disposition.at, now),
+                    by: disposition.by,
+                  },
+          }),
+          age: agoShort(first, now),
+          // The leading Run's own open drift: what an earlier Run of this Task drifted from
+          // was judged against a tree that has moved since.
+          drift:
+            open.length === 0
+              ? null
+              : `${open[0]!.constraint}${open.length > 1 ? ` (and ${open.length - 1} more)` : ""}`,
+          held: held === undefined ? null : heldLine(null),
+          heldBy: held === undefined ? null : yield* holderOf(held),
+          decision,
+          agents,
+          children: fan?.children ?? [],
+          mr,
+          branch,
+          disposition:
+            disposition === null
+              ? null
+              : disposition.ref === ""
+                ? disposition.kind
+                : `${disposition.kind} ${disposition.ref}`,
+          landed,
+          ended: finishedAt > 0 ? finishedAt : null,
+          mrState,
+          checks,
+          ready: readiness.ready,
+          readiness,
+          check,
+          reopened,
+          planReady,
+          // Only a ready plan's first action is an offer; asking every card would ask every refresh.
+          offer: planReady ? primaryOf(yield* offersOfRun(leader.id)) : null,
+          run: leader.id,
+          runs: runs.map((run) => run.id),
+          at: at === 0 ? first : at,
+        };
+        return task?.herd ? { ...view, herd: task.herd } : view;
       }),
-      age: agoShort(first, now),
-      // The leading Run's own open drift: what an earlier Run of this Task drifted from
-      // was judged against a tree that has moved since.
-      drift:
-        open.length === 0
-          ? null
-          : `${open[0]!.constraint}${open.length > 1 ? ` (and ${open.length - 1} more)` : ""}`,
-      held: held === undefined ? null : heldLine(null),
-      heldBy: held === undefined ? null : yield* holderOf(held),
-      decision,
-      agents,
-      children: fan?.children ?? [],
-      mr,
-      branch,
-      disposition:
-        disposition === null
-          ? null
-          : disposition.ref === ""
-            ? disposition.kind
-            : `${disposition.kind} ${disposition.ref}`,
-      landed,
-      ended: finishedAt > 0 ? finishedAt : null,
-      mrState,
-      checks,
-      ready: readiness.ready,
-      readiness,
-      check,
-      reopened,
-      planReady,
-      // Only a ready plan's first action is an offer; asking every card would ask every refresh.
-      offer: planReady ? primaryOf(yield* offersOfRun(leader.id)) : null,
-      run: leader.id,
-      runs: runs.map((run) => run.id),
-      at: at === 0 ? first : at,
-    };
-    views.push(task?.herd ? { ...view, herd: task.herd } : view);
-  }
-  return sortBoard(views);
+    { concurrency: READS_AT_ONCE },
+  );
+  return sortBoard(views.filter((view) => view !== null));
 });
 
 /** Each Ready to release card's Run, with the revision its checks passed at and its sentence. */
