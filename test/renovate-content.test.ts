@@ -47,3 +47,18 @@ test("the batch branch is named outside Renovate Bot's branch prefix on both for
     expect(batch).not.toContain("renovate/batch");
   }
 });
+
+test("the batch leaves out a bump it cannot fix small, with a recommendation, and never stops to ask", () => {
+  for (const content of [gitlab, github]) {
+    const batch = (content.sections.get("batch") ?? "").replace(/\s+/g, " ");
+    expect(batch).not.toContain("consult");
+    expect(batch).toContain(
+      "Anything that needs more than that is **left out of the batch** and reported with why and what you recommend",
+    );
+    expect(batch).toContain("take the option you would recommend");
+    expect(batch).toContain("Do not stop to ask.");
+    // assess and merge keep theirs.
+    expect(content.sections.get("assess")).toContain("consultation");
+    expect(content.sections.get("merge")).toContain("consultation");
+  }
+});
