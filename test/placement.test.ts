@@ -1076,12 +1076,24 @@ test(
 );
 
 test(
-  "self-improve started on a checkout works in a fresh worktree detached at its default branch, leaving the checkout alone",
+  "self-improve started on a checkout works in a fresh worktree detached at origin's latest default branch, leaving the checkout alone",
   () =>
     runEffect(
       Effect.gen(function* () {
         const roaming = `${rig.root}/.herdr/worktrees/project/roaming`;
         const fs = yield* FileSystem.FileSystem;
+        const git = (cwd: string, ...args: string[]) =>
+          exec(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd });
+        const origin = `${rig.root}/origin.git`;
+        const elsewhere = `${rig.root}/elsewhere`;
+        yield* git(rig.root, "init", "--quiet", "--bare", "-b", "master", origin);
+        yield* git(rig.projectDir, "remote", "add", "origin", origin);
+        yield* git(rig.projectDir, "push", "--quiet", "origin", "master");
+        // origin moves on after this checkout last fetched.
+        yield* git(rig.root, "clone", "--quiet", origin, elsewhere);
+        yield* git(elsewhere, "commit", "--quiet", "--allow-empty", "-m", "later");
+        yield* git(elsewhere, "push", "--quiet", "origin", "master");
+        const latest = (yield* git(elsewhere, "rev-parse", "HEAD")).stdout.trim();
         yield* fs.writeFileString(`${rig.projectDir}/other-work.txt`, "someone else's");
         const view = yield* hosted(
           Effect.gen(function* () {
@@ -1101,6 +1113,8 @@ test(
         expect(view?.worktree?.path).toBe(roaming);
         const head = yield* exec(["git", "symbolic-ref", "-q", "HEAD"], { cwd: roaming });
         expect(head.exitCode).not.toBe(0);
+        expect((yield* git(roaming, "rev-parse", "HEAD")).stdout.trim()).toBe(latest);
+        expect((yield* git(rig.projectDir, "rev-parse", "master")).stdout.trim()).not.toBe(latest);
         expect(yield* fs.exists(`${roaming}/other-work.txt`)).toBe(false);
         expect(yield* fs.readFileString(`${rig.projectDir}/other-work.txt`)).toBe("someone else's");
       }),

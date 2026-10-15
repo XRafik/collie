@@ -484,6 +484,8 @@ stash stack — looks like, which is the thing this exists to prevent.
 every Renovate Bot branch it merges. So it gets a checkout of its own that is **detached**
 at the repository's default branch as the remote has it, at
 `~/.herdr/worktrees/<repo>/roaming`, and no branch is created or claimed for the run.
+Where the repository has an `origin` that will not fetch, the start is refused rather
+than cut from a stale base.
 There is no `--input branch=` for it, and nothing it does binds a branch to its worktree:
 it fetches and checks out each Renovate branch inside that one checkout and pushes with an
 explicit refspec, so a Renovate branch that already has a checkout of yours is left where
@@ -2595,6 +2597,7 @@ touched nor read. The triage, the filing and the Improvements' `plan` Runs work 
 Runs it reads are still that checkout's. Another Run holding that repository's roaming
 checkout, such as a `renovate`, refuses the start. The [cleanup](#cleanup) sweep removes
 the worktree once the Run has ended, however it ended, and nothing works in it any longer.
+An `origin` that will not fetch refuses the start, so it never triages stale code.
 
 It waits for its Improvements, then writes `summary.md` in its Run directory: each issue
 filed or commented, by category; each Improvement's Run and how it ended; and each finding
