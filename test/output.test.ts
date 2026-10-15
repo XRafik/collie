@@ -634,7 +634,7 @@ test("the message names the findings that cannot be acted on, and says nothing w
   expect(said).toContain("need not be one the change touched");
 });
 
-test("the last fix's check is proved by a pass of the check's command under another name, never by an expected failure", () => {
+test("the last fix's check is proved by the latest record of the check's command on this tree, under any name, and never by an expected failure", () => {
   const unit = { name: "unit", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
   const fix = {
     verdict: "clean" as const,
@@ -647,4 +647,10 @@ test("the last fix's check is proved by a pass of the check's command under anot
     settleFinalFix([BLOCKER], fix, { verifications, final: FINAL, commands: [unit] }).ok;
   expect(settled([record({ name: "mine" })])).toBe(true);
   expect(settled([record({ name: "mine", expect: "fail", exit: 1 })])).toBe(false);
+  expect(
+    settled([record({ name: "mine" }), record({ name: "unit", result: "fail", exit: 1 })]),
+  ).toBe(false);
+  expect(settled([record({ name: "mine" }), record({ name: "x", expect: "fail", exit: 1 })])).toBe(
+    false,
+  );
 });

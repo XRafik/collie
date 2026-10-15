@@ -714,8 +714,9 @@ function checkGap(name: string, evidence: CheckEvidence): string | null {
   const records = recordsNamed(evidence.verifications, name, evidence.commands);
   if (records.length === 0)
     return `check "${name}" has no verification record — run it through collie verify`;
-  if (records.some((v) => passed(v) && !staleAgainst(v, evidence.final))) return null;
-  const last = records[records.length - 1]!;
+  const latest = records.findLast((v) => !staleAgainst(v, evidence.final));
+  if (latest !== undefined && passed(latest)) return null;
+  const last = latest ?? records[records.length - 1]!;
   if (last.result === "fail" || last.expect === "fail") return `check failed: ${name}`;
   if (last.result === "unstable") return `check "${name}" ran on a tree that moved under it`;
   return `check "${name}" last passed on an earlier tree`;
