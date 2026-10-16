@@ -252,3 +252,44 @@ test("the real bun, rerun on a name holding a quote, brackets, $HOME, * and a ne
       expect(ran.result).toBe("pass");
     }),
   ));
+
+const QUICK = { file: "test/one.test.ts", name: "the quick one breaks" };
+
+test("a test run at the base fails there only where bun reported it failing, and runs once per base revision", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const bin = yield* FakeBin.make(`${rig.root}/bin`);
+      const bun = (printed: string, exit: number) =>
+        bin.add(
+          "bun",
+          `echo ran >> ${rig.root}/bun-runs; cat <<'PRINTED' >&2\n${printed}\nPRINTED\nexit ${exit}`,
+        );
+      const atBase = (host: Host["Service"], test: typeof QUICK) =>
+        host.verify({ runId, name: "unit", cwd: rig.projectDir, at: "default-base", test });
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${dir}/runs/${runId}`, { recursive: true });
+      const [failed, again, missing] = yield* inHost((host) =>
+        Effect.gen(function* () {
+          yield* bun(" 0 pass\n 1 fail", 1);
+          const failed = yield* atBase(host, NESTED);
+          const again = yield* atBase(host, NESTED);
+          yield* bun(`error: regex "^the quick one breaks$" matched 0 tests.`, 1);
+          return [failed, again, yield* atBase(host, QUICK)] as const;
+        }),
+      ).pipe(Effect.ensuring(bin.restore()));
+      const head = (yield* exec(["git", "rev-parse", "HEAD"], {
+        cwd: rig.projectDir,
+      })).stdout.trim();
+      expect(failed).toMatchObject({
+        name: "unit",
+        pass: "baseline",
+        test: NESTED,
+        result: "fail",
+      });
+      expect(failed.start.head_sha).toBe(head);
+      expect(again.id).toBe(failed.id);
+      // A test the base does not have is this Run's own.
+      expect(missing).toMatchObject({ pass: "baseline", test: QUICK, result: "pass" });
+      expect((yield* fs.readFileString(`${rig.root}/bun-runs`)).trim().split("\n")).toHaveLength(2);
+    }),
+  ));

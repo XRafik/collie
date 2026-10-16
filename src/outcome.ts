@@ -11,7 +11,7 @@
 
 import type { VerifySpec } from "./verify-spec";
 import {
-  isRerun,
+  ranOneTest,
   passed,
   ranCommand,
   recordsNamed,
@@ -88,8 +88,6 @@ export interface Collected {
     readonly file: string;
     readonly checks: ReadonlyArray<string>;
   }>;
-  /** Baseline failures are context; they never satisfy a check on this tree. */
-  readonly preexisting?: ReadonlySet<string>;
 }
 
 /**
@@ -110,7 +108,7 @@ function runsOf(got: Journal, name: string) {
   const command = got.commands?.find((one) => one.name === name);
   const any = got.verifications.filter(
     (v) =>
-      !isRerun(v) &&
+      !ranOneTest(v) &&
       (command === undefined ? v.by === "collie" && v.name === name : ranCommand(v, command)),
   );
   return { any, last: any.findLast((v) => !earlierTree(v, got.final)) };
@@ -127,7 +125,7 @@ function rerunOf(got: Journal, last: Verification | undefined) {
   const rerun = (test: FailedTest) =>
     after.findLast(
       (v) =>
-        isRerun(v) &&
+        v.pass === "rerun" &&
         v.by === "collie" &&
         v.name === last.name &&
         v.test?.file === test.file &&
@@ -135,31 +133,80 @@ function rerunOf(got: Journal, last: Verification | undefined) {
         !earlierTree(v, got.final),
     );
   const alone = (test: FailedTest) => rerun(test)?.result === "pass";
+  // Its runs where the branch leaves the default branch, which fail only where bun said that test failed.
+  const bases = (test: FailedTest, among: ReadonlyArray<Verification>) =>
+    among.filter(
+      (v) =>
+        v.pass === "baseline" &&
+        v.by === "collie" &&
+        v.name === last.name &&
+        v.test?.file === test.file &&
+        v.test.name === test.name,
+    );
+  const base = (test: FailedTest) => bases(test, got.verifications).at(-1);
+  const still = last.failed.filter((test) => !alone(test));
   return {
     flakes: last.failed.filter(alone),
-    still: last.failed.filter((test) => !alone(test)),
+    still,
     owed: last.failed.filter((test) => rerun(test) === undefined),
+    atBase: still.flatMap((test) => {
+      const at = base(test);
+      return at?.result === "fail" ? [{ ...test, at: at.start.head_sha }] : [];
+    }),
+    own: still.filter((test) => base(test)?.result !== "fail"),
+    unasked: still.filter((test) => bases(test, after).length === 0),
   };
 }
 
-/** Whether a check's latest run on this tree failed only on tests that then passed alone. */
-function onlyFlakes(got: Journal, name: string): boolean {
-  return rerunOf(got, runsOf(got, name).last)?.still.length === 0;
+/** Whether a check's latest run on this tree failed only on Flakes and tests that fail at the base too. */
+function settledUnpassed(got: Journal, name: string): boolean {
+  return rerunOf(got, runsOf(got, name).last)?.own.length === 0;
+}
+
+/** The Run's checks settled without a pass: every test each failed on was a Flake or fails at the base too. */
+export function settledChecks(got: Journal & Pick<Collected, "approved">): string[] {
+  return got.approved.filter((spec) => settledUnpassed(got, spec.name)).map((spec) => spec.name);
 }
 
 /**
  * Each Flake on this tree: a failed test of one of the Run's checks that passed when run again
- * alone, where every test that check failed on did. Never a pass, so the merge request names them.
+ * alone, where that check is settled. Never a pass, so the merge request names them.
  */
 export function flakesOf(
   got: Journal & Pick<Collected, "approved">,
 ): Array<FailedTest & { readonly check: string }> {
   return got.approved.flatMap((spec) => {
     const reran = rerunOf(got, runsOf(got, spec.name).last);
-    return reran === null || reran.still.length > 0
+    return reran === null || reran.own.length > 0
       ? []
       : reran.flakes.map((test) => ({ check: spec.name, ...test }));
   });
+}
+
+/** Each still-failing test that also fails where this branch leaves the default branch, at that revision. */
+export function baseFailuresOf(
+  got: Journal & Pick<Collected, "approved">,
+): Array<FailedTest & { readonly check: string; readonly at: string }> {
+  return got.approved.flatMap(
+    (spec) =>
+      rerunOf(got, runsOf(got, spec.name).last)?.atBase.map((test) => ({
+        check: spec.name,
+        ...test,
+      })) ?? [],
+  );
+}
+
+/** Each test of a check's latest run on this tree that failed again alone, and the base has not been asked about since. */
+export function baselinesOwed(
+  got: Journal & Pick<Collected, "approved">,
+): Array<{ readonly check: string; readonly test: FailedTest }> {
+  return got.approved.flatMap(
+    (spec) =>
+      rerunOf(got, runsOf(got, spec.name).last)?.unasked.map((test) => ({
+        check: spec.name,
+        test,
+      })) ?? [],
+  );
 }
 
 /** Each failed test of a check's latest run on this tree that has not been run again alone yet. */
@@ -175,12 +222,15 @@ export function rerunsOwed(
   );
 }
 
-/** The checks whose latest run on this tree failed without naming its tests: only a whole recheck can tell. */
-export function failedNamingNoTests(got: Journal & Pick<Collected, "approved">): string[] {
+/**
+ * The checks only a whole run can tell about: those whose latest run on this tree failed
+ * without naming its tests, or with no run of their command on it, as after a re-grant.
+ */
+export function wholeRunsOwed(got: Journal & Pick<Collected, "approved">): string[] {
   return got.approved
     .filter((spec) => {
       const { last } = runsOf(got, spec.name);
-      return last !== undefined && !passed(last) && rerunOf(got, last) === null;
+      return last === undefined || (!passed(last) && rerunOf(got, last) === null);
     })
     .map((spec) => spec.name);
 }
@@ -206,10 +256,10 @@ function approvedSetGaps(got: Collected): string[] {
     if (last !== undefined && passed(last)) continue;
     const reran = rerunOf(got, last);
     if (reran !== null) {
-      // Not a gap, and not a pass either: every test it failed on passed alone.
-      if (reran.still.length === 0) continue;
+      // Not a gap, and not a pass either: every test it failed on passed alone or fails at the base too.
+      if (reran.own.length === 0) continue;
       gaps.push(
-        `${spec.name} failed: ${reran.still.map((test) => `${test.name} (${test.file})`).join(", ")}`,
+        `${spec.name} failed: ${reran.own.map((test) => `${test.name} (${test.file})`).join(", ")}`,
       );
     } else if (any.length === 0) gaps.push(`${spec.name} was never run`);
     else if (any.some((v) => v.result === "fail" || v.expect === "fail"))
@@ -300,7 +350,7 @@ function gapsOf(kind: Outcome, got: Collected): Array<{ text: string; check: boo
       // collected these itself; what matters is a pass on the tree in front of us.
       for (const ticket of got.tickets) {
         for (const name of ticket.checks) {
-          if (lastPassedAtFinal(got, name) || onlyFlakes(got, name)) continue;
+          if (lastPassedAtFinal(got, name) || settledUnpassed(got, name)) continue;
           check(
             `${ticket.file} promised check "${name}", which has no passing verification on this tree`,
           );
@@ -397,7 +447,7 @@ export function endsWithoutPatch(kind: Outcome, got: Collected): boolean {
 /** What the `mr` prompt says was actually proved, and by whom. */
 export function renderEvidence(got: Pick<Collected, "verifications" | "final">): string {
   const latest = new Map<string, Verification>();
-  for (const v of got.verifications) if (!isRerun(v)) latest.set(`${v.name}:${v.by}`, v);
+  for (const v of got.verifications) if (!ranOneTest(v)) latest.set(`${v.name}:${v.by}`, v);
   if (latest.size === 0) return "(nothing was verified)";
   return [...latest.values()]
     .map((v) => {
@@ -418,9 +468,9 @@ export function renderEvidence(got: Pick<Collected, "verifications" | "final">):
 export function renderRecordedChecks(got: Pick<Collected, "verifications" | "final">): string {
   const latest = new Map<string, Verification>();
   const baseline = new Map<string, Verification>();
-  for (const v of got.verifications)
+  for (const v of got.verifications.filter((one) => !ranOneTest(one)))
     if (v.pass === "baseline") baseline.set(v.name, v);
-    else if (!isRerun(v)) latest.set(`${v.name}:${v.by}`, v);
+    else latest.set(`${v.name}:${v.by}`, v);
   if (latest.size + baseline.size === 0) return "(nothing is recorded for this Run)";
   const onTree = (v: Verification) =>
     v.end.head_sha === got.final.head_sha && v.end.fingerprint === got.final.fingerprint

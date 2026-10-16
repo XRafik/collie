@@ -119,10 +119,12 @@ fix and never counts as a pass, and the merge request names it under **Not settl
 run**. A failed check whose output names no tests is re-run whole once instead, since a check
 that fails and then passes is a flake. The gate then hands
 what a check could still prove to the implementer for up to four fixes; a reviewer's
-judgement or an Output's claim is not handed over, since no fix moves it. Before any fix, a
-check that failed is run once where the branch leaves the default branch: one that fails
-there too is named in the merge request as failing before the run's changes, and is not
-handed to the implementer. A fix that changes nothing and disputes every finding it was
+judgement or an Output's claim is not handed over, since no fix moves it. Before any fix, each
+test still failing after its rerun is run alone once where the branch leaves the default
+branch. A check whose every such test fails there too is not handed to the implementer, and
+the merge request names each of those tests, with that revision, as failing before the Run's
+changes; a test that passes there, or that the base does not have, is the Run's own. A check
+whose failures name no tests has no baseline and is handed to the fixes. A fix that changes nothing and disputes every finding it was
 handed ends the fixes, since another would check the same tree: the outcome stays unproved,
 and the merge request names each disputed gap with the fixer's reason. A gate fix lands after the last
 review, so the merge request says it was not re-reviewed. What the Run could not settle —

@@ -23,7 +23,7 @@ import { listTasks, type TaskRecord } from "./task";
 import { ago, agoMs, agoShort, spanned, epochMs } from "./time";
 import {
   commandOf,
-  isRerun,
+  ranOneTest,
   ranCommand,
   passed,
   readVerifications,
@@ -578,7 +578,7 @@ export function checksAt(
   approved: ReadonlyArray<CheckCommand> = [],
 ): Checks {
   const checksOf = (record: Verification) =>
-    isRerun(record)
+    ranOneTest(record)
       ? []
       : approved.length === 0
         ? record.by === "collie"

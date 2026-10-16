@@ -12,7 +12,7 @@ import { Data, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Stream } from "effect";
 import type { VerifySpec } from "./intent";
-import { failedTests, ranAlone, rerunArgv } from "./bun-tests";
+import { failedAlone, failedTests, ranAlone, rerunArgv } from "./bun-tests";
 import { appendJournal, readJournal } from "./journal";
 import { shell } from "./mr";
 import { nowIso, epochMs } from "./time";
@@ -280,7 +280,10 @@ export interface Collected {
   readonly pass?: CheckPass;
   /** Where both streams are appended as they arrive, so the output can be read while it runs. */
   readonly log?: string;
-  /** The one failed test a `rerun` runs, which passes only where it ran alone and passed. */
+  /**
+   * The one failed test this runs alone. A `rerun` passes only where it ran alone and passed; at
+   * the `baseline` it fails only where bun reported it failing, so a test the base lacks passes.
+   */
   readonly test?: FailedTest;
 }
 
@@ -354,10 +357,12 @@ export const collect = Effect.fn("Verify.collect")(function* (
   }).pipe(Effect.scoped, Effect.orDie);
   const end = yield* fingerprint(what.cwd);
   const at = yield* nowIso();
-  const judged =
-    what.test === undefined || ranAlone(Number(exit), `${stdout}\n${stderr}`)
-      ? Number(exit)
-      : Number(exit) || 1;
+  const output = `${stdout}\n${stderr}`;
+  const testPassed =
+    what.pass?.pass === "baseline"
+      ? !failedAlone(Number(exit), output)
+      : ranAlone(Number(exit), output);
+  const judged = what.test === undefined ? Number(exit) : testPassed ? 0 : Number(exit) || 1;
   const failed =
     what.test !== undefined || what.log === undefined || Number(exit) === 0
       ? null
@@ -440,14 +445,16 @@ export const runApproved = Effect.fn("Verify.runApproved")(function* (
 });
 
 /**
- * One failed test of a check run again alone, from the sources, in the check's directory and
- * under its name: whether it was a Flake (ADR-0034).
+ * One failed test of a check run alone, from the sources, in the check's directory and under
+ * its name: again on the same tree, whether it was a Flake, or at the base, whether it failed
+ * there too (ADR-0034).
  */
 export const rerunTest = Effect.fn("Verify.rerunTest")(function* (
   runDir: string,
   run: CheckRun,
   spec: VerifySpec,
   test: FailedTest,
+  pass: { readonly pass: "rerun" | "baseline" },
   log?: string,
 ): Effect.fn.Return<Verification, VerifyRefused, Services> {
   const cwd = yield* checkCwd(run, spec);
@@ -460,7 +467,7 @@ export const rerunTest = Effect.fn("Verify.rerunTest")(function* (
     argv: rerunArgv(test),
     cwd,
     by: "collie",
-    pass: { pass: "rerun" },
+    pass,
     log,
     test,
   });
@@ -490,8 +497,8 @@ export type CheckCommand = Pick<Verification, "name" | "argv" | "cwd"> & {
 export const ranCommand = (record: Command, check: CheckCommand) =>
   check.executable !== null && sameCommand(record, { ...check, executable: check.executable });
 
-/** A rerun of one failed test is recorded under its check's name, and is never the check's own run. */
-export const isRerun = (v: Pick<Verification, "pass">) => v.pass === "rerun";
+/** A run of one failed test, again or at the base, is recorded under its check's name, and is never the check's own run. */
+export const ranOneTest = (v: Pick<Verification, "test">) => v.test !== undefined;
 
 /** A named check's records: those of its command where it is one of the Run's, else by name. */
 export const recordsNamed = (
@@ -501,7 +508,7 @@ export const recordsNamed = (
 ) => {
   const command = commands.find((one) => one.name === name);
   return records.filter(
-    (v) => !isRerun(v) && (command === undefined ? v.name === name : ranCommand(v, command)),
+    (v) => !ranOneTest(v) && (command === undefined ? v.name === name : ranCommand(v, command)),
   );
 };
 

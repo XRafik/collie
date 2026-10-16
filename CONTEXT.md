@@ -529,7 +529,7 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 
 **Evidence** — A Verification collected at a revision. An Output field saying the tests pass is a claim, and is shown as one. The gate before a merge request reads evidence, never claims.
 
-**Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
+**Baseline** — The tests of a check that still fail at the gate, after their **Flake** rerun, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. When every one of them fails there too, the check is not handed to the implementer: the merge request names those tests as failing before the Run's changes, with the revision. A test the base does not report failing, one that does not exist there included, is the Run's own. A check whose failures name no tests has no baseline, because its exit code cannot establish that the Run added no failures: it stays required on the Run's current tree and goes to the gate fixes (ADR-0034, amended 2026-10-15).
 
 **Integration** — The default branch merged into a Run's branch where it has moved since, with a merge commit in the Run's own checkout: never a rebase and never a force push. It never touches uncommitted work, never counts a default branch it could not fetch, leaves a conflict for the builder to finish, and is recorded in the Run log as `integrated <branch>@<sha>`. A review is diffed against the merge-base it leaves.
 

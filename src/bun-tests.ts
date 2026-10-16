@@ -51,3 +51,8 @@ export function rerunArgv(test: FailedTest): ReadonlyArray<string> {
 export function ranAlone(exit: number, output: string): boolean {
   return exit === 0 && /^\s*1 pass$/m.test(output) && /^\s*0 fail$/m.test(output);
 }
+
+/** Whether bun ran that one test and it failed: a test it did not find is not failing there. */
+export function failedAlone(exit: number, output: string): boolean {
+  return exit !== 0 && /^\s*1 fail$/m.test(output);
+}

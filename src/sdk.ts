@@ -135,12 +135,15 @@ export { renderApproved } from "./verify-spec";
  * for a merge request to say what was proved rather than what an Output claimed.
  */
 export {
-  failedNamingNoTests,
+  baseFailuresOf,
+  baselinesOwed,
   flakesOf,
   isOutcome,
   renderEvidence,
   renderRecordedChecks,
   rerunsOwed,
+  settledChecks,
+  wholeRunsOwed,
   type Outcome,
 } from "./outcome";
 
@@ -313,8 +316,6 @@ export interface EvidenceAsk {
     readonly file: string;
     readonly checks: ReadonlyArray<string>;
   }>;
-  /** Approved checks that also failed where the branch leaves the default branch. */
-  readonly preexisting?: ReadonlyArray<string>;
 }
 
 const collectedOf = (options: EvidenceAsk) => ({
@@ -326,7 +327,6 @@ const collectedOf = (options: EvidenceAsk) => ({
   reviewed: new Set(options.reviewed),
   insideRun: (ref: string) => refInside(options.roots, ref),
   tickets: options.tickets,
-  preexisting: new Set(options.preexisting ?? []),
 });
 
 /**
@@ -620,7 +620,8 @@ export interface HostApi {
     /**
      * The failed test a `rerun` runs: `bun test <file> -t <its whole name>` in the check's
      * directory, from the sources, recorded under the check's name. It passed only where
-     * exactly one test ran and passed.
+     * exactly one test ran and passed. With `at`, it is run at the base once per revision,
+     * and failed there only where bun reported it failing.
      */
     readonly test?: FailedTest;
   }) => Effect.Effect<Verification, WorkflowError>;

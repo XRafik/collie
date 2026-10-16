@@ -1063,12 +1063,23 @@ and could be read whole: 20 or fewer, its fail count agreeing, and no error outs
 A `rerun` runs `bun test <file> -t <its whole name>` in the check's directory, from the
 sources, and records it under the check's name. It passes only where exactly one test ran
 and passed, and it is never the check's own pass. `rerunsOwed` says which tests are still
-to be rerun, `failedNamingNoTests` which checks only a whole recheck can tell, and
+to be rerun, `wholeRunsOwed` which checks only a whole recheck can tell, and
 `flakesOf` which failures were Flakes (ADR-0034, amended 2026-10-15).
+
+A test still failing after its rerun is run alone at the base with `at: "default-base"` and
+that `test`, once per base revision. Its `baseline` record fails only where bun reported that
+one test failing, so a test the base does not have is the Run's own. `baselinesOwed` says
+which tests to ask the base about, `baseFailuresOf` which also fail there, and
+`settledChecks` which checks failed only on Flakes and such tests: neither a gap nor a pass.
 
 ```ts
 for (const { check, test } of rerunsOwed({ ...evidence, approved }))
   yield * host.verify({ runId, name: check, cwd, pass: "rerun", test });
+for (const { check, test } of baselinesOwed({
+  ...(yield * host.evidence(runId, cwd)),
+  approved,
+}))
+  yield * host.verify({ runId, name: check, cwd, at: "default-base", test });
 ```
 
 A Check passes once per tree. The host answers with the latest record of exactly that
@@ -1097,9 +1108,10 @@ sentence each, and empty where the evidence is there. It reads the journal, the 
 checks, the Outputs you hold and the tickets you built — and it will not take a reviewer's
 judgement from an implementer's Output, because the agent that wrote the change cannot
 vouch for its own scope. Only the latest result for a check on the tree in front of it
-counts, so a pass a later fail on the same tree contradicts is not one. Baseline failures
-are diagnostic context: `preexisting` does not remove gaps. Each of the Run's checks and each
-ticket's promised check still needs a passing verification on the current tree.
+counts, so a pass a later fail on the same tree contradicts is not one. Each of the Run's
+checks and each ticket's promised check still needs a passing verification on the current
+tree, unless every test it failed on was a Flake or also fails at the base, by a `rerun` or
+`baseline` record of that one test.
 
 ```ts
 const gaps = evidenceGapsOf({

@@ -1150,17 +1150,19 @@ nothing already answers for it: it relies on the latest record of exactly that c
 command on the same tree, where it is a pass collected in the same environment by this
 host, whoever asked for it, and logs `<pass>: <check> relies on verification <id>`. So a
 check that passed on a tree, an agent's `collie verify` of it included, is not run again
-on that tree, and nor is one whose every failed test there was a Flake. A changed tree or set of checks also gets fresh proof while
+on that tree, and nor is one whose every failed test there was a Flake or fails at the base too. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. The merge request
 is reached only once the outcome is proved. Only the latest
 record of a check's exact command on that tree counts, whoever asked for it, so a
 pass a later fail contradicts is not one, and a record that only shares the check's name
-is not the check. In `implement`, a check that fails at the gate is run once more,
-before any fix, where the branch leaves the default branch, in the run's own checkout. One that
-fails there too remains required on the Run's tree: the base's exit code cannot show
-whether the branch added different failures. If merge request handling is unavailable,
+is not the check. In `implement`, each test a failed check still fails on after its rerun
+is run alone before any fix, where the branch leaves the default branch, in the run's own
+checkout, once per base revision. A check whose every such test fails there too is not
+handed to a fix, and the merge request names those tests. A check whose failures name no
+tests has no baseline and remains required on the Run's tree: its exit code at the base
+cannot show whether the branch added different failures. If merge request handling is unavailable,
 the Run suspends with the reason instead of completing without delivery. A run with no
 check named is not passed — an empty set would make the gate say yes to anything — and
 that is a gap the implementer closes: each gate fix is told to name the repository's checks

@@ -1442,8 +1442,6 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly file: string;
       readonly checks: ReadonlyArray<string>;
     }>;
-    /** Approved checks that also failed where the branch leaves the default branch. */
-    readonly preexisting?: ReadonlyArray<string>;
   }): ReadonlyArray<string>;
   /**
    * The gaps among those a verification on this tree could close: what a fix may be
@@ -1459,10 +1457,20 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export function rerunsOwed(
     got: FailedChecks,
   ): Array<{ readonly check: string; readonly test: FailedTest }>;
-  /** The checks whose latest run on this tree failed without naming its tests. */
-  export function failedNamingNoTests(got: FailedChecks): string[];
+  /** The checks whose latest run on this tree failed without naming its tests, or that have none of their command. */
+  export function wholeRunsOwed(got: FailedChecks): string[];
   /** Each Flake on this tree, by the check it failed in: never a pass. */
   export function flakesOf(got: FailedChecks): Array<FailedTest & { readonly check: string }>;
+  /** Each test still failing after its rerun that the base has not been asked about since. */
+  export function baselinesOwed(
+    got: FailedChecks,
+  ): Array<{ readonly check: string; readonly test: FailedTest }>;
+  /** Each still-failing test that also fails where the branch leaves the default branch, at that revision. */
+  export function baseFailuresOf(
+    got: FailedChecks,
+  ): Array<FailedTest & { readonly check: string; readonly at: string }>;
+  /** The checks settled without a pass: every test each failed on was a Flake or fails at the base too. */
+  export function settledChecks(got: FailedChecks): string[];
 
   /** Where the work to be done was described. */
   export interface WorkSource {
@@ -2417,7 +2425,8 @@ export const hostLayer = (options: {
             const marker = `${runDir(dir, asked.runId)}/${VERIFYING_FILE}`;
             const away = `${runDir(dir, asked.runId)}/${AWAY_FILE}`;
             yield* restoreCheckout(asked.cwd, away);
-            const rerun = asked.pass === "rerun" ? asked.test : undefined;
+            const rerun =
+              asked.pass === "rerun" || asked.at === "default-base" ? asked.test : undefined;
             if (asked.pass === "rerun" && rerun === undefined)
               return yield* new WorkflowError({ reason: "a rerun names the one test it runs" });
             if (asked.at === undefined && asked.expect !== "fail" && rerun === undefined) {
@@ -2428,6 +2437,18 @@ export const hostLayer = (options: {
             const verified = (base: string | null) =>
               Effect.gen(function* () {
                 const head = yield* runShell("git", ["rev-parse", "HEAD"], asked.cwd);
+                // A test is asked about once per base revision.
+                if (base !== null && rerun !== undefined) {
+                  const known = (yield* readVerifications(journal).pipe(Effect.orDie)).findLast(
+                    (v) =>
+                      v.pass === "baseline" &&
+                      v.name === spec.name &&
+                      v.test?.file === rerun.file &&
+                      v.test.name === rerun.name &&
+                      v.start.head_sha === head.stdout.trim(),
+                  );
+                  if (known !== undefined) return known;
+                }
                 const started = yield* nowIso();
                 // A file per run of the check, beside the journal its record goes to.
                 const log = `${journal}/checks/${started.replace(/[:.]/g, "-")}-${spec.name.replace(/[^\w.-]/g, "_")}.log`;
@@ -2458,7 +2479,14 @@ export const hostLayer = (options: {
                         recorded,
                         log,
                       )
-                    : rerunTest(journal, { ...own, cwd: asked.cwd }, spec, rerun, log)
+                    : rerunTest(
+                        journal,
+                        { ...own, cwd: asked.cwd },
+                        spec,
+                        rerun,
+                        { pass: asked.at === "default-base" ? "baseline" : "rerun" },
+                        log,
+                      )
                 ).pipe(
                   Effect.tap((record) => noteVerification(journal, record)),
                   Effect.mapError((refused) => new WorkflowError({ reason: refused.why })),
