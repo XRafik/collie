@@ -46,7 +46,7 @@ proved. In the Flock chat it is also what the model is shown — an image, a PDF
 a name, size and path — and Desktop keeps a copy, so the conversation still shows it after a
 restart ([ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md)).
 
-**Output** — A structured JSON file an agent writes to the Run directory for one operation (e.g. a review verdict + findings). It is decoded against the Workflow's schema before anything believes it, and one that does not decode buys one repair. Workflows read Outputs, never terminal text. Collie waits for it against the agent's idle time only: while herdr reports the agent working or blocked, or a question it asked is open on the Run, the budget does not run (ADR-draft-an-agents-question-is-asked-on-its-run).
+**Output** — A structured JSON file an agent writes to the Run directory for one operation (e.g. a review verdict + findings). It is decoded against the Workflow's schema before anything believes it, and one that does not decode buys one repair. Workflows read Outputs, never terminal text. Collie waits for it against the agent's idle time only: while herdr reports the agent working or blocked, or a question it asked is open on the Run, the budget does not run (ADR-0062).
 
 **Herd** — One herdr session: every workspace in it. The scope of the Collie tab, the
 conversation, proposals, the budget and elections. Keyed by the canonical path of the
