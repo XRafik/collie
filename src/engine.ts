@@ -3886,6 +3886,8 @@ export interface RegistryApi {
     readonly set: boolean;
     /** A stop of this Run without the children it started. */
     readonly alone?: boolean;
+    /** Why a stop ends the Run's agents, for its log. */
+    readonly reason?: string;
   }) => Effect.Effect<typeof Controlled.Type, HostRefused, HostServices>;
   /**
    * Grants this run one command Collie may run itself, or withdraws the grant of that
@@ -5251,12 +5253,16 @@ const makeRegistry: (
   });
 
   /** A stop, and the agents of every Run it reached closed: the Runs, and what did not close. */
-  const stopTree = Effect.fn("Engine.stopTree")(function* (runId: string, alone = false) {
+  const stopTree = Effect.fn("Engine.stopTree")(function* (
+    runId: string,
+    alone = false,
+    reason?: string,
+  ) {
     const { runs } = yield* applyControl(runId, STOP, true, undefined, alone);
     // Closing their panes is what stops the agents; the Run only stops looking.
     const agents = yield* Agents;
     const left: string[] = [];
-    for (const one of runs) left.push(...(yield* agents.halt(one)).left);
+    for (const one of runs) left.push(...(yield* agents.halt(one, reason)).left);
     return { runs, left };
   });
 
@@ -5776,6 +5782,7 @@ const makeRegistry: (
       readonly control: string;
       readonly set: boolean;
       readonly alone?: boolean;
+      readonly reason?: string;
     }) {
       if (options.control === HOLD && (yield* hasEnded(options.runId)))
         return yield* new HostRefused({
@@ -5783,7 +5790,7 @@ const makeRegistry: (
         });
       // A finished Run's status is history: a stop closes its live agents and sets nothing.
       if (options.control === STOP && options.set && (yield* workflowEnded(options.runId))) {
-        const halted = yield* (yield* Agents).halt(options.runId);
+        const halted = yield* (yield* Agents).halt(options.runId, options.reason);
         return {
           runId: options.runId,
           control: options.control,
@@ -5797,7 +5804,7 @@ const makeRegistry: (
       const found = yield* routed(options.runId).pipe(Effect.result);
       const left =
         options.control === STOP && options.set
-          ? (yield* stopTree(options.runId, options.alone)).left
+          ? (yield* stopTree(options.runId, options.alone, options.reason)).left
           : yield* applyControl(options.runId, options.control, options.set).pipe(Effect.as([]));
       const recorded = { runId: options.runId, control: options.control, set: options.set, left };
       if (found._tag === "Failure") {

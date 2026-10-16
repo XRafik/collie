@@ -256,7 +256,8 @@ next refresh asks again instead of standing on a verdict it never reached.
 Removal follows the checkout. A git-managed one is `git worktree remove` from the
 repository's own checkout, and then the tabs of the panes the finished runs' agents were
 registered in, where every pane of the tab sits inside the removed path, are closed — dead shells nothing else would ever close, and
-a tab a human has since split or reused is left alone. A tab herdr will not close is
+a tab a human has since split or reused is left alone. A finished Run's agent still in such a
+tab is ended through `endAgent` first, and its tab is kept where it is not Quiet. A tab herdr will not close is
 counted on the removal line (`· 1 tab(s) left open`), because the checkout has left the
 listing by then and no later sweep has a candidate to retry it with.
 
@@ -752,10 +753,19 @@ Quiet; otherwise it keeps the state reached, what was still running, and every s
 `agents.log` with the full thread and turn ids, the endpoint, the pid and the transcript.
 The stand-in server the tests run in its place is `test/support/codex-server.ts`.
 
+Every end of a Run's agent goes through `endAgent` in `src/agent-end.ts`: a Run's stop
+(`halt`), a Fallback's retirement, closing a Finished Task's workspace, and the worktree
+sweep's close of a dead tab. It proves the agent is this Run's from its launch record,
+stops it where its work runs, requires Quiet, keeps the Task's workspace, closes its pane
+and writes the end, with why, on the Run's `agents.log`, in that order; the workspace sweep
+and the tab close do their own closing once every agent has answered. An agent it cannot
+prove is this Run's is left running, and named.
+
 Every path that replaces an agent or releases what it worked in goes through the same stop
 first. `installControls` stops a record left under the name it installs and fails
 `NotQuiet` rather than delete it; the Agents service turns that into a parked launch. A
-Fallback's retirement stops the agent that ran out whether or not herdr lists it. A launch
+Fallback's retirement stops the agent that ran out whether or not herdr lists it, and parks
+where it cannot prove the agent is its own. A launch
 checks for a stop before it starts an agent and again after, and starts it and writes its
 launch record as one uninterruptible step, so a stop that lands in between finds the agent
 and stops it. The stale-controls put-down at launch and the Cleanup sweep run the stop for

@@ -331,8 +331,13 @@ export class Rig {
   }
 
   /** An agent herdr already has, matching one an earlier run started. */
-  addAgent(name: string, paneId: string) {
-    return this.appendState("agents", { name, pane_id: paneId });
+  addAgent(name: string, paneId: string, terminalId?: string) {
+    return this.appendState(
+      "agents",
+      terminalId === undefined
+        ? { name, pane_id: paneId }
+        : { name, pane_id: paneId, terminal_id: terminalId },
+    );
   }
 
   /** Another process under this agent's name, in the same pane. */

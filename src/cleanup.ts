@@ -37,13 +37,12 @@ import { desktopVerdicts, trimUsage, type DesktopOwn } from "./desktop";
 import {
   CONTROL_DIR,
   keptFor,
-  notStopped,
   putDownControl,
   readControl,
-  stopAgent,
   type CompactionPorts,
 } from "./compaction";
 import { readLaunches } from "./launches";
+import { endAgent, runLog } from "./agent-end";
 import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
@@ -729,17 +728,14 @@ export const taskWorkspacesSweeper = (opts: {
   stopMs?: number;
 }): Sweeper => {
   const kind = "workspace";
-  const stopping = {
-    ports: opts.ports ?? COMPACTION_PORTS,
-    stateDir: opts.stateDir,
-    log: () => Effect.void,
-  };
-  /** The agents a Task's Runs launched. */
-  const agentsOf = (task: TaskRecord) =>
+  /** Each agent a Task's Runs launched, as its latest launch recorded it. */
+  const launchesOf = (task: TaskRecord) =>
     Effect.forEach(
       opts.runs.filter((run) => run.task === task.id),
       (run) => readLaunches(opts.stateDir, run.id),
-    ).pipe(Effect.map((all) => [...new Set(all.flat().map((one) => one.agent))]));
+    ).pipe(Effect.map((all) => [...new Map(all.flat().map((one) => [one.agent, one])).values()]));
+  const agentsOf = (task: TaskRecord) =>
+    Effect.map(launchesOf(task), (all) => all.map((one) => one.agent));
   /** Why one of them may still be writing after an earlier stop, or null. */
   const stillWriting = (task: TaskRecord) =>
     Effect.gen(function* () {
@@ -834,13 +830,36 @@ export const taskWorkspacesSweeper = (opts: {
         const judged = yield* verdict(task);
         if (judged === null) return { kept: "already closed" };
         if ("keep" in judged) return { kept: judged.keep };
-        // Its agents are stopped where their work runs before any pane of theirs closes.
-        for (const agent of yield* agentsOf(task)) {
-          const reached = yield* stopAgent(stopping, agent, opts.stopMs).pipe(Effect.result);
-          if (reached._tag === "Failure") return { kept: "its agents' controls are in use" };
-          if (reached.success !== null && reached.success.state !== "quiet")
+        // Every agent ends where its work runs before any pane of theirs closes.
+        const launches = yield* launchesOf(task);
+        const listed =
+          launches.length === 0
+            ? Option.some([])
+            : yield* session.herdr.agentList().pipe(Effect.option);
+        if (Option.isNone(listed)) return { kept: "could not ask herdr what is open" };
+        for (const launched of launches) {
+          const ended = yield* endAgent(
+            {
+              herdr: session.herdr,
+              ports: opts.ports ?? COMPACTION_PORTS,
+              stateDir: opts.stateDir,
+              cwd: task.cwd,
+              stopMs: opts.stopMs,
+              log: runLog(opts.stateDir, launched.runId),
+            },
+            launched,
+            "its Task's workspace closed",
+            "caller",
+            listed.value,
+          ).pipe(Effect.orElseSucceed(() => null));
+          if (ended === null) return { kept: "could not ask herdr what is open" };
+          if (ended._tag === "Unprovable") return { kept: ended.reason };
+          if (ended._tag === "NotQuiet")
             return {
-              kept: `its Codex turn has not stopped: ${notStopped(agent, reached.success, reached.success.target)}`,
+              kept:
+                ended.locked === undefined
+                  ? `its Codex turn has not stopped: ${ended.reason}`
+                  : "its agents' controls are in use",
             };
         }
         const closed = yield* session.herdr.workspaceClose(task.workspace).pipe(Effect.result);

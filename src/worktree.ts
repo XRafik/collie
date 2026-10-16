@@ -39,7 +39,10 @@ import type { WorktreeRecord } from "./run";
 // Type-only: the host imports this module, and `runs.ts` reads through the host.
 import type { RunFacts } from "./runs";
 import { slugify } from "./template";
-import { unlistedServers } from "./compaction";
+import { unlistedServers, type CompactionPorts } from "./compaction";
+import { COMPACTION_PORTS } from "./compactors";
+import { endAgent, runLog } from "./agent-end";
+import { readLaunches } from "./launches";
 
 /**
  * Whether a Workflow changes the repository, and so needs a checkout of its own. It
@@ -1219,12 +1222,42 @@ const inside = (at: string, dir: string | null | undefined) =>
  */
 const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
   herdr: Herdr,
-  opts: { at: string; tabs: ReadonlySet<string>; panes: ReadonlyArray<PaneInfo> },
+  opts: {
+    at: string;
+    tabs: ReadonlySet<string>;
+    panes: ReadonlyArray<PaneInfo>;
+    stateDir: string;
+    ports: CompactionPorts;
+    /** The finished Runs' agents, by the pane each was left in. */
+    registered: ReadonlyArray<AgentEntry>;
+  },
 ) {
   // Where a pane was started and where it has moved to: a shell the agent `cd`-ed is
   // in the checkout whatever its tab was opened on.
   const isInside = (pane: PaneInfo) =>
     inside(opts.at, pane.cwd) || inside(opts.at, pane.foregroundCwd);
+  /** Whether the agent left in this pane, if any, has ended. */
+  const ends = (pane: PaneInfo) =>
+    Effect.gen(function* () {
+      const entry = opts.registered.find((one) => one.paneId === pane.paneId);
+      if (pane.agent === null || entry === undefined) return true;
+      const launched = (yield* readLaunches(opts.stateDir, entry.runId)).findLast(
+        (one) => one.agent === entry.agent,
+      );
+      const ended = yield* endAgent(
+        {
+          herdr,
+          ports: opts.ports,
+          stateDir: opts.stateDir,
+          cwd: opts.at,
+          log: runLog(opts.stateDir, entry.runId),
+        },
+        launched ?? { agent: entry.agent },
+        `its checkout ${opts.at} was removed`,
+        "caller",
+      ).pipe(Effect.orElseSucceed(() => null));
+      return ended?._tag === "Closed";
+    });
   let left = 0;
   for (const tabId of opts.tabs) {
     const panes = opts.panes.filter((pane) => pane.tabId === tabId);
@@ -1232,6 +1265,11 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
     // checkout is a tab somebody has taken over.
     const isDead = panes.length > 0 && panes.every(isInside);
     if (!isDead) continue;
+    const ended = yield* Effect.forEach(panes, ends);
+    if (!ended.every(Boolean)) {
+      left += 1;
+      continue;
+    }
     const closed = yield* Effect.result(herdr.tabClose(tabId));
     if (closed._tag === "Failure") left += 1;
   }
@@ -1444,6 +1482,7 @@ interface PruneOptions {
   /** Judge without removing; what is kept is still written down for the board. */
   dryRun?: boolean;
   settling?: Settling;
+  ports?: CompactionPorts;
 }
 
 /** One checkout's verdict: kept for `keep`, settled because of `why`, and whether it went. */
@@ -1577,6 +1616,9 @@ const prune = Effect.fn("worktree.prune")(function* (
                 .map((pane) => pane.tabId),
             ),
             panes: use.panes,
+            stateDir: opts.stateDir,
+            ports: opts.ports ?? COMPACTION_PORTS,
+            registered: opts.registered,
           })
         : { line: `kept ${name} · ${verdict.keep}`, removed: false };
     state[worktree.path] = { checked_at: now, repo, ...outcome };
@@ -1651,6 +1693,9 @@ const removeWorktree = Effect.fn("worktree.removeWorktree")(function* (
     /** The tabs its finished Runs' agents were left in, closed with the checkout. */
     tabs: ReadonlySet<string>;
     panes: ReadonlyArray<PaneInfo>;
+    stateDir: string;
+    ports: CompactionPorts;
+    registered: ReadonlyArray<AgentEntry>;
   },
 ) {
   const kept = (why: string): Removal => ({ line: `kept ${opts.name} · ${why}`, removed: false });
@@ -1691,6 +1736,9 @@ const removeWorktree = Effect.fn("worktree.removeWorktree")(function* (
     at: worktree.path,
     tabs: opts.tabs,
     panes: opts.panes,
+    stateDir: opts.stateDir,
+    ports: opts.ports,
+    registered: opts.registered,
   });
 
   // The checkout has gone, so this is a removal whatever happens to the branch — a
