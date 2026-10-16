@@ -81,7 +81,6 @@ import { forgeOnPath } from "./support/forge";
 
 let rig: Rig;
 let dir: string;
-/** What the next `review` step clears, and the skill it starts with. */
 interface Clearing {
   readonly clears?: ReadonlyArray<string>;
   readonly skill?: string;
@@ -448,7 +447,6 @@ test("a step's prompt opens with the three shell habits on its address line", ()
     }),
   ));
 
-/** Each step message typed into an agent's pane, token included. */
 const typedSteps = (calls: ReadonlyArray<Call>) =>
   calls
     .map((call) => call.argv ?? [])
