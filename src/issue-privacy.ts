@@ -15,7 +15,7 @@ export function remoteOf(url: string): { project: string; path: string } | null 
   return host && path ? { project: `${host}/${path}`, path } : null;
 }
 
-/** Working repositories under `root`, including hidden, nested and linked ones; inspection errors propagate. */
+/** Working repositories under `root`, including hidden, nested and linked ones; a link to nothing is skipped, other inspection errors propagate. */
 export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(function* (
   root: string,
 ) {
@@ -39,7 +39,16 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
       visited.add(canonical);
       for (const name of yield* fs.readDirectory(canonical)) {
         const child = path.join(canonical, name);
-        if ((yield* fs.stat(child)).type === "Directory") yield* visit(child);
+        // A link to nothing, such as a forwarded agent socket left by a closed login, or an
+        // entry removed during the walk, holds no checkout.
+        const info = yield* fs
+          .stat(child)
+          .pipe(
+            Effect.catchTag("PlatformError", (error) =>
+              error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
+            ),
+          );
+        if (info?.type === "Directory") yield* visit(child);
       }
     });
   yield* visit(root);
