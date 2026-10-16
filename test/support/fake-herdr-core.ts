@@ -20,7 +20,6 @@ const FAKE_CLIENT_VERSION = "herdr 0.9.0";
 const fakeHerdrCommand = (source: string) =>
   Bun.env.COLLIE_TEST_FAKE_HERDR ?? `${process.execPath} ${source}`;
 
-/** Writes the `herdr` at `bin` that runs the fake at `source`. */
 export const writeFakeHerdrShim = (bin: string, source: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) =>
     fs.writeFileString(bin, `#!/bin/sh\nexec ${fakeHerdrCommand(source)} "$@"\n`, {
@@ -367,7 +366,11 @@ function handle(
     }
 
     // Unset is a herdr from before `session list`, whose answer is no list at all.
-    const sessions = yield* envString("FAKE_HERDR_SESSIONS");
+    // `<log>.sessions.json`, where a test writes one, is a session opened while a host runs.
+    const opened = `${log}.sessions.json`;
+    const sessions = (yield* fs.exists(opened))
+      ? yield* fs.readFileString(opened)
+      : yield* envString("FAKE_HERDR_SESSIONS");
     if (cmd === "session list" && sessions !== "") {
       const listed = Schema.decodeUnknownSync(SessionsJson)(sessions).map((one) => ({
         name: one.name,

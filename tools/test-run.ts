@@ -101,7 +101,6 @@ export const workersFor = (
   return { workers, line: `test: ${workers} workers (${free.toFixed(1)} of ${cores} cores free)` };
 };
 
-/** What `bun run test` prints from `COLLIE_TEST_STARTS`: the total, then the ten largest sources. */
 export const startsSummary = (starts: string) => {
   const lines = starts.split("\n").filter((line) => line !== "");
   const counts = new Map<string, number>();

@@ -860,19 +860,22 @@ const hostBoard = (dir: string) =>
         });
       }).pipe(Effect.provideContext(bun));
     /** The board, with the Runs it was built from. */
-    const listing = Effect.gen(function* () {
-      const alive = yield* Effect.flatMap(herdsNow, aliveIn).pipe(Effect.provideContext(bun));
-      const facts = yield* runs;
-      return { runs: facts, views: yield* boardOf(facts, alive) };
-    });
-    const build = Effect.map(listing, (built) => built.views);
+    const listingOf = (herds: typeof herdsNow) =>
+      Effect.gen(function* () {
+        const alive = yield* Effect.flatMap(herds, aliveIn).pipe(Effect.provideContext(bun));
+        const facts = yield* runs;
+        return { runs: facts, views: yield* boardOf(facts, alive) };
+      });
+    const listing = listingOf(herdsNow);
     /** When each Task was first seen Finished, for as long as this host runs. */
     const seen = new Map<string, number>();
     const storage = yield* Effect.context<MessageStorage.MessageStorage>();
     /** Every kind of thing Collie cleans, judged against the Runs as they are now. */
+    // Fresh, never the board's cached sessions: a session opened since would look gone.
     const sweepers = Effect.gen(function* () {
-      const herds = yield* herdsNow;
+      const herds = yield* liveHerds(herdr, env);
       const sessions = herds.map((session) => session.herdr);
+      const build = Effect.map(listingOf(Effect.succeed(herds)), (built) => built.views);
       const all = yield* runs;
       const tasks = yield* listTasks(env.stateDir);
       return [

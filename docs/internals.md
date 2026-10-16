@@ -1197,9 +1197,10 @@ its time.
   real `git`, `ps` and `sleep`, the `sh` shims and stubs, and the fake `ssh` master's
   `sleep`. It first showed `herdr session list` as the largest source, at 3,970 of
   11,125: every board build read the sessions again, and a build follows every write
-  under the state directory. A host now reads them once a minute, as often as its
+  under the state directory. A host's board now reads them once a minute, as often as its
   event watch does (`SESSIONS_EVERY` in `src/herds.ts`), so a session that starts later
-  is on the board within that minute.
+  is on the board within that minute. A sweep still reads them fresh: cleanup must never
+  judge a newer session's agents gone.
 - **A test waits for a state.** It waits with `until` (`test/support/host.ts`) for what it
   needs: a run `suspended`, a file written, a pane gone. Real IO takes the time it takes,
   and a fixed sleep is too long on an idle machine and too short on a busy one. Work that
