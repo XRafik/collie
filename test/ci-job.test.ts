@@ -199,6 +199,8 @@ test("a job that passes for a checkout with changes it never saw proves nothing"
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const { asked, at } = yield* waiting("passed");
+      // However git is set to show untracked files.
+      yield* exec(["git", "config", "status.showUntrackedFiles", "no"], { cwd: asked.cwd });
       yield* fs.writeFileString(`${asked.cwd}/unseen.txt`, "x");
       expect(yield* ciJob(asked)).toEqual({
         unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} passed, but ${asked.cwd} has changes it never saw`,

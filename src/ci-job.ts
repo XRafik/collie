@@ -131,7 +131,7 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
         const now = yield* fingerprint(cwd);
         if (now.head_sha !== head || now.fingerprint !== tree.fingerprint)
           return unproved(`passed, but ${cwd} has moved off it since`);
-        const status = yield* shell("git", ["status", "--porcelain"], cwd);
+        const status = yield* shell("git", ["status", "--porcelain", "--untracked-files=all"], cwd);
         if (status.code !== 0 || status.stdout.trim() !== "")
           return unproved(`passed, but ${cwd} has changes it never saw`);
         if (recorded !== undefined && retried === null) return { proved: recorded };
