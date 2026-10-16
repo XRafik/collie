@@ -10,6 +10,7 @@
 // pieces below is upstream's rather than Collie's.
 
 import type { Asker } from "./proposals";
+import { readAudit } from "./audit";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
@@ -2815,11 +2816,20 @@ export const hostLayer = (options: {
               ),
             ),
         asked: (runId) =>
-          store
-            .asked(runId)
-            .pipe(
-              Effect.map((rows) => rows.map((row) => ({ name: row.decision, answer: row.answer }))),
-            ),
+          Effect.gen(function* () {
+            const rows = yield* store.asked(runId);
+            const audit = yield* under(readAudit(runDir(dir, runId))).pipe(
+              Effect.orElseSucceed(() => []),
+            );
+            return rows.map((row) => {
+              const actor = audit.find(
+                (line) => line.operation === "answer" && line.request === row.request,
+              )?.actor;
+              if (actor === undefined) return { name: row.decision, answer: row.answer };
+              const { requestId: _, schedule: __, ...by } = actor;
+              return { name: row.decision, answer: row.answer, by };
+            });
+          }),
         close: (runId, decision, value) =>
           store
             .settle({ run: runId, decision, value, request: `${runId}-${decision}-closed` })
@@ -3789,6 +3799,8 @@ export const Steered = Schema.Struct({
   how: Schema.optionalKey(Schema.String),
   /** The pane it went to. */
   pane: Schema.optionalKey(Schema.String),
+  /** Said to whoever sent it where the words were kept as a file rather than typed. */
+  kept: Schema.optionalKey(Schema.String),
   /** The kind of each credential-shaped value taken out before anything was written. */
   redacted: Schema.optionalKey(Schema.Array(Schema.String)),
 });

@@ -97,8 +97,9 @@ test(
                 ),
               )
               .flatMap((call) => call.argv)
-              .find((words) => words.includes(`Attached: ${message}`));
+              .find((words) => words.includes(`Their message is in ${message}.`));
             expect(said).toContain(`From ${agent.agent} of ${runId} on `);
+            expect(said).toContain("Read it whole and act on it as that agent's.");
             const humanAtCap = "y".repeat(8 * 1024);
             expect(
               (yield* first.cli(
@@ -115,7 +116,11 @@ test(
                 { HERDR_PANE_ID: "not-an-agent" },
               )).envelope.ok,
             ).toBe(true);
-            expect(yield* fs.readFileString(first.herdrLog)).toContain(humanAtCap);
+            const humanMessage = `${runDir(first.world.state, runId)}/attachments/message-${new Bun.CryptoHasher("sha256").update(humanAtCap).digest("hex").slice(0, 8)}.md`;
+            expect(yield* fs.readFileString(humanMessage)).toBe(humanAtCap);
+            expect(yield* fs.readFileString(first.herdrLog)).toContain(
+              `Their message is in ${humanMessage}. Read it whole and act on it as theirs.`,
+            );
           }),
         ["attended.workflow.ts"],
       ),
@@ -188,7 +193,11 @@ test(
             });
             const log = yield* fs.readFileString(second.herdrLog);
             expect(log).toContain(`From ${here.agent} of ${here.runId} on ${machineName()}.`);
-            expect(log).toContain(words.replaceAll("\n", "\\n"));
+            const kept =
+              /Their message is in (\S+)\. Read it whole and act on it as that agent's\./.exec(
+                log,
+              )?.[1];
+            expect(yield* fs.readFileString(kept ?? "")).toBe(words);
             const replied = yield* second.cli(
               ["run", "steer", here.runId, "Here is the answer.", "--operation", here.agent],
               { HERDR_PANE_ID: there.pane },

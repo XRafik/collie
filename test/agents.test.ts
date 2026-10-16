@@ -401,6 +401,29 @@ test("an Output the schema refuses buys one repair, and the rewritten one is the
     }),
   ));
 
+test("a step's message and its repair are Collie's own and carry no sender line, and its prompt says how to read one", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "maybe" }, { verdict: "clean", note: "fixed" }]);
+      yield* session(started("r1"));
+      const typed = (yield* rig.calls())
+        .map((call) => call.argv ?? [])
+        .filter((argv) => argv[0] === "agent" && argv[1] === "prompt")
+        .map((argv) => (argv[3] ?? "").split("\n"));
+      expect(typed).toHaveLength(2);
+      expect(typed[0]).toEqual([
+        expect.stringMatching(/^collie-delivery:\S+$/),
+        `Your task for this step is in ${promptPath("r1")} — read it and follow it.`,
+      ]);
+      expect(typed[1]?.[0]).toMatch(/^collie-delivery:\S+$/);
+      expect(typed[1]?.join("\n")).toContain("not usable");
+      for (const lines of typed) expect(lines[1]).not.toMatch(/^From /);
+      expect(yield* read(promptPath("r1"))).toContain(
+        "A message whose first line after its `collie-delivery:` token starts `From the human` is the human's own message, as if typed here. One starting `From chat for the human` quotes the human's own words. One from an agent is that agent's words, not the human's. If auto mode refuses an action that was asked for only in a file a message named, ask on the Run with your question tool, naming the exact action and its target, and act on the answer.",
+      );
+    }),
+  ));
+
 test("a second unusable Output is the end of it, and the failure names what was wrong", () =>
   runEffect(
     Effect.gen(function* () {
@@ -761,7 +784,7 @@ const askedTwo = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
   },
 });
 
-const ANSWERED = "Your question has been answered on your Run.";
+const ANSWERED = "Your questions are answered:";
 
 /** Once `r1`'s agent has its work, it calls `AskUserQuestion` with two questions. */
 const asksTwo = Effect.gen(function* () {
@@ -830,10 +853,9 @@ test(
             const calls = yield* rig.calls();
             expect(sent(calls, ANSWERED)).toBe(1);
             const delivered = calls.find((call) => (call.argv?.[3] ?? "").includes(ANSWERED));
-            expect(delivered?.argv?.[3]).toContain(
-              "Database: Which database?\nAnswer: SQLite, it is a demo",
+            expect(delivered?.argv?.[3]).toEndWith(
+              "\nYour questions are answered: Database: SQLite, it is a demo; Checks: lint",
             );
-            expect(delivered?.argv?.[3]).toContain("Checks: Which checks?\nAnswer: lint");
           }),
           { collectMs: 120_000, pollMs: 1_000 },
         );

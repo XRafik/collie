@@ -41,6 +41,7 @@ import {
   type Outcome,
 } from "./outcome";
 import type { Source } from "./offers";
+import type { Asker } from "./proposals";
 import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
 
@@ -775,6 +776,8 @@ export class Host extends Context.Service<Host, HostApi>()("collie/Host") {}
 export interface AskedQuestion {
   readonly name: string;
   readonly answer: string | null;
+  /** Who answered it, where the Run's audit says. */
+  readonly by?: Asker;
 }
 
 export interface DecisionSpec {

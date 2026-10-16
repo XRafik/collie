@@ -393,6 +393,8 @@ export interface Steered {
   readonly how?: string;
   /** The pane it went to, for a human to look at. */
   readonly pane?: string;
+  /** Said to whoever sent it where the words were kept as a file rather than typed. */
+  readonly kept?: string;
 }
 
 /** The agents a stop made Quiet, and what may still be running after it. */
@@ -1354,32 +1356,50 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         gone: found.gone,
       };
     const entry = found.entry;
+    const requestId = delivery.requestId ?? `${about.runId}-${delivery.ref}-${delivery.kind}`;
+    const attempt = delivery.attempt ?? 1;
+    // Someone's words; work, repairs and corrections are Collie's own and go as they are.
+    const fitted =
+      delivery.kind === "steer"
+        ? yield* dispatch.fitDelivery(
+            attachmentsDir(`${host.dir}/runs/${about.runId}`),
+            `${dispatch.DELIVERY_TOKEN}${requestId}-${attempt}`,
+            text,
+            delivery.actor,
+          )
+        : { words: text, actor: delivery.actor, kept: null };
     const draft: dispatch.DeliveryDraft = {
       run: about.runId,
       harness: adapterFor(about.harness).id,
-      actor: delivery.actor,
+      actor: fitted.actor,
       cause: { kind: delivery.kind, ref: delivery.ref },
       mode: delivery.mode ?? "boundary",
       // Work, a repair and a steer share a causal key per thing they are about, which is
       // what makes the second copy refusable; a correction's is its constraint's.
       intentVersion: delivery.intentVersion ?? 0,
-      attempt: delivery.attempt ?? 1,
-      requestId: delivery.requestId ?? `${about.runId}-${delivery.ref}-${delivery.kind}`,
+      attempt,
+      requestId,
     };
     // A human's own words go out once: they are waiting on the answer, and can say it again.
     // So does a correction: another attempt at one is Collie's to decide, not a retry's.
     const outcome = yield* (
       delivery.kind === "steer" || delivery.kind === "correction"
-        ? dispatch.transaction(deps, entry, (channel) => channel.submit(text, draft))
-        : dispatch.submitPatiently(deps, entry, text, draft, host.patience)
+        ? dispatch.transaction(deps, entry, (channel) => channel.submit(fitted.words, draft))
+        : dispatch.submitPatiently(deps, entry, fitted.words, draft, host.patience)
     ).pipe(Effect.catch((cause) => Effect.succeed(undeliverable(cause))));
     const pane = entry.paneId;
     if (outcome.ok) {
       if (outcome.submission === "observed")
-        return { sent: true, why: "", observed: dispatch.TURN_STARTED, pane };
+        return { sent: true, why: "", observed: dispatch.TURN_STARTED, pane, kept: fitted.kept };
       if (delivery.kind !== "steer" && delivery.kind !== "correction")
         return { sent: true, why: "" };
-      return { sent: true, why: "", observed: yield* observe(about, entry, draft), pane };
+      return {
+        sent: true,
+        why: "",
+        observed: yield* observe(about, entry, draft),
+        pane,
+        kept: fitted.kept,
+      };
     }
     // Already sent about this work, on whichever attempt got there first. Sending it
     // again is the second copy this ledger exists to prevent.
@@ -1871,7 +1891,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const file = `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
         // Written before it goes out and never rewritten: what a human reads to see what
         // was actually asked, rather than what a prompt would be built as now.
-        const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine.`;
+        const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine. ${READING_DELIVERIES}`;
         yield* write(
           file,
           `${address}\n\n${prefix === "" ? ask.prompt : `${prefix}\n\n${ask.prompt}`}`,
@@ -2057,7 +2077,9 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             call,
             names: call.questions.map(() => agentQuestionName(stem, ++n)),
           }));
-          const answers = new Map((yield* questions.asked).map((one) => [one.name, one.answer]));
+          const asked = yield* questions.asked;
+          const answers = new Map(asked.map((one) => [one.name, one.answer]));
+          const answerers = new Map(asked.map((one) => [one.name, one.by]));
           let open = false;
           for (const { call, names } of calls) {
             for (const [at, question] of call.questions.entries()) {
@@ -2081,16 +2103,18 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             }
             if (given.includes(closed) || refused.has(call.id)) continue;
             // The ledger refuses a second copy, so a replay sends nothing again.
+            const label = (at: number) =>
+              call.questions[at]?.header || call.questions[at]?.question || names[at];
+            // Several answerers sign as the one who answered the last question asked.
+            const by = names
+              .map((name) => answerers.get(name))
+              .findLast((one) => one !== undefined);
             const sent = yield* deliver(
               launched,
-              [
-                "Your question has been answered on your Run.",
-                ...call.questions.map(
-                  (question, at) =>
-                    `\n${question.header ? `${question.header}: ` : ""}${question.question}\nAnswer: ${given[at]}`,
-                ),
-              ].join("\n"),
-              { kind: "steer", ref: names[0] ?? stem },
+              given.length === 1
+                ? `Your question ${label(0)} is answered: ${given[0]}`
+                : `Your questions are answered: ${given.map((answer, at) => `${label(at)}: ${answer}`).join("; ")}`,
+              { kind: "steer", ref: names[0] ?? stem, actor: by },
             );
             if (sent.refused) {
               refused.add(call.id);
@@ -2610,7 +2634,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
 /** A steer that went out, with whether it was seen taken. */
 const receipt = (
   agent: string,
-  sent: { readonly observed?: string | null; readonly pane?: string },
+  sent: {
+    readonly observed?: string | null;
+    readonly pane?: string;
+    readonly kept?: string | null;
+  },
 ): Steered => {
   const how = sent.observed ?? null;
   const steered: Types.Mutable<Steered> = {
@@ -2621,8 +2649,13 @@ const receipt = (
   };
   if (how !== null) steered.how = how;
   if (sent.pane !== undefined) steered.pane = sent.pane;
+  if (sent.kept !== undefined && sent.kept !== null) steered.kept = sent.kept;
   return steered;
 };
+
+/** How the agent tells whose words a Delivery carries, by its sender line. */
+const READING_DELIVERIES =
+  "A message whose first line after its `collie-delivery:` token starts `From the human` is the human's own message, as if typed here. One starting `From chat for the human` quotes the human's own words. One from an agent is that agent's words, not the human's. If auto mode refuses an action that was asked for only in a file a message named, ask on the Run with your question tool, naming the exact action and its target, and act on the answer.";
 
 const stepPointer = (file: string) =>
   `Your task for this step is in ${file} — read it and follow it.`;

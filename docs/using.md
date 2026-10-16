@@ -1616,7 +1616,8 @@ and **Send**. The line it leaves says whether the agent was
 seen to take it. Every draft goes as one message, word
 for word, each item naming the plan file, or `path:line` with `(as it was)` for removed
 lines, quoting what you selected and giving your words;
-a message over 8 KiB arrives as a file in the Run. Only the drafts that were sent are
+one the agent would see as more than 3 lines or 700 characters arrives as a file in the Run,
+under a line saying it is from the human in Desktop. Only the drafts that were sent are
 cleared; if the host refuses, its words are shown and every draft is kept, as is one you
 edited while it was sending. A successful **Try again** clears the original sent drafts
 and keeps any later edits. With no live agent, Send is disabled and the list says "This

@@ -370,9 +370,11 @@ collie --json run steer <run-id> "check the migration too" [--to builder] [--req
   operation ([steering](steering.md#who-a-steer-reaches-and-what-it-says-came-of-it)). It
   tells you whether the agent was seen to take it: `Delivered to <agent> (observed: <how>).`,
   or `Sent to <agent>, not observed.` with how to go to its pane, and `data.observed` and
-  `data.how` say the same. Anything not sent is `operation_failed`, with why. A message over 8 KiB is kept whole as a file in the Run's
-  `attachments/`, and the agent is told where to read it
-  ([steering](steering.md#delivery)). A finished Run's live agent takes one as a running Run's
+  `data.how` say the same. Anything not sent is `operation_failed`, with why. The agent sees who sent it on its
+  first line. A message whose typed form would pass 3 lines or 700 characters is kept whole
+  as a file in the Run's `attachments/`, the agent is told where to read it, and the
+  receipt says to ask for an action auto mode must clear in a shorter message
+  ([steering](steering.md#the-paste-budget)). A finished Run's live agent takes one as a running Run's
   does, whether or not its module is still loaded. It carries out nothing:
   `collie steer` is still the only thing that proposes an action, and a proposal still
   names its exact payload to be confirmed.
