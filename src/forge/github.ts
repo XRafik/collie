@@ -10,7 +10,7 @@ import {
   type MrPanel,
   type MrRef,
 } from "../board-model";
-import { whatItSaid, type Runner } from "../mr";
+import { keepCredentialHelper, whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import { epochMs } from "../time";
 import type { DeployTier, Forge, ForBranch, FromBranch, FromBranchList, Readiness } from "./forge";
@@ -540,6 +540,8 @@ export const github: Forge = {
       }),
     ),
   clone,
+  credentials: (_project, into, run) =>
+    keepCredentialHelper(into, HOST, "!gh auth git-credential", run),
   display: "GitHub",
   cli: "gh",
   noun: "pull request",

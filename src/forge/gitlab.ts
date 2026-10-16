@@ -11,7 +11,7 @@ import {
   type MrUnavailable,
 } from "../board-model";
 import { epochMs } from "../time";
-import { whatItSaid, type Runner } from "../mr";
+import { keepCredentialHelper, whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type { DeployTier, Forge, ForBranch, FromBranch, FromBranchList, Readiness } from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
@@ -568,6 +568,15 @@ export const gitlab: Forge = {
       }),
     ),
   clone,
+  credentials: (project, into, run) => {
+    const host = hostOf(project) ?? project.split("/")[0]!;
+    return keepCredentialHelper(
+      into,
+      host,
+      `!f() { test "$1" = get || exit 0; echo username=oauth2; echo "password=$(glab config get token --host ${shellQuote(host)})"; }; f`,
+      run,
+    );
+  },
   display: "GitLab",
   cli: "glab",
   runStatus: pipelineStatus,

@@ -148,6 +148,15 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<Readiness, never, R>;
+  /**
+   * Gives the checkout at `into` a credential helper for `project`'s host that asks the
+   * CLI for its token at each use, so no token is stored.
+   */
+  readonly credentials: <R>(
+    project: string,
+    into: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
   /** "GitLab" or "GitHub". */
   readonly display: string;
   /** The CLI it is reached through, as a human is told to log in with it. */

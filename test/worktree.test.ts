@@ -1719,7 +1719,7 @@ test("a roaming Run's repository is cloned through its URL's forge, and one on n
   runEffect(
     Effect.gen(function* () {
       yield* fakeGitAnswering(
-        { ...gitAnswers(), "worktree list --porcelain": porcelain([]) },
+        { ...gitAnswers(), "worktree list --porcelain": porcelain([]), config: "" },
         {},
         { clone: 'mkdir -p "$4/.git"' },
       );
@@ -1752,6 +1752,43 @@ test("a roaming Run's repository is cloned through its URL's forge, and one on n
       expect(
         (yield* renovateCheckout({ repository: "https://bitbucket.org/acme/app" })).refused,
       ).toBe("bitbucket.org is neither GitHub nor GitLab");
+    }),
+  ));
+
+test("a clone made before Collie kept its credentials gets the helper on its next use", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const url = "https://gitlab.example.com/acme/old";
+      const source = join(rig.stateDir, "renovate-repositories", Bun.hash(url).toString(16));
+      yield* fs.makeDirectory(join(source, ".git"), { recursive: true });
+      yield* fakeGitAnswering(
+        {
+          ...gitAnswers(),
+          "worktree list --porcelain": porcelain([{ path: source, branch: "master" }]),
+          config: "",
+        },
+        {},
+        {
+          "worktree add":
+            'for a in "$@"; do case "$a" in /*) mkdir -p "$a" && printf "gitdir: $a/.gitdir\\n" > "$a/.git"; break ;; esac; done',
+        },
+      );
+
+      const checkout = yield* renovateCheckout({ repository: url });
+
+      expect(checkout.refused).toBeNull();
+      const configured = (yield* askedIn()).filter(
+        (call) => call.cwd === source && call.command.startsWith("config --local"),
+      );
+      expect(configured.map((call) => call.command)).toEqual([
+        "config --local --unset-all credential.https://gitlab.example.com.helper",
+        "config --local --add credential.https://gitlab.example.com.helper ",
+        expect.stringMatching(
+          /^config --local --add credential\.https:\/\/gitlab\.example\.com\.helper !.*glab config get token --host 'gitlab\.example\.com'/,
+        ),
+      ]);
+      expect((yield* asked()).some((command) => command.startsWith("clone"))).toBe(false);
     }),
   ));
 
@@ -1824,6 +1861,7 @@ test("a GitLab URL is cloned before the Renovate worktree is cut", () =>
         {
           ...gitAnswers(),
           "worktree list --porcelain": porcelain([{ path: source, branch: "master" }]),
+          config: "",
         },
         {},
         {

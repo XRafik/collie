@@ -70,6 +70,8 @@ export const ForgeModel = Schema.Struct({
   /** Hosts the CLI is logged in to. */
   loggedIn: Schema.Array(Schema.String),
   login: Schema.NullOr(Schema.String),
+  /** The token the CLI hands out for its host, where a test changes it. */
+  token: Schema.optionalKey(Schema.String),
   mrs: Schema.Array(FakeMr),
   issues: Schema.optionalKey(Schema.Array(FakeIssue)),
   issueNotes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
@@ -278,7 +280,7 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   }
   if (verb === "config" && sub === "get" && args[2] === "token") {
     const host = flag(args, "--host") ?? "";
-    return model.loggedIn.includes(host) ? ok("glpat-fake\n") : ok("");
+    return model.loggedIn.includes(host) ? ok(`${model.token ?? "glpat-fake"}\n`) : ok("");
   }
   if (verb === "mr" && sub === "list" && args[3] === "@me")
     return json(
@@ -385,6 +387,10 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (verb === "auth" && sub === "status")
     return model.loggedIn.includes(flag(args, "--hostname") ?? FORGE_HOST.github) ? ok() : no();
   if (!model.loggedIn.includes(FORGE_HOST.github)) return no(4);
+  if (verb === "auth" && sub === "git-credential" && args[2] === "get")
+    return ok(
+      `protocol=https\nhost=${FORGE_HOST.github}\nusername=x-access-token\npassword=${model.token ?? "gho-fake"}\n`,
+    );
   if (verb === "issue") return issueAnswer("github", model, args);
   if (verb === "api" && sub === "user")
     return model.login === null ? no() : json({ login: model.login });

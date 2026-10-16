@@ -954,16 +954,20 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       from = path.join(opts.stateDir, "renovate-repositories", Bun.hash(repository).toString(16));
+      const host = project.split("/")[0]!;
+      const forge = forgeOfHost(host, opts.gitlabHost);
+      if (forge === null) return { ...here, refused: `${host} is neither GitHub nor GitLab` };
       if (!(yield* fs.exists(path.join(from, ".git")))) {
         yield* fs.makeDirectory(path.dirname(from), { recursive: true });
-        const host = project.split("/")[0]!;
-        const forge = forgeOfHost(host, opts.gitlabHost);
-        if (forge === null) return { ...here, refused: `${host} is neither GitHub nor GitLab` };
         const cloned = yield* FORGES[forge].clone(project, from, opts.stateDir, shell);
         if (!cloned.ok) {
           return { ...here, refused: `could not clone ${repository}: ${cloned.reason}` };
         }
       }
+      // Every use, so a clone made before the helper existed gets it too.
+      const kept = yield* FORGES[forge].credentials(project, from, shell);
+      if (!kept.ok)
+        return { ...here, refused: `could not keep credentials for ${repository}: ${kept.reason}` };
     }
     const made = yield* roamingCheckout({
       cwd: from,

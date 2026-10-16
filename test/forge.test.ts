@@ -810,6 +810,62 @@ for (const name of ["gitlab", "github"] as const) {
     ));
 }
 
+for (const name of ["gitlab", "github"] as const) {
+  test(`a ${name} clone keeps a credential helper that asks ${CLI[name]} at each use, and no token`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "forge-credentials-" });
+        const bin = yield* FakeBin.make(`${dir}/bin`);
+        try {
+          const onPath = yield* forgeOnPath(bin, name, model(name, { token: "first-token" }));
+          const clone = `${dir}/clone`;
+          yield* exec(["git", "init", "--quiet", clone]);
+          // A global helper with a stale answer, which git would otherwise ask first.
+          const global = `${dir}/global.gitconfig`;
+          yield* fs.writeFileString(
+            global,
+            `[credential]\n\thelper = "!f() { echo username=stale; echo password=stale-token; }; f"\n`,
+          );
+          const env = {
+            ...process.env,
+            GIT_CONFIG_GLOBAL: global,
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_TERMINAL_PROMPT: "0",
+          };
+          const host = FORGE_HOST[name];
+          const fill = exec(
+            ["sh", "-c", `printf 'protocol=https\\nhost=${host}\\n\\n' | git credential fill`],
+            { cwd: clone, env },
+          );
+
+          for (const _ of [1, 2])
+            expect(yield* FORGES[name].credentials(PROJECT[name], clone, shell)).toEqual({
+              ok: true,
+              reason: "",
+            });
+          expect((yield* fill).stdout).toContain("password=first-token\n");
+          yield* onPath.set(model(name, { token: "second-token" }));
+          expect((yield* fill).stdout).toContain("password=second-token\n");
+
+          const config = yield* fs.readFileString(`${clone}/.git/config`);
+          expect(config).not.toContain("-token");
+          expect(config.toLowerCase()).not.toContain("extraheader");
+          const helpers = (yield* exec(
+            ["git", "config", "--local", "--get-all", `credential.https://${host}.helper`],
+            { cwd: clone },
+          )).stdout
+            .split("\n")
+            .slice(0, -1);
+          expect(helpers).toHaveLength(2);
+          expect(helpers[0]).toBe("");
+        } finally {
+          yield* bin.restore();
+        }
+      }),
+    ));
+}
+
 test("a GitLab pipeline of an older head is not this head's CI, and one that was canceled has not passed", () =>
   runEffect(
     Effect.gen(function* () {

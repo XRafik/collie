@@ -284,6 +284,9 @@ when it finishes. `worktrees.json` is rewritten only when something moved.
 
 A Renovate clone under `renovate-repositories/` is its own kind of the same sweep: it goes
 once no Run with a row cut a checkout from it and no checkout cut from it is left on disk.
+Each use of such a clone, new or kept, gives it the forge's credential helper (see
+[The forge boundary](#the-forge-boundary)), so a clone made before the helper existed gets
+it on its next Run, and the checkouts cut from it share it.
 
 Two things are deliberately not conditions. A `run start` names the checkout it is about
 to work in, and that one is held whatever its state, because the run resolving its branch
@@ -659,6 +662,12 @@ forge of the merge request in front of it (`forgeOf(ref)`, from the reference's 
 gets answers rather than CLI calls: whether the CLI is ready for a host, who it is logged
 in as, one merge request as the panel, how far a merged commit is deployed, and a note.
 An operation is added to the interface when its first caller moves onto it.
+
+A checkout Collie clones keeps a credential helper for its forge's host in its own git
+config, and no token: GitLab's asks `glab config get token --host <host>` at each use and
+answers as `oauth2`, and GitHub's is gh's own `gh auth git-credential`. An empty helper
+entry before it drops whatever helper a global config named, so a stale credential there
+never answers first. Setting it again changes nothing.
 
 The interface also lists open issues, files issues, and comments on them. The adapters
 decode their own CLI answers into the shared issue shape. GitLab reads consecutive

@@ -37,6 +37,25 @@ export function whatItSaid(result: Ran): string {
   return [result.stdout.trim(), result.stderr?.trim() ?? ""].filter(Boolean).join("\n");
 }
 
+/**
+ * Makes `helper` the checkout's only credential helper for `host`: the empty entry before
+ * it drops any helper git read from a wider config. Setting it again changes nothing.
+ */
+export const keepCredentialHelper = Effect.fn("mr.keepCredentialHelper")(function* <R>(
+  checkout: string,
+  host: string,
+  helper: string,
+  run: Runner<R>,
+) {
+  const key = `credential.https://${host}.helper`;
+  yield* run("git", ["config", "--local", "--unset-all", key], checkout);
+  for (const value of ["", helper]) {
+    const set = yield* run("git", ["config", "--local", "--add", key, value], checkout);
+    if (set.code !== 0) return { ok: false, reason: whatItSaid(set) || `git could not set ${key}` };
+  }
+  return { ok: true, reason: "" };
+});
+
 /** A Linear id, the shape it takes in a branch name, a URL, or an Output. */
 const LINEAR_ID = /\b([A-Z][A-Z0-9]+-\d+)\b/g;
 
