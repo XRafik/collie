@@ -46,7 +46,7 @@ proved. In the Flock chat it is also what the model is shown — an image, a PDF
 a name, size and path — and Desktop keeps a copy, so the conversation still shows it after a
 restart ([ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md)).
 
-**Output** — A structured JSON file an agent writes to the Run directory for one operation (e.g. a review verdict + findings). It is decoded against the Workflow's schema before anything believes it, and one that does not decode buys one repair. Workflows read Outputs, never terminal text.
+**Output** — A structured JSON file an agent writes to the Run directory for one operation (e.g. a review verdict + findings). It is decoded against the Workflow's schema before anything believes it, and one that does not decode buys one repair. Workflows read Outputs, never terminal text. Collie waits for it against the agent's idle time only: while herdr reports the agent working or blocked, or a question it asked is open on the Run, the budget does not run (ADR-0062).
 
 **Herd** — One herdr session: every workspace in it. The scope of the Collie tab, the
 conversation, proposals, the budget and elections. Keyed by the canonical path of the
@@ -337,14 +337,16 @@ host reports, the live agents and what each Run left in its directory, so the Ho
 to no Task is a TaskView of its own.
 
 **Decision** — What a Task is waiting on a human for, and one of the two things that put
-it in **Needs you**: a **question** a Run asked, or a **Proposal** Collie made. Any of a
+it in **Needs you**: a **question** a Run asked, or a **Proposal** Collie made. A question
+is the Workflow's, asked with `ask`, or one a Run's agent asked with its harness's own
+question tool, which Collie puts on the Run and whose answer it delivers to that agent. Any of a
 Task's Runs can be waiting on one, a fan-out's Repo runs included, and each is answered on
 the Run that asked. Both are answered on the card, from the CLI or from chat, and survive
 the board closing. A Run's **Checks** are never one: nobody approves them (ADR-0055).
 
 **Stalled** — The other way into **Needs you**, and the one with nothing on the card to
-answer: an agent is waiting for a human in its own pane — at its harness's own dialog,
-which herdr reports as a `blocked` agent — or a Run parked because its agent's pane would
+answer: an agent is waiting for a human in its own pane — at a dialog of its harness's
+that Collie could not put on the Run, which herdr reports as a `blocked` agent — or a Run parked because its agent's pane would
 not take a prompt. Either way the work has stopped, so the card says which pane to go to
 rather than what the step was doing.
 
@@ -527,18 +529,28 @@ What each is for, what it needs, and how they chain: `docs/workflows.md`.
 
 **Evidence** — A Verification collected at a revision. An Output field saying the tests pass is a claim, and is shown as one. The gate before a merge request reads evidence, never claims.
 
-**Baseline** — A check that failed at the gate, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. A failure there is diagnostic context: its exit code cannot establish that the Run added no failures. The check remains required on the Run's current tree and may be handed to the implementer to fix.
+**Baseline** — The tests of a check that still fail at the gate, after their **Flake** rerun, run once by Collie where the Run's branch leaves the default branch, in the Run's own checkout. When every one of them fails there too, the check is not handed to the implementer: the merge request names those tests as failing before the Run's changes, with the revision. A test the base does not report failing, one that does not exist there included, is the Run's own. A check whose failures name no tests has no baseline, because its exit code cannot establish that the Run added no failures: it stays required on the Run's current tree and goes to the gate fixes (ADR-0034, amended 2026-10-15).
 
 **Integration** — The default branch merged into a Run's branch where it has moved since, with a merge commit in the Run's own checkout: never a rebase and never a force push. It never touches uncommitted work, never counts a default branch it could not fetch, leaves a conflict for the builder to finish, and is recorded in the Run log as `integrated <branch>@<sha>`. A review is diffed against the merge-base it leaves.
 
 **Acceptance criterion** — One checkbox under a ticket's Acceptance criteria heading. The builder's Output answers each with how it is met (a test, a file) or `not met: <reason>`. One unanswered or not met goes back to the builder before any reviewer sees the work, and the reviewer is shown every answer.
 
-**Check pass** — One run of one of a Run's **Checks** by Collie, with why it runs: `gate` on the
-Run's branch, `baseline` where the branch left the default branch, `recheck` on the same
-tree to rule out a flake, `fix` after gate fix N, `finish` at the Run's end, or a plain
-`check`. The pass is the Workflow's declaration, never read off its id. While it runs, the
-card and chat say the check, the pass, how long it has run against how long it usually
-takes, and where its output is being written (ADR-0042).
+**Check pass** — One run of one of a Run's **Checks** by Collie, or the pass on this tree it
+relies on instead, with why it runs: `gate` on the
+Run's branch, `rerun` of only the tests that just failed, on the same tree, to tell a
+**Flake**, `baseline` where the branch left the default branch, `recheck` of a whole check
+whose failures name no tests, on the same tree, `fix` after gate fix N, `finish` at the
+Run's end, or a plain
+`check`. The pass is the Workflow's declaration, never read off its
+id. While it runs, the card and chat say the check, the pass, how long it has run against
+how long it usually takes, and where its output is being written (ADR-0042).
+
+**Flake** — A test of one of a Run's **Checks** that failed, then passed when Collie ran it
+again alone on the same tree. Collie reads which tests failed from the check's own output,
+for a runner whose output it knows (bun test first), and reruns only those, once. A flake is
+not a gap the gate fixes are handed, and never a pass: the merge request names it under
+**Not settled by the run**. A check whose failures name no tests has no flakes, only its
+whole `recheck` (ADR-0034, amended 2026-10-15).
 
 **Obstacle** — What is identifiably in a Run's way, in one sentence: a command failing several times in a row the same way. It is shown to the human and given to the next prompt so the approach can change. It stops nothing.
 
@@ -624,12 +636,13 @@ Workflow stay this Session's, and a hand-off stays in the Run's **Lineage**. The
 
 **Work boundary** — The moment immediately before a reused agent that has finished its
 previous work is given the next piece: a Workflow's next operation on the same agent, a
-fix round's next iteration. It is where Collie reads that
-harness's current-context measure and, at or above the user-wide `compact_at_tokens`,
-asks it to compact natively before sending anything. Not a liveness nudge, not a
-mid-step recovery message, and not a human typing in the pane — none of those are work.
-A freshly launched agent has no boundary before its first piece of work. What Collie
-does with each outcome, and what a five-minute unresolved attempt stops:
+fix round's next iteration. Collie waits there until herdr reports the agent idle, and
+only then reads that harness's current-context measure and, at or above the user-wide
+`compact_at_tokens`, asks it to compact natively before sending anything. Not a liveness
+nudge, not a mid-step recovery message, and not a human typing in the pane — none of those
+are work. A freshly launched agent has no boundary before its first piece of work. What
+Collie does with each outcome, and what it shows while a compaction is unresolved past five
+minutes (it keeps waiting and sends the work once the compaction ends):
 `docs/using.md`.
 
 **Notification** — The only channel from an unattended Run to the person who started it, so what is not worth interrupting for is not sent at all. One title shape — `<repo> · <slug> <what happened>` — one taxonomy in `src/notify.ts`, once per `(run, kind, step)`, and never a reason for a Run to fail.

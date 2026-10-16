@@ -91,20 +91,24 @@ bump at a time.
   holds is **left out and reported**, not merged from its remote-tracking ref either.
 - Merge each remaining Renovate branch into the batch branch, in the order that makes the
   fewest conflicts, with `git merge --no-ff origin/<branch>`. Fix what the bump broke on
-  the batch branch: a conflict, a call site, a failing test. Anything larger is a
-  consultation.
+  the batch branch: a conflict, a call site, a failing test. Anything that needs more than
+  that is **left out of the batch** and reported with why and what you recommend — pinning
+  it, a follow-up Run, or the migration it needs — and the batch carries on without it.
+- Where this step leaves you a choice you can make yourself, take the option you would
+  recommend and say in your Output which you took. Do not stop to ask.
 - Run the repository's own install, lint, typecheck and tests on the batch branch before
   you push it. Push with `git push -u origin <batch branch>`.
 - Open one pull request from the batch branch to the default branch with
   `gh pr create --assignee {{mr.assignee}}`, titled `Renovate batch <YYYY-MM-DD>`, whose
   description lists every Renovate pull request it carries as `- <what it bumps> (#<n>)`
-  and every one it left out with why. Wait for its required checks with
-  `gh pr checks <n> --required --watch` and fix failures on the batch branch. Never
+  and every one it left out with why and what you recommend. Wait for its required checks
+  with `gh pr checks <n> --required --watch` and fix failures on the batch branch. Never
   force-push it.
 - Leave the individual Renovate pull requests open: Renovate closes them itself once the
   batch is on the default branch, and `merge` accounts for any that stay open.
 
-Then write your Output, naming the batch pull request and everything it left out.
+Then write your Output, naming the batch pull request and everything it left out, with
+why and what you recommend.
 
 ## stage
 

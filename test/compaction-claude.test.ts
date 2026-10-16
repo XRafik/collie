@@ -16,6 +16,7 @@ import {
   COMPACTION_PORTS,
   externalSubmissions,
   newestRateLimits,
+  questionsSince,
   ranOutSince,
   recordClaudeEvent,
   submittedDelivery,
@@ -325,6 +326,67 @@ test("a payload Collie cannot decode records nothing and prints nothing", () =>
     }),
   ));
 
+const encodeJsonText = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
+const decodeJsonText = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json));
+
+/** An `AskUserQuestion` call as `PreToolUse` hands it to the hook. */
+const asking = (tool: string, questions: Schema.Json) =>
+  encodeJsonText({
+    session_id: "s-1",
+    hook_event_name: "PreToolUse",
+    tool_name: tool,
+    tool_use_id: "toolu_1",
+    tool_input: { questions },
+  });
+
+const TWO = [
+  {
+    question: "Which database?",
+    header: "Database",
+    options: [
+      { label: "Postgres", description: "the one ops runs" },
+      { label: "SQLite", description: "a file beside the app" },
+    ],
+    multiSelect: false,
+  },
+  {
+    question: "Which checks?",
+    header: "Checks",
+    options: [{ label: "lint", description: "oxlint" }],
+    multiSelect: true,
+  },
+];
+
+test("an AskUserQuestion call is recorded whole for its Run, and denied at once", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const printed = yield* recordClaudeEvent(dir, asking("AskUserQuestion", TWO));
+
+      expect(yield* questionsSince(dir, 0)).toEqual([
+        { at: expect.any(Number), session: "s-1", id: "toolu_1", questions: TWO },
+      ]);
+      expect(decodeJsonText(printed)).toEqual({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
+          permissionDecisionReason: expect.stringContaining("on your Run"),
+        },
+      });
+      expect(printed).toContain("End your turn now");
+      expect(printed).toContain("your next message");
+    }),
+  ));
+
+test("another tool, and a question Collie cannot decode, record and print nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(yield* recordClaudeEvent(dir, asking("Bash", TWO))).toBe("");
+      expect(yield* recordClaudeEvent(dir, asking("AskUserQuestion", [{ header: 1 }]))).toBe("");
+      expect(yield* recordClaudeEvent(dir, asking("AskUserQuestion", "which?"))).toBe("");
+      expect(yield* questionsSince(dir, 0)).toEqual([]);
+    }),
+  ));
+
 test("the helpers record identity, usage and outcome — never conversation content", () =>
   runEffect(
     Effect.gen(function* () {
@@ -363,6 +425,9 @@ test("install writes run-scoped settings and passes them with Claude's own flag"
       expect(written).toContain(`"PostCompact"`);
       expect(written).toContain(`"manual|auto"`);
       expect(written).toContain(`'herdr' 'compaction' '${dir}'`);
+      // An agent's question goes to its Run, through the same helper.
+      expect(written).toContain(`"PreToolUse"`);
+      expect(written).toContain(`"AskUserQuestion"`);
     }),
   ));
 

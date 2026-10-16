@@ -51,3 +51,62 @@ branch when it is checked out again, and an edit to a file that differs between 
 makes the restore fail, which stops the Run with the checkout left at the base for the next
 verification to put back. A comparison in a separate checkout would avoid this, at the price
 of installing the project's dependencies there, which Collie does not know how to do.
+
+## Amended 2026-10-15: compared test by test
+
+#89 (e35fc570) removed the exemption above. It rewrote the glossary's **Baseline** as
+diagnostic context, because an exit code cannot establish that a Run added no failures —
+the hole named under Consequences. It left this record and `docs/workflows.md` promising
+the exemption, and left the merge request's "also fails at" line where nothing could reach
+it. What that cost was measured on 2026-10-14 (investigation run-556cba08): run-42a58022 and
+run-c9e655bd.implement each spent four gate fixes, about an hour, on Collie's own
+2,800-test suite at load 35–68, then parked. Their `check` had failed at the base too. Across
+24 of that day's check logs, 15 different tests failed, one to three per run and a different
+set each time. Every fix agent disputed the failure, with evidence, and changed nothing, and
+the gate ran the same tree again regardless.
+
+The exemption comes back, decided per test, which answers #89's reason where a check's
+output says which tests failed and leaves #89's rule standing where it does not.
+
+- **Which tests failed is read from the check's own output.** When a check fails, the host
+  reads the failing tests from its log, for a runner whose output it knows — bun test first,
+  another runner when a project needs one — and keeps them on the record.
+- **A test that fails and then passes alone is a flake.** The host runs only those tests
+  again, once, on the same tree, with the runner's own command in the check's directory, as
+  a `rerun` pass. One that passes is a **Flake**: not a gap for the gate fixes, never a pass,
+  and named in the merge request under **Not settled by the run**. For such a check the
+  rerun takes the place of the whole-check recheck. A check whose failures name no tests
+  keeps the whole recheck and the exit-code flake rule.
+- **The baseline is per test.** The tests still failing after the rerun are run at the
+  merge-base, in the same checkout and with the same detach and restore as above. A test
+  counts as failing there only where the runner reports it failing, so one that does not
+  exist at the base is the Run's own. When every still-failing test fails at the base too,
+  the check is not a gap for the gate fixes, and the merge request names those tests and
+  the revision. Any other still-failing test makes the check a gap, as before.
+- **A check whose failures name no tests gets no exemption, and no baseline run.** #89's
+  reason holds for it: the exit code cannot tell. It goes to the gate fixes.
+- **A gate fix that changes nothing ends the fixes.** When a round leaves HEAD and the
+  fingerprint as they were and disputes every finding it was handed, another round would
+  check the same tree again. The gate goes on to the merge request, which names the
+  still-failing check and the dispute under **Not settled by the run**. The Run's outcome
+  stays unproved ([ADR-0010](0010-a-run-proves-its-outcome.md)): no gate is satisfied, and
+  the human decides in the merge request before it lands, as the gate did before #89.
+
+What a check's result on a tree is stays as it was: the latest of Collie's results counts,
+and nothing here turns a failure into a pass.
+
+### Consequences of the amendment
+
+- A flaky test costs a rerun of itself, seconds rather than a suite, and no fix.
+- A test that fails twice at the gate under load but not at the base is the Run's own. The
+  fixes are handed it, and a fixer that disputes it without a change ends them.
+- The rerun runs the runner directly, not the check's own wrapper. Collie's suite runs
+  against compiled executables (`tools/test.ts`) and a bare `bun test` runs the sources, so
+  a failure only the compiled executable shows would read as a flake. A check that declares
+  its own rerun command is the upgrade, when that is seen to happen.
+- A check whose one command reports test failures beside a failure of another kind (a lint
+  that runs alongside the tests) is judged on its tests. Collie's own `check` stops before
+  its tests when lint or typecheck fails, so its failures name no tests then and get no
+  exemption.
+- A check red on the base no longer hides a new failure in it: a new failing test is not
+  one the base reports, and a check that names no tests is not exempted at all.

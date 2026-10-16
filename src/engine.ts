@@ -174,7 +174,9 @@ import {
   VerifySpecSchema,
   type VerifySpec,
 } from "./verify-spec";
+import { rerunArgv } from "./bun-tests";
 import {
+  checkCwd,
   commandOf,
   encodeVerifying,
   fingerprint,
@@ -182,6 +184,7 @@ import {
   ranCommand,
   readVerifications,
   reliedFor,
+  rerunTest,
   resolveExecutable,
   runApproved,
   VERIFYING_FILE,
@@ -274,6 +277,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly fingerprint: string;
   }
 
+  /** One test of a check, as its runner named it: the file, and the name with \` > \` between describes. */
+  export interface FailedTest {
+    readonly file: string;
+    readonly name: string;
+  }
+
   /** A command Collie watched, bound to the tree it ran on. Never an Output's claim. */
   export interface Verification {
     /** What a log line or a merge request names it by. */
@@ -292,6 +301,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly by: "agent" | "collie";
     /** What it ran with outside the tree; absent on a record from before environments were. */
     readonly environment?: string;
+    /** Why Collie ran it; absent on an agent's. A \`rerun\` is never its check's own run. */
+    readonly pass?: "gate" | "rerun" | "recheck" | "fix" | "baseline" | "finish" | "check";
+    /** The tests a failing check's output names, where it could be read whole. */
+    readonly failed?: ReadonlyArray<FailedTest>;
+    /** The one test a \`rerun\` ran. */
+    readonly test?: FailedTest;
   }
 
   /** What the journal holds and the tree in front of you, for checks to be read against. */
@@ -401,7 +416,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly record: (runId: string, event: string) => Effect.Effect<void>;
     /** Why this Run parked its own work, shown beside its status; null clears it. */
     readonly parked: (runId: string, why: string | null) => Effect.Effect<void>;
-    readonly asking: (runId: string, question: DecisionSpec) => Effect.Effect<void>;
+    readonly asking: (runId: string, question: DecisionSpec, asker?: string) => Effect.Effect<void>;
+    /** Every question this run has been asked, oldest first, with its answer once it has one. */
+    readonly asked: (
+      runId: string,
+    ) => Effect.Effect<ReadonlyArray<{ readonly name: string; readonly answer: string | null }>>;
+    /** Answers an open question with \`value\` as Collie, waking nothing that waits on it. */
+    readonly close: (runId: string, decision: string, value: string) => Effect.Effect<void>;
     /** What has been verified for this run, and the tree in front of it now. */
     readonly evidence: (runId: string, cwd: string) => Effect.Effect<CheckEvidence>;
     /** Runs one of this Run's checks and records it. A name not among them is refused. */
@@ -412,9 +433,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly expect?: "pass" | "fail";
       /** Run it where this checkout left the default branch, then put the checkout back. */
       readonly at?: "default-base";
-      /** Why it is run: the gate on the branch, a recheck for a flake, or a fix after gate fix \`round\`. */
-      readonly pass?: "gate" | "recheck" | "fix";
+      /** Why it is run: the gate on the branch, a rerun of one failed \`test\`, a recheck for a flake, or a fix after gate fix \`round\`. */
+      readonly pass?: "gate" | "rerun" | "recheck" | "fix";
       readonly round?: number;
+      readonly test?: FailedTest;
     }) => Effect.Effect<Verification, WorkflowError>;
     /**
      * Puts a file on the merge request a Run was pointed at, as one note Collie sends.
@@ -1421,8 +1443,6 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly file: string;
       readonly checks: ReadonlyArray<string>;
     }>;
-    /** Approved checks that also failed where the branch leaves the default branch. */
-    readonly preexisting?: ReadonlyArray<string>;
   }): ReadonlyArray<string>;
   /**
    * The gaps among those a verification on this tree could close: what a fix may be
@@ -1431,6 +1451,27 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export function checkGapsOf(
     options: Parameters<typeof evidenceGapsOf>[0],
   ): ReadonlyArray<string>;
+
+  /** A Run's checks read against its journal, for which tests failed and how each rerun went. */
+  type FailedChecks = CheckEvidence & { readonly approved: ReadonlyArray<VerifySpec> };
+  /** Each failed test of a check's latest run on this tree that has not been run again alone yet. */
+  export function rerunsOwed(
+    got: FailedChecks,
+  ): Array<{ readonly check: string; readonly test: FailedTest }>;
+  /** The checks whose latest run on this tree failed without naming its tests, or that have none of their command. */
+  export function wholeRunsOwed(got: FailedChecks): string[];
+  /** Each Flake on this tree, by the check it failed in: never a pass. */
+  export function flakesOf(got: FailedChecks): Array<FailedTest & { readonly check: string }>;
+  /** Each test still failing after its rerun that the base has not been asked about since. */
+  export function baselinesOwed(
+    got: FailedChecks,
+  ): Array<{ readonly check: string; readonly test: FailedTest }>;
+  /** Each still-failing test that also fails where the branch leaves the default branch, at that revision. */
+  export function baseFailuresOf(
+    got: FailedChecks,
+  ): Array<FailedTest & { readonly check: string; readonly at: string }>;
+  /** The checks settled without a pass: every test each failed on was a Flake or fails at the base too. */
+  export function settledChecks(got: FailedChecks): string[];
 
   /** Where the work to be done was described. */
   export interface WorkSource {
@@ -2385,7 +2426,11 @@ export const hostLayer = (options: {
             const marker = `${runDir(dir, asked.runId)}/${VERIFYING_FILE}`;
             const away = `${runDir(dir, asked.runId)}/${AWAY_FILE}`;
             yield* restoreCheckout(asked.cwd, away);
-            if (asked.at === undefined && asked.expect !== "fail") {
+            const rerun =
+              asked.pass === "rerun" || asked.at === "default-base" ? asked.test : undefined;
+            if (asked.pass === "rerun" && rerun === undefined)
+              return yield* new WorkflowError({ reason: "a rerun names the one test it runs" });
+            if (asked.at === undefined && asked.expect !== "fail" && rerun === undefined) {
               const kept = yield* relyOn(asked.runId, { ...own, cwd: asked.cwd }, spec, recorded);
               if (kept !== null) return kept;
             }
@@ -2393,6 +2438,20 @@ export const hostLayer = (options: {
             const verified = (base: string | null) =>
               Effect.gen(function* () {
                 const head = yield* runShell("git", ["rev-parse", "HEAD"], asked.cwd);
+                // A test is asked about once per base revision.
+                if (base !== null && rerun !== undefined) {
+                  const checkDir = yield* checkCwd({ ...own, cwd: asked.cwd }, spec);
+                  const known = (yield* readVerifications(journal).pipe(Effect.orDie)).findLast(
+                    (v) =>
+                      v.pass === "baseline" &&
+                      v.name === spec.name &&
+                      v.cwd === checkDir &&
+                      v.test?.file === rerun.file &&
+                      v.test.name === rerun.name &&
+                      v.start.head_sha === head.stdout.trim(),
+                  );
+                  if (known !== undefined) return known;
+                }
                 const started = yield* nowIso();
                 // A file per run of the check, beside the journal its record goes to.
                 const log = `${journal}/checks/${started.replace(/[:.]/g, "-")}-${spec.name.replace(/[^\w.-]/g, "_")}.log`;
@@ -2401,8 +2460,8 @@ export const hostLayer = (options: {
                     marker,
                     encodeVerifying({
                       name: spec.name,
-                      executable: spec.executable,
-                      argv: spec.argv,
+                      executable: rerun === undefined ? spec.executable : "bun",
+                      argv: rerun === undefined ? spec.argv : rerunArgv(rerun),
                       pass: recorded.pass,
                       round: recorded.round ?? null,
                       revision: head.code === 0 ? head.stdout.trim() : "",
@@ -2412,14 +2471,25 @@ export const hostLayer = (options: {
                     }),
                   )
                   .pipe(Effect.ignore);
-                return yield* runApproved(
-                  journal,
-                  { ...own, cwd: asked.cwd },
-                  approved,
-                  spec,
-                  asked.expect ?? "pass",
-                  recorded,
-                  log,
+                return yield* (
+                  rerun === undefined
+                    ? runApproved(
+                        journal,
+                        { ...own, cwd: asked.cwd },
+                        approved,
+                        spec,
+                        asked.expect ?? "pass",
+                        recorded,
+                        log,
+                      )
+                    : rerunTest(
+                        journal,
+                        { ...own, cwd: asked.cwd },
+                        spec,
+                        rerun,
+                        { pass: asked.at === "default-base" ? "baseline" : "rerun" },
+                        log,
+                      )
                 ).pipe(
                   Effect.tap((record) => noteVerification(journal, record)),
                   Effect.mapError((refused) => new WorkflowError({ reason: refused.why })),
@@ -2728,13 +2798,14 @@ export const hostLayer = (options: {
                 })
           ).pipe(Effect.andThen(store.announce));
         },
-        asking: (runId, question) =>
+        asking: (runId, question, asker) =>
           store
             .asking({
               run: runId,
               decision: question.name,
               prompt: question.prompt,
               options: question.options,
+              asker,
             })
             .pipe(
               Effect.andThen(
@@ -2743,6 +2814,16 @@ export const hostLayer = (options: {
                 }),
               ),
             ),
+        asked: (runId) =>
+          store
+            .asked(runId)
+            .pipe(
+              Effect.map((rows) => rows.map((row) => ({ name: row.decision, answer: row.answer }))),
+            ),
+        close: (runId, decision, value) =>
+          store
+            .settle({ run: runId, decision, value, request: `${runId}-${decision}-closed` })
+            .pipe(Effect.asVoid),
         evidence: (runId, cwd) =>
           under(
             Effect.gen(function* () {
@@ -4887,7 +4968,9 @@ const makeRegistry: (
     for (const row of yield* store.runs) {
       const generation = live.get(row.generation);
       if (generation === undefined) continue;
-      const answered = (yield* store.asked(row.run)).filter((one) => one.answer !== null);
+      const answered = (yield* store.asked(row.run)).filter(
+        (one) => one.answer !== null && one.asker === null,
+      );
       if (answered.length === 0) continue;
       const state = pollStatus(
         yield* engine.poll(generation.registration.workflow, row.execution),
@@ -5768,11 +5851,14 @@ const makeRegistry: (
       }
       if (settled._tag === "accepted") yield* crash("answered");
       // Completed again on a repeat: the recording host may have died before the run was told.
-      yield* answerDecision(found.generation.registration, {
-        name,
-        executionId: found.execution,
-        value,
-      });
+      // An agent's question is read by the collection that asked it; waking the workflow
+      // would replay it.
+      if (settled.row.asker === null)
+        yield* answerDecision(found.generation.registration, {
+          name,
+          executionId: found.execution,
+          value,
+        });
 
       return { runId: options.runId, decision: name, value, fresh: settled._tag === "accepted" };
     }, waking.withPermits(1)),

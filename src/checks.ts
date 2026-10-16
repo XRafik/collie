@@ -216,6 +216,8 @@ function doing(check: Pick<RunningCheck, "name" | "pass" | "round" | "base">): s
       return `${running} on the branch`;
     case "baseline":
       return `${running} where the branch left ${check.base ?? "the default branch"}, to see whether it failed before this Run`;
+    case "rerun":
+      return `Running a test ${check.name} failed on, alone on the same tree, to tell a flake`;
     case "recheck":
       return `${running} again on the same tree to rule out a flake`;
     case "fix":
