@@ -8,6 +8,7 @@ import {
   evidenceGaps,
   endsWithoutPatch,
   baseFailuresOf,
+  baselinesOwed,
   flakesOf,
   isOutcome,
   KINDS,
@@ -687,6 +688,19 @@ test("a still-failing test that passed at the base, or that the base does not ha
     "tests failed: outer > the nested one (test/two.test.ts)",
   ]);
   expect(flakesOf(got)).toEqual([]);
+});
+
+test("a test's failure at the base in another directory neither settles the check nor answers its baseline", () => {
+  const got = collected({
+    verifications: [
+      ...gateThenReruns([NESTED], [[NESTED, "fail"]]),
+      { ...atBase(NESTED, "fail"), cwd: "/repo/package-a" },
+    ],
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([
+    "tests failed: outer > the nested one (test/two.test.ts)",
+  ]);
+  expect(baselinesOwed(got)).toEqual([{ check: "tests", test: NESTED }]);
 });
 
 test("a whole run is owed by a check that failed naming no tests, or has no run of its command on this tree", () => {

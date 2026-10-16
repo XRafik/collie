@@ -1060,17 +1060,19 @@ yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 
 A check's failed record names its failing tests as `failed` where its output is bun test's
 and could be read whole: 20 or fewer, its fail count agreeing, and no error outside a test.
-A `rerun` runs `bun test <file> -t <its whole name>` in the check's directory, from the
-sources, and records it under the check's name. It passes only where exactly one test ran
-and passed, and it is never the check's own pass. `rerunsOwed` says which tests are still
-to be rerun, `wholeRunsOwed` which checks only a whole recheck can tell, and
-`flakesOf` which failures were Flakes (ADR-0034, amended 2026-10-15).
+A `rerun` runs `bun test ./<file> -t <its whole name>` in the check's directory, from the
+sources (a bare path is a filter bun matches against every file), and records it under the
+check's name. It passes only where exactly one test ran and passed, and it is never the
+check's own pass. `rerunsOwed` says which tests are still to be rerun, `wholeRunsOwed` which
+checks only a whole recheck can tell, and `flakesOf` which failures were Flakes (ADR-0034,
+amended 2026-10-15).
 
 A test still failing after its rerun is run alone at the base with `at: "default-base"` and
-that `test`, once per base revision. Its `baseline` record fails only where bun reported that
-one test failing, so a test the base does not have is the Run's own. `baselinesOwed` says
-which tests to ask the base about, `baseFailuresOf` which also fail there, and
-`settledChecks` which checks failed only on Flakes and such tests: neither a gap nor a pass.
+that `test`, once per base revision and check directory. Its `baseline` record fails only
+where bun ran that one test in one file and named it failing, so a test the base does not
+have is the Run's own. `baselinesOwed` says which tests to ask the base about,
+`baseFailuresOf` which also fail there, and `settledChecks` which checks failed only on
+Flakes and such tests: neither a gap nor a pass.
 
 ```ts
 for (const { check, test } of rerunsOwed({ ...evidence, approved }))

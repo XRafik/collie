@@ -128,18 +128,20 @@ function rerunOf(got: Journal, last: Verification | undefined) {
         v.pass === "rerun" &&
         v.by === "collie" &&
         v.name === last.name &&
+        v.cwd === last.cwd &&
         v.test?.file === test.file &&
         v.test.name === test.name &&
         !earlierTree(v, got.final),
     );
   const alone = (test: FailedTest) => rerun(test)?.result === "pass";
-  // Its runs where the branch leaves the default branch, which fail only where bun said that test failed.
+  // Its runs in this check's directory where the branch leaves the default branch, which fail only where bun said that test failed.
   const bases = (test: FailedTest, among: ReadonlyArray<Verification>) =>
     among.filter(
       (v) =>
         v.pass === "baseline" &&
         v.by === "collie" &&
         v.name === last.name &&
+        v.cwd === last.cwd &&
         v.test?.file === test.file &&
         v.test.name === test.name,
     );

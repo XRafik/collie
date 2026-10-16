@@ -337,3 +337,35 @@ test("a test run at the base fails there only where bun ran that one file and na
       expect(failing.result).toBe("fail");
     }),
   ));
+
+test("a test asked about at the base is asked again once its check runs in another directory", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${rig.projectDir}/package-b`, { recursive: true });
+      yield* fs.writeFileString(`${rig.projectDir}/package-b/thing.ts`, "export const b = 1;\n");
+      yield* exec(["git", "add", "-A"], { cwd: rig.projectDir });
+      yield* exec(["git", "commit", "-qm", "package-b"], { cwd: rig.projectDir });
+      yield* fs.makeDirectory(`${dir}/runs/${runId}`, { recursive: true });
+      const bin = yield* fakeBun(`(fail) ${NESTED.name} [1.00ms]\n 0 pass\n 1 fail`, 1);
+      const [first, moved] = yield* inHost((host) =>
+        Effect.gen(function* () {
+          const atBase = host.verify({
+            runId,
+            name: "unit",
+            cwd: rig.projectDir,
+            at: "default-base",
+            test: NESTED,
+          });
+          const first = yield* atBase;
+          yield* fs.writeFileString(
+            `${evidenceDir(dir, runId)}/approved.json`,
+            asApproved([{ name: "unit", executable: "bun", argv: ["test"], cwd: "package-b" }]),
+          );
+          return [first, yield* atBase] as const;
+        }),
+      ).pipe(Effect.ensuring(bin.restore()));
+      expect(moved.id).not.toBe(first.id);
+      expect(moved.cwd).toBe(`${first.cwd}/package-b`);
+    }),
+  ));

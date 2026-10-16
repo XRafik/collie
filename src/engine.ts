@@ -176,6 +176,7 @@ import {
 } from "./verify-spec";
 import { rerunArgv } from "./bun-tests";
 import {
+  checkCwd,
   commandOf,
   encodeVerifying,
   fingerprint,
@@ -2439,10 +2440,12 @@ export const hostLayer = (options: {
                 const head = yield* runShell("git", ["rev-parse", "HEAD"], asked.cwd);
                 // A test is asked about once per base revision.
                 if (base !== null && rerun !== undefined) {
+                  const checkDir = yield* checkCwd({ ...own, cwd: asked.cwd }, spec);
                   const known = (yield* readVerifications(journal).pipe(Effect.orDie)).findLast(
                     (v) =>
                       v.pass === "baseline" &&
                       v.name === spec.name &&
+                      v.cwd === checkDir &&
                       v.test?.file === rerun.file &&
                       v.test.name === rerun.name &&
                       v.start.head_sha === head.stdout.trim(),
