@@ -762,7 +762,12 @@ export const taskWorkspacesSweeper = (opts: {
     task: TaskRecord,
   ): Effect.Effect<
     | { keep: string }
-    | { remove: string; terminals: ReadonlySet<string>; writing: string | null }
+    | {
+        remove: string;
+        terminals: ReadonlySet<string>;
+        panes: ReadonlyArray<PaneInfo>;
+        writing: string | null;
+      }
     | null,
     never,
     BunServices
@@ -800,7 +805,7 @@ export const taskWorkspacesSweeper = (opts: {
         return { keep: `holds a pane Collie did not open (${foreign.paneId})` };
       // Kept in a listing, while a sweep stops it again.
       const writing = yield* stillWriting(task);
-      return { remove: `Finished ${minutes} min ago`, terminals, writing };
+      return { remove: `Finished ${minutes} min ago`, terminals, panes: panes.value, writing };
     });
 
   const taskAt = (target: string) => opts.tasks.find((task) => task.workspace === target);
@@ -832,11 +837,22 @@ export const taskWorkspacesSweeper = (opts: {
         if ("keep" in judged) return { kept: judged.keep };
         // Every agent ends where its work runs before any pane of theirs closes.
         const launches = yield* launchesOf(task);
-        const listed =
-          launches.length === 0
-            ? Option.some([])
-            : yield* session.herdr.agentList().pipe(Effect.option);
+        const listed = yield* session.herdr.agentList().pipe(Effect.option);
         if (Option.isNone(listed)) return { kept: "could not ask herdr what is open" };
+        const inside = new Set(
+          judged.panes
+            .filter((pane) => pane.workspaceId === task.workspace)
+            .map((pane) => pane.paneId),
+        );
+        const stranger = listed.value.find(
+          (agent) =>
+            inside.has(agent.paneId) &&
+            !launches.some(
+              (one) => one.agent === agent.name && one.terminalId === agent.terminalId,
+            ),
+        );
+        if (stranger !== undefined)
+          return { kept: `${stranger.name} runs in it, and is not this Task's` };
         const why = "its Task's workspace closed";
         const ended: Array<(typeof launches)[number]> = [];
         for (const launched of launches) {
@@ -867,14 +883,20 @@ export const taskWorkspacesSweeper = (opts: {
         }
         const closed = yield* session.herdr.workspaceClose(task.workspace).pipe(Effect.result);
         if (closed._tag === "Failure") return { kept: herdrFailureReason(closed.failure) };
-        for (const { agent, runId } of ended)
-          yield* runLog(opts.stateDir, runId)(endedLine(agent, why)).pipe(Effect.ignore);
         // Its agents left in another workspace go with it, matched by terminal as a stop does.
+        const gone = new Set<string>();
         for (const other of opts.sessions) {
           const panes = yield* other.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
           for (const pane of panes)
-            if (pane.terminalId !== null && judged.terminals.has(pane.terminalId))
-              yield* other.herdr.paneClose(pane.paneId).pipe(Effect.ignore);
+            if (pane.terminalId !== null && judged.terminals.has(pane.terminalId)) {
+              const shut = yield* other.herdr.paneClose(pane.paneId).pipe(Effect.result);
+              if (shut._tag === "Success") gone.add(pane.terminalId);
+            }
+        }
+        for (const { agent, runId, terminalId } of ended) {
+          const at = listed.value.find((one) => one.name === agent);
+          if (at === undefined || inside.has(at.paneId) || gone.has(terminalId ?? ""))
+            yield* runLog(opts.stateDir, runId)(endedLine(agent, why)).pipe(Effect.ignore);
         }
         return { freed: 0 };
       }),

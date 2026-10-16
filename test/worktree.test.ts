@@ -3078,6 +3078,37 @@ test("the worktree sweep keeps the tab of an agent started again under a finishe
     }),
   ));
 
+test("the worktree sweep keeps the tab of a finished Run's agent's pane another named agent has taken", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const worktreePath = yield* collieWorktree("wt", { panes: ["1-5"] });
+      yield* rig.addPane("1-5", "1:5", worktreePath, "claude");
+      yield* rig.addAgent("other-1", "1-5", "t-other");
+      const agents = `${rig.stateDir}/agents/run-wt`;
+      yield* fs.makeDirectory(agents, { recursive: true });
+      yield* fs.writeFileString(
+        `${agents}/implement.launch.json`,
+        asRecord({
+          agent: "impl-1-5",
+          output: `${agents}/implement.json`,
+          reused: false,
+          runId: "run-wt",
+          operation: "implement",
+          role: "implementer",
+          workflow: "implement",
+          harness: "claude",
+          terminalId: "t-1-5",
+        }),
+      );
+      yield* settledGit();
+      yield* mergedMr();
+
+      expect(yield* pruneWith({})).toEqual(["♻ removed wt · merged in !14 · 1 tab(s) left open"]);
+      expect(yield* rig.cmds()).not.toContain("tab close");
+    }),
+  ));
+
 test("the worktree sweep keeps the tab of a finished Run's agent that is not Quiet", () =>
   runEffect(
     Effect.gen(function* () {

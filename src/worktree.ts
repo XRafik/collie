@@ -14,6 +14,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import {
   herdrFailureReason,
   type Herdr,
+  type AgentInfo,
   type PaneInfo,
   type WorktreeInfo,
   type WorktreeListing,
@@ -1238,9 +1239,11 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
     inside(opts.at, pane.cwd) || inside(opts.at, pane.foregroundCwd);
   const why = `its checkout ${opts.at} was removed`;
   /** Whether the agent left in this pane, if any, has ended, with its end's log once the tab closes. */
-  const ends = (pane: PaneInfo) =>
+  const ends = (pane: PaneInfo, agents: ReadonlyArray<AgentInfo>) =>
     Effect.gen(function* () {
       const entry = opts.registered.find((one) => one.paneId === pane.paneId);
+      const holder = agents.find((one) => one.paneId === pane.paneId);
+      if (holder !== undefined && holder.name !== entry?.agent) return null;
       if (pane.agent === null || entry === undefined) return Effect.void;
       const launched = (yield* readLaunches(opts.stateDir, entry.runId)).findLast(
         (one) => one.agent === entry.agent,
@@ -1256,6 +1259,7 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
         launched ?? { agent: entry.agent },
         why,
         "caller",
+        agents,
       ).pipe(Effect.orElseSucceed(() => null));
       if (ended?._tag !== "Closed") return null;
       return ended.ended
@@ -1263,13 +1267,20 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
         : Effect.void;
     });
   let left = 0;
+  let agents: Option.Option<ReadonlyArray<AgentInfo>> | undefined;
   for (const tabId of opts.tabs) {
     const panes = opts.panes.filter((pane) => pane.tabId === tabId);
     // A tab herdr no longer has is nothing to close; one with a pane outside the
     // checkout is a tab somebody has taken over.
     const isDead = panes.length > 0 && panes.every(isInside);
     if (!isDead) continue;
-    const ended = yield* Effect.forEach(panes, ends);
+    agents ??= yield* Effect.option(herdr.agentList());
+    if (Option.isNone(agents)) {
+      left += 1;
+      continue;
+    }
+    const listed = agents.value;
+    const ended = yield* Effect.forEach(panes, (pane) => ends(pane, listed));
     if (ended.includes(null)) {
       left += 1;
       continue;
