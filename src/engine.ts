@@ -3058,15 +3058,19 @@ export const hostLayer = (options: {
             const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
               Effect.orElseSucceed(() => ({ gitlabHost: undefined })),
             );
-            while (!((yield* set(HOLD, asked.runId)) || (yield* set(STOP, asked.runId)))) {
-              if (yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost)) {
-                yield* host.parked(asked.runId, null);
-                return true;
-              }
-              yield* Effect.sleep(options.productionPoll ?? "5 minutes");
-            }
+            const controlled = Effect.gen(function* () {
+              while (!((yield* set(HOLD, asked.runId)) || (yield* set(STOP, asked.runId))))
+                yield* Effect.sleep("1 second");
+              return false;
+            });
+            const carried = Effect.gen(function* () {
+              while (!(yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost)))
+                yield* Effect.sleep(options.productionPoll ?? "5 minutes");
+              return true;
+            });
+            const carries = yield* Effect.raceFirst(controlled, carried);
             yield* host.parked(asked.runId, null);
-            return false;
+            return carries;
           }).pipe(Effect.provideContext(services)),
         mergeRequest: (runId, url) =>
           fs.makeDirectory(runDir(dir, runId), { recursive: true }).pipe(

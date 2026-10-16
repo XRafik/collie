@@ -12,7 +12,18 @@
 import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
-import { Effect, Fiber, FileSystem, Layer, Option, Path, Result, Schedule, Schema } from "effect";
+import {
+  Duration,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Result,
+  Schedule,
+  Schema,
+} from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./recorder";
 import { exec } from "./command";
@@ -149,8 +160,11 @@ const foundation = () => ({
   dir,
   userDir: rig.userDir,
   placing: { herdr: hostOf().herdr, env: hostOf().env },
-  productionPoll: "20 millis" as const,
+  productionPoll,
 });
+
+/** How often production is read; a scenario that must not wait on it sets it long. */
+let productionPoll: Duration.Input = "20 millis";
 
 const session = <A, E>(
   run: Effect.Effect<
@@ -6135,12 +6149,13 @@ scenario(
   () =>
     runEffect(
       Effect.gen(function* () {
-        const { bin } = yield* deploying("gitlab", [
+        const { bin, forge } = yield* deploying("gitlab", [
           { name: "production", tier: "production", deployed: OLDER },
         ]);
         claimed.length = 0;
         const runId = "r-prod-held";
         yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        productionPoll = "1 hour";
         const status = yield* running(
           { entry: shipped("renovate"), runId, input: {}, host: holdingClaim },
           (status) =>
@@ -6149,6 +6164,10 @@ scenario(
                 () => parkedWhy(runId),
                 (why) => why !== "",
               );
+              yield* until(
+                () => forge.calls(),
+                (calls) => calls.some((call) => call.includes("deployments")),
+              );
               const fs = yield* FileSystem.FileSystem;
               yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
               return yield* until(
@@ -6156,7 +6175,7 @@ scenario(
                 (got) => got === "suspended",
               );
             }),
-        );
+        ).pipe(Effect.ensuring(Effect.sync(() => (productionPoll = "20 millis"))));
         yield* bin.restore();
         expect(status).toBe("suspended");
         expect(claimed).toEqual([`claim ${runId}`]);
