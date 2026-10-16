@@ -3884,6 +3884,8 @@ export interface RegistryApi {
     readonly runId: string;
     readonly control: string;
     readonly set: boolean;
+    /** A stop of this Run without the children it started. */
+    readonly alone?: boolean;
   }) => Effect.Effect<typeof Controlled.Type, HostRefused, HostServices>;
   /**
    * Grants this run one command Collie may run itself, or withdraws the grant of that
@@ -3912,6 +3914,8 @@ export interface RegistryApi {
   readonly view: (runId: string) => Effect.Effect<RunView | null>;
   /** Every run this host has rows for, newest last, narrowed to one Task where named. */
   readonly views: (task: string | null) => Effect.Effect<ReadonlyArray<RunView>>;
+  /** Records `url` as the merge request `runId` opened, as the MR step does, without its notice. */
+  readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
   /**
    * Forgets these Runs' rows, and what the engine keeps of their executions, in one
    * transaction (ADR-0045 D5). Answers with the Runs it forgot; a row the engine never
@@ -5219,9 +5223,11 @@ const makeRegistry: (
     control: string,
     set: boolean,
     recovered?: ReadonlySet<string>,
+    alone = false,
   ) {
     // A stop reaches the children a Run started: they are its work too.
-    const runs = control === STOP ? [runId, ...descendantsOf(yield* store.runs, runId)] : [runId];
+    const runs =
+      control === STOP && !alone ? [runId, ...descendantsOf(yield* store.runs, runId)] : [runId];
     // Written before anything is woken, so a run that wakes up never finds the request
     // that stopped it still there.
     const stopped = new Set<string>();
@@ -5245,8 +5251,8 @@ const makeRegistry: (
   });
 
   /** A stop, and the agents of every Run it reached closed: the Runs, and what did not close. */
-  const stopTree = Effect.fn("Engine.stopTree")(function* (runId: string) {
-    const { runs } = yield* applyControl(runId, STOP, true);
+  const stopTree = Effect.fn("Engine.stopTree")(function* (runId: string, alone = false) {
+    const { runs } = yield* applyControl(runId, STOP, true, undefined, alone);
     // Closing their panes is what stops the agents; the Run only stops looking.
     const agents = yield* Agents;
     const left: string[] = [];
@@ -5578,6 +5584,14 @@ const makeRegistry: (
           }),
         ),
       ),
+    mergeRequest: (runId: string, url: string) =>
+      fs
+        .makeDirectory(runDir(dir, runId), { recursive: true })
+        .pipe(
+          Effect.andThen(fs.writeFileString(mergeRequestPath(dir, runId), `${url}\n`)),
+          Effect.andThen(store.announce),
+          Effect.orDie,
+        ),
     watch: (runId: string) =>
       store
         .watching(view(runId))
@@ -5761,6 +5775,7 @@ const makeRegistry: (
       readonly runId: string;
       readonly control: string;
       readonly set: boolean;
+      readonly alone?: boolean;
     }) {
       if (options.control === HOLD && (yield* hasEnded(options.runId)))
         return yield* new HostRefused({
@@ -5782,7 +5797,7 @@ const makeRegistry: (
       const found = yield* routed(options.runId).pipe(Effect.result);
       const left =
         options.control === STOP && options.set
-          ? (yield* stopTree(options.runId)).left
+          ? (yield* stopTree(options.runId, options.alone)).left
           : yield* applyControl(options.runId, options.control, options.set).pipe(Effect.as([]));
       const recorded = { runId: options.runId, control: options.control, set: options.set, left };
       if (found._tag === "Failure") {

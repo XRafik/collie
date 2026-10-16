@@ -696,9 +696,22 @@ reads it from this checkout's history rather than carding every Run Collie has e
 
 Collie learns a merge by itself, whether or not a pane is open: the host asks the merge
 request's own forge, through that forge's adapter — GitLab with `glab`, GitHub with `gh` —
-about each merge request in Waiting on you every 5 minutes; one
+about each Task's merge request every 5 minutes, whatever section its card is in, so a
+merge while a Run is busy or parked is noticed too; one
 that merged gets its `merged` disposition recorded as that forge's word and its card moves
-to Finished. One that was closed without merging only changes its card's sentence: closing
+to Finished. A Task whose Runs recorded no merge request takes the one opened from its
+branch, whoever opened it — you on the forge, or a builder you told to in its pane — and
+it is recorded as the newest Run on that branch's own, so the drawer, offers, Ready to
+release and Cleanup all see it. The forge is the one the branch's checkout pushes to, and
+it is asked about each branch at most once every 5 minutes. A merge request that merged or
+closed before the Task's first Run began is an older branch's and is ignored; of several,
+the newest is the Task's. A merge also settles its Task: whatever in it is still going —
+running, waiting, parked or asking, a plan waiting on its builder included — and began
+before the forge says it merged, is stopped by the host, with `<label> merged` as the
+reason in its trail, and the card reads `Merged as cego/collie#114.`, never "Stopped by
+you". A stop that did not take is asked again on the next round. A Run started after
+the merge, such as a follow-up on the same branch, is left alone, and so is a child the
+stopped Run started in a Task of its own. One that was closed without merging only changes its card's sentence: closing
 can mean superseded as easily as abandoned, and only you know which. The same answer
 carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup — and the
 revision they ran at, which is the one Collie's own checks are counted at too: a failing

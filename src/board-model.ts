@@ -414,6 +414,8 @@ export const MrDetails = Schema.TaggedStruct("Details", {
   head: Schema.optionalKey(Schema.String),
   /** The commit the merge put on the target branch, in full, or "" while it is not merged. */
   mergedSha: Schema.String,
+  /** When the forge says it merged, where it says. */
+  mergedAt: Schema.optionalKey(Schema.String),
   /** When the forge last saw it change, in epoch milliseconds, or 0 when it did not say. */
   updatedAt: Schema.Number,
   url: Schema.String,

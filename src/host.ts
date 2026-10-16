@@ -65,6 +65,7 @@ import {
   Reliance,
   runDir,
   evidenceDir,
+  STOP,
   type HostServices,
   type Locate,
 } from "./engine";
@@ -922,7 +923,25 @@ const hostBoard = (dir: string) =>
         }),
       ];
     });
-    return { env, herdr, bun, listing, sweepers };
+    /** The host's own stop, audited as the host's and asked once per Run. */
+    const stop = (runId: string, reason: string) =>
+      once(
+        runDir(env.stateDir, runId),
+        {
+          operation: STOP,
+          request: `merged-${runId}`,
+          origin: "host",
+          reason,
+          asked: { reason },
+          result: Controlled,
+        },
+        registry.control({ runId, control: STOP, set: true, alone: true }),
+      ).pipe(
+        Effect.provideContext(hosted),
+        Effect.provideContext(bun),
+        Effect.catchCause((cause) => Effect.logWarning(`could not stop ${runId}`, cause)),
+      );
+    return { env, herdr, bun, listing, sweepers, record: registry.mergeRequest, stop };
   });
 
 /** The board built once for this host's clients and side jobs, from when the host starts. */
@@ -974,14 +993,16 @@ const sharedBoardLayer = (dir: string) =>
 const sideJobsLayer = (panels: MrPanels) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
-      const { env, herdr, bun, boards, sweepers } = yield* SharedBoard;
+      const { env, herdr, bun, boards, sweepers, record, stop } = yield* SharedBoard;
       const board = Stream.runHead(boards).pipe(
         Effect.flatMap((latest) =>
           latest._tag === "Some" ? Effect.succeed(latest.value) : Effect.never,
         ),
       );
       yield* Effect.forkScoped(
-        sideJobs({ env, herdr, board, panels, sweepers }).pipe(Effect.provideContext(bun)),
+        sideJobs({ env, herdr, board, panels, record, stop, sweepers }).pipe(
+          Effect.provideContext(bun),
+        ),
       );
     }),
   );

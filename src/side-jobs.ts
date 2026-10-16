@@ -4,7 +4,7 @@
 import { Clock, Effect, Schedule, type Duration } from "effect";
 import type { TaskView, MrState, Reopened } from "./board-model";
 import { readyRuns } from "./board";
-import { loadDefaults } from "./config";
+import { gitlabHostOf, loadDefaults } from "./config";
 import { currentReports, readDrift } from "./drift";
 import type { PluginEnv } from "./env";
 import type { Herdr } from "./herdr";
@@ -161,6 +161,10 @@ export const sideJobs = <E, R>(opts: {
     R
   >;
   readonly panels: MrPanels;
+  /** Records a merge request the watch found from a branch as that Run's own. */
+  readonly record: (runId: string, url: string) => Effect.Effect<void>;
+  /** The host's audited stop, for what a merge settled. */
+  readonly stop: (runId: string, reason: string) => Effect.Effect<void>;
   readonly sweepers: Effect.Effect<ReadonlyArray<Sweeper>, E, R>;
 }) => {
   const { env, herdr } = opts;
@@ -176,11 +180,16 @@ export const sideJobs = <E, R>(opts: {
       every(
         MERGES_EVERY,
         Effect.gen(function* () {
+          const { runs, views } = yield* opts.board;
           yield* settleMerges({
             stateDir: env.stateDir,
             cwd: env.cwd,
             run: shell,
-            views: (yield* opts.board).views,
+            views,
+            runs,
+            record: opts.record,
+            stop: opts.stop,
+            gitlabHost: yield* gitlabHostOf(env),
             now: yield* Clock.currentTimeMillis,
             checked,
             states,

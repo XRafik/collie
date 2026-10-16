@@ -34,6 +34,9 @@ export const FakeMr = Schema.Struct({
   autoMerge: Schema.optionalKey(Schema.Boolean),
   approved: Schema.optionalKey(Schema.Boolean),
   updatedAt: Schema.optionalKey(Schema.String),
+  createdAt: Schema.optionalKey(Schema.String),
+  mergedAt: Schema.optionalKey(Schema.String),
+  closedAt: Schema.optionalKey(Schema.String),
   /** Whether the forge would merge it now; mergeable where unsaid. */
   mergeable: Schema.optionalKey(Schema.Literals(["yes", "conflict", "unapproved", "checking"])),
 });
@@ -237,6 +240,7 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       assignees: (mr.assignees ?? []).map((username) => ({ username })),
       sha: mr.head ?? null,
       merge_commit_sha: mr.mergedSha ?? null,
+      merged_at: mr.mergedAt ?? null,
       head_pipeline:
         pipeline === null ? null : { status: pipeline, sha: mr.pipelineAt ?? mr.head ?? null },
       source_branch: mr.sourceBranch ?? null,
@@ -252,11 +256,12 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   }
   if (verb === "mr" && sub === "list" && flag(args, "--source-branch") !== undefined) {
     const repo = flag(args, "--repo");
+    if (repo !== undefined && !model.loggedIn.includes(repo.split("/")[0]!)) return no();
     return json(
       model.mrs
         .filter(
           (one) =>
-            one.state === "open" &&
+            (args.includes("--all") || one.state === "open") &&
             one.sourceBranch === flag(args, "--source-branch") &&
             (repo === undefined || one.project === repo),
         )
@@ -264,6 +269,10 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
           iid: Number(one.iid),
           web_url: `https://${one.project}/-/merge_requests/${one.iid}`,
           merge_when_pipeline_succeeds: one.autoMerge ?? false,
+          state: one.state === "open" ? "opened" : one.state,
+          created_at: one.createdAt ?? null,
+          merged_at: one.mergedAt ?? null,
+          closed_at: one.closedAt ?? null,
         })),
     );
   }
@@ -421,6 +430,7 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       headRefOid: pull.head ?? null,
       ...GITHUB_MERGE_STATE[pull.mergeable ?? "yes"],
       mergeCommit: pull.mergedSha === undefined ? null : { oid: pull.mergedSha },
+      mergedAt: pull.mergedAt ?? null,
       statusCheckRollup: (pull.checks ?? []).map((check) => ({
         __typename: "CheckRun",
         name: check.name,
@@ -445,13 +455,18 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
         .filter(
           (one) =>
             one.project === repo &&
-            one.state === "open" &&
+            (flag(args, "--state") === "all" || one.state === "open") &&
             one.sourceBranch === flag(args, "--head"),
         )
         .map((one) => ({
           number: Number(one.iid),
           url: `https://${one.project}/pull/${one.iid}`,
           autoMergeRequest: one.autoMerge === true ? { enabledAt: "2026-10-01T00:00:00Z" } : null,
+          state: one.state.toUpperCase(),
+          createdAt: one.createdAt ?? "",
+          mergedAt: one.mergedAt ?? null,
+          // GitHub stamps a merged pull request closed too.
+          closedAt: one.closedAt ?? one.mergedAt ?? null,
         })),
     );
   }

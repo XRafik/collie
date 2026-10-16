@@ -37,7 +37,7 @@ import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
 import { shell } from "./mr";
-import type { ForgeChecks, Mergeability, OfferView } from "./board-model";
+import type { Disposition, ForgeChecks, Mergeability, OfferView } from "./board-model";
 import { everyDelivery, SENT_STATES, toldIn, type Delivery } from "./steering";
 import { readCards } from "./cards";
 import {
@@ -733,10 +733,44 @@ const fanOf = Effect.fn("Board.fanOf")(function* (
   };
 });
 
+/**
+ * Whether a Run's work is over: it ended, or it waits only on children of its own on the
+ * card that are over, one of them stopped. A stop suspends a Run, so its parent waits on
+ * it forever; a child that finished hands the parent back its own work.
+ */
+function over(run: RunFacts, runs: ReadonlyArray<RunFacts>): boolean {
+  if (ended(run)) return true;
+  if (run.asking.length > 0 || run.parked !== null) return false;
+  const children = runs.filter((one) => one.parent === run.id);
+  return (
+    children.some((child) => child.state === "stopped" || !ended(child)) &&
+    children.every((child) => over(child, runs))
+  );
+}
+
+/** Who made a Run's latest stop, from its audit trail (ADR-0039). */
+const lastStopBy = (run: RunFacts) =>
+  readAudit(run.dir).pipe(
+    Effect.map((lines) => lines.findLast((line) => line.operation === "stop")?.actor.origin),
+    Effect.orElseSucceed(() => undefined),
+  );
+
 /** The Run a card is about: the newest still going, else the newest. */
 function leaderOf(runs: ReadonlyArray<RunFacts>): RunFacts {
-  return runs.find((run) => !ended(run)) ?? runs[0]!;
+  return runs.find((run) => !over(run, runs)) ?? runs[0]!;
 }
+
+/** What became of a Task's work: the latest Disposition on any of its Runs. */
+const dispositionOf = Effect.fn("Board.dispositionOf")(function* (runs: ReadonlyArray<RunFacts>) {
+  let newest: Disposition | null = null;
+  for (const run of runs) {
+    const seen = latest(
+      yield* readDispositions(run.dir).pipe(Effect.catch(() => Effect.succeed([]))),
+    );
+    if (seen !== null && (newest === null || epochMs(seen.at) > epochMs(newest.at))) newest = seen;
+  }
+  return newest;
+});
 
 /** How long finished work stays on the board. A day, so an evening's work is still there
     in the morning — midnight is not when a human stops calling it today. */
@@ -795,23 +829,11 @@ export function mrOf(run: RunFacts): string | null {
   return run.mr ?? (isMrTarget(target) ? target : null);
 }
 
-/**
- * Whether settled Runs' work landed, from what they left: a disposition, or nothing that
- * anyone has to file in the first place.
- */
-const landedByRecord = Effect.fn("Board.landedByRecord")(function* (runs: ReadonlyArray<RunFacts>) {
-  for (const run of runs) {
-    const toFile = filed({
-      branch: run.branch,
-      mr: mrOf(run),
-      planIssues: yield* planIssuesIn(run.dir),
-    });
-    if (!toFile) continue;
-    const seen = latest(
-      yield* readDispositions(run.dir).pipe(Effect.catch(() => Effect.succeed([]))),
-    );
-    if (seen === null) return false;
-  }
+/** Whether none of these Runs left anything anyone has to file. */
+const nothingToFile = Effect.fn("Board.nothingToFile")(function* (runs: ReadonlyArray<RunFacts>) {
+  for (const run of runs)
+    if (filed({ branch: run.branch, mr: mrOf(run), planIssues: yield* planIssuesIn(run.dir) }))
+      return false;
   return true;
 });
 
@@ -917,13 +939,16 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             ? touched.get(run.id) || epochMs(run.created)
             : epochMs(run.finished);
         const last = Math.max(0, ...runs.map(endedAt).filter(Number.isFinite));
+        // Read whatever the state: a merge GitLab reported lands the work even while the Run
+        // is still going, and the card must say so.
+        const disposition = yield* dispositionOf(runs);
         // Finished work older than a day is History's, behind `older…` — landed work only:
         // an unmerged branch from last week is still waiting on you, however old.
         if (
-          runs.every(ended) &&
+          runs.every((run) => over(run, runs)) &&
           last < now - FINISHED_FOR_MS &&
           pending.length === 0 &&
-          (yield* landedByRecord(runs))
+          (disposition !== null || (yield* nothingToFile(runs)))
         )
           return null;
         const leader = leaderOf(runs);
@@ -976,11 +1001,6 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         const held = runs.find((run) => run.held && !ended(run));
         const settledNow =
           state === "done" || state === "failed" || state === "stopped" || state === "abandoned";
-        // Read whatever the state: a merge GitLab reported lands the work even while the Run
-        // is still going, and the card must say so.
-        const disposition = latest(
-          yield* readDispositions(leader.dir).pipe(Effect.catch(() => Effect.succeed([]))),
-        );
         const failure =
           state === "failed"
             ? lastFailure(
@@ -1068,13 +1088,18 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           sentence: sentenceFor({
             mr,
             mrState,
+            // A stop the host made for a merge is the merge, never the human's stop.
+            ...(state === "stopped" &&
+            disposition?.kind === "merged" &&
+            (yield* lastStopBy(leader)) === "host"
+              ? { state: "done" as const }
+              : { state }),
             checks,
             readiness,
             summary: leader.summary,
             agent: agents.find((one) => one.run === leader.id)?.name ?? null,
             planReady,
             abandoned: abandoned && at > 0 ? agoMs(at, now) : null,
-            state,
             decision,
             step: doing?.step ?? null,
             // Never the pane's title: a terminal names its harness or file, not the work.

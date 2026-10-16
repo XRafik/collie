@@ -665,7 +665,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `agents[]`                | The live agents on it, its Repo runs' included.                                                                                                                 |
 | `children[]`              | Its plan's repositories, in wave order: `repo`, its `run` (`null` until it starts), its `state` (`done`, `active`, `blocked`, `failed` or `todo`) and its `mr`. |
 | `mr`, `mrState`, `branch` | What it is building, where it can be read, and what the forge last said about the merge request.                                                                |
-| `disposition`, `landed`   | What became of the work, where a person recorded it — never inferred from a merge request — and whether it needs nothing more, which is Finished.               |
+| `disposition`, `landed`   | What became of the work, the latest on any of its Runs, recorded by a person or by the merge watch, and whether it needs nothing more, which is Finished.       |
 | `ended`                   | When the leading Run ended, or `null` while it has not.                                                                                                         |
 | `planReady`, `offer`      | A finished plan nobody has implemented, and the offer its card's first action invokes.                                                                          |
 | `checks`                  | What checked an open merge request: `passed` or `failed` (with `name`) at revision `at`, `running`, or `unchecked`; else `null`.                                |

@@ -109,7 +109,9 @@ before it changes anything, from its `package.json` scripts, a Makefile or its C
 each with `collie run intent verification`. Nobody approves them, and the merge request
 lists each with its command ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 
-**Ends:** with the merge request, or with the reason there is none. Nobody is asked along
+**Ends:** with the merge request, or fails with the reason there is none — a ticket stopped
+on a blocking finding, acceptance criteria still unmet, a review that halted — and says to
+continue with a follow-up Run, which **Keep going on this** starts. Nobody is asked along
 the way: the human verifies the work in the merge request, before it lands. The gate re-runs
 a failed check once, since a check that fails and then passes is a flake, and then hands
 what a check could still prove to the implementer for up to four fixes; a reviewer's
@@ -157,9 +159,8 @@ inside a repository is that run's own business, as in a single-repository run. T
 them, resuming it goes on with the ones it already has rather than starting them again, and
 its result names what each repository ended as.
 
-- **A repository that did not build** fails rather than ending with its reason — a ticket
-  stopped on a blocking finding, a review that halted, a merge request with no evidence for
-  it — so no wave starts on work that is not there.
+- **A repository that did not build** fails, as a single repository does, so no wave
+  starts on work that is not there.
 - **A repository that fails or cannot start** starts no further wave. The others in its
   wave are left to finish, and the parent fails naming the repository that stopped it and
   the ones that never ran.
