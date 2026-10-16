@@ -220,7 +220,8 @@ An agent's Output saying "the tests pass" is a **claim**. Collie shows it as one
 the agent that made it, and never as evidence.
 
 A **verification** is a command whose exit Collie watched, bound to the tree it ran on:
-`collie verify --run <id> -- <command>` ([CLI](cli.md#verify)). The tree is fingerprinted
+`collie verify -- <command>` from the Run's agent pane, or with `--run <id>` from anywhere
+else ([CLI](cli.md#verify)). The tree is fingerprinted
 before and after — the commit, the porcelain status, the diff against HEAD, and the
 content of every untracked file git is not ignoring — and a result whose two snapshots
 differ is `unstable`, never `pass`. So is one where either snapshot says the tree was too

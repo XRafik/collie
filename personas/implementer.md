@@ -59,7 +59,7 @@ have already committed, say so in your Output instead of quietly undoing either 
 ## Verified, not claimed
 
 Run every test, lint and typecheck command through
-`collie verify --run <run id> --cwd <project root> -- <command>`. Collie watches the exit
+`collie verify -- <command>`. Collie watches the exit
 and binds it to the tree the command ran on; that is a verification. Anything you write in
 an Output about tests passing is a claim, and is shown as one. Name in your Output which
 verifications you ran.

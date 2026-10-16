@@ -271,7 +271,7 @@ or an execution exists — so a value one of them refuses costs nothing to refus
   declare one, and asking for an outcome a module always proves is refused rather than
   recorded as something it will not deliver.
 
-`collie verify --run <run-id> -- <command>` records against a module's Run as it does
+`collie verify -- <command>` records against a module's Run as it does
 against any other: the same collector, the same binding to the tree the command ran on, and
 the same refusal for a directory that is not that Run's. A module can ask for one itself,
 but only for one of the Run's checks: those it started with, or one named since with
@@ -1304,9 +1304,16 @@ Like metrics, the report is data: no number in it is a threshold, and it refuses
 ## Verify
 
 ```sh
+collie verify -- bun test
 collie --json verify --run <run-id> -- bun test
-collie verify --run <run-id> --name typecheck --cwd <path> -- bun run typecheck
+collie verify --name typecheck --cwd <path> -- bun run typecheck
 ```
+
+From a Run's agent pane, `--run` can be left out: the Run is the one whose agent the pane
+is, found as for any command an agent runs there — herdr's agent list says which agent the
+pane holds, and the host says whose Run that agent is. Anywhere else, without `--run`, it
+fails `invalid_input`: `verify needs --run outside a Run's agent pane.` A `--run` given
+explicitly always wins.
 
 Runs the command, watches its exit, and records the result against the run's tree — the
 commit it was on and a digest of everything not committed, taken **before and after**.
@@ -1320,7 +1327,7 @@ status is the command's own, so a failure says why the first time.
 
 | Flag       | What it does                                                                                                                                                         |
 | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--run`    | Required. The run this is a verification of, and whose tree is snapshotted.                                                                                          |
+| `--run`    | The run this is a verification of, and whose tree is snapshotted. Defaults to the Run whose agent this pane is.                                                      |
 | `--cwd`    | Where to run it. Must be inside the run's checkout, including one it was given later — a review's fix moves it to the reviewed branch's; defaults to it.             |
 | `--name`   | What to call it on a card. By default the script it runs (`bun run typecheck` is `typecheck`), else the tool and its subcommand (`bun test`), else the tool (`tsc`). |
 | `--expect` | What a pass looks like: `pass` (default), or `fail` for a reproduction.                                                                                              |
@@ -1345,7 +1352,7 @@ succeeding is the reproduction failing, not the bug being fixed. Stability comes
 either way — a tree that moved under the command is `unstable` whatever was expected.
 
 ```sh
-collie verify --run <run-id> --name regression --expect fail -- bun test test/bug.test.ts
+collie verify --name regression --expect fail -- bun test test/bug.test.ts
 ```
 
 ### What Collie may run itself

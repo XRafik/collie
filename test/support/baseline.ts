@@ -1639,7 +1639,7 @@ scenario(
 
         const fix = yield* asked("r-fix-tree", "fix");
         expect(fix).toContain(`Project root: ${reviewed}`);
-        expect(fix).toContain(`collie verify --run r-fix-tree --cwd ${reviewed} -- <command>`);
+        expect(fix).toContain("`collie verify -- <command>`");
         expect(fix).not.toContain("Do not push");
         expect(fix).toContain("has an open merge request");
         expect(fix).toContain("never force");
@@ -3141,7 +3141,7 @@ scenario(
         const rules = [
           "is a follow-up",
           "unless you can answer the reason",
-          "collie verify --run",
+          "`collie verify -- <command>`",
           '`"scope_met": true`',
           "`summary` — two sentences",
           "Every `blocker` and `major`",

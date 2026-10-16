@@ -432,6 +432,19 @@ test("a step's message and its repair are Collie's own and carry no sender line,
     }),
   ));
 
+test("a step's prompt opens with the three shell habits on its address line", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean" }]);
+      yield* session(started("r1"));
+      const [address] = (yield* read(promptPath("r1"))).split("\n");
+      expect(address).toContain(
+        "Never use a shell variable as a command word: write the command out. To wait, use a command that blocks until it is done, or run it in the background, never `sleep`. Search under a directory's own path, never from `/`.",
+      );
+      expect(address).toContain("`From the human`");
+    }),
+  ));
+
 /** Each step message typed into an agent's pane, token included. */
 const typedSteps = (calls: ReadonlyArray<Call>) =>
   calls

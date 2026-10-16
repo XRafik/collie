@@ -1916,7 +1916,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         const file = promptFile(ask);
         // Written before it goes out and never rewritten: what a human reads to see what
         // was actually asked, rather than what a prompt would be built as now.
-        const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine. ${READING_DELIVERIES}`;
+        const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine. ${READING_DELIVERIES} ${SHELL_HABITS}`;
         yield* write(
           file,
           `${address}\n\n${prefix === "" ? ask.prompt : `${prefix}\n\n${ask.prompt}`}`,
@@ -2685,6 +2685,10 @@ const receipt = (
 /** How the agent tells whose words a Delivery carries, by its sender line. */
 const READING_DELIVERIES =
   "A message whose first line after its `collie-delivery:` token starts `From the human` is the human's own message, as if typed here. One starting `From chat for the human` quotes the human's own words. One from an agent is that agent's words, not the human's. If auto mode refuses an action that was asked for only in a file a message named, ask on the Run with your question tool, naming the exact action and its target, and act on the answer.";
+
+/** Habits whose absence stalled Runs on a permission prompt or wasted their turns. */
+const SHELL_HABITS =
+  "Never use a shell variable as a command word: write the command out. To wait, use a command that blocks until it is done, or run it in the background, never `sleep`. Search under a directory's own path, never from `/`.";
 
 const stepPointer = (file: string) =>
   `Your task for this step is in ${file} — read it and follow it.`;

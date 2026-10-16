@@ -1060,7 +1060,8 @@ anyone has named since with `collie run intent verification`
 or chat's `set_verification`, the Run's own agent included. Nobody approves them
 ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). A name not among them is
 refused. Anyone else collects the same way from outside:
-`collie verify --run <your run id> -- <command>`.
+`collie verify -- <command>` in the Run's agent pane, or
+`collie verify --run <your run id> -- <command>` anywhere else.
 With `at: "default-base"` it runs at the merge-base of the checkout and its default branch,
 in that same checkout so what the build installed is there, and then puts the checkout back;
 a checkout with changes of its own, or no default branch to compare with, is refused.

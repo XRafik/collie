@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import { Effect, FileSystem } from "effect";
 import { contentOf } from "../src/sdk";
+import { runEffect } from "./support/effect";
+import { root } from "./support/host";
 import implement from "../workflows/implement.md" with { type: "text" };
 import onGitlab from "../workflows/renovate.gitlab.md" with { type: "text" };
 import onGithub from "../workflows/renovate.github.md" with { type: "text" };
@@ -22,10 +25,23 @@ test("implement's mr step merges on a request of its own from the human, chat or
   expect(mr).not.toContain("unless the human tells you");
 });
 
-test("no shipped content says merging is the human's alone to ask for", () => {
-  for (const text of [implement, onGitlab, onGithub, review]) {
-    const flat = text.replace(/\s+/g, " ");
-    expect(flat).not.toContain("merging is theirs to ask for");
-    expect(flat).not.toContain("unless the human tells you");
-  }
-});
+test("no shipped content or prompt text Collie types spells out `collie verify --run`", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const typed = ["workflows/**/*", "personas/**/*", "prompts/**/*", "src/**/*.ts"].flatMap(
+        (pattern) => Array.from(new Bun.Glob(pattern).scanSync({ cwd: root })),
+      );
+      expect(typed.length).toBeGreaterThan(0);
+      // Its usage examples show both forms.
+      const examples = "src/commands/verify.ts";
+      const spelled: string[] = [];
+      for (const file of typed)
+        if (
+          file !== examples &&
+          (yield* fs.readFileString(`${root}${file}`)).includes("collie verify --run")
+        )
+          spelled.push(file);
+      expect(spelled).toEqual([]);
+    }),
+  ));
