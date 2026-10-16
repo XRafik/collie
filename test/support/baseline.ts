@@ -4387,7 +4387,7 @@ scenario(
 );
 
 scenario(
-  "a check that passes where the branch left the default branch is the Run's to fix",
+  "a check failing on a branch, whose output names no tests, is the Run's to fix and is never run at the base",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -4439,12 +4439,12 @@ scenario(
         expect(yield* asked("r-impl-own-red", "gate-fix-1")).toContain("unit failed");
         expect(yield* parkedWhy("r-impl-own-red")).toContain("unit failed");
         expect(yield* fs.exists(`${dir}/agents/r-impl-own-red/mr.prompt.md`)).toBe(false);
-        // The comparison ran at the base and put the branch back.
+        // Its output names no tests, so nothing is run at the base.
         expect(yield* git("rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
         const journal = yield* fs.readFileString(
           `${evidenceDir(dir, "r-impl-own-red")}/steering/verifications.jsonl`,
         );
-        expect(journal).toContain(base);
+        expect(journal).not.toContain(base);
       }),
     ),
   120_000,
