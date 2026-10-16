@@ -1142,7 +1142,10 @@ says what is missing. A check
 that failed and named its failing tests has each of them run once more alone (`rerun`); one
 that passes is a Flake, which is neither a gap nor a pass and is named in the merge request.
 A check that failed naming no tests runs once more whole (`recheck`). Gaps a check could
-still close go to the implementer for up to four fixes. Checks still missing after those fixes suspend the Run with the gaps named.
+still close go to the implementer for up to four fixes. Checks still missing after those
+fixes suspend the Run with the gaps named, except where a fix changed nothing and disputed
+every finding it was handed: the gate then logs `outcome unproved` and goes on to the merge
+request, which names each disputed gap with the fixer's reason.
 Repair the checks and resume the Run: a check whose latest record on the tree failed runs
 again, and so does one whose pass was collected in another environment or before this host
 started. Every pass but a `rerun`, which always runs — gate, recheck, fix, finish and the proof — runs a check only where
@@ -1153,14 +1156,14 @@ check that passed on a tree, an agent's `collie verify` of it included, is not r
 on that tree, and nor is one whose every failed test there was a Flake or fails at the base too. A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
-can repair the work; implement offers one after success or failure on a branch. The merge request
-is reached only once the outcome is proved. Only the latest
+can repair the work; implement offers one after success or failure on a branch. Apart from
+that disputed gate fix, the merge request is reached only once the outcome is proved. Only the latest
 record of a check's exact command on that tree counts, whoever asked for it, so a
 pass a later fail contradicts is not one, and a record that only shares the check's name
 is not the check. In `implement`, each test a failed check still fails on after its rerun
 is run alone before any fix, where the branch leaves the default branch, in the run's own
-checkout, once per base revision. A check whose every such test fails there too is not
-handed to a fix, and the merge request names those tests. A check whose failures name no
+checkout, once per base revision. The merge request names each test that fails there too,
+and a check whose every such test does is not handed to a fix. A check whose failures name no
 tests has no baseline and remains required on the Run's tree: its exit code at the base
 cannot show whether the branch added different failures. If merge request handling is unavailable,
 the Run suspends with the reason instead of completing without delivery. A run with no
