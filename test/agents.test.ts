@@ -75,6 +75,8 @@ import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
 import { FALLBACK_DEFAULTS } from "../src/settings";
 import type { AgentProfile } from "../src/profile";
+import { FakeBin } from "./support/bin";
+import { forgeOnPath } from "./support/forge";
 
 let rig: Rig;
 let dir: string;
@@ -2316,6 +2318,58 @@ const liveIn = Effect.fn("test.liveIn")(function* (
   });
 });
 
+test("a Run's authority is the branch it created and who started it; an older record and a roaming one authorise no branch", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const store = yield* Store;
+      const placedOn = (run: string, branch: string, worktree: { created_branch?: boolean }) =>
+        Effect.gen(function* () {
+          yield* store.admit({
+            request: `req-${run}`,
+            run,
+            workflow: "w",
+            project: dir,
+            input: {},
+            provenance: {},
+            options: {},
+            generation: "g",
+            execution: `exec-${run}`,
+            task: null,
+            parent: null,
+            placing: encodeJson({ from: dir, taskLabel: null }),
+          });
+          yield* store.place(run, {
+            checkout: encodeJson({
+              cwd: dir,
+              branch: branch === "" ? null : branch,
+              workspace: null,
+              worktree: {
+                path: dir,
+                branch,
+                created_by_collie: true,
+                managed_by: "git",
+                workspace_id: null,
+                ...worktree,
+              },
+            }),
+            task: null,
+          });
+        });
+      yield* placedOn("run-new", "me/x", { created_branch: true });
+      yield* placedOn("run-old", "me/x", {});
+      yield* placedOn("run-roams", "", {});
+      const host = yield* Host;
+      const authority = (run: string) => Effect.map(host.place(run), (place) => place.authority);
+      expect(yield* authority("run-new")).toEqual({
+        createdBranch: "me/x",
+        roaming: false,
+        started: null,
+      });
+      expect((yield* authority("run-old")).createdBranch).toBeNull();
+      expect(yield* authority("run-roams")).toMatchObject({ createdBranch: null, roaming: true });
+    }).pipe(Effect.provide(foundationLayer({ dir })), Effect.scoped, Effect.orDie),
+  ));
+
 test("a Run built from another Run's plan has that Run in its lineage, however it was started", () =>
   runEffect(
     Effect.gen(function* () {
@@ -4060,6 +4114,20 @@ const claudeSettingsControls = (): CompactionPorts => ({
   claude: { ...COMPACTION_PORTS.claude!, gate: () => Effect.void, ready: undefined },
 });
 
+const AutoModeSettings = Schema.fromJsonString(
+  Schema.Struct({
+    autoMode: Schema.Struct({
+      environment: Schema.Array(Schema.String),
+      allow: Schema.Array(Schema.String),
+    }),
+  }),
+);
+
+const settingsAt = (calls: ReadonlyArray<Call>) => {
+  const args = launchArgs(calls);
+  return read(args[args.indexOf("--settings") + 1] ?? "");
+};
+
 test("with no agent profile a launch types and passes what it always has", () =>
   runEffect(
     Effect.gen(function* () {
@@ -4081,7 +4149,8 @@ test("with no agent profile a launch types and passes what it always has", () =>
       const same = (calls: ReadonlyArray<Call>, runId: string) =>
         [...paneLines(calls), ...launchArgs(calls)].map((said) => said.replaceAll(runId, "<run>"));
       expect(same(after, "r2")).toEqual(same(before, "r1"));
-      expect(launchArgs(after)).not.toContain("--settings");
+      // Its own, for the Run's autoMode block alone.
+      expect(launchArgs(after)).toContain(`${dir}/agents/r2/review.settings.json`);
     }),
   ));
 
@@ -4213,6 +4282,10 @@ test("a Claude overlay is merged into Collie's settings file, and Collie's hooks
       expect(Object.keys(settings.hooks)).toEqual(
         expect.arrayContaining(["PreCompact", "PostCompact", "UserPromptSubmit"]),
       );
+      const { autoMode } = yield* Schema.decodeUnknownEffect(AutoModeSettings)(
+        yield* read(args[args.indexOf("--settings") + 1] ?? ""),
+      );
+      expect(autoMode.environment[0]).toBe("$defaults");
     }),
   ));
 
@@ -4229,5 +4302,113 @@ test("without Collie's controls, a Claude overlay is a settings file of its own"
       const path = args[args.indexOf("--settings") + 1] ?? "";
       expect(path).toBe(`${dir}/agents/r1/review.settings.json`);
       expect(yield* read(path)).toContain("/home/me/.claude/CLAUDE.md");
+    }),
+  ));
+
+test("a Claude launch's settings carry the Run's autoMode block, each list opening with the defaults", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      const text = yield* settingsAt(yield* rig.calls());
+      const { autoMode } = yield* Schema.decodeUnknownEffect(AutoModeSettings)(text);
+      expect(autoMode.environment[0]).toBe("$defaults");
+      expect(autoMode.allow).toEqual(["$defaults"]);
+      expect(autoMode.environment[1]).toContain(`of Collie Run r1 (Workflow agent-work)`);
+      expect(autoMode.environment[2]).toContain(`Checkout: ${rig.projectDir}`);
+      expect(autoMode.environment[3]).toContain(rig.pluginEnv().stateDir);
+      expect(autoMode.environment[4]).toContain("collie-delivery:");
+      expect(autoMode.environment).toHaveLength(5);
+      expect(text).not.toContain("soft_deny");
+      expect(text).not.toContain("hard_deny");
+    }),
+  ));
+
+test("a Run that created its branch, which the forge leaves unprotected, may rewrite it, and quotes the human who started it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const branch = "me/new-work";
+      const origin = "git@gitlab.example.com:group/app.git";
+      const git = (...args: ReadonlyArray<string>) =>
+        Effect.promise(() => Bun.$`git ${args}`.cwd(rig.projectDir).quiet());
+      yield* git("init", "--quiet", "-b", branch);
+      yield* git("remote", "add", "origin", origin);
+      const bin = yield* FakeBin.make(`${rig.root}/bin`);
+      yield* forgeOnPath(bin, "gitlab", {
+        installed: true,
+        loggedIn: ["gitlab.example.com"],
+        login: "me",
+        mrs: [],
+        defaultBranch: "main",
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* Store;
+        yield* store.admit({
+          request: "req-r1",
+          run: "r1",
+          workflow: "agent-work",
+          project: rig.projectDir,
+          input: {},
+          provenance: {},
+          options: {},
+          generation: "g",
+          execution: "exec-r1",
+          task: null,
+          parent: null,
+          placing: encodeJson({
+            from: rig.projectDir,
+            taskLabel: null,
+            started: { door: "board", words: "Fix the login form" },
+          }),
+        });
+        yield* store.place("r1", {
+          checkout: encodeJson({
+            cwd: rig.projectDir,
+            branch,
+            workspace: null,
+            worktree: {
+              path: rig.projectDir,
+              branch,
+              created_by_collie: true,
+              created_branch: true,
+              managed_by: "git",
+              workspace_id: null,
+              made_at: null,
+              root_tab_id: null,
+              root_pane_id: null,
+            },
+          }),
+          task: null,
+        });
+      }).pipe(Effect.provide(foundationLayer({ dir })), Effect.scoped, Effect.orDie);
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1")).pipe(Effect.ensuring(bin.restore()));
+
+      const { autoMode } = yield* Schema.decodeUnknownEffect(AutoModeSettings)(
+        yield* settingsAt(yield* rig.calls()),
+      );
+      expect(autoMode.allow[1]).toStartWith(`Rewriting history on branch ${branch} of ${origin}`);
+      expect(autoMode.environment[2]).toContain(`branch ${branch}, which this Run created.`);
+      expect(autoMode.environment[5]).toBe(
+        'The user started this Run from the board with: "Fix the login form"',
+      );
+      expect(autoMode.allow[2]).toContain("starting words");
+      expect(yield* fs.exists(`${rig.root}/bin/gitlab.model.json.log`)).toBe(true);
+    }),
+  ));
+
+test("a Codex launch writes no autoMode", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"), { harness: "codex", model: "default" });
+
+      const calls = yield* rig.calls();
+      expect(launchArgs(calls).join(" ")).not.toContain("autoMode");
+      for (const path of yield* fs.readDirectory(`${dir}/agents/r1`))
+        expect(yield* read(`${dir}/agents/r1/${path}`)).not.toContain("autoMode");
     }),
   ));

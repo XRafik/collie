@@ -377,6 +377,38 @@ function forBranch<R>(
   });
 }
 
+const DefaultBranchJson = Schema.fromJsonString(Schema.Struct({ default_branch: Schema.String }));
+const ProtectedJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String })));
+const PAGE = 100;
+
+/** GitLab's `*` stands for any run of characters, `/` included. */
+const wildcard = (pattern: string) =>
+  new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`);
+
+/** The default branch, or a protected branch as listed, wildcards matched; null where either is unread. */
+function protects<R>(
+  project: string,
+  branch: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<boolean | null, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(project);
+    if (host === null) return null;
+    const route = `projects/${encodeURIComponent(project.slice(host.length + 1))}`;
+    const api = (path: string) => run("glab", ["api", "--hostname", host, path], cwd);
+    const repo = yield* api(route);
+    const named = Schema.decodeUnknownOption(DefaultBranchJson)(repo.stdout);
+    if (repo.code !== 0 || Option.isNone(named)) return null;
+    if (named.value.default_branch === branch) return true;
+    const listed = yield* api(`${route}/protected_branches?per_page=${PAGE}`);
+    const rules = Schema.decodeUnknownOption(ProtectedJson)(listed.stdout);
+    // ponytail: one page; a full one is a project with more rules than it reads, so it cannot say.
+    if (listed.code !== 0 || Option.isNone(rules) || rules.value.length >= PAGE) return null;
+    return rules.value.some((rule) => wildcard(rule.name).test(branch));
+  });
+}
+
 const BranchMrsJson = Schema.fromJsonString(
   Schema.Array(
     Schema.Struct({
@@ -584,6 +616,7 @@ export const gitlab: Forge = {
   webUrl: (project) => `https://${project}`,
   forBranch,
   fromBranch,
+  protects,
   template,
   // `glab mr create` and `glab mr note` take text only, so a file goes through the API,
   // which reads `@<file>` itself: no command substitution (CrowdStrike flags it).

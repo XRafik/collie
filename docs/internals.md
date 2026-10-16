@@ -669,6 +669,15 @@ answers as `oauth2`, and GitHub's is gh's own `gh auth git-credential`. An empty
 entry before it drops whatever helper a global config named, so a stale credential there
 never answers first. Setting it again changes nothing.
 
+`protects(project, branch)` says whether a branch, pushed or not, is protected: `true`
+where it is the default branch or matches any protection rule or ruleset, whatever the rule
+allows, and `null` where the forge cannot say. GitLab reads the project's default branch
+and its protected branches, matching their wildcards; GitHub reads the default branch, the
+rules active for the name (`rules/branches/<name>`), and the classic protection rules'
+patterns through GraphQL. A Claude agent's launch reads it for the branch its Run created,
+and only `false` gives the agent the history allowance
+([What a Claude agent's auto mode is told](using.md#what-a-claude-agents-auto-mode-is-told)).
+
 The interface also lists open issues, files issues, and comments on them. The adapters
 decode their own CLI answers into the shared issue shape. GitLab reads consecutive
 pages; GitHub requests all open issues through its list command. These flags follow the

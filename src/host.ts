@@ -127,6 +127,7 @@ import {
   worktreesSweeper,
   type SweptBy,
 } from "./cleanup";
+import { startedOf } from "./automode";
 import { once, readAudit, recordAudit, startedBy, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
@@ -1307,6 +1308,12 @@ const frontDoorHandlers = (
                         Effect.flatMap((generation) =>
                           registry.start({
                             generation,
+                            started: startedOf(
+                              whoOf(client).origin,
+                              whoOf(client).said,
+                              input,
+                              text,
+                            ),
                             requestedBy:
                               whoOf(client).origin === "agent"
                                 ? Option.getOrUndefined(

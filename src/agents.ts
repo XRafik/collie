@@ -61,10 +61,13 @@ import { Oversight } from "./oversight";
 import {
   autoCompactWindowAsWritten,
   FALLBACK_DEFAULTS,
+  gitlabHostOf,
   loadDefaults,
   readConfig,
   type Defaults,
 } from "./config";
+import { autoModeBlock, autoModeFacts, type AutoModeBlock, type RunAuthority } from "./automode";
+import { shell } from "./mr";
 import type { YamlMap } from "./yaml";
 import { RanOn } from "./board-model";
 import type { Asker } from "./proposals";
@@ -162,6 +165,8 @@ export interface AgentAsk {
   readonly skill: string | null;
   /** What this step's agent is told, in its own turn, that it may do: its Clearance. */
   readonly clears?: ReadonlyArray<string>;
+  /** What the Run authorises, for a Claude agent's auto mode; nothing where left out. */
+  readonly authority?: RunAuthority;
   /** Null takes the host's own configured default, which is the operator's. */
   readonly harness: string | null;
   readonly model: string | null;
@@ -631,6 +636,7 @@ export const agentWork = <
       model: choice.model,
       effort: choice.effort,
       permissions: work.permissions ?? null,
+      authority: place.authority,
     };
     fellBack(ask, choice.from, choice.why);
     if (held !== null && held.sequence > 1) ask.sequence = held.sequence;
@@ -1785,10 +1791,25 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
           ),
         );
         const settingsArgs =
-          adapter.id === "claude" && profile.claude !== undefined
-            ? yield* overlaySettings(
+          adapter.id === "claude"
+            ? yield* claudeSettings(
                 controls,
-                profile.claude,
+                profile.claude ?? {},
+                autoModeBlock(
+                  yield* autoModeFacts(
+                    {
+                      agent,
+                      run: ask.runId,
+                      workflow: ask.workflow,
+                      machine: machineName(),
+                      stateDir: host.env.stateDir,
+                      cwd: ask.cwd,
+                    },
+                    ask.authority ?? NO_AUTHORITY,
+                    shell,
+                    yield* gitlabHostOf(host.env).pipe(Effect.orElseSucceed(() => undefined)),
+                  ),
+                ),
                 `${dirFor(ask.runId)}/${stemOf(ask)}`,
               )
             : controls;
@@ -2818,11 +2839,18 @@ const write = (path: string, text: string) =>
 
 const encodeSettings = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 
+const NO_AUTHORITY: RunAuthority = { createdBranch: null, roaming: false, started: null };
+
 /**
- * Claude's `--settings` with the operator's overlay merged in: into the file Collie's
- * controls already pass, or into a file of its own where they pass none.
+ * Claude's `--settings` with the operator's overlay and the Run's `autoMode` merged in: into
+ * the file Collie's controls already pass, or into a file of its own where they pass none.
  */
-const overlaySettings = (controls: ReadonlyArray<string>, overlay: ClaudeOverlay, stem: string) =>
+const claudeSettings = (
+  controls: ReadonlyArray<string>,
+  overlay: ClaudeOverlay,
+  autoMode: AutoModeBlock,
+  stem: string,
+) =>
   Effect.gen(function* () {
     const at = controls.indexOf("--settings");
     const passed = at === -1 ? undefined : controls[at + 1];
@@ -2835,7 +2863,8 @@ const overlaySettings = (controls: ReadonlyArray<string>, overlay: ClaudeOverlay
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.JsonObject))),
             Effect.orDie,
           );
-    yield* write(path, `${encodeSettings(mergeClaudeSettings(collie, overlay))}\n`);
+    const merged = { ...mergeClaudeSettings(collie, overlay), autoMode: { ...autoMode } };
+    yield* write(path, `${encodeSettings(merged)}\n`);
     return passed === undefined ? [...controls, "--settings", path] : controls;
   });
 

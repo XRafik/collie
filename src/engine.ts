@@ -162,7 +162,8 @@ import { TASK_INPUT, checkoutFor, repositoryName, workOf } from "./worktree";
 import { Herdr, herdrFailureReason } from "./herdr";
 
 import type { PluginEnv } from "./env";
-import { WorktreeRecordSchema } from "./run";
+import { StartedSchema, type RunAuthority, type Started } from "./automode";
+import { WorktreeRecordSchema, type WorktreeRecord } from "./run";
 import { listTasks, newTask, taskOfWorkspace, writeTask } from "./task";
 import { nowIso, epochMs } from "./time";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
@@ -335,6 +336,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly workspace: string | null;
     /** This Run, then the Runs it was started from or builds a plan of, and so on: whose agents it may ask. */
     readonly lineage: ReadonlyArray<string>;
+    /** What a Claude agent's auto mode is told this Run authorises: the branch it made, and who started it. */
+    readonly authority: {
+      readonly createdBranch: string | null;
+      readonly roaming: boolean;
+      readonly started: { readonly door: "board" | "desktop" | "cli-tty" | "chat"; readonly words: string } | null;
+    };
   }
 
   /**
@@ -2742,6 +2749,7 @@ export const hostLayer = (options: {
                           options,
                           task: row.task,
                           placed: placedOf(row, options),
+                          started: Option.getOrUndefined(decodePlacing(row.placing ?? ""))?.started,
                         })),
                       ),
                 ),
@@ -2761,6 +2769,7 @@ export const hostLayer = (options: {
                   options: admitted?.options ?? {},
                   task: admitted?.task ?? null,
                   workspace: admitted?.placed.workspace ?? null,
+                  authority: authorityOf(admitted?.placed.worktree ?? null, admitted?.started),
                 })),
                 Effect.orElseSucceed(() => ({
                   cwd: dir,
@@ -2768,6 +2777,7 @@ export const hostLayer = (options: {
                   options: {},
                   task: null,
                   workspace: null,
+                  authority: authorityOf(null, undefined),
                 })),
               ),
               lineageOf(runId),
@@ -3572,6 +3582,8 @@ type Cut = typeof Cut.Type;
  */
 const Placing = Schema.Struct({
   requestedBy: Schema.optional(RequestedBy),
+  /** The human door that started it and their words, where one did. */
+  started: Schema.optional(StartedSchema),
   branchBase: Schema.optional(Schema.String),
   closes: Schema.optional(Schema.Literal("reported")),
   from: Schema.String,
@@ -3592,6 +3604,16 @@ export const owesReport = (row: RunRow) =>
     onNone: () => false,
     onSome: (placing) => placing.requestedBy !== undefined || placing.closes === "reported",
   });
+
+/** What a Run's agents are told it authorises; a record from before this was kept authorises nothing. */
+const authorityOf = (
+  worktree: WorktreeRecord | null,
+  started: Started | undefined,
+): RunAuthority => ({
+  createdBranch: worktree?.created_branch === true ? worktree.branch : null,
+  roaming: worktree !== null && worktree.branch === "",
+  started: started ?? null,
+});
 
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
@@ -4065,6 +4087,8 @@ export interface RegistryApi {
 /** What a start is given. */
 export interface StartOptions {
   readonly requestedBy?: RequestedBy;
+  /** The human door that started it and their words, where one did. */
+  readonly started?: Started;
   readonly branchBase?: string | undefined;
   readonly generation: Generation;
   readonly request: string;
@@ -5579,6 +5603,7 @@ const makeRegistry: (
       options: launch,
       placing: encodePlacing({
         requestedBy: options.requestedBy,
+        started: options.started,
         branchBase: options.branchBase,
         closes: generation.closes,
         from: request.kind === "existing" ? request.path : options.project,

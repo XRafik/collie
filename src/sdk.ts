@@ -28,6 +28,7 @@ import { WorkflowInstance, type WorkflowEngine } from "effect/workflow/WorkflowE
 import * as DurableDeferred from "effect/workflow/DurableDeferred";
 import * as Workflow from "effect/workflow/Workflow";
 import type { Agents } from "./agents";
+import type { RunAuthority } from "./automode";
 import { bodySections, INPUT_STRATEGIES, type InputStrategy } from "./definitions";
 import { exclusiveClashes, launchInputProblem } from "./strategies";
 import { expressionsIn, malformedIn } from "./template";
@@ -725,6 +726,8 @@ export interface Place {
   readonly workspace: string | null;
   /** This Run, then the Runs it was started from or builds a plan of, and so on: whose agents it may ask. */
   readonly lineage: ReadonlyArray<string>;
+  /** What a Claude agent's auto mode is told this Run authorises: the branch it made, and who started it. */
+  readonly authority: RunAuthority;
 }
 
 /** The reviewed branch's checkout, or why there is none, in the resolver's own words. */

@@ -117,6 +117,16 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<ForBranch, never, R>;
+  /**
+   * Whether `branch`, pushed or not, is the default branch or matches any protection rule
+   * or ruleset, whatever the rule allows; null where the forge cannot say.
+   */
+  readonly protects: <R>(
+    project: string,
+    branch: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<boolean | null, never, R>;
   /** Every merge request whose source branch is `branch`, whatever its state. */
   readonly fromBranch: <R>(
     project: string,

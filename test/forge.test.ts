@@ -717,6 +717,34 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 
+  test(`the ${name} forge says a branch is protected by the default branch or any rule, and null where it cannot read`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const ask = (branch: string, over: Partial<ForgeModel> = {}) =>
+          forge.protects(
+            PROJECT[name],
+            branch,
+            "/w",
+            fakeForge(name, model(name, { defaultBranch: "main", ...over })).run,
+          );
+        const rule =
+          name === "gitlab"
+            ? { protectedBranches: [{ name: "release/*" }] }
+            : { rulesets: ["release/*"] };
+        expect(yield* ask("main")).toBe(true);
+        expect(yield* ask("me/not-pushed-yet")).toBe(false);
+        expect(yield* ask("release/2.0", rule)).toBe(true);
+        expect(yield* ask("me/not-pushed-yet", rule)).toBe(false);
+        expect(
+          yield* ask("release/2.0", {
+            protectedBranches: [{ name: "release/*", allowForcePush: true }],
+          }),
+        ).toBe(true);
+        expect(yield* ask("me/x", { protectionDown: true })).toBeNull();
+        expect(yield* ask("me/x", { installed: false })).toBeNull();
+      }),
+    ));
+
   test(`the ${name} forge lists a branch's merge requests in every state, and says when it cannot`, () =>
     runEffect(
       Effect.gen(function* () {

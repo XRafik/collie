@@ -604,6 +604,8 @@ const place = yield * host.place((yield * Run).id);
 // place.workspace — a workspace of its own, where the Run asked for one; null otherwise
 // place.lineage   — this Run, then the Runs it was started from or builds a plan of, and
 //                   so on: whose agents `askRoute` and `handOffWork` may reach
+// place.authority — the branch this Run created, whether it roams, and the human door and
+//                   words that started it: what a Claude agent's auto mode is told
 ```
 
 `place.cwd` is decided before your body runs. A workflow that
