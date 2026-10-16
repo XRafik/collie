@@ -10,7 +10,7 @@ import { FlockClient } from "../flock";
 
 const actAtom = FlockClient.mutation("act");
 const offersAtom = FlockClient.mutation("offers");
-const workflowsAtom = FlockClient.mutation("workflows");
+const definitionsAtom = FlockClient.mutation("definitions");
 const openLinkAtom = FlockClient.mutation("openLink");
 const goToPaneAtom = FlockClient.mutation("goToPane");
 const terminalSendAtom = FlockClient.mutation("terminalSend");
@@ -55,7 +55,7 @@ export const useActions = () => {
   const toast = useToast();
   const act = useAtomSet(() => actAtom, { mode: "promiseExit" });
   const offers = useAtomSet(() => offersAtom, { mode: "promiseExit" });
-  const workflows = useAtomSet(() => workflowsAtom, { mode: "promiseExit" });
+  const definitions = useAtomSet(() => definitionsAtom, { mode: "promiseExit" });
   const openLink = useAtomSet(() => openLinkAtom, { mode: "promiseExit" });
   const goToPane = useAtomSet(() => goToPaneAtom, { mode: "promiseExit" });
   const terminalSend = useAtomSet(() => terminalSendAtom, { mode: "promiseExit" });
@@ -173,8 +173,8 @@ export const useActions = () => {
     terminalSend: (command: TerminalCommand) => terminalSend({ payload: { command } }),
     offersOf: (installation: string, runId: string) =>
       offers({ payload: { installation, runId } }).then(read),
-    workflowsIn: (installation: string, project: string) =>
-      workflows({ payload: { installation, project } }).then(read),
+    /** Its host's Workflows and Personas, or why not; the caller shows a failure. */
+    definitionsOf: (installation: string) => definitions({ payload: { installation } }),
     /** The job onboarding that route's Machine, whose progress comes on the board. */
     onboard: (profile: string, skip?: ReadonlyArray<Skippable>) =>
       onboard({ payload: skip === undefined ? { profile } : { profile, skip } }).then(read),

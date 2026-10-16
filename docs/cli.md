@@ -2032,7 +2032,11 @@ The operations that change a Run are on `FrontDoorRpcs` too: `start`, `answer`, 
 `invoke` (an offer). Two reads tell a front door on another computer what those take:
 `offers`, what a Run offers to do next as its module decides now, with each offer's
 arguments as JSON Schema; and `workflows`, what may be started in a project and the Inputs
-each asks for. `start` then takes what a human typed in `text`, and the host settles it
+each asks for. A third, `definitions`, reads every Workflow and Persona in the host's
+shipped and user Layers in full: each module as `workflow show` reads it, with its own file
+and the Markdown beside it named `<stem>.md` or `<stem>.<anything>.md`, the modules that
+would not load, each Persona as `persona show` gives it, and the Persona files that would
+not load. It typechecks nothing. `start` then takes what a human typed in `text`, and the host settles it
 against the workflow's own schema. `usage` reads this Machine's [Usage readings](#usage).
 `schedules` reads this Machine's [Schedules](#schedules), and `changeSchedule` adds one,
 paused or not, or pauses, resumes or removes one, under a request id and the asker's Actor.
@@ -2083,7 +2087,14 @@ the Machine's `config.json`, each with its own edit's time and only where that i
 the Machine's own last edit of the key, records when each was set in `settings-set.json`
 and, when Desktop asks, that a Desktop gave them, and refuses the whole batch over any value the TUI's Settings
 would refuse ([ADR-0043](adr/0043-a-shared-setting-is-its-latest-edit.md)); `settings`
-reads them back, each with when it was set; and `news`, which
+reads them back, each with when it was set; `sharedDefinitions`, which reads the user
+Layer's shared definitions, each with its bytes in base64 (null for a removal) and the time of its
+latest edit; `setSharedDefinitions`, which writes the Flock's where each is later than the
+Machine's own, gives each written file its edit's time, keeps the file a write replaces
+under `replaced/`, writes nothing through a link, and refuses the whole batch over any path
+that is not a file directly in `workflows/` or `personas/`, or any malformed time or base64
+([ADR-0061](adr/0061-a-users-definitions-are-the-flocks.md));
+and `news`, which
 hands one conversation its Herd's pending News, each item with its Significance, and
 records it `read`, `sent` or `uncertain` for that conversation alone. Given `keys`, it hands
 over every pending item and records only those keys: what Desktop's Flock chat actually

@@ -45,6 +45,7 @@ export const useFlock = () => {
     trouble: flock.trouble,
     lost: computed(() => [...told.value.lost]),
     notLive: (installation: string) => notLiveOf(told.value, installation),
+    protocolOf: (installation: string) => told.value.machines.get(installation)?.protocol ?? null,
     machines: computed(() => board.value.machines),
     notices: computed(() => told.value.notices),
     /** Now, as of the last minute. */

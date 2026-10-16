@@ -13,7 +13,13 @@ import {
   settingSections,
   takeFrom,
 } from "../desktop/src/shared/flock-settings";
-import { flockSync } from "../desktop/src/bun/flock-settings";
+import {
+  definitionsSync,
+  type FlockDefinitions,
+  flockSync,
+} from "../desktop/src/bun/flock-settings";
+import type { SharedDefinition } from "../src/definitions-model";
+import { latestEdits } from "../src/flock-settings";
 import { settingStored } from "../src/settings";
 import {
   applyChange,
@@ -27,6 +33,26 @@ const set = (key: string, value: SharedSetting["value"], hour: number): SharedSe
   key,
   value,
   at: at(hour),
+});
+
+test("the latest edit of each key wins, a removal is an edit, and a tie keeps what is held", () => {
+  const held = [
+    set("a", "old", 9),
+    set("b", "mine", 11),
+    set("c", "held", 9),
+    set("d", "only mine", 9),
+  ];
+  const has = [
+    set("a", null, 10),
+    set("b", "theirs", 10),
+    set("c", "other", 9),
+    set("e", "theirs", 8),
+  ];
+
+  expect(latestEdits(held, has, (one) => one.key)).toEqual({
+    take: [set("a", null, 10), set("e", "theirs", 8)],
+    give: [set("b", "mine", 11), set("d", "only mine", 9)],
+  });
 });
 
 test("the first sync takes a key set on only one Machine from it", () => {
@@ -340,6 +366,113 @@ test("each sync tells how it ended for its Machine: synced, or failed in its hos
         ["vm-a", null],
         ["vm-b", "no such operation"],
       ]);
+    }),
+  ));
+
+/** A Machine's host as ticket 02's: each path written only where the given edit is later. */
+const definer = (name: string, held: ReadonlyArray<SharedDefinition>, refused?: string) => {
+  const asked: Array<ReadonlyArray<SharedDefinition>> = [];
+  let has = [...held];
+  const door = {
+    sharedDefinitions: () =>
+      refused === undefined
+        ? Effect.sync(() => has)
+        : Effect.fail(new HostRefused({ reason: refused })),
+    setSharedDefinitions: ({ definitions }: { definitions: ReadonlyArray<SharedDefinition> }) =>
+      Effect.sync(() => {
+        asked.push(definitions);
+        for (const given of definitions) {
+          const own = has.find(({ path }) => path === given.path);
+          if (own === undefined || own.at < given.at)
+            has = [...has.filter(({ path }) => path !== given.path), given];
+        }
+        return has;
+      }),
+  };
+  return { name, door, asked };
+};
+type Definer = ReturnType<typeof definer>;
+
+const defined = (path: string, base64: string | null, hour: number): SharedDefinition => ({
+  path,
+  base64,
+  at: at(hour),
+});
+
+const definitionsSyncer = (
+  flock: SubscriptionRef.SubscriptionRef<FlockDefinitions>,
+  told: (machine: Definer, failed: string | null) => Effect.Effect<void>,
+  ...machines: Definer[]
+) =>
+  definitionsSync({
+    flock,
+    machines: () => machines,
+    save: () => Effect.void,
+    request: Effect.succeed("r"),
+    told,
+  });
+
+test("a definition taken from one Machine is given to the next connected Machine", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const flock = yield* SubscriptionRef.make<FlockDefinitions>({});
+      const plan = defined("workflows/plan.workflow.ts", "export default 1", 10);
+      const vmA = definer("vm-a", [plan]);
+      const vmB = definer("vm-b", []);
+      const { syncOn } = yield* definitionsSyncer(flock, () => Effect.void, vmA, vmB);
+
+      yield* syncOn(vmA);
+      expect(vmB.asked).toEqual([[plan]]);
+      expect((yield* SubscriptionRef.get(flock))["workflows/plan.workflow.ts"]).toEqual({
+        base64: "export default 1",
+        at: at(10),
+        from: "vm-a",
+      });
+    }),
+  ));
+
+test("a Machine's newer edit of a definition wins over the copy Desktop holds", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const path = "personas/builder.md";
+      const flock = yield* SubscriptionRef.make<FlockDefinitions>({
+        [path]: { base64: "held", at: at(9), from: "vm-b" },
+      });
+      const vmA = definer("vm-a", [defined(path, "edited on vm-a", 11)]);
+      const { syncOn } = yield* definitionsSyncer(flock, () => Effect.void, vmA);
+
+      yield* syncOn(vmA);
+      expect(vmA.asked).toEqual([]);
+      expect((yield* SubscriptionRef.get(flock))[path]).toEqual({
+        base64: "edited on vm-a",
+        at: at(11),
+        from: "vm-a",
+      });
+    }),
+  ));
+
+test("a host that refuses the definitions leaves its Machine failed in its words, and the others still sync", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const flock = yield* SubscriptionRef.make<FlockDefinitions>({
+        "workflows/plan.md": { base64: "plan", at: at(8), from: "Desktop" },
+      });
+      const told: Array<readonly [string, string | null]> = [];
+      const vmA = definer("vm-a", [], "no such operation");
+      const vmB = definer("vm-b", []);
+      const { syncEvery } = yield* definitionsSyncer(
+        flock,
+        (one, failed) => Effect.sync(() => void told.push([one.name, failed])),
+        vmA,
+        vmB,
+      );
+
+      yield* syncEvery();
+      expect(told.sort()).toEqual([
+        ["vm-a", "no such operation"],
+        ["vm-b", null],
+      ]);
+      expect(vmB.asked).toEqual([[defined("workflows/plan.md", "plan", 8)]]);
     }),
   ));
 

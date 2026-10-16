@@ -6,19 +6,8 @@ import type { Level } from "../../../src/shared/usage";
 import { updatesAtom } from "../flock";
 import tile from "../../../../assets/brand/logos/collie-tile-256.png";
 
-const {
-  connecting,
-  trouble,
-  lost,
-  machines,
-  notices,
-  tasks,
-  sections,
-  header,
-  waiting,
-  placedBy,
-  placedAt,
-} = useFlock();
+const { connecting, trouble, lost, notices, tasks, sections, header, waiting, placedBy, placedAt } =
+  useFlock();
 const { summary } = useInSync();
 const usage = useUsage();
 usage.keepFresh();
@@ -27,7 +16,6 @@ const LEVEL_CLASS = {
   warn: "text-warning font-medium",
   out: "text-error font-medium",
 } satisfies Record<Level, string>;
-const starting = ref(false);
 const { onboardOn } = useOnboarding();
 const { renewBy } = useCredentials();
 const { page, asked, open, back, toggle, showRecord } = usePage();
@@ -184,6 +172,17 @@ watch(update, (now) => {
         <UButton
           color="neutral"
           variant="outline"
+          icon="i-lucide-workflow"
+          label="Workflows"
+          data-testid="workflows"
+          :active="page?.kind === 'workflows'"
+          active-variant="solid"
+          :aria-pressed="page?.kind === 'workflows'"
+          @click="toggle('workflows')"
+        />
+        <UButton
+          color="neutral"
+          variant="outline"
           icon="i-lucide-server"
           data-testid="machines"
           :active="page?.kind === 'machines'"
@@ -213,14 +212,6 @@ watch(update, (now) => {
           @click="toggle('settings')"
         />
         <OnboardDialog />
-        <UButton
-          icon="i-lucide-plus"
-          label="New run"
-          data-testid="new-run"
-          :disabled="machines.length === 0"
-          @click="starting = true"
-        />
-        <StartDialog v-model:open="starting" :machines="machines" />
         <UButton
           v-if="!chatShown && !popped"
           icon="i-lucide-messages-square"
@@ -317,6 +308,11 @@ watch(update, (now) => {
         />
         <MachinesPage
           v-if="page?.kind === 'machines'"
+          class="absolute inset-0"
+          @back="gesture({ kind: 'close' })"
+        />
+        <WorkflowsPage
+          v-if="page?.kind === 'workflows'"
           class="absolute inset-0"
           @back="gesture({ kind: 'close' })"
         />

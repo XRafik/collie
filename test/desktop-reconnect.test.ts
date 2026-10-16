@@ -3,9 +3,17 @@
 
 import { expect, test } from "bun:test";
 import { Deferred, Effect, Exit, Fiber, Queue, Stream } from "effect";
-import { act, DoorMap, type Door, offersOn, runDetailOn } from "../desktop/src/bun/machine";
+import {
+  act,
+  definitionsIn,
+  DoorMap,
+  type Door,
+  offersOn,
+  runDetailOn,
+} from "../desktop/src/bun/machine";
 import { RpcClientDefect, RpcClientError } from "effect/rpc/RpcClientError";
-import type { RunDetail } from "../src/board-model";
+import { HostRefused, type RunDetail } from "../src/board-model";
+import type { HostDefinitions } from "../src/definitions-model";
 import { ActionFailed } from "../desktop/src/shared/flock";
 import { fastForward } from "./support/effect";
 
@@ -159,5 +167,25 @@ test("a host that cannot read a Run still fails its details", () =>
       yield* Queue.fail(a.queue, { _tag: "Died" });
       const exit = yield* runDetailOn(doors, "i-1", "r-1").pipe(Stream.runDrain, Effect.exit);
       expect(Exit.hasDies(exit)).toBe(true);
+    }),
+  ));
+
+test("a Machine's definitions are read over its door, as its other reads are", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const answer: HostDefinitions = { workflows: [], problems: [], personas: [], errors: ["x"] };
+      const doors = new DoorMap<ReturnType<typeof reached>>();
+      // SAFETY: answered as the client answers a call not asked to discard its reply.
+      const answering = (reply: Effect.Effect<HostDefinitions, HostRefused>) =>
+        reached({ definitions: (() => reply) as Door["definitions"] });
+      doors.set("i-1", answering(Effect.succeed(answer)));
+      doors.set("i-2", answering(Effect.fail(new HostRefused({ reason: "Unknown request tag" }))));
+      expect(yield* definitionsIn(doors, "i-1")).toBe(answer);
+      expect((yield* Effect.flip(definitionsIn(doors, "i-2"))).reason).toBe(
+        "vm-mk: Unknown request tag",
+      );
+      expect((yield* Effect.flip(definitionsIn(doors, "i-3"))).reason).toBe(
+        "that Machine is not connected",
+      );
     }),
   ));

@@ -11,7 +11,7 @@ import {
 
 /** What a Machine lags on, in words, with the steps that fix onboarding. */
 export interface Lag {
-  readonly part: "version" | "settings" | "credentials" | "onboarding";
+  readonly part: "version" | "settings" | "definitions" | "credentials" | "onboarding";
   readonly said: string;
   readonly steps: ReadonlyArray<OnboardStep>;
 }
@@ -79,6 +79,17 @@ const lags = (row: MachineRow, desktop: DesktopHolds): ReadonlyArray<Lag> => {
     failed === null
       ? []
       : [{ part: "settings", said: `Settings didn't sync: ${failed}`, steps: [] }];
+  const unshared = row.definitions?.failed ?? null;
+  const definitions: ReadonlyArray<Lag> =
+    unshared === null
+      ? []
+      : [
+          {
+            part: "definitions",
+            said: `Definitions didn't sync: ${unshared}${development === null ? "" : " (a development checkout, updated by hand)"}`,
+            steps: [],
+          },
+        ];
   const credentials = desktop.credentials.flatMap((credential): ReadonlyArray<Lag> => {
     const held = row.credentials[credential];
     if (held === undefined || held.given) return [];
@@ -91,7 +102,7 @@ const lags = (row: MachineRow, desktop: DesktopHolds): ReadonlyArray<Lag> => {
       },
     ];
   });
-  return [...version, ...settings, ...credentials, ...onboarding];
+  return [...version, ...settings, ...definitions, ...credentials, ...onboarding];
 };
 
 /** A part not known yet is not behind. */

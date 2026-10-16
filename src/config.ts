@@ -3,6 +3,7 @@
 import { Data, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { isHostName } from "./gitlab-token";
 import { permissionsAsWritten } from "./harness";
+import { byKey, latestEdits } from "./flock-settings";
 import { ensureLockDir, withLock } from "./lock";
 import { isNumber, isString } from "./schema";
 import {
@@ -16,7 +17,6 @@ import {
   type SettingValue,
 } from "./settings";
 import type { SharedSetting, SharedSettings } from "./board-model";
-import { epochMs } from "./time";
 import { isYamlMap, YamlMapSchema, type YamlMap, type YamlValue } from "./yaml";
 
 export { type Defaults, FALLBACK_DEFAULTS } from "./settings";
@@ -198,12 +198,12 @@ export const takeShared = (
         if ("refused" in one) return yield* new SettingRefused({ reason: one.refused });
         parsed.push({ key, value: one.value, at });
       }
-      const before = (yield* readSettingsSet(userDir)).set;
-      for (const { key, value, at } of parsed) {
-        const last = before[key];
-        if (last === undefined || epochMs(at) > epochMs(last))
-          yield* writeSetting(userDir, key, value, at);
-      }
+      const before = Object.entries((yield* readSettingsSet(userDir)).set).map(([key, at]) => ({
+        key,
+        at,
+      }));
+      for (const { key, value, at } of latestEdits(before, parsed, byKey).take)
+        yield* writeSetting(userDir, key, value, at);
       if (by !== null)
         yield* writeSettingsSet(userDir, {
           ...(yield* readSettingsSet(userDir)),
