@@ -3643,6 +3643,8 @@ const FLAKY_OUTPUT = [
 
 const ONE_PASSES = `printf ' 1 pass\\n 0 fail\\n' >&2`;
 const ONE_FAILS = `printf ' 0 pass\\n 1 fail\\n' >&2; exit 1`;
+/** bun at the base, naming the test `-t` asked for as the one that failed. */
+const FAILS_AT_BASE = `n="\${4#^}"; printf '(fail) %s\\n 0 pass\\n 1 fail\\nRan 1 test across 1 file.\\n' "\${n%$}" >&2; exit 1`;
 
 /**
  * `unit` counts its runs in `counter` and, while `fails` holds for run `$n`, prints
@@ -3817,7 +3819,7 @@ scenario(
           fails: "true",
           printed: FLAKY_OUTPUT,
           rerun: ONE_FAILS,
-          atBase: ONE_FAILS,
+          atBase: FAILS_AT_BASE,
         });
         const base = yield* baseSha();
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
@@ -3866,7 +3868,7 @@ scenario(
           fails: "[ $n -eq 1 ]",
           printed: TWO_FAILED,
           rerun: ONE_FAILS,
-          atBase: `case "$4" in *old*) ${ONE_FAILS};; *) ${ONE_PASSES};; esac`,
+          atBase: `case "$4" in *old*) ${FAILS_AT_BASE};; *) ${ONE_PASSES};; esac`,
         });
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
         const result = yield* ran({
