@@ -99,11 +99,11 @@ harness-native (**Native chat**) and Effect-native.
 
 **In sync** — A Machine that has everything **Desktop** gives its Flock: it is live, it runs
 Desktop's Collie version or a newer release, it holds the latest edit of every shared
-setting, it was given the credentials Desktop holds now but those its onboarding skipped, and `collie doctor` finds it onboarded. A Machine on a
+setting and every shared definition, it was given the credentials Desktop holds now but those its onboarding skipped, and `collie doctor` finds it onboarded. A Machine on a
 development checkout, which nothing upgrades, is never behind on its version. Each part is
 read from what the Machine's host and doctor last told Desktop, and from what Desktop last
 gave it. A Machine that is not in sync is **behind** on each part it lacks, and each has its
-own fix. Paired hosts keep settings and release versions level without Desktop.
+own fix. Paired hosts keep settings, shared definitions and release versions level without Desktop.
 Desktop also brings a Machine level as it connects and gives it credentials, so one that
 stays behind is one where that failed. Not "up to date",
 which is Desktop's own check for a newer release of itself.
@@ -496,7 +496,7 @@ accounted for and the release succeeded, but one or more updates were deferred w
 operator's approval. The exceptions are named in the checklist entry. An unresolved
 blocker is not an exception: it leaves the entry unchecked and the Run open.
 
-**Layer** — Where a definition is looked up, later wins by name. A Workflow is one `*.workflow.ts` entry, found project `.collie/workflows/` first, then the user's `~/.collie/user/workflows/`, then the installation's `workflows/`; a broken override is reported, never fallen through. A Persona is Markdown, found the same way: the project's `.collie/personas/`, then the user's `~/.collie/user/personas/`, then the installation's `personas/`. Forking takes a baseline definition into a later Layer.
+**Layer** — Where a definition is looked up, later wins by name. A Workflow is one `*.workflow.ts` entry, found project `.collie/workflows/` first, then the user's `~/.collie/user/workflows/`, then the installation's `workflows/`; a broken override is reported, never fallen through. A Persona is Markdown, found the same way: the project's `.collie/personas/`, then the user's `~/.collie/user/personas/`, then the installation's `personas/`. Forking takes a baseline definition into a later Layer. The user Layer's files are **shared definitions**: every Machine in a Flock holds the latest edit of each, its removal included, so the user Layer is the Flock's rather than one Machine's ([ADR-0061](docs/adr/0061-a-users-definitions-are-the-flocks.md)).
 
 **Override** — A Persona that declares `extends: <name>` and changes only what it names; everything else still follows the parent in the Layer below. A file without `extends:` replaces the whole Persona, and a full copy records `forked_from_hash` so a parent that has moved on can be marked stale. The merge rules are canonical in `src/definitions.ts` and `docs/authoring.md`. A Workflow is overridden by an entry with the same id, and customised by importing what it keeps.
 

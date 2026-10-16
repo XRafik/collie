@@ -64,7 +64,10 @@ here are in [`src/README.md`](src/README.md).
   `workflows/retrospective.ts`, `personas/retrospective.md`, `test/support/baseline.ts`.
   Its triage uses the installed `retro` skill.
 - **Settings** → [ADR-0043](docs/adr/0043-a-shared-setting-is-its-latest-edit.md), `src/settings.ts`,
-  `setSetting` and `takeShared` in `src/config.ts`.
+  `setSetting` and `takeShared` in `src/config.ts`. The user Layer's files are shared by the same rule:
+  [ADR-0061](docs/adr/0061-a-users-definitions-are-the-flocks.md),
+  `src/shared-definitions.ts`, `src/peers.ts`, `desktop/src/bun/flock-settings.ts`,
+  `test/shared-definitions.test.ts`, `test/peer-definitions.test.ts`, `test/desktop-settings.test.ts`.
 - **Outcomes, proof** → [`docs/cli.md`](docs/cli.md#outcomes), [ADR-0010](docs/adr/0010-a-run-proves-its-outcome.md),
   `src/outcome.ts`, `src/verify.ts`, `src/verify-spec.ts`, `src/metrics.ts`.
 - **Checks Collie runs, as seen** → [ADR-0042](docs/adr/0042-a-check-collie-runs-is-seen-while-it-runs.md),

@@ -20,9 +20,9 @@ import {
   RunDetail,
   RunFile,
   sortBoard,
-  Startable,
   TaskView,
 } from "../../../src/board-model";
+import { HostDefinitions } from "../../../src/definitions-model";
 
 /**
  * A Machine as Desktop knows it: its installation id, the herdr profile it is reached
@@ -163,8 +163,9 @@ export const MachineDoctored = Schema.TaggedStruct("Doctored", {
 });
 export type MachineDoctored = typeof MachineDoctored.Type;
 
-/** How a Machine's latest settings sync ended: null where it synced, else why not. */
+/** How a Machine's latest settings or definitions sync ended: null where it synced, else why not. */
 export const MachineSynced = Schema.TaggedStruct("Synced", {
+  part: Schema.Literals(["settings", "definitions"]),
   machine: KnownMachine,
   failed: Schema.NullOr(Schema.String),
 });
@@ -255,11 +256,6 @@ export const DesktopAction = Schema.Union([
     runId: Schema.String,
     offer: Schema.String,
     input: Schema.Record(Schema.String, Schema.Json),
-  }),
-  Schema.TaggedStruct("Start", {
-    project: Schema.String,
-    id: Schema.String,
-    text: Schema.Record(Schema.String, Schema.String),
   }),
 ]);
 export type DesktopAction = typeof DesktopAction.Type;
@@ -426,9 +422,10 @@ export const DesktopRpcs = RpcGroup.make(
   Rpc.make("terminalSend", { payload: { command: TerminalCommand }, error: ActionFailed }),
   /** A web page, opened in the human's own browser. */
   Rpc.make("openLink", { payload: { url: Schema.String } }),
-  Rpc.make("workflows", {
-    payload: { installation: Schema.String, project: Schema.String },
-    success: Schema.Array(Startable),
+  /** Its host's Workflows and Personas, for the Workflows page. */
+  Rpc.make("definitions", {
+    payload: { installation: Schema.String },
+    success: HostDefinitions,
     error: ActionFailed,
   }),
   /** Desktop's own version and update news, the latest first. */
@@ -670,6 +667,8 @@ export interface Flock {
   readonly doctored: ReadonlyMap<string, OnboardRun>;
   /** How each route's latest settings sync ended, by herdr profile. */
   readonly synced: ReadonlyMap<string, string | null>;
+  /** How each route's latest definitions sync ended, by herdr profile. */
+  readonly definitions: ReadonlyMap<string, string | null>;
   /** Each route's credentials, by herdr profile. */
   readonly given: ReadonlyMap<string, CredentialsGiven>;
 }
@@ -687,6 +686,7 @@ export const EMPTY_FLOCK: Flock = {
   onboarded: new Map(),
   doctored: new Map(),
   synced: new Map(),
+  definitions: new Map(),
   given: new Map(),
 };
 
@@ -708,6 +708,7 @@ const removed = (flock: Flock, profile: string): Flock => {
     onboarded: without(flock.onboarded),
     doctored: without(flock.doctored),
     synced: without(flock.synced),
+    definitions: without(flock.definitions),
     given: without(flock.given),
     machines: new Map([...flock.machines].filter(([, { machine }]) => machine.profile !== profile)),
   };
@@ -727,7 +728,12 @@ export const applyItem = (flock: Flock, item: FlockItem): Flock => {
   if ("_tag" in item && item._tag === "Doctored")
     return { ...flock, doctored: new Map(flock.doctored).set(item.machine.profile, item.run) };
   if ("_tag" in item && item._tag === "Synced")
-    return { ...flock, synced: new Map(flock.synced).set(item.machine.profile, item.failed) };
+    return item.part === "settings"
+      ? { ...flock, synced: new Map(flock.synced).set(item.machine.profile, item.failed) }
+      : {
+          ...flock,
+          definitions: new Map(flock.definitions).set(item.machine.profile, item.failed),
+        };
   if ("_tag" in item && item._tag === "Given") {
     const { machine, credential, given, failed } = item;
     const { profile } = machine;
@@ -881,13 +887,13 @@ export const flockCards = (flock: Flock) => {
     tasks: sortBoard([...placed.keys()]),
     // SAFETY: the board's helpers filter and sort these Tasks; they never make new ones.
     placedOf: (task: TaskView) => placed.get(task)!,
-    /** Each live Machine by its display name, and the projects its board has work in. */
+    /** Each live Machine by its display name, and whether it is this computer's. */
     machines: [...flock.machines]
       .filter(([, { asOf }]) => asOf === null)
-      .map(([installation, { tasks }]) => ({
+      .map(([installation, { machine }]) => ({
         installation,
         name: names.get(installation)!,
-        projects: [...new Set([...tasks.values()].map((task) => task.project))].sort(),
+        local: machine.profile === "local",
       })),
   };
 };
@@ -990,6 +996,8 @@ export interface MachineRow {
   readonly development: string | null;
   /** How its latest settings sync ended; null until one has. */
   readonly settings: { readonly failed: string | null } | null;
+  /** How its latest definitions sync ended; null until one has. */
+  readonly definitions: { readonly failed: string | null } | null;
   readonly credentials: CredentialsGiven;
   /** Why it isn't live; null while it is, or is connecting. */
   readonly reason: string | null;
@@ -1050,6 +1058,9 @@ export const machineRows = (flock: Flock): ReadonlyArray<MachineRow> =>
       build: shown?.build ?? null,
       development: shown?.development ?? null,
       settings: flock.synced.has(profile) ? { failed: flock.synced.get(profile)! } : null,
+      definitions: flock.definitions.has(profile)
+        ? { failed: flock.definitions.get(profile)! }
+        : null,
       credentials: flock.given.get(profile) ?? {},
       reason: live ? null : (lost?.reason ?? null),
     };

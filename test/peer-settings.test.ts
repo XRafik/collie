@@ -302,6 +302,8 @@ test(
               }),
             settings: () => Effect.succeed({ settings: [], flock: null }),
             setSettings: ({ settings }) => Effect.succeed({ settings, flock: null }),
+            sharedDefinitions: () => Effect.succeed([]),
+            setSharedDefinitions: ({ definitions }) => Effect.succeed(definitions),
           };
           const link: Link = {
             ...own,

@@ -752,10 +752,11 @@ test("Sync now on a Machine behind on its version reopens its route, which asks 
       const answer = yield* syncNow(behind.machine, ["version", "settings"], {
         reopen: Queue.offer(changes, { _tag: "Reopen", profile: "p-vm" }),
         sync: Effect.die("not synced while it reconnects"),
+        syncDefinitions: Effect.die("not synced while it reconnects"),
         give: Effect.die("not given while it reconnects"),
       });
       expect(answer).toEqual({
-        said: "Reopening vm to upgrade it; its settings and credentials follow once it connects",
+        said: "Reopening vm to upgrade it; its settings, definitions and credentials follow once it connects",
         failed: false,
       });
       yield* until(() => connections === 2 && asked === 2);
@@ -812,13 +813,16 @@ test("Sync now while a Machine's upgrade runs leaves the upgrade to finish", () 
     }).pipe(Effect.scoped),
   ));
 
-test("Sync now on a Machine behind on settings or credentials syncs and gives, and says what came of each", () =>
+test("Sync now on a Machine behind on settings, definitions or credentials syncs and gives, and says what came of each", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const did: string[] = [];
-      const steps = (failed: string | null) => ({
+      const steps = (failed: string | null, definitions: string | null = null) => ({
         reopen: Effect.die("not reopened"),
         sync: Effect.sync(() => void did.push("sync")).pipe(Effect.as(failed)),
+        syncDefinitions: Effect.sync(() => void did.push("definitions")).pipe(
+          Effect.as(definitions),
+        ),
         give: Effect.sync(() => void did.push("give")).pipe(
           Effect.as([
             { credential: "gitlab" as const, failed: null },
@@ -828,16 +832,36 @@ test("Sync now on a Machine behind on settings or credentials syncs and gives, a
       });
       const vm = { profile: "p-vm", name: "vm" };
       expect(yield* syncNow(vm, ["credentials"], steps(null))).toEqual({
-        said: "vm: settings synced; the GitLab token given; Helle's token not given: ssh: connection reset",
+        said: "vm: settings synced; definitions synced; the GitLab token given; Helle's token not given: ssh: connection reset",
         failed: true,
       });
       expect(yield* syncNow(vm, ["settings"], steps("host refused"))).toEqual({
-        said: "vm: settings didn't sync: host refused; the GitLab token given; Helle's token not given: ssh: connection reset",
+        said: "vm: settings didn't sync: host refused; definitions synced; the GitLab token given; Helle's token not given: ssh: connection reset",
         failed: true,
       });
       expect(
         yield* syncNow(vm, ["settings"], { ...steps(null), give: Effect.succeed([]) }),
-      ).toEqual({ said: "vm: settings synced", failed: false });
-      expect(did).toEqual(["sync", "give", "sync", "give", "sync"]);
+      ).toEqual({ said: "vm: settings synced; definitions synced", failed: false });
+      expect(
+        yield* syncNow(vm, ["definitions"], {
+          ...steps(null, "no such operation"),
+          give: Effect.succeed([]),
+        }),
+      ).toEqual({
+        said: "vm: settings synced; definitions didn't sync: no such operation",
+        failed: true,
+      });
+      expect(did).toEqual([
+        "sync",
+        "definitions",
+        "give",
+        "sync",
+        "definitions",
+        "give",
+        "sync",
+        "definitions",
+        "sync",
+        "definitions",
+      ]);
     }),
   ));

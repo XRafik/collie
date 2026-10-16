@@ -8,12 +8,14 @@ const props = defineProps<{
   runId: string;
   launches: ReadonlyArray<RunAgent> | undefined;
   live: ReadonlyArray<BoardAgent>;
+  /** The board protocol the Run's Machine last spoke; null where none is known. */
+  protocol: number | null;
 }>();
 const { drafts, edit, remove, clear } = useReviewDrafts(() => props);
 const { run } = useActions();
 
-const offered = computed(() => deliveryChoices(props.launches, props.live));
-/** The human's choice while the Run still offers it, else the agent at work. */
+const offered = computed(() => deliveryChoices(props.launches, props.live, props.protocol));
+/** The human's choice while the Run still offers it, else the first offered. */
 const picked = ref<string>();
 const choice = computed(
   () => offered.value.find((one) => one.key === picked.value) ?? offered.value[0],

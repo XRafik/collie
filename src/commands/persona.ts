@@ -3,15 +3,8 @@ import { Argument, Command } from "effect/cli";
 import { forkResolvedDefinition } from "../fork";
 import { err } from "../operations";
 import { attempt, mutation } from "../envelope";
-import {
-  context,
-  definitions,
-  discoveryContext,
-  forkFlags,
-  layerDir,
-  personaData,
-  root,
-} from "./shared";
+import { context, definitions, discoveryContext, forkFlags, layerDir, root } from "./shared";
+import { personaData } from "../definitions";
 
 /** The Persona a `persona` subcommand acts on. */
 const personaArg = Argument.String("persona").pipe(

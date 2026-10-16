@@ -62,7 +62,13 @@ test(
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
             yield* save(second, "plain.workflow.ts");
-            yield* save(first, "attended.workflow.ts");
+            // A project's Layer stays on its Machine; the user Layer is the Flock's.
+            const onlyFirst = `${first.world.project}/.collie/workflows`;
+            yield* fs.makeDirectory(onlyFirst, { recursive: true });
+            yield* fs.copyFile(
+              `${fixtures}/attended.workflow.ts`,
+              `${onlyFirst}/attended.workflow.ts`,
+            );
             yield* first.lists([second]);
             const there = second.world.project;
             const added = yield* first.cli([

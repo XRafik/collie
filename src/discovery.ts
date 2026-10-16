@@ -13,11 +13,11 @@
 import { Effect, FileSystem, Schema } from "effect";
 import { loadEntry, revisionOf } from "./engine";
 import { jsonSchemaFor, type WorkflowEntry } from "./sdk";
+import { Declared, Fault, LAYERS, type EntryLayer } from "./definitions-model";
+
+export { Declared, Fault, LAYERS, type EntryLayer } from "./definitions-model";
 
 export const ENTRY_SUFFIX = ".workflow.ts";
-
-export const LAYERS = ["project", "user", "shipped"] as const;
-export type EntryLayer = (typeof LAYERS)[number];
 
 export interface Root {
   readonly layer: EntryLayer;
@@ -50,23 +50,6 @@ export const savedModules = (where: {
     searchPath({ pluginRoot: where.pluginRoot, userDir: where.userDir, project: where.cwd }),
   );
 
-/**
- * One Input a module declares, as a front door needs it: what to call it, whether it may
- * be left out, how it is inferred, and what it will take. The drawing is what lets a
- * picker offer a menu for a closed set or a yes/no for a boolean rather than a text box.
- */
-export const Declared = Schema.Struct({
-  name: Schema.String,
-  required: Schema.Boolean,
-  /** The strategy that infers this one, from the module's own hints; null for neither. */
-  strategy: Schema.NullOr(Schema.String),
-  /** The field's schema as JSON Schema, or null where it would not draw. */
-  schema: Schema.NullOr(Schema.Json),
-  /** Each place the drawing says less than the schema does; the schema still holds. */
-  limits: Schema.Array(Schema.String),
-});
-export type Declared = typeof Declared.Type;
-
 /** An entry a caller may run, said as a consumer needs it: what, where, and from which layer. */
 export const Resolved = Schema.Struct({
   id: Schema.String,
@@ -79,15 +62,6 @@ export const Resolved = Schema.Struct({
   /** The outcome the module fixes, or null where it fixes none. */
   outcome: Schema.NullOr(Schema.String),
 });
-
-/** An id nothing can be run under, and the file that is why. */
-export const Fault = Schema.Struct({
-  id: Schema.String,
-  layer: Schema.Literals(LAYERS),
-  path: Schema.String,
-  message: Schema.String,
-});
-export type Fault = typeof Fault.Type;
 
 /** Everything the search path holds, as a client may see it. */
 export const Catalogue = Schema.Struct({

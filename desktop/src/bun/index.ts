@@ -69,7 +69,14 @@ import { type ChatMachine, chatDoor } from "./flock-tools";
 import { changeSettings, chatChoice, readSettings, writeSettings } from "./settings";
 import { followWindow, zoomWindow } from "./scale";
 import type { Drawn } from "../shared/scale";
-import { flockSync, readFlockSettings, writeFlockSettings } from "./flock-settings";
+import {
+  definitionsSync,
+  flockSync,
+  readFlockDefinitions,
+  readFlockSettings,
+  writeFlockDefinitions,
+  writeFlockSettings,
+} from "./flock-settings";
 import { DEFAULT_CHAT_HARNESS, editSetting } from "../shared/flock-settings";
 import { nowIso } from "../../../src/time";
 import { changedLine } from "../../../src/schedule-model";
@@ -88,7 +95,7 @@ import {
   changeScheduleOn,
   moveScheduleOn,
   runFileOn,
-  workflowsOn,
+  definitionsIn,
   endChildren,
   flockStream,
   type HerdrMachine,
@@ -247,6 +254,7 @@ const main = Effect.gen(function* () {
       ? saved
       : editSetting(saved, "gitlab_host", settings.gitlabHost, yield* nowIso());
   const flockSettings = yield* SubscriptionRef.make("refused" in seeded ? saved : seeded);
+  const flockDefinitions = yield* SubscriptionRef.make(yield* readFlockDefinitions(own));
   const defaultGitlab = yield* Config.String("COLLIE_DESKTOP_GITLAB").pipe(
     Config.withDefault(GITLAB),
   );
@@ -398,7 +406,7 @@ const main = Effect.gen(function* () {
     });
   yield* zoomed(board.window, "Collie", (now) => SubscriptionRef.set(drawn, now));
   const uuid = (yield* Crypto.Crypto).randomUUIDv4.pipe(Effect.orDie);
-  /** Each route's latest settings sync, told again to a view that subscribes. */
+  /** Each route's latest settings and definitions sync, told again to a view that subscribes. */
   const synced = new Map<string, MachineSynced>();
   const settingsOf = (door: Doors) => ({
     name: door.machine.name,
@@ -407,17 +415,27 @@ const main = Effect.gen(function* () {
   });
   // A Machine out of reach, or on a collie without the operation until it is upgraded, is
   // synced when it next connects.
+  const toldSynced =
+    (part: MachineSynced["part"]) =>
+    ({ machine }: { readonly machine: KnownMachine }, failed: string | null) =>
+      Effect.suspend(() => {
+        const item = { _tag: "Synced", part, machine, failed } as const;
+        synced.set(`${part}:${machine.profile}`, item);
+        return PubSub.publish(news, item);
+      }).pipe(Effect.asVoid);
   const { syncOn, syncEvery } = yield* flockSync({
     flock: flockSettings,
     machines: () => [...doors.values()].map(settingsOf),
     save: (flock) => writeFlockSettings(own, flock).pipe(Effect.provide(BunServices.layer)),
     request: uuid,
-    told: ({ machine }, failed) =>
-      Effect.suspend(() => {
-        const item = { _tag: "Synced", machine, failed } as const;
-        synced.set(machine.profile, item);
-        return PubSub.publish(news, item);
-      }).pipe(Effect.asVoid),
+    told: toldSynced("settings"),
+  });
+  const definitions = yield* definitionsSync({
+    flock: flockDefinitions,
+    machines: () => [...doors.values()].map(settingsOf),
+    save: (flock) => writeFlockDefinitions(own, flock).pipe(Effect.provide(BunServices.layer)),
+    request: uuid,
+    told: toldSynced("definitions"),
   });
   const firstFailure = (each: ReadonlyArray<{ readonly failed: string | null }>) =>
     each[0]?.failed ?? null;
@@ -657,6 +675,10 @@ const main = Effect.gen(function* () {
             door === undefined
               ? Effect.succeed("it isn't connected; it is synced when it connects")
               : syncOn(settingsOf(door)),
+          syncDefinitions:
+            door === undefined
+              ? Effect.succeed("it isn't connected; it is synced when it connects")
+              : definitions.syncOn(settingsOf(door)),
           give: given.giveLacking(route),
         },
       );
@@ -760,6 +782,7 @@ const main = Effect.gen(function* () {
             return Effect.all(
               [
                 door === undefined ? Effect.void : syncOn(settingsOf(door)),
+                door === undefined ? Effect.void : definitions.syncOn(settingsOf(door)),
                 route === undefined ? Effect.void : given.giveLacking(route),
                 route?.pair === undefined
                   ? Effect.void
@@ -1013,8 +1036,7 @@ const main = Effect.gen(function* () {
       ),
     offers: ({ installation, runId }) =>
       doorTo(doors, installation).pipe(Effect.flatMap((door) => offersOn(door, runId))),
-    workflows: ({ installation, project }) =>
-      doorTo(doors, installation).pipe(Effect.flatMap((door) => workflowsOn(door, project))),
+    definitions: ({ installation }) => definitionsIn(doors, installation),
     updates: () => Stream.map(updates.news, (news) => ({ version: manifest.version, news })),
     checkForUpdates: () => updates.check,
     restart: () =>
