@@ -415,7 +415,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly record: (runId: string, event: string) => Effect.Effect<void>;
     /** Why this Run parked its own work, shown beside its status; null clears it. */
     readonly parked: (runId: string, why: string | null) => Effect.Effect<void>;
-    readonly asking: (runId: string, question: DecisionSpec) => Effect.Effect<void>;
+    readonly asking: (runId: string, question: DecisionSpec, asker?: string) => Effect.Effect<void>;
     /** Every question this run has been asked, oldest first, with its answer once it has one. */
     readonly asked: (
       runId: string,
@@ -2795,13 +2795,14 @@ export const hostLayer = (options: {
                 })
           ).pipe(Effect.andThen(store.announce));
         },
-        asking: (runId, question) =>
+        asking: (runId, question, asker) =>
           store
             .asking({
               run: runId,
               decision: question.name,
               prompt: question.prompt,
               options: question.options,
+              asker,
             })
             .pipe(
               Effect.andThen(
@@ -4963,7 +4964,7 @@ const makeRegistry: (
       const generation = live.get(row.generation);
       if (generation === undefined) continue;
       const answered = (yield* store.asked(row.run)).filter(
-        (one) => one.answer !== null && !AgentsSdk.isAgentQuestion(one.decision),
+        (one) => one.answer !== null && one.asker === null,
       );
       if (answered.length === 0) continue;
       const state = pollStatus(
@@ -5843,7 +5844,7 @@ const makeRegistry: (
       // Completed again on a repeat: the recording host may have died before the run was told.
       // An agent's question is read by the collection that asked it; waking the workflow
       // would replay it.
-      if (!AgentsSdk.isAgentQuestion(name))
+      if (settled.row.asker === null)
         yield* answerDecision(found.generation.registration, {
           name,
           executionId: found.execution,

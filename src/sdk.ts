@@ -580,8 +580,11 @@ export interface HostApi {
    * status; null says it no longer has.
    */
   readonly parked: (runId: string, why: string | null) => Effect.Effect<void>;
-  /** Records the question this run is waiting on, so the host can say what may answer it. */
-  readonly asking: (runId: string, question: DecisionSpec) => Effect.Effect<void>;
+  /**
+   * Records the question this run is waiting on, so the host can say what may answer it.
+   * `asker` is the operation whose agent asked it, which the workflow is not woken for.
+   */
+  readonly asking: (runId: string, question: DecisionSpec, asker?: string) => Effect.Effect<void>;
   /** Every question this run has been asked, oldest first, with its answer once it has one. */
   readonly asked: (runId: string) => Effect.Effect<ReadonlyArray<AskedQuestion>>;
   /** Answers an open question with `value` as Collie, waking nothing that waits on it. */

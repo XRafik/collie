@@ -216,15 +216,13 @@ export class AgentParked extends Schema.TaggedError<AgentParked>()("AgentParked"
 
 /** The Run's own questions, which a collection puts an agent's question on. */
 export interface Questions {
-  readonly ask: (question: DecisionSpec) => Effect.Effect<void>;
+  readonly ask: (question: DecisionSpec, asker: string) => Effect.Effect<void>;
   readonly asked: Effect.Effect<ReadonlyArray<AskedQuestion>>;
   readonly close: (decision: string, value: string) => Effect.Effect<void>;
 }
 
 /** An agent's question on its Run, numbered from 1 in the order its step asked them. */
 export const agentQuestionName = (operation: string, n: number) => `ask-${operation}-${n}`;
-// ponytail: told apart by its name, so a workflow's own `ask` named like one would be read as an agent's.
-export const isAgentQuestion = (name: string) => /^ask-.+-\d+$/.test(name);
 
 /** What collecting this step's Output answers a question still open when it arrives. */
 const closedAnswer = (operation: string) => `closed: ${operation} finished before it was answered`;
@@ -671,7 +669,7 @@ export const agentWork = <
               }),
             );
     const questions: Questions = {
-      ask: (question) => host.asking(runId, question),
+      ask: (question, asker) => host.asking(runId, question, asker),
       asked: host.asked(runId),
       close: (decision, value) => host.close(runId, decision, value),
     };
@@ -2066,7 +2064,10 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             for (const [at, question] of call.questions.entries()) {
               const name = names[at] ?? "";
               if (answers.has(name)) continue;
-              yield* questions.ask({ name, prompt: questionPrompt(question), options: [] });
+              yield* questions.ask(
+                { name, prompt: questionPrompt(question), options: [] },
+                launched.operation,
+              );
               answers.set(name, null);
             }
             const given = names.map((name) => answers.get(name) ?? null);

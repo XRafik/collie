@@ -77,6 +77,41 @@ test(
 );
 
 test(
+  "a workflow's own question named like an agent's is answered into the workflow",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { wf, state } = yield* workspace("collie-control-agent-named-");
+        const host = yield* openHost(state);
+        yield* host.ask({ op: "load", entry: `${wf}/named-like-an-agent.workflow.ts` });
+        yield* host.ask({
+          op: "start",
+          id: "named-like-an-agent",
+          runId: "r1",
+          input: { note: "x" },
+        });
+        yield* host.until({ op: "waiting", runId: "r1" }, asking("ask-approval-1"));
+        const answered = yield* host.ask({
+          op: "answer",
+          id: "named-like-an-agent",
+          runId: "r1",
+          decision: "ask-approval-1",
+          value: "approved",
+          request: "req-1",
+        });
+        expect(answered.ok).toBe(true);
+        const done = yield* host.until(
+          { op: "poll", id: "named-like-an-agent", runId: "r1" },
+          complete,
+        );
+        expect(done.value).toBe("approved");
+        yield* host.stop;
+      }).pipe(Effect.scoped),
+    ),
+  120_000,
+);
+
+test(
   "a question a run has not asked, and an answer it does not take, are both refused",
   () =>
     runEffect(
