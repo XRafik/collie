@@ -359,9 +359,10 @@ export const collect = Effect.fn("Verify.collect")(function* (
   const at = yield* nowIso();
   const output = `${stdout}\n${stderr}`;
   const testPassed =
-    what.pass?.pass === "baseline"
-      ? !failedAlone(Number(exit), output)
-      : ranAlone(Number(exit), output);
+    what.test === undefined ||
+    (what.pass?.pass === "baseline"
+      ? !failedAlone(Number(exit), output, what.test)
+      : ranAlone(Number(exit), output));
   const judged = what.test === undefined ? Number(exit) : testPassed ? 0 : Number(exit) || 1;
   const failed =
     what.test !== undefined || what.log === undefined || Number(exit) === 0
@@ -473,7 +474,7 @@ export const rerunTest = Effect.fn("Verify.rerunTest")(function* (
   });
 });
 
-const checkCwd = (run: CheckRun, spec: VerifySpec) =>
+export const checkCwd = (run: CheckRun, spec: VerifySpec) =>
   Path.Path.pipe(
     Effect.map((path) =>
       spec.cwd === "worktree" ? (run.worktree ?? run.cwd) : path.resolve(run.cwd, spec.cwd),

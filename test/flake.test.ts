@@ -178,7 +178,7 @@ test("a rerun runs bun test on the one test's file, matching its whole name, in 
         host.verify({ runId, name: "unit", cwd: rig.projectDir, pass: "rerun", test: NESTED }),
       ).pipe(Effect.ensuring(bin.restore()));
       const fs = yield* FileSystem.FileSystem;
-      const argv = ["test", NESTED.file, "-t", "^outer inner the nested one breaks$"];
+      const argv = ["test", `./${NESTED.file}`, "-t", "^outer inner the nested one breaks$"];
       expect((yield* fs.readFileString(`${rig.root}/bun-argv`)).trimEnd().split("\n")).toEqual(
         argv,
       );
@@ -255,7 +255,7 @@ test("the real bun, rerun on a name holding a quote, brackets, $HOME, * and a ne
 
 const QUICK = { file: "test/one.test.ts", name: "the quick one breaks" };
 
-test("a test run at the base fails there only where bun reported it failing, and runs once per base revision", () =>
+test("a test run at the base fails there only where bun reported that test failing, and runs once per base revision", () =>
   runEffect(
     Effect.gen(function* () {
       const bin = yield* FakeBin.make(`${rig.root}/bin`);
@@ -268,13 +268,26 @@ test("a test run at the base fails there only where bun reported it failing, and
         host.verify({ runId, name: "unit", cwd: rig.projectDir, at: "default-base", test });
       const fs = yield* FileSystem.FileSystem;
       yield* fs.makeDirectory(`${dir}/runs/${runId}`, { recursive: true });
-      const [failed, again, missing] = yield* inHost((host) =>
+      const [failed, again, missing, another] = yield* inHost((host) =>
         Effect.gen(function* () {
-          yield* bun(" 0 pass\n 1 fail", 1);
+          yield* bun(
+            `(fail) ${NESTED.name} [1.00ms]\n 0 pass\n 1 fail\nRan 1 test across 1 file.`,
+            1,
+          );
           const failed = yield* atBase(host, NESTED);
           const again = yield* atBase(host, NESTED);
           yield* bun(`error: regex "^the quick one breaks$" matched 0 tests.`, 1);
-          return [failed, again, yield* atBase(host, QUICK)] as const;
+          const missing = yield* atBase(host, QUICK);
+          yield* bun(
+            `(fail) ${NESTED.name} [1.00ms]\n 0 pass\n 1 fail\nRan 1 test across 1 file.`,
+            1,
+          );
+          return [
+            failed,
+            again,
+            missing,
+            yield* atBase(host, { ...NESTED, name: "another" }),
+          ] as const;
         }),
       ).pipe(Effect.ensuring(bin.restore()));
       const head = (yield* exec(["git", "rev-parse", "HEAD"], {
@@ -290,6 +303,37 @@ test("a test run at the base fails there only where bun reported it failing, and
       expect(again.id).toBe(failed.id);
       // A test the base does not have is this Run's own.
       expect(missing).toMatchObject({ pass: "baseline", test: QUICK, result: "pass" });
-      expect((yield* fs.readFileString(`${rig.root}/bun-runs`)).trim().split("\n")).toHaveLength(2);
+      // Another test's failure is not this one's.
+      expect(another.result).toBe("pass");
+      expect((yield* fs.readFileString(`${rig.root}/bun-runs`)).trim().split("\n")).toHaveLength(3);
+    }),
+  ));
+
+test("a test run at the base fails there only where bun ran that one file and named that test failing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const same = (verdict: number) =>
+        `import { expect, test } from "bun:test";\ntest("same test", () => expect(1).toBe(${verdict}));\n`;
+      yield* fs.makeDirectory(`${rig.projectDir}/test`, { recursive: true });
+      yield* fs.makeDirectory(`${rig.projectDir}/nested/test`, { recursive: true });
+      yield* fs.writeFileString(`${rig.projectDir}/test/one.test.ts`, same(1));
+      yield* fs.writeFileString(`${rig.projectDir}/nested/test/one.test.ts`, same(2));
+      yield* exec(["git", "add", "-A"], { cwd: rig.projectDir });
+      yield* exec(["git", "commit", "-qm", "same names"], { cwd: rig.projectDir });
+      yield* fs.makeDirectory(`${dir}/runs/${runId}`, { recursive: true });
+      const atBase = (host: Host["Service"], file: string) =>
+        host.verify({
+          runId,
+          name: "unit",
+          cwd: rig.projectDir,
+          at: "default-base",
+          test: { file, name: "same test" },
+        });
+      const [passing, failing] = yield* inHost((host) =>
+        Effect.all([atBase(host, "test/one.test.ts"), atBase(host, "nested/test/one.test.ts")]),
+      );
+      expect(passing.result).toBe("pass");
+      expect(failing.result).toBe("fail");
     }),
   ));

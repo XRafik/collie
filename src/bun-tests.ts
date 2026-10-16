@@ -41,10 +41,14 @@ export function failedTests(output: string): ReadonlyArray<FailedTest> | null {
   return [...found.values()];
 }
 
-/** `-t` matches a nested name with its parts joined by one space, where bun prints ` > `. */
+/**
+ * A path, not a filter: bare, bun runs every file whose path contains it. `-t` matches a
+ * nested name with its parts joined by one space, where bun prints ` > `.
+ */
 export function rerunArgv(test: FailedTest): ReadonlyArray<string> {
   const joined = test.name.split(" > ").join(" ");
-  return ["test", test.file, "-t", `^${joined.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`];
+  const file = test.file.startsWith("/") ? test.file : `./${test.file}`;
+  return ["test", file, "-t", `^${joined.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`];
 }
 
 /** Whether a rerun ran exactly one test and it passed; "matched 0 tests" and two of that name do not. */
@@ -52,7 +56,13 @@ export function ranAlone(exit: number, output: string): boolean {
   return exit === 0 && /^\s*1 pass$/m.test(output) && /^\s*0 fail$/m.test(output);
 }
 
-/** Whether bun ran that one test and it failed: a test it did not find is not failing there. */
-export function failedAlone(exit: number, output: string): boolean {
-  return exit !== 0 && /^\s*1 fail$/m.test(output);
+/** Whether bun ran that one test in one file and named it failing: a test it did not find is not failing there. */
+export function failedAlone(exit: number, output: string, test: FailedTest): boolean {
+  return (
+    exit !== 0 &&
+    /^\s*0 pass$/m.test(output) &&
+    /^\s*1 fail$/m.test(output) &&
+    /^Ran 1 test across 1 file\./m.test(output) &&
+    output.split("\n").some((line) => FAILED.exec(line)?.[1] === test.name)
+  );
 }
