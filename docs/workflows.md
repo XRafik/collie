@@ -132,6 +132,19 @@ checks still unproved, blocking disputes the reviewers left unanswered, and the 
 an implementer made where the spec was silent — goes into the description under **Not
 settled by the run**, and the merge request opens anyway.
 
+Once the `mr` step has pushed and the merge request is recorded — opened by the step, or
+found from the Task's branch by the merge watch — each check
+[left to CI](cli.md#what-collie-may-run-itself) is proved by its pipeline job on the merge
+request's head, which must be the checkout's `HEAD`. The run reads the job through the
+forge every 30 s while it is pending or running, and its log and `collie run checks` say
+which check, job and commit it waits on. A pass is recorded as a verification of the check,
+with the job's URL; on GitLab a merged-results pipeline counts for the head it was built
+from, and records the merge commit beside it. A job that failed, was skipped or cancelled,
+is missing from the pipeline, or has not finished after 2 hours parks the run unproved,
+naming the check, the job and the commit, and a resume waits again; a job already recorded
+is not recorded twice. A merge of the merge request while the run waits stops it, through
+the merge watch, and records nothing for the job.
+
 Module: [`workflows/implement.workflow.ts`](../workflows/implement.workflow.ts), with its
 content in [`workflows/implement.md`](../workflows/implement.md).
 

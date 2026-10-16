@@ -13,7 +13,16 @@ import {
 import { epochMs } from "../time";
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
-import type { DeployTier, Forge, ForBranch, FromBranch, FromBranchList, Readiness } from "./forge";
+import type {
+  DeployTier,
+  Forge,
+  ForBranch,
+  FromBranch,
+  FromBranchList,
+  JobRead,
+  JobState,
+  Readiness,
+} from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
 
 export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
@@ -426,6 +435,106 @@ function fromBranch<R>(
   });
 }
 
+const MrHeadJson = Schema.fromJsonString(
+  Schema.Struct({
+    sha: optionalText,
+    head_pipeline: Schema.optionalKey(
+      Schema.NullOr(Schema.Struct({ id: Schema.Number, sha: optionalText })),
+    ),
+  }),
+);
+const CommitJson = Schema.fromJsonString(
+  Schema.Struct({ parent_ids: Schema.Array(Schema.String) }),
+);
+const JobsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({ name: Schema.String, status: Schema.String, web_url: optionalText }),
+  ),
+);
+
+const JOB_STATES = new Map<string, JobState>([
+  ["success", "passed"],
+  ["failed", "failed"],
+  ["canceled", "cancelled"],
+  ["canceling", "cancelled"],
+  ["skipped", "skipped"],
+  // Nobody started it, so nothing it would prove ran.
+  ["manual", "skipped"],
+  ["running", "running"],
+]);
+
+/**
+ * The job on the merge request's head pipeline. A merged-results pipeline runs on a merge
+ * commit, which counts for the head only where GitLab shows that commit's parent is it.
+ */
+function job<R>(
+  ref: MrRef,
+  name: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<JobRead, never, R> {
+  return Effect.gen(function* () {
+    const ready = yield* gitlabForProject(ref.project, cwd, run);
+    if (!ready.ok) return { ok: false, reason: ready.reason };
+    const where = whereOf(ref);
+    const host = hostOf(ref.project);
+    if (host === null || ref.project === null)
+      return { ok: false, reason: `${where} names no GitLab project` };
+    const api = (route: string) =>
+      run(
+        "glab",
+        [
+          "api",
+          "--hostname",
+          host,
+          `projects/${encodeURIComponent(ref.project!.slice(host.length + 1))}/${route}`,
+        ],
+        cwd,
+      );
+    const view = yield* run(
+      "glab",
+      ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
+      cwd,
+    );
+    const mr = Schema.decodeUnknownOption(MrHeadJson)(view.stdout);
+    if (view.code !== 0 || Option.isNone(mr))
+      return { ok: false, reason: `glab could not read ${where}` };
+    const head = mr.value.sha ?? "";
+    const pipeline = mr.value.head_pipeline ?? null;
+    const waiting = { ok: true, head, state: "pending", url: null, merge: null } as const;
+    if (pipeline === null) return waiting;
+    let merge: string | null = null;
+    if (pipeline.sha && pipeline.sha !== head) {
+      const commit = Schema.decodeUnknownOption(CommitJson)(
+        (yield* api(`repository/commits/${pipeline.sha}`)).stdout,
+      );
+      if (Option.isNone(commit))
+        return {
+          ok: false,
+          reason: `GitLab would not say which head ${where}'s pipeline ${pipeline.id} at ${pipeline.sha} was built from`,
+        };
+      // An older head's: this head's pipeline has not started.
+      if (!commit.value.parent_ids.includes(head)) return waiting;
+      merge = pipeline.sha;
+    }
+    const listed = yield* api(`pipelines/${pipeline.id}/jobs?per_page=100`);
+    const jobs = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(jobs))
+      return {
+        ok: false,
+        reason: `glab could not list the jobs of ${where}'s pipeline ${pipeline.id}`,
+      };
+    const found = jobs.value.find((one) => one.name === name);
+    return {
+      ok: true,
+      head,
+      state: found === undefined ? "missing" : (JOB_STATES.get(found.status) ?? "pending"),
+      url: found?.web_url ?? null,
+      merge,
+    };
+  });
+}
+
 function template(cwd: string) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -574,6 +683,7 @@ export const gitlab: Forge = {
   noun: "merge request",
   forBranch,
   fromBranch,
+  job,
   template,
   // `glab mr create` and `glab mr note` take text only, so a file goes through the API,
   // which reads `@<file>` itself: no command substitution (CrowdStrike flags it).

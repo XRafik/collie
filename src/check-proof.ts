@@ -16,10 +16,15 @@ export interface Journal {
   readonly final: Snapshot;
   /** The Run's Checks' commands as they resolve here; a record of exactly one counts for it, whoever asked. */
   readonly commands?: ReadonlyArray<CheckCommand>;
+  /** The Run's Checks, which say which are left to CI where `commands` is not given. */
+  readonly approved?: ReadonlyArray<LeftToCi>;
 }
 
+type LeftToCi = { readonly name: string; readonly ci?: string };
+
 export interface CheckProof {
-  readonly state: "passed" | "failed" | "unstable" | "earlier" | "never";
+  /** A check left to CI is only ever `waiting` on its job or `proved` by it. */
+  readonly state: "passed" | "failed" | "unstable" | "earlier" | "never" | "waiting" | "proved";
   /** Every run of the Check's own command, oldest first. */
   readonly runs: ReadonlyArray<Verification>;
   /** The latest of them on this tree. */
@@ -38,6 +43,13 @@ export function checkProof(
   unmatched: Unmatched = "anyone",
 ): CheckProof {
   const command = got.commands?.find((one) => one.name === name);
+  if ((command ?? got.approved?.find((one) => one.name === name))?.ci !== undefined) {
+    const jobs = got.verifications.filter(
+      (v) => v.name === name && v.pass === "ci" && v.by === "collie",
+    );
+    const proof = jobs.findLast((v) => !staleAgainst(v, got.final) && passed(v));
+    return { state: proof === undefined ? "waiting" : "proved", runs: jobs, last: proof };
+  }
   const runs = got.verifications.filter(
     (v) =>
       !ranOneTest(v) &&
@@ -58,7 +70,10 @@ function stateOf(runs: ReadonlyArray<Verification>, last: Verification | undefin
   return "earlier";
 }
 
-/** The Checks a Run runs itself. */
-export const owedLocally = <C extends { readonly name: string }>(
-  checks: ReadonlyArray<C>,
-): ReadonlyArray<C> => checks;
+/** Whether a proof leaves a local run nothing to close: a pass here, or a check left to CI. */
+export const owesNothingHere = (proof: CheckProof) =>
+  proof.state === "passed" || proof.state === "waiting" || proof.state === "proved";
+
+/** The Checks a Run runs itself: all but those left to CI. */
+export const owedLocally = <C extends LeftToCi>(checks: ReadonlyArray<C>): ReadonlyArray<C> =>
+  checks.filter((check) => check.ci === undefined);

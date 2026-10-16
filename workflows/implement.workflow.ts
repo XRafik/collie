@@ -816,9 +816,15 @@ export default defineWorkflow({
         ),
       ];
       if (unsettled.length > 0) yield* host.record(runId, `unsettled: ${unsettled.join("; ")}`);
+      const leftToCi = checks.filter((spec) => spec.ci !== undefined);
       const ready = yield* host.mr({ cwd, source: { value: source.value, kind: source.kind } });
       if (!ready.ok) {
-        const reason = `Cannot open the merge request: ${ready.reason}. Repair it, then resume ${runId}.`;
+        const head = (yield* host.evidence(runId, cwd)).final.head_sha.slice(0, 12);
+        const unproved = leftToCi.map(
+          (spec) =>
+            ` ${spec.name} is left to CI and unproved: job ${spec.ci} on ${head} cannot be read without one.`,
+        );
+        const reason = `Cannot open the merge request: ${ready.reason}.${unproved.join("")} Repair it, then resume ${runId}.`;
         yield* host.record(runId, reason);
         yield* host.parked(runId, reason);
         return yield* Workflow.suspend(yield* WorkflowInstance);
@@ -869,6 +875,28 @@ export default defineWorkflow({
         });
       }
       yield* host.mergeRequest(runId, opened.mr_url);
+      // Each check left to CI is proved by its job on the merge request's head, or the Run parks.
+      if (leftToCi.length > 0)
+        yield* Activity.make({
+          name: "ci-proof",
+          success: Schema.Void,
+          execute: Effect.gen(function* () {
+            const unproved: string[] = [];
+            for (const spec of leftToCi) {
+              const read = yield* host.ciJob({ runId, cwd, name: spec.name, wait: true });
+              if ("unproved" in read) unproved.push(read.unproved);
+            }
+            if (yield* host.stopRequested(runId))
+              return yield* Workflow.suspend(yield* WorkflowInstance);
+            if (unproved.length > 0) {
+              const why = `Outcome unproved: ${unproved.join("; ")}. Repair it, then resume ${runId}.`;
+              yield* host.record(runId, why);
+              yield* host.parked(runId, why);
+              return yield* Workflow.suspend(yield* WorkflowInstance);
+            }
+            yield* host.parked(runId, null);
+          }),
+        });
       return opened.mr_url;
     }),
 });

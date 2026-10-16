@@ -776,6 +776,48 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 
+  test(`the ${name} forge reads a check's job on the merge request's head, in every state, and says when it cannot`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const read = (over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
+          forge.job(
+            ref(name),
+            "nuxi-typecheck",
+            "/w",
+            fakeForge(name, model(name, { mrs: [mr(name, over)], ...rest })).run,
+          );
+        const url =
+          name === "github"
+            ? "https://github.com/owner/repo/runs/2"
+            : "https://gitlab.example.com/group/app/-/jobs/2";
+        for (const state of [
+          "passed",
+          "pending",
+          "running",
+          "failed",
+          "skipped",
+          "cancelled",
+        ] as const)
+          expect(
+            yield* read({
+              jobs: [
+                { name: "lint", state: "failed" },
+                { name: "nuxi-typecheck", state },
+              ],
+            }),
+          ).toEqual({ ok: true, head: HEAD, state, url, merge: null });
+        expect(yield* read({ jobs: [{ name: "lint", state: "passed" }] })).toEqual({
+          ok: true,
+          head: HEAD,
+          state: "missing",
+          url: null,
+          merge: null,
+        });
+        for (const rest of [{ installed: false }, { loggedIn: [] }])
+          expect((yield* read({ jobs: [] }, rest)).ok).toBe(false);
+      }),
+    ));
+
   test(`the ${name} forge finds the repository's template wherever it keeps one, and none`, () =>
     runEffect(
       Effect.gen(function* () {
@@ -833,5 +875,40 @@ test("a GitLab pipeline of an older head is not this head's CI, and one that was
       });
       expect(pipelineChecks("canceled")).toEqual({ state: "unknown" });
       expect(pipelineChecks("")).toEqual({ state: "none" });
+    }),
+  ));
+
+test("a GitLab merged-results pipeline counts for the head it was built from, and one that cannot be shown is not missing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const MERGE = "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
+      const TARGET = "0000000000000000000000000000000000000001";
+      const read = (over: Partial<FakeMr>, ancestry: Record<string, ReadonlyArray<string>>) =>
+        gitlab.job(
+          ref("gitlab"),
+          "nuxi-typecheck",
+          "/w",
+          fakeForge(
+            "gitlab",
+            model("gitlab", {
+              mrs: [mr("gitlab", { jobs: [{ name: "nuxi-typecheck", state: "passed" }], ...over })],
+              ancestry,
+            }),
+          ).run,
+        );
+      expect(yield* read({ pipelineAt: MERGE }, { [MERGE]: [TARGET, HEAD] })).toEqual({
+        ok: true,
+        head: HEAD,
+        state: "passed",
+        url: "https://gitlab.example.com/group/app/-/jobs/1",
+        merge: MERGE,
+      });
+      // A pipeline of an older head: this head's has not started.
+      expect(
+        yield* read({ pipelineAt: MERGE }, { [MERGE]: [TARGET, "an-older-head"] }),
+      ).toMatchObject({ ok: true, state: "pending" });
+      const unshown = yield* read({ pipelineAt: MERGE }, {});
+      expect(unshown.ok).toBe(false);
+      if (!unshown.ok) expect(unshown.reason).toContain(MERGE);
     }),
   ));

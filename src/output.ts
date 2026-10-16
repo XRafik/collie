@@ -707,6 +707,8 @@ export interface CheckEvidence {
 function checkGap(name: string, evidence: CheckEvidence): string | null {
   switch (checkProof(evidence, name).state) {
     case "passed":
+    case "waiting":
+    case "proved":
       return null;
     case "never":
       return `check "${name}" has no verification record — run it through collie verify`;

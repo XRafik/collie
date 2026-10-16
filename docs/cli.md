@@ -1374,6 +1374,29 @@ amends it there.
 [{ "name": "tests", "executable": "bun", "argv": ["test"], "cwd": "worktree" }]
 ```
 
+An entry may leave its check **to CI** with `"ci": "<job name>"`, the merge request pipeline
+job that proves it
+([ADR-draft-a-check-left-to-ci-is-proved-by-its-pipeline-job](adr/draft-a-check-left-to-ci-is-proved-by-its-pipeline-job.md)).
+Its executable and arguments stay, to tell a human what the job runs. Nobody runs it locally:
+the gate skips it, its missing local pass is no gap, and prompts list it as
+`<name>: left to CI (job <job>), do not run it`. Once the merge request is open, the run
+waits for that job on the merge request's head commit, read through the forge, and records
+its pass as a verification of the check, with the job's URL. A failed, skipped, cancelled
+or missing job, a job not finished after 2 hours, or a checkout with no forge parks the run
+unproved, naming the check, the job and the commit.
+
+```json
+[
+  {
+    "name": "nuxi",
+    "executable": "bunx",
+    "argv": ["nuxi", "typecheck"],
+    "cwd": "worktree",
+    "ci": "nuxi-typecheck"
+  }
+]
+```
+
 A file that is there and does not decode is an error naming it, never an empty set, and
 the start is refused as `invalid_input`, so a typo is never quietly replaced by an agent's
 choice. So is `--verify` given to a plan that spans repositories: each repository is held to

@@ -1137,15 +1137,41 @@ proof on the tree in `evidence`: `passed`, `failed`, `unstable`, `earlier` (it p
 on an earlier tree) or `never`, with its runs and the latest of them on this tree. A record
 counts where it ran exactly that check's command, whoever asked for it. Where
 `evidence.commands` does not name the check, records count by name: anyone's by default, or
-only Collie's own with `"collie"`. `owedLocally` takes the Run's checks and returns those the
-Run runs itself; today that is every one. Loop over it, not over the checks, wherever your
-workflow runs them.
+only Collie's own with `"collie"`. A check [left to CI](cli.md#what-collie-may-run-itself)
+(its spec has `ci`, the job's name) is only ever `waiting` on its job or `proved` by it, and
+neither is a gap. `owedLocally` takes the Run's checks and returns those the Run runs itself:
+every one but those left to CI. Loop over it, not over the checks, wherever your workflow
+runs them.
 
 ```ts
 const evidence = yield * host.evidence(runId, cwd);
 const red = owedLocally(yield * host.approved(runId)).filter(
   (spec) => checkProof(evidence, spec.name).state !== "passed",
 );
+```
+
+A check left to CI is proved by its job instead, with
+`host.ciJob({ runId, cwd, name, wait })`. It reads the job through the forge adapter's one
+read for it, the named job on the head commit of the merge request the Run recorded, which
+must be `cwd`'s `HEAD`. On GitLab that is the job in the merge request's head pipeline, and
+a merged-results pipeline counts for the head only where GitLab shows the merge commit was
+built from it; on GitHub it is the check run of that name on the head commit. The adapter
+answers `passed`, `pending`, `running`, `failed`, `skipped`, `cancelled` or `missing`, with
+the job's URL, or why the forge could not say. A pass is recorded once per tree as the
+check's `ci` pass, with `job` (`{ name, url, merge? }`, `merge` being the merged-results
+commit) beside its command, start and end tree. That Verification answers `{ proved }`; anything
+else answers `{ unproved, state, url }`, the sentence naming the check, the job and the
+commit. With `wait: true` a pending or running job is read again every 30 s for up to 2
+hours, the Run's log and `collie run checks` saying which check, job and commit it waits
+on, and a stop ends the wait. `renderRecordedChecks(evidence, leftToCi)` tells a reviewer
+each such check as `left to CI: proved by <job> on the merge request's head`, with the
+job's state where you read one.
+
+```ts
+for (const spec of (yield * host.approved(runId)).filter((one) => one.ci !== undefined)) {
+  const read = yield * host.ciJob({ runId, cwd, name: spec.name, wait: true });
+  if ("unproved" in read) yield * host.parked(runId, read.unproved);
+}
 ```
 
 [ADR-0023](adr/0023-a-rally-is-a-loop-and-a-claim-is-not-proof.md) is why the rally is a

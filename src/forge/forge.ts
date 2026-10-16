@@ -46,6 +46,28 @@ export type FromBranchList =
   | { readonly ok: true; readonly mrs: ReadonlyArray<FromBranch> }
   | { readonly ok: false; readonly reason: string };
 
+/** A pipeline job's state, as a check left to CI reads it; `missing` is a pipeline without it. */
+export type JobState =
+  | "passed"
+  | "pending"
+  | "running"
+  | "failed"
+  | "skipped"
+  | "cancelled"
+  | "missing";
+
+/** A named job on a merge request's head commit, or why the forge could not say. */
+export type JobRead =
+  | {
+      readonly ok: true;
+      readonly head: string;
+      readonly state: JobState;
+      readonly url: string | null;
+      /** The merge commit a merged-results pipeline of `head` ran on, else null. */
+      readonly merge: string | null;
+    }
+  | { readonly ok: false; readonly reason: string };
+
 export interface ReviewCommands {
   readonly diff: string;
   readonly view: string;
@@ -124,6 +146,13 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<FromBranchList, never, R>;
+  /** The job named `name` in the pipeline on the merge request's head commit. */
+  readonly job: <R>(
+    ref: MrRef,
+    name: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<JobRead, never, R>;
   /** The repository's merge request template, relative to the checkout, or null. */
   readonly template: (
     cwd: string,

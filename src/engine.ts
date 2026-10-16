@@ -97,6 +97,7 @@ import { currentPid, signalProcess } from "./lock";
 import { skillDirs, skillFile, type CheckoutKind, type InputStrategy } from "./definitions";
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
+import { ciJob } from "./ci-job";
 import {
   autoMergingHere,
   forgeHere,
@@ -302,11 +303,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     /** What it ran with outside the tree; absent on a record from before environments were. */
     readonly environment?: string;
     /** Why Collie ran it; absent on an agent's. A \`rerun\` is never its check's own run. */
-    readonly pass?: "gate" | "rerun" | "recheck" | "fix" | "baseline" | "finish" | "check";
+    readonly pass?: "gate" | "rerun" | "recheck" | "fix" | "baseline" | "finish" | "ci" | "check";
     /** The tests a failing check's output names, where it could be read whole. */
     readonly failed?: ReadonlyArray<FailedTest>;
     /** The one test a \`rerun\` ran. */
     readonly test?: FailedTest;
+    /** The pipeline job a \`ci\` pass read, and the merge commit it ran on where not the head itself. */
+    readonly job?: { readonly name: string; readonly url: string | null; readonly merge?: string };
   }
 
   /** What the journal holds and the tree in front of you, for checks to be read against. */
@@ -319,6 +322,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly executable: string | null;
       readonly argv: ReadonlyArray<string>;
       readonly cwd: string;
+      readonly ci?: string;
     }>;
   }
 
@@ -356,12 +360,32 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly message: string;
   }
 
+  /** A pipeline job's state; \`missing\` is a pipeline without it. */
+  export type JobState =
+    | "passed"
+    | "pending"
+    | "running"
+    | "failed"
+    | "skipped"
+    | "cancelled"
+    | "missing";
+  /** What became of a check left to CI: its recorded pass, or why it is unproved. */
+  export type CiJob =
+    | { readonly proved: Verification }
+    | {
+        readonly unproved: string;
+        readonly state: JobState | null;
+        readonly url: string | null;
+      };
+
   /** One of this Run's checks, named by a human, chat or the Run's agent. */
   export interface VerifySpec {
     readonly name: string;
     readonly executable: string;
     readonly argv: ReadonlyArray<string>;
     readonly cwd: string;
+    /** The merge request pipeline job that proves it: nobody runs it locally. */
+    readonly ci?: string;
   }
 
   /** The reviewed branch's checkout, or why there is none. */
@@ -466,6 +490,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
      * Fails, saying why, where the forge cannot be read: not knowing is not a no.
      */
     readonly autoMerging: (cwd: string) => Effect.Effect<string | null, WorkflowError>;
+    /**
+     * The job proving a check left to CI, on the head of the merge request this Run recorded,
+     * which must be cwd's HEAD. A pass is recorded once per tree as the check's \`ci\`
+     * Verification. With wait, a pending or running job is read again every 30 s for up to 2
+     * hours. Anything else is why it is unproved, naming the check, the job and the commit.
+     */
+    readonly ciJob: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly name: string;
+      readonly wait?: boolean;
+    }) => Effect.Effect<CiJob>;
     /**
      * Blocks until this Run holds the shared claim on the repository it works in, and
      * answers null where that repository has none. Waiting here costs wall clock and no
@@ -1416,9 +1452,17 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     got: { readonly verifications: ReadonlyArray<Verification>; readonly final: Snapshot },
   ): string;
 
-  /** Every check this Run's journal holds, latest of each and its baseline, for a reviewer to read. */
+  /**
+   * Every check this Run's journal holds, latest of each and its baseline, for a reviewer to
+   * read; then each check left to CI, with its job's state where the Run has a merge request.
+   */
   export function renderRecordedChecks(
     got: { readonly verifications: ReadonlyArray<Verification>; readonly final: Snapshot },
+    leftToCi?: ReadonlyArray<{
+      readonly name: string;
+      readonly job: string;
+      readonly state: string | null;
+    }>,
   ): string;
 
   /**
@@ -1452,9 +1496,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     options: Parameters<typeof evidenceGapsOf>[0],
   ): ReadonlyArray<string>;
 
-  /** A Check's proof on this tree: passed, failed, unstable, passed only on an earlier tree, or never run. */
+  /**
+   * A Check's proof on this tree: passed, failed, unstable, passed only on an earlier tree, or
+   * never run; for a check left to CI, waiting on its job or proved by it.
+   */
   export interface CheckProof {
-    readonly state: "passed" | "failed" | "unstable" | "earlier" | "never";
+    readonly state: "passed" | "failed" | "unstable" | "earlier" | "never" | "waiting" | "proved";
     /** Every run of the Check's own command, oldest first. */
     readonly runs: ReadonlyArray<Verification>;
     /** The latest of them on this tree. */
@@ -1462,9 +1509,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   }
   /** Whose records count, by name, for a Check whose command is not given. */
   export type Unmatched = "anyone" | "collie";
-  export function checkProof(got: CheckEvidence, name: string, unmatched?: Unmatched): CheckProof;
-  /** The Checks a Run runs itself. */
-  export function owedLocally<C extends { readonly name: string }>(
+  export function checkProof(
+    got: CheckEvidence & { readonly approved?: ReadonlyArray<VerifySpec> },
+    name: string,
+    unmatched?: Unmatched,
+  ): CheckProof;
+  /** The Checks a Run runs itself: all but those left to CI. */
+  export function owedLocally<C extends { readonly name: string; readonly ci?: string }>(
     checks: ReadonlyArray<C>,
   ): ReadonlyArray<C>;
 
@@ -2906,6 +2957,44 @@ export const hostLayer = (options: {
               return yield* autoMergingHere(cwd, runShell, gitlabHost);
             }).pipe(Effect.mapError((reason) => new WorkflowError({ reason }))),
           ),
+        ciJob: (asked) =>
+          under(
+            Effect.gen(function* () {
+              const spec = (yield* approvedOf(dir, asked.runId)).find(
+                (one) => one.name === asked.name,
+              );
+              if (spec?.ci === undefined)
+                return {
+                  unproved: `"${asked.name}" is not one of this Run's checks left to CI`,
+                  state: null,
+                  url: null,
+                };
+              const own = yield* treeOf(yield* store.run(asked.runId), asked.runId, dir);
+              // A stop ends the wait: the workflow suspends on it, as it does on an agent's.
+              const stopped = set(STOP, asked.runId).pipe(
+                Effect.repeat({ until: (stop) => stop, schedule: Schedule.spaced("1 second") }),
+                Effect.as({
+                  unproved: `${spec.name} is left to CI and unproved: the Run was stopped while job ${spec.ci} was read`,
+                  state: null,
+                  url: null,
+                }),
+              );
+              return yield* Effect.raceFirst(
+                ciJob({
+                  runId: asked.runId,
+                  runDir: runDir(dir, asked.runId),
+                  journal: evidenceDir(dir, asked.runId),
+                  cwd: asked.cwd,
+                  spec,
+                  command: yield* commandOf({ ...own, cwd: asked.cwd }, spec),
+                  mr: yield* mergeRequestOf(fs, dir, asked.runId),
+                  wait: asked.wait ?? false,
+                  run: runShell,
+                }),
+                stopped,
+              );
+            }),
+          ).pipe(Effect.orDie),
         claim: <E, R>(asked: {
           readonly runId: string;
           readonly cwd: string;

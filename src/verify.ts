@@ -187,6 +187,8 @@ const VerifyingSchema = Schema.Struct({
   started: Schema.String,
   /** Where its output is being written. */
   log: Schema.optionalKey(Schema.String),
+  /** The pipeline job a `ci` pass waits on. */
+  job: Schema.optionalKey(Schema.String),
 });
 export type Verifying = typeof VerifyingSchema.Type;
 const VerifyingJson = Schema.fromJsonString(VerifyingSchema);
@@ -492,6 +494,7 @@ export const sameCommand = (one: Command, other: Command) =>
 /** A check's command resolved for its Run; one whose executable is not found matches no record. */
 export type CheckCommand = Pick<Verification, "name" | "argv" | "cwd"> & {
   readonly executable: string | null;
+  readonly ci?: string;
 };
 
 /** Whether this record ran exactly that check's command. */
@@ -530,7 +533,8 @@ export function reliedPass(
 export const commandOf = Effect.fn("Verify.commandOf")(function* (run: CheckRun, spec: VerifySpec) {
   const cwd = yield* checkCwd(run, spec);
   const executable = yield* resolveExecutable(spec.executable, cwd);
-  return { name: spec.name, executable, argv: spec.argv, cwd };
+  const command = { name: spec.name, executable, argv: spec.argv, cwd };
+  return spec.ci === undefined ? command : { ...command, ci: spec.ci };
 });
 
 /** `reliedPass` for one of a Run's checks, read from its journal against its tree now. */

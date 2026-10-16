@@ -13,7 +13,16 @@ import {
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import { epochMs } from "../time";
-import type { DeployTier, Forge, ForBranch, FromBranch, FromBranchList, Readiness } from "./forge";
+import type {
+  DeployTier,
+  Forge,
+  ForBranch,
+  FromBranch,
+  FromBranchList,
+  JobRead,
+  JobState,
+  Readiness,
+} from "./forge";
 import { Issue, filedIssueOf } from "./issues";
 
 const HOST = "github.com";
@@ -328,6 +337,66 @@ function fromBranch<R>(
   });
 }
 
+const HeadJson = Schema.fromJsonString(Schema.Struct({ headRefOid: Schema.String }));
+const CheckRunsJson = Schema.fromJsonString(
+  Schema.Struct({
+    check_runs: Schema.Array(
+      Schema.Struct({ status: Schema.String, conclusion: optionalText, html_url: optionalText }),
+    ),
+  }),
+);
+
+const CONCLUSIONS = new Map<string, JobState>([
+  ["success", "passed"],
+  ["failure", "failed"],
+  ["timed_out", "failed"],
+  ["action_required", "failed"],
+  ["cancelled", "cancelled"],
+  ["stale", "cancelled"],
+  ["skipped", "skipped"],
+  ["neutral", "skipped"],
+]);
+
+/** The check run of that name on the pull request's head commit; GitHub lists the newest first. */
+function job<R>(
+  ref: MrRef,
+  name: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<JobRead, never, R> {
+  return Effect.gen(function* () {
+    const where = mrWords(ref).label;
+    const repo = mrPath({ project: ref.project, iid: "" });
+    const view = yield* run(
+      "gh",
+      ["pr", "view", ref.iid, "--repo", repo, "--json", "headRefOid"],
+      cwd,
+    );
+    const pull = Schema.decodeUnknownOption(HeadJson)(view.stdout);
+    if (view.code !== 0 || Option.isNone(pull))
+      return { ok: false, reason: `gh could not read ${where}` };
+    const head = pull.value.headRefOid;
+    const listed = yield* run(
+      "gh",
+      ["api", `repos/${repo}/commits/${head}/check-runs?check_name=${encodeURIComponent(name)}`],
+      cwd,
+    );
+    const runs = Schema.decodeUnknownOption(CheckRunsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(runs))
+      return { ok: false, reason: `gh could not list the check runs on ${head}` };
+    const found = runs.value.check_runs[0];
+    const state: JobState =
+      found === undefined
+        ? "missing"
+        : found.status !== "completed"
+          ? found.status === "in_progress"
+            ? "running"
+            : "pending"
+          : (CONCLUSIONS.get(found.conclusion ?? "") ?? "failed");
+    return { ok: true, head, state, url: found?.html_url ?? null, merge: null };
+  });
+}
+
 /** Where GitHub looks for a pull request template, in the order it looks. */
 const TEMPLATES = [
   ".github/pull_request_template.md",
@@ -545,6 +614,7 @@ export const github: Forge = {
   noun: "pull request",
   forBranch,
   fromBranch,
+  job,
   template,
   commands: ({ project, branch, assignee, existing }) => {
     const repo = shellQuote(mrPath({ project, iid: "" }));

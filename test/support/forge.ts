@@ -14,6 +14,13 @@ export const Check = Schema.Struct({
 });
 export type Check = typeof Check.Type;
 
+/** A pipeline job on a merge request's head, in the words a check left to CI is read in. */
+export const FakeJob = Schema.Struct({
+  name: Schema.String,
+  state: Schema.Literals(["passed", "pending", "running", "failed", "skipped", "cancelled"]),
+});
+export type FakeJob = typeof FakeJob.Type;
+
 export const FakeMr = Schema.Struct({
   /** `host/path`, as an `MrRef`'s project. */
   project: Schema.String,
@@ -28,6 +35,8 @@ export const FakeMr = Schema.Struct({
   pipelineAt: Schema.optionalKey(Schema.String),
   mergedSha: Schema.optionalKey(Schema.String),
   checks: Schema.optionalKey(Schema.Array(Check)),
+  /** Its head pipeline's jobs, the nth with id n; on GitLab its pipeline ran at `pipelineAt`. */
+  jobs: Schema.optionalKey(Schema.Array(FakeJob)),
   sourceBranch: Schema.optionalKey(Schema.String),
   fork: Schema.optionalKey(Schema.Boolean),
   targetBranch: Schema.optionalKey(Schema.String),
@@ -212,6 +221,27 @@ function pipelineOf(checks: ReadonlyArray<Check> | undefined): string | null {
   return "success";
 }
 
+const GITLAB_JOB = {
+  passed: "success",
+  pending: "pending",
+  running: "running",
+  failed: "failed",
+  skipped: "skipped",
+  cancelled: "canceled",
+} as const;
+
+const GITHUB_RUN = {
+  passed: { status: "completed", conclusion: "success" },
+  pending: { status: "queued", conclusion: null },
+  running: { status: "in_progress", conclusion: null },
+  failed: { status: "completed", conclusion: "failure" },
+  skipped: { status: "completed", conclusion: "skipped" },
+  cancelled: { status: "completed", conclusion: "cancelled" },
+} as const;
+
+/** The id a merge request's head pipeline has. */
+const pipelineIdOf = (mr: FakeMr) => Number(mr.iid) * 100;
+
 function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (!model.installed) return no(127);
   const [verb, sub] = args;
@@ -242,7 +272,13 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       merge_commit_sha: mr.mergedSha ?? null,
       merged_at: mr.mergedAt ?? null,
       head_pipeline:
-        pipeline === null ? null : { status: pipeline, sha: mr.pipelineAt ?? mr.head ?? null },
+        pipeline === null && mr.jobs === undefined
+          ? null
+          : {
+              id: pipelineIdOf(mr),
+              status: pipeline ?? "running",
+              sha: mr.pipelineAt ?? mr.head ?? null,
+            },
       source_branch: mr.sourceBranch ?? null,
       source_project_id: mr.fork === true ? 7 : 3,
       target_project_id: 3,
@@ -308,6 +344,24 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
             : [{ sha: env.deployed, environment: { name: env.name } }],
         ),
       );
+    const jobs = /\/pipelines\/(\d+)\/jobs/.exec(route);
+    if (jobs) {
+      const mr = model.mrs.find((one) => pipelineIdOf(one) === Number(jobs[1]));
+      return mr === undefined
+        ? no()
+        : json(
+            (mr.jobs ?? []).map((job, at) => ({
+              name: job.name,
+              status: GITLAB_JOB[job.state],
+              web_url: `https://${mr.project}/-/jobs/${at + 1}`,
+            })),
+          );
+    }
+    const commit = /\/repository\/commits\/([^/?]+)$/.exec(route);
+    if (commit) {
+      const parents = model.ancestry?.[commit[1]!];
+      return parents === undefined ? no() : json({ id: commit[1]!, parent_ids: [...parents] });
+    }
     const pipeline = /\/pipelines\/(\d+)$/.exec(route);
     if (pipeline) {
       const said = model.runs?.[pipeline[1]!];
@@ -367,6 +421,24 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
           ? "ahead"
           : "behind";
     return json({ status });
+  }
+  const checkRuns = /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?check_name=(.+)$/.exec(route);
+  if (checkRuns) {
+    const [, repo = "", sha = "", name = ""] = checkRuns;
+    const mr = model.mrs.find((one) => one.project === `github.com/${repo}` && one.head === sha);
+    return json({
+      check_runs: (mr?.jobs ?? []).flatMap((job, at) =>
+        job.name === decodeURIComponent(name)
+          ? [
+              {
+                name: job.name,
+                ...GITHUB_RUN[job.state],
+                html_url: `https://github.com/${repo}/runs/${at + 1}`,
+              },
+            ]
+          : [],
+      ),
+    });
   }
   const runs = /\/actions\/runs\/(\d+)$/.exec(route);
   if (runs) {

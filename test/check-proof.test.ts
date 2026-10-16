@@ -109,9 +109,70 @@ test("a Check with no record was never run", () => {
   expect(proofOf([record({ name: "lint" })]).state).toBe("never");
 });
 
-test("every Check is owed a local run", () => {
+test("every Check is owed a local run but one left to CI", () => {
   const lint: VerifySpec = { ...TESTS, name: "lint", argv: ["run", "lint"] };
-  expect(owedLocally([TESTS, lint])).toEqual([TESTS, lint]);
+  expect(owedLocally([TESTS, lint, NUXI])).toEqual([TESTS, lint]);
+});
+
+const NUXI: VerifySpec = {
+  name: "nuxi",
+  executable: "bunx",
+  argv: ["nuxi", "typecheck"],
+  cwd: "/repo",
+  ci: "nuxi-typecheck",
+};
+const NUXI_COMMAND: CheckCommand = { ...NUXI, executable: "/usr/bin/bunx" };
+const JOB = { name: "nuxi-typecheck", url: "https://gitlab.example.com/g/p/-/jobs/9" };
+const jobPass = (over: Partial<Verification> = {}) =>
+  record({
+    id: "nuxi-ci",
+    name: "nuxi",
+    executable: "/usr/bin/bunx",
+    argv: ["nuxi", "typecheck"],
+    pass: "ci",
+    job: JOB,
+    ...over,
+  });
+
+test("a check left to CI waits on its job until its pass on this commit is recorded", () => {
+  const nuxi = (verifications: ReadonlyArray<Verification>, final = FINAL) =>
+    checkProof({ verifications, final, approved: [NUXI] }, "nuxi");
+  expect(nuxi([]).state).toBe("waiting");
+  // A local run of its command is no proof of it.
+  expect(nuxi([jobPass({ pass: "gate", job: undefined })]).state).toBe("waiting");
+  const earlier = { head_sha: "abc000", fingerprint: "tree-0" };
+  expect(nuxi([jobPass({ start: earlier, end: earlier })]).state).toBe("waiting");
+  const proved = jobPass();
+  expect(nuxi([proved])).toEqual({ state: "proved", runs: [proved], last: proved });
+  expect(
+    checkProof({ verifications: [proved], final: FINAL, commands: [NUXI_COMMAND] }, "nuxi").state,
+  ).toBe("proved");
+});
+
+test("no gap decider counts a check left to CI's missing local pass", () => {
+  const passing = record();
+  expect(evidenceGaps("unspecified", collected([passing], { approved: [TESTS, NUXI] }))).toEqual(
+    [],
+  );
+  expect(
+    evidenceGaps(
+      "feature",
+      collected([passing], {
+        approved: [TESTS, NUXI],
+        tickets: [{ file: "01.md", checks: ["tests", "nuxi"] }],
+        outputs: new Map<string, YamlValue>([["build", { tickets_done: ["one"] }]]),
+        reviewed: new Set(["synthesize"]),
+      }),
+    ).filter((gap) => gap.includes("nuxi")),
+  ).toEqual([]);
+  const settled = settleFinalFix(
+    [],
+    { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [{ name: "nuxi" }] },
+    { verifications: [], final: FINAL, commands: [NUXI_COMMAND] },
+  );
+  expect(settled.ok).toBe(true);
+  // A Run whose only Check is left to CI still names one.
+  expect(evidenceGaps("unspecified", collected([], { approved: [NUXI] }))).toEqual([]);
 });
 
 function collected(
