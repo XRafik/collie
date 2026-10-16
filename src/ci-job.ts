@@ -1,6 +1,4 @@
-// A check left to CI, proved by its job in the merge request's pipeline on the head commit
-// (ADR-draft-a-check-left-to-ci-is-proved-by-its-pipeline-job): read through the forge,
-// waited on, and a pass recorded as the check's `ci` Verification.
+// ADR-draft-a-check-left-to-ci-is-proved-by-its-pipeline-job
 
 import { Clock, Duration, Effect, FileSystem } from "effect";
 import { mrRefOf } from "./board-model";
@@ -65,8 +63,9 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
   const fs = yield* FileSystem.FileSystem;
   const { spec, cwd } = asked;
   const job = spec.ci ?? "";
-  const at = yield* asked.run("git", ["rev-parse", "HEAD"], cwd);
-  const head = at.code === 0 ? at.stdout.trim() : "";
+  // The tree a pass is bound to, read again before it is recorded.
+  const tree = yield* fingerprint(cwd);
+  const head = tree.head_sha;
   const unproved = (
     why: string,
     state: JobState | null = null,
@@ -81,10 +80,9 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
     }) satisfies CiJob;
   const journal = () => readVerifications(asked.journal).pipe(Effect.orElseSucceed(() => []));
   const recorded = checkProof(
-    { verifications: yield* journal(), final: yield* fingerprint(cwd), commands: [asked.command] },
+    { verifications: yield* journal(), final: tree, commands: [asked.command] },
     spec.name,
-  );
-  if (recorded.state === "proved" && recorded.last !== undefined) return { proved: recorded.last };
+  ).last;
   if (head === "")
     return {
       unproved: `${spec.name} is left to CI and unproved: job ${job} was never read: ${cwd}'s HEAD could not be read`,
@@ -93,7 +91,10 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
       log: null,
     } satisfies CiJob;
   const ref = mrRefOf(asked.mr);
-  if (ref === null) return unproved("was never read: this Run has no merge request");
+  if (ref === null)
+    return recorded === undefined
+      ? unproved("was never read: this Run has no merge request")
+      : { proved: recorded };
   const forge = forgeOf(ref);
   const marker = `${asked.runDir}/${VERIFYING_FILE}`;
   const began = yield* Clock.currentTimeMillis;
@@ -126,9 +127,13 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
           continue;
         }
       }
+      if (state === "passed" && recorded !== undefined && retried === null)
+        return { proved: recorded };
       if (state === "passed") {
+        const now = yield* fingerprint(cwd);
+        if (now.head_sha !== head || now.fingerprint !== tree.fingerprint)
+          return unproved(`passed, but ${cwd} has moved off it since`);
         const at = yield* nowIso();
-        const tree = yield* fingerprint(cwd);
         const ran = { name: job, url: read.url };
         const proof: Verification = {
           id: `${asked.runId}-${spec.name}-${epochMs(at)}`,

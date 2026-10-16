@@ -1,10 +1,8 @@
-// A Check's proof on a tree, and which of a Run's Checks are owed a local run: the one
-// place either is read. Pure: the caller hands it the journal and the tree.
-
 import {
   passed,
   ranCommand,
   ranOneTest,
+  sameCommand,
   staleAgainst,
   type CheckCommand,
   type Snapshot,
@@ -20,7 +18,11 @@ export interface Journal {
   readonly approved?: ReadonlyArray<LeftToCi>;
 }
 
-type LeftToCi = { readonly name: string; readonly ci?: string };
+type LeftToCi = {
+  readonly name: string;
+  readonly ci?: string;
+  readonly argv?: ReadonlyArray<string>;
+};
 
 export interface CheckProof {
   /** A check left to CI is only ever `waiting` on its job or `proved` by it. */
@@ -43,9 +45,17 @@ export function checkProof(
   unmatched: Unmatched = "anyone",
 ): CheckProof {
   const command = got.commands?.find((one) => one.name === name);
-  if ((command ?? got.approved?.find((one) => one.name === name))?.ci !== undefined) {
+  const check = command ?? got.approved?.find((one) => one.name === name);
+  if (check?.ci !== undefined) {
     const jobs = got.verifications.filter(
-      (v) => v.name === name && v.pass === "ci" && v.by === "collie",
+      (v) =>
+        v.name === name &&
+        v.pass === "ci" &&
+        v.by === "collie" &&
+        v.job?.name === check.ci &&
+        (command === undefined
+          ? check.argv === undefined || sameCommand(v, { ...v, argv: check.argv })
+          : sameCommand(v, { ...command, executable: command.executable ?? v.executable })),
     );
     const proof = jobs.findLast((v) => !staleAgainst(v, got.final) && passed(v));
     return { state: proof === undefined ? "waiting" : "proved", runs: jobs, last: proof };

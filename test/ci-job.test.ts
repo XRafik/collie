@@ -133,11 +133,48 @@ test("a merge request whose head is not yet this checkout's is waited on, and it
     Effect.gen(function* () {
       const { asked } = yield* waiting("passed", MR, "an-older-head");
       expect(yield* ciJob({ ...asked, wait: false })).toMatchObject({ state: "pending" });
-      const { asked: here } = yield* waiting("passed");
+      const { asked: here, at } = yield* waiting("passed");
       const proved = yield* ciJob(here);
       expect(proved).toMatchObject({ proved: { pass: "ci", name: "nuxi" } });
       expect(yield* ciJob(here)).toEqual(proved);
       expect(yield* readVerifications(here.journal)).toHaveLength(1);
+      // Its job rerun and failed on the same commit: the job's state now, the proof kept as it was.
+      const { asked: rerun } = yield* waiting("failed", MR, at);
+      expect(yield* ciJob({ ...here, run: rerun.run, wait: false })).toMatchObject({
+        state: "failed",
+      });
+      expect(yield* readVerifications(here.journal)).toHaveLength(1);
+    }),
+  ));
+
+test("a job that passes for a commit the checkout has left while it was waited on proves nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { asked, at } = yield* waiting("passed");
+      const committing: Runner = (cmd, args, where) =>
+        Effect.andThen(
+          Effect.sync(() =>
+            Bun.spawnSync(
+              ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"].concat([
+                "commit",
+                "-qm",
+                "two",
+                "--allow-empty",
+              ]),
+              { cwd: asked.cwd },
+            ),
+          ),
+          asked.run(cmd, args, where),
+        );
+      expect(yield* ciJob({ ...asked, run: committing })).toEqual({
+        unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} passed, but ${asked.cwd} has moved off it since`,
+        state: null,
+        url: null,
+        log: null,
+      });
+      expect(yield* readVerifications(asked.journal).pipe(Effect.orElseSucceed(() => []))).toEqual(
+        [],
+      );
     }),
   ));
 

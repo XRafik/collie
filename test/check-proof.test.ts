@@ -149,6 +149,27 @@ test("a check left to CI waits on its job until its pass on this commit is recor
   ).toBe("proved");
 });
 
+test("a check left to CI moved to another job or command is not proved by its old job's pass", () => {
+  const proved = jobPass();
+  const proof = (one: VerifySpec) => [
+    checkProof({ verifications: [proved], final: FINAL, approved: [one] }, "nuxi").state,
+    checkProof(
+      {
+        verifications: [proved],
+        final: FINAL,
+        commands: [{ ...one, executable: "/usr/bin/bunx" }],
+      },
+      "nuxi",
+    ).state,
+  ];
+  expect(proof(NUXI)).toEqual(["proved", "proved"]);
+  expect(proof({ ...NUXI, ci: "new-job" })).toEqual(["waiting", "waiting"]);
+  expect(proof({ ...NUXI, argv: ["nuxi", "typecheck", "--strict"] })).toEqual([
+    "waiting",
+    "waiting",
+  ]);
+});
+
 test("no gap decider counts a check left to CI's missing local pass", () => {
   const passing = record();
   expect(evidenceGaps("unspecified", collected([passing], { approved: [TESTS, NUXI] }))).toEqual(
