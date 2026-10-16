@@ -64,6 +64,7 @@ import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 import { addressOf } from "../shared/record-terminal";
 import { withNotice } from "../../../src/redact";
+import { type ActionsLog, confirmed, type Unconfirmed, unlogged, withheldOf } from "./sent";
 
 const children = new Set<Bun.Subprocess>();
 export const endChildren = () => {
@@ -1050,14 +1051,17 @@ type Refused =
   | ProposalRefused
   | RequestConflict
   | RpcClientError.RpcClientError
-  | Unsteered;
+  | Unsteered
+  | Unconfirmed;
 
 /** Why a host said no, in its own words, under the request it was asked as. */
 const refusal = (request?: string) => (error: Refused) =>
   new ActionFailed({
     request,
     reason:
-      error._tag === "HostRefused" || error._tag === "RequestConflict"
+      error._tag === "HostRefused" ||
+      error._tag === "RequestConflict" ||
+      error._tag === "Unconfirmed"
         ? error.reason
         : error._tag === "ProposalRefused"
           ? error.detail
@@ -1095,15 +1099,48 @@ interface Unsteered {
   readonly message: string;
 }
 
+/** What a board action is about, and the words a sentence names it with. */
+const aboutOf = (action: DesktopAction) => {
+  switch (action._tag) {
+    case "Confirm":
+      return { about: action.proposal, what: `the confirmation of ${action.proposal}` };
+    case "Decline":
+      return { about: action.proposal, what: `the decline of ${action.proposal}` };
+    case "Start":
+      return { about: null, what: `the start of ${action.id}` };
+    case "Control":
+      return { about: action.runId, what: `the ${action.control} of ${action.runId}` };
+    default:
+      return {
+        about: action.runId,
+        what: `the ${action._tag === "FollowUp" ? "follow-up" : action._tag.toLowerCase()} to ${action.runId}`,
+      };
+  }
+};
+
 /** One board action carried out on a Machine's host, and what it came to in a line. */
-export const act = (reached: Reached, request: string, action: DesktopAction) => {
+export const act = (
+  reached: Reached,
+  request: string,
+  action: DesktopAction,
+  log: ActionsLog = unlogged,
+) => {
   const door = reached.desktop;
-  const said = (() => {
+  // Set from the reply of a write the host takes once, false for one it had already taken.
+  let fresh = true;
+  const freshly = <T extends { readonly fresh: boolean }>(reply: T) => {
+    fresh = reply.fresh;
+    return reply;
+  };
+  const said: Effect.Effect<string, Exclude<Refused, Unconfirmed>> = (() => {
     switch (action._tag) {
       case "Answer":
         return door
           .answer({ runId: action.runId, decision: action.decision, value: action.value, request })
-          .pipe(Effect.map((done) => withNotice(`Answered ${action.runId}`, done.redacted, ". ")));
+          .pipe(
+            Effect.map(freshly),
+            Effect.map((done) => withNotice(`Answered ${action.runId}`, done.redacted, ". ")),
+          );
       case "Control": {
         const verb = action.control === "stop" ? "Stopped" : action.set ? "Held" : "Released";
         return door
@@ -1174,26 +1211,72 @@ export const act = (reached: Reached, request: string, action: DesktopAction) =>
             ),
           );
       case "FollowUp":
-        return door
-          .followUp({ runId: action.runId, text: action.text, request })
-          .pipe(
-            Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
-          );
+        return door.followUp({ runId: action.runId, text: action.text, request }).pipe(
+          Effect.map(freshly),
+          Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
+        );
       case "Invoke":
         return door
           .invoke({ runId: action.runId, offer: action.offer, input: action.input, request })
           .pipe(
+            Effect.map(freshly),
             Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
           );
       case "Start":
         return door
           .start({ project: action.project, id: action.id, input: {}, text: action.text, request })
           .pipe(
+            Effect.map(freshly),
             Effect.map((started) => withNotice(`Started ${started.runId}`, started.redacted, ". ")),
           );
     }
   })();
-  return over(reached, said, request);
+  const sending = {
+    log,
+    door: "board" as const,
+    machine: reached.machine.name,
+    request,
+    kind: action._tag,
+    withheld: withheldOf(action),
+  };
+  return over(
+    reached,
+    confirmed({ ...sending, ...aboutOf(action) }, said, () => !fresh),
+    request,
+  );
+};
+
+/**
+ * A board action on the Machine an installation id names, or why Desktop did not send it:
+ * `unsent` is the view's reason, as for a card on a saved board.
+ */
+export const actOn = (
+  doors: ReadonlyMap<string, Reached>,
+  installation: string,
+  request: string,
+  action: DesktopAction,
+  log: ActionsLog,
+  unsent?: string,
+) => {
+  const door = doors.get(installation);
+  const why = unsent ?? (door === undefined ? "that Machine is not connected" : undefined);
+  if (why === undefined) return act(door!, request, action, log);
+  const machine = door?.machine.name ?? installation;
+  const { about } = aboutOf(action);
+  return log({
+    door: "board",
+    machine,
+    request,
+    kind: action._tag,
+    about,
+    attempt: 0,
+    ended: "not-sent",
+    reason: why,
+  }).pipe(
+    Effect.andThen(
+      Effect.fail(new ActionFailed({ request, reason: `Not sent to ${machine}: ${why}.` })),
+    ),
+  );
 };
 
 /** The door to the Machine an installation id names, while Desktop shows it. */

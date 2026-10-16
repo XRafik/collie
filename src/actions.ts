@@ -1,7 +1,7 @@
 // Everything a model may propose, as one closed schema. No effects and nothing Bun-only:
 // Desktop's main process decodes chat's actions with it too.
 
-import { Effect, Schema, Struct } from "effect";
+import { Effect, Predicate, Result, Schema, Struct } from "effect";
 import { VerifySpecSchema } from "./verify-spec";
 import { SavedStart } from "./schedule-model";
 
@@ -170,6 +170,23 @@ export const ActionSchema = Schema.Union([
 ]);
 export type Action = Schema.Schema.Type<typeof ActionSchema>;
 export type ActionKind = Action["kind"];
+
+const KINDS: ReadonlySet<unknown> = new Set(
+  ActionSchema.members.map(({ fields }) => fields.kind.literal),
+);
+
+/** Why the first of `actions` that is not Collie's is refused, by its place and kind; null where all are. */
+export const refusedAction = (actions: ReadonlyArray<unknown>): string | null => {
+  for (const [at, action] of actions.entries()) {
+    const decoded = Schema.decodeUnknownResult(ActionSchema)(action);
+    if (Result.isSuccess(decoded)) continue;
+    const kind = Predicate.hasProperty(action, "kind") ? action.kind : null;
+    return KINDS.has(kind)
+      ? `actions[${at}] (kind "${String(kind)}"): ${decoded.failure.message.replace(/\s+/g, " ")}`
+      : `actions[${at}] has kind ${JSON.stringify(kind)}, which is not a kind Collie takes`;
+  }
+  return null;
+};
 
 /** Who a `deliver` is for, as a sentence names it. */
 export const recipientOf = (action: Extract<Action, { kind: "deliver" }>): string =>

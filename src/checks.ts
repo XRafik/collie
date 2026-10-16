@@ -57,10 +57,14 @@ export const lastLinesOf = (log: string | null, count = LAST_LINES) =>
 /** Every Run's marker, read once for a whole board. */
 export const markersOf = Effect.fn("Checks.markersOf")(function* (runs: ReadonlyArray<RunFacts>) {
   const found = new Map<string, Verifying>();
-  for (const run of runs) {
-    const marker = yield* verifyingIn(run.dir);
-    if (marker !== null) found.set(run.id, marker);
-  }
+  yield* Effect.forEach(
+    runs,
+    (run) =>
+      Effect.map(verifyingIn(run.dir), (marker) => {
+        if (marker !== null) found.set(run.id, marker);
+      }),
+    { concurrency: 8, discard: true },
+  );
   return found;
 });
 

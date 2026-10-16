@@ -113,10 +113,7 @@ const every = <E, R>(spaced: Duration.Input, round: Effect.Effect<unknown, E, R>
 
 /** How often News looks again, and the diffs of Runs that just ended are kept. */
 const LOOK_EVERY = "5 seconds";
-/**
- * How often the merge watch looks. Its board asks herdr nothing, only the Runs' own files,
- * and a forge is asked about a merge request every 5 minutes whatever this is.
- */
+/** How often the merge watch looks; a forge is asked about a merge request every 5 minutes whatever this is. */
 const MERGES_EVERY = "10 seconds";
 /** How long after one cleanup sweep ends the next begins (ADR-0045). */
 const SWEEP_EVERY = "10 minutes";
@@ -157,10 +154,12 @@ export const keepHomesTokened = <R>(
 export const sideJobs = <E, R>(opts: {
   readonly env: PluginEnv;
   readonly herdr: Herdr;
-  readonly runs: Effect.Effect<ReadonlyArray<RunFacts>, E, R>;
-  readonly board: Effect.Effect<ReadonlyArray<TaskView>, E, R>;
-  /** The board with herdr's live agents, which says what a Reopened Run's agent is doing. */
-  readonly liveBoard: Effect.Effect<ReadonlyArray<TaskView>, E, R>;
+  /** The host's latest board, and the Runs it was built from. */
+  readonly board: Effect.Effect<
+    { readonly runs: ReadonlyArray<RunFacts>; readonly views: ReadonlyArray<TaskView> },
+    E,
+    R
+  >;
   readonly panels: MrPanels;
   /** Records a merge request the watch found from a branch as that Run's own. */
   readonly record: (runId: string, url: string) => Effect.Effect<void>;
@@ -181,12 +180,13 @@ export const sideJobs = <E, R>(opts: {
       every(
         MERGES_EVERY,
         Effect.gen(function* () {
+          const { runs, views } = yield* opts.board;
           yield* settleMerges({
             stateDir: env.stateDir,
             cwd: env.cwd,
             run: shell,
-            views: yield* opts.board,
-            runs: yield* opts.runs,
+            views,
+            runs,
             record: opts.record,
             stop: opts.stop,
             gitlabHost: yield* gitlabHostOf(env),
@@ -200,8 +200,7 @@ export const sideJobs = <E, R>(opts: {
       every(
         LOOK_EVERY,
         Effect.gen(function* () {
-          const runs = yield* opts.runs;
-          const views = yield* opts.liveBoard;
+          const { runs, views } = yield* opts.board;
           for (const [run, done] of idleAgain(views, workedOn)) finishedTold.set(run, done);
           yield* news(env, herdr, runs, views, finishedTold);
           yield* keepDiffs(runs, kept);

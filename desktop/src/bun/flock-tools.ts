@@ -13,6 +13,7 @@ import {
   HostRefused,
   NEWS_BATCH,
   type NewsBatch,
+  PROTOCOL,
   type Significance,
   type TaskView,
 } from "../../../src/board-model";
@@ -34,6 +35,7 @@ import type { Staged } from "../shared/attachments";
 import { type ChatBoard, unreadBecause } from "../shared/flock";
 import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { carriedPaths } from "./carried";
+import { type ActionsLog, confirmed, Outlined, reasonOf, unlogged, withheldOf } from "./sent";
 import type { Door } from "./machine";
 
 /** What the Flock chat asks of a Machine's host, over the channel the bridge declared `chat`. */
@@ -53,6 +55,7 @@ export const chatDoor = (door: Door) => ({
   editFile: (asked: Parameters<Door["editFile"]>[0]) => door.editFile(asked),
   upload: (asked: Parameters<Door["upload"]>[0]) => door.upload(asked),
   read: (asked: Parameters<Door["read"]>[0]) => door.read(asked),
+  progress: (asked: Parameters<Door["progress"]>[0]) => door.progress(asked),
   schedules: () => door.schedules(),
   changeSchedule: (asked: Parameters<Door["changeSchedule"]>[0]) => door.changeSchedule(asked),
 });
@@ -87,6 +90,8 @@ export interface FlockChat {
   readonly said: () => string | undefined;
   /** Desktop's copies of the files the human's message this turn carried. */
   readonly attachments: () => ReadonlyArray<Staged> | undefined;
+  /** Where each write's attempts are kept; none where absent. */
+  readonly actionsLog?: ActionsLog;
   /** What this session uploaded to each Machine: path there, and when, by sha256. */
   readonly uploaded: Map<string, Map<string, { readonly path: string; readonly at: number }>>;
   readonly machineRule: () => string | undefined;
@@ -209,6 +214,31 @@ export const FLOCK_TOOLS = Object.values(FlockTools.tools).map(describeTool);
 
 const ANSWER_WITHIN = "10 seconds";
 
+/** A host's answer within `ANSWER_WITHIN`, or why it gave none. */
+const answered = <A, E>(
+  machine: ChatMachine,
+  asking: Effect.Effect<A, E>,
+): Effect.Effect<Result.Result<A, string>> =>
+  asking.pipe(
+    Effect.timeoutOption(ANSWER_WITHIN),
+    Effect.map(
+      Option.match({
+        onNone: () => Result.fail(`${machine.name} did not answer within 10 s`),
+        onSome: (answer) => Result.succeed(answer),
+      }),
+    ),
+    // A host without the operation answers with a defect, not a failure.
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.interrupt
+        : Effect.succeed(
+            Result.fail(
+              `${machine.name} did not answer; its Collie may be older than Desktop's; upgrade Collie on ${machine.name}`,
+            ),
+          ),
+    ),
+  );
+
 /** The Machine's live board and channel, or why it has none. */
 const reachedAt = (
   { name, board, door }: ChatMachine,
@@ -315,8 +345,28 @@ const owning = (known: Boards, ids: (tasks: ReadonlyArray<TaskView>) => Readonly
     unread,
   }));
 
-/** The board protocol a host must speak to keep each turn's words and settle only the News named. */
-const FLOCK_PROTOCOL = 2;
+/** Who has the Run `named`, each host with an open channel asked where no board lists a bare id. */
+const runOwners = (known: Boards, named: string) => {
+  const owners = owning(known, runsOf);
+  if (named.indexOf(":") > 0 || owners.length < 2 || owners.some(({ ids }) => ids?.has(named)))
+    return Effect.succeed(owners);
+  return Effect.forEach(
+    owners,
+    (owner) =>
+      owner.ids === null || owner.machine.door === undefined
+        ? Effect.succeed(owner)
+        : answered(owner.machine, owner.machine.door.progress({ runId: named })).pipe(
+            Effect.map(
+              Result.match({
+                onSuccess: (progress) =>
+                  progress === null ? owner : { ...owner, ids: new Set([named]) },
+                onFailure: (why) => ({ ...owner, ids: null, unread: why }),
+              }),
+            ),
+          ),
+    { concurrency: "unbounded" },
+  );
+};
 
 /** Says, before a write, who is asking and what the human said that turn. */
 export const declareVoice = (flock: FlockChat, machine: Reached) => {
@@ -328,7 +378,7 @@ export const declareVoice = (flock: FlockChat, machine: Reached) => {
   return machine.door.declare(voice);
 };
 
-/** The Machine to write to, refused where it has no live board or its host is too old to record the turn's words. */
+/** The Machine to write to, refused where it has no live board or its board speaks an older protocol than Desktop's. */
 export const writable = (machine: ChatMachine) =>
   reach(machine).pipe(
     Effect.mapError(
@@ -336,7 +386,7 @@ export const writable = (machine: ChatMachine) =>
         new HostRefused({ reason: `${reason}. Nothing was done on ${machine.name}.` }),
     ),
     Effect.filterOrFail(
-      (reached) => reached.board.protocol >= FLOCK_PROTOCOL,
+      (reached) => reached.board.protocol >= PROTOCOL,
       () =>
         new HostRefused({
           reason: `its Collie is older than Desktop's chat; upgrade Collie on ${machine.name}. Nothing was done there.`,
@@ -350,13 +400,44 @@ export const speaking = (flock: FlockChat, machine: ChatMachine) =>
 
 export const newRequest = Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4);
 
-/** Why a host said no, in its own words. */
-export const reasonOf = (error: { readonly message: string }) =>
-  "reason" in error && isString(error.reason)
-    ? error.reason
-    : "detail" in error && isString(error.detail)
-      ? error.detail
-      : error.message;
+export { reasonOf };
+
+/** A chat write to `machine` under `request`, logged and confirmed as a board action is. */
+const sentOn = <A, E extends { readonly _tag: string; readonly message: string }, R>(
+  flock: FlockChat,
+  machine: ChatMachine,
+  request: string,
+  kind: string,
+  about: string,
+  action: Schema.Json,
+  call: (reached: Reached) => Effect.Effect<A, E, R>,
+) => {
+  const log = flock.actionsLog ?? unlogged;
+  const sending = {
+    door: "chat" as const,
+    machine: machine.name,
+    request,
+    kind,
+    about: about === "" ? null : about,
+  };
+  return writable(machine).pipe(
+    Effect.tapError((refused) =>
+      log({ ...sending, attempt: 0, ended: "not-sent", reason: reasonOf(refused) }),
+    ),
+    Effect.flatMap((reached) =>
+      confirmed(
+        { ...sending, log, withheld: withheldOf(action), what: `the ${kind} to ${about}` },
+        declareVoice(flock, reached).pipe(Effect.andThen(call(reached))),
+      ),
+    ),
+  );
+};
+
+/** What a write's outcome is called in the chat: one no reply confirmed is not a failure. */
+const endedAs = (error: { readonly _tag: string; readonly message: string }) => ({
+  state: error._tag === "Unconfirmed" ? "not confirmed" : "failed",
+  note: reasonOf(error),
+});
 
 const herd = Effect.fn("FlockTools.herd")(function* (flock: FlockChat) {
   const known = yield* boards(flock);
@@ -377,7 +458,7 @@ const onRun = Effect.fn("FlockTools.onRun")(function* (
   if (input.run === undefined)
     return `${tool} takes {"run": "<machine>:<run id>"}; Desktop's chat has no board selection to stand in.`;
   const known = yield* boards(flock);
-  const placed = place(input.run, owning(known, runsOf), "Run");
+  const placed = place(input.run, yield* runOwners(known, input.run), "Run");
   return Result.isFailure(placed) ? placed.failure : yield* answer(placed.success);
 });
 
@@ -387,16 +468,8 @@ const readOn = (machine: ChatMachine, tool: (typeof FLOCK_READS)[number], input:
     Effect.matchEffect({
       onFailure: ({ reason }) => Effect.succeed(reason),
       onSuccess: ({ door }) =>
-        door.read({ tool, input }).pipe(
-          Effect.timeout(ANSWER_WITHIN),
-          // A host without `read` answers with a defect, not a failure.
-          Effect.catchCause((cause) =>
-            Cause.hasInterruptsOnly(cause)
-              ? Effect.interrupt
-              : Effect.succeed(
-                  `${machine.name} did not answer; its Collie may be older than Desktop's; upgrade Collie on ${machine.name}.`,
-                ),
-          ),
+        answered(machine, door.read({ tool, input })).pipe(
+          Effect.map(Result.match({ onSuccess: (text) => text, onFailure: (why) => `${why}.` })),
         ),
     }),
     Effect.map((text) => `## ${machine.name}\n\n${text}`),
@@ -618,20 +691,26 @@ const hold = Effect.fn("FlockTools.hold")(
     if (input.run === undefined)
       return "collie_hold from Desktop's chat takes a Run; hold a workspace's Runs one by one, by the ids collie_herd lists.";
     const known = yield* boards(flock);
-    const placed = place(input.run, owning(known, runsOf), "Run");
+    const placed = place(input.run, yield* runOwners(known, input.run), "Run");
     if (Result.isFailure(placed)) return placed.failure;
     const { machine, id } = placed.success;
-    const { door } = yield* speaking(flock, machine);
-    const done = yield* door.control({
+    const request = yield* newRequest;
+    const holding = {
       runId: id,
-      control: "hold",
+      control: "hold" as const,
       set: true,
-      request: yield* newRequest,
+      request,
       reason: input.reason ?? "asked in chat",
-    });
+    };
+    const done = yield* sentOn(flock, machine, request, "hold", id, holding, (reached) =>
+      reached.door.control(holding),
+    );
     return done.detail || `Held ${machine.name}:${id}`;
   },
-  Effect.catch((error) => Effect.succeed(`hold: failed — ${reasonOf(error)}`)),
+  Effect.catch((error) => {
+    const { state, note } = endedAs(error);
+    return Effect.succeed(`hold: ${state} — ${note}`);
+  }),
 );
 
 /** A text field of an action decoded from JSON, or "" where it has none. */
@@ -658,7 +737,10 @@ interface Localized {
   readonly action: JsonObject;
 }
 
-const placeOne = (action: JsonObject, known: Boards): Result.Result<Localized, string> => {
+const placeOne = Effect.fnUntraced(function* (
+  action: JsonObject,
+  known: Boards,
+): Effect.fn.Return<Result.Result<Localized, string>> {
   if (textAt(action, "kind").startsWith("schedule_")) {
     const explicit = textAt(action, "machine");
     let machine =
@@ -700,7 +782,7 @@ const placeOne = (action: JsonObject, known: Boards): Result.Result<Localized, s
   if (about === null) return Result.succeed({ machine: null, action });
   const where =
     about.field === "run"
-      ? place(about.name, owning(known, runsOf), "Run")
+      ? place(about.name, yield* runOwners(known, about.name), "Run")
       : place(
           about.name,
           owning(known, () => new Set()),
@@ -710,7 +792,7 @@ const placeOne = (action: JsonObject, known: Boards): Result.Result<Localized, s
     machine,
     action: { ...action, [about.field]: id },
   }));
-};
+});
 
 const carryOut = Effect.fn("FlockTools.do")(function* (flock: FlockChat, input: JsonObject) {
   const decoded = decodeAsked(input);
@@ -732,7 +814,7 @@ const carryOut = Effect.fn("FlockTools.do")(function* (flock: FlockChat, input: 
           place(textAt(action, "proposal"), owning(known, proposalsOf), "proposal"),
           ({ machine, id }) => ({ machine, action: { ...action, proposal: id } }),
         )
-      : placeOne(action, known);
+      : yield* placeOne(action, known);
     if (Result.isFailure(where)) {
       said.push(`${kind}: failed — ${where.failure}`);
       break;
@@ -744,18 +826,28 @@ const carryOut = Effect.fn("FlockTools.do")(function* (flock: FlockChat, input: 
       break;
     }
     const step = `${request}-${index}`;
-    const done = yield* writable(machine).pipe(
-      Effect.flatMap((reached) =>
+    const done = yield* sentOn(
+      flock,
+      machine,
+      step,
+      kind,
+      textAt(local, "run") || textAt(local, "proposal"),
+      local,
+      (reached) =>
         withFiles(flock, reached, local).pipe(
-          Effect.tap(() => declareVoice(flock, reached)),
           Effect.flatMap((sent) => doOne(reached, kind, sent, step)),
+          Effect.filterOrFail(
+            (done) => done.state !== "failed",
+            (done) =>
+              "outline" in done && isString(done.outline)
+                ? new Outlined({ reason: done.note, logged: done.outline })
+                : new HostRefused({ reason: done.note }),
+          ),
         ),
-      ),
-      Effect.catch((error) => Effect.succeed({ state: "failed", note: reasonOf(error) })),
-    );
+    ).pipe(Effect.catch((error) => Effect.succeed(endedAs(error))));
     said.push(`${kind}: ${done.state}${done.note ? ` — ${done.note}` : ""}`);
     // What follows a failure was asked for on the assumption that it did not happen.
-    if (done.state === "failed") break;
+    if (done.state === "failed" || done.state === "not confirmed") break;
   }
   return said.join("\n");
 });
@@ -786,6 +878,7 @@ const doOne = (machine: Reached, kind: string, action: JsonObject, request: stri
           note: results
             .map((one) => `${one.kind} ${one.state}${one.note ? ` (${one.note})` : ""}`)
             .join("; "),
+          outline: results.map((one) => `${one.kind} ${one.state}`).join("; "),
         })),
       );
     case "decline":
@@ -824,7 +917,7 @@ const propose = Effect.fn("FlockTools.propose")(
     const known = yield* boards(flock);
     const placed: Localized[] = [];
     for (const action of actions) {
-      const one = placeOne(action, known);
+      const one = yield* placeOne(action, known);
       if (Result.isFailure(one)) return one.failure;
       placed.push(one.success);
     }

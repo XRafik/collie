@@ -4,12 +4,15 @@ import { expect, test } from "bun:test";
 import { Effect, FileSystem, Schedule, Schema, Stream } from "effect";
 import { readAudit } from "../src/audit";
 import { readDispositions } from "../src/disposition";
-import { currentEnv } from "../src/env";
+import { currentEnv, readEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
 import { connect, frontDoor, socketOf } from "../src/host";
+import { shareBoard } from "../src/board-stream";
+import { sideJobs } from "../src/side-jobs";
 import { newsPath, pending, read as readNews } from "../src/news";
 import { herdOf } from "../src/steering";
 import { writeTask } from "../src/task";
+import { fastForward, runEffect } from "./support/effect";
 import { stopHost } from "./support/host";
 import { collie, proves } from "./support/world";
 
@@ -273,3 +276,43 @@ test(
     ),
   120_000,
 );
+
+test("News and the merge watch read the host's latest board, and list no Runs of their own", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-side-shared-" });
+      const env = readEnv({
+        HERDR_PLUGIN_STATE_DIR: stateDir,
+        HERDR_SOCKET_PATH: `${stateDir}/none.sock`,
+        COLLIE_CWD: stateDir,
+      });
+      let listings = 0;
+      let reads = 0;
+      const boards = yield* shareBoard({
+        build: Effect.sync(() => {
+          listings++;
+          return { runs: [], views: [] };
+        }),
+        changed: Stream.never,
+      });
+      const board = Stream.runHead(boards).pipe(
+        Effect.tap(() => Effect.sync(() => reads++)),
+        Effect.flatMap((latest) =>
+          latest._tag === "Some" ? Effect.succeed(latest.value) : Effect.never,
+        ),
+      );
+      yield* sideJobs({
+        env,
+        herdr: new Herdr(env),
+        board,
+        panels: new Map(),
+        record: () => Effect.void,
+        stop: () => Effect.void,
+        sweepers: Effect.succeed([]),
+      }).pipe(Effect.timeout("12 seconds"), Effect.ignore, fastForward);
+      // Two merge looks and three News looks at least, on one build.
+      expect(reads).toBeGreaterThanOrEqual(5);
+      expect(listings).toBe(1);
+    }),
+  ));
