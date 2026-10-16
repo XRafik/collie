@@ -224,7 +224,6 @@ export interface Questions {
 /** An agent's question on its Run, numbered from 1 in the order its step asked them. */
 export const agentQuestionName = (operation: string, n: number) => `ask-${operation}-${n}`;
 
-/** What collecting this step's Output answers a question still open when it arrives. */
 const closedAnswer = (operation: string) => `closed: ${operation} finished before it was answered`;
 
 /**

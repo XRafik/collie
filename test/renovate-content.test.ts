@@ -57,7 +57,6 @@ test("the batch leaves out a bump it cannot fix small, with a recommendation, an
     );
     expect(batch).toContain("take the option you would recommend");
     expect(batch).toContain("Do not stop to ask.");
-    // assess and merge keep theirs.
     expect(content.sections.get("assess")).toContain("consultation");
     expect(content.sections.get("merge")).toContain("consultation");
   }

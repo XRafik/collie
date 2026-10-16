@@ -122,7 +122,6 @@ test(
           expect(prompts).toContain("SQLite; it is only a demo");
           expect(prompts).toContain("lint and typecheck");
 
-          // The run was collecting all along, and carries on to its end once the Output comes.
           yield* fs
             .writeFileString(launched.output, encode({ verdict: "built" }))
             .pipe(Effect.orDie);
