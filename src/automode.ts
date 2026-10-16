@@ -4,7 +4,7 @@
 import { Effect, Schema } from "effect";
 import { FORGES, forgeOfHost } from "./forge/forge";
 import { projectFromRemote, type Runner } from "./mr";
-import { scrub } from "./redact";
+import { redact, scrub } from "./redact";
 
 /** The door a human started a Run through, and their words. */
 export const StartedSchema = Schema.Struct({
@@ -81,11 +81,11 @@ export const autoModeFacts = <R>(
 ): Effect.Effect<AutoModeFacts, never, R> =>
   Effect.gen(function* () {
     const remote = yield* run("git", ["remote", "get-url", "origin"], session.cwd);
-    const origin = remote.code === 0 ? remote.stdout.trim() || null : null;
+    const url = remote.code === 0 ? remote.stdout.trim() || null : null;
     const head = yield* run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], session.cwd);
     const branch = head.code === 0 ? head.stdout.trim() || null : null;
     const created = !own.roaming && branch !== null && branch === own.createdBranch;
-    const project = origin === null ? null : projectFromRemote(origin);
+    const project = url === null ? null : projectFromRemote(url);
     const forge = project === null ? null : forgeOfHost(project.split("/")[0]!, gitlabHost);
     const protects =
       created && project !== null && forge !== null
@@ -93,7 +93,7 @@ export const autoModeFacts = <R>(
         : null;
     return {
       ...session,
-      origin,
+      origin: url === null ? null : withoutCredentials(url),
       branch,
       roaming: own.roaming,
       created,
@@ -101,6 +101,9 @@ export const autoModeFacts = <R>(
       started: own.started,
     };
   });
+
+const withoutCredentials = (url: string) =>
+  redact(url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1"));
 
 const quoted = (words: string) => {
   const { text } = scrub(words);

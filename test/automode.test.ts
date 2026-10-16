@@ -105,6 +105,25 @@ for (const forge of ["gitlab", "github"] as const) {
     ));
 }
 
+test("an origin's embedded credentials never reach the block", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const token = ["glpat", "synthetic0000000000test"].join("-");
+      const { block } = yield* blockFor(
+        "gitlab",
+        {},
+        { origin: `https://oauth2:${token}@gitlab.example.com/group/app.git` },
+      );
+      const text = [...block.environment, ...block.allow].join("\n");
+      expect(text).not.toContain(token);
+      expect(text).not.toContain("oauth2");
+      expect(block.environment[2]).toContain("https://gitlab.example.com/group/app.git");
+      expect(block.allow.find((one) => one.startsWith(HISTORY))).toContain(
+        "https://gitlab.example.com/group/app.git",
+      );
+    }),
+  ));
+
 test("a created branch a GitLab wildcard rule or a GitHub ruleset matches gets no history allowance", () =>
   runEffect(
     Effect.gen(function* () {
