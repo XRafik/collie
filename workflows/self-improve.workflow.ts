@@ -81,6 +81,8 @@ export default defineWorkflow({
     ),
   }),
   hints: { improvements: "goal" },
+  // The checkout it was started in is shared and may be dirty or behind its remote.
+  checkout: "roaming",
   output: Schema.String,
   agents: { harness: "claude", model: "opus", effort: "xhigh" },
   run: ({ input }) =>

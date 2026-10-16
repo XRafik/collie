@@ -56,7 +56,9 @@ nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host ke
 `LD_LIBRARY_PATH` and `ICU_DATA`.
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
-whether the grace ran out, every warning the engine and the registry log. Lines are flushed
+whether the grace ran out, every warning the engine and the registry log, and a board build
+or an RPC answer that took over 2 s, with which RPC and how long it took. A stream, such as
+the board's, is never timed: it is meant to stay open. Lines are flushed
 every 100 ms, so a host killed outright can lose its last few. Past 1 MiB the file starts
 again and the previous one is kept as `host.log.1`. Look there first when a host stops
 answering. What a host started by a client writes to its stdout and stderr, a stack trace
@@ -230,7 +232,10 @@ A worktree is **settled**, and only then removed, when all five hold
 3. nothing is in it: no live agent's pane (its start directory, the directory it has
    moved to, or its workspace) other than the idle agents of the runs that finished there,
    no run still going there, and no stopped or failed run a resume would carry on there
-   while its work has not landed;
+   while its work has not landed — except that a failed run does not keep a roaming
+   checkout, which the next roaming start of its repository would take over anyway, and
+   the idle agents of the runs that finished or failed inside one hold it no more than
+   their own run would;
 4. its work has landed: the merge watch read its merge request as merged or closed, on
    GitHub or GitLab (`board/mr-states.json`), a Disposition of merged, abandoned or
    superseded was recorded on a Run that recorded it, or, with neither, its branch is gone
@@ -1119,9 +1124,14 @@ One whole suite runs at a time on a Machine, per user. `bun run test` takes a lo
 holds the lock — the pid, its command line and when it started — and then, every 30
 seconds, how long it has waited (`tools/suite-lock.ts`). Which forms take the lock:
 
-- `bun run check`, `bun run test`, and `bun run test <args>`, whose arguments go to
-  `bun test` inside the lock: a focused run through the script still waits for a whole
-  suite.
+- `bun run check`, `bun run test`, and `bun run test <args>` whose arguments name no
+  existing file or directory and no `--changed` — `-t <name>` alone, or a filter that is
+  not a path — run the whole suite and take the lock.
+- A targeted `bun run test`, one naming an existing file or directory or passing
+  `--changed[=<ref>]`, does not (`tools/test-run.ts`). The lock guards the cores and the
+  executables in `.scratch/test-bin/`; a run of a few files needs few cores, builds into a
+  temporary directory of its own that it removes when it ends, and reads
+  `.scratch/test-timings.json` without updating it.
 - `bun test <file>`, `bun test -t <name>` and `bun run test:live` do not: they run the
   sources directly, beside whatever suite is running.
 

@@ -2,29 +2,42 @@
 // then told to each client as every Task once and each Task that changed, numbered so a
 // client can tell it missed nothing.
 
-import { Cause, Effect, Option, type Scope, Stream, SubscriptionRef } from "effect";
+import { Cause, Clock, Effect, Option, type Scope, Stream, SubscriptionRef } from "effect";
 import type { BoardMessage, BoardSnapshot, TaskView } from "./board-model";
 
+/** How long a build may take before the host log says so. */
+const SLOW_BUILD_MS = 2_000;
+
 /**
- * One board for every client: built when the first one subscribes and again whenever
- * `changed` says something may have moved, one build at a time, with the changes that arrive
- * during a build folded into the next. It keeps building for as long as `Scope` lasts.
- * Its stream is the latest board, then each one built after it.
+ * One board for everything that reads it: built at once and again whenever `changed` says
+ * something may have moved, one build at a time, with the changes that arrive during a
+ * build folded into the next. It keeps building for as long as `Scope` lasts. Its stream
+ * is the latest board that covers every change seen before it was read, then each one
+ * built after it, so a reader reads its own writes.
  */
-export const shareBoard = <E, R, R2>(options: {
-  readonly build: Effect.Effect<ReadonlyArray<TaskView>, E, R>;
+export const shareBoard = <A, E, R, R2>(options: {
+  readonly build: Effect.Effect<A, E, R>;
   readonly changed: Stream.Stream<unknown, never, R2>;
-}): Effect.Effect<Stream.Stream<ReadonlyArray<TaskView>>, never, Scope.Scope | R | R2> =>
+}): Effect.Effect<Stream.Stream<A>, never, Scope.Scope | R | R2> =>
   Effect.gen(function* () {
-    const scope = yield* Effect.scope;
-    const context = yield* Effect.context<R | R2>();
-    const latest = yield* SubscriptionRef.make(Option.none<ReadonlyArray<TaskView>>());
-    const builder = Stream.concat(Stream.make(undefined), options.changed).pipe(
+    let seen = 0;
+    const latest = yield* SubscriptionRef.make(
+      Option.none<{ readonly covers: number; readonly board: A }>(),
+    );
+    const timed = Effect.gen(function* () {
+      const started = yield* Clock.currentTimeMillis;
+      const built = yield* options.build;
+      const took = (yield* Clock.currentTimeMillis) - started;
+      if (took > SLOW_BUILD_MS) yield* Effect.logWarning(`the board took ${took} ms to build`);
+      return built;
+    });
+    yield* Stream.concat(Stream.make(undefined), options.changed).pipe(
+      Stream.map(() => ++seen),
       Stream.buffer({ capacity: 1, strategy: "sliding" }),
       // A build that fails is skipped: the last board stands until a change builds again.
-      Stream.mapEffect(() =>
-        options.build.pipe(
-          Effect.map(Option.some),
+      Stream.mapEffect((covers) =>
+        timed.pipe(
+          Effect.map((board) => Option.some({ covers, board })),
           Effect.catchCause((cause) =>
             Cause.hasInterruptsOnly(cause)
               ? Effect.interrupt
@@ -37,20 +50,18 @@ export const shareBoard = <E, R, R2>(options: {
       Stream.runForEach((built) =>
         Option.isSome(built) ? SubscriptionRef.set(latest, built) : Effect.void,
       ),
-      Effect.provideContext(context),
+      Effect.forkScoped,
     );
-    let started = false;
     return Stream.unwrap(
-      Effect.gen(function* () {
-        if (!started) {
-          started = true;
-          yield* Effect.forkIn(builder, scope);
-        }
+      Effect.sync(() => {
+        const since = seen;
         return SubscriptionRef.changes(latest).pipe(
-          // A client that reads slowly skips to the latest board; it is told by diff.
+          // A reader that reads slowly skips to the latest board; a client is told by diff.
           Stream.buffer({ capacity: 1, strategy: "sliding" }),
           Stream.filter(Option.isSome),
           Stream.map((built) => built.value),
+          Stream.filter((built) => built.covers >= since),
+          Stream.map((built) => built.board),
         );
       }),
     );

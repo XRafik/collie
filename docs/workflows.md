@@ -407,7 +407,10 @@ in, and `machine` reads every Run on its Machine and also files Collie's own `de
 `improvements`, a whole number, bounds how many fixes it starts; `0` files without
 building.
 
-**What happens:** it reads the 24 hours of Runs before it started. A `retrospective`
+**What happens:** it works in a worktree of its own, detached at `origin`'s default branch
+as just fetched, never in the checkout it was started in, which other Runs share; the
+cleanup sweep removes it once the Run has ended. It reads the 24 hours of Runs before it
+started. A `retrospective`
 agent triages their records with the installed `retro` skill, and each finding that
 recurs is filed on the forge of the checkout it runs in, or commented on the open issue it
 matches. Up to `improvements` groups of newly filed issues start as `plan` Runs that build

@@ -19,7 +19,6 @@ here are in [`src/README.md`](src/README.md).
 - **Placement** of a start → [ADR-0033](docs/adr/0033-a-run-started-from-the-home-is-placed-not-asked.md),
   `src/flows.ts`, `src/route.ts`, `src/projects.ts`, `src/agent-start.ts`.
 - **CLI surface, error codes, `--json`** → [`docs/cli.md`](docs/cli.md), `src/envelope.ts`, `src/operations.ts`.
-- **Claiming a change works** → [`docs/acceptance.md`](docs/acceptance.md), `bun run acceptance`.
 - **herdr calls, red `contract`** → [`docs/internals.md`](docs/internals.md#checking-the-boundary-against-herdr),
   `herdr-pin.json`, `test/herdr-contract.test.ts`.
 - **Compaction** → [`docs/using.md`](docs/using.md#compaction-between-pieces-of-work),
@@ -140,6 +139,13 @@ here are in [`src/README.md`](src/README.md).
 The one pairing they do not record: before touching anything on the release or install
 path, run `bun run build && bun run smoke`. The build alone does not prove the compiled
 binary still starts.
+
+While you iterate, run what covers what you touched, each through `collie verify`:
+
+- `bun run typecheck`;
+- `bun test <files>`, which runs the sources and takes no suite lock;
+- never the whole suite (`bun run test`, `bun run check`): that is the gate's, which runs
+  the Run's Checks on the final tree.
 
 Tests are unit tests only: they call the code through its own interface, with fakes at
 its edges. No Playwright and no test that drives a built app or a browser — a behaviour

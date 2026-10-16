@@ -184,8 +184,9 @@ Already disputed, and the human's to settle rather than yours to redo:
 
 Apply the findings you agree with and commit them. A finding you believe is wrong is not
 silently skipped: record it under `disputed` with your reason, and the human sees it. Run
-the project's checks through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`
-and say what you ran: what Collie watched is a verification, and anything else is a claim.
+the typecheck and the test files you touched, each through
+`collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`, and never the whole suite.
+Say what you ran: what Collie watched is a verification, and anything else is a claim.
 
 At the end of the round, where `{{branch}}` has an open merge request (a pull request on
 GitHub), push this round's commits to it: a plain push, never forced. A rejected push is

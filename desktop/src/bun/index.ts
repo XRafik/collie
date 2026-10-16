@@ -58,6 +58,7 @@ import { appWindowFor } from "./browser";
 import { applicationMenu } from "./menu";
 import { clipboardPaths } from "../shared/attachments";
 import { readAttachment, stageAttachment, stagePath } from "./attachments";
+import { actionsLog } from "./sent";
 import { type FlockConversation, openFlockChat, refusal, untilStarted } from "./chat";
 import { claudeCode } from "./claude";
 import { claudeDriver } from "./claude-driver";
@@ -82,7 +83,7 @@ import { changedLine } from "../../../src/schedule-model";
 import { SettingValue, settingText } from "../../../src/settings";
 import { isString } from "../../../src/schema";
 import {
-  act,
+  actOn,
   DoorMap,
   type Doors,
   doorTo,
@@ -244,6 +245,7 @@ const main = Effect.gen(function* () {
     hash: yield* updater.hash,
     version: manifest.version,
   }).pipe(Effect.ignore);
+  const logged = yield* actionsLog(own);
   let settings = yield* readSettings(own);
   const saved = yield* readFlockSettings(own);
   // The GitLab host an earlier Desktop kept as its own becomes the Flock's.
@@ -975,13 +977,10 @@ const main = Effect.gen(function* () {
         return `Removed ${known.route.machine.name}`;
       }),
     syncNow: ({ profile }) => syncMachine(profile),
-    act: ({ installation, action, request: again }) =>
+    act: ({ installation, action, request: again, unsent }) =>
       Effect.gen(function* () {
         const request = again ?? (yield* uuid);
-        const door = yield* doorTo(doors, installation).pipe(
-          Effect.mapError((failed) => new ActionFailed({ reason: failed.reason, request })),
-        );
-        return yield* act(door, request, action);
+        return yield* actOn(doors, installation, request, action, logged, unsent);
       }),
     goToPane: ({ installation, runId }) =>
       Effect.gen(function* () {

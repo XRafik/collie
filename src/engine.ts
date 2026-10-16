@@ -175,14 +175,18 @@ import {
   type VerifySpec,
 } from "./verify-spec";
 import {
+  commandOf,
   encodeVerifying,
   fingerprint,
   insideRun,
+  ranCommand,
   readVerifications,
-  reusableFor,
+  reliedFor,
+  resolveExecutable,
   runApproved,
   VERIFYING_FILE,
   type CheckPass,
+  type CheckRun,
   type Verification,
 } from "./verify";
 import * as Workflow from "effect/workflow/Workflow";
@@ -294,6 +298,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export interface CheckEvidence {
     readonly verifications: ReadonlyArray<Verification>;
     readonly final: Snapshot;
+    /** The Run's checks' commands as they resolve here, so a record is read as the check it ran. */
+    readonly commands?: ReadonlyArray<{
+      readonly name: string;
+      readonly executable: string | null;
+      readonly argv: ReadonlyArray<string>;
+      readonly cwd: string;
+    }>;
   }
 
   /** A Run as the host admitted it: where it works, where its work belongs, what it was given. */
@@ -404,8 +415,6 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       /** Why it is run: the gate on the branch, a recheck for a flake, or a fix after gate fix \`round\`. */
       readonly pass?: "gate" | "recheck" | "fix";
       readonly round?: number;
-      /** Answer with its latest pass on this tree in this environment, where nothing a human did since could change it. */
-      readonly reuse?: boolean;
     }) => Effect.Effect<Verification, WorkflowError>;
     /**
      * Puts a file on the merge request a Run was pointed at, as one note Collie sends.
@@ -2142,6 +2151,17 @@ const recordedClaim = (
     Effect.orElseSucceed((): HelleClaim | null => null),
   );
 
+/** A pass this host already collected that answers for exactly one of a Run's Checks. */
+export class Reliance extends Context.Service<
+  Reliance,
+  {
+    readonly relied: (
+      runId: string,
+      command: Pick<Verification, "executable" | "argv" | "cwd">,
+    ) => Effect.Effect<Verification | null>;
+  }
+>()("collie/Reliance") {}
+
 /** A Run's execution as the host that runs it can stop it and see it stopped. */
 export class Executions extends Context.Service<
   Executions,
@@ -2281,7 +2301,7 @@ export const hostLayer = (options: {
   readonly readings?: Effect.Effect<ReadonlyArray<UsageReading>>;
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
-}): Layer.Layer<Host | Notifier | Oversight, never, Store | BunServices> =>
+}): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices> =>
   Layer.effectContext(
     Effect.gen(function* () {
       const dir = options.dir;
@@ -2331,6 +2351,18 @@ export const hostLayer = (options: {
               }),
             ).pipe(Effect.ignore);
       const lineageOf = lineageIn(store);
+      const hostStarted = yield* nowIso();
+      /** A pass this host collected that answers for this check now, said in the Run log. */
+      const relyOn = (runId: string, run: CheckRun, spec: VerifySpec, recorded: CheckPass) =>
+        Effect.gen(function* () {
+          const kept = yield* reliedFor(evidenceDir(dir, runId), run, spec, hostStarted);
+          if (kept !== null)
+            yield* appendLog(
+              runDir(dir, runId),
+              `${recorded.pass}: ${spec.name} relies on verification ${kept.id}`,
+            ).pipe(Effect.orDie);
+          return kept;
+        });
       /** Runs one approved command for a Run, under the pass it was asked for (ADR-0042). */
       const check = (asked: Parameters<Sdk.HostApi["verify"]>[0], recorded: CheckPass) =>
         under(
@@ -2353,8 +2385,8 @@ export const hostLayer = (options: {
             const marker = `${runDir(dir, asked.runId)}/${VERIFYING_FILE}`;
             const away = `${runDir(dir, asked.runId)}/${AWAY_FILE}`;
             yield* restoreCheckout(asked.cwd, away);
-            if (asked.reuse === true && asked.at === undefined && asked.expect !== "fail") {
-              const kept = yield* reusableFor(journal, { ...own, cwd: asked.cwd }, spec);
+            if (asked.at === undefined && asked.expect !== "fail") {
+              const kept = yield* relyOn(asked.runId, { ...own, cwd: asked.cwd }, spec, recorded);
               if (kept !== null) return kept;
             }
             // Written once the checkout is where the check runs, so it names that revision.
@@ -2713,11 +2745,17 @@ export const hostLayer = (options: {
             ),
         evidence: (runId, cwd) =>
           under(
-            Effect.all({
-              verifications: readVerifications(evidenceDir(dir, runId)).pipe(
-                Effect.orElseSucceed((): ReadonlyArray<Verification> => []),
-              ),
-              final: fingerprint(cwd),
+            Effect.gen(function* () {
+              const own = yield* treeOf(yield* store.run(runId), runId, dir);
+              return yield* Effect.all({
+                verifications: readVerifications(evidenceDir(dir, runId)).pipe(
+                  Effect.orElseSucceed((): ReadonlyArray<Verification> => []),
+                ),
+                final: fingerprint(cwd),
+                commands: Effect.forEach(yield* approvedOf(dir, runId), (spec) =>
+                  commandOf({ ...own, cwd }, spec),
+                ),
+              });
             }),
           ).pipe(Effect.orDie),
         verify: (asked) => check(asked, passAsked(asked)),
@@ -3039,9 +3077,23 @@ export const hostLayer = (options: {
               yield* notify(runId, "drift-unresolved", "cross_run_pending", { key: "cross_run" });
           }).pipe(Effect.ignore),
       });
+      const relied: Reliance["Service"]["relied"] = (runId, command) =>
+        under(
+          Effect.gen(function* () {
+            const own = yield* treeOf(yield* store.run(runId), runId, dir);
+            const executable = yield* resolveExecutable(command.executable, command.cwd);
+            if (executable === null) return null;
+            for (const spec of yield* approvedOf(dir, runId)) {
+              if (ranCommand({ ...command, executable }, yield* commandOf(own, spec)))
+                return yield* relyOn(runId, own, spec, { pass: "check" });
+            }
+            return null;
+          }),
+        ).pipe(Effect.orElseSucceed(() => null));
       return Context.make(Host, host).pipe(
         Context.add(Notifier, Notifier.of({ notify })),
         Context.add(Oversight, oversight),
+        Context.add(Reliance, Reliance.of({ relied })),
       );
     }),
   );
@@ -3434,6 +3486,13 @@ const PlacingJson = Schema.fromJsonString(Placing);
 const decodePlacing = Schema.decodeUnknownOption(PlacingJson);
 const encodePlacing = Schema.encodeSync(PlacingJson);
 
+/** Whether a Run's report is owed: an agent started it, or its Task closes once it is reported. */
+export const owesReport = (row: RunRow) =>
+  Option.match(decodePlacing(row.placing ?? ""), {
+    onNone: () => false,
+    onSome: (placing) => placing.requestedBy !== undefined || placing.closes === "reported",
+  });
+
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 
@@ -3712,6 +3771,8 @@ const SWEEP_INTERVAL = "500 millis";
 /** How long a woken run is given to settle before a caller is told it was woken. */
 const WAKE_INTERVAL = "250 millis";
 const WAKE_TRIES = 8;
+
+const VIEW_CONCURRENCY = 8;
 
 /** What a host is holding, as a caller may see it: live names and unloadable ones. */
 export const Registrations = Schema.Struct({
@@ -4004,6 +4065,7 @@ export const foundationLayer = (options: {
   | Host
   | Notifier
   | Oversight
+  | Reliance
   | Store
   | WorkflowEngine.WorkflowEngine
   | MessageStorage.MessageStorage
@@ -4849,6 +4911,20 @@ const makeRegistry: (
   const claimOf = (runId: string) =>
     recordedClaim(claimPath(dir, runId)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
+  /** A finished execution's status: it is never resumed, so it cannot change. */
+  const finished = new Map<string, typeof RunStatus.Type>();
+  const polled = Effect.fn("Engine.polled")(function* (generation: Generation, execution: string) {
+    const workflow = generation.registration.workflow;
+    const status = pollStatus(
+      yield* engine.poll(workflow, execution),
+      generation.entry,
+      workflow.successSchema,
+      workflow.errorSchema,
+    );
+    if (status.status === "complete" || status.status === "failed") finished.set(execution, status);
+    return status;
+  });
+
   const viewOf = Effect.fn("Engine.viewOf")(function* (row: RunRow) {
     const input = yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({})));
     const placing = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
@@ -4907,13 +4983,7 @@ const makeRegistry: (
           unavailable.get(row.generation) ?? `${row.generation} is not registered in this host`,
       };
     }
-    const result = yield* engine.poll(generation.registration.workflow, row.execution);
-    const status = pollStatus(
-      result,
-      generation.entry,
-      generation.registration.workflow.successSchema,
-      generation.registration.workflow.errorSchema,
-    );
+    const status = finished.get(row.execution) ?? (yield* polled(generation, row.execution));
     // A failed Run keeps a claim it may have left shared work half-done under.
     const kept = status.status === "failed" ? yield* claimOf(row.run) : null;
     return {
@@ -5503,7 +5573,9 @@ const makeRegistry: (
     views: (task: string | null) =>
       store.runs.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf),
+          Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf, {
+            concurrency: VIEW_CONCURRENCY,
+          }),
         ),
       ),
     watch: (runId: string) =>

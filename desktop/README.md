@@ -69,6 +69,17 @@ The Toolkit both chats share is the root's `src/toolkit.ts`.
 | `src/bun/file-tools.ts`     | The chat's file tools            |
 | `src/shared/attachments.ts` | What the view shows of them      |
 
+## Writes to a host
+
+Done only on the host's reply, and kept in `actions.log`. Tested in
+`test/desktop-confirm.test.ts` and `test/desktop-pending-answer.test.ts`.
+
+| File                           | What it owns                                                  |
+| ------------------------------ | ------------------------------------------------------------- |
+| `src/bun/sent.ts`              | The 30 s wait, 3 tries under one request, and `actions.log`   |
+| `src/shared/actions.ts`        | One request per gesture, which **Try again** sends again      |
+| `src/shared/pending-answer.ts` | What a card shows of an answer until the board no longer asks |
+
 ## Review comments and the Diff tab
 
 [ADR-0051](../docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md). Desktop never

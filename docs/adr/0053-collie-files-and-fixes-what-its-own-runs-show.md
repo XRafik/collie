@@ -182,3 +182,21 @@ The human asked for `self-improve` to serve every project, not only Collie's.
   - `machine` reads every Run on its Machine, and alone files `defect`s.
 - **Collie's own daily Schedule is the `runs=machine` one**, in a Collie checkout, so
   Collie's bugs seen in any project's Runs are filed on Collie's tracker.
+
+## Amended 2026-10-15: a worktree of its own
+
+The checkout a Schedule starts it in is shared with other Runs, and may be dirty or behind
+its remote, so a Run working there could collide with other work or triage stale code.
+
+- **It works in a roaming checkout** (`checkout: "roaming"`), as `renovate` does: the host
+  fetches `origin` and cuts a worktree detached at the default branch from the checkout it
+  was started in, before the Run exists. Triage, filing and its Improvements' `plan` Runs
+  all work from there. An `origin` that will not fetch refuses the start rather than
+  cutting the worktree from a stale base. Another Run holding that repository's roaming checkout refuses the
+  start, as it refuses a second `renovate`.
+- **The Runs it reads are still that checkout's.** A Run's project is where it was started,
+  not where it was placed, so `runs=checkout` and the Schedule's saved start are unchanged.
+- **The cleanup sweep removes the worktree** once the Run has ended, succeeded or failed,
+  and nothing is working in it: an Improvement still running there keeps it, and a failed
+  Run, which the next roaming start would take over from anyway, does not
+  ([ADR-0045](0045-collie-removes-what-it-made-once-nothing-needs-it.md)).

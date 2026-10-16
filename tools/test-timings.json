@@ -194,7 +194,6 @@
     "test/offers.test.ts": 172,
     "test/standing.test.ts": 155,
     "test/herdr-release.test.ts": 150,
-    "test/acceptance.test.ts": 148,
     "test/lines-preview.test.ts": 122,
     "test/desktop-mac-signing.test.ts": 95
   }

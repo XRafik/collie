@@ -1051,11 +1051,15 @@ Collie never works a pass out from your workflow's id.
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
 ```
 
-`reuse: true` answers with the latest pass Collie collected for that check instead of
-running it, where it was the same command on this tree in this
-[environment](cli.md#verify); otherwise the check runs. Ask for it only where
-nothing a human did since could change the answer: `implement`'s proof asks on its first
-execution, straight after the gate, and never after a resume.
+A Check passes once per tree. The host answers with the latest record of exactly that
+check's command (the executable as resolved, its arguments and its directory) on the tree
+in front of it, without running anything, where that record is a pass collected in the same
+[environment](cli.md#verify) since this host started. Who asked for it does not matter: an
+agent's `collie verify` of the command is run by the host too. The Run log says
+`<pass>: <check> relies on verification <id>`. Otherwise the check runs, and it always runs
+with `expect: "fail"` or `at: "default-base"`, or where that latest record failed — as the
+gate's recheck after a failure finds it. Your workflow decides nothing about this, so there
+is no flag to ask for it.
 
 `host.approved(runId)` is the Run's checks as they stand now, for a prompt to name what the
 work will be held to — `renderApproved` writes it out — and

@@ -460,7 +460,7 @@ export const runView = (
 ): Effect.Effect<RunView | Failure | null, never, Client> =>
   anyRuns(env).pipe(
     Effect.flatMap((any) =>
-      any
+      any || env.machine !== undefined
         ? asks(env, (client) => client.run({ runId })).pipe(
             Effect.map((answered) => (answered.ok ? answered.value : answered)),
           )

@@ -88,13 +88,14 @@ export const verify = Command.make(
           );
           if (!opened.ok) return opened;
           const echo = yield* echoed();
-          const record = yield* Stream.runFoldEffect(
+          type Answered = { verification: import("../verify-model").Verification; ran: boolean };
+          const answered = yield* Stream.runFoldEffect(
             opened.events,
-            (): import("../verify-model").Verification | null => null,
+            (): Answered | null => null,
             (last, event) =>
               event._tag === "Output"
                 ? echo[event.stream](event.text).pipe(Effect.as(last))
-                : Effect.succeed(event.verification),
+                : Effect.succeed({ verification: event.verification, ran: event.ran ?? true }),
           ).pipe(
             Effect.catch((cause) =>
               Effect.succeed(
@@ -104,14 +105,17 @@ export const verify = Command.make(
               ),
             ),
           );
-          if (record === null)
+          if (answered === null)
             return err("operation_failed", "The verification ended without a record.");
-          if ("ok" in record) return record;
+          if ("ok" in answered) return answered;
+          const { verification: record, ran } = answered;
           process.exitCode = record.exit;
           return {
             ok: true as const,
-            data: { verification: record },
-            human: `${record.name}: ${record.result} (exit ${record.exit})`,
+            data: { verification: record, ran },
+            human: ran
+              ? `${record.name}: ${record.result} (exit ${record.exit})`
+              : `${record.name}: ${record.result}, not run again: verification ${record.id} already passed on this tree`,
           };
         }),
       ),
