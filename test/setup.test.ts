@@ -90,7 +90,9 @@ const install = (dir: string, publicKey: string, extra: Record<string, string> =
     };
   });
 
-const env = () => Effect.promise(() => Bun.file("/usr/bin/env").bytes());
+// Where coreutils is one multi-call binary, `env` runs as whatever it is named; `gnuenv` does not.
+const ENV = (await Bun.file("/usr/bin/gnuenv").exists()) ? "/usr/bin/gnuenv" : "/usr/bin/env";
+const env = () => Effect.promise(() => Bun.file(ENV).bytes());
 
 test("a signed runner places the release, and setup ends in doctor", () =>
   runEffect(
