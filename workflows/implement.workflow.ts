@@ -42,6 +42,7 @@ import {
   isOutcome,
   isSingleRepo,
   orderedTicketsOf,
+  owedLocally,
   planReposOf,
   renderApproved,
   renderEvidence,
@@ -582,7 +583,7 @@ export default defineWorkflow({
               why.pass === "recheck"
                 ? wholeRunsOwed({ ...(yield* host.evidence(runId, cwd)), approved: checks })
                 : null;
-            for (const spec of checks) {
+            for (const spec of owedLocally(checks)) {
               if (now.includes(spec.name)) continue;
               if (whole !== null && !whole.includes(spec.name)) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
@@ -729,7 +730,7 @@ export default defineWorkflow({
           // has its named failures run alone too, before any gap is read.
           const rely = Effect.gen(function* () {
             const settled = settledChecks({ ...(yield* host.evidence(runId, cwd)), approved });
-            for (const spec of approved.filter((one) => !settled.includes(one.name))) {
+            for (const spec of owedLocally(approved).filter((one) => !settled.includes(one.name))) {
               const relied = yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" });
               yield* host.record(runId, `proof: ${spec.name} relies on verification ${relied.id}`);
             }
@@ -987,7 +988,7 @@ const spawned = (
     );
     return ran === undefined
       ? spec
-      : { name: spec.name, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };
+      : { ...spec, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };
   });
 
 /** A ticket's criteria as its builder is given them. */

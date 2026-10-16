@@ -1132,6 +1132,22 @@ tree could close: a check that failed, never ran, or passed on an earlier tree. 
 what a fix may be handed. A reviewer's judgement and an Output's claim are not moved by
 running anything, so a fix handed one spends a session and changes nothing.
 
+Both read each check through `checkProof`, which you can call yourself. It gives a check's
+proof on the tree in `evidence`: `passed`, `failed`, `unstable`, `earlier` (it passed only
+on an earlier tree) or `never`, with its runs and the latest of them on this tree. A record
+counts where it ran exactly that check's command, whoever asked for it. Where
+`evidence.commands` does not name the check, records count by name: anyone's by default, or
+only Collie's own with `"collie"`. `owedLocally` takes the Run's checks and returns those the
+Run runs itself; today that is every one. Loop over it, not over the checks, wherever your
+workflow runs them.
+
+```ts
+const evidence = yield * host.evidence(runId, cwd);
+const red = owedLocally(yield * host.approved(runId)).filter(
+  (spec) => checkProof(evidence, spec.name).state !== "passed",
+);
+```
+
 [ADR-0023](adr/0023-a-rally-is-a-loop-and-a-claim-is-not-proof.md) is why the rally is a
 loop and why a claim is not proof.
 

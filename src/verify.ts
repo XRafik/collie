@@ -501,18 +501,6 @@ export const ranCommand = (record: Command, check: CheckCommand) =>
 /** A run of one failed test, again or at the base, is recorded under its check's name, and is never the check's own run. */
 export const ranOneTest = (v: Pick<Verification, "test">) => v.test !== undefined;
 
-/** A named check's records: those of its command where it is one of the Run's, else by name. */
-export const recordsNamed = (
-  records: ReadonlyArray<Verification>,
-  name: string,
-  commands: ReadonlyArray<CheckCommand> = [],
-) => {
-  const command = commands.find((one) => one.name === name);
-  return records.filter(
-    (v) => !ranOneTest(v) && (command === undefined ? v.name === name : ranCommand(v, command)),
-  );
-};
-
 /** A pass that expected one: a reproduced failure is not. */
 export const passed = (v: Verification) => v.result === "pass" && v.expect === "pass";
 

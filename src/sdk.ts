@@ -147,6 +147,9 @@ export {
   type Outcome,
 } from "./outcome";
 
+/** A Check's proof on this tree, and which of a Run's Checks it runs itself. */
+export { checkProof, owedLocally, type CheckProof, type Unmatched } from "./check-proof";
+
 /**
  * Which of the five kinds of work a work source is. A workflow that reads a plan
  * directory differently from a Linear issue asks here rather than guessing from the text.

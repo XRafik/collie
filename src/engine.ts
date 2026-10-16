@@ -1452,6 +1452,22 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     options: Parameters<typeof evidenceGapsOf>[0],
   ): ReadonlyArray<string>;
 
+  /** A Check's proof on this tree: passed, failed, unstable, passed only on an earlier tree, or never run. */
+  export interface CheckProof {
+    readonly state: "passed" | "failed" | "unstable" | "earlier" | "never";
+    /** Every run of the Check's own command, oldest first. */
+    readonly runs: ReadonlyArray<Verification>;
+    /** The latest of them on this tree. */
+    readonly last: Verification | undefined;
+  }
+  /** Whose records count, by name, for a Check whose command is not given. */
+  export type Unmatched = "anyone" | "collie";
+  export function checkProof(got: CheckEvidence, name: string, unmatched?: Unmatched): CheckProof;
+  /** The Checks a Run runs itself. */
+  export function owedLocally<C extends { readonly name: string }>(
+    checks: ReadonlyArray<C>,
+  ): ReadonlyArray<C>;
+
   /** A Run's checks read against its journal, for which tests failed and how each rerun went. */
   type FailedChecks = CheckEvidence & { readonly approved: ReadonlyArray<VerifySpec> };
   /** Each failed test of a check's latest run on this tree that has not been run again alone yet. */

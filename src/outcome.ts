@@ -10,11 +10,10 @@
 // this says what is missing.
 
 import type { VerifySpec } from "./verify-spec";
+import { checkProof } from "./check-proof";
 import {
-  ranOneTest,
   passed,
-  ranCommand,
-  recordsNamed,
+  ranOneTest,
   type CheckCommand,
   type FailedTest,
   type Snapshot,
@@ -95,24 +94,13 @@ export interface Collected {
  * later fail contradicts is not one.
  */
 function lastPassedAtFinal(got: Collected, name: string): boolean {
-  const last = recordsNamed(got.verifications, name, got.commands)
-    .filter((v) => !earlierTree(v, got.final))
-    .at(-1);
-  return last !== undefined && passed(last);
+  return checkProof(got, name).state === "passed";
 }
 
 type Journal = Pick<Collected, "verifications" | "final" | "commands">;
 
-/** Every run of a check's own command, and the latest of them on the tree in front of us. */
-function runsOf(got: Journal, name: string) {
-  const command = got.commands?.find((one) => one.name === name);
-  const any = got.verifications.filter(
-    (v) =>
-      !ranOneTest(v) &&
-      (command === undefined ? v.by === "collie" && v.name === name : ranCommand(v, command)),
-  );
-  return { any, last: any.findLast((v) => !earlierTree(v, got.final)) };
-}
+/** A check's proof, where only Collie's own runs count for a check whose command is not given. */
+const runsOf = (got: Journal, name: string) => checkProof(got, name, "collie");
 
 /**
  * The tests a check's failed run named, split by whether each has since passed a rerun alone
@@ -255,8 +243,8 @@ function approvedSetGaps(got: Collected): string[] {
   if (got.approved.length === 0) return [noCheckNamed];
   const gaps: string[] = [];
   for (const spec of got.approved) {
-    const { any, last } = runsOf(got, spec.name);
-    if (last !== undefined && passed(last)) continue;
+    const { state, runs, last } = runsOf(got, spec.name);
+    if (state === "passed") continue;
     const reran = rerunOf(got, last);
     if (reran !== null) {
       // Not a gap, and not a pass either: every test it failed on passed alone or fails at the base too.
@@ -264,10 +252,10 @@ function approvedSetGaps(got: Collected): string[] {
       gaps.push(
         `${spec.name} failed: ${reran.own.map((test) => `${test.name} (${test.file})`).join(", ")}`,
       );
-    } else if (any.length === 0) gaps.push(`${spec.name} was never run`);
-    else if (any.some((v) => v.result === "fail" || v.expect === "fail"))
+    } else if (state === "never") gaps.push(`${spec.name} was never run`);
+    else if (runs.some((v) => v.result === "fail" || v.expect === "fail"))
       gaps.push(`${spec.name} failed`);
-    else if (any.some((v) => v.result === "unstable"))
+    else if (runs.some((v) => v.result === "unstable"))
       gaps.push(`${spec.name} ran on a tree that moved under it`);
     else gaps.push(`${spec.name} last passed on a different tree`);
   }

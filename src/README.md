@@ -49,6 +49,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `verify.ts`            | A command's result bound to its tree, so a card can say verified; a running check's marker and log        |
 | `bun-tests.ts`         | Which tests a failed `bun test` names, and the command that runs one again alone                          |
 | `verify-spec.ts`       | Which commands Collie may run itself for a Run, and where that permission came from                       |
+| `check-proof.ts`       | A Check's proof on a tree, and which of a Run's Checks it runs itself                                     |
 | `checks.ts`            | The one reading of a Run's running and finished checks that every door uses                               |
 | `outcome.ts`           | What a Run must prove to close, per kind, and what is still missing                                       |
 | `metrics.ts`           | What a Run produced and when: evidence, slices, rework, context — never pane activity                     |
