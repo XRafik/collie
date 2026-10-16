@@ -34,7 +34,8 @@ The text follows word for word. The receiving Run's operations record the sender
 agent and authenticated Machine. The answer follows the same route, found by Run id. The
 answers to an agent's question ([ADR-0062](adr/0062-an-agents-question-is-asked-on-its-run.md))
 carry the line of whoever answered: one line, `Your question <header> is answered: <answer>`,
-or each question's answer joined with `; `. Collie's own messages carry no sender line: a
+or each question's answer joined with `; `. Answers given by different senders go as
+separate messages, each under its own sender's line. Collie's own messages carry no sender line: a
 step's message, a repair, a correction, a compaction request and a hand-off. Each step's
 prompt tells its agent that a line starting `From the human` is the human's own message,
 one starting `From chat for the human` quotes the human, and one from an agent is that

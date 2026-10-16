@@ -1348,7 +1348,9 @@ const frontDoorHandlers = (
           return fresh(
             () => runId,
             { operation: "answer", request, ...whoOf(client), result: Answered },
-            registry.answer({ runId, decision, value, request }).pipe(Effect.map(saying(removed))),
+            registry
+              .answer({ runId, decision, value, request, by: whoOf(client) })
+              .pipe(Effect.map(saying(removed))),
           );
         },
         control: ({ runId, control, set, request, reason }, { client }) =>

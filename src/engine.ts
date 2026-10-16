@@ -10,7 +10,7 @@
 // pieces below is upstream's rather than Collie's.
 
 import type { Asker } from "./proposals";
-import { readAudit } from "./audit";
+import { actorOf, readAudit, type ScheduledBy } from "./audit";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
@@ -2858,9 +2858,10 @@ export const hostLayer = (options: {
               Effect.orElseSucceed(() => []),
             );
             return rows.map((row) => {
-              const actor = audit.find(
-                (line) => line.operation === "answer" && line.request === row.request,
-              )?.actor;
+              const actor =
+                row.answerer ??
+                audit.find((line) => line.operation === "answer" && line.request === row.request)
+                  ?.actor;
               if (actor === undefined) return { name: row.decision, answer: row.answer };
               const { requestId: _, schedule: __, ...by } = actor;
               return { name: row.decision, answer: row.answer, by };
@@ -4055,6 +4056,7 @@ export interface RegistryApi {
     readonly value: string;
     /** The caller's claim on this answer, so the same one arriving twice is one answer. */
     readonly request: string;
+    readonly by?: Asker & { readonly schedule?: ScheduledBy | undefined };
   }) => Effect.Effect<typeof Answered.Type, HostRefused, HostServices>;
   /** Sets or clears one durable control over one run, and says whether it reached it. */
   readonly control: (options: {
@@ -5902,12 +5904,9 @@ const makeRegistry: (
       );
     }),
 
-    answer: Effect.fn("Engine.Registry.answer")(function* (options: {
-      readonly runId: string;
-      readonly decision: string | null;
-      readonly value: string;
-      readonly request: string;
-    }) {
+    answer: Effect.fn("Engine.Registry.answer")(function* (
+      options: Parameters<RegistryApi["answer"]>[0],
+    ) {
       const found = yield* routed(options.runId);
       const asks = yield* asked(options.runId);
       const open = asks.filter((one) => one.answer === null);
@@ -5939,6 +5938,7 @@ const makeRegistry: (
         decision: name,
         value,
         request: options.request,
+        answerer: options.by === undefined ? undefined : actorOf(options.by, options.request),
       });
       if (settled._tag === "refused") {
         return yield* new HostRefused({ reason: settled.reason });

@@ -59,6 +59,7 @@ import { seedIntent, writeIntent } from "../src/intent";
 import { appendLine, deliveriesOf, readLedger, reconcile } from "../src/steering";
 import { readLaunches } from "../src/launches";
 import { Store } from "../src/store";
+import type { AuditLine } from "../src/audit";
 import { readTask, writeTask } from "../src/task";
 import { taskFor } from "../src/operations";
 import { lineageAgent, readRegistry, registerAgent, registryPath, scopeFor } from "../src/registry";
@@ -969,10 +970,10 @@ const questionsOf = (count: number) =>
     }
   });
 
-const answer = (decision: string, value: string) =>
+const answer = (decision: string, value: string, answerer?: AuditLine["actor"]) =>
   Store.pipe(
     Effect.flatMap((store) =>
-      store.settle({ run: "r1", decision, value, request: `answer-${decision}` }),
+      store.settle({ run: "r1", decision, value, request: `answer-${decision}`, answerer }),
     ),
   );
 
@@ -1019,6 +1020,46 @@ test(
             const delivered = calls.find((call) => (call.argv?.[3] ?? "").includes(ANSWERED));
             expect(delivered?.argv?.[3]).toEndWith(
               "\nYour questions are answered: Database: SQLite, it is a demo; Checks: lint",
+            );
+          }),
+          { collectMs: 120_000, pollMs: 1_000 },
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "answers from different senders each reach the agent under their own sender line",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* asksTwo;
+            yield* questionsOf(2);
+            yield* answer("ask-review-1", "SQLite", {
+              origin: "agent",
+              requestId: "answer-ask-review-1",
+              from: { run: "r-other", agent: "r-other-build-r1" },
+            });
+            yield* answer("ask-review-2", "lint", {
+              origin: "board",
+              requestId: "answer-ask-review-2",
+            });
+            while (!(yield* prompted("is answered", 2)))
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            const typed = (yield* rig.calls())
+              .map((call) => call.argv?.[3] ?? "")
+              .filter((one) => one.includes("is answered"));
+            expect(typed).toHaveLength(2);
+            expect(typed.find((one) => one.includes("Database"))).toMatch(
+              /From r-other-build-r1 of r-other [^\n]*\nYour question Database is answered: SQLite$/,
+            );
+            expect(typed.find((one) => one.includes("Checks"))).toMatch(
+              /From the human, on the board, [^\n]*\nYour question Checks is answered: lint$/,
             );
           }),
           { collectMs: 120_000, pollMs: 1_000 },

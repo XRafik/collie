@@ -231,6 +231,18 @@ export interface Questions {
 /** An agent's question on its Run, numbered from 1 in the order its step asked them. */
 export const agentQuestionName = (operation: string, n: number) => `ask-${operation}-${n}`;
 
+/** Answers in the order asked, grouped by who gave them, so each is sent under its own sender. */
+const bySender = (answerers: ReadonlyArray<Asker | undefined>) => {
+  const groups = new Map<string, { by: Asker | undefined; at: number[] }>();
+  for (const [at, by] of answerers.entries()) {
+    const key = [by?.origin, by?.from?.run, by?.from?.agent, by?.said].join("\0");
+    const group = groups.get(key) ?? { by, at: [] };
+    group.at.push(at);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+};
+
 const closedAnswer = (operation: string) => `closed: ${operation} finished before it was answered`;
 
 /**
@@ -2150,23 +2162,21 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             // The ledger refuses a second copy, so a replay sends nothing again.
             const label = (at: number) =>
               call.questions[at]?.header || call.questions[at]?.question || names[at];
-            // Several answerers sign as the one who answered the last question asked.
-            const by = names
-              .map((name) => answerers.get(name))
-              .findLast((one) => one !== undefined);
-            const sent = yield* deliver(
-              launched,
-              given.length === 1
-                ? `Your question ${label(0)} is answered: ${given[0]}`
-                : `Your questions are answered: ${given.map((answer, at) => `${label(at)}: ${answer}`).join("; ")}`,
-              { kind: "steer", ref: names[0] ?? stem, actor: by },
-            );
-            if (sent.refused) {
-              refused.add(call.id);
-              yield* log(
-                launched.runId,
-                `${launched.agent}: was not sent the answers to ${names.join(", ")} (${sent.why})`,
+            for (const group of bySender(names.map((name) => answerers.get(name)))) {
+              const sent = yield* deliver(
+                launched,
+                group.at.length === 1
+                  ? `Your question ${label(group.at[0]!)} is answered: ${given[group.at[0]!]}`
+                  : `Your questions are answered: ${group.at.map((at) => `${label(at)}: ${given[at]}`).join("; ")}`,
+                { kind: "steer", ref: names[group.at[0]!] ?? stem, actor: group.by },
               );
+              if (sent.refused) {
+                refused.add(call.id);
+                yield* log(
+                  launched.runId,
+                  `${launched.agent}: was not sent the answers to ${group.at.map((at) => names[at]).join(", ")} (${sent.why})`,
+                );
+              }
             }
           }
           return open;
