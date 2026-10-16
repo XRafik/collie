@@ -1283,11 +1283,13 @@ that quotes one has it replaced by `…`. Past
 shipped and user Layers. It is one view for the whole Flock, since every In sync Machine
 has the same definitions: it reads this computer's Machine where that is connected, else
 the first connected Machine, names the Machine it read under its title, and reads again
-each time it opens. It lists the Workflows, each marked where it would not construct, the
-modules that would not load, the Personas and the Persona files that would not load.
-A Workflow chosen shows its Inputs, the options the host settles, its result and failure
-schemas, its metadata and each of its files, the module and its Markdown; a Persona chosen
-shows its instructions rendered. A read that failed — no Machine connected, a renewed
+each time it opens. A list down its left side has the Workflows, each marked where it would
+not construct, the modules that would not load, the Personas and the Persona files that
+would not load, with a jump to each section; each entry gives its full title, its id and the
+start of its description. The rest of the page shows the one chosen. A Workflow shows its
+Inputs, what it offers next, its result and failure schemas, the options the host settles,
+its metadata and each of its files: the module highlighted and its Markdown rendered. A
+Persona shows its instructions rendered. A read that failed — no Machine connected, a renewed
 connection, or an older Collie refusing it — is said on the page in its own words. Nothing
 on it starts, edits or checks anything: Runs are started from the Flock chat.
 

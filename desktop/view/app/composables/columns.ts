@@ -10,5 +10,5 @@ const CLASSES: Record<Column, string> = {
 /** The classes that lay out a record's tab, or a page, in its column. */
 export const columnClass = (tabOrPage: string) => CLASSES[columnOf(tabOrPage)];
 
-/** The reading column, which every page's header, banner and tabs share. */
+/** The reading column, which a record's header, banner and tabs share. */
 export const readingClass = CLASSES.reading;
