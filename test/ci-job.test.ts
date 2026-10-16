@@ -86,17 +86,20 @@ const committing =
   (asked: { readonly cwd: string; readonly run: Runner }): Runner =>
   (cmd, args, where) =>
     Effect.andThen(
-      Effect.sync(() =>
-        Bun.spawnSync(
-          ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"].concat([
-            "commit",
-            "-qm",
-            "two",
-            "--allow-empty",
-          ]),
-          { cwd: asked.cwd },
-        ),
-      ),
+      exec(
+        [
+          "git",
+          "-c",
+          "user.name=t",
+          "-c",
+          "user.email=t@example.test",
+          "commit",
+          "-qm",
+          "two",
+          "--allow-empty",
+        ],
+        { cwd: asked.cwd },
+      ).pipe(Effect.scoped, Effect.orDie),
       asked.run(cmd, args, where),
     );
 
