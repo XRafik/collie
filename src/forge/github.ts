@@ -543,6 +543,7 @@ export const github: Forge = {
   display: "GitHub",
   cli: "gh",
   noun: "pull request",
+  webUrl: (project) => `https://${project}`,
   forBranch,
   fromBranch,
   template,

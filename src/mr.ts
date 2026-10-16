@@ -362,6 +362,8 @@ export function prepareMergeRequest<R>(
       issues: yield* linearIssues(work, run),
       forge: forge.display,
       noun: forge.noun,
+      url: forge.webUrl(project),
+      branch: branch === "HEAD" ? "" : branch,
       existing: found.open?.url ?? "",
       autoMerge: found.open?.autoMerge ?? false,
       commands: forge.commands({

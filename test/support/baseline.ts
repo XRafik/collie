@@ -323,6 +323,25 @@ const prompts = () =>
       ),
     );
 
+/** The Clearance line typed with an operation's step message, or "" for none. */
+const clearance = (runId: string, operation: string) =>
+  prompts().pipe(
+    Effect.map(
+      (typed) =>
+        typed
+          .find((one) => one.includes(`${dir}/agents/${runId}/${operation}.prompt.md`))
+          ?.split("\n")
+          .find((line) => line.startsWith("Cleared for this step: ")) ?? "",
+    ),
+  );
+
+/** The branch of the checkout an operation was told it works in. */
+const checkoutBranch = (runId: string, operation = "mr") =>
+  Effect.gen(function* () {
+    const root = /^Project root: (.+)$/m.exec(yield* asked(runId, operation))?.[1];
+    return (yield* exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: root })).stdout.trim();
+  });
+
 /** What an operation was actually asked, which is the file its message named. */
 const asked = (runId: string, operation: string) =>
   FileSystem.FileSystem.pipe(
@@ -1413,6 +1432,9 @@ scenario(
         const fix = yield* asked("r-review-mr", "fix");
         expect(fix).toContain(`Project root: ${rig.root}/.herdr/worktrees/project/fix-the-guard`);
         expect(fix).toContain("the checkout of `fix-the-guard`");
+        expect(yield* clearance("r-review-mr", "fix")).toBe(
+          "Cleared for this step: pushing new commits to fix-the-guard on origin (https://gitlab.example.com/group/project) with a plain push.",
+        );
         expect(fix).not.toContain("glab mr checkout");
         expect(fix).toContain("never the whole suite");
         expect(fix).not.toContain("Run the project's checks");
@@ -2895,6 +2917,13 @@ scenario(
 
         const opening = yield* asked("r-impl-mr", "mr");
         expect(opening).toContain("- Assignee: `someone-else`");
+        // The checkout's branch, never the one the build's Output named.
+        const cleared = yield* clearance("r-impl-mr", "mr");
+        expect(cleared).toBe(
+          `Cleared for this step: pushing ${yield* checkoutBranch("r-impl-mr")} to origin (https://gitlab.example.com/group/project); opening or updating its merge request there.`,
+        );
+        expect(cleared).not.toContain("mk/one-registry");
+        expect(cleared).not.toContain("merging");
         // What was collected, by whom — Collie ran it, so it is not the agent's claim.
         expect(opening).toContain("unit");
         expect(opening).toContain("by collie");
@@ -5546,11 +5575,15 @@ const RECORDED = { verdict: "clean", findings: [], checked_off: true, status: "r
 const RENOVATING = {
   gitlab: {
     origin: "git@gitlab.example.com:group/app.git",
+    url: "https://gitlab.example.com/group/app",
+    noun: "merge request",
     preamble: "Repository checkout or GitLab URL",
     create: "glab mr create --assignee whoever-is-configured",
   },
   github: {
     origin: "git@github.com:owner/repo.git",
+    url: "https://github.com/owner/repo",
+    noun: "pull request",
     preamble: "Repository checkout or GitHub URL",
     create: "gh pr create --assignee tester",
   },
@@ -5594,6 +5627,41 @@ for (const name of ["gitlab", "github"] as const) {
             expect(prompt).not.toMatch(other);
           }
           expect(yield* asked(runId, "batch")).toContain(RENOVATING[name].create);
+          expect(yield* clearance(runId, "stage")).toBe(
+            `Cleared for this step: playing, retrying and watching the stage deploy, e2e-stage and smoke jobs of ${RENOVATING[name].url}'s pipelines; rolling stage back to the newest tag whose production deploy succeeded, never a production job.`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `renovate's merge and release on a ${name} checkout are cleared in that forge's words`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const bin = yield* renovatable();
+          yield* forgeOnPath(bin, name, {
+            installed: true,
+            loggedIn: [FORGE_HOST[name]],
+            login: "tester",
+            mrs: [],
+          });
+          yield* exec(["git", "remote", "set-url", "origin", RENOVATING[name].origin], {
+            cwd: rig.projectDir,
+          });
+          const runId = `r-land-${name}`;
+          yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+          yield* ran({ entry: shipped("renovate"), runId, input: {}, host: withoutHelle });
+          yield* bin.restore();
+          const { url, noun } = RENOVATING[name];
+          expect(yield* clearance(runId, "merge")).toBe(
+            `Cleared for this step: approving the reviewed head of, and merging, Renovate's own ${noun}s on ${url}; merging this Run's batch ${noun} there once a teammate has approved it; using the forge's own commands as this step's content names them.`,
+          );
+          expect(yield* clearance(runId, "release")).toBe(
+            `Cleared for this step: pushing an annotated version tag of ${url}'s default branch to origin; creating its release where the repository is a package; watching the tag's pipeline, never playing a production deploy job.`,
+          );
+          expect(yield* clearance(runId, "record")).toBe("");
         }),
       ),
     120_000,

@@ -195,6 +195,10 @@ export interface Landed {
   readonly dir: string;
   /** The forge the repository is on, whose content its steps are given. */
   readonly forge: keyof typeof RENOVATE_ON;
+  /** The repository's web address on that forge, which a step's Clearance names. */
+  readonly url: string;
+  /** "merge request" or "pull request". */
+  readonly noun: string;
   /** What every step of this Run is told. */
   readonly input: typeof RenovateInput.Type;
   readonly tracked: typeof Tracked.Type;
@@ -231,12 +235,22 @@ export const shippedLanding: Landing = {
   merge: (at) =>
     agentWork({
       ...asRenovator(at, "merge"),
+      clears: [
+        `approving the reviewed head of, and merging, Renovate's own ${at.noun}s on ${at.url}`,
+        `merging this Run's batch ${at.noun} there once a teammate has approved it`,
+        "using the forge's own commands as this step's content names them",
+      ],
       instructions: RENOVATE_ON[at.forge].merge,
       output: Merged,
     }),
   release: (at) =>
     agentWork({
       ...asRenovator(at, "release"),
+      clears: [
+        `pushing an annotated version tag of ${at.url}'s default branch to origin`,
+        "creating its release where the repository is a package",
+        "watching the tag's pipeline, never playing a production deploy job",
+      ],
       instructions: RENOVATE_ON[at.forge].release,
       output: Released,
     }),
@@ -357,6 +371,8 @@ export const renovation = (landing: Landing = shippedLanding) =>
           ...bound,
           dir: place.dir,
           forge: forge.provider,
+          url: forge.url ?? "",
+          noun: forge.noun ?? "merge request",
           tracked,
           assessed,
         };
@@ -399,6 +415,10 @@ export const renovation = (landing: Landing = shippedLanding) =>
           if (batched.mr_url !== undefined) yield* host.mergeRequest(runId, batched.mr_url);
           const staged = yield* agentWork({
             ...asRenovator(here, "stage"),
+            clears: [
+              `playing, retrying and watching the stage deploy, e2e-stage and smoke jobs of ${here.url}'s pipelines`,
+              "rolling stage back to the newest tag whose production deploy succeeded, never a production job",
+            ],
             instructions: steps.stage,
             output: Staged,
           });

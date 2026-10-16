@@ -369,6 +369,29 @@ is no menu, and the agent takes steering after the run has ended.
 Module: [`workflows/general.workflow.ts`](../workflows/general.workflow.ts), with its
 prompt in [`workflows/general.md`](../workflows/general.md).
 
+## What a shipped step is cleared for
+
+A step that pushes, merges, tags or plays a job says so in its agent's own turn, as its
+Clearance ([`docs/sdk.md`](sdk.md#having-an-agent-do-the-work)), in the forge's own noun.
+Each names only what that step's content tells the agent to do:
+
+- **`implement`'s `mr`**: pushing the checkout's branch to origin (its web address) and
+  opening or updating its merge request there. Not merging: it merges only when a message
+  of its own asks it to.
+- **`review`'s fix step**: pushing new commits to the reviewed branch on origin with a
+  plain push.
+- **`renovate`'s `stage`**: playing, retrying and watching the stage deploy, e2e-stage and
+  smoke jobs of the repository's pipelines, and rolling stage back to the newest tag whose
+  production deploy succeeded — never a production job.
+- **`renovate`'s `merge`**: approving the reviewed head of, and merging, Renovate's own merge
+  requests; merging the Run's batch merge request once a teammate has approved it; using
+  the forge's own commands as the content names them.
+- **`renovate`'s `release`**: pushing an annotated version tag of the default branch,
+  creating its release where the repository is a package, and watching the tag's
+  pipeline — never playing a production deploy job.
+
+Every other shipped step clears nothing.
+
 ## How they chain
 
 - `plan` → `implement`, with the plan directory forwarded as the work source.

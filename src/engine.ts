@@ -386,6 +386,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly forge?: string;
     /** "merge request" or "pull request". */
     readonly noun?: string;
+    /** The checkout's branch; empty on a detached checkout. */
+    readonly branch?: string;
+    /** The repository's web address, as its forge's adapter writes it. */
+    readonly url?: string;
     /** The URL of this branch's open merge request, or empty for none. */
     readonly existing?: string;
     /** Whether \`existing\` merges itself once green, so a push to it is a merge. */
@@ -906,6 +910,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly skill?: string;
     /** The agent pushes the branch: while its merge request auto-merges, the Run parks instead. */
     readonly pushes?: boolean;
+    /**
+     * The step's Clearance, typed on one line after its pointer: each entry one sentence
+     * naming one action and its target, from facts Collie holds, never from an Output.
+     */
+    readonly clears?: ReadonlyArray<string>;
     readonly harness?: string;
     readonly model?: string;
     readonly effort?: string;

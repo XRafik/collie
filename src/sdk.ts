@@ -751,6 +751,10 @@ export interface MrReady {
   readonly forge?: string;
   /** "merge request" or "pull request", as the forge says it. */
   readonly noun?: string;
+  /** The checkout's branch; empty on a detached checkout. */
+  readonly branch?: string;
+  /** The repository's web address, as its forge's adapter writes it. */
+  readonly url?: string;
   /** The URL of this branch's open merge request, or empty for none. */
   readonly existing?: string;
   /** Whether `existing` merges itself once green, so a push to it is a merge. */

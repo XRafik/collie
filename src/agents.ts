@@ -160,6 +160,8 @@ export interface AgentAsk {
   readonly output: string;
   /** A skill this work is started with, invoked the way the human channel invokes one. */
   readonly skill: string | null;
+  /** What this step's agent is told, in its own turn, that it may do: its Clearance. */
+  readonly clears?: ReadonlyArray<string>;
   /** Null takes the host's own configured default, which is the operator's. */
   readonly harness: string | null;
   readonly model: string | null;
@@ -291,6 +293,8 @@ export interface AgentsApi {
   readonly retire: (launched: Launched, line: string) => Effect.Effect<void, AgentParked>;
   /** A line in the Run's log. */
   readonly say: (runId: string, line: string) => Effect.Effect<void>;
+  /** The step message as it will first be typed, token included, and its prompt's path. */
+  readonly stepMessage: (ask: AgentAsk) => { readonly typed: string; readonly prompt: string };
   /** `note` shows, and then clears, why a launch is still waiting without parking. */
   readonly launch: (
     ask: AgentAsk,
@@ -448,6 +452,12 @@ interface Doing<Output extends OutputContract> {
    * work does not start: the Run records why and parks as Needs you (ADR-0050 D4).
    */
   readonly pushes?: boolean;
+  /**
+   * The step's Clearance: each entry one sentence naming one action and its target, built
+   * from facts Collie holds and never from an Output. Typed on one line after the step's
+   * pointer, where Claude's auto mode reads it as the user's own request.
+   */
+  readonly clears?: ReadonlyArray<string>;
   readonly harness?: string;
   readonly model?: string;
   readonly effort?: string;
@@ -543,6 +553,10 @@ export const agentWork = <
         }),
       );
     }
+    const unclear = clearanceProblem(given.clears ?? []);
+    if (unclear !== null) {
+      return yield* new WorkflowError({ reason: `${work.operation}: ${unclear}` });
+    }
     const output = agents.outputFor(work.runId, work.operation);
     const role = work.role ?? work.operation;
     // Where each skill the instructions mention lives, so a mention is the path to read
@@ -620,6 +634,16 @@ export const agentWork = <
     };
     fellBack(ask, choice.from, choice.why);
     if (held !== null && held.sequence > 1) ask.sequence = held.sequence;
+    if (given.clears !== undefined) ask.clears = given.clears;
+    if ((given.clears ?? []).length > 0) {
+      const step = agents.stepMessage(ask);
+      const typed = Array.from(step.typed).length;
+      if (typed > dispatch.PASTE_BUDGET.chars) {
+        return yield* new WorkflowError({
+          reason: `${work.operation}: its step message would be ${typed} characters typed, over the ${dispatch.PASTE_BUDGET.chars} Claude Code still shows as typed; its prompt is ${step.prompt}. Shorten its Clearance, or use a shorter state directory.`,
+        });
+      }
+    }
 
     // Tickets an agent says it finished are carded while it is still working, so a human
     // sees each one land rather than waiting for the whole piece — and looked for once
@@ -1251,6 +1275,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
   /** What went out as a step's prompt or its repair, kept so a resend is the same words. */
   const sentPath = (about: Launched, kind: "step" | "repair") =>
     `${dirFor(about.runId)}/${stemOf(about)}.${kind}.md`;
+  const promptFile = (ask: AgentAsk) => `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
   const log = (runId: string, line: string) => append(`${dirFor(runId)}/agents.log`, line);
 
   /**
@@ -1888,7 +1913,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
             );
         const adapter = adapterFor(launched.harness);
         const prefix = personaPrefix(adapter, yield* personaOf(ask.persona ?? ask.role));
-        const file = `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
+        const file = promptFile(ask);
         // Written before it goes out and never rewritten: what a human reads to see what
         // was actually asked, rather than what a prompt would be built as now.
         const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine. ${READING_DELIVERIES}`;
@@ -1927,8 +1952,7 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
         // message and not a transcript, and a step's prompt carries a whole contract.
         // A skill marked `disable-model-invocation` refuses an agent that invokes it
         // itself; this is the human's channel, so a slash command here runs.
-        const started = ask.skill === null ? "" : `${adapter.skillCommand(ask.skill)} `;
-        const pointer = `${started}${stepPointer(file)}`;
+        const pointer = stepText(adapter, ask, file);
         yield* write(sentPath(launched, "step"), pointer);
         let asked = yield* deliver(launched, pointer, {
           kind: "step",
@@ -2509,6 +2533,11 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
 
   return {
     outputFor,
+    stepMessage: (ask) => {
+      const prompt = promptFile(ask);
+      const text = stepText(adapterFor(ask.harness ?? host.harness), ask, prompt);
+      return { typed: dispatch.marked(text, `${ask.runId}-${stemOf(ask)}-step-1`), prompt };
+    },
     skills: (names) => under(skills(names)),
     attachments: (runId) =>
       under(listAttachments(attachmentsDir(`${host.dir}/runs/${runId}`))).pipe(
@@ -2659,6 +2688,30 @@ const READING_DELIVERIES =
 
 const stepPointer = (file: string) =>
   `Your task for this step is in ${file} — read it and follow it.`;
+
+/** The longest a step's joined Clearance may be, before its prefix. */
+const CLEARANCE_CHARS = 400;
+
+const clearanceProblem = (clears: ReadonlyArray<string>): string | null => {
+  if (clears.some((one) => /[\r\n]/.test(one)))
+    return "a Clearance is one line, and this one has a line break";
+  const joined = Array.from(clears.join("; ")).length;
+  return joined > CLEARANCE_CHARS
+    ? `its Clearance is ${joined} characters, over the ${CLEARANCE_CHARS} a Clearance may be`
+    : null;
+};
+
+/** What a step's agent is sent, before the dispatcher adds its token. */
+const stepText = (
+  adapter: { readonly skillCommand: (name: string) => string },
+  ask: AgentAsk,
+  file: string,
+) => {
+  const started = ask.skill === null ? "" : `${adapter.skillCommand(ask.skill)} `;
+  const pointer = `${started}${stepPointer(file)}`;
+  const clears = ask.clears ?? [];
+  return clears.length === 0 ? pointer : `${pointer}\nCleared for this step: ${clears.join("; ")}.`;
+};
 const encodeLaunched = Schema.encodeSync(Schema.fromJsonString(Launched));
 
 /** What a delivery is called in a log: one line of it, so the log stays readable. */

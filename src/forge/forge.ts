@@ -154,6 +154,8 @@ export interface Forge {
   readonly cli: string;
   /** "merge request" or "pull request". */
   readonly noun: string;
+  /** The repository's web address, from its `host/path`. */
+  readonly webUrl: (project: string) => string;
   /** One note on the merge request, and its approval where `approve` asks for it. */
   readonly post: <R>(
     ref: MrRef,

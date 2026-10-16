@@ -572,6 +572,7 @@ export const gitlab: Forge = {
   cli: "glab",
   runStatus: pipelineStatus,
   noun: "merge request",
+  webUrl: (project) => `https://${project}`,
   forBranch,
   fromBranch,
   template,

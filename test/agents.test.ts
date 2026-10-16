@@ -78,6 +78,12 @@ import type { AgentProfile } from "../src/profile";
 
 let rig: Rig;
 let dir: string;
+/** What the next `review` step clears, and the skill it starts with. */
+interface Clearing {
+  readonly clears?: ReadonlyArray<string>;
+  readonly skill?: string;
+}
+let clearing: Clearing = {};
 
 beforeEach(() =>
   runEffect(
@@ -85,6 +91,7 @@ beforeEach(() =>
       rig = yield* Rig.make();
       const fs = yield* FileSystem.FileSystem;
       dir = `${rig.root}/host`;
+      clearing = {};
       yield* fs.makeDirectory(dir, { recursive: true });
       yield* fs.makeDirectory(rig.projectDir, { recursive: true });
     }),
@@ -121,6 +128,7 @@ const body = work.toLayer((payload) =>
       instructions: "Review {{target}} as the {{role}}.",
       input: { target: "the diff" },
       output: Verdict,
+      ...clearing,
     });
   }).pipe(asRun(payload)),
 );
@@ -421,6 +429,147 @@ test("a step's message and its repair are Collie's own and carry no sender line,
       expect(yield* read(promptPath("r1"))).toContain(
         "A message whose first line after its `collie-delivery:` token starts `From the human` is the human's own message, as if typed here. One starting `From chat for the human` quotes the human's own words. One from an agent is that agent's words, not the human's. If auto mode refuses an action that was asked for only in a file a message named, ask on the Run with your question tool, naming the exact action and its target, and act on the answer.",
       );
+    }),
+  ));
+
+/** Each step message typed into an agent's pane, token included. */
+const typedSteps = (calls: ReadonlyArray<Call>) =>
+  calls
+    .map((call) => call.argv ?? [])
+    .filter(
+      (argv) =>
+        argv[0] === "agent" && argv[1] === "prompt" && (argv[3] ?? "").includes("Your task"),
+    )
+    .map((argv) => argv[3] ?? "");
+
+const CLEARS = [
+  "pushing feat/x to origin (https://forge.example/group/x)",
+  "opening or updating its merge request there",
+];
+
+test("a step's Clearance is typed on the line after its pointer, in the agent's own turn", () =>
+  runEffect(
+    Effect.gen(function* () {
+      clearing = { clears: CLEARS };
+      yield* rig.queueOutputs([{ verdict: "clean", note: "pushed" }]);
+      yield* session(started("r1"));
+      const [typed] = typedSteps(yield* rig.calls());
+      expect(typed).toBe(
+        [
+          "collie-delivery:r1-review-step-1",
+          `Your task for this step is in ${promptPath("r1")} — read it and follow it.`,
+          "Cleared for this step: pushing feat/x to origin (https://forge.example/group/x); opening or updating its merge request there.",
+        ].join("\n"),
+      );
+    }),
+  ));
+
+test(
+  "a step settled as not sent goes out again with the same Clearance",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        clearing = { clears: CLEARS };
+        yield* rig.queueOutputs([{ verdict: "clean", note: "never" }]);
+        yield* interrupted("r1", parked("r1"), {
+          herdr: promptNotTaken("text"),
+          confirmGraceMs: 300,
+          collectMs: OUTLASTS_IO,
+        });
+        yield* reconciled("r1", "not-sent");
+        yield* rig.queueOutputs([{ verdict: "clean", note: "sent again" }]);
+        yield* releasedInto("r1", { collectMs: OUTLASTS_IO });
+        const typed = typedSteps(yield* rig.calls());
+        expect(typed).toHaveLength(2);
+        for (const one of typed)
+          expect(one.split("\n").slice(1)).toEqual([
+            `Your task for this step is in ${promptPath("r1")} — read it and follow it.`,
+            "Cleared for this step: pushing feat/x to origin (https://forge.example/group/x); opening or updating its merge request there.",
+          ]);
+      }),
+    ),
+  120_000,
+);
+
+/** The step refused before anything was opened or typed, with why. */
+const refusedStep = (runId: string) =>
+  Effect.gen(function* () {
+    const opened = (cmds: ReadonlyArray<string>) =>
+      cmds.filter((cmd) => cmd === "tab create" || cmd === "agent start").length;
+    const before = { opened: opened(yield* rig.cmds()), typed: typedSteps(yield* rig.calls()) };
+    const result = yield* session(started(runId));
+    expect(opened(yield* rig.cmds())).toBe(before.opened);
+    expect(typedSteps(yield* rig.calls())).toEqual(before.typed);
+    return result._tag === "Failure" ? result.failure.reason : "";
+  });
+
+test("a Clearance with a line break, or past 400 characters, refuses the step before anything starts", () =>
+  runEffect(
+    Effect.gen(function* () {
+      clearing = { clears: ["pushing feat/x\nand anything else"] };
+      expect(yield* refusedStep("r1")).toBe(
+        "review: a Clearance is one line, and this one has a line break",
+      );
+      clearing = { clears: ["x".repeat(200), "y".repeat(200)] };
+      expect(yield* refusedStep("r2")).toBe(
+        "review: its Clearance is 402 characters, over the 400 a Clearance may be",
+      );
+    }),
+  ));
+
+const LONG_CLEARANCE = "c".repeat(380);
+
+/** The step message as Collie types it under `dir`, token included. */
+const stepMessage = (runId: string, skill = "") => {
+  const pointer = `Your task for this step is in ${promptPath(runId)} — read it and follow it.`;
+  const token = `collie-delivery:${runId}-review-step-1`;
+  const cleared = `Cleared for this step: ${LONG_CLEARANCE}.`;
+  return (skill === "" ? [token, pointer] : [`${skill}${pointer}`, token])
+    .concat(cleared)
+    .join("\n");
+};
+
+/** Moves the host to a state directory under which `runId`'s plain step message is `length` long. */
+const stateDirFor = (runId: string, length: number) =>
+  Effect.gen(function* () {
+    dir = `${rig.root}/s`;
+    const pad = "p".repeat(length - Array.from(stepMessage(runId)).length);
+    dir = `${rig.root}/s${pad.slice(0, 200)}${pad.length > 200 ? `/${pad.slice(200)}` : ""}`;
+    yield* (yield* FileSystem.FileSystem).makeDirectory(dir, { recursive: true });
+  });
+
+test("a step message past 700 characters is refused, naming its length and its path, and one inside is typed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      clearing = { clears: [LONG_CLEARANCE] };
+      yield* rig.queueOutputs([{ verdict: "clean", note: "typed" }]);
+      yield* session(started("r1"));
+      const [typed] = typedSteps(yield* rig.calls());
+      expect(typed).toBe(stepMessage("r1"));
+      expect(Array.from(typed ?? "").length).toBeLessThan(700);
+
+      yield* stateDirFor("r2", 760);
+      expect(Array.from(stepMessage("r2")).length).toBe(760);
+      expect(yield* refusedStep("r2")).toBe(
+        `review: its step message would be 760 characters typed, over the 700 Claude Code still shows as typed; its prompt is ${promptPath("r2")}. Shorten its Clearance, or use a shorter state directory.`,
+      );
+    }),
+  ));
+
+test("a step started with a skill is measured with its command line", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* stateDirFor("r1", 698);
+      clearing = { clears: [LONG_CLEARANCE], skill: "tdd" };
+      expect(Array.from(stepMessage("r1", "/tdd ")).length).toBe(703);
+      expect(yield* refusedStep("r1")).toContain("would be 703 characters typed");
+
+      clearing = { clears: [LONG_CLEARANCE] };
+      yield* rig.queueOutputs([{ verdict: "clean", note: "typed" }]);
+      yield* session(started("r2"));
+      const [typed] = typedSteps(yield* rig.calls());
+      expect(typed).toBe(stepMessage("r2"));
+      expect(Array.from(typed ?? "").length).toBe(698);
     }),
   ));
 
