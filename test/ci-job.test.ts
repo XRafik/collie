@@ -81,6 +81,25 @@ const waiting = Effect.fn("ciJob.waiting")(function* (
   return { asked, at, root, forge };
 });
 
+/** Its runner, committing in the checkout on every call, as a commit made while the job is read. */
+const committing =
+  (asked: { readonly cwd: string; readonly run: Runner }): Runner =>
+  (cmd, args, where) =>
+    Effect.andThen(
+      Effect.sync(() =>
+        Bun.spawnSync(
+          ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"].concat([
+            "commit",
+            "-qm",
+            "two",
+            "--allow-empty",
+          ]),
+          { cwd: asked.cwd },
+        ),
+      ),
+      asked.run(cmd, args, where),
+    );
+
 test("a job still running is waited on, saying which check, job and commit, and a stop records nothing", () =>
   runEffect(
     Effect.gen(function* () {
@@ -151,23 +170,38 @@ test("a job that passes for a commit the checkout has left while it was waited o
   runEffect(
     Effect.gen(function* () {
       const { asked, at } = yield* waiting("passed");
-      const committing: Runner = (cmd, args, where) =>
-        Effect.andThen(
-          Effect.sync(() =>
-            Bun.spawnSync(
-              ["git", "-c", "user.name=t", "-c", "user.email=t@example.test"].concat([
-                "commit",
-                "-qm",
-                "two",
-                "--allow-empty",
-              ]),
-              { cwd: asked.cwd },
-            ),
-          ),
-          asked.run(cmd, args, where),
-        );
-      expect(yield* ciJob({ ...asked, run: committing })).toEqual({
+      expect(yield* ciJob({ ...asked, run: committing(asked) })).toEqual({
         unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} passed, but ${asked.cwd} has moved off it since`,
+        state: null,
+        url: null,
+        log: null,
+      });
+      expect(yield* readVerifications(asked.journal).pipe(Effect.orElseSucceed(() => []))).toEqual(
+        [],
+      );
+    }),
+  ));
+
+test("a recorded pass is not returned for a checkout that moves while the job is read", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { asked, at } = yield* waiting("passed");
+      expect(yield* ciJob(asked)).toMatchObject({ proved: { pass: "ci" } });
+      expect(yield* ciJob({ ...asked, run: committing(asked) })).toMatchObject({
+        unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} passed, but ${asked.cwd} has moved off it since`,
+      });
+      expect(yield* readVerifications(asked.journal)).toHaveLength(1);
+    }),
+  ));
+
+test("a job that passes for a checkout with changes it never saw proves nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { asked, at } = yield* waiting("passed");
+      yield* fs.writeFileString(`${asked.cwd}/unseen.txt`, "x");
+      expect(yield* ciJob(asked)).toEqual({
+        unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} passed, but ${asked.cwd} has changes it never saw`,
         state: null,
         url: null,
         log: null,

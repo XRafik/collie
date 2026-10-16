@@ -5,7 +5,7 @@ import { mrRefOf } from "./board-model";
 import { checkProof } from "./check-proof";
 import { forgeOf, type JobState } from "./forge/forge";
 import { noteVerification } from "./metrics";
-import type { Runner } from "./mr";
+import { shell, type Runner } from "./mr";
 import { appendLog } from "./oversight";
 import { epochMs, nowIso } from "./time";
 import {
@@ -127,12 +127,14 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
           continue;
         }
       }
-      if (state === "passed" && recorded !== undefined && retried === null)
-        return { proved: recorded };
       if (state === "passed") {
         const now = yield* fingerprint(cwd);
         if (now.head_sha !== head || now.fingerprint !== tree.fingerprint)
           return unproved(`passed, but ${cwd} has moved off it since`);
+        const status = yield* shell("git", ["status", "--porcelain"], cwd);
+        if (status.code !== 0 || status.stdout.trim() !== "")
+          return unproved(`passed, but ${cwd} has changes it never saw`);
+        if (recorded !== undefined && retried === null) return { proved: recorded };
         const at = yield* nowIso();
         const ran = { name: job, url: read.url };
         const proof: Verification = {
