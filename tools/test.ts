@@ -27,7 +27,14 @@ import { resolve } from "node:path";
 import { BunRuntime, BunServices } from "@effect/platform-bun";
 import solidPlugin from "@opentui/solid/bun-plugin";
 import { Effect } from "effect";
-import { binDirectory, isTargeted, timingFlags, turnFor, workersFor } from "./test-run";
+import {
+  binDirectory,
+  isTargeted,
+  startsSummary,
+  timingFlags,
+  turnFor,
+  workersFor,
+} from "./test-run";
 import { sweepDeadRoots } from "../test/support/sweep";
 import { LIVE_HARNESSES } from "../test/support/live-switch";
 
@@ -43,6 +50,7 @@ const run = (targeted: boolean, out: string, flags: ReadonlyArray<string>) => as
   const collie = `${out}/collie`;
   const herdr = `${out}/fake-herdr`;
   const forge = `${out}/fake-forge`;
+  const starts = `${out}/starts`;
   const started = performance.now();
   sweepDeadRoots(tmpdir());
   const built = await Promise.all([
@@ -78,15 +86,18 @@ const run = (targeted: boolean, out: string, flags: ReadonlyArray<string>) => as
   const { workers, line } = workersFor(args, before, cpus(), availableParallelism());
   console.error(line);
   const parallel = workers === "caller" ? [] : [`--parallel=${workers}`];
+  await Bun.write(starts, "");
   const exit = await Bun.spawn(["bun", "test", ...parallel, "--timeout=30000", ...flags, ...args], {
     env: {
       ...suiteEnv(),
       COLLIE_TEST_BINARY: collie,
       COLLIE_TEST_FAKE_HERDR: herdr,
       COLLIE_TEST_FAKE_FORGE: forge,
+      COLLIE_TEST_STARTS: starts,
     },
     stdio: ["inherit", "inherit", "inherit"],
   }).exited;
+  for (const line of startsSummary(await Bun.file(starts).text())) console.error(line);
   console.error(`test: ${((performance.now() - started) / 1_000).toFixed(2)} s including builds`);
   return exit;
 };

@@ -233,7 +233,7 @@ import { latest, readDispositions } from "./disposition";
 import { runAgents, stepsOf } from "./launches";
 import { factsOfView, settled, type RunFacts } from "./runs";
 import { Store } from "./store";
-import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
+import { SESSIONS_EVERY, aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
   withDirLock,
   currentPid,
@@ -839,6 +839,9 @@ const hostBoard = (dir: string) =>
     const hosted = yield* Effect.context<HostServices>();
     const env = yield* servingEnv(dir);
     const herdr = new Herdr(env);
+    // Read as often as `herdChanges` reads them: each read is a herdr process, and a build
+    // runs on every write under the state directory.
+    const herdsNow = yield* Effect.cachedWithTTL(liveHerds(herdr, env), SESSIONS_EVERY);
     const runs = registry
       .views(null)
       .pipe(Effect.map((views) => views.map((view) => factsOfView(env.stateDir, view))));
@@ -858,9 +861,7 @@ const hostBoard = (dir: string) =>
       }).pipe(Effect.provideContext(bun));
     /** The board, with the Runs it was built from. */
     const listing = Effect.gen(function* () {
-      const alive = yield* Effect.flatMap(liveHerds(herdr, env), aliveIn).pipe(
-        Effect.provideContext(bun),
-      );
+      const alive = yield* Effect.flatMap(herdsNow, aliveIn).pipe(Effect.provideContext(bun));
       const facts = yield* runs;
       return { runs: facts, views: yield* boardOf(facts, alive) };
     });
@@ -870,7 +871,7 @@ const hostBoard = (dir: string) =>
     const storage = yield* Effect.context<MessageStorage.MessageStorage>();
     /** Every kind of thing Collie cleans, judged against the Runs as they are now. */
     const sweepers = Effect.gen(function* () {
-      const herds = yield* liveHerds(herdr, env);
+      const herds = yield* herdsNow;
       const sessions = herds.map((session) => session.herdr);
       const all = yield* runs;
       const tasks = yield* listTasks(env.stateDir);

@@ -15,7 +15,7 @@ import {
 } from "effect";
 import { readEnv, type PluginEnv } from "../../src/env";
 import { Herdr } from "../../src/herdr";
-import { fakeHerdr, fakeHerdrCommand } from "./fake-herdr-core";
+import { fakeHerdr, writeFakeHerdrShim } from "./fake-herdr-core";
 
 const JsonString = Schema.fromJsonString(Schema.Json);
 const JsonObjectString = Schema.fromJsonString(Schema.JsonObject);
@@ -233,13 +233,7 @@ export class Rig {
       for (const dir of dirs) {
         yield* fs.makeDirectory(dir, { recursive: true });
       }
-      yield* fs.writeFileString(
-        binPath,
-        `#!/bin/sh\nexec ${fakeHerdrCommand(fakeHerdrPath)} "$@"\n`,
-        {
-          mode: 0o755,
-        },
-      );
+      yield* writeFakeHerdrShim(binPath, fakeHerdrPath);
     });
   }
 

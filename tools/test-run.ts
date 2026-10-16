@@ -100,3 +100,15 @@ export const workersFor = (
   const workers = Math.min(cores, Math.max(2, Math.round(free)));
   return { workers, line: `test: ${workers} workers (${free.toFixed(1)} of ${cores} cores free)` };
 };
+
+/** What `bun run test` prints from `COLLIE_TEST_STARTS`: the total, then the ten largest sources. */
+export const startsSummary = (starts: string) => {
+  const lines = starts.split("\n").filter((line) => line !== "");
+  const counts = new Map<string, number>();
+  for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
+  const largest = [...counts]
+    .toSorted(([a, x], [b, y]) => y - x || a.localeCompare(b))
+    .slice(0, 10)
+    .map(([source, count]) => `${String(count).padStart(7)}  ${source}`);
+  return [`test: ${lines.length} processes started`, ...largest];
+};

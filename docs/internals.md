@@ -1188,6 +1188,18 @@ its time.
   run and IO waits; a one-second sample of idle CPU just before the tests start counts
   neither, and the builds and any suite this one waited for are over before it is taken.
 
+- **A test starts a process.** Each start costs the Machine, and an endpoint sensor more
+  again. `bun run test` sets `COLLIE_TEST_STARTS` to a fresh file, and the compiled
+  `collie`, fake herdr and fake forge each append a line naming themselves and what they
+  were asked, such as `herdr agent list` or `collie host` (`src/starts.ts`). The suite
+  ends with `test: <N> processes started` and the ten largest sources. The count leaves
+  out what never reaches those entry points: `collie` running as bun under `BUN_BE_BUN`,
+  real `git`, `ps` and `sleep`, the `sh` shims and stubs, and the fake `ssh` master's
+  `sleep`. It first showed `herdr session list` as the largest source, at 3,970 of
+  11,125: every board build read the sessions again, and a build follows every write
+  under the state directory. A host now reads them once a minute, as often as its
+  event watch does (`SESSIONS_EVERY` in `src/herds.ts`), so a session that starts later
+  is on the board within that minute.
 - **A test waits for a state.** It waits with `until` (`test/support/host.ts`) for what it
   needs: a run `suspended`, a file written, a pane gone. Real IO takes the time it takes,
   and a fixed sleep is too long on an idle machine and too short on a busy one. Work that

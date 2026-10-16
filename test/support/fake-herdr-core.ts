@@ -17,8 +17,16 @@ import {
 const FAKE_CLIENT_VERSION = "herdr 0.9.0";
 
 /** How a shim runs the fake: what `bun run test` compiled of it, or else its source. */
-export const fakeHerdrCommand = (source: string) =>
+const fakeHerdrCommand = (source: string) =>
   Bun.env.COLLIE_TEST_FAKE_HERDR ?? `${process.execPath} ${source}`;
+
+/** Writes the `herdr` at `bin` that runs the fake at `source`. */
+export const writeFakeHerdrShim = (bin: string, source: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.writeFileString(bin, `#!/bin/sh\nexec ${fakeHerdrCommand(source)} "$@"\n`, {
+      mode: 0o755,
+    }),
+  );
 
 interface FakeTab {
   tab_id: string;

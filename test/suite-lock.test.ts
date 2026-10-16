@@ -2,7 +2,14 @@ import { expect, test } from "bun:test";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { processStartTime } from "../src/lock";
 import { inTurn } from "../tools/suite-lock";
-import { binDirectory, isTargeted, timingFlags, turnFor, workersFor } from "../tools/test-run";
+import {
+  binDirectory,
+  isTargeted,
+  startsSummary,
+  timingFlags,
+  turnFor,
+  workersFor,
+} from "../tools/test-run";
 import { runEffect } from "./support/effect";
 
 /** A claim as `src/lock.ts` writes one. */
@@ -186,4 +193,25 @@ test("a --parallel the caller passed stands, and one after -- is a test's argume
     line: "test: workers as the caller's --parallel says",
   });
   expect(workersFor(["--", "--parallel=4"], before, busy, 16).workers).toBe(2);
+});
+
+test("a suite counts the processes it started and names the ten largest sources", () => {
+  const sources = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+  const lines = sources.flatMap((source, at) =>
+    Array.from({ length: at + 1 }, () => `herdr ${source}`),
+  );
+  expect(startsSummary(`${lines.join("\n")}\ncollie host\n`)).toEqual([
+    "test: 79 processes started",
+    "     12  herdr l",
+    "     11  herdr k",
+    "     10  herdr j",
+    "      9  herdr i",
+    "      8  herdr h",
+    "      7  herdr g",
+    "      6  herdr f",
+    "      5  herdr e",
+    "      4  herdr d",
+    "      3  herdr c",
+  ]);
+  expect(startsSummary("")).toEqual(["test: 0 processes started"]);
 });
