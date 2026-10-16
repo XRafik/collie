@@ -103,6 +103,7 @@ import {
   forgeHere,
   prepareMergeRequest,
   postNote,
+  productionCarries,
   projectHere,
   shell as runShell,
 } from "./mr";
@@ -500,6 +501,20 @@ export const SDK_DECLARATIONS = `declare module "collie" {
      * \`integrated <branch>@<sha>\`. Take it inside an Activity, so a replay does not merge again.
      */
     readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
+    /** The commit origin's default branch is at now. Take it inside an Activity. */
+    readonly defaultHead: (cwd: string) => Effect.Effect<string, WorkflowError>;
+    /**
+     * Blocks, with no agent turn, until the forge shows production carries \`sha\`, saying
+     * on the card what it waits for: true then, false where the Run was stopped or held first.
+     */
+    readonly awaitProduction: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly sha: string;
+      readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
+      readonly slug: string;
+      readonly url: string;
+    }) => Effect.Effect<boolean>;
   }
   export const Host: Context.Service<HostApi, HostApi>;
   export interface IssueRef { readonly number: number; readonly url: string; }
@@ -2359,6 +2374,8 @@ export const hostLayer = (options: {
   readonly readings?: Effect.Effect<ReadonlyArray<UsageReading>>;
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
+  /** How often a wait for production asks the forge again. */
+  readonly productionPoll?: Duration.Input;
 }): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices> =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -3014,6 +3031,42 @@ export const hostLayer = (options: {
               Effect.orDie,
             ),
           ),
+        defaultHead: (cwd) =>
+          under(runShell("git", ["ls-remote", "origin", "HEAD"], cwd)).pipe(
+            Effect.flatMap((said) => {
+              const sha = said.code === 0 ? (said.stdout.trim().split(/\s/)[0] ?? "") : "";
+              return sha === ""
+                ? Effect.fail(
+                    new WorkflowError({
+                      reason: `origin's default branch could not be read from ${cwd}: ${(said.stderr ?? "").trim()}`,
+                    }),
+                  )
+                : Effect.succeed(sha);
+            }),
+          ),
+        awaitProduction: (asked) =>
+          Effect.gen(function* () {
+            const short = asked.sha.slice(0, 8);
+            const plays = asked.jobs.map((job) => `\`${job.name}\` at ${job.url ?? asked.url}`);
+            yield* host.parked(
+              asked.runId,
+              plays.length === 0
+                ? `Waiting for production to carry \`${short}\` of ${asked.url}. The claim on \`${asked.slug}\` is held until it does.`
+                : `Waiting for production: play ${plays.join(", ")}. The claim on \`${asked.slug}\` is held until the forge shows production carries \`${short}\`.`,
+            );
+            const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
+              Effect.orElseSucceed(() => ({ gitlabHost: undefined })),
+            );
+            while (!((yield* set(HOLD, asked.runId)) || (yield* set(STOP, asked.runId)))) {
+              if (yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost)) {
+                yield* host.parked(asked.runId, null);
+                return true;
+              }
+              yield* Effect.sleep(options.productionPoll ?? "5 minutes");
+            }
+            yield* host.parked(asked.runId, null);
+            return false;
+          }).pipe(Effect.provideContext(services)),
         mergeRequest: (runId, url) =>
           fs.makeDirectory(runDir(dir, runId), { recursive: true }).pipe(
             Effect.andThen(fs.writeFileString(mergeRequestPath(dir, runId), `${url}\n`)),
@@ -4191,6 +4244,7 @@ export const foundationLayer = (options: {
   readonly messagePoll?: Duration.Input | undefined;
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
+  readonly productionPoll?: Duration.Input;
 }): Layer.Layer<
   | Host
   | Notifier

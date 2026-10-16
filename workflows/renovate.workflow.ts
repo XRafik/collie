@@ -24,7 +24,9 @@ import {
   defineWorkflow,
 } from "collie";
 import { Effect, Schema } from "effect";
-import type { WorkflowEngine, WorkflowInstance } from "effect/workflow/WorkflowEngine";
+import * as Activity from "effect/workflow/Activity";
+import * as Workflow from "effect/workflow/Workflow";
+import { WorkflowInstance, type WorkflowEngine } from "effect/workflow/WorkflowEngine";
 import onGitlab from "./renovate.gitlab.md" with { type: "text" };
 import onGithub from "./renovate.github.md" with { type: "text" };
 
@@ -68,13 +70,16 @@ const verdict = {
 };
 
 /** The one issue every later step writes to, so a long wait cannot split a repository. */
-const Tracked = Schema.Struct({
+export const Tracked = Schema.Struct({
   ...verdict,
   issue: Schema.String.annotate({ description: "the Linear issue id this Run records itself on" }),
   issue_url: Schema.optionalKey(Schema.String),
   team: Schema.optionalKey(Schema.String),
   repository: Schema.optionalKey(Schema.String),
   created_issue: Schema.optionalKey(Schema.Boolean),
+  picked_because: Schema.optionalKey(Schema.String).annotate({
+    description: "which issue among several was taken, and why",
+  }),
 });
 
 /** One Renovate merge request, as the assessment read it. */
@@ -173,8 +178,11 @@ export const Released = Schema.Struct({
   release_url: Schema.optionalKey(Schema.String),
   is_package: Schema.optionalKey(Schema.Boolean),
   pipeline: Schema.optionalKey(Schema.String).annotate({
-    description: "succeeded or not run",
+    description: "succeeded, not run, or waiting for production",
   }),
+  prod_jobs: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ name: Schema.String, url: Schema.optionalKey(Schema.String) })),
+  ).annotate({ description: "the production jobs left for the human to play" }),
   up_to_date: Schema.optionalKey(Schema.Boolean),
 });
 
@@ -447,11 +455,37 @@ export const renovation = (landing: Landing = shippedLanding) =>
         }
 
         yield* landing.merge(here);
+        // Everything this Run merged, read once so a replay waits for the same commit.
+        const head =
+          claim === null
+            ? null
+            : yield* Activity.make({
+                name: "default-head",
+                success: Schema.String,
+                error: WorkflowError,
+                execute: host.defaultHead(cwd),
+              });
         const released = yield* landing.release(here);
         const recorded = yield* landing.record(here, released);
-        return yield* finished(
-          `${tracked.issue}: ${recorded.status}${released.version ? ` ${released.version}` : ""}`,
-        );
+        const jobs = released.prod_jobs ?? [];
+        const outcome = `${tracked.issue}: ${recorded.status}${released.version ? ` ${released.version}` : ""}`;
+        if (claim === null || head === null) {
+          const left = jobs.map((job) => `\`${job.name}\`${job.url ? ` at ${job.url}` : ""}`);
+          return left.length === 0
+            ? outcome
+            : `${outcome}; production jobs left to play: ${left.join(", ")}`;
+        }
+        // The forge decides when production carries the merge, never the Output.
+        const carried = yield* host.awaitProduction({
+          runId,
+          cwd,
+          sha: head,
+          jobs,
+          slug: claim.slug,
+          url: here.url,
+        });
+        if (!carried) return yield* Workflow.suspend(yield* WorkflowInstance);
+        return yield* finished(`${outcome}; production carries it`);
       }),
   });
 

@@ -236,6 +236,21 @@ export function forgeHere<R>(
   });
 }
 
+/** Whether the forge shows production carrying `sha`: false where it cannot say. */
+export function productionCarries<R>(
+  cwd: string,
+  sha: string,
+  run: Runner<R>,
+  gitlabHost?: string,
+): Effect.Effect<boolean, never, R> {
+  return Effect.gen(function* () {
+    const here = yield* forgeHere(cwd, run, gitlabHost);
+    if (!here.ok) return false;
+    const ref = { project: here.project, iid: "" };
+    return (yield* here.forge.liveTier(ref, sha, cwd, run)) === "production";
+  });
+}
+
 /**
  * The URL of the checkout's branch's open merge request where it merges itself once green,
  * else null. A checkout on no forge has none to merge; a forge that cannot be read fails with

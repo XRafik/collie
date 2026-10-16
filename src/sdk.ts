@@ -693,6 +693,28 @@ export interface HostApi {
    */
   readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
   /**
+   * The commit origin's default branch is at now: everything merged there so far. Take it
+   * inside an Activity, so a replay reads the same commit. Fails where origin cannot be read.
+   */
+  readonly defaultHead: (cwd: string) => Effect.Effect<string, WorkflowError>;
+  /**
+   * Blocks until the forge shows production carries `sha`, costing wall clock and no model
+   * tokens, and says on the card meanwhile what it waits for: `jobs` are the production
+   * jobs left for a human to play, and word the line only. A forge that cannot say is
+   * waited on too. Answers true once production carries it, false where the Run was
+   * stopped or held first.
+   */
+  readonly awaitProduction: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly sha: string;
+    readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
+    /** The claim held meanwhile. */
+    readonly slug: string;
+    /** The repository's web address, which a job without its own is played at. */
+    readonly url: string;
+  }) => Effect.Effect<boolean>;
+  /**
    * Puts a note on the merge request a Run was pointed at, sent by Collie rather than
    * written out again by an agent — asking for a file to be repeated verbatim is how
    * verbatim stops being true. The refusal is the message: a target that is not a merge

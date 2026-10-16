@@ -43,6 +43,7 @@ import {
   sortOut,
 } from "../../workflows/retrospective";
 import {
+  HOLD,
   PARKED,
   answerDecision,
   controlPath,
@@ -148,6 +149,7 @@ const foundation = () => ({
   dir,
   userDir: rig.userDir,
   placing: { herdr: hostOf().herdr, env: hostOf().env },
+  productionPoll: "20 millis" as const,
 });
 
 const session = <A, E>(
@@ -5519,22 +5521,36 @@ scenario(
  * the work is done — is what these tests are about.
  */
 const claimed: string[] = [];
-const withoutHelle: HostOverride = Layer.effect(Host)(
-  Effect.gen(function* () {
-    const host = yield* Host;
-    return Host.of({
-      ...host,
-      claim: (options) =>
-        Effect.as(
-          options
-            .say("holding the claim")
-            .pipe(Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`)))),
-          { slug: "project" },
-        ),
-      release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
-    });
-  }),
-);
+const helleAnswers = (claim: "held" | "none", production: "deployed" | "read"): HostOverride =>
+  Layer.effect(Host)(
+    Effect.gen(function* () {
+      const host = yield* Host;
+      const answered = Host.of({
+        ...host,
+        claim: (options) =>
+          claim === "none"
+            ? Effect.succeed(null)
+            : Effect.as(
+                options
+                  .say("holding the claim")
+                  .pipe(
+                    Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
+                  ),
+                { slug: "project" },
+              ),
+        release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
+      });
+      if (production === "read") return answered;
+      return Host.of({
+        ...answered,
+        defaultHead: () => Effect.succeed("0".repeat(40)),
+        awaitProduction: () => Effect.succeed(true),
+      });
+    }),
+  );
+const withoutHelle = helleAnswers("held", "deployed");
+/** A claim held, and production read from the forge on PATH. */
+const holdingClaim = helleAnswers("held", "read");
 
 /** Everything a renovation needs from the machine: glab, a GitLab remote, a config. */
 const renovatable = () =>
@@ -5752,7 +5768,7 @@ scenario(
         });
         yield* bin.restore();
 
-        expect(said(result)).toBe("REN-1: renovated 1.2.0");
+        expect(said(result)).toBe("REN-1: renovated 1.2.0; production carries it");
         const track = yield* asked("r-pkg", "track");
         expect(track).toMatch(/^Linear team \(not given means .*\): not given$/m);
         expect(track).toContain("Linear Renovate issue (not given means find it): not given");
@@ -5827,7 +5843,7 @@ scenario(
         });
         yield* bin.restore();
 
-        expect(said(result)).toBe("REN-1: renovated 1.2.0");
+        expect(said(result)).toBe("REN-1: renovated 1.2.0; production carries it");
         expect(yield* prompts()).toHaveLength(8);
         // Taken before the first thing that touches anything shared, given back after the
         // last one — and not before, so nobody deploys on a half-finished renovation.
@@ -5906,6 +5922,283 @@ scenario(
 
 const PACKAGE = { verdict: "clean", up_to_date: false, is_package: true, merge_requests: BUMPS };
 
+/** An application's Outputs up to the release, which each scenario below says itself. */
+const APPLICATION: ReadonlyArray<Schema.Json> = [
+  TRACKED,
+  { verdict: "clean", up_to_date: false, is_package: false, merge_requests: BUMPS },
+  { verdict: "clean", mr_url: "https://gitlab.example.com/x!99", branch: "deps/batch" },
+  { verdict: "clean", verified: true, verified_by: "e2e-stage" },
+  { verdict: "clean", approved_by: ["a-teammate"], head_sha: "abc" },
+  MERGED,
+];
+const OLDER = "1".repeat(40);
+const LATER = "2".repeat(40);
+
+/** A renovatable checkout on `name`'s forge, whose environments are `environments`. */
+const deploying = (name: MrForge, environments: ForgeModel["environments"]) =>
+  Effect.gen(function* () {
+    const bin = yield* renovatable();
+    const model: ForgeModel = {
+      installed: true,
+      loggedIn: [FORGE_HOST[name]],
+      login: "tester",
+      mrs: [],
+      environments,
+    };
+    const forge = yield* forgeOnPath(bin, name, model);
+    // origin stays the bare repository, whose default branch the Run reads.
+    yield* exec(["git", "remote", "set-url", "upstream", RENOVATING[name].origin], {
+      cwd: rig.projectDir,
+    });
+    const head = (yield* exec(["git", "rev-parse", "HEAD"], { cwd: rig.projectDir })).stdout.trim();
+    const deployed = (sha: string, more: Partial<ForgeModel> = {}) =>
+      forge.set({
+        ...model,
+        environments: [{ name: "production", tier: "production", deployed: sha }],
+        ...more,
+      });
+    return { bin, forge, head, deployed };
+  });
+
+for (const name of ["gitlab", "github"] as const) {
+  const url = RENOVATING[name].url;
+
+  scenario(
+    `an application on ${name} names its production job and holds its claim, with no turn, until production carries the merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, deployed } = yield* deploying(name, [
+            { name: "production", tier: "production", deployed: OLDER },
+          ]);
+          claimed.length = 0;
+          const runId = `r-prod-${name}`;
+          yield* rig.queueOutputs([
+            ...APPLICATION,
+            { ...RELEASED, prod_jobs: [{ name: "deploy-prod", url: `${url}/jobs/9` }] },
+            RECORDED,
+          ]);
+          const status = yield* running(
+            { entry: shipped("renovate"), runId, input: {}, host: holdingClaim },
+            (status) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(runId),
+                    (why) => why !== "",
+                  ),
+                ).toBe(
+                  `Waiting for production: play \`deploy-prod\` at ${url}/jobs/9. The claim on \`project\` is held until the forge shows production carries \`${head.slice(0, 8)}\`.`,
+                );
+                expect(yield* prompts()).toHaveLength(8);
+                expect(claimed).toEqual([`claim ${runId}`]);
+                yield* deployed(head);
+                return yield* until(
+                  () => status,
+                  (got) => got === "complete",
+                );
+              }),
+          );
+          yield* bin.restore();
+          expect(status).toBe("complete");
+          expect(yield* prompts()).toHaveLength(8);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* parkedWhy(runId)).toBe("");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `a renovation on ${name} waits for production whatever its Output names, and only a deployment carrying the merge ends it`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, deployed } = yield* deploying(name, [
+            { name: "production", tier: "production", deployed: OLDER },
+          ]);
+          claimed.length = 0;
+          const entry = shipped("renovate");
+          const waiting = `Waiting for production to carry \`${head.slice(0, 8)}\` of ${url}. The claim on \`project\` is held until it does.`;
+          const polled = (more: number) =>
+            Effect.gen(function* () {
+              const before = (yield* forge.calls()).length;
+              yield* until(
+                () => forge.calls(),
+                (calls) => calls.length >= before + more,
+              );
+            });
+
+          // No production job named: the forge still decides.
+          yield* deployed(OLDER);
+          yield* rig.queueOutputs([
+            ...APPLICATION,
+            RELEASED,
+            RECORDED,
+            ...APPLICATION,
+            { ...RELEASED, prod_jobs: [] },
+            RECORDED,
+          ]);
+          const omitted = yield* running(
+            { entry, runId: `r-omit-${name}`, input: {}, host: holdingClaim },
+            (status) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(`r-omit-${name}`),
+                    (why) => why !== "",
+                  ),
+                ).toBe(waiting);
+                for (const behind of [
+                  deployed(OLDER),
+                  deployed(OLDER, {
+                    environments: [
+                      { name: "production", tier: "production", deployed: OLDER, failed: head },
+                    ],
+                  }),
+                  deployed(head, { deploysDown: true }),
+                ]) {
+                  yield* behind;
+                  yield* polled(6);
+                  expect(yield* status).not.toBe("complete");
+                  expect(claimed).not.toContain(`release r-omit-${name}`);
+                }
+                yield* deployed(LATER, { ancestry: { [LATER]: [head] } });
+                return yield* until(
+                  () => status,
+                  (got) => got === "complete",
+                );
+              }),
+          );
+          expect(omitted).toBe("complete");
+          expect(claimed.at(-1)).toBe(`release r-omit-${name}`);
+
+          // An empty list is no different.
+          yield* deployed(OLDER);
+          const empty = yield* running(
+            { entry, runId: `r-empty-jobs-${name}`, input: {}, host: holdingClaim },
+            (status) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(`r-empty-jobs-${name}`),
+                    (why) => why !== "",
+                  ),
+                ).toBe(waiting);
+                expect(claimed).not.toContain(`release r-empty-jobs-${name}`);
+                yield* deployed(head);
+                return yield* until(
+                  () => status,
+                  (got) => got === "complete",
+                );
+              }),
+          );
+          yield* bin.restore();
+          expect(empty).toBe("complete");
+          expect(claimed.at(-1)).toBe(`release r-empty-jobs-${name}`);
+        }),
+      ),
+    120_000,
+  );
+}
+
+scenario(
+  "a host restarted while a renovation waits for production goes back into the wait, with no turn",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { bin, head, deployed } = yield* deploying("gitlab", [
+          { name: "production", tier: "production", deployed: OLDER },
+        ]);
+        claimed.length = 0;
+        const runId = "r-prod-restart";
+        const entry = shipped("renovate");
+        yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        expect(yield* parkedOn({ entry, runId, input: {}, host: holdingClaim })).toContain(
+          "Waiting for production",
+        );
+        expect(yield* prompts()).toHaveLength(5);
+
+        yield* deployed(head);
+        const result = yield* resumed({ entry, runId, input: {}, host: holdingClaim });
+        yield* bin.restore();
+        expect(said(result)).toBe("REN-1: renovated 1.2.0; production carries it");
+        expect(yield* prompts()).toHaveLength(5);
+        expect(claimed.at(-1)).toBe(`release ${runId}`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a hold ends the wait for production with the claim still held",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { bin } = yield* deploying("gitlab", [
+          { name: "production", tier: "production", deployed: OLDER },
+        ]);
+        claimed.length = 0;
+        const runId = "r-prod-held";
+        yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        const status = yield* running(
+          { entry: shipped("renovate"), runId, input: {}, host: holdingClaim },
+          (status) =>
+            Effect.gen(function* () {
+              yield* until(
+                () => parkedWhy(runId),
+                (why) => why !== "",
+              );
+              const fs = yield* FileSystem.FileSystem;
+              yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
+              return yield* until(
+                () => status,
+                (got) => got === "suspended",
+              );
+            }),
+        );
+        yield* bin.restore();
+        expect(status).toBe("suspended");
+        expect(claimed).toEqual([`claim ${runId}`]);
+        expect(yield* parkedWhy(runId)).toBe("");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a renovation holding no claim does not wait for production, and its result names the jobs left to play",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* renovatable();
+        yield* rig.queueOutputs([
+          ...APPLICATION,
+          {
+            ...RELEASED,
+            prod_jobs: [
+              { name: "deploy-prod", url: "https://gitlab.example.com/group/project/-/jobs/9" },
+              { name: "deploy-prod-eu" },
+            ],
+          },
+          RECORDED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("renovate"),
+          runId: "r-unclaimed",
+          input: {},
+          host: helleAnswers("none", "read"),
+        });
+        yield* bin.restore();
+        expect(said(result)).toBe(
+          "REN-1: renovated 1.2.0; production jobs left to play: `deploy-prod` at https://gitlab.example.com/group/project/-/jobs/9, `deploy-prod-eu`",
+        );
+        expect(yield* parkedWhy("r-unclaimed")).toBe("");
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "a fork changes what lands and keeps everything that decides whether it should",
   () =>
@@ -5948,7 +6241,7 @@ scenario(
         });
         yield* bin.restore();
 
-        expect(said(result)).toBe("REN-1: renovated deploy-7");
+        expect(said(result)).toBe("REN-1: renovated deploy-7; production carries it");
         // Under an unrelated name, from another directory: everything up to the landing is
         // word for word what the shipped workflow asked, and only the Run it is about
         // differs. A fork that had copied the orchestration would drift from this.

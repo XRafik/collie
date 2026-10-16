@@ -720,6 +720,15 @@ rather than after. `adopting` is your own durable question, asked only where the
 already the operator's; `host.release(runId)` gives it back, and only a Run that finished
 its work should.
 
+`host.defaultHead(cwd)` is the commit origin's default branch is at now, and fails where
+origin cannot be read; take it inside an Activity, so a replay reads the same commit.
+`host.awaitProduction({ runId, cwd, sha, jobs, slug, url })` blocks, at no token cost, until
+the forge shows production carries `sha`, polling every five minutes. Meanwhile the card
+says what it waits for: `jobs` are the production jobs left for a human to play, which word
+that line and decide nothing, `slug` is the claim held and `url` the repository. It answers
+`true` once production carries the commit, and `false` where the Run was stopped or held
+first. A forge that cannot say keeps it waiting.
+
 ## Markdown as content
 
 A workflow's Markdown is what its agents are told, and nothing else: what it takes, what it
