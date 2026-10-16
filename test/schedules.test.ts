@@ -91,8 +91,12 @@ test(
 
           const list = yield* until(
             () => listed(world),
-            (now) => now.schedules[0]?.last?.outcome.kind === "run",
+            (now) => ["run", "refused"].includes(now.schedules[0]?.last?.outcome.kind ?? ""),
           );
+          // An occurrence that came due while the pause was written is refused, and is the last.
+          const last = list.schedules[0]?.last?.outcome;
+          if (last?.kind === "refused") expect(last.reason).toBe("the Schedule was paused");
+          else expect(last).toMatchObject({ kind: "run", status: "complete" });
           expect(list.machine).toEqual({ installation, hostname: hostname() });
           expect(list.schedules[0]).toMatchObject({
             machine: { installation, hostname: hostname() },
@@ -108,7 +112,6 @@ test(
               workspace: world.project,
               verify: [],
             },
-            last: { outcome: { kind: "run", status: "complete" } },
           });
 
           const removed = yield* schedule(world, ["remove", "hello-often"]);

@@ -18,7 +18,9 @@ import {
 } from "../desktop/src/bun/flock-tools";
 import type { ChatBoard, DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
+import type { Attempted } from "../desktop/src/bun/sent";
 import { changeSettings } from "../desktop/src/bun/settings";
+import { fastForward } from "./support/effect";
 import { task } from "./support/task";
 
 interface Asked {
@@ -138,6 +140,7 @@ const machine = (
         note("editFile", payload);
         return { path: payload.path, replaced: 1 };
       }),
+    progress: () => Effect.succeed(null),
     read: (payload) =>
       Effect.sync(() => {
         note("read", payload);
@@ -824,15 +827,17 @@ test("where work can start is every Machine's own answer, a section each, and a 
     }),
   ));
 
-test("a Machine whose host cannot answer a read is told to upgrade, and the rest still answer", () =>
+test("a Machine whose host cannot answer a read is told to upgrade, one that is slow that it timed out, and the rest still answer", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const asked: Asked[] = [];
       const old = machine("vm-mk", [], asked);
+      const slow = machine("vm-slow", [], asked);
       const flock = {
         machines: () => [
           machine("mk-pc", [], asked),
-          { ...old, door: { ...old.door, read: () => Effect.never } },
+          { ...old, door: { ...old.door, read: () => Effect.die("no read") } },
+          { ...slow, door: { ...slow.door, read: () => Effect.never } },
         ],
         conversation: "flock@mk-pc",
         said: () => undefined,
@@ -847,7 +852,11 @@ test("a Machine whose host cannot answer a read is told to upgrade, and the rest
       const reading = yield* callFlockTool(flock, "collie_workspaces", {}).pipe(Effect.forkChild);
       yield* TestClock.adjust("1 minute");
       const said = yield* Fiber.join(reading);
-      expect(said).toContain("upgrade Collie on vm-mk");
+      expect(said).toContain(
+        "## vm-mk\n\nvm-mk did not answer; its Collie may be older than Desktop's; upgrade Collie on vm-mk.",
+      );
+      expect(said).toContain("## vm-slow\n\nvm-slow did not answer within 10 s.");
+      expect(said).not.toContain("upgrade Collie on vm-slow");
       expect(said).toContain("collie_workspaces answered by mk-pc");
     }).pipe(Effect.provide([BunServices.layer, TestClock.layer()])),
   ));
@@ -1163,4 +1172,318 @@ test("a Flock chat move to a Machine it cannot reach is refused, and nothing is 
       expect(said).toContain("machine_unreachable");
       expect(asked.filter(({ op }) => op === "changeSchedule")).toEqual([]);
     }),
+  ));
+
+test("a deliver to a Machine whose board speaks an older protocol is refused before anything is sent", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const flock = {
+        ...flockOf(asked),
+        machines: () => [
+          machine("old-pc", [task({ id: "t-a", run: "r-1", runs: ["r-1"] })], asked, PROTOCOL - 1),
+          machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked),
+        ],
+      };
+      const deliver = (run: string) => ({
+        actions: [{ kind: "deliver", run, text: "look again" }],
+      });
+      expect(yield* callFlockTool(flock, "collie_do", deliver("r-1"))).toBe(
+        "deliver: failed — its Collie is older than Desktop's chat; upgrade Collie on old-pc. Nothing was done there.",
+      );
+      expect(asked).toEqual([]);
+      expect(yield* callFlockTool(flock, "collie_do", deliver("r-2"))).toBe("deliver: applied");
+      expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+        "vm-mk declare",
+        "vm-mk act",
+      ]);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+/** A Machine whose host has `runs` though its board lists none of them, or whose `progress` is `answer`. */
+const holding = (
+  name: string,
+  asked: Asked[],
+  runs: ReadonlyArray<string>,
+  answer?: ChatDoor["progress"],
+): Reached => {
+  const reached = machine(name, [], asked);
+  const progress: ChatDoor["progress"] =
+    answer ??
+    (({ runId }) =>
+      Effect.succeed(
+        runs.includes(runId) ? { ready: { ready: false, missing: [] }, ci: null, steps: [] } : null,
+      ));
+  return { ...reached, door: { ...reached.door, progress } };
+};
+
+const flockOn = (asked: Asked[], machines: ReadonlyArray<ChatMachine>) => ({
+  ...flockOf(asked),
+  machines: () => machines,
+});
+
+test("a bare id no board lists yet is read on the one Machine whose host has it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const flock = flockOn(asked, [
+        holding("mk-pc", asked, []),
+        holding("vm-mk", asked, ["r-new"]),
+      ]);
+      expect(yield* callFlockTool(flock, "collie_run", { run: "r-new" })).toBe(
+        "## vm-mk\n\ncollie_run answered by vm-mk",
+      );
+      expect(reads(asked)).toEqual([
+        { machine: "vm-mk", payload: { tool: "collie_run", input: { run: "r-new" } } },
+      ]);
+      const nowhere: Asked[] = [];
+      const none = flockOn(nowhere, [holding("mk-pc", nowhere, []), holding("vm-mk", nowhere, [])]);
+      expect(yield* callFlockTool(none, "collie_run", { run: "r-new" })).toBe(
+        'No Run "r-new" on any Machine. Nothing was done; collie_herd lists them as <machine>:<id>.',
+      );
+      expect(nowhere).toEqual([]);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+for (const [why, answer, said] of [
+  ["fails", () => Effect.die("no progress"), "upgrade Collie on mk-pc"],
+  ["does not answer", () => Effect.never, "mk-pc did not answer within 10 s"],
+] as const)
+  test(`a Machine whose host ${why} when asked about a bare id is unread, and nothing is done`, () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const asked: Asked[] = [];
+        const flock = flockOn(asked, [
+          holding("mk-pc", asked, [], answer),
+          holding("vm-mk", asked, ["r-new"]),
+        ]);
+        const reading = yield* callFlockTool(flock, "collie_run", { run: "r-new" }).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("1 minute");
+        const refused = yield* Fiber.join(reading);
+        expect(refused).toStartWith(
+          'Run "r-new" is on vm-mk, and mk-pc could not be checked for one too (',
+        );
+        expect(refused).toContain(said);
+        expect(refused).toContain("name it as vm-mk:r-new");
+        expect(asked).toEqual([]);
+      }).pipe(Effect.provide([BunServices.layer, TestClock.layer()])),
+    ));
+
+test("a hold and a run-scoped action on a bare id no board lists go to the Machine whose host has it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const flock = flockOn(asked, [
+        holding("mk-pc", asked, []),
+        holding("vm-mk", asked, ["r-new"]),
+      ]);
+      expect(yield* callFlockTool(flock, "collie_hold", { run: "r-new" })).toBe("Held r-new");
+      expect(
+        yield* callFlockTool(flock, "collie_do", { actions: [{ kind: "stop", run: "r-new" }] }),
+      ).toBe("stop: applied");
+      expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+        "vm-mk declare",
+        "vm-mk control",
+        "vm-mk declare",
+        "vm-mk act",
+      ]);
+      expect(asked[3]!.payload).toMatchObject({ actions: [{ kind: "stop", run: "r-new" }] });
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("an answer its Machine never confirms is said as not confirmed, and nothing after it is sent", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const silent = machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked);
+      const flock = flockOn(asked, [
+        {
+          ...silent,
+          door: {
+            ...silent.door,
+            act: (payload) =>
+              Effect.sync(() => asked.push({ machine: "vm-mk", op: "act", payload })).pipe(
+                Effect.andThen(Effect.never),
+              ),
+          },
+        },
+      ]);
+      const said = yield* fastForward(
+        callFlockTool(flock, "collie_do", {
+          actions: [
+            { kind: "answer", run: "r-2", choiceId: "next-1", answer: "yes" },
+            { kind: "stop", run: "r-2" },
+          ],
+        }),
+        1_000,
+      );
+      expect(said).toBe(
+        "answer: not confirmed — vm-mk did not confirm the answer to r-2 within 30 s, 3 times. It may still land; Try again sends the same request, which vm-mk takes at most once.",
+      );
+      const acts = asked.filter(({ op }) => op === "act");
+      expect(acts).toHaveLength(3);
+      expect(new Set(acts.map(({ payload }) => JSON.stringify(payload))).size).toBe(1);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+const keeping = () => {
+  const lines: Attempted[] = [];
+  return { lines, log: (line: Attempted) => Effect.sync(() => void lines.push(line)) };
+};
+
+test("a host that never takes the chat's declaration ends the write as not confirmed, logged each try", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const mute = machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked);
+      const flock = {
+        ...flockOn(asked, [{ ...mute, door: { ...mute.door, declare: () => Effect.never } }]),
+        actionsLog: log,
+      };
+      const stop = yield* fastForward(
+        callFlockTool(flock, "collie_do", { actions: [{ kind: "stop", run: "r-2" }] }),
+        1_000,
+      );
+      expect(stop).toStartWith("stop: not confirmed — vm-mk did not confirm the stop to r-2");
+      const held = yield* fastForward(callFlockTool(flock, "collie_hold", { run: "r-2" }), 1_000);
+      expect(held).toStartWith("hold: not confirmed — vm-mk did not confirm the hold to r-2");
+      expect(lines.map(({ kind, ended }) => `${kind} ${ended}`)).toEqual([
+        "stop timed-out",
+        "stop timed-out",
+        "stop timed-out",
+        "hold timed-out",
+        "hold timed-out",
+        "hold timed-out",
+      ]);
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("a chat write refused before it is sent is logged as not sent, with Desktop's reason", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const flock = {
+        ...flockOn(asked, [
+          machine("old-pc", [task({ id: "t-a", run: "r-1", runs: ["r-1"] })], asked, PROTOCOL - 1),
+        ]),
+        actionsLog: log,
+      };
+      yield* callFlockTool(flock, "collie_do", { actions: [{ kind: "stop", run: "r-1" }] });
+      yield* callFlockTool(flock, "collie_hold", { run: "r-1" });
+      expect(asked).toEqual([]);
+      expect(lines).toMatchObject([
+        {
+          door: "chat",
+          machine: "old-pc",
+          kind: "stop",
+          about: "r-1",
+          attempt: 0,
+          ended: "not-sent",
+        },
+        {
+          door: "chat",
+          machine: "old-pc",
+          kind: "hold",
+          about: "r-1",
+          attempt: 0,
+          ended: "not-sent",
+        },
+      ]);
+      expect(lines[0]!.reason).toContain("its Collie is older than Desktop's chat");
+      expect(lines[0]!.request).toBeString();
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("a refusal that quotes what the chat sent is logged without it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const quoting = machine("vm-mk", [task({ id: "t-b", run: "r-2", runs: ["r-2"] })], asked);
+      const flock = {
+        ...flockOn(asked, [
+          {
+            ...quoting,
+            door: {
+              ...quoting.door,
+              act: () =>
+                Effect.succeed([
+                  {
+                    kind: "answer",
+                    state: "failed",
+                    note: '"PRIVATE_ANSWER_123" is not one of A, B',
+                  },
+                ]),
+            },
+          },
+        ]),
+        actionsLog: log,
+      };
+      const said = yield* callFlockTool(flock, "collie_do", {
+        actions: [{ kind: "answer", run: "r-2", choiceId: "next-1", answer: "PRIVATE_ANSWER_123" }],
+      });
+      expect(said).toContain("PRIVATE_ANSWER_123");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.ended).toBe("refused");
+      expect(lines[0]!.reason).toContain("is not one of A, B");
+      expect(lines[0]!.reason).not.toContain("PRIVATE_ANSWER_123");
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("a confirmation whose proposed action fails is logged with its kinds and states only", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      const { lines, log } = keeping();
+      const proposing = machine(
+        "vm-mk",
+        [
+          task({
+            id: "t-b",
+            run: "r-2",
+            runs: ["r-2"],
+            decision: { kind: "proposal", id: "p-1", hash: "h", text: "Answer it", actions: [] },
+          }),
+        ],
+        asked,
+      );
+      const flock = {
+        ...flockOn(asked, [
+          {
+            ...proposing,
+            door: {
+              ...proposing.door,
+              confirm: ({ proposal }) =>
+                Effect.succeed({
+                  proposal,
+                  results: [
+                    {
+                      index: 0,
+                      kind: "answer",
+                      state: "failed",
+                      note: '"PRIVATE_CONFIRM_ANSWER_123" is not one of A, B',
+                      run: "r-2",
+                    },
+                  ],
+                }),
+            },
+          },
+        ]),
+        actionsLog: log,
+      };
+      const said = yield* callFlockTool(flock, "collie_do", {
+        actions: [{ kind: "confirm", proposal: "p-1", hash: "h" }],
+      });
+      expect(said).toContain("PRIVATE_CONFIRM_ANSWER_123");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatchObject({
+        kind: "confirm",
+        ended: "refused",
+        reason: "answer failed",
+      });
+    }).pipe(Effect.provide(BunServices.layer)),
   ));

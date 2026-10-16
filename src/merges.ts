@@ -99,7 +99,10 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     // Anything that ended and nobody disposed of: the waiting cards, and a card that
     // already reads as landed from an earlier answer but has no disposition saying so.
     const section = sectionOf(view);
-    if (view.mr === null || section === "working" || section === "needs-you") continue;
+    // A Run that ended reads as working or blocked while its Reopened agent is.
+    const ended = view.reopened != null && view.decision === null;
+    if (view.mr === null || (!ended && (section === "working" || section === "needs-you")))
+      continue;
     // A merged one is still followed to its deploy jobs, until production has it.
     if (view.disposition !== null && !view.disposition.startsWith("merged")) continue;
     const label = mrLabel(view.mr);

@@ -21,6 +21,7 @@ import * as BunSocketServer from "@effect/platform-bun/BunSocketServer";
 import {
   Clock,
   Config,
+  Context,
   Crypto,
   Data,
   Deferred,
@@ -46,6 +47,8 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcClient from "effect/rpc/RpcClient";
 import type * as RpcClientError from "effect/rpc/RpcClientError";
 import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
 import manifest from "../herdr-plugin.toml";
@@ -153,6 +156,7 @@ import {
   SteerOutcome,
   Attachments,
   type FrontDoor,
+  type TaskView,
   type Where,
 } from "./board-model";
 import {
@@ -177,7 +181,7 @@ import {
   settle as settleNews,
 } from "./news";
 import { evaluationDeps } from "./evaluator";
-import { ActionSchema } from "./actions";
+import { ActionSchema, refusedAction } from "./actions";
 import { clearOverride, err, request, steer, type OpResult } from "./operations";
 import { REJECTED } from "./envelope";
 import {
@@ -223,7 +227,8 @@ import {
 } from "./peers-model";
 import { latest, readDispositions } from "./disposition";
 import { runAgents, stepsOf } from "./launches";
-import { factsOfView, settled } from "./runs";
+import { factsOfView, settled, type RunFacts } from "./runs";
+import { Store } from "./store";
 import { aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
   withDirLock,
@@ -456,6 +461,29 @@ export const HostRpcs = RpcGroup.make(
 
 /** Everything this build serves; a client of another build uses `FrontDoorRpcs` alone. */
 const AllRpcs = HostRpcs.merge(FrontDoorRpcs);
+
+/** How long an RPC may take to answer before the host log says so. */
+const SLOW_RPC_MS = 2_000;
+
+/** Logs an RPC slow to answer. A stream is meant to stay open, so it is never timed. */
+export class SlowRpcs extends RpcMiddleware.Service<SlowRpcs>()("collie/SlowRpcs") {}
+
+export const slowRpcsLayer = Layer.succeed(SlowRpcs)((effect, { rpc }) =>
+  RpcSchema.isStreamSchema(rpc.successSchema)
+    ? effect
+    : Effect.gen(function* () {
+        const started = yield* Clock.currentTimeMillis;
+        return yield* effect.pipe(
+          Effect.ensuring(
+            Effect.gen(function* () {
+              const took = (yield* Clock.currentTimeMillis) - started;
+              if (took > SLOW_RPC_MS)
+                yield* Effect.logWarning(`the ${rpc._tag} RPC took ${took} ms to answer`);
+            }),
+          ),
+        );
+      }),
+);
 
 export type HostClient = RpcClient.RpcClient<
   RpcGroup.Rpcs<typeof AllRpcs>,
@@ -810,11 +838,11 @@ const hostBoard = (dir: string) =>
     const runs = registry
       .views(null)
       .pipe(Effect.map((views) => views.map((view) => factsOfView(env.stateDir, view))));
-    const boardOf = (alive: ReadonlyArray<AgentInfo>) =>
+    const boardOf = (facts: ReadonlyArray<RunFacts>, alive: ReadonlyArray<AgentInfo>) =>
       Effect.gen(function* () {
         return yield* buildBoard({
           env,
-          runs: yield* runs,
+          runs: facts,
           alive,
           quietMs: (yield* loadDefaults(env.userDir)).boardQuietMs,
           offers: (runId) =>
@@ -824,12 +852,15 @@ const hostBoard = (dir: string) =>
             ),
         });
       }).pipe(Effect.provideContext(bun));
-    const build = Effect.flatMap(
-      Effect.flatMap(liveHerds(herdr, env), aliveIn).pipe(Effect.provideContext(bun)),
-      boardOf,
-    );
-    // What ended and what it opened needs no herdr: the merge watch asks nobody's panes.
-    const unattended = boardOf([]);
+    /** The board, with the Runs it was built from. */
+    const listing = Effect.gen(function* () {
+      const alive = yield* Effect.flatMap(liveHerds(herdr, env), aliveIn).pipe(
+        Effect.provideContext(bun),
+      );
+      const facts = yield* runs;
+      return { runs: facts, views: yield* boardOf(facts, alive) };
+    });
+    const build = Effect.map(listing, (built) => built.views);
     /** When each Task was first seen Finished, for as long as this host runs. */
     const seen = new Map<string, number>();
     const storage = yield* Effect.context<MessageStorage.MessageStorage>();
@@ -891,18 +922,66 @@ const hostBoard = (dir: string) =>
         }),
       ];
     });
-    return { env, herdr, bun, runs, build, unattended, sweepers };
+    return { env, herdr, bun, listing, sweepers };
   });
 
+/** The board built once for this host's clients and side jobs, from when the host starts. */
+class SharedBoard extends Context.Service<
+  SharedBoard,
+  Omit<Effect.Success<ReturnType<typeof hostBoard>>, "listing"> & {
+    /** Whatever may have moved the board. */
+    readonly changed: Stream.Stream<void>;
+    readonly boards: Stream.Stream<{
+      readonly runs: ReadonlyArray<RunFacts>;
+      readonly views: ReadonlyArray<TaskView>;
+    }>;
+  }
+>()("collie/SharedBoard") {}
+
+/**
+ * Anything written under the state directory, by this host or anyone else, or a Run
+ * recorded from any door, is a reason to build again.
+ */
+const sharedBoardLayer = (dir: string) =>
+  Layer.effect(SharedBoard)(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const store = yield* Store;
+      const { listing, ...board } = yield* hostBoard(dir);
+      // Debounced apart from the tick, so a burst of writes cannot hold the tick back.
+      // Shared, so every subscriber rides one recursive watch: setting one up walks the tree.
+      const changed = yield* Stream.mergeAll(
+        [
+          fs.watch(dir, { recursive: true }).pipe(
+            Stream.catch(() => Stream.empty),
+            Stream.debounce("200 millis"),
+            Stream.map(() => undefined),
+          ),
+          Stream.tick(BOARD_TICK),
+          herdChanges(board.herdr, board.env).pipe(
+            Stream.provideContext(board.bun),
+            Stream.catch(() => Stream.empty),
+          ),
+          store.changes.pipe(Stream.map(() => undefined)),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Stream.share({ capacity: 1, strategy: "sliding" }));
+      return { ...board, changed, boards: yield* shareBoard({ build: listing, changed }) };
+    }),
+  );
+
 /** The merge watch, News, the cleanup sweep and the Home's tokens, for as long as this host runs. */
-const sideJobsLayer = (dir: string, panels: MrPanels) =>
+const sideJobsLayer = (panels: MrPanels) =>
   Layer.effectDiscard(
     Effect.gen(function* () {
-      const { env, herdr, bun, runs, build, unattended, sweepers } = yield* hostBoard(dir);
-      yield* Effect.forkScoped(
-        sideJobs({ env, herdr, runs, board: unattended, liveBoard: build, panels, sweepers }).pipe(
-          Effect.provideContext(bun),
+      const { env, herdr, bun, boards, sweepers } = yield* SharedBoard;
+      const board = Stream.runHead(boards).pipe(
+        Effect.flatMap((latest) =>
+          latest._tag === "Some" ? Effect.succeed(latest.value) : Effect.never,
         ),
+      );
+      yield* Effect.forkScoped(
+        sideJobs({ env, herdr, board, panels, sweepers }).pipe(Effect.provideContext(bun)),
       );
     }),
   );
@@ -942,7 +1021,8 @@ const frontDoorHandlers = (
       const registry = yield* Registry;
       const hosted = yield* Effect.context<HostServices>();
       const reliance = yield* Reliance;
-      const { env, herdr, bun, build, sweepers } = yield* hostBoard(dir);
+      const { env, herdr, bun, sweepers, changed, ...shared } = yield* SharedBoard;
+      const boards = shared.boards.pipe(Stream.map((built) => built.views));
       const usage = yield* Usage;
       const schedules = yield* Schedules;
       // Trimming rewrites the trail through one temporary file, so one read records at a time.
@@ -1128,24 +1208,6 @@ const frontDoorHandlers = (
         }).pipe(plainly);
       /** A Run picked up again: what current files allow is registered, then its stop cleared. */
       const takeUp = (runId: string) => registry.resume(runId);
-      // Debounced apart from the tick, so a burst of writes cannot hold the tick back.
-      // Shared, so every subscriber rides one recursive watch: setting one up walks the tree.
-      const changed = yield* Stream.mergeAll(
-        [
-          fs.watch(dir, { recursive: true }).pipe(
-            Stream.catch(() => Stream.empty),
-            Stream.debounce("200 millis"),
-            Stream.map(() => undefined),
-          ),
-          Stream.tick(BOARD_TICK),
-          herdChanges(herdr, env).pipe(
-            Stream.provideContext(bun),
-            Stream.catch(() => Stream.empty),
-          ),
-        ],
-        { concurrency: "unbounded" },
-      ).pipe(Stream.share({ capacity: 1, strategy: "sliding" }));
-      const boards = yield* shareBoard({ build, changed });
       return FrontDoorRpcs.of({
         declare: ({ frontDoor, session, from, stamp: stamped, ...voice }, { client }) => {
           // Which Machine a channel came from is said by this host's own link, never by the channel.
@@ -1542,9 +1604,7 @@ const frontDoorHandlers = (
             const asker = askerEnv(client);
             const decoded = Schema.decodeUnknownOption(Schema.Array(ActionSchema))(actions);
             if (Option.isNone(decoded))
-              return outcomeOf(
-                err("invalid_input", "An action is not one of the kinds Collie takes."),
-              );
+              return outcomeOf(err("invalid_input", `${refusedAction(actions)}.`));
             if (herd !== null && !isHerdName(herd))
               return outcomeOf(err("invalid_input", `"${herd}" is not a Herd.`));
             const key = herd ?? (yield* askersHerd(client));
@@ -1591,10 +1651,7 @@ const frontDoorHandlers = (
           return plainly(
             Schema.decodeUnknownEffect(Schema.Array(ActionSchema))(actions).pipe(
               Effect.mapError(
-                () =>
-                  new HostRefused({
-                    reason: `${REFUSED_INPUT}: an action is not one of the kinds Collie takes`,
-                  }),
+                () => new HostRefused({ reason: `${REFUSED_INPUT}: ${refusedAction(actions)}` }),
               ),
               Effect.flatMap((decoded) => {
                 const proposed = decoded.filter((action) => !ACTED_KINDS.has(action.kind));
@@ -2427,12 +2484,13 @@ const own = (dir: string) =>
         ),
     });
     return yield* Layer.launch(
-      RpcServer.layer(AllRpcs).pipe(
+      RpcServer.layer(AllRpcs.middleware(SlowRpcs)).pipe(
         Layer.provide(
           Layer.mergeAll(
             handlers(dir, installation, development, declared, peers),
             frontDoorHandlers(dir, installation, development, panels, declared, stamp),
-            sideJobsLayer(dir, panels),
+            sideJobsLayer(panels),
+            slowRpcsLayer,
             Layer.effectDiscard(
               Effect.gen(function* () {
                 const { reportsLayer } = yield* Effect.promise(() => import("./reports"));
@@ -2440,6 +2498,7 @@ const own = (dir: string) =>
               }),
             ),
           ).pipe(
+            Layer.provide(sharedBoardLayer(dir)),
             Layer.provide(
               Layer.mergeAll(
                 schedulesLayer({ dir, env: { ...env, stateDir: dir }, installation, seconds }).pipe(
