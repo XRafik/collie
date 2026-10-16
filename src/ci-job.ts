@@ -28,12 +28,20 @@ export const CI_BOUND = Duration.hours(2);
 
 /** What became of a check left to CI: its recorded pass, or why it is unproved. */
 export type CiJob =
-  | { readonly proved: Verification }
+  | {
+      readonly proved: Verification;
+      /** It failed, and passed when retried: a Flake. */
+      readonly retried?: true;
+    }
   | {
       readonly unproved: string;
       /** The job's state where the forge said one, else null. */
       readonly state: JobState | null;
       readonly url: string | null;
+      /** The command that prints its log, where there is such a job. */
+      readonly log: string | null;
+      /** It failed where the branch leaves its target too: not this Run's to fix. */
+      readonly before?: { readonly at: string; readonly url: string | null };
     };
 
 export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
@@ -47,6 +55,11 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
   readonly mr: string | null;
   /** Read again while the job is pending or running, up to `CI_BOUND`. */
   readonly wait: boolean;
+  /**
+   * A failed job is read where the branch leaves its target, and retried once and waited on
+   * where it did not fail there too (ADR-0034).
+   */
+  readonly settle?: boolean;
   readonly run: Runner<R>;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -54,11 +67,17 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
   const job = spec.ci ?? "";
   const at = yield* asked.run("git", ["rev-parse", "HEAD"], cwd);
   const head = at.code === 0 ? at.stdout.trim() : "";
-  const unproved = (why: string, state: JobState | null = null, url: string | null = null) =>
+  const unproved = (
+    why: string,
+    state: JobState | null = null,
+    url: string | null = null,
+    log: string | null = null,
+  ) =>
     ({
       unproved: `${spec.name} is left to CI and unproved: job ${job} on ${head.slice(0, 12)} ${why}`,
       state,
       url,
+      log,
     }) satisfies CiJob;
   const journal = () => readVerifications(asked.journal).pipe(Effect.orElseSucceed(() => []));
   const recorded = checkProof(
@@ -71,6 +90,7 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
       unproved: `${spec.name} is left to CI and unproved: job ${job} was never read: ${cwd}'s HEAD could not be read`,
       state: null,
       url: null,
+      log: null,
     } satisfies CiJob;
   const ref = mrRefOf(asked.mr);
   if (ref === null) return unproved("was never read: this Run has no merge request");
@@ -78,12 +98,34 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
   const marker = `${asked.runDir}/${VERIFYING_FILE}`;
   const began = yield* Clock.currentTimeMillis;
   let waiting = false;
+  let retried: string | null = null;
   return yield* Effect.gen(function* () {
     for (;;) {
       const read = yield* forge.job(ref, job, cwd, asked.run);
       if (!read.ok) return unproved(`could not be read: ${read.reason}`);
-      // The forge has not seen the push yet, or the merge request moved on without this checkout.
-      const state = read.head === head ? read.state : "pending";
+      // The forge has not seen the push or the retry yet, or the merge request moved on without this checkout.
+      const state =
+        read.head !== head || (read.id === retried && read.state === "failed")
+          ? "pending"
+          : read.state;
+      const log = read.id === null ? null : forge.jobLog(ref, read.id);
+      if (state === "failed" && asked.settle === true && retried === null) {
+        const base = yield* forge.baseJob(ref, job, cwd, asked.run);
+        if (base.ok && base.state === "failed") {
+          const before: CiJob = {
+            ...unproved("is failed", state, read.url, log),
+            before: { at: base.at, url: base.url },
+          };
+          return before;
+        }
+        if (read.id !== null && (yield* forge.retryJob(ref, read.id, cwd, asked.run)).ok) {
+          retried = read.id;
+          yield* appendLog(asked.runDir, `ci: retried job ${job} for ${spec.name} on ${head}`).pipe(
+            Effect.ignore,
+          );
+          continue;
+        }
+      }
       if (state === "passed") {
         const at = yield* nowIso();
         const tree = yield* fingerprint(cwd);
@@ -113,17 +155,18 @@ export const ciJob = Effect.fn("CiJob.read")(function* <R>(asked: {
           asked.runDir,
           `ci: ${spec.name} proved by job ${job} on ${head}${read.merge === null ? "" : ` (merged-results pipeline at ${read.merge})`}: ${read.url ?? "no URL"}`,
         ).pipe(Effect.ignore);
-        return { proved: proof };
+        return retried === null ? { proved: proof } : { proved: proof, retried: true as const };
       }
       if (state !== "pending" && state !== "running")
         return unproved(
           state === "missing" ? "is not in its pipeline" : `is ${state}`,
           state,
           read.url,
+          log,
         );
-      if (!asked.wait) return unproved(`is ${state}`, state, read.url);
+      if (!asked.wait && retried === null) return unproved(`is ${state}`, state, read.url, log);
       if ((yield* Clock.currentTimeMillis) - began >= Duration.toMillis(CI_BOUND))
-        return unproved(`is still ${state} after 2 hours`, state, read.url);
+        return unproved(`is still ${state} after 2 hours`, state, read.url, log);
       if (!waiting) {
         waiting = true;
         yield* appendLog(

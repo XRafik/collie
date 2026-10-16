@@ -9,7 +9,7 @@ import { readVerifications, verifyingIn, type CheckCommand } from "../src/verify
 import type { VerifySpec } from "../src/verify-spec";
 import { exec } from "./support/command";
 import { fastForward, runEffect } from "./support/effect";
-import { FORGE_HOST, PROJECT, fakeForge, type FakeJob } from "./support/forge";
+import { FORGE_HOST, PROJECT, fakeForge, type FakeJob, type FakeMr } from "./support/forge";
 
 const NUXI: VerifySpec = {
   name: "nuxi",
@@ -25,6 +25,7 @@ const waiting = Effect.fn("ciJob.waiting")(function* (
   state: FakeJob["state"],
   mr: string | null = MR,
   head?: string,
+  over: Partial<FakeMr> = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "collie-ci-job-" });
@@ -55,7 +56,9 @@ const waiting = Effect.fn("ciJob.waiting")(function* (
         iid: "31",
         state: "open",
         head: head ?? at,
+        targetBranch: "main",
         jobs: [{ name: "nuxi-typecheck", state }],
+        ...over,
       },
     ],
   });
@@ -115,6 +118,7 @@ test("a job not finished after 2 hours leaves its check unproved, saying so", ()
           unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} is still pending after 2 hours`,
           state: "pending",
           url: `https://${PROJECT.gitlab}/-/jobs/1`,
+          log: LOG,
         });
         // Every 30 s, so about 240 reads.
         expect(forge.calls.filter((call) => call.includes("/jobs")).length).toBeGreaterThan(200);
@@ -145,7 +149,73 @@ test("a Run with no merge request has its check left to CI unproved, and the for
         unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} was never read: this Run has no merge request`,
         state: null,
         url: null,
+        log: null,
       });
       expect(forge.calls).toEqual([]);
+    }),
+  ));
+
+const BASE = "b".repeat(40);
+const LOG = `glab ci trace 1 --repo ${PROJECT.gitlab}`;
+const retries = (calls: ReadonlyArray<string>) => calls.filter((call) => call.includes("/retry"));
+
+test("a failed job that also fails where the branch leaves its target is reported, and not retried", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { asked, at, forge } = yield* waiting("failed", MR, undefined, {
+        base: { at: BASE, jobs: [{ name: "nuxi-typecheck", state: "failed" }] },
+      });
+      expect(yield* ciJob({ ...asked, settle: true })).toEqual({
+        unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} is failed`,
+        state: "failed",
+        url: `https://${PROJECT.gitlab}/-/jobs/1`,
+        log: LOG,
+        before: { at: BASE, url: `https://${PROJECT.gitlab}/-/jobs/1001` },
+      });
+      expect(retries(forge.calls)).toEqual([]);
+    }),
+  ));
+
+test("a failed job green where the branch leaves its target is retried once, and its pass is a Flake recorded as the proof", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { asked, forge } = yield* waiting("failed", MR, undefined, {
+        jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "passed" }],
+        base: { at: BASE, jobs: [{ name: "nuxi-typecheck", state: "passed" }] },
+      });
+      expect(yield* ciJob({ ...asked, settle: true })).toMatchObject({
+        proved: { pass: "ci", name: "nuxi" },
+        retried: true,
+      });
+      expect(retries(forge.calls)).toHaveLength(1);
+      expect(yield* readVerifications(asked.journal)).toHaveLength(1);
+    }),
+  ));
+
+test("a failed job that fails its retry, or with no base to compare, is the Run's own, with the command for its log", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const over of [
+        { base: { at: BASE, jobs: [{ name: "nuxi-typecheck", state: "passed" as const }] } },
+        {},
+      ]) {
+        const { asked, at, forge } = yield* waiting("failed", MR, undefined, {
+          jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "failed" }],
+          ...over,
+        });
+        expect(yield* ciJob({ ...asked, settle: true })).toEqual({
+          unproved: `nuxi is left to CI and unproved: job nuxi-typecheck on ${at.slice(0, 12)} is failed`,
+          state: "failed",
+          // The retry's own job.
+          url: `https://${PROJECT.gitlab}/-/jobs/101`,
+          log: `glab ci trace 101 --repo ${PROJECT.gitlab}`,
+        });
+        expect(retries(forge.calls)).toHaveLength(1);
+      }
+      // Without `settle`, a failure is only read.
+      const { asked, forge } = yield* waiting("failed");
+      expect(yield* ciJob(asked)).toMatchObject({ state: "failed", log: LOG });
+      expect(forge.calls.some((call) => call.includes("pipelines?sha="))).toBe(false);
+      expect(retries(forge.calls)).toEqual([]);
     }),
   ));

@@ -19,6 +19,7 @@ import type {
   ForBranch,
   FromBranch,
   FromBranchList,
+  BaseJobRead,
   JobRead,
   JobState,
   Readiness,
@@ -341,9 +342,21 @@ const HeadJson = Schema.fromJsonString(Schema.Struct({ headRefOid: Schema.String
 const CheckRunsJson = Schema.fromJsonString(
   Schema.Struct({
     check_runs: Schema.Array(
-      Schema.Struct({ status: Schema.String, conclusion: optionalText, html_url: optionalText }),
+      Schema.Struct({
+        id: Schema.Number,
+        head_sha: Schema.String,
+        status: Schema.String,
+        conclusion: optionalText,
+        html_url: optionalText,
+      }),
     ),
   }),
+);
+const BaseJson = Schema.fromJsonString(
+  Schema.Struct({ baseRefName: Schema.String, headRefOid: Schema.String }),
+);
+const MergeBaseJson = Schema.fromJsonString(
+  Schema.Struct({ merge_base_commit: Schema.NullOr(Schema.Struct({ sha: Schema.String })) }),
 );
 
 const CONCLUSIONS = new Map<string, JobState>([
@@ -376,26 +389,97 @@ function job<R>(
     if (view.code !== 0 || Option.isNone(pull))
       return { ok: false, reason: `gh could not read ${where}` };
     const head = pull.value.headRefOid;
-    const listed = yield* run(
-      "gh",
-      ["api", `repos/${repo}/commits/${head}/check-runs?check_name=${encodeURIComponent(name)}`],
-      cwd,
-    );
-    const runs = Schema.decodeUnknownOption(CheckRunsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(runs))
-      return { ok: false, reason: `gh could not list the check runs on ${head}` };
-    const found = runs.value.check_runs[0];
-    const state: JobState =
-      found === undefined
-        ? "missing"
-        : found.status !== "completed"
-          ? found.status === "in_progress"
-            ? "running"
-            : "pending"
-          : (CONCLUSIONS.get(found.conclusion ?? "") ?? "failed");
-    return { ok: true, head, state, url: found?.html_url ?? null, merge: null };
+    const found = yield* checkRun(repo, head, name, cwd, run);
+    if (found === null) return { ok: false, reason: `gh could not list the check runs on ${head}` };
+    return {
+      ok: true,
+      head,
+      state: found === undefined ? "missing" : stateOf(found),
+      url: found?.html_url ?? null,
+      id: found === undefined ? null : String(found.id),
+      merge: null,
+    };
   });
 }
+
+/** The newest check run named `name` on `ref`, undefined for none, null where gh could not say. */
+const checkRun = <R>(repo: string, ref: string, name: string, cwd: string, run: Runner<R>) =>
+  Effect.map(
+    run(
+      "gh",
+      ["api", `repos/${repo}/commits/${ref}/check-runs?check_name=${encodeURIComponent(name)}`],
+      cwd,
+    ),
+    (listed) => {
+      const runs = Schema.decodeUnknownOption(CheckRunsJson)(listed.stdout);
+      return listed.code !== 0 || Option.isNone(runs) ? null : runs.value.check_runs[0];
+    },
+  );
+
+const stateOf = (found: {
+  readonly status: string;
+  readonly conclusion?: string | null;
+}): JobState =>
+  found.status !== "completed"
+    ? found.status === "in_progress"
+      ? "running"
+      : "pending"
+    : (CONCLUSIONS.get(found.conclusion ?? "") ?? "failed");
+
+/** The check run at the pull request's merge-base, else on its base branch's tip. */
+function baseJob<R>(
+  ref: MrRef,
+  name: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<BaseJobRead, never, R> {
+  return Effect.gen(function* () {
+    const where = mrWords(ref).label;
+    const repo = mrPath({ project: ref.project, iid: "" });
+    const view = yield* run(
+      "gh",
+      ["pr", "view", ref.iid, "--repo", repo, "--json", "baseRefName,headRefOid"],
+      cwd,
+    );
+    const pull = Schema.decodeUnknownOption(BaseJson)(view.stdout);
+    if (view.code !== 0 || Option.isNone(pull))
+      return { ok: false, reason: `gh could not read ${where}` };
+    const { baseRefName: target, headRefOid: head } = pull.value;
+    const compared = yield* run("gh", ["api", `repos/${repo}/compare/${target}...${head}`], cwd);
+    const base = Option.getOrNull(Schema.decodeUnknownOption(MergeBaseJson)(compared.stdout))
+      ?.merge_base_commit?.sha;
+    if (compared.code !== 0 || base === undefined)
+      return { ok: false, reason: `GitHub would not say where ${where} leaves ${target}` };
+    const found =
+      (yield* checkRun(repo, base, name, cwd, run)) ??
+      (yield* checkRun(repo, target, name, cwd, run));
+    if (found === null || found === undefined)
+      return {
+        ok: false,
+        reason: `no check run ${name} at ${base.slice(0, 12)} or on ${target}`,
+      };
+    return { ok: true, at: found.head_sha, state: stateOf(found), url: found.html_url ?? null };
+  });
+}
+
+function retryJob<R>(
+  ref: MrRef,
+  id: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<Readiness, never, R> {
+  const repo = mrPath({ project: ref.project, iid: "" });
+  return Effect.map(
+    run("gh", ["api", `repos/${repo}/actions/jobs/${id}/rerun`, "-X", "POST"], cwd),
+    (ran) =>
+      ran.code === 0
+        ? { ok: true, reason: "" }
+        : { ok: false, reason: `gh could not rerun job ${id} of ${mrWords(ref).label}` },
+  );
+}
+
+const jobLog = (ref: MrRef, id: string) =>
+  `gh run view --job ${id} --log --repo ${mrPath({ project: ref.project, iid: "" })}`;
 
 /** Where GitHub looks for a pull request template, in the order it looks. */
 const TEMPLATES = [
@@ -615,6 +699,9 @@ export const github: Forge = {
   forBranch,
   fromBranch,
   job,
+  baseJob,
+  retryJob,
+  jobLog,
   template,
   commands: ({ project, branch, assignee, existing }) => {
     const repo = shellQuote(mrPath({ project, iid: "" }));

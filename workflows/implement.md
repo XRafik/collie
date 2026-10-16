@@ -226,6 +226,32 @@ where you gave one, else the script it runs (`typecheck` for `bun run typecheck`
 the tool and its subcommand (`bun test`), else the tool (`tsc`). A check with no record
 on this tree is not a passing check, whatever the note says.
 
+## ci-fix
+
+CI fix {{iteration}} of at most {{max_iterations}}. The merge request is open, and a check
+this Run leaves to CI failed in its pipeline on the merge request's head:
+
+{{findings}}
+
+Each one names the job, its URL, and the command that prints its log. Collie compared each
+with the same job where this branch leaves its target branch, and retried it once: it
+passed there and failed again here, so it is this branch's to fix. Read the log, fix the
+cause test first with {{skill:tdd}}, and commit the fix to this branch. Where you are sure
+the failure is not this branch's, change nothing and record it under `disputed` with your
+reason; the merge request names it for the human.
+
+Run the typecheck and the test files you touched, each through
+`collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`, and never the whole suite.
+Never run the check left to CI yourself: its job is what proves it.
+
+Push without `ci.skip` — `git push -u origin HEAD` — so the pipeline runs on your commit:
+Collie waits on the job again on the new head commit. A round that pushes no new commit
+parks the Run. A push that fails is reported as `"pushed": false`, not fatal.
+
+Then write your Output. `file` and `title` in `fixed` and `disputed` are exactly as the
+finding above gives them, so Collie can match them; `checks` names every test and lint
+command you ran, by the name `collie verify` recorded it under.
+
 ## criteria
 
 Before anyone reviews {{ticket.file}}, each of its acceptance criteria needs an answer.

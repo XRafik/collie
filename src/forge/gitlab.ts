@@ -11,7 +11,7 @@ import {
   type MrUnavailable,
 } from "../board-model";
 import { epochMs } from "../time";
-import { whatItSaid, type Runner } from "../mr";
+import { whatItSaid, type Ran, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type {
   DeployTier,
@@ -19,6 +19,7 @@ import type {
   ForBranch,
   FromBranch,
   FromBranchList,
+  BaseJobRead,
   JobRead,
   JobState,
   Readiness,
@@ -448,8 +449,22 @@ const CommitJson = Schema.fromJsonString(
 );
 const JobsJson = Schema.fromJsonString(
   Schema.Array(
-    Schema.Struct({ name: Schema.String, status: Schema.String, web_url: optionalText }),
+    Schema.Struct({
+      id: Schema.Number,
+      name: Schema.String,
+      status: Schema.String,
+      web_url: optionalText,
+    }),
   ),
+);
+const PipelinesJson = Schema.fromJsonString(
+  Schema.Array(Schema.Struct({ id: Schema.Number, sha: Schema.String })),
+);
+const MrBaseJson = Schema.fromJsonString(
+  Schema.Struct({
+    target_branch: optionalText,
+    diff_refs: Schema.optionalKey(Schema.NullOr(Schema.Struct({ base_sha: optionalText }))),
+  }),
 );
 
 const JOB_STATES = new Map<string, JobState>([
@@ -474,23 +489,10 @@ function job<R>(
   run: Runner<R>,
 ): Effect.Effect<JobRead, never, R> {
   return Effect.gen(function* () {
-    const ready = yield* gitlabForProject(ref.project, cwd, run);
-    if (!ready.ok) return { ok: false, reason: ready.reason };
     const where = whereOf(ref);
-    const host = hostOf(ref.project);
-    if (host === null || ref.project === null)
-      return { ok: false, reason: `${where} names no GitLab project` };
-    const api = (route: string) =>
-      run(
-        "glab",
-        [
-          "api",
-          "--hostname",
-          host,
-          `projects/${encodeURIComponent(ref.project!.slice(host.length + 1))}/${route}`,
-        ],
-        cwd,
-      );
+    const reached = yield* projectApi(ref, cwd, run);
+    if (!reached.ok) return reached;
+    const { api } = reached;
     const view = yield* run(
       "glab",
       ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
@@ -501,7 +503,7 @@ function job<R>(
       return { ok: false, reason: `glab could not read ${where}` };
     const head = mr.value.sha ?? "";
     const pipeline = mr.value.head_pipeline ?? null;
-    const waiting = { ok: true, head, state: "pending", url: null, merge: null } as const;
+    const waiting = { ok: true, head, state: "pending", url: null, id: null, merge: null } as const;
     if (pipeline === null) return waiting;
     let merge: string | null = null;
     if (pipeline.sha && pipeline.sha !== head) {
@@ -517,23 +519,106 @@ function job<R>(
       if (!commit.value.parent_ids.includes(head)) return waiting;
       merge = pipeline.sha;
     }
-    const listed = yield* api(`pipelines/${pipeline.id}/jobs?per_page=100`);
-    const jobs = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(jobs))
+    const found = yield* jobIn(api, pipeline.id, name);
+    if (found === null)
       return {
         ok: false,
         reason: `glab could not list the jobs of ${where}'s pipeline ${pipeline.id}`,
       };
-    const found = jobs.value.find((one) => one.name === name);
-    return {
-      ok: true,
-      head,
-      state: found === undefined ? "missing" : (JOB_STATES.get(found.status) ?? "pending"),
-      url: found?.web_url ?? null,
-      merge,
-    };
+    return { ok: true, head, ...found, merge };
   });
 }
+
+/** `glab api` on the merge request's project, or why there is none. */
+const projectApi = <R>(ref: MrRef, cwd: string, run: Runner<R>) =>
+  Effect.gen(function* () {
+    const ready = yield* gitlabForProject(ref.project, cwd, run);
+    if (!ready.ok) return { ok: false, reason: ready.reason } as const;
+    const host = hostOf(ref.project);
+    if (host === null || ref.project === null)
+      return { ok: false, reason: `${whereOf(ref)} names no GitLab project` } as const;
+    const project = encodeURIComponent(ref.project.slice(host.length + 1));
+    return {
+      ok: true,
+      api: (route: string, method: "GET" | "POST" = "GET") =>
+        run("glab", ["api", "--hostname", host, "-X", method, `projects/${project}/${route}`], cwd),
+    } as const;
+  });
+
+/** The job named `name` in pipeline `id`, or null where its jobs could not be listed. */
+const jobIn = <R>(api: (route: string) => Effect.Effect<Ran, never, R>, id: number, name: string) =>
+  Effect.gen(function* () {
+    const listed = yield* api(`pipelines/${id}/jobs?per_page=100`);
+    const jobs = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(jobs)) return null;
+    const found = jobs.value.find((one) => one.name === name);
+    return {
+      state: found === undefined ? "missing" : (JOB_STATES.get(found.status) ?? "pending"),
+      url: found?.web_url ?? null,
+      id: found === undefined ? null : String(found.id),
+    } as const;
+  });
+
+/** The job at the merge request's merge-base pipeline, else on its target branch's latest. */
+function baseJob<R>(
+  ref: MrRef,
+  name: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<BaseJobRead, never, R> {
+  return Effect.gen(function* () {
+    const where = whereOf(ref);
+    const reached = yield* projectApi(ref, cwd, run);
+    if (!reached.ok) return reached;
+    const { api } = reached;
+    const view = yield* run(
+      "glab",
+      ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
+      cwd,
+    );
+    const mr = Schema.decodeUnknownOption(MrBaseJson)(view.stdout);
+    if (view.code !== 0 || Option.isNone(mr))
+      return { ok: false, reason: `glab could not read ${where}` };
+    const base = mr.value.diff_refs?.base_sha;
+    const target = mr.value.target_branch;
+    if (!base || !target)
+      return { ok: false, reason: `GitLab would not say where ${where} leaves its target branch` };
+    const latest = (query: string) =>
+      Effect.map(api(`pipelines?${query}&per_page=1`), (ran) =>
+        ran.code === 0
+          ? Option.getOrElse(Schema.decodeUnknownOption(PipelinesJson)(ran.stdout), () => [])[0]
+          : undefined,
+      );
+    const pipeline =
+      (yield* latest(`sha=${base}`)) ?? (yield* latest(`ref=${encodeURIComponent(target)}`));
+    if (pipeline === undefined)
+      return { ok: false, reason: `no pipeline at ${base.slice(0, 12)} or on ${target}` };
+    const found = yield* jobIn(api, pipeline.id, name);
+    if (found === null)
+      return { ok: false, reason: `glab could not list the jobs of pipeline ${pipeline.id}` };
+    return { ok: true, at: pipeline.sha, state: found.state, url: found.url };
+  });
+}
+
+function retryJob<R>(
+  ref: MrRef,
+  id: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<Readiness, never, R> {
+  return Effect.gen(function* () {
+    const reached = yield* projectApi(ref, cwd, run);
+    if (!reached.ok) return reached;
+    const { api } = reached;
+    const ran = yield* api(`jobs/${id}/retry`, "POST");
+    return ran.code === 0
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: `glab could not retry job ${id} of ${whereOf(ref)}` };
+  });
+}
+
+const jobLog = (ref: MrRef, id: string) =>
+  ["glab", "ci", "trace", id, ...repoArgs(ref.project)].join(" ");
 
 function template(cwd: string) {
   return Effect.gen(function* () {
@@ -684,6 +769,9 @@ export const gitlab: Forge = {
   forBranch,
   fromBranch,
   job,
+  baseJob,
+  retryJob,
+  jobLog,
   template,
   // `glab mr create` and `glab mr note` take text only, so a file goes through the API,
   // which reads `@<file>` itself: no command substitution (CrowdStrike flags it).

@@ -145,6 +145,26 @@ naming the check, the job and the commit, and a resume waits again; a job alread
 is not recorded twice. A merge of the merge request while the run waits stops it, through
 the merge watch, and records nothing for the job.
 
+A failed job is settled before anyone fixes it. The run reads the same job where the branch
+leaves its target branch, or on the target branch's latest pipeline where that commit has
+none: failed there too, it failed before the run's changes, and the merge request and the
+run's log say so, with the commit, and the job gets no fix (ADR-0034). Anything else there —
+no merge-base, no pipeline, no such job, any other result — makes the failure the run's own.
+That job is then retried once through the forge; a pass on the retry is a Flake, named on
+the merge request and the log, and recorded as the check's proof. A job that still fails
+starts a **CI fix round**, `ci-fix-<n>`, on the builder: its prompt names every failed
+check with its job, the job's URL and the forge adapter's command for its log, and has it
+push without `ci.skip`. The run then waits on the job again on the new head commit, and the
+merge request is updated by that push, never opened again; a note on it says the fix
+landed after the last review and was not re-reviewed. A round that pushes no new commit
+parks the run saying so. A round that changes nothing and disputes every failure ends the
+rounds by the gate's own rule: the dispute is named on the merge request and the log, the
+check stays unproved, and the run completes. The rounds stop at the gate's limit of 4;
+after the last, a job still failing parks the run unproved, naming the check, the job and
+the commit. The CI fix loop is kept apart from the gate's: what fails, how it is read
+again and the steps a replay depends on all differ, and only the round limit and the
+dispute rule are shared.
+
 Module: [`workflows/implement.workflow.ts`](../workflows/implement.workflow.ts), with its
 content in [`workflows/implement.md`](../workflows/implement.md).
 

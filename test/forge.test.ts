@@ -805,16 +805,78 @@ for (const name of ["gitlab", "github"] as const) {
                 { name: "nuxi-typecheck", state },
               ],
             }),
-          ).toEqual({ ok: true, head: HEAD, state, url, merge: null });
+          ).toEqual({ ok: true, head: HEAD, state, url, id: "2", merge: null });
         expect(yield* read({ jobs: [{ name: "lint", state: "passed" }] })).toEqual({
           ok: true,
           head: HEAD,
           state: "missing",
           url: null,
+          id: null,
           merge: null,
         });
         for (const rest of [{ installed: false }, { loggedIn: [] }])
           expect((yield* read({ jobs: [] }, rest)).ok).toBe(false);
+      }),
+    ));
+
+  test(`the ${name} forge reads a job where the branch leaves its target, else on the target's latest, and fails safe`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const BASE = "b".repeat(40);
+        const TIP = "c".repeat(40);
+        const failed = [{ name: "nuxi-typecheck", state: "failed" as const }];
+        const passed = [{ name: "nuxi-typecheck", state: "passed" as const }];
+        const read = (over: Partial<FakeMr>) =>
+          forge.baseJob(
+            ref(name),
+            "nuxi-typecheck",
+            "/w",
+            fakeForge(name, model(name, { mrs: [mr(name, { targetBranch: "main", ...over })] }))
+              .run,
+          );
+        expect(
+          yield* read({ base: { at: BASE, jobs: failed }, target: { at: TIP, jobs: passed } }),
+        ).toMatchObject({ ok: true, at: BASE, state: "failed" });
+        expect(
+          yield* read({ base: { at: BASE }, target: { at: TIP, jobs: failed } }),
+        ).toMatchObject({ ok: true, at: TIP, state: "failed" });
+        expect((yield* read({ base: { at: BASE } })).ok).toBe(false);
+        expect((yield* read({ target: { at: TIP, jobs: failed } })).ok).toBe(false);
+        // GitLab's pipeline there lacks it; GitHub has no run of it there or on the target.
+        expect(
+          yield* read({ base: { at: BASE, jobs: [{ name: "lint", state: "failed" }] } }),
+        ).toEqual(
+          name === "gitlab"
+            ? { ok: true, at: BASE, state: "missing", url: null }
+            : expect.objectContaining({ ok: false }),
+        );
+      }),
+    ));
+
+  test(`the ${name} forge retries a job once asked, and says how to read its log`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fake = fakeForge(
+          name,
+          model(name, {
+            mrs: [
+              mr(name, { jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "passed" }] }),
+            ],
+          }),
+        );
+        const job = () => forge.job(ref(name), "nuxi-typecheck", "/w", fake.run);
+        expect(yield* job()).toMatchObject({ state: "failed", id: "1" });
+        expect(yield* forge.retryJob(ref(name), "1", "/w", fake.run)).toEqual({
+          ok: true,
+          reason: "",
+        });
+        expect(yield* job()).toMatchObject({ state: "passed", id: "101" });
+        expect((yield* forge.retryJob(ref(name), "9", "/w", fake.run)).ok).toBe(false);
+        expect(forge.jobLog(ref(name), "1")).toBe(
+          name === "gitlab"
+            ? "glab ci trace 1 --repo gitlab.example.com/group/app"
+            : "gh run view --job 1 --log --repo owner/repo",
+        );
       }),
     ));
 
@@ -901,6 +963,7 @@ test("a GitLab merged-results pipeline counts for the head it was built from, an
         head: HEAD,
         state: "passed",
         url: "https://gitlab.example.com/group/app/-/jobs/1",
+        id: "1",
         merge: MERGE,
       });
       // A pipeline of an older head: this head's has not started.

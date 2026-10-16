@@ -110,7 +110,8 @@ import { redact } from "./redact";
 import { reportOf, type Recorded } from "./report";
 import { outcomeRecordsOf, type OutcomeRecords } from "./outcomes";
 import type { Metrics } from "./board-model";
-import { parseMrTarget, parseMrUrl } from "./board-model";
+import { mrRefOf, parseMrTarget, parseMrUrl } from "./board-model";
+import { forgeOf } from "./forge/forge";
 import { integrateDefault, integratedLine } from "./integrate";
 import { strategyNamed } from "./strategies";
 import { Notifier, SOUND, notificationTitle, openedSubject, wanted, type Sound } from "./notify";
@@ -371,11 +372,19 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | "missing";
   /** What became of a check left to CI: its recorded pass, or why it is unproved. */
   export type CiJob =
-    | { readonly proved: Verification }
+    | {
+        readonly proved: Verification;
+        /** It failed, and passed when retried: a Flake. */
+        readonly retried?: true;
+      }
     | {
         readonly unproved: string;
         readonly state: JobState | null;
         readonly url: string | null;
+        /** The command that prints its log, where there is such a job. */
+        readonly log: string | null;
+        /** It failed where the branch leaves its target too: not this Run's to fix. */
+        readonly before?: { readonly at: string; readonly url: string | null };
       };
 
   /** One of this Run's checks, named by a human, chat or the Run's agent. */
@@ -495,13 +504,22 @@ export const SDK_DECLARATIONS = `declare module "collie" {
      * which must be cwd's HEAD. A pass is recorded once per tree as the check's \`ci\`
      * Verification. With wait, a pending or running job is read again every 30 s for up to 2
      * hours. Anything else is why it is unproved, naming the check, the job and the commit.
+     * With settle, a failed job is read where the branch leaves its target, and is retried
+     * once and waited on where it did not fail there too.
      */
     readonly ciJob: (options: {
       readonly runId: string;
       readonly cwd: string;
       readonly name: string;
       readonly wait?: boolean;
+      readonly settle?: boolean;
     }) => Effect.Effect<CiJob>;
+    /** Puts a note on the merge request this Run recorded, sent by Collie. */
+    readonly note: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly body: string;
+    }) => Effect.Effect<Posted>;
     /**
      * Blocks until this Run holds the shared claim on the repository it works in, and
      * answers null where that repository has none. Waiting here costs wall clock and no
@@ -2968,6 +2986,7 @@ export const hostLayer = (options: {
                   unproved: `"${asked.name}" is not one of this Run's checks left to CI`,
                   state: null,
                   url: null,
+                  log: null,
                 };
               const own = yield* treeOf(yield* store.run(asked.runId), asked.runId, dir);
               // A stop ends the wait: the workflow suspends on it, as it does on an agent's.
@@ -2977,6 +2996,7 @@ export const hostLayer = (options: {
                   unproved: `${spec.name} is left to CI and unproved: the Run was stopped while job ${spec.ci} was read`,
                   state: null,
                   url: null,
+                  log: null,
                 }),
               );
               return yield* Effect.raceFirst(
@@ -2989,10 +3009,19 @@ export const hostLayer = (options: {
                   command: yield* commandOf({ ...own, cwd: asked.cwd }, spec),
                   mr: yield* mergeRequestOf(fs, dir, asked.runId),
                   wait: asked.wait ?? false,
+                  settle: asked.settle ?? false,
                   run: runShell,
                 }),
                 stopped,
               );
+            }),
+          ).pipe(Effect.orDie),
+        note: (asked) =>
+          under(
+            Effect.gen(function* () {
+              const ref = mrRefOf(yield* mergeRequestOf(fs, dir, asked.runId));
+              if (ref === null) return { ok: false, message: "this Run has no merge request" };
+              return yield* forgeOf(ref).post(ref, asked.body, false, asked.cwd, runShell);
             }),
           ).pipe(Effect.orDie),
         claim: <E, R>(asked: {

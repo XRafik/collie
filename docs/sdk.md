@@ -1167,9 +1167,21 @@ on, and a stop ends the wait. `renderRecordedChecks(evidence, leftToCi)` tells a
 each such check as `left to CI: proved by <job> on the merge request's head`, with the
 job's state where you read one.
 
+An unproved answer also carries `log`: the command line that prints the job's log, written
+by the forge adapter (`glab ci trace <id> --repo <project>` on GitLab, `gh run view --job
+<id> --log --repo <owner/repo>` on GitHub), so a prompt hands an agent the adapter's
+command rather than naming a CLI of its own (ADR-0050). With `settle: true` a failed job is
+settled first: the adapter reads the same job at the merge-base of the merge request's head
+and its target branch, or on the target branch's latest pipeline where that commit has
+none, and one that failed there too answers with `before: { at, url }` and is not retried.
+Otherwise the adapter retries it once — GitLab's job retry, GitHub's rerun of that job —
+and waits on it; a pass then answers `{ proved, retried: true }`, a Flake. Name either on
+the merge request with `host.note({ runId, cwd, body })`, which puts a note on the merge
+request the Run recorded.
+
 ```ts
 for (const spec of (yield * host.approved(runId)).filter((one) => one.ci !== undefined)) {
-  const read = yield * host.ciJob({ runId, cwd, name: spec.name, wait: true });
+  const read = yield * host.ciJob({ runId, cwd, name: spec.name, wait: true, settle: true });
   if ("unproved" in read) yield * host.parked(runId, read.unproved);
 }
 ```

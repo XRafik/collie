@@ -678,7 +678,18 @@ export interface HostApi {
     readonly cwd: string;
     readonly name: string;
     readonly wait?: boolean;
+    /**
+     * A failed job is read where the branch leaves its target, and is retried once and
+     * waited on where it did not fail there too (ADR-0034): `before` and `retried` say which.
+     */
+    readonly settle?: boolean;
   }) => Effect.Effect<CiJob>;
+  /** Puts a note on the merge request this Run recorded, sent by Collie rather than an agent. */
+  readonly note: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly body: string;
+  }) => Effect.Effect<Posted>;
   /**
    * Blocks until this Run holds the shared claim on the repository it works in, and
    * answers null where that repository has none. Waiting here costs wall clock and no
