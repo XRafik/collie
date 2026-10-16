@@ -8,9 +8,9 @@
 // 5. close its pane;
 // 6. log the end on the Run's log.
 //
-// In the caller's mode, steps 4 and 5 are the caller's: it closes the panes itself once
-// every agent has answered. Ticket 07's unit stop goes after step 5, or after the caller's
-// own close; ticket 08's Closure is written with step 6.
+// In the caller's mode, steps 4 to 6 are the caller's: it closes the panes itself once
+// every agent has answered, then logs each end with `endedLine`. Ticket 07's unit stop goes
+// after step 5, or after the caller's own close; ticket 08's Closure is written with step 6.
 
 import { Data, Effect, FileSystem } from "effect";
 import { STOP_WAIT_MS, notStopped, stopAgent, type CompactionDeps } from "./compaction";
@@ -34,7 +34,11 @@ export type Ended =
   | { readonly _tag: "Closed"; readonly ended: boolean }
   /** `locked` is why no stop could be made, where none could. */
   | { readonly _tag: "NotQuiet"; readonly reason: string; readonly locked?: string }
-  | { readonly _tag: "Unprovable"; readonly reason: string };
+  | { readonly _tag: "Unprovable"; readonly reason: string }
+  /** Only where the caller closes: another process has the agent's name, so its panes stay. */
+  | { readonly _tag: "Replaced"; readonly reason: string };
+
+export const endedLine = (agent: string, why: string) => `${agent} ended: ${why}`;
 
 export const UNPROVABLE = "cannot be proven to be this Run's, so it was left running";
 
@@ -66,7 +70,12 @@ export const endAgent = Effect.fn("AgentEnd.end")(function* (
   if (one !== undefined && (launched.terminalId === undefined || one.terminalId === null))
     return { _tag: "Unprovable", reason: `${launched.agent} ${UNPROVABLE}` } satisfies Ended;
   if (one !== undefined && one.terminalId !== launched.terminalId)
-    return { _tag: "Closed", ended: false } satisfies Ended;
+    return closes === "caller"
+      ? ({
+          _tag: "Replaced",
+          reason: `${launched.agent} was started again since, and is not this Run's to end`,
+        } satisfies Ended)
+      : ({ _tag: "Closed", ended: false } satisfies Ended);
 
   const reached = yield* stopAgent(deps, launched.agent, deps.stopMs ?? STOP_WAIT_MS).pipe(
     Effect.result,
@@ -93,7 +102,8 @@ export const endAgent = Effect.fn("AgentEnd.end")(function* (
       .pipe(Effect.mapError((cause) => new PaneOpen({ paneId: one.paneId, cause })));
   }
   const ended = one !== undefined || reached.success !== null;
-  if (ended) yield* deps.log(`${launched.agent} ended: ${why}`).pipe(Effect.ignore);
+  if (ended && closes === "close")
+    yield* deps.log(endedLine(launched.agent, why)).pipe(Effect.ignore);
   return { _tag: "Closed", ended } satisfies Ended;
 });
 

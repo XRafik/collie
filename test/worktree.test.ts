@@ -2963,8 +2963,6 @@ test("a Renovate clone no Run uses and no checkout is left of goes; one a Run us
     }),
   ));
 
-// A finished Run's agent left in a dead tab ends through the one end before its tab closes.
-
 const asRecord = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 /** The Run's agent idle in pane 1-5, launched and served where its work runs; `state` is what a stop reaches. */
@@ -3061,6 +3059,22 @@ test("the worktree sweep stops a finished Run's Quiet agent before it closes the
         `${rig.stateDir}/agents/run-wt/agents.log`,
       );
       expect(log).toContain(`impl-1-5 ended: its checkout ${worktreePath} was removed`);
+    }),
+  ));
+
+test("the worktree sweep keeps the tab of an agent started again under a finished Run's agent's name", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const worktreePath = yield* collieWorktree("wt", { panes: ["1-5"] });
+      const { ports } = yield* servedLeftover(worktreePath, "quiet");
+      yield* rig.reincarnate("impl-1-5");
+      yield* settledGit();
+      yield* mergedMr();
+
+      expect(yield* pruneWith(ports)).toEqual([
+        "♻ removed wt · merged in !14 · 1 tab(s) left open",
+      ]);
+      expect(yield* rig.cmds()).not.toContain("tab close");
     }),
   ));
 

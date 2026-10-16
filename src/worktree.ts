@@ -41,7 +41,7 @@ import type { RunFacts } from "./runs";
 import { slugify } from "./template";
 import { unlistedServers, type CompactionPorts } from "./compaction";
 import { COMPACTION_PORTS } from "./compactors";
-import { endAgent, runLog } from "./agent-end";
+import { endAgent, endedLine, runLog } from "./agent-end";
 import { readLaunches } from "./launches";
 
 /**
@@ -1236,11 +1236,12 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
   // in the checkout whatever its tab was opened on.
   const isInside = (pane: PaneInfo) =>
     inside(opts.at, pane.cwd) || inside(opts.at, pane.foregroundCwd);
-  /** Whether the agent left in this pane, if any, has ended. */
+  const why = `its checkout ${opts.at} was removed`;
+  /** Whether the agent left in this pane, if any, has ended, with its end's log once the tab closes. */
   const ends = (pane: PaneInfo) =>
     Effect.gen(function* () {
       const entry = opts.registered.find((one) => one.paneId === pane.paneId);
-      if (pane.agent === null || entry === undefined) return true;
+      if (pane.agent === null || entry === undefined) return Effect.void;
       const launched = (yield* readLaunches(opts.stateDir, entry.runId)).findLast(
         (one) => one.agent === entry.agent,
       );
@@ -1253,10 +1254,13 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
           log: runLog(opts.stateDir, entry.runId),
         },
         launched ?? { agent: entry.agent },
-        `its checkout ${opts.at} was removed`,
+        why,
         "caller",
       ).pipe(Effect.orElseSucceed(() => null));
-      return ended?._tag === "Closed";
+      if (ended?._tag !== "Closed") return null;
+      return ended.ended
+        ? runLog(opts.stateDir, entry.runId)(endedLine(entry.agent, why)).pipe(Effect.ignore)
+        : Effect.void;
     });
   let left = 0;
   for (const tabId of opts.tabs) {
@@ -1266,12 +1270,13 @@ const closeDeadTabs = Effect.fn("worktree.closeDeadTabs")(function* (
     const isDead = panes.length > 0 && panes.every(isInside);
     if (!isDead) continue;
     const ended = yield* Effect.forEach(panes, ends);
-    if (!ended.every(Boolean)) {
+    if (ended.includes(null)) {
       left += 1;
       continue;
     }
     const closed = yield* Effect.result(herdr.tabClose(tabId));
     if (closed._tag === "Failure") left += 1;
+    else for (const logged of ended) if (logged !== null) yield* logged;
   }
   return left;
 });

@@ -248,9 +248,27 @@ test("where the caller closes the panes, none closes while one agent of several 
       expect(busy._tag).toBe("NotQuiet");
       expect(stops).toEqual(["review"]);
       expect(yield* paneCloses).toEqual([]);
-      expect(lines.filter((line) => line.includes("ended"))).toEqual([
-        "impl ended: its Task's workspace closed",
-      ]);
+      // Its end is the caller's to log, once its pane has closed.
+      expect(lines.filter((line) => line.includes("ended"))).toEqual([]);
+    }),
+  ));
+
+test("where the caller closes the panes, another process under the agent's name keeps them open", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged("impl", "p1");
+      yield* rig.reincarnate("impl");
+      const { deps } = depsOf();
+      const ended = yield* endAgent(
+        deps,
+        { agent: "impl", terminalId: "term-impl" },
+        "its Task's workspace closed",
+        "caller",
+      );
+      expect(ended).toEqual({
+        _tag: "Replaced",
+        reason: "impl was started again since, and is not this Run's to end",
+      });
     }),
   ));
 

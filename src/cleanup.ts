@@ -42,7 +42,7 @@ import {
   type CompactionPorts,
 } from "./compaction";
 import { readLaunches } from "./launches";
-import { endAgent, runLog } from "./agent-end";
+import { endAgent, endedLine, runLog } from "./agent-end";
 import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
 
@@ -837,8 +837,10 @@ export const taskWorkspacesSweeper = (opts: {
             ? Option.some([])
             : yield* session.herdr.agentList().pipe(Effect.option);
         if (Option.isNone(listed)) return { kept: "could not ask herdr what is open" };
+        const why = "its Task's workspace closed";
+        const ended: Array<(typeof launches)[number]> = [];
         for (const launched of launches) {
-          const ended = yield* endAgent(
+          const end = yield* endAgent(
             {
               herdr: session.herdr,
               ports: opts.ports ?? COMPACTION_PORTS,
@@ -848,22 +850,25 @@ export const taskWorkspacesSweeper = (opts: {
               log: runLog(opts.stateDir, launched.runId),
             },
             launched,
-            "its Task's workspace closed",
+            why,
             "caller",
             listed.value,
           ).pipe(Effect.orElseSucceed(() => null));
-          if (ended === null) return { kept: "could not ask herdr what is open" };
-          if (ended._tag === "Unprovable") return { kept: ended.reason };
-          if (ended._tag === "NotQuiet")
+          if (end === null) return { kept: "could not ask herdr what is open" };
+          if (end._tag === "Unprovable" || end._tag === "Replaced") return { kept: end.reason };
+          if (end._tag === "NotQuiet")
             return {
               kept:
-                ended.locked === undefined
-                  ? `its Codex turn has not stopped: ${ended.reason}`
+                end.locked === undefined
+                  ? `its Codex turn has not stopped: ${end.reason}`
                   : "its agents' controls are in use",
             };
+          if (end.ended) ended.push(launched);
         }
         const closed = yield* session.herdr.workspaceClose(task.workspace).pipe(Effect.result);
         if (closed._tag === "Failure") return { kept: herdrFailureReason(closed.failure) };
+        for (const { agent, runId } of ended)
+          yield* runLog(opts.stateDir, runId)(endedLine(agent, why)).pipe(Effect.ignore);
         // Its agents left in another workspace go with it, matched by terminal as a stop does.
         for (const other of opts.sessions) {
           const panes = yield* other.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
