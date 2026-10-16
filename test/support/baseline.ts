@@ -4008,6 +4008,61 @@ scenario(
   120_000,
 );
 
+const THREE_FAILED = [
+  "test/one.test.ts:",
+  "(fail) the flaky one [1.00ms]",
+  "(fail) the old one [1.00ms]",
+  "(fail) the new one [2.00ms]",
+  "",
+  "3 tests failed:",
+  "(fail) the flaky one [1.00ms]",
+  "(fail) the old one [1.00ms]",
+  "(fail) the new one [2.00ms]",
+  "",
+  " 0 pass",
+  " 3 fail",
+].join("\n");
+
+scenario(
+  "a check left failing on a disputed test still has its Flake and its base failure named in the merge request",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-mixed-disclosure";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: THREE_FAILED,
+          rerun: `case "$4" in *flaky*) ${ONE_PASSES};; *) ${ONE_FAILS};; esac`,
+          atBase: `case "$4" in *old*) ${FAILS_AT_BASE};; *) ${ONE_PASSES};; esac`,
+        });
+        const disputed = "unit failed: the new one (test/one.test.ts)";
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, disputing([disputed]), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const mr = yield* asked(runId, "mr");
+        expect(mr).toContain(`- ${disputed}: gate fix 1 disputed it and changed nothing`);
+        expect(mr).toContain(
+          "- unit: the flaky one (test/one.test.ts) failed, then passed when run again alone on the same tree",
+        );
+        // The check's own command, not a run of one of its tests.
+        expect(mr).not.toContain("-t ^the new one$");
+        expect(mr).toMatch(
+          /- unit: the old one \(test\/one\.test\.ts\) also fails at [0-9a-f]{12}, where this branch leaves the default branch/,
+        );
+      }),
+    ),
+  120_000,
+);
+
 /** Checks red until `${rig.root}/repaired` exists. */
 const stuck = (runId: string, names: ReadonlyArray<string>) =>
   Effect.gen(function* () {

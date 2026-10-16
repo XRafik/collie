@@ -121,9 +121,9 @@ that fails and then passes is a flake. The gate then hands
 what a check could still prove to the implementer for up to four fixes; a reviewer's
 judgement or an Output's claim is not handed over, since no fix moves it. Before any fix, each
 test still failing after its rerun is run alone once where the branch leaves the default
-branch. A check whose every such test fails there too is not handed to the implementer, and
-the merge request names each of those tests, with that revision, as failing before the Run's
-changes; a test that passes there, or that the base does not have, is the Run's own. A check
+branch. The merge request names each test that fails there too, with that revision, as
+failing before the Run's changes, and a check whose every such test does is not handed to the
+implementer; a test that passes there, or that the base does not have, is the Run's own. A check
 whose failures name no tests has no baseline and is handed to the fixes. A fix that changes nothing and disputes every finding it was
 handed ends the fixes, since another would check the same tree: the outcome stays unproved,
 and the merge request names each disputed gap with the fixer's reason. A gate fix lands after the last

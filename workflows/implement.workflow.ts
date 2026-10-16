@@ -797,8 +797,7 @@ export default defineWorkflow({
       const journal = { ...(yield* host.evidence(runId, cwd)), approved: checks };
       const flakes = flakesOf(journal);
       // Failed before this Run changed anything, and still fails: reported, never passed.
-      const settled = settledChecks(journal);
-      const preexisting = baseFailuresOf(journal).filter((one) => settled.includes(one.check));
+      const preexisting = baseFailuresOf(journal);
       const unsettled = [
         ...assumed,
         ...rallied.unsettled,
@@ -983,7 +982,9 @@ const spawned = (
   verifications: ReadonlyArray<Verification>,
 ): ReadonlyArray<VerifySpec> =>
   granted.map((spec) => {
-    const ran = verifications.findLast((one) => one.name === spec.name && one.by === "collie");
+    const ran = verifications.findLast(
+      (one) => one.name === spec.name && one.by === "collie" && one.test === undefined,
+    );
     return ran === undefined
       ? spec
       : { name: spec.name, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };

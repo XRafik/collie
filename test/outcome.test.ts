@@ -600,7 +600,8 @@ test("a check with a test still failing after its rerun is a gap naming that tes
   expect(evidenceGaps("unspecified", got)).toEqual([
     "tests failed: outer > the nested one (test/two.test.ts)",
   ]);
-  expect(flakesOf(got)).toEqual([]);
+  // A Flake is named whether or not its check is left failing on another test.
+  expect(flakesOf(got)).toEqual([{ check: "tests", ...QUICK }]);
   // A rerun on another tree says nothing about this one.
   const moved = gateThenReruns([QUICK], [[QUICK, "pass"]]).map((one, at) =>
     at === 0 ? one : { ...one, end: EARLIER },

@@ -172,17 +172,18 @@ export function settledChecks(got: Journal & Pick<Collected, "approved">): strin
 
 /**
  * Each Flake on this tree: a failed test of one of the Run's checks that passed when run again
- * alone, where that check is settled. Never a pass, so the merge request names them.
+ * alone. Never a pass, so the merge request names them.
  */
 export function flakesOf(
   got: Journal & Pick<Collected, "approved">,
 ): Array<FailedTest & { readonly check: string }> {
-  return got.approved.flatMap((spec) => {
-    const reran = rerunOf(got, runsOf(got, spec.name).last);
-    return reran === null || reran.own.length > 0
-      ? []
-      : reran.flakes.map((test) => ({ check: spec.name, ...test }));
-  });
+  return got.approved.flatMap(
+    (spec) =>
+      rerunOf(got, runsOf(got, spec.name).last)?.flakes.map((test) => ({
+        check: spec.name,
+        ...test,
+      })) ?? [],
+  );
 }
 
 /** Each still-failing test that also fails where this branch leaves the default branch, at that revision. */
