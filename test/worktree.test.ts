@@ -132,6 +132,7 @@ const gitAnswers = (branch = "add-picker", remoteBranches: string[] = []) => ({
   // The project this checkout belongs to, which is what an `mr:` target is checked
   // against before anything works on its branch.
   "remote get-url origin": "git@gitlab.example.com:acme/app.git",
+  fetch: "",
   "symbolic-ref --short refs/remotes/origin/HEAD": "origin/master",
   // Both shapes the module asks a ref about: what a new checkout is cut from, and
   // whether the ref is a branch at all.
@@ -682,6 +683,7 @@ const collieWorktree = (
     workflow?: string;
     /** Where it sits, for a checkout whose path is not named after a branch. */
     at?: string;
+    state?: RunFacts["state"];
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -698,7 +700,7 @@ const collieWorktree = (
       workflow: opts.workflow ?? "implement",
       project: rig.projectDir,
       cwd: worktreePath,
-      state: "succeeded",
+      state: opts.state ?? "succeeded",
       worktree: {
         path: worktreePath,
         branch,
@@ -805,6 +807,70 @@ test("a Renovate Run's detached checkout is pruned by the same sweep, with no br
       expect(yield* asked()).toContain(`worktree remove ${at}`);
       // Nothing was ever bound to it, so nothing is deleted with it.
       expect((yield* asked()).some((command) => command.startsWith("branch -d"))).toBe(false);
+    }),
+  ));
+
+test("a failed Run's clean roaming checkout is pruned, failed Runs inside it or not", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const at = join(rig.root, "worktrees", "project", "roaming");
+      yield* collieWorktree("", {
+        workflow: "self-improve",
+        at,
+        managedBy: "git",
+        workspaceId: null,
+        state: "failed",
+        panes: ["1-5"],
+      });
+      recorded.push(
+        runFacts({ id: "run-improvement", workflow: "plan", cwd: at, state: "failed" }),
+      );
+      registered.push(agentIn("run-improvement", "1-6"));
+      // Both Runs' agents, idle where they were left.
+      yield* rig.addPane("1-5", "1:5", at, "claude");
+      yield* rig.addPane("1-6", "1:6", at, "claude");
+      yield* settledGit({ "rev-parse --abbrev-ref --symbolic-full-name @{u}": "" });
+
+      expect(yield* prune()).toEqual(["♻ removed roaming · its Run is over and it holds nothing"]);
+    }),
+  ));
+
+test("a failed Run's roaming checkout is kept while one of its agents still works", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const at = join(rig.root, "worktrees", "project", "roaming");
+      yield* collieWorktree("", {
+        workflow: "self-improve",
+        at,
+        managedBy: "git",
+        workspaceId: null,
+        state: "failed",
+        panes: ["1-5"],
+      });
+      yield* rig.addPane("1-5", "1:5", at, "claude", null, null, "working");
+      yield* settledGit({ "rev-parse --abbrev-ref --symbolic-full-name @{u}": "" });
+
+      expect(yield* prune()).toEqual(["kept roaming · an agent is working in it"]);
+    }),
+  ));
+
+test("a failed Run's roaming checkout is kept while a Run still works in it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const at = join(rig.root, "worktrees", "project", "roaming");
+      yield* collieWorktree("", {
+        workflow: "self-improve",
+        at,
+        managedBy: "git",
+        workspaceId: null,
+        state: "failed",
+      });
+      recorded.push(
+        runFacts({ id: "run-improvement", workflow: "plan", cwd: at, state: "running" }),
+      );
+      yield* settledGit({ "rev-parse --abbrev-ref --symbolic-full-name @{u}": "" });
+
+      expect(yield* prune()).toEqual(["kept roaming · a run is still working in it"]);
     }),
   ));
 
@@ -1859,6 +1925,21 @@ test("the roaming checkout fetches first, and falls back to a local default bran
     }),
   ));
 
+test("a roaming checkout whose origin will not fetch is refused rather than cut from a stale base", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* fakeGitWithCheckouts([{ path: rig.projectDir, branch: "master" }], {
+        refusals: { fetch: "fatal: Could not read from remote repository." },
+      });
+
+      const checkout = yield* renovateCheckout();
+
+      expect(checkout.refused).toContain("could not fetch origin");
+      expect(checkout.refused).toContain("Could not read from remote repository");
+      expect((yield* asked()).some((command) => command.startsWith("worktree add"))).toBe(false);
+    }),
+  ));
+
 test("a repository with no remote-tracking default branch is detached at the local one", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1867,6 +1948,7 @@ test("a repository with no remote-tracking default branch is detached at the loc
       yield* fakeGitAnswering(
         {
           "remote get-url origin": "git@gitlab.example.com:acme/app.git",
+          fetch: "",
           "rev-parse --abbrev-ref HEAD": "master",
           "worktree list --porcelain": porcelain([{ path: rig.projectDir, branch: "master" }]),
         },

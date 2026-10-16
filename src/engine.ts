@@ -3535,6 +3535,13 @@ const PlacingJson = Schema.fromJsonString(Placing);
 const decodePlacing = Schema.decodeUnknownOption(PlacingJson);
 const encodePlacing = Schema.encodeSync(PlacingJson);
 
+/** Whether a Run's report is owed: an agent started it, or its Task closes once it is reported. */
+export const owesReport = (row: RunRow) =>
+  Option.match(decodePlacing(row.placing ?? ""), {
+    onNone: () => false,
+    onSome: (placing) => placing.requestedBy !== undefined || placing.closes === "reported",
+  });
+
 /** A row claimed and not placed yet: nothing hands it to the engine until it is. */
 const unplaced = (row: RunRow) => row.checkout === null && row.placing !== null;
 
@@ -3814,6 +3821,8 @@ const SWEEP_INTERVAL = "500 millis";
 const WAKE_INTERVAL = "250 millis";
 const WAKE_TRIES = 8;
 
+const VIEW_CONCURRENCY = 8;
+
 /** What a host is holding, as a caller may see it: live names and unloadable ones. */
 export const Registrations = Schema.Struct({
   live: Schema.Array(Schema.String),
@@ -3924,6 +3933,8 @@ export interface RegistryApi {
     readonly runId: string;
     readonly control: string;
     readonly set: boolean;
+    /** A stop of this Run without the children it started. */
+    readonly alone?: boolean;
   }) => Effect.Effect<typeof Controlled.Type, HostRefused, HostServices>;
   /**
    * Grants this run one command Collie may run itself, or withdraws the grant of that
@@ -3952,6 +3963,8 @@ export interface RegistryApi {
   readonly view: (runId: string) => Effect.Effect<RunView | null>;
   /** Every run this host has rows for, newest last, narrowed to one Task where named. */
   readonly views: (task: string | null) => Effect.Effect<ReadonlyArray<RunView>>;
+  /** Records `url` as the merge request `runId` opened, as the MR step does, without its notice. */
+  readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
   /**
    * Forgets these Runs' rows, and what the engine keeps of their executions, in one
    * transaction (ADR-0045 D5). Answers with the Runs it forgot; a row the engine never
@@ -4953,6 +4966,20 @@ const makeRegistry: (
   const claimOf = (runId: string) =>
     recordedClaim(claimPath(dir, runId)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
+  /** A finished execution's status: it is never resumed, so it cannot change. */
+  const finished = new Map<string, typeof RunStatus.Type>();
+  const polled = Effect.fn("Engine.polled")(function* (generation: Generation, execution: string) {
+    const workflow = generation.registration.workflow;
+    const status = pollStatus(
+      yield* engine.poll(workflow, execution),
+      generation.entry,
+      workflow.successSchema,
+      workflow.errorSchema,
+    );
+    if (status.status === "complete" || status.status === "failed") finished.set(execution, status);
+    return status;
+  });
+
   const viewOf = Effect.fn("Engine.viewOf")(function* (row: RunRow) {
     const input = yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({})));
     const placing = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
@@ -5011,13 +5038,7 @@ const makeRegistry: (
           unavailable.get(row.generation) ?? `${row.generation} is not registered in this host`,
       };
     }
-    const result = yield* engine.poll(generation.registration.workflow, row.execution);
-    const status = pollStatus(
-      result,
-      generation.entry,
-      generation.registration.workflow.successSchema,
-      generation.registration.workflow.errorSchema,
-    );
+    const status = finished.get(row.execution) ?? (yield* polled(generation, row.execution));
     // A failed Run keeps a claim it may have left shared work half-done under.
     const kept = status.status === "failed" ? yield* claimOf(row.run) : null;
     return {
@@ -5253,9 +5274,11 @@ const makeRegistry: (
     control: string,
     set: boolean,
     recovered?: ReadonlySet<string>,
+    alone = false,
   ) {
     // A stop reaches the children a Run started: they are its work too.
-    const runs = control === STOP ? [runId, ...descendantsOf(yield* store.runs, runId)] : [runId];
+    const runs =
+      control === STOP && !alone ? [runId, ...descendantsOf(yield* store.runs, runId)] : [runId];
     // Written before anything is woken, so a run that wakes up never finds the request
     // that stopped it still there.
     const stopped = new Set<string>();
@@ -5279,8 +5302,8 @@ const makeRegistry: (
   });
 
   /** A stop, and the agents of every Run it reached closed: the Runs, and what did not close. */
-  const stopTree = Effect.fn("Engine.stopTree")(function* (runId: string) {
-    const { runs } = yield* applyControl(runId, STOP, true);
+  const stopTree = Effect.fn("Engine.stopTree")(function* (runId: string, alone = false) {
+    const { runs } = yield* applyControl(runId, STOP, true, undefined, alone);
     // Closing their panes is what stops the agents; the Run only stops looking.
     const agents = yield* Agents;
     const left: string[] = [];
@@ -5607,9 +5630,19 @@ const makeRegistry: (
     views: (task: string | null) =>
       store.runs.pipe(
         Effect.flatMap((rows) =>
-          Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf),
+          Effect.forEach(task === null ? rows : rows.filter((row) => row.task === task), viewOf, {
+            concurrency: VIEW_CONCURRENCY,
+          }),
         ),
       ),
+    mergeRequest: (runId: string, url: string) =>
+      fs
+        .makeDirectory(runDir(dir, runId), { recursive: true })
+        .pipe(
+          Effect.andThen(fs.writeFileString(mergeRequestPath(dir, runId), `${url}\n`)),
+          Effect.andThen(store.announce),
+          Effect.orDie,
+        ),
     watch: (runId: string) =>
       store
         .watching(view(runId))
@@ -5796,6 +5829,7 @@ const makeRegistry: (
       readonly runId: string;
       readonly control: string;
       readonly set: boolean;
+      readonly alone?: boolean;
     }) {
       if (options.control === HOLD && (yield* hasEnded(options.runId)))
         return yield* new HostRefused({
@@ -5817,7 +5851,7 @@ const makeRegistry: (
       const found = yield* routed(options.runId).pipe(Effect.result);
       const left =
         options.control === STOP && options.set
-          ? (yield* stopTree(options.runId)).left
+          ? (yield* stopTree(options.runId, options.alone)).left
           : yield* applyControl(options.runId, options.control, options.set).pipe(Effect.as([]));
       const recorded = { runId: options.runId, control: options.control, set: options.set, left };
       if (found._tag === "Failure") {

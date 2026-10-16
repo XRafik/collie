@@ -674,7 +674,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `agents[]`                | The live agents on it, its Repo runs' included.                                                                                                                 |
 | `children[]`              | Its plan's repositories, in wave order: `repo`, its `run` (`null` until it starts), its `state` (`done`, `active`, `blocked`, `failed` or `todo`) and its `mr`. |
 | `mr`, `mrState`, `branch` | What it is building, where it can be read, and what the forge last said about the merge request.                                                                |
-| `disposition`, `landed`   | What became of the work, where a person recorded it — never inferred from a merge request — and whether it needs nothing more, which is Finished.               |
+| `disposition`, `landed`   | What became of the work, the latest on any of its Runs, recorded by a person or by the merge watch, and whether it needs nothing more, which is Finished.       |
 | `ended`                   | When the leading Run ended, or `null` while it has not.                                                                                                         |
 | `planReady`, `offer`      | A finished plan nobody has implemented, and the offer its card's first action invokes.                                                                          |
 | `checks`                  | What checked an open merge request: `passed` or `failed` (with `name`) at revision `at`, `running`, or `unchecked`; else `null`.                                |
@@ -2010,11 +2010,14 @@ any front door uses whatever its build or computer, declared with its Schemas in
 development checkout — `protocol`, the `herds` — every running herdr session, by Herd
 `id` and herdr's `name` — and every TaskView), then an `Upsert` or a `Remove` keyed by Task
 id for each change, each with a `seq` higher than the last. A client that reconnects gets a
-fresh snapshot. The host builds one board for every client, so a client that subscribes is
-told the latest at once (or once the first build is done), and it builds again when
+fresh snapshot. The host builds one board, from when it starts, for every client and for
+its own merge watch and News. A client that subscribes is told the latest board that
+covers every change seen before it subscribed, so it reads its own writes: at once when no
+build is owed, or once the build under way or owed is done. It builds again when a Run is recorded, from any door, when
 anything under its state directory is written, when herdr pushes an event from any of its
 sessions (a pane opening or closing, or an agent's status changing), and every five
-seconds: one build at a time, with what changes meanwhile folded into the next. The
+seconds: one build at a time, with what changes meanwhile folded into the next. The other
+operations, `runs` and `run` among them, read fresh. The
 installation id is written once, by the first host to own the directory, and survives
 restarts and upgrades.
 

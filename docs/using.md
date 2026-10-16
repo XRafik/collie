@@ -484,6 +484,8 @@ stash stack — looks like, which is the thing this exists to prevent.
 every Renovate Bot branch it merges. So it gets a checkout of its own that is **detached**
 at the repository's default branch as the remote has it, at
 `~/.herdr/worktrees/<repo>/roaming`, and no branch is created or claimed for the run.
+Where the repository has an `origin` that will not fetch, the start is refused rather
+than cut from a stale base.
 There is no `--input branch=` for it, and nothing it does binds a branch to its worktree:
 it fetches and checks out each Renovate branch inside that one checkout and pushes with an
 explicit refspec, so a Renovate branch that already has a checkout of yours is left where
@@ -694,9 +696,22 @@ reads it from this checkout's history rather than carding every Run Collie has e
 
 Collie learns a merge by itself, whether or not a pane is open: the host asks the merge
 request's own forge, through that forge's adapter — GitLab with `glab`, GitHub with `gh` —
-about each merge request in Waiting on you every 5 minutes; one
+about each Task's merge request every 5 minutes, whatever section its card is in, so a
+merge while a Run is busy or parked is noticed too; one
 that merged gets its `merged` disposition recorded as that forge's word and its card moves
-to Finished. One that was closed without merging only changes its card's sentence: closing
+to Finished. A Task whose Runs recorded no merge request takes the one opened from its
+branch, whoever opened it — you on the forge, or a builder you told to in its pane — and
+it is recorded as the newest Run on that branch's own, so the drawer, offers, Ready to
+release and Cleanup all see it. The forge is the one the branch's checkout pushes to, and
+it is asked about each branch at most once every 5 minutes. A merge request that merged or
+closed before the Task's first Run began is an older branch's and is ignored; of several,
+the newest is the Task's. A merge also settles its Task: whatever in it is still going —
+running, waiting, parked or asking, a plan waiting on its builder included — and began
+before the forge says it merged, is stopped by the host, with `<label> merged` as the
+reason in its trail, and the card reads `Merged as cego/collie#114.`, never "Stopped by
+you". A stop that did not take is asked again on the next round. A Run started after
+the merge, such as a follow-up on the same branch, is left alone, and so is a child the
+stopped Run started in a Task of its own. One that was closed without merging only changes its card's sentence: closing
 can mean superseded as easily as abandoned, and only you know which. The same answer
 carries the forge's own checks — GitLab's head pipeline, GitHub's check rollup — and the
 revision they ran at, which is the one Collie's own checks are counted at too: a failing
@@ -1245,8 +1260,25 @@ since workspace ids are only unique within one. **New run** asks a Machine what 
 can start, then starts it with what you typed for its inputs. What came of each, or the
 host's own words for why not, is said in a toast, and **Try again** on a failure sends the
 same request again, so a host that took it before the answer was lost does it once; the card then changes from the host's
-stream like any other change. Every one is recorded on that Machine as `desktop`, with this
-computer's name.
+stream like any other change. One click is one request, whatever fails after it: a refusal,
+a renewed connection, or the window's own channel to Desktop. An action counts as done only
+on the host's reply. Desktop waits 30 s for it, and sends the same request again when none
+comes, 3 times in all; a request that landed earlier reads back as a repeat, never a second
+write. A refusal or a failed connection is said at once and not tried again by itself. After
+the third wait it says "vm-mk did not confirm the answer to r-1 within 30 s, 3 times. It may
+still land; Try again sends the same request, which vm-mk takes at most once." An action
+Desktop does not send, such as one from a dialog opened before its Machine dropped to a
+saved board, says it was not sent and why. An answer shows on its card in place of the
+question's buttons, "Sending Ship it to vm-mk…" and then "Answered Ship it; waiting for
+vm-mk's board", until that Machine's board no longer has the question open; a refusal, or
+the last wait, puts the buttons back. Every one is recorded on that Machine as `desktop`,
+with this computer's name, and on this computer in `actions.log` beside `flock-chat.json`
+(`$XDG_STATE_HOME/collie-desktop/`): a JSON line per attempt with when, the board or the
+chat, the Machine, the request, the kind, the Run or proposal and the attempt, ending
+`accepted`, `repeat`, `refused`, `timed-out`, `failed` or `not-sent` with the reason. It
+holds ids and kinds only, never an answer's value, a message's text or a file: a reason
+that quotes one has it replaced by `…`. Past
+1 MiB it starts again, keeping the last as `actions.log.1`.
 
 **Machines** is a page that lists every Machine Desktop reaches — this computer first, then
 herdr's — with how it stands, and is where Machines join the Flock. Each joins the same way:
@@ -1721,15 +1753,24 @@ said to be unread rather than holding up the rest.
 
 The chat reads each Machine's board from the one the window draws: `collie_herd`, where a
 bare id is, the Herds a News look asks and whether a Machine's Collie can take a write all
-come from the board Desktop already follows, so no tool call has a host build one. Run
-details, News and every write still go to the Machine's host. Every Machine the window
+come from the board Desktop already follows, so no tool call has a host build one. A bare
+Run id no board lists yet, such as one started a moment ago, is asked of each Machine's
+host, within ten seconds; one that does not answer counts as not checked. Run
+details, News and every write still go to the Machine's host. A write is sent as the
+board's actions are: waited for 30 s, 3 times under one request, and kept in `actions.log`,
+as `not-sent` where the Machine was not written to at all.
+One its host never confirms is said as not confirmed ("answer: not confirmed — vm-mk did
+not confirm …"), and nothing after it in the same call is sent. Every Machine the window
 shows is one the chat knows by name, and one with no live board is named with why: still
 connecting, and how long Desktop has waited for its first board; out of reach, waiting
 for SSO, without Collie or needing a newer Desktop, in its connection's own words; or only
 a board Desktop saved, and when. That reason is what `collie_herd`, `collie_workspaces` and
 `collie_news` say of it, and what a write to it is refused with ("… Nothing was done on
 vm-mk."); a bare id another Machine has is refused while that one cannot be checked. A
-Machine whose Collie is older than Desktop's chat is written to by nothing.
+Machine whose board speaks an older protocol than Desktop's is written to by nothing: the
+write is refused with "its Collie is older than Desktop's chat; upgrade Collie on
+<machine>. Nothing was done there." A read a host does not answer within ten seconds says
+so; one its host cannot take says its Collie may be older than Desktop's.
 
 The bell turns Desktop's own turns off (and on again); it is on by default, and kept in
 `settings.json` beside the session.
@@ -2592,6 +2633,14 @@ the forge of the checkout it runs in. Up to `improvements` groups of newly filed
 then start there as Improvements, each a `plan` of its own card that builds itself
 (`then=implement`) and ends at a reviewed merge request that closes its issues. Nobody is
 asked anything, and nothing is merged. `improvements=0` files without building.
+
+It works in a worktree of its own, cut from the checkout it was started in and detached at
+`origin`'s default branch as just fetched, so a shared, dirty or stale checkout is neither
+touched nor read. The triage, the filing and the Improvements' `plan` Runs work there; the
+Runs it reads are still that checkout's. Another Run holding that repository's roaming
+checkout, such as a `renovate`, refuses the start. The [cleanup](#cleanup) sweep removes
+the worktree once the Run has ended, however it ended, and nothing works in it any longer.
+An `origin` that will not fetch refuses the start, so it never triages stale code.
 
 It waits for its Improvements, then writes `summary.md` in its Run directory: each issue
 filed or commented, by category; each Improvement's Run and how it ended; and each finding

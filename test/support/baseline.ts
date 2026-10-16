@@ -866,6 +866,100 @@ scenario(
 );
 
 scenario(
+  "an implement Run that stops short of its merge request fails with the reason: a ticket left blocking",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* noMergeRequests;
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const blocked = {
+          ...BUILT,
+          verdict: "findings",
+          findings: [
+            {
+              severity: "blocker",
+              title: "the schema will not migrate",
+              file: "db",
+              detail: "existing rows cannot be decoded",
+            },
+          ],
+        };
+        yield* approve("r-impl-blocked", ["unit"]);
+        const reviewed = { ...CLEAN_SYNTHESIS, verdict: "findings", findings: blocked.findings };
+        yield* rig.queueOutputs([
+          blocked,
+          reviewed,
+          { verdict: "clean", fixed: [], disputed: [], checks: [] },
+          reviewed,
+        ]);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-impl-blocked",
+          input: { plan },
+        });
+
+        expect(result._tag).toBe("Failure");
+        expect(reasonOf(result)).toContain("build: no_progress");
+        expect(reasonOf(result)).toContain("Continue with a follow-up Run to finish delivery.");
+        expect((yield* prompts()).join("\n")).not.toContain("r-impl-blocked/mr.prompt.md");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "an implement Run that stops short of its merge request fails with the reason: fix_unverified",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* noMergeRequests;
+        yield* repository();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        yield* approve("r-impl-unverified", ["unit"]);
+        const blocking = (title: string) => ({
+          ...CLEAN_SYNTHESIS,
+          verdict: "findings",
+          findings: [{ severity: "blocker", title, file: "db", detail: "it goes wrong" }],
+        });
+        const fixed = (title: string, checks: ReadonlyArray<{ name: string }> = []) => ({
+          verdict: "clean",
+          fixed: [{ title, file: "db" }],
+          disputed: [],
+          checks,
+        });
+        yield* rig.queueOutputs([
+          BUILT,
+          blocking("first"),
+          fixed("first"),
+          blocking("second"),
+          fixed("second"),
+          blocking("third"),
+          fixed("third"),
+          blocking("fourth"),
+          // Nothing was ever run under that name, so the last fix's word for it buys nothing.
+          fixed("fourth", [{ name: "unit" }]),
+        ]);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-impl-unverified",
+          input: { plan },
+        });
+
+        expect(result._tag).toBe("Failure");
+        expect(reasonOf(result)).toContain(
+          `fix_unverified: check "unit" has no verification record`,
+        );
+        expect(reasonOf(result)).toContain("Continue with a follow-up Run to finish delivery.");
+        expect((yield* prompts()).join("\n")).not.toContain("r-impl-unverified/mr.prompt.md");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "a plan the fan-out cannot run starts nothing, and the menu comes back",
   () =>
     runEffect(
@@ -2253,7 +2347,7 @@ scenario(
 );
 
 scenario(
-  "criteria still unanswered after two hand-backs stop the work before any reviewer",
+  "an implement Run that stops short of its merge request fails with the reason: criteria still unmet after the hand-backs",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -2273,10 +2367,12 @@ scenario(
         });
         yield* bin.restore();
 
-        expect(said(result)).toContain(
+        expect(result._tag).toBe("Failure");
+        expect(reasonOf(result)).toContain(
           "01-first.md: acceptance criteria still unanswered or unmet after 2 hand-backs, so no review starts",
         );
-        expect(said(result)).toContain("**Named.** Each one is named in the log.");
+        expect(reasonOf(result)).toContain("**Named.** Each one is named in the log.");
+        expect(reasonOf(result)).toContain("Continue with a follow-up Run to finish delivery.");
         const sent = (yield* prompts()).join("\n");
         expect(sent).toContain("01-first.md.criteria-2.prompt.md");
         expect(sent).not.toContain("review-1");
@@ -2384,7 +2480,7 @@ scenario(
           runId: "r-linear-uncopied",
           input: { plan: "ABC-124" },
         });
-        expect(said(stopped)).toContain("plan/SPEC.md cannot be read");
+        expect(reasonOf(stopped)).toContain("plan/SPEC.md cannot be read");
         expect(yield* prompts()).not.toContainEqual(expect.stringContaining("review-1"));
       }),
     ),

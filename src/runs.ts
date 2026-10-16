@@ -5,7 +5,7 @@ import type { FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import type { RequestedBy, RunReport } from "./board-model";
 import type { PluginEnv } from "./env";
-import { resultText, runViews } from "./lifecycle";
+import { resultText, runView, runViews } from "./lifecycle";
 import { HOLD, STOP, evidenceDir, runDir, type RunView } from "./engine";
 import type { Settled } from "./strategies";
 import type { WorktreeRecord } from "./run";
@@ -151,7 +151,9 @@ export const findRun = (
   env: PluginEnv,
   id: string,
 ): Effect.Effect<RunFacts | null, never, Client> =>
-  listRuns(env).pipe(Effect.map((runs) => runs.find((run) => run.id === id) ?? null));
+  runView(env, id).pipe(
+    Effect.map((view) => (view === null || "ok" in view ? null : factsOfView(env.stateDir, view))),
+  );
 
 /** Whether a Run has ended, which a question it is waiting on is not. */
 export const settled = (run: Pick<RunFacts, "state">): boolean =>

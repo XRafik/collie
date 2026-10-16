@@ -160,7 +160,7 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
-    test("reads a merge request open, merged or closed, with its head and merge commit", () =>
+    test("reads a merge request open, merged or closed, with its head, merge commit and merge time", () =>
       runEffect(
         Effect.gen(function* () {
           const read = (over: Partial<FakeMr>) =>
@@ -179,9 +179,12 @@ for (const name of ["gitlab", "github"] as const) {
             headSha: "1a2b3c4",
             mergedSha: "",
           });
-          expect(yield* read({ state: "merged", mergedSha: MERGED })).toMatchObject({
+          expect(
+            yield* read({ state: "merged", mergedSha: MERGED, mergedAt: "2026-10-15T08:00:00Z" }),
+          ).toMatchObject({
             state: "merged",
             mergedSha: MERGED,
+            mergedAt: "2026-10-15T08:00:00Z",
           });
           expect(yield* read({ state: "closed" })).toMatchObject({ state: "closed" });
           expect(yield* read({ state: "closed", draft: true })).toMatchObject({ state: "closed" });
@@ -711,6 +714,65 @@ for (const name of ["gitlab", "github"] as const) {
             fakeForge(name, model(name, { installed: false })).run,
           )).ok,
         ).toBe(false);
+      }),
+    ));
+
+  test(`the ${name} forge lists a branch's merge requests in every state, and says when it cannot`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const from = (over: Partial<FakeMr>) =>
+          mr(name, { sourceBranch: "me/x", createdAt: "2026-10-15T08:00:00Z", ...over });
+        const mrs = [
+          from({ iid: "31" }),
+          from({ iid: "32", state: "merged", mergedAt: "2026-10-15T08:40:00Z" }),
+          from({ iid: "33", state: "closed", closedAt: "2026-10-15T09:00:00Z" }),
+          mr(name, { iid: "34", sourceBranch: "other" }),
+        ];
+        const listed = yield* forge.fromBranch(
+          PROJECT[name],
+          "me/x",
+          "/w",
+          fakeForge(name, model(name, { mrs })).run,
+        );
+        const url = (iid: string) =>
+          name === "github"
+            ? `https://github.com/owner/repo/pull/${iid}`
+            : `https://gitlab.example.com/group/app/-/merge_requests/${iid}`;
+        expect(listed).toEqual({
+          ok: true,
+          mrs: [
+            {
+              iid: "31",
+              url: url("31"),
+              state: "open",
+              created: "2026-10-15T08:00:00Z",
+              ended: null,
+            },
+            {
+              iid: "32",
+              url: url("32"),
+              state: "merged",
+              created: "2026-10-15T08:00:00Z",
+              ended: "2026-10-15T08:40:00Z",
+            },
+            {
+              iid: "33",
+              url: url("33"),
+              state: "closed",
+              created: "2026-10-15T08:00:00Z",
+              ended: "2026-10-15T09:00:00Z",
+            },
+          ],
+        });
+        for (const over of [{ installed: false }, { loggedIn: [] }])
+          expect(
+            (yield* forge.fromBranch(
+              PROJECT[name],
+              "me/x",
+              "/w",
+              fakeForge(name, model(name, { mrs, ...over })).run,
+            )).ok,
+          ).toBe(false);
       }),
     ));
 

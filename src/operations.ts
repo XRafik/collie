@@ -1312,10 +1312,14 @@ const logLines = Effect.fn("operations.logLines")(function* (run: RunFacts) {
  * is asking, what it has produced and where it has drifted. The same read the evidence
  * pack embeds, so a detail asked for in chat is the detail a proposal was made from.
  */
-export const runFacts = Effect.fn("operations.runFacts")(function* (env: PluginEnv, run: RunFacts) {
+export const runFacts = Effect.fn("operations.runFacts")(function* (
+  env: PluginEnv,
+  run: RunFacts,
+  listed?: ReadonlyArray<RunFacts>,
+) {
   const intent = yield* readIntent(run.dir).pipe(Effect.catch(() => Effect.succeed(null)));
   const attention = yield* attentionFor(run);
-  const started = (yield* listRuns(env)).filter((one) => one.parent === run.id);
+  const started = (listed ?? (yield* listRuns(env))).filter((one) => one.parent === run.id);
   const agents = yield* runAgents(env.stateDir, run.id);
   const lines = [
     `Status: ${run.state}`,

@@ -352,8 +352,9 @@ export const checkLines = Effect.fn("Tools.checkLines")(function* (
 
 /** One Run in detail, led by the check Collie is running for it, then where each finished one's output is. */
 const runAnswer = Effect.fn("Tools.runAnswer")(function* (env: PluginEnv, run: RunFacts) {
-  const facts = yield* runFacts(env, run);
-  const running = yield* checkLines(run, yield* listRuns(env), yield* Clock.currentTimeMillis);
+  const runs = yield* listRuns(env);
+  const facts = yield* runFacts(env, run, runs);
+  const running = yield* checkLines(run, runs, yield* Clock.currentTimeMillis);
   const kept = (yield* donePasses(run)).filter((one) => one.log !== null);
   const done =
     kept.length === 0

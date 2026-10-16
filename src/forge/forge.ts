@@ -32,6 +32,20 @@ export type ForBranch =
     }
   | { readonly ok: false; readonly reason: string };
 
+/** A merge request from a branch, in any state, with when it opened and merged or closed. */
+export interface FromBranch {
+  readonly iid: string;
+  readonly url: string;
+  readonly state: "open" | "merged" | "closed";
+  readonly created: string;
+  readonly ended: string | null;
+}
+
+/** A branch's merge requests in every state, or why the forge could not say. */
+export type FromBranchList =
+  | { readonly ok: true; readonly mrs: ReadonlyArray<FromBranch> }
+  | { readonly ok: false; readonly reason: string };
+
 export interface ReviewCommands {
   readonly diff: string;
   readonly view: string;
@@ -103,6 +117,13 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<ForBranch, never, R>;
+  /** Every merge request whose source branch is `branch`, whatever its state. */
+  readonly fromBranch: <R>(
+    project: string,
+    branch: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<FromBranchList, never, R>;
   /** The repository's merge request template, relative to the checkout, or null. */
   readonly template: (
     cwd: string,

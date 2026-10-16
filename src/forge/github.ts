@@ -13,7 +13,7 @@ import {
 import { whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import { epochMs } from "../time";
-import type { DeployTier, Forge, ForBranch, Readiness } from "./forge";
+import type { DeployTier, Forge, ForBranch, FromBranch, FromBranchList, Readiness } from "./forge";
 import { Issue, filedIssueOf } from "./issues";
 
 const HOST = "github.com";
@@ -33,6 +33,7 @@ const PullJson = Schema.fromJsonString(
     baseRefName: optionalText,
     headRefOid: optionalText,
     mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
+    mergedAt: optionalText,
     statusCheckRollup: Schema.optionalKey(
       Schema.NullOr(
         Schema.Array(
@@ -111,6 +112,7 @@ const FIELDS = [
   "baseRefName",
   "headRefOid",
   "mergeCommit",
+  "mergedAt",
   "statusCheckRollup",
   "reviewDecision",
   "comments",
@@ -169,7 +171,8 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       url: pull.url ?? mrWords(ref).url ?? "",
       autoMerge: pull.autoMergeRequest != null,
     } satisfies MrDetails;
-    return mergeable === undefined ? details : { ...details, mergeable };
+    const merged = pull.mergedAt ? { ...details, mergedAt: pull.mergedAt } : details;
+    return mergeable === undefined ? merged : { ...merged, mergeable };
   });
 }
 
@@ -262,6 +265,65 @@ function forBranch<R>(
         url: pull.url ?? `https://${project}/pull/${iid}`,
         autoMerge: pull.autoMergeRequest != null,
       },
+    };
+  });
+}
+
+const BranchPullsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      number: Schema.Number,
+      url: optionalText,
+      state: Schema.String,
+      createdAt: Schema.String,
+      mergedAt: optionalText,
+      closedAt: optionalText,
+    }),
+  ),
+);
+
+/** Every pull request from `branch`, read with `gh pr list --state all`; a failed read is not "none". */
+function fromBranch<R>(
+  project: string,
+  branch: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<FromBranchList, never, R> {
+  return Effect.gen(function* () {
+    const repo = mrPath({ project, iid: "" });
+    const listed = yield* run(
+      "gh",
+      [
+        "pr",
+        "list",
+        "--repo",
+        repo,
+        "--head",
+        branch,
+        "--state",
+        "all",
+        "--json",
+        "number,url,state,createdAt,mergedAt,closedAt",
+      ],
+      cwd,
+    );
+    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, mrs: [] };
+    const decoded = Schema.decodeUnknownOption(BranchPullsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(decoded))
+      return { ok: false, reason: `gh could not list ${repo}'s pull requests from ${branch}` };
+    return {
+      ok: true,
+      mrs: decoded.value.map((pull): FromBranch => {
+        const iid = String(pull.number);
+        return {
+          iid,
+          url: pull.url ?? `https://${project}/pull/${iid}`,
+          state: pull.state === "MERGED" ? "merged" : pull.state === "OPEN" ? "open" : "closed",
+          created: pull.createdAt,
+          // A merged pull request is closed too; when it merged is when it ended.
+          ended: pull.mergedAt ?? pull.closedAt ?? null,
+        };
+      }),
     };
   });
 }
@@ -482,6 +544,7 @@ export const github: Forge = {
   cli: "gh",
   noun: "pull request",
   forBranch,
+  fromBranch,
   template,
   commands: ({ project, branch, assignee, existing }) => {
     const repo = shellQuote(mrPath({ project, iid: "" }));

@@ -1,6 +1,7 @@
 import { Effect, FileSystem, Layer, Option, Schedule, Schema } from "effect";
 import type { PluginEnv } from "./env";
-import { Registry, runDir, type CrashPoint, type RunView } from "./engine";
+import { Registry, owesReport, runDir, type CrashPoint, type RunView } from "./engine";
+import { Store } from "./store";
 import { RunReport } from "./board-model";
 import { Agents } from "./agents";
 import { readLaunches } from "./launches";
@@ -26,6 +27,7 @@ export const reportsLayer = (opts: {
   Layer.effectDiscard(
     Effect.gen(function* () {
       const registry = yield* Registry;
+      const store = yield* Store;
       const agents = yield* Agents;
       const fs = yield* FileSystem.FileSystem;
       const env = { ...opts.env, hostStamp: opts.stamp, pairs: false };
@@ -54,7 +56,7 @@ export const reportsLayer = (opts: {
               const tasks = yield* listTasks(env.stateDir);
               if (tasks.some((one) => one.id !== task.id && one.workspace === task.workspace))
                 return { done: true, note: "The workspace is kept: another Task names it." };
-              const runs = (yield* registry.views(null)).filter((one) => one.task === task.id);
+              const runs = yield* registry.views(task.id);
               if (runs.some((one) => one.runId !== view.runId && !isSettled(one)))
                 return { done: true, note: "The workspace is kept: another Run needs it." };
               const workspaces = yield* herdr.workspaceList();
@@ -178,12 +180,16 @@ export const reportsLayer = (opts: {
 
       const sweep = Effect.gen(function* () {
         if (!(yield* fs.exists(socketOf(env.stateDir)))) return;
-        const views = yield* registry.views(null);
+        const views = yield* Effect.forEach(
+          (yield* store.runs).filter(owesReport),
+          (row) => registry.view(row.run),
+          { concurrency: 4 },
+        );
         yield* Effect.forEach(
           views.filter(
-            (view) =>
+            (view): view is RunView =>
+              view !== null &&
               isSettled(view) &&
-              (view.requestedBy !== undefined || view.closes === "reported") &&
               (view.report === undefined || (view.closes === "reported" && !view.report.closed)),
           ),
           finish,

@@ -2,13 +2,17 @@
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Schedule, Schema, Stream } from "effect";
+import { readAudit } from "../src/audit";
 import { readDispositions } from "../src/disposition";
-import { currentEnv } from "../src/env";
+import { currentEnv, readEnv } from "../src/env";
 import { Herdr } from "../src/herdr";
-import { frontDoor, socketOf } from "../src/host";
+import { connect, frontDoor, socketOf } from "../src/host";
+import { shareBoard } from "../src/board-stream";
+import { sideJobs } from "../src/side-jobs";
 import { newsPath, pending, read as readNews } from "../src/news";
 import { herdOf } from "../src/steering";
 import { writeTask } from "../src/task";
+import { fastForward, runEffect } from "./support/effect";
 import { stopHost } from "./support/host";
 import { collie, proves } from "./support/world";
 
@@ -74,6 +78,88 @@ test(
           ]);
         }),
       ["targeted.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a merge the host's watch reads stops what in its Task is still going, as the host and saying why",
+  () =>
+    proves(
+      "collie-side-settle-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* writeTask(world.state, {
+            id: "task-1",
+            workspace: "w1",
+            label: "project | Targeted",
+            cwd: world.project,
+            created_at: "2026-10-01T09:00:00Z",
+          }).pipe(Effect.orDie);
+          const PATH = yield* mergedGlab(`${world.home}/bin`).pipe(Effect.orDie);
+          const started = yield* collie(
+            world,
+            ["run", "start", "targeted-parks", "--task", "task-1", "--input", `target=${MR}`],
+            { PATH },
+          );
+          expect(started.envelope.ok).toBe(true);
+          const runId = yield* runIdOf(started.envelope);
+          const stops = yield* until(
+            readAudit(`${world.state}/runs/${runId}`).pipe(
+              Effect.map((lines) => lines.filter((line) => line.operation === "stop")),
+              Effect.orElseSucceed(() => []),
+            ),
+            (lines) => lines.length > 0,
+          );
+          yield* stopHost(world.state);
+          expect(stops.map((line) => [line.actor.origin, line.reason])).toEqual([
+            ["host", "mk/project!7 merged"],
+          ]);
+        }),
+      ["targeted-parks.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a merge stops a Run of its Task without the child it started in another Task",
+  () =>
+    proves(
+      "collie-side-settle-child-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* writeTask(world.state, {
+            id: "task-1",
+            workspace: "w1",
+            label: "project | Targeted",
+            cwd: world.project,
+            created_at: "2026-10-01T09:00:00Z",
+          }).pipe(Effect.orDie);
+          const PATH = yield* mergedGlab(`${world.home}/bin`).pipe(Effect.orDie);
+          const started = yield* collie(
+            world,
+            ["run", "start", "targeted-parent", "--task", "task-1", "--input", `target=${MR}`],
+            { PATH },
+          );
+          expect(started.envelope.ok).toBe(true);
+          const runId = yield* runIdOf(started.envelope);
+          const client = yield* connect(world.state).pipe(Effect.orDie);
+          yield* until(
+            client.run({ runId: `${runId}.aside` }).pipe(Effect.orElseSucceed(() => null)),
+            (view) => view?.parked !== null && view?.parked !== undefined,
+          );
+          yield* until(
+            readAudit(`${world.state}/runs/${runId}`).pipe(
+              Effect.map((lines) => lines.some((line) => line.operation === "stop")),
+              Effect.orElseSucceed(() => false),
+            ),
+            (stopped) => stopped,
+          );
+          const aside = yield* client.run({ runId: `${runId}.aside` }).pipe(Effect.orDie);
+          yield* stopHost(world.state);
+          expect(aside?.controls).toEqual([]);
+        }),
+      ["targeted-parent.workflow.ts", "targeted-parks.workflow.ts"],
     ),
   120_000,
 );
@@ -190,3 +276,43 @@ test(
     ),
   120_000,
 );
+
+test("News and the merge watch read the host's latest board, and list no Runs of their own", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-side-shared-" });
+      const env = readEnv({
+        HERDR_PLUGIN_STATE_DIR: stateDir,
+        HERDR_SOCKET_PATH: `${stateDir}/none.sock`,
+        COLLIE_CWD: stateDir,
+      });
+      let listings = 0;
+      let reads = 0;
+      const boards = yield* shareBoard({
+        build: Effect.sync(() => {
+          listings++;
+          return { runs: [], views: [] };
+        }),
+        changed: Stream.never,
+      });
+      const board = Stream.runHead(boards).pipe(
+        Effect.tap(() => Effect.sync(() => reads++)),
+        Effect.flatMap((latest) =>
+          latest._tag === "Some" ? Effect.succeed(latest.value) : Effect.never,
+        ),
+      );
+      yield* sideJobs({
+        env,
+        herdr: new Herdr(env),
+        board,
+        panels: new Map(),
+        record: () => Effect.void,
+        stop: () => Effect.void,
+        sweepers: Effect.succeed([]),
+      }).pipe(Effect.timeout("12 seconds"), Effect.ignore, fastForward);
+      // Two merge looks and three News looks at least, on one build.
+      expect(reads).toBeGreaterThanOrEqual(5);
+      expect(listings).toBe(1);
+    }),
+  ));

@@ -385,12 +385,16 @@ export const machineToAdd = (typed: MachineToAdd): MachineToAdd | null => {
 
 export const DesktopRpcs = RpcGroup.make(
   Rpc.make("flock", { success: FlockItem, stream: true }),
-  /** A retry names the request that failed; a first try leaves it to the main process. */
+  /**
+   * The view names the request, the same on every try of one gesture. `unsent` is why the
+   * view would not have it sent, which the main process says and logs instead.
+   */
   Rpc.make("act", {
     payload: {
       installation: Schema.String,
       action: DesktopAction,
       request: Schema.optional(Schema.String),
+      unsent: Schema.optional(Schema.String),
     },
     success: Schema.String,
     error: ActionFailed,

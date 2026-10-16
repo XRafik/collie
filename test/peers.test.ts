@@ -8,6 +8,8 @@ import { createConnection } from "node:net";
 import { Clock, Deferred, Effect, Exit, Fiber, FileSystem, Schema } from "effect";
 import { readAudit } from "../src/audit";
 import { runDir } from "../src/engine";
+import { readEnv } from "../src/env";
+import { findRun } from "../src/runs";
 import { connect, connectPeer, ownerOf } from "../src/host";
 import { certOf, certificateFor, keyOf, peersOf, relayOf } from "../src/peers";
 import { runEffect } from "./support/effect";
@@ -157,6 +159,28 @@ test(
             expect(
               (yield* read(first.sshLog)).split("\n").filter((line) => line.startsWith("login")),
             ).toHaveLength(1);
+          }),
+        ["attended.workflow.ts"],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "finding a Run on another Machine asks that Machine's host",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-peers-find-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const { runId } = yield* waitingRun(second);
+            yield* first.lists([second]);
+            expect((yield* first.cli(["run", "show", runId])).envelope.error).toBeUndefined();
+
+            const found = yield* findRun({ ...readEnv(first.env), machine: "second" }, runId);
+            expect(found?.id).toBe(runId);
+            expect(yield* findRun(readEnv(first.env), runId)).toBeNull();
           }),
         ["attended.workflow.ts"],
       ),

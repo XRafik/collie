@@ -109,7 +109,9 @@ before it changes anything, from its `package.json` scripts, a Makefile or its C
 each with `collie run intent verification`. Nobody approves them, and the merge request
 lists each with its command ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 
-**Ends:** with the merge request, or with the reason there is none. Nobody is asked along
+**Ends:** with the merge request, or fails with the reason there is none — a ticket stopped
+on a blocking finding, acceptance criteria still unmet, a review that halted — and says to
+continue with a follow-up Run, which **Keep going on this** starts. Nobody is asked along
 the way: the human verifies the work in the merge request, before it lands. Where a failed check's
 output names the tests that failed (bun test's does), the gate reruns each of those tests
 once, alone, on the same tree. A test that then passes is a **Flake**: it is not handed to a
@@ -163,9 +165,8 @@ inside a repository is that run's own business, as in a single-repository run. T
 them, resuming it goes on with the ones it already has rather than starting them again, and
 its result names what each repository ended as.
 
-- **A repository that did not build** fails rather than ending with its reason — a ticket
-  stopped on a blocking finding, a review that halted, a merge request with no evidence for
-  it — so no wave starts on work that is not there.
+- **A repository that did not build** fails, as a single repository does, so no wave
+  starts on work that is not there.
 - **A repository that fails or cannot start** starts no further wave. The others in its
   wave are left to finish, and the parent fails naming the repository that stopped it and
   the ones that never ran.
@@ -413,7 +414,10 @@ in, and `machine` reads every Run on its Machine and also files Collie's own `de
 `improvements`, a whole number, bounds how many fixes it starts; `0` files without
 building.
 
-**What happens:** it reads the 24 hours of Runs before it started. A `retrospective`
+**What happens:** it works in a worktree of its own, detached at `origin`'s default branch
+as just fetched, never in the checkout it was started in, which other Runs share; the
+cleanup sweep removes it once the Run has ended. It reads the 24 hours of Runs before it
+started. A `retrospective`
 agent triages their records with the installed `retro` skill, and each finding that
 recurs is filed on the forge of the checkout it runs in, or commented on the open issue it
 matches. Up to `improvements` groups of newly filed issues start as `plan` Runs that build

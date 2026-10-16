@@ -925,6 +925,185 @@ test("a Run that ended with nothing to file is finished, not waiting", () =>
     }),
   ));
 
+test("a Task's card reads its Task: a stopped child's Disposition, not its waiting parent", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      // A stop suspends the implement Run, so the plan Run waits on it forever.
+      const plan = yield* madeRun(dir, {
+        id: "r-plan",
+        workflow: "plan",
+        task: "task-1",
+        created: "2026-09-14T08:00:00Z",
+      });
+      const implement = yield* madeRun(dir, {
+        id: "r-plan.implement",
+        task: "task-1",
+        parent: "r-plan",
+        state: "stopped",
+        branch: "mk/control-plane",
+        created: "2026-09-14T08:10:00Z",
+        finished: "2026-09-14T08:30:00Z",
+      });
+      yield* recordDisposition(implement.dir, {
+        at: "2026-09-14T09:00:00Z",
+        by: "mk",
+        kind: "merged",
+        ref: "cego/collie#115",
+        note: null,
+      });
+
+      const [card] = yield* board(env, [plan, implement]);
+      expect(card!.state).toBe("stopped");
+      expect(card!.sentence).toEndWith("Merged as cego/collie#115 1 hour ago.");
+      expect(card!.disposition).toBe("merged cego/collie#115");
+      expect(sectionOf(card!)).toBe("finished");
+    }),
+  ));
+
+test("a Task's card reads its Task: the latest Disposition on any of its Runs", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const plan = yield* madeRun(dir, {
+        id: "r-plan",
+        workflow: "plan",
+        task: "task-1",
+        state: "succeeded",
+        created: "2026-09-14T08:00:00Z",
+        finished: "2026-09-14T08:05:00Z",
+      });
+      const implement = yield* madeRun(dir, {
+        id: "r-implement",
+        task: "task-1",
+        state: "succeeded",
+        branch: "mk/control-plane",
+        created: "2026-09-14T08:10:00Z",
+        finished: "2026-09-14T08:30:00Z",
+      });
+      const disposed = (run: RunFacts, at: string, ref: string) =>
+        recordDisposition(run.dir, { at, by: "mk", kind: "merged", ref, note: null });
+
+      yield* disposed(implement, "2026-09-14T09:00:00Z", "cego/collie#114");
+      yield* disposed(plan, "2026-09-14T09:30:00Z", "cego/collie#115");
+      expect((yield* board(env, [plan, implement]))[0]!.disposition).toBe("merged cego/collie#115");
+
+      yield* disposed(implement, "2026-09-14T09:45:00Z", "cego/collie#116");
+      expect((yield* board(env, [plan, implement]))[0]!.disposition).toBe("merged cego/collie#116");
+    }),
+  ));
+
+test("a Task's card reads its Task: a landed plan and implement Task folds into History", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const fs = yield* FileSystem.FileSystem;
+      const plan = yield* madeRun(dir, {
+        id: "r-plan",
+        workflow: "plan",
+        task: "task-1",
+        state: "succeeded",
+        created: "2026-09-12T08:00:00Z",
+        finished: "2026-09-12T08:05:00Z",
+      });
+      yield* fs.makeDirectory(`${plan.dir}/plan/issues`, { recursive: true });
+      yield* fs.writeFileString(`${plan.dir}/plan/issues/01-thing.md`, "# 1\n");
+      const implement = yield* madeRun(dir, {
+        id: "r-plan.implement",
+        task: "task-1",
+        parent: "r-plan",
+        state: "succeeded",
+        branch: "mk/control-plane",
+        created: "2026-09-12T08:10:00Z",
+        finished: "2026-09-12T08:30:00Z",
+      });
+      yield* recordDisposition(implement.dir, {
+        at: "2026-09-12T09:00:00Z",
+        by: "mk",
+        kind: "merged",
+        ref: "cego/collie#115",
+        note: null,
+      });
+
+      expect(yield* board(env, [plan, implement])).toEqual([]);
+    }),
+  ));
+
+test("a Task's card reads its Task: a going child leads its going parent", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const plan = yield* madeRun(dir, {
+        id: "r-plan",
+        workflow: "plan",
+        task: "task-1",
+        created: "2026-09-14T08:00:00Z",
+      });
+      const implement = yield* madeRun(dir, {
+        id: "r-plan.implement",
+        task: "task-1",
+        parent: "r-plan",
+        summary: "Building the card",
+        created: "2026-09-14T08:10:00Z",
+      });
+
+      const [card] = yield* board(env, [plan, implement], { quietMs: Infinity });
+      expect(card!.run).toBe("r-plan.implement");
+      expect(card!.state).toBe("active");
+    }),
+  ));
+
+test("a Task's card reads its Task: a parent that went on to its own question still leads it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const parent = yield* madeRun(dir, {
+        id: "r-reviewed",
+        task: "task-1",
+        state: "waiting",
+        asking: [{ name: "sign-off", prompt: "Sign this review off?", options: [] }],
+        created: "2026-09-12T08:00:00Z",
+      });
+      const child = yield* madeRun(dir, {
+        id: "r-reviewed.grade-one",
+        task: "task-1",
+        parent: "r-reviewed",
+        state: "succeeded",
+        created: "2026-09-12T08:10:00Z",
+        finished: "2026-09-12T08:30:00Z",
+      });
+
+      const [card] = yield* board(env, [parent, child]);
+      expect(card!.run).toBe("r-reviewed");
+      expect(sectionOf(card!)).toBe("needs-you");
+    }),
+  ));
+
+test("a Task's card reads its Task: a parent going on after its children succeeded still leads it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const parent = yield* madeRun(dir, {
+        id: "r-reviewed",
+        task: "task-1",
+        summary: "Writing the review",
+        created: "2026-09-14T08:00:00Z",
+      });
+      const child = yield* madeRun(dir, {
+        id: "r-reviewed.grade-one",
+        task: "task-1",
+        parent: "r-reviewed",
+        state: "succeeded",
+        created: "2026-09-14T08:10:00Z",
+        finished: "2026-09-14T08:30:00Z",
+      });
+
+      const [card] = yield* board(env, [parent, child], { quietMs: Infinity });
+      expect(card!.run).toBe("r-reviewed");
+      expect(card!.state).toBe("active");
+    }),
+  ));
+
 test("landed is a disposition, a merge the forge reports, or work with nothing to land", () =>
   runEffect(
     Effect.gen(function* () {
