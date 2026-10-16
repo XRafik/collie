@@ -4,11 +4,13 @@
 import { expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { readAudit } from "../src/audit";
+import { connect } from "../src/host";
 import { withLock } from "../src/lock";
 import { fileTime } from "../src/time";
 import { runEffect } from "./support/effect";
 import { until } from "./support/host";
 import { twoMachines, type Side } from "./support/peers";
+import { proves } from "./support/world";
 
 test(
   "a definition created, edited, removed or edited on both reaches the other host by its latest edit",
@@ -122,4 +124,23 @@ test(
       ),
     ),
   180_000,
+);
+
+test(
+  "a host whose user directory is removed does not make it again",
+  () =>
+    proves(
+      "collie-user-dir-gone-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* connect(world.state);
+          yield* fs.remove(world.config, { recursive: true });
+          // Past the 10 seconds a failed watch waits before it tries again.
+          yield* Effect.sleep("12 seconds");
+          expect(yield* fs.exists(world.config)).toBe(false);
+        }),
+      [],
+    ),
+  60_000,
 );

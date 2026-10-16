@@ -1156,8 +1156,11 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   });
   yield* Effect.forkIn(
     Effect.gen(function* () {
+      // ponytail: polled quietly while the user directory is gone, which only its owner makes.
+      if (!(yield* fs.exists(link.userDir))) return yield* Effect.sleep("10 seconds");
       for (const kind of definitionKinds)
-        yield* fs.makeDirectory(`${link.userDir}/${kind}`, { recursive: true });
+        if (!(yield* fs.exists(`${link.userDir}/${kind}`)))
+          yield* fs.makeDirectory(`${link.userDir}/${kind}`);
       yield* Stream.mergeAll(
         [
           ...definitionKinds.map((kind) =>
