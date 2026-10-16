@@ -2361,10 +2361,11 @@ runbook find tools printing tokens — a second guard against the commands that 
 ## Compaction between pieces of work
 
 Collie reuses an agent across a Workflow's operations and a fix round's iterations, so
-its context grows all day. Before it gives a reused agent the next
-piece of work, Collie reads that harness's own current-context measure and, at or above
-`compact_at_tokens`, asks it to compact natively and waits for the outcome before sending
-anything.
+its context grows all day. A reused agent is given its next piece of work only once herdr
+reports it idle: while it is working or blocked, nothing is sent, and the Run log says
+`<agent>: still working; <step> waits for its turn to end`. Then Collie reads that
+harness's own current-context measure and, at or above `compact_at_tokens`, asks it to
+compact natively and waits for the outcome before sending anything.
 
 One absolute number rather than a percentage: the four harnesses measure different
 windows, and one number is what you can reason about. **150,000 tokens** by default, so an
@@ -2459,23 +2460,26 @@ describes a context that no longer exists.
 
 What happens at a boundary:
 
-| What Collie finds                                                                | What it does                                                        |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `compact_at_tokens` is `0`                                                       | Sends the work.                                                     |
-| A freshly launched agent's first work                                            | Sends it. There is nothing behind it to compact.                    |
-| A usable sample under the threshold                                              | Sends the work.                                                     |
-| A usable sample at or above it                                                   | Asks the harness to compact, then sends the work once it completes. |
-| No usable sample — the harness has not measured this context, or the read failed | Warns, sends the work, and asks for no compaction from a guess.     |
-| The harness confirms the compaction failed                                       | Warns and sends the work anyway.                                    |
-| Five minutes with neither a completion nor a failure                             | Stops the Run without sending the work.                             |
+| What Collie finds                                                                | What it does                                                                       |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `compact_at_tokens` is `0`                                                       | Sends the work.                                                                    |
+| A freshly launched agent's first work                                            | Sends it. There is nothing behind it to compact.                                   |
+| A usable sample under the threshold                                              | Sends the work.                                                                    |
+| A usable sample at or above it                                                   | Asks the harness to compact, then sends the work once it completes.                |
+| No usable sample — the harness has not measured this context, or the read failed | Warns, sends the work, and asks for no compaction from a guess.                    |
+| The harness confirms the compaction failed                                       | Warns and sends the work anyway.                                                   |
+| Five minutes with neither a completion nor a failure                             | Keeps waiting, shows the Run needs you, and sends the work by itself once it does. |
 
 The last row is the one to know about. An acknowledgement, an idle pane, an unrelated
 compaction and a dropped connection all establish nothing, so Collie will not call the
 attempt over — and a timeout is not proof that the agent stopped compacting either.
-So it does not retry, does not touch the agent, and does not replay the work: the work
-stops with the reason, and the board says it needs you. Nothing will send that agent work while the attempt is still in the
-air, `collie run resume` included — a resume finds the attempt's five minutes long spent
-and stops again on the spot.
+So it does not retry, does not touch the agent, and does not replay the work. It keeps
+waiting, and the board says the Run needs you: `<agent>: compaction <id> has not finished
+after 5 minutes; Collie keeps waiting and sends <step> once it does. Check its pane.` The
+Run is not parked. When the harness reports the completion or the failure, the note goes
+and the work is sent, with no resume. A steer still reaches the agent while it waits, and
+a stop ends the wait with nothing sent. Nothing will send that agent work while the attempt
+is still in the air, `collie run resume` included.
 
 So look at the pane, and decide. If the compaction did finish and the harness simply
 never said so — Claude has no compact-failed hook, so a `PostCompact` that never arrives

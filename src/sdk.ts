@@ -17,7 +17,7 @@
 
 import { Context, Effect, FileSystem, Layer, Path, Predicate, Schema } from "effect";
 import type { CheckEvidence } from "./output";
-import type { Verification } from "./verify";
+import type { FailedTest, Verification } from "./verify";
 import type { Issue, IssueRef } from "./forge/issues";
 export type { Issue, IssueRef } from "./forge/issues";
 import type { Report } from "./report";
@@ -124,7 +124,7 @@ export {
   riskLine,
 } from "./output";
 
-export type { Snapshot, Verification } from "./verify";
+export type { FailedTest, Snapshot, Verification } from "./verify";
 export type { VerifySpec } from "./verify-spec";
 
 /** This Run's checks as a human would type them, for a prompt to name what it faces. */
@@ -134,7 +134,18 @@ export { renderApproved } from "./verify-spec";
  * What kind of result a Run is for, and what the journal says it actually collected —
  * for a merge request to say what was proved rather than what an Output claimed.
  */
-export { isOutcome, renderEvidence, renderRecordedChecks, type Outcome } from "./outcome";
+export {
+  baseFailuresOf,
+  baselinesOwed,
+  flakesOf,
+  isOutcome,
+  renderEvidence,
+  renderRecordedChecks,
+  rerunsOwed,
+  settledChecks,
+  wholeRunsOwed,
+  type Outcome,
+} from "./outcome";
 
 /**
  * Which of the five kinds of work a work source is. A workflow that reads a plan
@@ -305,8 +316,6 @@ export interface EvidenceAsk {
     readonly file: string;
     readonly checks: ReadonlyArray<string>;
   }>;
-  /** Approved checks that also failed where the branch leaves the default branch. */
-  readonly preexisting?: ReadonlyArray<string>;
 }
 
 const collectedOf = (options: EvidenceAsk) => ({
@@ -318,7 +327,6 @@ const collectedOf = (options: EvidenceAsk) => ({
   reviewed: new Set(options.reviewed),
   insideRun: (ref: string) => refInside(options.roots, ref),
   tickets: options.tickets,
-  preexisting: new Set(options.preexisting ?? []),
 });
 
 /**
@@ -572,8 +580,15 @@ export interface HostApi {
    * status; null says it no longer has.
    */
   readonly parked: (runId: string, why: string | null) => Effect.Effect<void>;
-  /** Records the question this run is waiting on, so the host can say what may answer it. */
-  readonly asking: (runId: string, question: DecisionSpec) => Effect.Effect<void>;
+  /**
+   * Records the question this run is waiting on, so the host can say what may answer it.
+   * `asker` is the operation whose agent asked it, which the workflow is not woken for.
+   */
+  readonly asking: (runId: string, question: DecisionSpec, asker?: string) => Effect.Effect<void>;
+  /** Every question this run has been asked, oldest first, with its answer once it has one. */
+  readonly asked: (runId: string) => Effect.Effect<ReadonlyArray<AskedQuestion>>;
+  /** Answers an open question with `value` as Collie, waking nothing that waits on it. */
+  readonly close: (runId: string, decision: string, value: string) => Effect.Effect<void>;
   /**
    * What has been verified for this run, and the tree in front of it now. This is what
    * `settleFinalFix` is read against: a check an Output says it ran is a claim, and the
@@ -600,11 +615,18 @@ export interface HostApi {
     readonly at?: "default-base";
     /**
      * Why it is run, which every door shows while it runs (ADR-0042): `gate` on the branch,
-     * `recheck` on the same tree for a flake, or `fix` after gate fix `round`. Absent is a
-     * plain `check`.
+     * `rerun` of one failed `test` alone, `recheck` of the whole check on the same tree for a
+     * flake, or `fix` after gate fix `round`. Absent is a plain `check`.
      */
-    readonly pass?: "gate" | "recheck" | "fix";
+    readonly pass?: "gate" | "rerun" | "recheck" | "fix";
     readonly round?: number;
+    /**
+     * The failed test a `rerun` runs: `bun test <file> -t <its whole name>` in the check's
+     * directory, from the sources, recorded under the check's name. It passed only where
+     * exactly one test ran and passed. With `at`, it is run at the base once per revision,
+     * and failed there only where bun reported it failing.
+     */
+    readonly test?: FailedTest;
   }) => Effect.Effect<Verification, WorkflowError>;
   /**
    * This Run's checks as they stand now: what Collie runs itself to prove it. A prompt
@@ -750,6 +772,11 @@ export interface Posted {
 export class Host extends Context.Service<Host, HostApi>()("collie/Host") {}
 
 /** A question as the host records it: its identity, what it asks, and what it takes. */
+export interface AskedQuestion {
+  readonly name: string;
+  readonly answer: string | null;
+}
+
 export interface DecisionSpec {
   readonly name: string;
   readonly prompt: string;

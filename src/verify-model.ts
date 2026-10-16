@@ -1,13 +1,16 @@
 import { Effect, Schema } from "effect";
 
 /**
- * Why a check was run (ADR-0042): the gate on the branch, a recheck of the same tree for a
- * flake, a fix after gate fix N, the default branch's base, the finish's own, or a plain
- * check where nobody said.
+ * Why a check was run (ADR-0042): the gate on the branch, a rerun of one of its failed tests
+ * alone, a recheck of the same tree for a flake, a fix after gate fix N, the default branch's
+ * base, the finish's own, or a plain check where nobody said.
  */
-export const PASSES = ["gate", "recheck", "fix", "baseline", "finish", "check"] as const;
+export const PASSES = ["gate", "rerun", "recheck", "fix", "baseline", "finish", "check"] as const;
 export const Pass = Schema.Literals(PASSES);
 export type Pass = typeof Pass.Type;
+/** One test of a check, as its runner named it: the file, and the name with ` > ` between describes. */
+export const FailedTestSchema = Schema.Struct({ file: Schema.String, name: Schema.String });
+export type FailedTest = typeof FailedTestSchema.Type;
 const SnapshotSchema = Schema.Struct({ head_sha: Schema.String, fingerprint: Schema.String });
 export type Snapshot = typeof SnapshotSchema.Type;
 
@@ -43,6 +46,10 @@ export const VerificationSchema = Schema.Struct({
   log: Schema.optionalKey(Schema.String),
   /** What it ran with outside the tree; absent before environments were, and never reused. */
   environment: Schema.optionalKey(Schema.String),
+  /** The tests a failing check's output names, where it could be read whole (ADR-0034). */
+  failed: Schema.optionalKey(Schema.Array(FailedTestSchema)),
+  /** The one test a `rerun` ran. */
+  test: Schema.optionalKey(FailedTestSchema),
 });
 export type Verification = typeof VerificationSchema.Type;
 export const VerifyEvent = Schema.Union([

@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, Fiber, FileSystem, Schema } from "effect";
-import { exec } from "./support/command";
+import { Effect, FileSystem, Schema } from "effect";
 import { runEffect } from "./support/effect";
 import { claudeTrust } from "../src/trust";
 import { isYamlMap, YamlMapSchema, type YamlMap } from "../src/yaml";
@@ -215,52 +214,28 @@ test("a grant while another collie holds the config lock writes nothing", () =>
 
 test("a config claude keeps rewriting is left alone rather than overwritten", () =>
   runEffect(
-    Effect.scoped(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = join(rig.root, ".claude.json");
-        // A fifo hands every read of the config different bytes, which is what a claude
-        // writing between this grant's read and its rename looks like from in here.
-        yield* exec(["mkfifo", path]);
-        const trustModule = new URL("../src/trust.ts", import.meta.url).pathname.replaceAll(
-          "'",
-          "\\'",
-        );
-        const child = Bun.spawn(
-          [
-            "bun",
-            "-e",
-            `import { BunServices } from "@effect/platform-bun"; import { ManagedRuntime } from "effect"; import { claudeTrust } from '${trustModule}'; const runtime = ManagedRuntime.make(BunServices.layer); console.log((await runtime.runPromise(claudeTrust(process.argv[1], process.argv[2]).grant(process.argv[3]))).message)`,
-            rig.root,
-            rig.stateDir,
-            rig.projectDir,
-          ],
-          { stdout: "pipe", stderr: "pipe" },
-        );
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* claudeConfig({});
+      const before = yield* fs.readFileString(path);
+      // Every read of the config different bytes, which is what a claude writing between
+      // this grant's read and its rename looks like from in here.
+      let n = 0;
+      const rewriting = FileSystem.FileSystem.of({
+        ...fs,
+        readFileString: (file, encoding) =>
+          file === path
+            ? Effect.sync(
+                () => `${Schema.encodeSync(ClaudeConfigJson)({ projects: {}, n: n++ })}\n`,
+              )
+            : fs.readFileString(file, encoding),
+      });
 
-        const feeding = yield* Effect.forkScoped(
-          Effect.gen(function* () {
-            for (let n = 0; ; n++) {
-              yield* Effect.promise(() =>
-                Bun.write(
-                  path,
-                  `${Schema.encodeSync(ClaudeConfigJson)({ projects: {}, n })}\n`,
-                ).then(
-                  () => true,
-                  () => false,
-                ),
-              );
-              yield* Effect.sleep("5 millis");
-            }
-          }),
-        );
-        const message = yield* Effect.promise(() => new Response(child.stdout).text());
-        yield* Effect.promise(() => child.exited);
-        yield* Fiber.interrupt(feeding);
+      const result = yield* claudeTrust(rig.root, rig.stateDir)
+        .grant(rig.projectDir)
+        .pipe(Effect.provideService(FileSystem.FileSystem, rewriting));
 
-        expect(message).toContain("kept changing under the grant");
-        // Never renamed over: the config is still claude's own file, untouched.
-        expect((yield* fs.stat(path)).type).toBe("FIFO");
-      }),
-    ),
+      expect(result.message).toContain("kept changing under the grant");
+      expect(yield* fs.readFileString(path)).toBe(before);
+    }),
   ));

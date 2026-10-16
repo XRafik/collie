@@ -317,6 +317,12 @@ const verdict =
   tried again, under the same delivery, for up to ten minutes. Past that the Run is
   `suspended` rather than failed, `run show` says what held and for how long, and
   `collie run resume` hands the same prompt to the same agent.
+- **The Output budget is idle time.** The agent has two hours to write its Output, counted
+  only while herdr reports it `idle`, `done` or `unknown`, or cannot say. While it is
+  `working` or `blocked` the clock stops, so a long suite is never parked for being slow.
+  It stops too while a question the agent asked is open on the Run
+  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and `collie run resume`
+  collects what it writes late.
 - **`cwd` is where the host placed the Run** unless you name another checkout.
 - **`role`** defaults to the operation's name. The role is injected as a persona, and where
   `personas/<role>.md` exists in the project, on this machine or in the installation, that
@@ -1038,8 +1044,9 @@ With `at: "default-base"` it runs at the merge-base of the checkout and its defa
 in that same checkout so what the build installed is there, and then puts the checkout back;
 a checkout with changes of its own, or no default branch to compare with, is refused.
 
-Say why a check runs with `pass`: `"gate"` on the branch, `"recheck"` on the same tree to
-rule out a flake, or `"fix"` with `round: N` after gate fix N. Every door shows it while
+Say why a check runs with `pass`: `"gate"` on the branch, `"rerun"` with one `test` it
+failed on, `"recheck"` of the whole check on the same tree to rule out a flake, or `"fix"`
+with `round: N` after gate fix N. Every door shows it while
 the check runs — the card says `Running test again on the same tree to rule out a flake,
 12 min of a usual 20.` — and the record keeps it after
 ([ADR-0042](adr/0042-a-check-collie-runs-is-seen-while-it-runs.md)). A check at
@@ -1049,6 +1056,32 @@ Collie never works a pass out from your workflow's id.
 
 ```ts
 yield * host.verify({ runId, name: "test", cwd, pass: "fix", round: 2 });
+```
+
+A check's failed record names its failing tests as `failed` where its output is bun test's
+and could be read whole: 20 or fewer, its fail count agreeing, and no error outside a test.
+A `rerun` runs `bun test ./<file> -t <its whole name>` in the check's directory, from the
+sources (a bare path is a filter bun matches against every file), and records it under the
+check's name. It passes only where exactly one test ran and passed, and it is never the
+check's own pass. `rerunsOwed` says which tests are still to be rerun, `wholeRunsOwed` which
+checks only a whole recheck can tell, and `flakesOf` which failures were Flakes (ADR-0034,
+amended 2026-10-15).
+
+A test still failing after its rerun is run alone at the base with `at: "default-base"` and
+that `test`, once per base revision and check directory. Its `baseline` record fails only
+where bun ran that one test in one file and named it failing, so a test the base does not
+have is the Run's own. `baselinesOwed` says which tests to ask the base about,
+`baseFailuresOf` which also fail there, and `settledChecks` which checks failed only on
+Flakes and such tests: neither a gap nor a pass.
+
+```ts
+for (const { check, test } of rerunsOwed({ ...evidence, approved }))
+  yield * host.verify({ runId, name: check, cwd, pass: "rerun", test });
+for (const { check, test } of baselinesOwed({
+  ...(yield * host.evidence(runId, cwd)),
+  approved,
+}))
+  yield * host.verify({ runId, name: check, cwd, at: "default-base", test });
 ```
 
 A Check passes once per tree. The host answers with the latest record of exactly that
@@ -1077,9 +1110,10 @@ sentence each, and empty where the evidence is there. It reads the journal, the 
 checks, the Outputs you hold and the tickets you built — and it will not take a reviewer's
 judgement from an implementer's Output, because the agent that wrote the change cannot
 vouch for its own scope. Only the latest result for a check on the tree in front of it
-counts, so a pass a later fail on the same tree contradicts is not one. Baseline failures
-are diagnostic context: `preexisting` does not remove gaps. Each of the Run's checks and each
-ticket's promised check still needs a passing verification on the current tree.
+counts, so a pass a later fail on the same tree contradicts is not one. Each of the Run's
+checks and each ticket's promised check still needs a passing verification on the current
+tree, unless every test it failed on was a Flake or also fails at the base, by a `rerun` or
+`baseline` record of that one test.
 
 ```ts
 const gaps = evidenceGapsOf({

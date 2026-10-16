@@ -512,6 +512,7 @@ export const workspace = Effect.fn("HostTest.workspace")(function* (prefix: stri
   yield* fs.writeFileString(`${world.home}/.bunfig.toml`, testBunfig);
   for (const name of [
     "proof.workflow.ts",
+    "named-like-an-agent.workflow.ts",
     "plain.workflow.ts",
     "paths.workflow.ts",
     "broken.workflow.ts",

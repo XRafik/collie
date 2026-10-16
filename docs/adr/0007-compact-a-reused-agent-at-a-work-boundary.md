@@ -195,3 +195,33 @@ carried most of a window from one ticket into the next and was rarely compacted 
 at all. At 150,000 each ticket starts well short of the window, and the boundary is still
 the only place Collie compacts. `0` still turns it off, the auto-compact window setting is
 unchanged, and nothing else here changes.
+
+## Amended 2026-10-15: only an idle agent is asked, and a slow compaction waits
+
+run-9e6e269c.implement stopped on "compaction … neither completed nor failed within 5
+minutes — no work sent" (investigation run-556cba08). Collie asked its builder to compact at
+11:57:36Z, 45 minutes into a 72-minute turn. Claude queued the typed `/compact` behind that
+turn and ran it at 12:24:27, in 31 seconds. The budget had stopped the Run at 12:02:36, and
+nothing looked at the attempt again until a human resumed the Run 20 hours later. That
+resume found the compaction completed and sent the work at once.
+
+- **A boundary waits for the agent to be idle.** Before reading the context sample, and
+  before sending the compaction request or the next piece of work, Collie waits until herdr
+  reports the agent `idle` or `done`. Working or blocked, it waits, with no budget: the agent
+  is alive and doing something. An agent herdr no longer lists goes the way a gone agent
+  already goes. A status herdr cannot read is taken as it is today, and the work proceeds.
+  The same wait keeps a replayed or resumed Workflow from typing a step into an agent that
+  is still on the last one.
+- **An attempt past its five minutes no longer stops the step.** The Run shows that it needs
+  you, with the attempt and the pane to look at, and Collie keeps polling. A completion or a
+  confirmed failure that arrives later clears that note and sends the work, without a
+  resume. Nothing still retries, touches the agent or replays the work, and deleting the
+  agent's control directory still releases an attempt that will never resolve.
+- **The budget still starts when the request is written.** Starting it at the harness's own
+  correlated start was considered and left out. With only idle agents asked and no stop at
+  the end of it, the start would only move when the note appears, and it would add a
+  `started` outcome to four adapters of which only Claude reports one.
+
+This replaces, for a Run's own boundaries, "After five minutes the step stops blocked" and
+the paragraph on the pause being the blocked-step path. The Control Plane's hand-off, which
+does not wait, is unchanged.

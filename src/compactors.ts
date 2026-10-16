@@ -602,6 +602,10 @@ const ClaudePayload = Schema.Struct({
   custom_instructions: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /** Decoded on its own, so a renamed field loses the limits and keeps the context line. */
   rate_limits: Schema.optionalKey(Schema.Unknown),
+  /** `PreToolUse` only: the tool called, its call's id and what it was called with. */
+  tool_name: Schema.optionalKey(Schema.String),
+  tool_use_id: Schema.optionalKey(Schema.String),
+  tool_input: Schema.optionalKey(Schema.Unknown),
   context_window: Schema.optionalKey(
     Schema.NullOr(
       Schema.Struct({
@@ -622,6 +626,61 @@ const ClaudePayload = Schema.Struct({
   ),
 });
 const decodeClaudePayload = Schema.decodeUnknownOption(Schema.fromJsonString(ClaudePayload));
+
+/** One question of an `AskUserQuestion` call, as Claude's tool takes it. */
+export const AgentQuestion = Schema.Struct({
+  question: Schema.String,
+  header: Schema.optionalKey(Schema.String),
+  options: Schema.Array(
+    Schema.Struct({ label: Schema.String, description: Schema.optionalKey(Schema.String) }),
+  ),
+  multiSelect: Schema.optionalKey(Schema.Boolean),
+});
+export type AgentQuestion = typeof AgentQuestion.Type;
+
+const decodeAsked = Schema.decodeUnknownOption(
+  Schema.Struct({ questions: Schema.NonEmptyArray(AgentQuestion) }),
+);
+
+/** One `AskUserQuestion` call, as the hook recorded it for the agent's Run. */
+export const AskedCall = Schema.Struct({
+  at: Schema.Number,
+  session: Schema.NullOr(Schema.String),
+  /** The call's `tool_use_id`, or the time where the payload had none. */
+  id: Schema.String,
+  questions: Schema.Array(AgentQuestion),
+});
+export type AskedCall = typeof AskedCall.Type;
+const encodeAskedCall = Schema.encodeSync(Schema.fromJsonString(AskedCall));
+const decodeAskedCall = Schema.decodeUnknownOption(Schema.fromJsonString(AskedCall));
+
+/** Apart from the telemetry, whose cap trims lines: a question must not be trimmed away. */
+const QUESTIONS = "questions.jsonl";
+
+const DENIED_QUESTION = JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "deny",
+    permissionDecisionReason:
+      "Collie has put your question on your Run for a human to answer. End your turn now: the answer will be your next message.",
+  },
+});
+
+/** The `AskUserQuestion` calls this agent made at or after `since`, oldest first. */
+export const questionsSince = Effect.fn("Compactors.questionsSince")(function* (
+  dir: string,
+  since: number,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const text = yield* fs
+    .readFileString(path.join(dir, QUESTIONS))
+    .pipe(Effect.orElseSucceed(() => ""));
+  return text
+    .split("\n")
+    .flatMap((line) => Option.toArray(decodeAskedCall(line)))
+    .filter((call) => call.at >= since);
+});
 const decodeLimits = Schema.decodeUnknownOption(StatusLineLimits);
 
 /**
@@ -709,6 +768,22 @@ export const recordClaudeEvent = Effect.fn("Compactors.recordClaudeEvent")(funct
     );
     return "";
   }
+  if (event === "PreToolUse") {
+    const asked = payload.tool_name === "AskUserQuestion" ? decodeAsked(payload.tool_input) : null;
+    if (asked === null || asked._tag === "None") return "";
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const at = yield* Clock.currentTimeMillis;
+    const line = encodeAskedCall({
+      at,
+      session,
+      id: payload.tool_use_id ?? String(at),
+      questions: asked.value.questions,
+    });
+    yield* fs.makeDirectory(dir, { recursive: true });
+    yield* fs.writeFileString(path.join(dir, QUESTIONS), `${line}\n`, { flag: "a" });
+    return DENIED_QUESTION;
+  }
   const transcript = payload.transcript_path;
   if (event === "StopFailure") {
     // Only a spent subscription; an overload or a transient limit is retried by Claude.
@@ -793,6 +868,7 @@ export function claudeSettings(dir: string, stopFailure: boolean): string {
         PreCompact: [hook],
         PostCompact: [hook],
         UserPromptSubmit: [submitted],
+        PreToolUse: [{ matcher: "AskUserQuestion", hooks: [{ type: "command", command: helper }] }],
         ...(stopFailure && { StopFailure: [spent] }),
       },
     },

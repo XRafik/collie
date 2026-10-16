@@ -3258,8 +3258,8 @@ scenario(
         yield* bin.add("glab", `exit 0`);
         yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        // Approved, and it passes only at the default branch's base: an Output that says the
-        // tests pass is a claim, and the journal is what the gate reads.
+        // Approved, and it fails until repaired: an Output that says the tests pass is a claim,
+        // and the journal is what the gate reads.
         const count = `${rig.root}/runs`;
         yield* approve("r-impl-gate", ["unit"]);
         const fs = yield* FileSystem.FileSystem;
@@ -3269,10 +3269,7 @@ scenario(
             {
               name: "unit",
               executable: "sh",
-              argv: [
-                "-c",
-                `echo >> ${count}; wc -l < ${count} | { read n; [ $n -eq 2 ] || [ -f ${rig.root}/repaired ]; }`,
-              ],
+              argv: ["-c", `echo >> ${count}; [ -f ${rig.root}/repaired ]`],
               cwd: rig.projectDir,
             },
           ]),
@@ -3403,8 +3400,7 @@ scenario(
         yield* bin.add("glab", `exit 0`);
         yield* ahead();
         const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        // Fails at the gate, passes at the default branch's base, fails once more, then passes
-        // once the fix has run.
+        // Fails at the gate and on its recheck, then passes once the fix has run.
         const count = `${rig.root}/runs`;
         yield* approve("r-gate-fix", ["unit"]);
         const fs = yield* FileSystem.FileSystem;
@@ -3414,10 +3410,7 @@ scenario(
             {
               name: "unit",
               executable: "sh",
-              argv: [
-                "-c",
-                `echo >> ${count}; wc -l < ${count} | { read n; [ $n -eq 2 ] || [ $n -ge 4 ]; }`,
-              ],
+              argv: ["-c", `echo >> ${count}; wc -l < ${count} | { read n; [ $n -ge 3 ]; }`],
               cwd: rig.projectDir,
             },
           ]),
@@ -3467,11 +3460,11 @@ scenario(
             {
               name: "unit",
               executable: "sh",
-              // What the marker says while it runs, then: red at the gate, green at the
-              // base, red again on the recheck, green after the fix.
+              // What the marker says while it runs, then: red at the gate and on the recheck,
+              // green after the fix.
               argv: [
                 "-c",
-                `cat ${marker} >> ${seen}; echo >> ${seen}; echo >> ${count}; wc -l < ${count} | { read n; [ $n -eq 2 ] || [ $n -ge 4 ]; }`,
+                `cat ${marker} >> ${seen}; echo >> ${seen}; echo >> ${count}; wc -l < ${count} | { read n; [ $n -ge 3 ]; }`,
               ],
               cwd: rig.projectDir,
             },
@@ -3493,20 +3486,19 @@ scenario(
         });
         yield* bin.restore();
 
-        const passes = ["gate", "baseline", "recheck", "fix"];
+        const passes = ["gate", "recheck", "fix"];
         const markers = (yield* fs.readFileString(seen))
           .split("\n")
           .filter((line) => line !== "")
           .map((line) => Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(line));
-        expect(markers.slice(0, 4)).toMatchObject(
+        expect(markers.slice(0, 3)).toMatchObject(
           passes.map((pass) => ({ name: "unit", pass, round: pass === "fix" ? 1 : null })),
         );
         const recorded = (yield* readVerifications(evidenceDir(dir, "r-passes"))).filter(
           (one) => one.by === "collie",
         );
-        expect(recorded.slice(0, 4).map((one) => [one.pass, one.round])).toEqual([
+        expect(recorded.slice(0, 3).map((one) => [one.pass, one.round])).toEqual([
           ["gate", undefined],
-          ["baseline", undefined],
           ["recheck", undefined],
           ["fix", 1],
         ]);
@@ -3606,8 +3598,8 @@ scenario(
         yield* fs.writeFileString(
           `${evidenceDir(dir, runId)}/approved.json`,
           asApproved([
-            // Red at the gate, green at the base, red on the recheck, green after the fix.
-            counting("unit", `${rig.root}/unit-runs`, `[ $n -eq 2 ] || [ $n -ge 4 ]`),
+            // Red at the gate and on the recheck, green after the fix.
+            counting("unit", `${rig.root}/unit-runs`, `[ $n -ge 3 ]`),
             counting("lint", `${rig.root}/lint-runs`),
           ]),
         );
@@ -3623,7 +3615,7 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         // The fix left the tree as it was, so lint's pass at the gate still answers.
         expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
-        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(4);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(3);
         const records = yield* readVerifications(evidenceDir(dir, runId));
         const last = (name: string, pass: string) =>
           records.findLast((one) => one.name === name && one.pass === pass)!.id;
@@ -3631,6 +3623,570 @@ scenario(
           { name: "unit", id: last("unit", "fix") },
           { name: "lint", id: last("lint", "gate") },
         ]);
+      }),
+    ),
+  120_000,
+);
+
+/** bun's output for a run whose one failure is `the flaky one` in test/one.test.ts. */
+const FLAKY_OUTPUT = [
+  "test/one.test.ts:",
+  "(pass) the steady one [1.00ms]",
+  "(fail) the flaky one [2.00ms]",
+  "",
+  "1 tests failed:",
+  "(fail) the flaky one [2.00ms]",
+  "",
+  " 1 pass",
+  " 1 fail",
+].join("\n");
+
+const ONE_PASSES = `printf ' 1 pass\\n 0 fail\\n' >&2`;
+const ONE_FAILS = `printf ' 0 pass\\n 1 fail\\n' >&2; exit 1`;
+/** bun at the base, naming the test `-t` asked for as the one that failed. */
+const FAILS_AT_BASE = `n="\${4#^}"; printf '(fail) %s\\n 0 pass\\n 1 fail\\nRan 1 test across 1 file.\\n' "\${n%$}" >&2; exit 1`;
+
+/**
+ * `unit` counts its runs in `counter` and, while `fails` holds for run `$n`, prints
+ * `printed` and exits 1; a `bun` on PATH stands in for each of its tests run alone: `rerun`
+ * on the branch, and `atBase` (passing, unless given) where it leaves the default branch,
+ * counted in `base-runs`.
+ */
+const failingThen = (
+  runId: string,
+  options: {
+    readonly fails: string;
+    readonly printed: string;
+    readonly rerun: string;
+    readonly atBase?: string;
+  },
+) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* bin.add(
+      "bun",
+      `if [ "$(git log -1 --format=%s)" = first ]; then echo >> ${rig.root}/base-runs; ${options.atBase ?? ONE_PASSES}; else ${options.rerun}; fi`,
+    );
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(`${rig.root}/printed`, `${options.printed}\n`);
+    yield* approve(runId, ["unit"]);
+    yield* fs.writeFileString(
+      `${evidenceDir(dir, runId)}/approved.json`,
+      asApproved([
+        counting(
+          "unit",
+          `${rig.root}/unit-runs`,
+          `! { ${options.fails}; } || { cat ${rig.root}/printed >&2; exit 1; }`,
+        ),
+      ]),
+    );
+    return bin;
+  });
+
+const passesOf = (runId: string) =>
+  readVerifications(evidenceDir(dir, runId)).pipe(
+    Effect.map((records) =>
+      records.filter((one) => one.by === "collie").map((one) => one.pass ?? "check"),
+    ),
+  );
+
+const gateFixed = (runId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.exists(`${dir}/agents/${runId}/gate-fix-1.prompt.md`)),
+  );
+
+scenario(
+  "a check failing only on a test that passes alone reaches the merge request with that Flake, and no fix",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-flake";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: FLAKY_OUTPUT,
+          rerun: `printf ' 1 pass\\n 0 fail\\n' >&2`,
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "mr")).toContain(
+          "- unit: the flaky one (test/one.test.ts) failed, then passed when run again alone on the same tree — a Flake, so this Run has not settled it.",
+        );
+        expect(yield* gateFixed(runId)).toBe(false);
+        // Neither the recheck nor the proof runs the whole check again.
+        expect(yield* passesOf(runId)).toEqual(["gate", "rerun"]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a test that fails when run again alone goes to gate fix 1, whose finding names it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-flake-not";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        // Red at the gate, green at the base and after the fix.
+        const bin = yield* failingThen(runId, {
+          fails: "[ $n -eq 1 ]",
+          printed: FLAKY_OUTPUT,
+          rerun: `printf ' 0 pass\\n 1 fail\\n' >&2; exit 1`,
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-1")).toContain(
+          "unit failed: the flaky one (test/one.test.ts)",
+        );
+        expect(yield* passesOf(runId)).toEqual(["gate", "rerun", "baseline", "fix"]);
+        expect(yield* asked(runId, "mr")).not.toContain("a Flake");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a failed check that names no tests is run again whole, as before",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-flake-whole";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "[ $n -eq 1 ]",
+          printed: "something broke",
+          rerun: "exit 1",
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* gateFixed(runId)).toBe(false);
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck"]);
+      }),
+    ),
+  120_000,
+);
+
+/** The commit where this branch leaves the default branch, as the merge request shortens it. */
+const baseSha = () =>
+  exec(["git", "rev-parse", "--short=12", "HEAD~1"], { cwd: rig.projectDir }).pipe(
+    Effect.map((done) => done.stdout.trim()),
+  );
+
+const runsAtBase = () =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(`${rig.root}/base-runs`)),
+    Effect.map((text) => text.split("\n").length - 1),
+    Effect.orElseSucceed(() => 0),
+  );
+
+scenario(
+  "a check whose only still-failing test also fails at the base reaches the merge request naming it, with no fix",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-base-red";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: FLAKY_OUTPUT,
+          rerun: ONE_FAILS,
+          atBase: FAILS_AT_BASE,
+        });
+        const base = yield* baseSha();
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "mr")).toContain(
+          `- unit: the flaky one (test/one.test.ts) also fails at ${base}, where this branch leaves the default branch, so it failed before this Run's changes.`,
+        );
+        expect(yield* gateFixed(runId)).toBe(false);
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* passesOf(runId)).toEqual(["gate", "rerun", "baseline"]);
+      }),
+    ),
+  120_000,
+);
+
+const TWO_FAILED = [
+  "test/one.test.ts:",
+  "(fail) the old one [1.00ms]",
+  "(fail) the new one [2.00ms]",
+  "",
+  "2 tests failed:",
+  "(fail) the old one [1.00ms]",
+  "(fail) the new one [2.00ms]",
+  "",
+  " 0 pass",
+  " 2 fail",
+].join("\n");
+
+scenario(
+  "of two still-failing tests, the one that passes at the base is the only one gate fix 1 is handed",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-base-half";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "[ $n -eq 1 ]",
+          printed: TWO_FAILED,
+          rerun: ONE_FAILS,
+          atBase: `case "$4" in *old*) ${FAILS_AT_BASE};; *) ${ONE_PASSES};; esac`,
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const fixing = yield* asked(runId, "gate-fix-1");
+        expect(fixing).toContain("unit failed: the new one (test/one.test.ts)");
+        expect(fixing).not.toContain("unit failed: the old one");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a still-failing test the base does not have goes to the fixes, and is run at that base once",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-base-missing";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "[ $n -le 2 ]",
+          printed: FLAKY_OUTPUT,
+          rerun: ONE_FAILS,
+          atBase: `echo 'error: regex "^the flaky one$" matched 0 tests.' >&2; exit 1`,
+        });
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, GATE_FIX, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-1")).toContain(
+          "unit failed: the flaky one (test/one.test.ts)",
+        );
+        expect(yield* asked(runId, "gate-fix-2")).toContain(
+          "unit failed: the flaky one (test/one.test.ts)",
+        );
+        expect(yield* runsAtBase()).toBe(1);
+        expect(yield* passesOf(runId)).toEqual([
+          "gate",
+          "rerun",
+          "baseline",
+          "fix",
+          "rerun",
+          "fix",
+        ]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a whole recheck that names its failed tests has each run alone before any fix",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-recheck-named";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: FLAKY_OUTPUT,
+          rerun: ONE_PASSES,
+        });
+        // Names nothing at the gate, then the flaky one on its recheck.
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(
+          `${evidenceDir(dir, runId)}/approved.json`,
+          asApproved([
+            counting(
+              "unit",
+              `${rig.root}/unit-runs`,
+              `{ [ $n -eq 1 ] && echo broke >&2; } || cat ${rig.root}/printed >&2; exit 1`,
+            ),
+          ]),
+        );
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* gateFixed(runId)).toBe(false);
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck", "rerun"]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a proof recheck has its named failures run alone, so a disputed gap keeps its title and the Run is not parked",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-proof-named";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: TWO_FAILED,
+          rerun: `case "$4" in *old*) ${ONE_PASSES};; *) ${ONE_FAILS};; esac`,
+        });
+        const disputed = "unit failed: the new one (test/one.test.ts)";
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, disputing([disputed]), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* asked(runId, "mr")).toContain(
+          `- ${disputed}: gate fix 1 disputed it and changed nothing`,
+        );
+        expect((yield* passesOf(runId)).filter((pass) => pass === "recheck")).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+const THREE_FAILED = [
+  "test/one.test.ts:",
+  "(fail) the flaky one [1.00ms]",
+  "(fail) the old one [1.00ms]",
+  "(fail) the new one [2.00ms]",
+  "",
+  "3 tests failed:",
+  "(fail) the flaky one [1.00ms]",
+  "(fail) the old one [1.00ms]",
+  "(fail) the new one [2.00ms]",
+  "",
+  " 0 pass",
+  " 3 fail",
+].join("\n");
+
+scenario(
+  "a check left failing on a disputed test still has its Flake and its base failure named in the merge request",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-mixed-disclosure";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* failingThen(runId, {
+          fails: "true",
+          printed: THREE_FAILED,
+          rerun: `case "$4" in *flaky*) ${ONE_PASSES};; *) ${ONE_FAILS};; esac`,
+          atBase: `case "$4" in *old*) ${FAILS_AT_BASE};; *) ${ONE_PASSES};; esac`,
+        });
+        const disputed = "unit failed: the new one (test/one.test.ts)";
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, disputing([disputed]), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const mr = yield* asked(runId, "mr");
+        expect(mr).toContain(`- ${disputed}: gate fix 1 disputed it and changed nothing`);
+        expect(mr).toContain(
+          "- unit: the flaky one (test/one.test.ts) failed, then passed when run again alone on the same tree",
+        );
+        // The check's own command, not a run of one of its tests.
+        expect(mr).not.toContain("-t ^the new one$");
+        expect(mr).toMatch(
+          /- unit: the old one \(test\/one\.test\.ts\) also fails at [0-9a-f]{12}, where this branch leaves the default branch/,
+        );
+      }),
+    ),
+  120_000,
+);
+
+/** Checks red until `${rig.root}/repaired` exists. */
+const stuck = (runId: string, names: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* approve(runId, [...names]);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      `${evidenceDir(dir, runId)}/approved.json`,
+      asApproved(
+        names.map((name) =>
+          counting(name, `${rig.root}/${name}-runs`, `[ -f ${rig.root}/repaired ]`),
+        ),
+      ),
+    );
+    return bin;
+  });
+
+const disputing = (titles: ReadonlyArray<string>) => ({
+  ...GATE_FIX,
+  disputed: titles.map((title) => ({
+    severity: "blocker",
+    title,
+    reason: "the check is wrong, not the code",
+  })),
+});
+
+const repairing = () => ({
+  writes: [{ path: `${rig.root}/repaired`, text: "fixed\n" }],
+  output: GATE_FIX,
+});
+
+scenario(
+  "a gate fix that commits nothing and disputes its one finding is the last, and the merge request names the dispute",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-disputed";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit"]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, disputing(["unit failed"]), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.exists(`${dir}/agents/${runId}/gate-fix-2.prompt.md`)).toBe(false);
+        expect(yield* asked(runId, "mr")).toContain(
+          "- unit failed: gate fix 1 disputed it and changed nothing: the check is wrong, not the code",
+        );
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* fs.readFileString(`${runDir(dir, runId)}/log.txt`)).toContain(
+          "outcome unproved: unit failed; gate fix 1 disputed them and changed nothing",
+        );
+        const records = yield* readVerifications(evidenceDir(dir, runId));
+        expect(records.findLast((one) => one.name === "unit")?.result).toBe("fail");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a gate fix that disputes its finding but changes the tree is followed by another",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-disputed-moved";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit"]);
+        const moved = {
+          writes: [{ path: `${rig.projectDir}/touched`, text: "changed\n" }],
+          output: disputing(["unit failed"]),
+        };
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moved, repairing(), OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-2")).toContain("unit failed");
+        expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a gate fix that changes nothing but leaves one of two findings undisputed is followed by another",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-disputed-half";
+        yield* ahead();
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit", "lint"]);
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          disputing(["unit failed"]),
+          repairing(),
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          options: { outcome: "feature" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* asked(runId, "gate-fix-2")).toContain("lint failed");
+        expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
       }),
     ),
   120_000,
@@ -3784,7 +4340,7 @@ scenario(
 );
 
 scenario(
-  "a check red on the base still reaches the fix loop before the merge request",
+  "a failed check that names no tests reaches the fix loop, and is never run at the base",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -3801,7 +4357,7 @@ scenario(
             {
               name: "unit",
               executable: "sh",
-              argv: ["-c", `echo >> ${count}; wc -l < ${count} | { read n; [ $n -ge 4 ]; }`],
+              argv: ["-c", `echo >> ${count}; wc -l < ${count} | { read n; [ $n -ge 3 ]; }`],
               cwd: rig.projectDir,
             },
           ]),
@@ -3824,13 +4380,14 @@ scenario(
         const opening = yield* asked("r-impl-red-base", "mr");
         expect(opening).toContain("gate fix 1");
         expect(yield* asked("r-impl-red-base", "gate-fix-1")).toContain("unit failed");
+        expect(yield* passesOf("r-impl-red-base")).toEqual(["gate", "recheck", "fix"]);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "a check that passes where the branch left the default branch is the Run's to fix",
+  "a check failing on a branch, whose output names no tests, is the Run's to fix and is never run at the base",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -3882,12 +4439,12 @@ scenario(
         expect(yield* asked("r-impl-own-red", "gate-fix-1")).toContain("unit failed");
         expect(yield* parkedWhy("r-impl-own-red")).toContain("unit failed");
         expect(yield* fs.exists(`${dir}/agents/r-impl-own-red/mr.prompt.md`)).toBe(false);
-        // The comparison ran at the base and put the branch back.
+        // Its output names no tests, so nothing is run at the base.
         expect(yield* git("rev-parse", "--abbrev-ref", "HEAD")).toBe("feature");
         const journal = yield* fs.readFileString(
           `${evidenceDir(dir, "r-impl-own-red")}/steering/verifications.jsonl`,
         );
-        expect(journal).toContain(base);
+        expect(journal).not.toContain(base);
       }),
     ),
   120_000,

@@ -7,10 +7,14 @@ import {
   checkGaps,
   evidenceGaps,
   endsWithoutPatch,
+  baseFailuresOf,
+  baselinesOwed,
+  flakesOf,
   isOutcome,
   KINDS,
   noCheckNamed,
   renderEvidence,
+  wholeRunsOwed,
   renderRecordedChecks,
 } from "../src/outcome";
 import type { Collected, Outcome } from "../src/outcome";
@@ -175,41 +179,19 @@ test("the latest of Collie's results on this tree is the one that counts", () =>
   ).toEqual([]);
 });
 
-test("a failure on the base does not prove this Run's approved check", () => {
-  const failing = [record({ name: "tests", result: "fail" })];
-  expect(
-    evidenceGaps(
-      "unspecified",
-      collected({ verifications: failing, preexisting: new Set(["tests"]) }),
-    ),
-  ).toEqual(["tests failed"]);
+test("a whole check failing on the base too does not prove this Run's approved check", () => {
+  const failing = [
+    record({ name: "tests", result: "fail" }),
+    record({ name: "tests", id: "base", pass: "baseline", result: "fail", start: BASE, end: BASE }),
+  ];
   expect(evidenceGaps("unspecified", collected({ verifications: failing }))).toEqual([
     "tests failed",
   ]);
-  expect(
-    evidenceGaps(
-      "unspecified",
-      collected({ verifications: [record({ name: "tests" })], preexisting: new Set(["tests"]) }),
-    ),
-  ).toEqual([]);
-  const moved = [...failing, record({ name: "tests", result: "unstable" })];
-  expect(
-    evidenceGaps(
-      "unspecified",
-      collected({ verifications: moved, preexisting: new Set(["tests"]) }),
-    ),
-  ).toHaveLength(1);
   const promised = {
     verifications: failing,
     tickets: [{ file: "01-picker.md", checks: ["tests"] }],
   };
   const built = { tickets_done: ["01"], scope_met: true };
-  expect(
-    evidenceGaps("feature", withOutput(built, { ...promised, preexisting: new Set(["tests"]) })),
-  ).toEqual([
-    "tests failed",
-    '01-picker.md promised check "tests", which has no passing verification on this tree',
-  ]);
   expect(evidenceGaps("feature", withOutput(built, promised))).toEqual([
     "tests failed",
     '01-picker.md promised check "tests", which has no passing verification on this tree',
@@ -559,4 +541,181 @@ test("a promised check is proved by a pass of its command under any name, and ne
     '01-a.md promised check "tests", which has no passing verification on this tree',
   ]);
   expect(gaps([agents(), reproduced])).toHaveLength(2);
+});
+
+const QUICK = { file: "test/one.test.ts", name: "the quick one" };
+const NESTED = { file: "test/two.test.ts", name: "outer > the nested one" };
+/** Collie's gate run of `tests`, failing on `failed`, and a rerun of each of `reran`. */
+const gateThenReruns = (
+  failed: ReadonlyArray<typeof QUICK>,
+  reran: ReadonlyArray<readonly [typeof QUICK, "pass" | "fail"]>,
+) => [
+  record({ name: "tests", pass: "gate", result: "fail", exit: 1, failed: [...failed] }),
+  ...reran.map(([test, result], at) =>
+    record({
+      name: "tests",
+      id: `rerun-${at}`,
+      pass: "rerun",
+      executable: "/usr/bin/bun",
+      argv: ["test", test.file, "-t", test.name],
+      test,
+      result,
+      exit: result === "pass" ? 0 : 1,
+      at: "2026-09-11T10:05:00.000Z",
+    }),
+  ),
+];
+
+test("a check whose failed tests all passed their rerun on this tree is not a gap, and each is a Flake", () => {
+  const got = collected({
+    verifications: gateThenReruns(
+      [QUICK, NESTED],
+      [
+        [QUICK, "pass"],
+        [NESTED, "pass"],
+      ],
+    ),
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([]);
+  expect(flakesOf(got)).toEqual([
+    { check: "tests", ...QUICK },
+    { check: "tests", ...NESTED },
+  ]);
+  // A ticket that promised the check is not owed a pass the Flake never was.
+  expect(
+    checkGaps("feature", { ...got, tickets: [{ file: "01-a.md", checks: ["tests"] }] }),
+  ).toEqual([]);
+});
+
+test("a check with a test still failing after its rerun is a gap naming that test", () => {
+  const got = collected({
+    verifications: gateThenReruns(
+      [QUICK, NESTED],
+      [
+        [QUICK, "pass"],
+        [NESTED, "fail"],
+      ],
+    ),
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([
+    "tests failed: outer > the nested one (test/two.test.ts)",
+  ]);
+  // A Flake is named whether or not its check is left failing on another test.
+  expect(flakesOf(got)).toEqual([{ check: "tests", ...QUICK }]);
+  // A rerun on another tree says nothing about this one.
+  const moved = gateThenReruns([QUICK], [[QUICK, "pass"]]).map((one, at) =>
+    at === 0 ? one : { ...one, end: EARLIER },
+  );
+  expect(evidenceGaps("unspecified", collected({ verifications: moved }))).toEqual([
+    "tests failed: the quick one (test/one.test.ts)",
+  ]);
+});
+
+test("a passing rerun record never counts as the check's pass", () => {
+  const rerun = gateThenReruns([], [[QUICK, "pass"]]).slice(1);
+  const tests = { name: "tests", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  for (const commands of [undefined, [tests]]) {
+    expect(evidenceGaps("unspecified", collected({ verifications: rerun, commands }))).toEqual([
+      "tests was never run",
+    ]);
+    expect(
+      evidenceGaps(
+        "unspecified",
+        collected({
+          verifications: [record({ ...tests, result: "fail", exit: 1, argv: ["test"] }), ...rerun],
+          commands,
+        }),
+      ),
+    ).toEqual(["tests failed"]);
+  }
+  expect(renderEvidence({ verifications: rerun, final: FINAL })).toBe("(nothing was verified)");
+});
+
+const BASE = { head_sha: "base00", fingerprint: "tree-b" };
+/** One test run alone where this branch leaves the default branch: `fail` only where bun said it failed. */
+const atBase = (test: typeof QUICK, result: "pass" | "fail") =>
+  record({
+    name: "tests",
+    id: `base-${test.name}`,
+    pass: "baseline",
+    executable: "/usr/bin/bun",
+    argv: ["test", test.file, "-t", test.name],
+    test,
+    result,
+    exit: result === "pass" ? 0 : 1,
+    start: BASE,
+    end: BASE,
+    at: "2026-09-11T10:06:00.000Z",
+  });
+
+test("still-failing tests that all failed at the base are not a gap, and each is named with the base", () => {
+  const got = collected({
+    verifications: [
+      ...gateThenReruns(
+        [QUICK, NESTED],
+        [
+          [QUICK, "pass"],
+          [NESTED, "fail"],
+        ],
+      ),
+      atBase(NESTED, "fail"),
+    ],
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([]);
+  expect(
+    checkGaps("feature", { ...got, tickets: [{ file: "01-a.md", checks: ["tests"] }] }),
+  ).toEqual([]);
+  expect(baseFailuresOf(got)).toEqual([{ check: "tests", ...NESTED, at: "base00" }]);
+  expect(flakesOf(got)).toEqual([{ check: "tests", ...QUICK }]);
+  // Neither a base failure nor a Flake is the check's pass.
+  expect(renderEvidence(got)).toBe("- tests: fail (by collie)");
+});
+
+test("a still-failing test that passed at the base, or that the base does not have, is a gap naming only it", () => {
+  const got = collected({
+    verifications: [
+      ...gateThenReruns(
+        [QUICK, NESTED],
+        [
+          [QUICK, "fail"],
+          [NESTED, "fail"],
+        ],
+      ),
+      atBase(QUICK, "fail"),
+      atBase(NESTED, "pass"),
+    ],
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([
+    "tests failed: outer > the nested one (test/two.test.ts)",
+  ]);
+  expect(flakesOf(got)).toEqual([]);
+});
+
+test("a test's failure at the base in another directory neither settles the check nor answers its baseline", () => {
+  const got = collected({
+    verifications: [
+      ...gateThenReruns([NESTED], [[NESTED, "fail"]]),
+      { ...atBase(NESTED, "fail"), cwd: "/repo/package-a" },
+    ],
+  });
+  expect(evidenceGaps("unspecified", got)).toEqual([
+    "tests failed: outer > the nested one (test/two.test.ts)",
+  ]);
+  expect(baselinesOwed(got)).toEqual([{ check: "tests", test: NESTED }]);
+});
+
+test("a whole run is owed by a check that failed naming no tests, or has no run of its command on this tree", () => {
+  const tests = { name: "tests", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  const regranted = [{ ...tests, argv: ["test", "--regranted"] }];
+  const failedWhole = [record({ ...tests, result: "fail", exit: 1 })];
+  expect(wholeRunsOwed(collected({ verifications: failedWhole, commands: [tests] }))).toEqual([
+    "tests",
+  ]);
+  expect(wholeRunsOwed(collected({ verifications: failedWhole, commands: regranted }))).toEqual([
+    "tests",
+  ]);
+  expect(
+    wholeRunsOwed(collected({ verifications: [record({ ...tests })], commands: [tests] })),
+  ).toEqual([]);
+  expect(wholeRunsOwed(collected({ verifications: gateThenReruns([QUICK], []) }))).toEqual([]);
 });

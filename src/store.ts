@@ -62,6 +62,8 @@ const Decision = Schema.Struct({
   answer: Schema.NullOr(Schema.String),
   /** The claim the answer arrived under, so the same request twice is one answer. */
   request: Schema.NullOr(Schema.String),
+  /** The operation whose agent asked it on its Run; null for the workflow's own question. */
+  asker: Schema.NullOr(Schema.String),
 });
 export type DecisionRow = typeof Decision.Type;
 
@@ -120,6 +122,7 @@ export interface StoreApi {
     readonly decision: string;
     readonly prompt: string;
     readonly options: ReadonlyArray<string>;
+    readonly asker?: string;
   }) => Effect.Effect<void>;
   /** Every question this run has been asked, answered or not, in the order they were. */
   readonly asked: (run: string) => Effect.Effect<ReadonlyArray<DecisionRow>>;
@@ -227,6 +230,10 @@ const MIGRATIONS = {
     yield* sql`ALTER TABLE collie_runs ADD COLUMN asked TEXT`;
     yield* sql`ALTER TABLE collie_runs ADD COLUMN placing TEXT`;
   }),
+  "8_asker": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE collie_decisions ADD COLUMN asker TEXT`;
+  }),
   "4_decisions": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
@@ -287,14 +294,14 @@ function makeStore(): Effect.Effect<StoreApi, never, SqlClient.SqlClient | React
       Request: Schema.String,
       Result: Decision,
       execute: (run) =>
-        sql`SELECT run, decision, prompt, options, answer, request FROM collie_decisions WHERE run = ${run} ORDER BY asked, decision`,
+        sql`SELECT run, decision, prompt, options, answer, request, asker FROM collie_decisions WHERE run = ${run} ORDER BY asked, decision`,
     });
 
     const decisionRow = SqlSchema.findAll({
       Request: Schema.Struct({ run: Schema.String, decision: Schema.String }),
       Result: Decision,
       execute: (key) =>
-        sql`SELECT run, decision, prompt, options, answer, request FROM collie_decisions WHERE run = ${key.run} AND decision = ${key.decision}`,
+        sql`SELECT run, decision, prompt, options, answer, request, asker FROM collie_decisions WHERE run = ${key.run} AND decision = ${key.decision}`,
     });
 
     const everyGeneration = SqlSchema.findAll({
@@ -322,10 +329,10 @@ function makeStore(): Effect.Effect<StoreApi, never, SqlClient.SqlClient | React
         Effect.gen(function* () {
           const at = yield* nowIso();
           yield* sql`
-              INSERT INTO collie_decisions (run, decision, prompt, options, asked)
+              INSERT INTO collie_decisions (run, decision, prompt, options, asked, asker)
               VALUES (
                 ${question.run}, ${question.decision}, ${question.prompt},
-                ${asJsonText([...question.options])}, ${at}
+                ${asJsonText([...question.options])}, ${at}, ${question.asker ?? null}
               )
               ON CONFLICT(run, decision) DO NOTHING
             `;

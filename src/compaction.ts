@@ -99,10 +99,10 @@ export interface AgentContext extends LaunchContext {
   /** The Run this agent belongs to. A delivery's ledger line names the Run, not the agent. */
   run: string;
   /**
-   * The one channel to this agent, owned by the Dispatcher transaction the caller opened.
-   * A compaction is a delivery like any other — it is recorded, it is ordered against
-   * whatever else is due, and it goes out under the same lock — so an adapter is handed
-   * a channel rather than herdr itself.
+   * The one channel to this agent. A request's is owned by the Dispatcher transaction
+   * opened for it: a compaction is a delivery like any other — it is recorded, it is
+   * ordered against whatever else is due, and it goes out under the same lock — so an
+   * adapter is handed a channel rather than herdr itself. A reading's or a poll's sends nothing.
    */
   channel: Channel;
   /** The local endpoint this agent's controls talk to, where it has one. */
@@ -389,11 +389,13 @@ export interface CompactionDeps {
 
 /**
  * Whether the waiting work may be sent. `dispatch: false` is the pause: the Run stops
- * where it is, with the reason a human reads, and no prompt goes to the agent.
+ * where it is, with the reason a human reads, and no prompt goes to the agent. `waiting`
+ * is a compaction past its budget that `pollCompaction` goes on asking about, outside
+ * the Dispatcher's transaction, while the reason is shown.
  */
 export type Boundary =
   | { readonly dispatch: true }
-  | { readonly dispatch: false; readonly reason: string };
+  | { readonly dispatch: false; readonly reason: string; readonly waiting?: true };
 
 const DISPATCH: Boundary = { dispatch: true };
 
@@ -792,8 +794,13 @@ const psCommand = (pid: number) =>
 export const atBoundary = Effect.fn("Compaction.atBoundary")(function* (
   deps: CompactionDeps,
   at: { agent: string; run: string; step: string },
-  /** From the caller's open transaction: the ports never take a lock of their own. */
-  channel: Channel,
+  /**
+   * Opens the Dispatcher's transaction for the request alone, failing `Unsubmitted` where
+   * it could not: the ports never take a lock of their own, and nothing else here holds one.
+   */
+  submitting: <A, E, R>(
+    body: (channel: Channel) => Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | Unsubmitted | Error, R | PortServices>,
 ) {
   const limit = yield* enabled(deps.configured);
   if (!limit) return DISPATCH;
@@ -810,7 +817,7 @@ export const atBoundary = Effect.fn("Compaction.atBoundary")(function* (
     cwd: record.cwd,
     dir: record.dir,
     endpoint: record.endpoint,
-    channel,
+    channel: sendsNothing(record.agent),
   };
 
   // An attempt an earlier boundary left unresolved outranks a fresh reading. It is the
@@ -820,7 +827,7 @@ export const atBoundary = Effect.fn("Compaction.atBoundary")(function* (
     yield* deps.log(
       `${at.agent}: compaction ${record.attempt.id} from ${record.attempt.step} is still unresolved`,
     );
-    return yield* settle(deps, ctx, record, record.attempt);
+    return yield* settle(deps, ctx, record, record.attempt, at.step);
   }
 
   const sample = yield* port
@@ -861,7 +868,9 @@ export const atBoundary = Effect.fn("Compaction.atBoundary")(function* (
   yield* deps.warn(
     `  ⇣ ${at.agent}: ${sample} tokens in context — asking it to compact before ${at.step}`,
   );
-  const submitted = yield* port.request(ctx, attempt.id).pipe(Effect.result);
+  const submitted = yield* submitting((channel) =>
+    port.request({ ...ctx, channel }, attempt.id),
+  ).pipe(Effect.result);
   const failure = Result.isFailure(submitted) ? submitted.failure : null;
   // Written but unconfirmed: what tells a request that never arrived from one ignored.
   if (Result.isSuccess(submitted) && submitted.success === "unobserved") {
@@ -886,7 +895,74 @@ export const atBoundary = Effect.fn("Compaction.atBoundary")(function* (
       `${at.agent}: asking it to compact failed (${reason(failure)}), but the request may already have reached it — waiting on ${attempt.id}`,
     );
   }
-  return yield* settle(deps, ctx, record, attempt);
+  return yield* settle(deps, ctx, record, attempt, at.step);
+});
+
+/**
+ * The channel a reading or a poll is given: it runs in no transaction, so a steer is never
+ * refused behind it, and it may send nothing.
+ */
+const sendsNothing = (agent: string): Channel => ({
+  agent,
+  submit: () =>
+    Effect.succeed({
+      ok: false,
+      id: null,
+      reason: "blocked",
+      detail: "a compaction's reading or poll sends nothing",
+    }),
+});
+
+/**
+ * One more look at an attempt past its budget. `null` while it is still unresolved; an attempt no longer recorded, as a
+ * deleted control directory leaves it, is over.
+ */
+export const pollCompaction = Effect.fn("Compaction.pollCompaction")(function* (
+  deps: CompactionDeps,
+  agent: string,
+) {
+  const record = yield* readControl(deps.stateDir, agent);
+  const port = record ? deps.ports[record.harness] : undefined;
+  if (!record?.attempt || !port) return DISPATCH;
+  const ctx: AgentContext = {
+    agent: record.agent,
+    run: record.attempt.run,
+    harness: record.harness,
+    cwd: record.cwd,
+    dir: record.dir,
+    endpoint: record.endpoint,
+    channel: sendsNothing(record.agent),
+  };
+  return yield* resolved(deps, ctx, record, record.attempt);
+});
+
+/** What the harness has established about one request: the boundary it ends, or `null`. */
+const resolved = Effect.fn("Compaction.resolved")(function* (
+  deps: CompactionDeps,
+  ctx: AgentContext,
+  record: ControlRecord,
+  attempt: Schema.Schema.Type<typeof AttemptSchema>,
+) {
+  const port = deps.ports[ctx.harness]!;
+  const outcome = yield* port.poll(ctx, attempt.id).pipe(
+    Effect.catch((cause) =>
+      // Logged, not warned, and above all not resolved: a read that failed says
+      // nothing about the compaction, and the budget is still running.
+      deps
+        .log(`${ctx.agent}: reading compaction ${attempt.id} failed (${reason(cause)})`)
+        .pipe(Effect.as(null)),
+    ),
+  );
+  if (outcome === null) return null;
+  yield* writeControl(deps.stateDir, { ...record, attempt: null });
+  if (outcome.kind === "success") {
+    yield* deps.log(`${ctx.agent}: native compaction ${attempt.id} completed`);
+  } else {
+    yield* deps.warn(
+      `  ⚠ ${ctx.agent}: native compaction failed (${outcome.reason}) — sending the work anyway`,
+    );
+  }
+  return DISPATCH;
 });
 
 /**
@@ -900,44 +976,26 @@ const settle = Effect.fn("Compaction.settle")(function* (
   ctx: AgentContext,
   record: ControlRecord,
   attempt: Schema.Schema.Type<typeof AttemptSchema>,
+  step: string,
 ) {
-  const port = deps.ports[ctx.harness]!;
-  const clear = writeControl(deps.stateDir, { ...record, attempt: null });
   for (;;) {
-    const outcome = yield* port.poll(ctx, attempt.id).pipe(
-      Effect.catch((cause) =>
-        // Logged, not warned, and above all not resolved: a read that failed says
-        // nothing about the compaction, and the budget is still running.
-        deps
-          .log(`${ctx.agent}: reading compaction ${attempt.id} failed (${reason(cause)})`)
-          .pipe(Effect.as(null)),
-      ),
-    );
-    if (outcome?.kind === "success") {
-      yield* clear;
-      yield* deps.log(`${ctx.agent}: native compaction ${attempt.id} completed`);
-      return DISPATCH;
-    }
-    if (outcome?.kind === "failure") {
-      yield* clear;
-      yield* deps.warn(
-        `  ⚠ ${ctx.agent}: native compaction failed (${outcome.reason}) — sending the work anyway`,
-      );
-      return DISPATCH;
-    }
+    const done = yield* resolved(deps, ctx, record, attempt);
+    if (done !== null) return done;
     const now = yield* Clock.currentTimeMillis;
     if (now >= attempt.deadline) {
       // The attempt is kept, not cleared: it is unresolved, not over. A timeout is not
       // proof that the agent stopped compacting, so nothing here retries, kills the
-      // agent or replays the work — and the next boundary refuses to dispatch too.
+      // agent or replays the work.
+      if (deps.waitMs === 0)
+        return {
+          dispatch: false,
+          reason: `${ctx.agent}: compaction ${attempt.id} is still in the air — no work sent; try again once it has finished`,
+        } satisfies Boundary;
       return {
         dispatch: false,
-        reason:
-          deps.waitMs === 0
-            ? `${ctx.agent}: compaction ${attempt.id} is still in the air — no work sent; try again once it has finished`
-            : `${ctx.agent}: compaction ${attempt.id} neither completed nor failed within ` +
-              `${Math.round(deps.waitMs / 60_000)} minutes — no work sent; check its pane`,
-      };
+        waiting: true,
+        reason: `${ctx.agent}: compaction ${attempt.id} has not finished after ${Math.round(deps.waitMs / 60_000)} minutes; Collie keeps waiting and sends ${step} once it does. Check its pane.`,
+      } satisfies Boundary;
     }
     yield* Effect.sleep(Math.min(deps.pollMs, attempt.deadline - now));
   }

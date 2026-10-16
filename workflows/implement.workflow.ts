@@ -32,7 +32,10 @@ import {
   criteriaIn,
   defineWorkflow,
   evidenceGapsOf,
+  baseFailuresOf,
+  baselinesOwed,
   findingKey,
+  flakesOf,
   formatFindings,
   identityProblem,
   isBlocking,
@@ -43,13 +46,15 @@ import {
   renderApproved,
   renderEvidence,
   renderProgress,
+  rerunsOwed,
+  settledChecks,
   settleFinalFix,
   leaveOutstanding,
   findingsIn,
   settleRound,
   splitDisputed,
   unmetCriteria,
-  type CheckEvidence,
+  wholeRunsOwed,
   type Criterion,
   type Finding,
   type Handed,
@@ -181,21 +186,6 @@ const ROUNDS = 4;
 const CRITERIA_TRIES = 2;
 /** Hand-backs of what stopped an integration — a commit can uncover a conflict. */
 const MERGE_TRIES = 2;
-
-/** The checks whose latest run by Collie, on the tree in front of it, failed. */
-const failingNow = (evidence: CheckEvidence, names: ReadonlyArray<string>) =>
-  names.filter(
-    (name) =>
-      evidence.verifications
-        .filter(
-          (v) =>
-            v.name === name &&
-            v.by === "collie" &&
-            v.end.head_sha === evidence.final.head_sha &&
-            v.end.fingerprint === evidence.final.fingerprint,
-        )
-        .at(-1)?.result === "fail",
-  );
 
 /** One agent for the whole Run, so its model is named once and the fixes know the build. */
 const BUILDER = "build";
@@ -550,8 +540,8 @@ export default defineWorkflow({
       // checks that may come out differently. The host runs nothing that already passed on
       // this tree.
       let passes = 0;
+      let reruns = 0;
       let passed: ReadonlyArray<string> = [];
-      let baseline: ReadonlyArray<{ readonly name: string; readonly at: string }> = [];
       const readGaps = Effect.fn("implement.readGaps")(function* (
         approved: ReadonlyArray<VerifySpec>,
         reviewed: SynthesisReport,
@@ -580,58 +570,103 @@ export default defineWorkflow({
             // A pass journaled before gaps were told apart handed a fix every gap.
             fixable: Schema.optionalKey(Schema.Array(Schema.String)),
             passed: Schema.Array(Schema.String),
+            tree: Schema.optionalKey(
+              Schema.Struct({ head: Schema.String, fingerprint: Schema.String }),
+            ),
           }),
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
             const now = [...passed];
+            // A failure that named its tests had them run again alone instead.
+            const whole =
+              why.pass === "recheck"
+                ? wholeRunsOwed({ ...(yield* host.evidence(runId, cwd)), approved: checks })
+                : null;
             for (const spec of checks) {
               if (now.includes(spec.name)) continue;
+              if (whole !== null && !whole.includes(spec.name)) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
-            return { ...(yield* readGaps(checks, rallied.reviewed)), passed: now };
+            const { final } = yield* host.evidence(runId, cwd);
+            return {
+              ...(yield* readGaps(checks, rallied.reviewed)),
+              passed: now,
+              tree: { head: final.head_sha, fingerprint: final.fingerprint },
+            };
           }).pipe(Effect.orDie),
         });
         passed = pass.passed;
-        return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps };
+        return { gaps: pass.gaps, fixable: pass.fixable ?? pass.gaps, tree: pass.tree };
       });
-      let gaps = yield* gapsNow({ pass: "gate" });
-      if (gaps.fixable.length > 0) {
-        // A baseline failure is context, never proof that this tree passes.
-        baseline = yield* Activity.make({
-          name: "baseline",
-          success: Schema.Array(Schema.Struct({ name: Schema.String, at: Schema.String })),
-          execute: Effect.gen(function* () {
-            const failing = failingNow(
-              yield* host.evidence(runId, cwd),
-              (yield* host.approved(runId)).map((spec) => spec.name),
-            );
-            const failed: Array<{ name: string; at: string }> = [];
-            for (const name of failing) {
-              const ran = yield* host
-                .verify({ runId, name, cwd, at: "default-base" })
-                .pipe(Effect.orElseSucceed(() => null));
-              if (ran?.result === "fail") failed.push({ name, at: ran.start.head_sha });
-            }
-            return failed;
+      // Each test a failed check named, run again alone once on the same tree, and each that
+      // still fails run alone at the base: a Flake, or a test that fails there too, is neither
+      // a gap nor a pass (ADR-0034, amended 2026-10-15).
+      const settleTests = Effect.gen(function* () {
+        const approved = yield* host.approved(runId);
+        for (const { check, test } of rerunsOwed({
+          ...(yield* host.evidence(runId, cwd)),
+          approved,
+        }))
+          yield* host.verify({ runId, name: check, cwd, pass: "rerun", test });
+        // A base that cannot be reached exempts nothing.
+        for (const { check, test } of baselinesOwed({
+          ...(yield* host.evidence(runId, cwd)),
+          approved,
+        }))
+          yield* host
+            .verify({ runId, name: check, cwd, at: "default-base", test })
+            .pipe(Effect.ignore);
+        return approved;
+      });
+      const settleFailed = Effect.fn("implement.settleFailed")(function* (gaps: {
+        readonly gaps: ReadonlyArray<string>;
+        readonly fixable: ReadonlyArray<string>;
+        readonly tree?: { readonly head: string; readonly fingerprint: string };
+      }) {
+        if (gaps.fixable.length === 0) return gaps;
+        reruns += 1;
+        const reread = yield* Activity.make({
+          name: `rerun.${reruns}`,
+          success: Schema.Struct({
+            gaps: Schema.Array(Schema.String),
+            fixable: Schema.Array(Schema.String),
           }),
+          execute: settleTests.pipe(
+            Effect.flatMap((approved) => readGaps(approved, rallied.reviewed)),
+            Effect.orDie,
+          ),
         });
-        // Once more before a fix: a check that fails and then passes on the same tree is a
-        // flake, and a Run that ends on one has proved nothing about the change.
-        gaps = yield* gapsNow({ pass: "recheck" });
-      }
+        // Neither moves the tree from where the pass before read it.
+        return { ...reread, tree: gaps.tree };
+      });
+      let gaps = yield* settleFailed(yield* gapsNow({ pass: "gate" }));
+      // Once more before a fix, where a failure named no tests: a check that fails and then
+      // passes on the same tree is a flake, and a Run that ends on one has proved nothing.
+      if (gaps.fixable.length > 0) gaps = yield* settleFailed(yield* gapsNow({ pass: "recheck" }));
       // A gate fix lands after the last review, so the merge request says it was not re-reviewed.
       let unreviewed = rallied.unreviewed;
       // The implementer fixes what a check could still prove, bounded like the rally; the
       // human reads what is left in the merge request, before it lands.
       let fixes = 0;
-      for (; gaps.fixable.length > 0 && fixes < ROUNDS; fixes++) {
+      // A round that changed nothing and disputed every finding: another would check the same tree.
+      let stalled: { readonly at: number; readonly disputed: ReadonlyArray<Finding> } | null = null;
+      for (; gaps.fixable.length > 0 && fixes < ROUNDS && stalled === null; fixes++) {
         const at = fixes + 1;
+        const before = gaps.tree;
         passed = [];
+        const atBase = baseFailuresOf({
+          ...(yield* host.evidence(runId, cwd)),
+          approved: yield* host.approved(runId),
+        }).map(({ check, name, file }) => `${check}: ${name} (${file})`);
         const findings = gaps.fixable.map((gap) => ({
           severity: "blocker",
           title: gap,
-          detail: "Collie read this Run's checks on this tree, and this is what is still unproved.",
+          detail: `Collie read this Run's checks on this tree, and this is what is still unproved.${
+            atBase.length === 0
+              ? ""
+              : ` These also fail where this branch leaves the default branch, so they are not yours to fix: ${atBase.join("; ")}.`
+          }`,
         }));
         const fixed = yield* agentWork({
           operation: `gate-fix-${at}`,
@@ -648,7 +683,16 @@ export default defineWorkflow({
           },
           output: FixOutputSchema,
         });
-        gaps = yield* gapsNow({ pass: "fix", round: at });
+        gaps = yield* settleFailed(yield* gapsNow({ pass: "fix", round: at }));
+        const disputed = new Set((fixed.disputed ?? []).map(findingKey));
+        if (
+          before !== undefined &&
+          gaps.tree?.head === before.head &&
+          gaps.tree.fingerprint === before.fingerprint &&
+          (fixed.fixed ?? []).length === 0 &&
+          findings.every((one) => disputed.has(findingKey(one)))
+        )
+          stalled = { at, disputed: fixed.disputed ?? [] };
         const settled = settleFinalFix(findings, fixed, yield* host.evidence(runId, cwd));
         unreviewed = [
           unreviewed,
@@ -673,25 +717,35 @@ export default defineWorkflow({
         execute: Effect.gen(function* () {
           const approved = yield* host.approved(runId);
           let reviewed = rallied.reviewed;
-          const reading = Effect.suspend(() => readGaps(approved, reviewed));
-          const rely = Effect.forEach(
-            approved,
-            (spec) =>
-              Effect.gen(function* () {
-                const relied = yield* host.verify({
-                  runId,
-                  name: spec.name,
-                  cwd,
-                  pass: "recheck",
-                });
-                yield* host.record(
-                  runId,
-                  `proof: ${spec.name} relies on verification ${relied.id}`,
-                );
-              }),
-            { discard: true },
+          const disputed = new Set((stalled?.disputed ?? []).map(findingKey));
+          const undisputed = (gap: string) => !disputed.has(findingKey({ title: gap }));
+          const reading = Effect.suspend(() => readGaps(approved, reviewed)).pipe(
+            Effect.map(({ gaps, fixable }) => ({
+              gaps: gaps.filter(undisputed),
+              fixable: fixable.filter(undisputed),
+            })),
           );
+          // A check settled on this tree by its tests run alone is not run again; one that is
+          // has its named failures run alone too, before any gap is read.
+          const rely = Effect.gen(function* () {
+            const settled = settledChecks({ ...(yield* host.evidence(runId, cwd)), approved });
+            for (const spec of approved.filter((one) => !settled.includes(one.name))) {
+              const relied = yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" });
+              yield* host.record(runId, `proof: ${spec.name} relies on verification ${relied.id}`);
+            }
+            yield* settleTests;
+          });
           yield* rely;
+          if (stalled !== null) {
+            const standing = (yield* readGaps(approved, reviewed)).fixable.filter(
+              (gap) => !undisputed(gap),
+            );
+            if (standing.length > 0)
+              yield* host.record(
+                runId,
+                `outcome unproved: ${standing.join("; ")}; gate fix ${stalled.at} disputed them and changed nothing`,
+              );
+          }
           let missing = yield* reading;
           if (missing.fixable.length > 0) {
             yield* host.parked(
@@ -740,18 +794,24 @@ export default defineWorkflow({
         ]);
       }
       const checks = yield* host.approved(runId);
+      const journal = { ...(yield* host.evidence(runId, cwd)), approved: checks };
+      const flakes = flakesOf(journal);
       // Failed before this Run changed anything, and still fails: reported, never passed.
-      const failing = failingNow(
-        yield* host.evidence(runId, cwd),
-        checks.map((spec) => spec.name),
-      );
-      const preexisting = baseline.filter((one) => failing.includes(one.name));
+      const preexisting = baseFailuresOf(journal);
       const unsettled = [
         ...assumed,
         ...rallied.unsettled,
+        ...(stalled?.disputed ?? []).map(
+          (one) =>
+            `${one.title}: gate fix ${stalled!.at} disputed it and changed nothing${one.reason ? `: ${one.reason}` : ""}`,
+        ),
+        ...flakes.map(
+          ({ check, name, file }) =>
+            `${check}: ${name} (${file}) failed, then passed when run again alone on the same tree — a Flake, so this Run has not settled it.`,
+        ),
         ...preexisting.map(
-          ({ name, at }) =>
-            `${name} also fails at ${at.slice(0, 12)}, where this branch leaves the default branch, so it failed before this Run's changes and still fails (by exit code only: a dependency this branch changed can make that comparison wrong)`,
+          ({ check, name, file, at }) =>
+            `${check}: ${name} (${file}) also fails at ${at.slice(0, 12)}, where this branch leaves the default branch, so it failed before this Run's changes.`,
         ),
       ];
       if (unsettled.length > 0) yield* host.record(runId, `unsettled: ${unsettled.join("; ")}`);
@@ -922,7 +982,9 @@ const spawned = (
   verifications: ReadonlyArray<Verification>,
 ): ReadonlyArray<VerifySpec> =>
   granted.map((spec) => {
-    const ran = verifications.findLast((one) => one.name === spec.name && one.by === "collie");
+    const ran = verifications.findLast(
+      (one) => one.name === spec.name && one.by === "collie" && one.test === undefined,
+    );
     return ran === undefined
       ? spec
       : { name: spec.name, executable: ran.executable, argv: ran.argv, cwd: ran.cwd };

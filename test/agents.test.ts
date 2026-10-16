@@ -11,7 +11,17 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import type { BunServices } from "@effect/platform-bun";
-import { ConfigProvider, Duration, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import {
+  Clock,
+  ConfigProvider,
+  Duration,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Path,
+  Schema,
+} from "effect";
 import { TestClock } from "effect/testing";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr, type Call } from "./support/recorder";
@@ -30,6 +40,7 @@ import { Children, Host, Run, jsonSchemaFor, withAgents } from "../src/sdk";
 import { asRun, enveloped } from "./support/enveloped";
 import {
   PARKED,
+  STOP,
   controlPath,
   evidenceDir,
   foundationLayer,
@@ -53,7 +64,13 @@ import { taskFor } from "../src/operations";
 import { lineageAgent, readRegistry, registerAgent, registryPath, scopeFor } from "../src/registry";
 import { HerdrError } from "../src/herdr";
 import { agentName, shellQuote } from "../src/naming";
-import { controlDir, withControlLock, type CompactionPorts } from "../src/compaction";
+import {
+  controlDir,
+  withControlLock,
+  type AgentContext,
+  type CompactionOutcome,
+  type CompactionPorts,
+} from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
 import { claudeTrust } from "../src/trust";
 import { FALLBACK_DEFAULTS } from "../src/settings";
@@ -181,7 +198,7 @@ const session = <A, E>(
   run: Effect.Effect<
     A,
     E,
-    WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem | Path.Path
+    WorkflowEngine.WorkflowEngine | Agents | Store | BunServices.BunServices
   >,
   over?: Partial<AgentHost>,
 ) =>
@@ -637,6 +654,248 @@ test(
         const result = yield* releasedInto("r1");
         expect(result._tag === "Success" && result.success.note).toBe("late");
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+/** Ends once the Run parks, with that as its result. */
+const untilParked = (runId: string) =>
+  Effect.gen(function* () {
+    while (!(yield* parked(runId))) yield* TestClock.withLive(Effect.sleep("10 millis"));
+    return "parked" as const;
+  });
+
+/** An agent herdr reports busy until its Output is written. */
+class BusyUntilWritten extends FakeHerdr {
+  reads = 0;
+  written = false;
+  constructor(private readonly busy: "working" | "blocked") {
+    super(rig.pluginEnv());
+  }
+  override agentStatus() {
+    this.reads += 1;
+    return Effect.succeed(this.written ? ("idle" as const) : this.busy);
+  }
+}
+
+for (const busy of ["working", "blocked"] as const)
+  test(
+    `an agent herdr reports ${busy} far past the budget is collected, never parked`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          yield* rig.queueOutputs([null]);
+          const herdr = new BusyUntilWritten(busy);
+          // Five budgets' worth of polls at 20ms against 400ms, then the Output.
+          const writes = Effect.gen(function* () {
+            while (herdr.reads < 100) yield* TestClock.withLive(Effect.sleep("10 millis"));
+            yield* (yield* FileSystem.FileSystem).writeFileString(
+              outputPath("r1"),
+              `{"verdict":"clean","note":"after the suite"}`,
+            );
+            herdr.written = true;
+          });
+          const result = yield* session(
+            Effect.forkChild(writes).pipe(
+              Effect.andThen(Effect.raceFirst(started("r1"), untilParked("r1"))),
+            ),
+            { herdr, collectMs: 400 },
+          );
+          expect(result).not.toBe("parked");
+          expect(result !== "parked" && result._tag === "Success" && result.success.note).toBe(
+            "after the suite",
+          );
+        }),
+      ),
+    60_000,
+  );
+
+for (const [what, herdr] of [
+  ["idle", () => new FakeHerdr(rig.pluginEnv())],
+  ["unreadable", () => new Unreadable(rig.pluginEnv())],
+] as const)
+  test(
+    `an agent whose status is ${what} and that writes nothing parks once the budget is spent idle`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          yield* rig.queueOutputs([null]);
+          yield* interrupted("r1", parked("r1"), {
+            herdr: herdr(),
+            pollMs: 1_000,
+            collectMs: 120_000,
+          });
+          expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
+            `has written nothing to ${outputPath("r1")} after 2 minutes idle. If it is still working,`,
+          );
+        }),
+      ),
+    60_000,
+  );
+
+/** Claude's `PreToolUse` for one `AskUserQuestion` call of two questions. */
+const askedTwo = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+  session_id: "s-1",
+  hook_event_name: "PreToolUse",
+  tool_name: "AskUserQuestion",
+  tool_use_id: "toolu_1",
+  tool_input: {
+    questions: [
+      {
+        question: "Which database?",
+        header: "Database",
+        options: [
+          { label: "Postgres", description: "the one ops runs" },
+          { label: "SQLite", description: "a file beside the app" },
+        ],
+        multiSelect: false,
+      },
+      {
+        question: "Which checks?",
+        header: "Checks",
+        options: [{ label: "lint", description: "oxlint" }],
+        multiSelect: true,
+      },
+    ],
+  },
+});
+
+const ANSWERED = "Your question has been answered on your Run.";
+
+/** Once `r1`'s agent has its work, it calls `AskUserQuestion` with two questions. */
+const asksTwo = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  while (!(yield* fs.exists(`${dir}/agents/r1/review.launch.json`)))
+    yield* TestClock.withLive(Effect.sleep("10 millis"));
+  yield* recordClaudeEvent(yield* controlDir(rig.pluginEnv().stateDir, agentFor("r1")), askedTwo);
+}).pipe(Effect.orDie);
+
+/** `r1`'s questions once there are `count` of them, by name. */
+const questionsOf = (count: number) =>
+  Effect.gen(function* () {
+    const store = yield* Store;
+    for (;;) {
+      const asked = yield* store.asked("r1");
+      if (asked.length >= count) return asked;
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+    }
+  });
+
+const answer = (decision: string, value: string) =>
+  Store.pipe(
+    Effect.flatMap((store) =>
+      store.settle({ run: "r1", decision, value, request: `answer-${decision}` }),
+    ),
+  );
+
+/** Waits out `ms` on the run's own clock. */
+const spend = (ms: number) =>
+  Effect.gen(function* () {
+    const until = (yield* Clock.currentTimeMillis) + ms;
+    while ((yield* Clock.currentTimeMillis) < until)
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+  });
+
+test(
+  "an agent's two questions are open Decisions on its Run, and both answers go back as one Delivery",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* asksTwo;
+            const asked = yield* questionsOf(2);
+            expect(asked.map((one) => [one.decision, one.answer])).toEqual([
+              ["ask-review-1", null],
+              ["ask-review-2", null],
+            ]);
+            expect(asked[0]?.prompt).toBe(
+              "Database: Which database?\nPostgres — the one ops runs\nSQLite — a file beside the app\nAnswer with an option or in your own words.",
+            );
+            expect(asked[1]?.prompt).toBe(
+              "Checks: Which checks?\nlint — oxlint\n(choose any)\nAnswer with an option or in your own words.",
+            );
+
+            yield* answer("ask-review-1", "SQLite, it is a demo");
+            yield* spend(5_000);
+            expect(sent(yield* rig.calls(), ANSWERED)).toBe(0);
+
+            yield* answer("ask-review-2", "lint");
+            while (!(yield* prompted(ANSWERED)))
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
+            yield* spend(5_000);
+            const calls = yield* rig.calls();
+            expect(sent(calls, ANSWERED)).toBe(1);
+            const delivered = calls.find((call) => (call.argv?.[3] ?? "").includes(ANSWERED));
+            expect(delivered?.argv?.[3]).toContain(
+              "Database: Which database?\nAnswer: SQLite, it is a demo",
+            );
+            expect(delivered?.argv?.[3]).toContain("Checks: Which checks?\nAnswer: lint");
+          }),
+          { collectMs: 120_000, pollMs: 1_000 },
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "an open question pauses an idle agent's Output budget, which runs again once it is answered",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* asksTwo;
+            yield* questionsOf(2);
+            yield* spend(150_000);
+            expect(yield* parked("r1")).toBe(false);
+
+            yield* answer("ask-review-1", "Postgres");
+            yield* answer("ask-review-2", "lint");
+            while (!(yield* parked("r1"))) yield* TestClock.withLive(Effect.sleep("10 millis"));
+          }),
+          { collectMs: 60_000, pollMs: 1_000 },
+        );
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain("after 1 minutes idle");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a question still open when the Output comes is closed, and nothing is sent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* asksTwo;
+            yield* questionsOf(2);
+            yield* answer("ask-review-1", "Postgres");
+            yield* (yield* FileSystem.FileSystem).writeFileString(
+              outputPath("r1"),
+              `{"verdict":"clean","note":"decided for itself"}`,
+            );
+            const done = yield* Fiber.join(fiber);
+            const asked = yield* (yield* Store).asked("r1");
+            expect(asked.map((one) => [one.decision, one.answer])).toEqual([
+              ["ask-review-1", "Postgres"],
+              ["ask-review-2", "closed: review finished before it was answered"],
+            ]);
+            return done;
+          }),
+          { collectMs: 120_000, pollMs: 1_000 },
+        );
+        expect(result._tag).toBe("Success");
+        expect(sent(yield* rig.calls(), ANSWERED)).toBe(0);
       }),
     ),
   120_000,
@@ -2614,6 +2873,221 @@ test("by default a reused agent past 150,000 tokens compacts between tickets", (
 test("by default a reused agent under 150,000 tokens is not compacted", () =>
   runEffect(compactionsAtDefault(140_000).pipe(Effect.map((asked) => expect(asked).toBe(0)))));
 
+/**
+ * A compaction that has not finished until the test says how it ended. Each poll also tries
+ * to send through the channel it was given, and keeps what that channel answered.
+ */
+interface SlowCompaction {
+  ended: CompactionOutcome | null;
+  readonly asked: string[];
+  readonly pollSent: boolean[];
+}
+
+const slowCompaction = () => {
+  const state: SlowCompaction = { ended: null, asked: [], pollSent: [] };
+  const full = fullContext(state.asked).claude!;
+  const submit = (ctx: AgentContext, id: string, text: string, requestId: string) =>
+    ctx.channel.submit(text, {
+      run: ctx.run,
+      cause: { kind: "compaction", ref: id },
+      mode: "boundary",
+      intentVersion: 0,
+      attempt: 1,
+      requestId,
+    });
+  const ports: CompactionPorts = {
+    claude: {
+      ...full,
+      request: (ctx, id) =>
+        submit(ctx, id, "/compact", id).pipe(Effect.andThen(full.request(ctx, id))),
+      poll: (ctx, id) =>
+        submit(ctx, id, "from a poll", `${id}-poll`).pipe(
+          Effect.map((outcome) => {
+            state.pollSent.push(outcome.ok);
+            return state.ended;
+          }),
+        ),
+    },
+  };
+  return { state, ports };
+};
+
+const until = (reached: Reached) =>
+  Effect.gen(function* () {
+    for (let tries = 0; !(yield* reached); tries++) {
+      if (tries === 3_000) return yield* Effect.die(new Error("never got that far"));
+      yield* TestClock.withLive(Effect.sleep("10 millis"));
+    }
+  });
+
+const parkedSays = (about: string): Reached =>
+  read(controlPath(dir, PARKED, "r1")).pipe(Effect.map((why) => why.includes(about)));
+
+const listingSuspended: Reached = Effect.gen(function* () {
+  const engine = yield* WorkflowEngine.WorkflowEngine;
+  const id = yield* listing.executionId({ runId: "r1", input: ITEMS });
+  return pollStatus(yield* engine.poll(listing, id), "agent-listing").status === "suspended";
+});
+
+/**
+ * The two-item list, its boundary's compaction still running past a shortened wait while
+ * `during` runs. The list's result, or null where `stops` and it suspended instead.
+ */
+const pastTheWait = <A, E>(
+  ports: CompactionPorts,
+  during: Effect.Effect<A, E, Agents | FileSystem.FileSystem | WorkflowEngine.WorkflowEngine>,
+  stops = false,
+) =>
+  Effect.gen(function* () {
+    yield* rig.queueOutputs([
+      { verdict: "clean", note: "first" },
+      { verdict: "clean", note: "second" },
+    ]);
+    const fiber = yield* Effect.forkChild(
+      listing.execute({ runId: "r1", input: ITEMS }).pipe(Effect.result),
+    );
+    const what = yield* during;
+    if (stops) {
+      yield* until(listingSuspended);
+      return { what, result: null };
+    }
+    return { what, result: yield* Fiber.join(fiber) };
+  }).pipe(
+    Effect.provide(listingBody),
+    Effect.provide(
+      agentsLayer({ ...hostOf(), compactAtTokens: 1000, ports, compactionWaitMs: 60_000 }),
+    ),
+    Effect.provide(foundationLayer({ dir })),
+    Effect.scoped,
+    Effect.orDie,
+  );
+
+const NOT_FINISHED = "has not finished after 1 minutes; Collie keeps waiting and sends 02-ui";
+
+test(
+  "a compaction past its wait keeps the Run waiting, says so, and sends the work once it completes",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        const { result } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            expect(yield* parkedSays("Check its pane")).toBe(true);
+            expect(sent(yield* rig.calls(), "02-ui")).toBe(0);
+            state.ended = { kind: "success" };
+          }),
+        );
+        expect(result?._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toBe("");
+        expect(yield* read(`${dir}/agents/r1/agents.log`)).toMatch(
+          /native compaction \S+ completed/,
+        );
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a compaction that fails past its wait clears the note and sends the work with the warning",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        const { result } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            state.ended = { kind: "failure", reason: "the window is full" };
+          }),
+        );
+        expect(result?._tag).toBe("Success");
+        expect(yield* read(controlPath(dir, PARKED, "r1"))).toBe("");
+        expect(yield* read(`${dir}/agents/r1/agents.log`)).toContain(
+          "native compaction failed (the window is full) — sending the work anyway",
+        );
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a steer reaches the agent before and after a compaction's wait while it is unresolved",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        const { what } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(Effect.sync(() => state.asked.length === 1));
+            const before = yield* say("r1", "mind the schema", "steer-1");
+            const early = yield* parkedSays(NOT_FINISHED);
+            yield* until(parkedSays(NOT_FINISHED));
+            const after = yield* say("r1", "mind the migration", "steer-2");
+            const unresolved = state.ended === null;
+            state.ended = { kind: "success" };
+            return { before, early, after, unresolved };
+          }),
+        );
+        expect(what.early).toBe(false);
+        expect(what.unresolved).toBe(true);
+        expect([what.before.delivered, what.after.delivered]).toEqual([true, true]);
+        expect(sent(yield* rig.calls(), "mind the schema")).toBe(1);
+        expect(sent(yield* rig.calls(), "mind the migration")).toBe(1);
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a compaction's polls are given a channel that sends nothing, and only its request is sent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { state, ports } = slowCompaction();
+        yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            state.ended = { kind: "success" };
+          }),
+        );
+        expect(state.pollSent.length).toBeGreaterThan(1);
+        expect(state.pollSent.every((ok) => !ok)).toBe(true);
+        const compactions = (yield* deliveriesOf(rig.pluginEnv().stateDir, "r1")).filter(
+          ({ delivery }) => delivery.cause.kind === "compaction",
+        );
+        expect(compactions).toHaveLength(1);
+        expect(sent(yield* rig.calls(), "from a poll")).toBe(0);
+      }),
+    ),
+  60_000,
+);
+
+test(
+  "a stop while a compaction is past its wait ends the wait and types nothing",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { ports } = slowCompaction();
+        const fs = yield* FileSystem.FileSystem;
+        const { result } = yield* pastTheWait(
+          ports,
+          Effect.gen(function* () {
+            yield* until(parkedSays(NOT_FINISHED));
+            yield* fs.writeFileString(controlPath(dir, STOP, "r1"), "").pipe(Effect.orDie);
+          }),
+          true,
+        );
+        expect(result).toBe(null);
+        expect(sent(yield* rig.calls(), "02-ui")).toBe(0);
+      }),
+    ),
+  60_000,
+);
+
 test("a boundary whose context cannot be sampled records no context line, never a zero", () =>
   runEffect(
     Effect.gen(function* () {
@@ -2634,6 +3108,166 @@ test("a boundary whose context cannot be sampled records no context line, never 
         );
       const lines = yield* readMetrics(evidenceDir(dir, "r1"));
       expect(lines.filter((line) => line.kind === "context")).toEqual([]);
+    }),
+  ));
+
+/** What a reused agent was asked and told, and what herdr said of it, in order. */
+class Watched extends FakeHerdr {
+  readonly seen: string[] = [];
+  override agentStatus(target: string) {
+    return super
+      .agentStatus(target)
+      .pipe(Effect.tap((status) => Effect.sync(() => this.seen.push(status))));
+  }
+  override agentPrompt(target: string, text: string) {
+    this.seen.push(`prompt ${/([^/\s]+)\.prompt\.md/.exec(text)?.[1] ?? text}`);
+    return super.agentPrompt(target, text);
+  }
+}
+
+/** The two-item list with its agent's status scripted, over the compaction limit. */
+const listedWhile = (status: string, herdr?: FakeHerdr) =>
+  Effect.gen(function* () {
+    yield* rig.queueOutputs([
+      { verdict: "clean", note: "first" },
+      { verdict: "clean", note: "second" },
+    ]);
+    const watched = herdr ?? new Watched(rig.pluginEnv({ FAKE_HERDR_AGENT_STATUS: status }));
+    const seen = watched instanceof Watched ? watched.seen : [];
+    const full = fullContext([]).claude!;
+    const ports: CompactionPorts = {
+      claude: {
+        ...full,
+        request: (ctx, id) =>
+          Effect.sync(() => void seen.push("compact")).pipe(Effect.andThen(full.request(ctx, id))),
+      },
+    };
+    const result = yield* listing.execute({ runId: "r1", input: ITEMS }).pipe(
+      Effect.result,
+      Effect.provide(listingBody),
+      Effect.provide(
+        agentsLayer({
+          ...hostOf(),
+          herdr: watched,
+          compactAtTokens: 1000,
+          ports,
+        }),
+      ),
+      Effect.provide(foundationLayer({ dir })),
+      Effect.scoped,
+      Effect.orDie,
+    );
+    return { result, seen };
+  });
+
+for (const busy of ["working", "blocked"])
+  test(`a reused agent herdr reports ${busy} is given nothing until it is idle`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { result, seen } = yield* listedWhile(`idle,${busy},${busy},${busy},idle`);
+        expect(result._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
+        // The first read is the first prompt's own, as it went in.
+        const boundary = seen.slice(seen.indexOf("prompt 01-api") + 2);
+        expect(boundary.slice(0, 5)).toEqual([busy, busy, busy, "idle", "compact"]);
+        expect(boundary.filter((one) => one.startsWith("prompt"))).toEqual(["prompt 02-ui"]);
+        const log = yield* read(`${dir}/agents/r1/agents.log`);
+        expect(log.match(/still working; 02-ui waits for its turn to end/g)).toHaveLength(1);
+      }),
+    ));
+
+/** herdr cannot say what the agent is doing. */
+class Unreadable extends FakeHerdr {
+  override agentStatus() {
+    return Effect.fail(
+      new HerdrError({
+        message: "herdr agent get failed",
+        detail: "socket closed",
+      }),
+    );
+  }
+}
+
+for (const [what, run] of [
+  ["unknown", () => listedWhile("unknown")],
+  ["unreadable", () => listedWhile("", new Unreadable(rig.pluginEnv()))],
+] as const)
+  test(`a reused agent whose status is ${what} is given its work as before`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { result } = yield* run();
+        expect(result._tag === "Success" && result.success).toBe("01-api:first+02-ui:second");
+      }),
+    ));
+
+/** The list started with its agent busy after the first item, left at the waiting boundary. */
+const waitingAtBoundary = Effect.gen(function* () {
+  yield* rig.queueOutputs([
+    { verdict: "clean", note: "first" },
+    { verdict: "clean", note: "second" },
+  ]);
+  yield* listing.execute({ runId: "r1", input: ITEMS }, { discard: true });
+  for (let tries = 0; ; tries++) {
+    const log = yield* read(`${dir}/agents/r1/agents.log`).pipe(Effect.orElseSucceed(() => ""));
+    if (log.includes("still working; 02-ui")) return;
+    if (tries === 3_000) return yield* Effect.die(new Error("the boundary never waited"));
+    yield* TestClock.withLive(Effect.sleep("10 millis"));
+  }
+});
+
+const busyAfterFirst = <A, E>(
+  run: Effect.Effect<A, E, WorkflowEngine.WorkflowEngine | Agents | FileSystem.FileSystem>,
+) =>
+  run.pipe(
+    Effect.provide(listingBody),
+    Effect.provide(
+      agentsLayer({
+        ...hostOf(),
+        herdr: new FakeHerdr(rig.pluginEnv({ FAKE_HERDR_AGENT_STATUS: "idle,working" })),
+        collectMs: 30_000,
+      }),
+    ),
+    Effect.provide(foundationLayer({ dir })),
+    Effect.scoped,
+    Effect.orDie,
+  );
+
+test("a steer reaches an agent whose boundary is waiting for its turn to end", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const told = yield* busyAfterFirst(
+        Effect.gen(function* () {
+          yield* waitingAtBoundary;
+          const told = yield* say("r1", "keep going", "steer-1");
+          // Ends the wait, which would otherwise outlast the test.
+          yield* control("stop", "r1", true);
+          yield* TestClock.withLive(Effect.sleep("300 millis"));
+          return told;
+        }),
+      );
+      expect(told).toMatchObject({ agent: sweeper, delivered: true });
+      expect(prompts(yield* rig.calls())).toContain("keep going");
+    }),
+  ));
+
+test("a stop while the boundary waits ends the wait, and nothing more is typed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const reads = Effect.map(
+        rig.calls(),
+        (calls) => calls.filter((call) => call.cmd === "agent get").length,
+      );
+      const { before, after } = yield* busyAfterFirst(
+        Effect.gen(function* () {
+          yield* waitingAtBoundary;
+          yield* control("stop", "r1", true);
+          yield* TestClock.withLive(Effect.sleep("300 millis"));
+          const before = yield* reads;
+          yield* TestClock.withLive(Effect.sleep("300 millis"));
+          return { before, after: yield* reads };
+        }),
+      );
+      expect(after).toBe(before);
+      expect(sent(yield* rig.calls(), "02-ui.prompt.md")).toBe(0);
     }),
   ));
 
@@ -3073,6 +3707,9 @@ test(
   120_000,
 );
 
+/** An Output budget a resend's real IO cannot outrun on the fast clock. */
+const OUTLASTS_IO = 300_000;
+
 /** What the park's own instructions say to run, done as the command does it. */
 const reconciled = (runId: string, as: "sent" | "not-sent") =>
   Effect.gen(function* () {
@@ -3093,11 +3730,12 @@ test(
         yield* interrupted("r1", parked("r1"), {
           herdr: promptNotTaken("text"),
           confirmGraceMs: 300,
+          collectMs: OUTLASTS_IO,
         });
         yield* reconciled("r1", "not-sent");
 
         yield* rig.queueOutputs([{ verdict: "clean", note: "sent again" }]);
-        const result = yield* releasedInto("r1");
+        const result = yield* releasedInto("r1", { collectMs: OUTLASTS_IO });
         expect(result._tag === "Success" && result.success.note).toBe("sent again");
         expect(sent(yield* rig.calls(), "Your task for this step")).toBe(2);
         expect(new Set((yield* steps("r1")).map((one) => one.delivery.id)).size).toBe(2);
@@ -3160,6 +3798,7 @@ test(
         yield* interrupted("r1", parked("r1"), {
           herdr: promptNotTaken("text"),
           confirmGraceMs: 300,
+          collectMs: OUTLASTS_IO,
         });
         yield* reconciled("r1", "not-sent");
 
@@ -3171,14 +3810,15 @@ test(
             const payload = { runId: "r1", input: { skip: false } };
             yield* engine.resume(work, yield* work.executionId(payload));
             yield* work.execute(payload, { discard: true });
-            yield* Effect.sleep(Duration.millis(3_000));
+            while (!(yield* read(controlPath(dir, PARKED, "r1"))).includes("tries again"))
+              yield* TestClock.withLive(Effect.sleep("10 millis"));
           }),
-          { herdr: refusing, collectMs: 30_000 },
+          { herdr: refusing, collectMs: OUTLASTS_IO },
         );
         expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain("collie run resume r1");
 
         yield* rig.queueOutputs([{ verdict: "clean", note: "third time" }]);
-        const result = yield* releasedInto("r1");
+        const result = yield* releasedInto("r1", { collectMs: OUTLASTS_IO });
         expect(result._tag === "Success" && result.success.note).toBe("third time");
       }),
     ),
@@ -3381,7 +4021,9 @@ test("a Claude overlay is merged into Collie's settings file, and Collie's hooks
       )(yield* read(args[args.indexOf("--settings") + 1] ?? ""));
       expect(settings.enabledPlugins).toEqual({ "ponytail@market": false });
       expect(settings.disableClaudeAiConnectors).toBe(true);
-      expect(settings.hooks.PreToolUse).toEqual([guard]);
+      expect(settings.hooks.PreToolUse).toHaveLength(2);
+      expect(settings.hooks.PreToolUse?.[0]).toMatchObject({ matcher: "AskUserQuestion" });
+      expect(settings.hooks.PreToolUse?.[1]).toEqual(guard);
       expect(settings.hooks.UserPromptSubmit).toHaveLength(2);
       expect(settings.hooks.UserPromptSubmit?.[1]).toEqual(guard);
       expect(Object.keys(settings.hooks)).toEqual(

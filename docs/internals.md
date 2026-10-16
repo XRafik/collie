@@ -719,6 +719,26 @@ loop, for a step that keeps an earlier agent, and `handoff.ts`, for a Run handin
 result to another Run's live agent. A liveness nudge and a mid-step recovery message go
 through neither, which is why neither is a boundary.
 
+A reused agent is given work only once herdr reports it `idle` or `done`. At a step's
+boundary `turnEnded` in `agents.ts` polls herdr's status first, with no budget while the
+agent is `working` or `blocked`, and only then samples its context, asks it to compact or
+sends the step. A status herdr cannot give ends the wait, and so does a stop of the Run,
+which sends nothing. The wait is outside the Dispatcher's transaction, because that holds
+the agent's ledger lock and a steer would otherwise wait for the turn to end. The Run log
+says once that the step waits, and how long it waited.
+
+Only sending the compaction request takes the Dispatcher's transaction. Reading the
+context and polling an attempt run outside any, with a channel that refuses to send, so a
+steer is never refused behind them: the transaction refuses a second one for the same agent
+in the same process. A compaction is waited on for five minutes (`COMPACTION_WAIT_MS`, the
+host's `compactionWaitMs`). Past them `settle` answers `waiting` rather than parking:
+`boundary` in `agents.ts` shows the reason through the host's `parked`, which raises
+needs-you once, and goes on polling the same attempt with `pollCompaction` at the poll
+interval. Only the harness's correlated outcome ends it; on either outcome the attempt and
+the note are cleared and the step is sent, through its own transaction. A stop of the Run
+ends the wait and sends nothing, and a host restart finds the attempt on the control record
+at the next boundary and waits there.
+
 An agent's controls live in `<state>/compaction/<agent>/` rather than in its Run's
 directory, because the agent outlives the Run that launched it — the same fact the
 registry exists for. That directory holds the control record, the helper the launch

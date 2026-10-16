@@ -328,7 +328,8 @@ test("a process of the session that ignores SIGTERM fails the stop by its pid, a
     Effect.gen(function* () {
       yield* working({ child: "ignores" });
       const child = (yield* events()).find((one) => one.child !== undefined)!.child!;
-      const halt = yield* halted({ stopMs: 25_000 });
+      // Live: the server's exit and its survivors' grace are real time, not the fast clock's.
+      const halt = yield* TestClock.withLive(halted({ stopMs: 5_000 }));
       expect(halt.stopped).toEqual([]);
       expect(halt.left.join("\n")).toContain(`pid ${child}`);
       expect(alive(child)).toBe(true);
@@ -784,7 +785,8 @@ test("a sweep stops again a record whose earlier stop failed before it signalled
       expect((yield* sweeper.judge).keep.map((one) => one.reason).join("\n")).toContain(
         "the connection was lost",
       );
-      const swept = yield* sweep([sweeper], `${rig.root}/state`, "host");
+      // Live: the server's exit after its signal is real time, not the fast clock's.
+      const swept = yield* TestClock.withLive(sweep([sweeper], `${rig.root}/state`, "host"));
       expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
       expect(swept.remove.map((one) => one.target)).toEqual([
         `${rig.root}/state/compaction/${agent}`,
