@@ -1346,6 +1346,13 @@ either way — a tree that moved under the command is `unstable` whatever was ex
 collie verify --run <run-id> --name regression --expect fail -- bun test test/bug.test.ts
 ```
 
+An agent's `collie verify` left running in the background is reported back to it: where
+herdr says the agent has settled and Collie is still collecting its Output when the
+command ends, the host sends it a `boundary` delivery naming the check, its result and exit
+status, the commit and the log, which it keeps in the state directory's `evidence/<run>/verify/`.
+So an agent may end its turn waiting on a verify, and on nothing else in the background
+([steering](steering.md#what-the-host-sends-on-its-own)).
+
 ### What Collie may run itself
 
 An agent may `collie verify` anything; Collie runs only this run's

@@ -120,6 +120,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `compaction.ts`        | One threshold, one work-boundary policy, each agent's controls for its lifetime, and its one stop         |
 | `compactors.ts`        | Each harness's official compaction interface, generated per agent and bundled in Collie                   |
 | `codex.ts`             | Codex's App Server as a client: thread identity, its context, its compactions and its turns               |
+| `collecting.ts`        | Which agents Collie is collecting an Output from now, by Run and agent                                    |
 | `processes.ts`         | Where a process's command, start time and session are read, and proven before anything signals it         |
 | `usage-model.ts`       | A Subscription's Usage reading: Schemas, parsing, Exhausted; pure, so Desktop and a module share it       |
 | `usage.ts`             | This Machine's Usage readings: Claude's endpoint, Codex's app server, status lines                        |

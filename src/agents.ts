@@ -132,6 +132,7 @@ import {
   type ClaudeOverlay,
 } from "./profile";
 import { isString } from "./schema";
+import { Collecting, collectingLayer, type CollectingApi } from "./collecting";
 import { causalKey, deliveriesOf, SENT_STATES, toldLine } from "./steering";
 import { readTask, withTaskLock, writeTask } from "./task";
 import { malformedIn, renderTemplate, skillMention, skillsIn } from "./template";
@@ -1229,17 +1230,21 @@ const DEFAULT_COLLECT_MS = 2 * 60 * 60 * 1000;
  * controls and permissions the operator configured. The host's own services are captured
  * here, so a workflow asks for an agent without asking for a filesystem.
  */
-export const agentsLayer = (host: AgentHost): Layer.Layer<Agents, never, AgentServices> =>
+export const agentsLayer = (
+  host: AgentHost,
+): Layer.Layer<Agents | Collecting, never, AgentServices> =>
   Layer.effect(Agents)(
     Effect.gen(function* () {
       const services = yield* Effect.context<AgentServices>();
-      return Agents.of(makeAgents(host, (effect) => Effect.provideContext(effect, services)));
+      return Agents.of(
+        makeAgents(host, (effect) => Effect.provideContext(effect, services), yield* Collecting),
+      );
     }),
-  );
+  ).pipe(Layer.provideMerge(collectingLayer));
 
 type Under = <A, E>(effect: Effect.Effect<A, E, AgentServices>) => Effect.Effect<A, E>;
 
-const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
+const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): AgentsApi => {
   const dirFor = (runId: string) => launchDir(host.dir, runId);
   const launchPath = (runId: string, operation: string) =>
     `${dirFor(runId)}/${operation}${LAUNCH_SUFFIX}`;
@@ -2105,25 +2110,29 @@ const makeAgents = (host: AgentHost, under: Under): AgentsApi => {
 
   const collect = (launched: Launched, unless?: string | null, questions?: Questions) =>
     under(
-      Effect.gen(function* () {
-        const asking = questions === undefined ? null : yield* questionsOf(launched, questions);
-        const text = yield* Effect.raceFirst(
-          waitForOutput(launched.output, unless ?? null, {
-            pollMs: host.pollMs ?? DEFAULT_POLL_MS,
-            budgetMs: host.collectMs ?? DEFAULT_COLLECT_MS,
-            counts: Effect.gen(function* () {
-              if (asking !== null && (yield* asking(false))) return false;
-              const status = yield* host.herdr
-                .agentStatus(launched.agent)
-                .pipe(Effect.orElseSucceed(() => null));
-              return status !== "working" && status !== "blocked";
+      collecting.during(
+        launched.runId,
+        launched.agent,
+        Effect.gen(function* () {
+          const asking = questions === undefined ? null : yield* questionsOf(launched, questions);
+          const text = yield* Effect.raceFirst(
+            waitForOutput(launched.output, unless ?? null, {
+              pollMs: host.pollMs ?? DEFAULT_POLL_MS,
+              budgetMs: host.collectMs ?? DEFAULT_COLLECT_MS,
+              counts: Effect.gen(function* () {
+                if (asking !== null && (yield* asking(false))) return false;
+                const status = yield* host.herdr
+                  .agentStatus(launched.agent)
+                  .pipe(Effect.orElseSucceed(() => null));
+                return status !== "working" && status !== "blocked";
+              }),
             }),
-          }),
-          confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
-        );
-        if (text !== null && asking !== null) yield* asking(true);
-        return text;
-      }),
+            confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
+          );
+          if (text !== null && asking !== null) yield* asking(true);
+          return text;
+        }),
+      ),
     );
 
   const repair = (launched: Launched, problem: string, unusable: string) =>

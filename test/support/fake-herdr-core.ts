@@ -815,7 +815,15 @@ function handle(
         }
         // A comma-separated list is read one per call, the last value repeating, so a
         // test can script "working for a while, then idle".
-        const scripted = (yield* envString("FAKE_HERDR_AGENT_STATUS", "idle")).split(",");
+        // A file, where named and present, says it instead, so a test can change it under a host.
+        const statusFile = yield* envString("FAKE_HERDR_AGENT_STATUS_FILE");
+        const filed =
+          statusFile !== "" && (yield* fs.exists(statusFile))
+            ? (yield* fs.readFileString(statusFile)).trim()
+            : "";
+        const scripted = (filed || (yield* envString("FAKE_HERDR_AGENT_STATUS", "idle"))).split(
+          ",",
+        );
         let status = scripted[Math.min(state.statusReads, scripted.length - 1)] ?? "idle";
         state.statusReads += 1;
         if (state.blocked > 0 && state.blocked <= blockFor) {

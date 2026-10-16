@@ -97,6 +97,8 @@ import { ChangedIntent } from "./intent-model";
 import { donePasses, markersOf, runningCheck, followLog } from "./checks";
 import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
+import { Collecting } from "./collecting";
+import { runLog } from "./agent-end";
 import { hostLogger, rotateInPlace } from "./host-log";
 import { handoffsDir, handoffsIn } from "./handoffs";
 import { Catalogue, discover, searchPath } from "./discovery";
@@ -131,7 +133,7 @@ import { once, readAudit, recordAudit, startedBy, trimAudit } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
-import { Herdr, type AgentInfo } from "./herdr";
+import { Herdr, isSettled, type AgentInfo } from "./herdr";
 import { buildBoard, mrOf } from "./board";
 import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
@@ -1051,6 +1053,7 @@ const frontDoorHandlers = (
       const hosted = yield* Effect.context<HostServices>();
       const reliance = yield* Reliance;
       const { env, herdr, bun, sweepers, changed, ...shared } = yield* SharedBoard;
+      const collecting = yield* Collecting;
       const boards = shared.boards.pipe(Stream.map((built) => built.views));
       const usage = yield* Usage;
       const schedules = yield* Schedules;
@@ -1072,6 +1075,36 @@ const frontDoorHandlers = (
         ...askerOf(client),
         ...stampOf(client),
       });
+      /** An agent settled while Collie waits on its Output is told its verify ended, or it would wait forever. */
+      const toldVerifyEnded = (
+        client: { readonly id: number },
+        verified: import("./verify-model").Verification,
+      ) => {
+        const asker = whoOf(client);
+        const { run, agent } = asker.from ?? {};
+        if (asker.origin !== "agent" || run === undefined || agent === undefined)
+          return Effect.void;
+        return Effect.gen(function* () {
+          if (!(yield* collecting.has(run, agent))) return;
+          if (!isSettled(yield* herdr.agentStatus(agent).pipe(Effect.provideContext(bun)))) return;
+          yield* registry.steer({
+            runId: run,
+            agent,
+            mode: "boundary",
+            request: `verify-${verified.id}`,
+            text: `Your collie verify "${verified.name}" ended: ${verified.result} (exit ${verified.exit}) at ${verified.end.head_sha}. Its log: ${verified.log ?? "none kept"}`,
+          });
+        }).pipe(
+          Effect.catch((cause) =>
+            runLog(
+              env.stateDir,
+              run,
+            )(
+              `${agent}: could not be told its verify ${verified.id} ended (${reason(cause)})`,
+            ).pipe(Effect.provideContext(bun), Effect.ignore),
+          ),
+        );
+      };
       type Carrying = ReturnType<typeof carryOut>;
       /** Each carry-out still running, so a retry of its confirm answers what it came to. */
       type Carried = Exit.Exit<Effect.Success<Carrying>, Effect.Error<Carrying>>;
@@ -1826,9 +1859,11 @@ const frontDoorHandlers = (
                   Effect.gen(function* () {
                     const echo = (stream: "stdout" | "stderr") => (text: string) =>
                       Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
+                    const started = (yield* nowIso()).replace(/[:.]/g, "-");
+                    const log = `${evidenceDir(env.stateDir, runId)}/verify/${started}-${name.replace(/[^\w.-]/g, "_")}.log`;
                     const collected = yield* collect(
                       evidenceDir(env.stateDir, runId),
-                      { run: runId, name, executable, argv, cwd: where, by: "agent", expect },
+                      { run: runId, name, executable, argv, cwd: where, by: "agent", expect, log },
                       { stdout: echo("stdout"), stderr: echo("stderr") },
                     ).pipe(
                       Effect.mapError(
@@ -1854,6 +1889,7 @@ const frontDoorHandlers = (
                       verification: collected.success,
                       ran: true,
                     });
+                    yield* toldVerifyEnded(client, collected.success);
                     yield* Queue.end(queue);
                   }).pipe(Effect.provideContext(hosted)),
                 { bufferSize: 16 },

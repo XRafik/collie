@@ -125,6 +125,10 @@ Run every test, lint and typecheck command through
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
 
+A `collie verify` you started in the background is reported to you when it ends,
+so you may end your turn waiting on it. Never end a turn waiting on any other
+background job.
+
 {{obstacle}}
 
 ### What this run has to prove
@@ -196,6 +200,10 @@ Run every test, lint and typecheck command through
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
 
+A `collie verify` you started in the background is reported to you when it ends,
+so you may end your turn waiting on it. Never end a turn waiting on any other
+background job.
+
 Never defer a blocking finding to a follow-up or leave it out of your Output: every
 `blocker` and `major` above is either under `fixed` or under `disputed`, never both and
 never neither. A blocking finding you dispute goes to the next review, and one still
@@ -235,6 +243,10 @@ and never the whole suite: it is the gate's. Commit to this branch and push it, 
 on GitLab, or `git push -u origin HEAD` on GitHub. A push that fails is reported as
 `"pushed": false`, not fatal.
 
+A `collie verify` you started in the background is reported to you when it ends,
+so you may end your turn waiting on it. Never end a turn waiting on any other
+background job.
+
 {{session.ask}}
 
 Then write your Output: `criteria` answers every criterion in the whole list above, not
@@ -255,6 +267,10 @@ them, and `git commit --no-edit`. Never rebase, reset or abort it, and never for
 this branch's history only grows. Run the typecheck and the test files the conflicts
 touched, each through `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`, and
 never the whole suite: it is the gate's.
+
+A `collie verify` you started in the background is reported to you when it ends,
+so you may end your turn waiting on it. Never end a turn waiting on any other
+background job.
 
 Push the merge — `git push -u origin HEAD -o ci.skip` on GitLab, or
 `git push -u origin HEAD` on GitHub. A push that fails is reported as `"pushed": false`,
@@ -301,6 +317,10 @@ Run every test, lint and typecheck command through
 `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`; Collie records the result
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
+
+A `collie verify` you started in the background is reported to you when it ends,
+so you may end your turn waiting on it. Never end a turn waiting on any other
+background job.
 
 Push anything the earlier steps have not pushed yet, this time **without** `ci.skip`:
 yours is the push that runs the pipeline, and the state a human will look at.
