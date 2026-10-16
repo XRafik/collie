@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { processStartTime } from "../src/lock";
 import { inTurn } from "../tools/suite-lock";
-import { binDirectory, isTargeted, timingFlags, turnFor } from "../tools/test-run";
+import { binDirectory, isTargeted, timingFlags, turnFor, workersFor } from "../tools/test-run";
 import { runEffect } from "./support/effect";
 
 /** A claim as `src/lock.ts` writes one. */
@@ -147,3 +147,43 @@ test("a targeted run reads the timings and never updates them", () =>
       expect(yield* timingFlags(true, timings, seed)).toEqual([`--timings=${timings}`]);
     }).pipe(Effect.scoped),
   ));
+
+/** `os.cpus()` for `cores` cores, each with `idle` and `busy` ms so far. */
+const sample = (cores: number, idle: number, busy: number) =>
+  Array.from({ length: cores }, () => ({
+    times: { user: busy, nice: 0, sys: 0, idle, irq: 0 },
+  }));
+
+test("a suite takes the cores that were idle over the sample, at least 2 and at most one per core", () => {
+  const before = sample(16, 1_000, 1_000);
+  expect(workersFor([], before, sample(16, 2_000, 1_000), 16)).toEqual({
+    workers: 16,
+    line: "test: 16 workers (16.0 of 16 cores free)",
+  });
+  expect(workersFor([], before, sample(16, 1_000, 2_000), 16)).toEqual({
+    workers: 2,
+    line: "test: 2 workers (0.0 of 16 cores free)",
+  });
+  expect(workersFor([], before, sample(16, 1_500, 1_500), 16)).toEqual({
+    workers: 8,
+    line: "test: 8 workers (8.0 of 16 cores free)",
+  });
+  expect(workersFor([], before, before, 16)).toEqual({
+    workers: 16,
+    line: "test: 16 workers (16.0 of 16 cores free)",
+  });
+});
+
+test("a --parallel the caller passed stands, and one after -- is a test's argument", () => {
+  const before = sample(16, 1_000, 1_000);
+  const busy = sample(16, 1_000, 2_000);
+  expect(workersFor(["--parallel=4", "test/engine.test.ts"], before, busy, 16)).toEqual({
+    workers: "caller",
+    line: "test: workers as the caller's --parallel=4 says",
+  });
+  expect(workersFor(["--parallel"], before, busy, 16)).toEqual({
+    workers: "caller",
+    line: "test: workers as the caller's --parallel says",
+  });
+  expect(workersFor(["--", "--parallel=4"], before, busy, 16).workers).toBe(2);
+});

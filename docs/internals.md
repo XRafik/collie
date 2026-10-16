@@ -1109,9 +1109,9 @@ thousand hosts, commands and herdr calls, and a bytecode build starts in a fract
 time the sources take to load. A fixture's own Config provider carries that binary choice,
 the process marker, the watched pid and the test's stop grace into its commands too;
 isolating its installation must not lose the suite's process settings. It uses [Bun's process-parallel
-runner](https://bun.com/docs/test/parallel) with a worker for each available logical CPU
-and a fresh global per file. It does not subtract the load average: the preceding suite's
-work and IO waits remain in that average after the CPU is free. The lock also covers
+runner](https://bun.com/docs/test/parallel) with a fresh global per file, and as many
+workers as the Machine has cores free (see [Keeping the suite and a start
+fast](#keeping-the-suite-and-a-start-fast)). The lock also covers
 builds so a queued suite cannot replace the executables an active suite runs. Tests within
 each file stay sequential: fixtures
 change environment variables and prototypes, so `--concurrent` is not safe here. A test's
@@ -1177,6 +1177,16 @@ docs lint to catch a page that fell behind — a stale page is a defect like any
 
 Each of these, where it crept in, cost the suite minutes or every start a large share of
 its time.
+
+- **The suite shares the Machine.** After its builds, and once its turn is granted,
+  `bun run test` samples `os.cpus()` one second apart and runs one worker per idle core:
+  `cores × idle / total` over the sample, rounded, at least 2 and at most one per core
+  (`workersFor` in `tools/test-run.ts`). It prints `test: N workers (F of C cores free)`.
+  A targeted run is sized the same way. A `--parallel` or `--parallel=N` before any `--`
+  is passed through as given, and is how a human or agent sets a share themselves. #110
+  stopped subtracting load averages because they lag and count the suite's own previous
+  run and IO waits; a one-second sample of idle CPU just before the tests start counts
+  neither, and the builds and any suite this one waited for are over before it is taken.
 
 - **A test waits for a state.** It waits with `until` (`test/support/host.ts`) for what it
   needs: a run `suspended`, a file written, a pane gone. Real IO takes the time it takes,
