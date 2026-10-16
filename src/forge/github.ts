@@ -405,14 +405,16 @@ function job<R>(
 /** The newest check run named `name` on `ref`, undefined for none, null where gh could not say. */
 const checkRun = <R>(repo: string, ref: string, name: string, cwd: string, run: Runner<R>) =>
   Effect.map(
-    run(
-      "gh",
-      ["api", `repos/${repo}/commits/${ref}/check-runs?check_name=${encodeURIComponent(name)}`],
-      cwd,
-    ),
+    checkRuns(repo, ref, `check_name=${encodeURIComponent(name)}`, cwd, run),
+    (runs) => runs && runs[0],
+  );
+
+const checkRuns = <R>(repo: string, ref: string, query: string, cwd: string, run: Runner<R>) =>
+  Effect.map(
+    run("gh", ["api", `repos/${repo}/commits/${ref}/check-runs?${query}`], cwd),
     (listed) => {
       const runs = Schema.decodeUnknownOption(CheckRunsJson)(listed.stdout);
-      return listed.code !== 0 || Option.isNone(runs) ? null : runs.value.check_runs[0];
+      return listed.code !== 0 || Option.isNone(runs) ? null : runs.value.check_runs;
     },
   );
 
@@ -450,9 +452,16 @@ function baseJob<R>(
       ?.merge_base_commit?.sha;
     if (compared.code !== 0 || base === undefined)
       return { ok: false, reason: `GitHub would not say where ${where} leaves ${target}` };
-    const found =
-      (yield* checkRun(repo, base, name, cwd, run)) ??
-      (yield* checkRun(repo, target, name, cwd, run));
+    const unread = { ok: false, reason: `gh could not list the check runs at ${base}` } as const;
+    const there = yield* checkRun(repo, base, name, cwd, run);
+    if (there === null) return unread;
+    if (there === undefined) {
+      // Only where CI never ran at the merge-base does the target branch's tip stand in for it.
+      const any = yield* checkRuns(repo, base, "per_page=1", cwd, run);
+      if (any === null) return unread;
+      if (any.length > 0) return { ok: true, at: base, state: "missing", url: null };
+    }
+    const found = there ?? (yield* checkRun(repo, target, name, cwd, run));
     if (found === null || found === undefined)
       return {
         ok: false,

@@ -548,10 +548,14 @@ const projectApi = <R>(ref: MrRef, cwd: string, run: Runner<R>) =>
 /** The job named `name` in pipeline `id`, or null where its jobs could not be listed. */
 const jobIn = <R>(api: (route: string) => Effect.Effect<Ran, never, R>, id: number, name: string) =>
   Effect.gen(function* () {
-    const listed = yield* api(`pipelines/${id}/jobs?per_page=100`);
-    const jobs = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(jobs)) return null;
-    const found = jobs.value.find((one) => one.name === name);
+    let found: (typeof JobsJson.Type)[number] | undefined;
+    for (let page = 1; found === undefined; page++) {
+      const listed = yield* api(`pipelines/${id}/jobs?per_page=100&page=${page}`);
+      const jobs = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
+      if (listed.code !== 0 || Option.isNone(jobs)) return null;
+      found = jobs.value.find((one) => one.name === name);
+      if (jobs.value.length < 100) break;
+    }
     return {
       state: found === undefined ? "missing" : (JOB_STATES.get(found.status) ?? "pending"),
       url: found?.web_url ?? null,
@@ -583,14 +587,16 @@ function baseJob<R>(
     const target = mr.value.target_branch;
     if (!base || !target)
       return { ok: false, reason: `GitLab would not say where ${where} leaves its target branch` };
+    // undefined where there is no pipeline, null where GitLab would not say.
     const latest = (query: string) =>
-      Effect.map(api(`pipelines?${query}&per_page=1`), (ran) =>
-        ran.code === 0
-          ? Option.getOrElse(Schema.decodeUnknownOption(PipelinesJson)(ran.stdout), () => [])[0]
-          : undefined,
-      );
-    const pipeline =
-      (yield* latest(`sha=${base}`)) ?? (yield* latest(`ref=${encodeURIComponent(target)}`));
+      Effect.map(api(`pipelines?${query}&per_page=1`), (ran) => {
+        const listed = Schema.decodeUnknownOption(PipelinesJson)(ran.stdout);
+        return ran.code === 0 && Option.isSome(listed) ? listed.value[0] : null;
+      });
+    const at = yield* latest(`sha=${base}`);
+    const pipeline = at === undefined ? yield* latest(`ref=${encodeURIComponent(target)}`) : at;
+    if (pipeline === null)
+      return { ok: false, reason: `glab could not list the pipelines of ${where}'s target` };
     if (pipeline === undefined)
       return { ok: false, reason: `no pipeline at ${base.slice(0, 12)} or on ${target}` };
     const found = yield* jobIn(api, pipeline.id, name);

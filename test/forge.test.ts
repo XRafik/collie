@@ -842,14 +842,13 @@ for (const name of ["gitlab", "github"] as const) {
         ).toMatchObject({ ok: true, at: TIP, state: "failed" });
         expect((yield* read({ base: { at: BASE } })).ok).toBe(false);
         expect((yield* read({ target: { at: TIP, jobs: failed } })).ok).toBe(false);
-        // GitLab's pipeline there lacks it; GitHub has no run of it there or on the target.
+        // CI ran there without it: the target's red job says nothing about it.
         expect(
-          yield* read({ base: { at: BASE, jobs: [{ name: "lint", state: "failed" }] } }),
-        ).toEqual(
-          name === "gitlab"
-            ? { ok: true, at: BASE, state: "missing", url: null }
-            : expect.objectContaining({ ok: false }),
-        );
+          yield* read({
+            base: { at: BASE, jobs: [{ name: "lint", state: "passed" }] },
+            target: { at: TIP, jobs: failed },
+          }),
+        ).toEqual({ ok: true, at: BASE, state: "missing", url: null });
       }),
     ));
 
@@ -937,6 +936,27 @@ test("a GitLab pipeline of an older head is not this head's CI, and one that was
       });
       expect(pipelineChecks("canceled")).toEqual({ state: "unknown" });
       expect(pipelineChecks("")).toEqual({ state: "none" });
+    }),
+  ));
+
+test("a GitLab job past the first page of its pipeline's jobs is found", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const jobs = [
+        ...Array.from({ length: 100 }, (_, n) => ({
+          name: `shard-${n}`,
+          state: "passed" as const,
+        })),
+        { name: "nuxi-typecheck", state: "passed" as const },
+      ];
+      expect(
+        yield* gitlab.job(
+          ref("gitlab"),
+          "nuxi-typecheck",
+          "/w",
+          fakeForge("gitlab", model("gitlab", { mrs: [mr("gitlab", { jobs })] })).run,
+        ),
+      ).toMatchObject({ ok: true, state: "passed", id: "101" });
     }),
   ));
 

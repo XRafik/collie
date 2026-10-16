@@ -1381,9 +1381,14 @@ Its executable and arguments stay, to tell a human what the job runs. Nobody run
 the gate skips it, its missing local pass is no gap, and prompts list it as
 `<name>: left to CI (job <job>), do not run it`. Once the merge request is open, the run
 waits for that job on the merge request's head commit, read through the forge, and records
-its pass as a verification of the check, with the job's URL. A failed, skipped, cancelled
-or missing job, a job not finished after 2 hours, or a checkout with no forge parks the run
-unproved, naming the check, the job and the commit.
+its pass as a verification of the check, with the job's URL. A failed job is first read
+where the branch leaves its target branch: failed there too, it is reported as failing
+before the run's changes, and left unproved. Otherwise it is retried once, and a pass on
+the retry is reported as a Flake. A job that fails its retry goes to the builder in a CI
+fix round, at most 4; see [`docs/workflows.md`](workflows.md). A skipped, cancelled or
+missing job, a job not finished after 2 hours, a checkout with no forge, or a job still
+failing after the last round parks the run unproved, naming the check, the job and the
+commit.
 
 ```json
 [

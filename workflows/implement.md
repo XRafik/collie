@@ -244,6 +244,10 @@ Run the typecheck and the test files you touched, each through
 `collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`, and never the whole suite.
 Never run the check left to CI yourself: its job is what proves it.
 
+A `collie verify` you started in the background is reported to you when it ends,
+so you may end your turn waiting on it. Never end a turn waiting on any other
+background job.
+
 Push without `ci.skip` — `git push -u origin HEAD` — so the pipeline runs on your commit:
 Collie waits on the job again on the new head commit. A round that pushes no new commit
 parks the Run. A push that fails is reported as `"pushed": false`, not fatal.

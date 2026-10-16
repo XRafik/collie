@@ -408,10 +408,12 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
               jobsOf(mr.base?.jobs ?? [], 1000),
               jobsOf(mr.target?.jobs ?? [], 2000),
             ][id - pipelineIdOf(mr)];
+      const page = Number(/[?&]page=(\d+)/.exec(route)?.[1] ?? "1");
+      const size = Number(/[?&]per_page=(\d+)/.exec(route)?.[1] ?? "20");
       return mr === undefined || listed === undefined
         ? no()
         : json(
-            listed.map((job) => ({
+            listed.slice((page - 1) * size, page * size).map((job) => ({
               id: job.id,
               name: job.name,
               status: GITLAB_JOB[job.state],
@@ -488,9 +490,10 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
       merge_base_commit: pull?.base === undefined ? null : { sha: pull.base.at },
     });
   }
-  const checkRuns = /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?check_name=(.+)$/.exec(route);
+  const checkRuns =
+    /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?(?:check_name=(.+)|per_page=1)$/.exec(route);
   if (checkRuns) {
-    const [, repo = "", sha = "", name = ""] = checkRuns;
+    const [, repo = "", sha = "", name] = checkRuns;
     const ofRepo = model.mrs.filter((one) => one.project === `github.com/${repo}`);
     const head = ofRepo.find((one) => one.head === sha);
     const base = ofRepo.find((one) => one.base?.at === sha);
@@ -505,7 +508,7 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
             : [[], sha];
     return json({
       check_runs: jobs.flatMap((job) =>
-        job.name === decodeURIComponent(name)
+        name === undefined || job.name === decodeURIComponent(name)
           ? [
               {
                 id: job.id,
