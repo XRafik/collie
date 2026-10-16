@@ -2082,7 +2082,7 @@ latest edit; `setSharedDefinitions`, which writes the Flock's where each is late
 Machine's own, gives each written file its edit's time, keeps the file a write replaces
 under `replaced/`, writes nothing through a link, and refuses the whole batch over any path
 that is not a file directly in `workflows/` or `personas/`, or any malformed time or base64
-([ADR-draft-a-users-definitions-are-the-flocks](adr/draft-a-users-definitions-are-the-flocks.md));
+([ADR-0061](adr/0061-a-users-definitions-are-the-flocks.md));
 and `news`, which
 hands one conversation its Herd's pending News, each item with its Significance, and
 records it `read`, `sent` or `uncertain` for that conversation alone. Given `keys`, it hands

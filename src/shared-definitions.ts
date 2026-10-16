@@ -1,6 +1,6 @@
 // The user Layer's files as a Flock shares them: each decided by its latest edit, a removal
 // included, with what an edit replaced kept under `replaced/`
-// (ADR-draft-a-users-definitions-are-the-flocks).
+// (ADR-0061).
 
 import { Data, Effect, FileSystem, Option, Schema } from "effect";
 import type { SharedDefinition } from "./definitions-model";

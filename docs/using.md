@@ -1427,7 +1427,7 @@ is everything else in its `config.json`: remembered answers such as `linear.team
 `gitlab.assignee`, `chat_harness`, and `projects.root`, which is a path on that Machine.
 
 Your user Layer is shared the same way
-([ADR-draft-a-users-definitions-are-the-flocks](adr/draft-a-users-definitions-are-the-flocks.md)).
+([ADR-0061](adr/0061-a-users-definitions-are-the-flocks.md)).
 Every file directly in `~/.collie/user/workflows/` and `~/.collie/user/personas/` is a
 **shared definition**: a module, its Markdown, a helper, a Persona. Each file is decided by
 whichever edit of it was made last, by a Collie command or in your editor. A file's edit is
