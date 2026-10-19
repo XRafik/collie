@@ -1196,8 +1196,15 @@ dimmed, marked "as of", until each Machine's connection is live; a board saved t
 machine herdr no longer lists is not shown.
 
 Every Decision and action the TUI board has is on Desktop's cards, and goes to the Machine
-the card is on. A question is answered with its options, or typed into where it has none;
-and a proposal is read in a drawer whose Confirm stays off until all of it has been on
+the card is on. A question card shows the first two lines of the question and one button,
+**Answer…**, or **Answer 3 questions…** where the Task's Runs have three open. It opens a
+dialog that takes you through them one at a time: "Question 1 of 3" with the Workflow and
+Run that asks, the whole question in a body that scrolls, then its options as a list, one
+click sending, or a field Enter sends. Back and Next move between them without answering. A
+question that arrives while it is open joins it, and one answered elsewhere stays, marked
+"No longer open". It closes by itself once everything is answered and every answer has
+reached its host; Esc closes it at any time, and a half-typed answer is kept until its
+question is answered or gone. A proposal is read in a drawer whose Confirm stays off until all of it has been on
 screen, then sent with its id
 and content hash. Each card's `⋯` menu offers what the TUI menu does, by the same rules —
 Steer…, the Run's offers (asked of its host when opened, with a field for each argument),
@@ -1267,10 +1274,13 @@ write. A refusal or a failed connection is said at once and not tried again by i
 the third wait it says "vm-mk did not confirm the answer to r-1 within 30 s, 3 times. It may
 still land; Try again sends the same request, which vm-mk takes at most once." An action
 Desktop does not send, such as one from a dialog opened before its Machine dropped to a
-saved board, says it was not sent and why. An answer shows on its card in place of the
-question's buttons, "Sending Ship it to vm-mk…" and then "Answered Ship it; waiting for
-vm-mk's board", until that Machine's board no longer has the question open; a refusal, or
-the last wait, puts the buttons back. Every one is recorded on that Machine as `desktop`,
+saved board, says it was not sent and why. Each answer is tracked on its own until that
+Machine's board no longer has its question open: in the dialog, in place of that question's
+controls, "Sending Ship it to vm-mk…" and then "Answered Ship it; waiting for vm-mk's
+board"; on the card, the button counts only questions with no answer on its way, and once
+every one has an answer on its way the card says so in place of the button, as "Sending 2
+answers to vm-mk…" and then "Answered 2 questions; waiting for vm-mk's board". A refusal,
+or the last wait, gives that question its controls back, and the card its button. Every one is recorded on that Machine as `desktop`,
 with this computer's name, and on this computer in `actions.log` beside `flock-chat.json`
 (`$XDG_STATE_HOME/collie-desktop/`): a JSON line per attempt with when, the board or the
 chat, the Machine, the request, the kind, the Run or proposal and the attempt, ending
@@ -1574,10 +1584,10 @@ and github-dark colours as Desktop's theme follows. A file is read from the host
 it is opened, and again when the Run changes how many lines it adds or removes, with no
 line cap; a file with more than
 500 changed lines, or a binary one, starts collapsed. **Evidence** shows the Run's
-verifications as a checklist, those that did not do what they were expected to first and
-already open with their output in its terminal colours; then every web link the Run's
-Outputs, handoffs, review and findings name, as a card: a Claude artifact by the title its
-link was given, the merge request with its state, its pipelines with the head pipeline's
+verifications as a checklist, every one collapsed, those that did not do what they were
+expected to first; opening one reads its output in its terminal colours; then every web
+link the Run's Outputs, handoffs, review and findings name, as a card: a Claude artifact
+by the title its link was given, the merge request with its state, its pipelines with the head pipeline's
 status, and any other pipeline with the status GitLab gives it where `glab` is signed in to
 its host, or a GitHub Actions run with its conclusion where `gh` is; its screenshots as a
 gallery, a `before` beside its `after` where their names pair them, twelve to a page; its

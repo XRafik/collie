@@ -69,6 +69,49 @@ test("loading the board model does nothing but define it", () =>
     }),
   ));
 
+test("a TaskView carries its open questions, and one from an older host without them still decodes", () => {
+  const question = {
+    kind: "question" as const,
+    run: "run-1",
+    id: "c-1",
+    step: "build",
+    topic: "the branch",
+    text: "Which branch?",
+    options: [],
+  };
+  const older = {
+    id: "task-1",
+    name: "Pure board module",
+    project: "/work/collie",
+    state: "blocked",
+    steps: [],
+    sentence: "Waiting on your answer about the branch.",
+    age: "2m",
+    drift: null,
+    held: null,
+    heldBy: null,
+    decision: question,
+    agents: [],
+    children: [],
+    mr: null,
+    branch: null,
+    disposition: null,
+    landed: false,
+    ended: null,
+    mrState: null,
+    planReady: false,
+    offer: null,
+    run: "run-1",
+    runs: ["run-1"],
+    at: 1_700_000_000_000,
+  };
+  const decode = Schema.decodeUnknownSync(Schema.toCodecJson(TaskView));
+
+  expect(decode(older).questions).toBeUndefined();
+  const newer = { ...older, questions: [question, { ...question, id: "c-2" }] };
+  expect(decode(JSON.parse(JSON.stringify(newer))).questions).toEqual(newer.questions);
+});
+
 test("a TaskView and a RunDetail survive a round trip through JSON", () => {
   const view: TaskView = {
     id: "task-1",
