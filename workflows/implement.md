@@ -241,7 +241,7 @@ the failure is not this branch's, change nothing and record it under `disputed` 
 reason; the merge request names it for the human.
 
 Run the typecheck and the test files you touched, each through
-`collie verify --run {{run.id}} --cwd {{cwd}} -- <command>`, and never the whole suite.
+`collie verify -- <command>`, and never the whole suite.
 Never run the check left to CI yourself: its job is what proves it.
 
 A `collie verify` you started in the background is reported to you when it ends,
