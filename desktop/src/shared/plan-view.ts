@@ -23,9 +23,9 @@ const textOf = (node: Node): string => {
   return tag === null ? "" : children.map(textOf).join("");
 };
 
-/** Parsed as it is drawn, so each heading's position is the one the drawn page has. */
+/** Trimmed and parsed as it is drawn, so each heading's position is the one the drawn page has. */
 export const specHeadings = (spec: string): Promise<ReadonlyArray<SpecHeading>> =>
-  parseMarkdown(spec, { plugins: SAFE_PLUGINS }).then(({ nodes }) => {
+  parseMarkdown(spec.trim(), { plugins: SAFE_PLUGINS }).then(({ nodes }) => {
     const found: Array<{ level: number; text: string }> = [];
     const visit = (node: Node): void => {
       if (!Array.isArray(node) || node[0] === null) return;
