@@ -146,7 +146,7 @@ export interface SittingEntry {
   /** As last seen on the board, so it is still drawn after it leaves. */
   readonly question: Question;
   /** The last answer the sitting saw in flight for it. */
-  readonly seen: Pick<InFlight, "shown" | "machine"> | null;
+  readonly seen: Pick<InFlight, "shown" | "machine" | "confirmed"> | null;
   readonly was: Condition["kind"];
 }
 
@@ -174,7 +174,7 @@ const conditionOf = (entry: SittingEntry, now: Now): Condition => {
   if (open && answer !== undefined)
     return { kind: "answered", said: sendingSaid(answer), sending: !answer.confirmed };
   if (open) return { kind: "unanswered" };
-  return entry.seen === null
+  return entry.seen?.confirmed !== true
     ? { kind: "gone" }
     : { kind: "answered", said: `Answered ${entry.seen.shown}`, sending: false };
 };
@@ -194,7 +194,10 @@ const refreshed = (entries: ReadonlyArray<SittingEntry>, now: Now) =>
     );
     return {
       question,
-      seen: answer === undefined ? null : { shown: answer.shown, machine: answer.machine },
+      seen:
+        answer === undefined
+          ? null
+          : { shown: answer.shown, machine: answer.machine, confirmed: answer.confirmed },
       was: entry.was,
     };
   });

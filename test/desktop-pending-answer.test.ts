@@ -286,6 +286,21 @@ test("a question answered elsewhere stays, as no longer open; one this dialog an
   expect(shown(2)).toMatchObject({ n: 2, condition: { kind: "gone" } });
 });
 
+test("an answer still sending when its question leaves the board reads no longer open, not answered", () => {
+  const a = sending(shownBy(nothingAnswered, [A, B]), A, "yes");
+  let sitting = sittingStarts(now([A, B], nothingAnswered));
+  sitting = sittingAnswered(sitting, now([A, B], a.state));
+  // Another client answered A, so the board drops it before this send's refusal arrives.
+  const settled = shownBy(a.state, [B]);
+  const refused = answerTried(settled, keyOf(A), a.answer, false);
+  sitting = sittingSees(sitting, now([B], refused));
+  const onA = sittingMoved(sitting, -sitting.cursor);
+  expect(sittingView(onA, now([B], refused))).toMatchObject({
+    question: A,
+    condition: { kind: "gone" },
+  });
+});
+
 test("a failed answer gives its question its controls back, and brings the dialog to it", () => {
   const a = sending(nothingAnswered, A, "yes");
   let sitting = sittingStarts(now([A, B], nothingAnswered));
