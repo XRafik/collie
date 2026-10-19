@@ -44,6 +44,7 @@ import {
   type Judged,
   type JudgementDeps,
   gitOutput,
+  looksSecret,
   merging,
   type RuleFacts,
 } from "./drift";
@@ -625,7 +626,7 @@ const NOT_OUTPUTS = [".launch.json", ".mcp.json", ".settings.json"];
 const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const printJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown, { space: 2 }));
 
-/** Each Output in `agentsDir`, printed with a two-space indent, by operation. */
+/** Each Output in `agentsDir`, printed with a two-space indent, by operation; one named like a credential is not quoted. */
 const outputsIn = Effect.fn("Oversight.outputsIn")(function* (agentsDir: string) {
   const fs = yield* FileSystem.FileSystem;
   const names = (yield* fs.readDirectory(agentsDir).pipe(Effect.orElseSucceed(() => [])))
@@ -633,6 +634,11 @@ const outputsIn = Effect.fn("Oversight.outputsIn")(function* (agentsDir: string)
     .sort();
   const outputs: Array<CrossRunOutput & { readonly truncated: boolean }> = [];
   for (const name of names.slice(0, MAX_FILES)) {
+    const operation = name.slice(0, -".json".length);
+    if (looksSecret(name)) {
+      outputs.push({ operation, text: "<redacted>", truncated: false });
+      continue;
+    }
     const raw = yield* fs
       .readFileString(`${agentsDir}/${name}`)
       .pipe(Effect.orElseSucceed(() => ""));
@@ -640,7 +646,7 @@ const outputsIn = Effect.fn("Oversight.outputsIn")(function* (agentsDir: string)
     const printed = decoded._tag === "None" ? raw : printJson(decoded.value);
     const lines = printed.split("\n");
     outputs.push({
-      operation: name.slice(0, -".json".length),
+      operation,
       text: lines.slice(0, MAX_LINES_PER_FILE).join("\n"),
       truncated: lines.length > MAX_LINES_PER_FILE,
     });

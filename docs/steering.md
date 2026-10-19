@@ -471,7 +471,7 @@ is given each Run's work beside its constraints, as data to judge: the diff from
 the commit of its newest card left the default branch, read in the judging Run's
 checkout, and its Outputs (`<operation>.json` in its agents directory, never the
 `.launch.json`, `.mcp.json` or `.settings.json` beside them), under the caps and redaction
-above, and marked `TRUNCATED` where any of it was cut. Where a Run's work cannot be read
+above — an Output whose name looks like a credential is named with `<redacted>` — and marked `TRUNCATED` where any of it was cut. Where a Run's work cannot be read
 the pack says why and the judgement goes on with what it can read: `work: none yet (no
 card)`, `diff: could not be read: <git's first line>` for a commit this checkout does not
 have, or `diff: no committed change yet`; its Outputs are shown either way, and the log line

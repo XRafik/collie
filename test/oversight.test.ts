@@ -950,6 +950,7 @@ test("the cross-run judge reads each related Run's work, and files only what cit
           `${dir}/agents/r2/build.json`,
           '{"verdict":"clean","note":"a picker"}',
         );
+        yield* fs.writeFileString(`${dir}/agents/r2/api-token.json`, '{"value":"s3cr3t"}');
         yield* fs.writeFileString(`${dir}/agents/r2/build.launch.json`, '{"argv":"LAUNCHED"}');
         yield* fs.writeFileString(`${dir}/agents/r2/build.mcp.json`, '{"servers":"MCP-CONFIG"}');
         yield* fs.makeDirectory(`${dir}/agents/r3`, { recursive: true });
@@ -999,6 +1000,8 @@ test("the cross-run judge reads each related Run's work, and files only what cit
         expect(r2).toContain("+export const a = 1;");
         expect(r2).toContain("--- src/api-token.ts\n<redacted>");
         expect(pack).not.toContain("hunter2");
+        expect(r2).toContain("--- output api-token\n<redacted>");
+        expect(pack).not.toContain("s3cr3t");
         expect(r2).toContain("--- output build");
         expect(r2).toContain('"verdict": "clean"');
         expect(pack).not.toContain("LAUNCHED");
