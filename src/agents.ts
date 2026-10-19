@@ -354,6 +354,11 @@ export interface AgentsApi {
    * `unless` is an Output already known to be unusable: the same text again is the agent
    * not having rewritten the file, which is not an answer to having been asked to.
    */
+  /** Runs `waiting` with this agent on the list of those collected from, as `collect` does. */
+  readonly collectedDuring: <A, E, R>(
+    launched: Launched,
+    waiting: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   readonly collect: (
     launched: Launched,
     unless?: string | null,
@@ -739,14 +744,18 @@ export const agentWork = <
       );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
     const collecting = (on: Launched, from: AgentAsk, waiting?: string) => {
-      // Each budget spent idle, one that has gone is started again, as a resume once did.
-      const late = Effect.gen(function* () {
-        for (;;) {
-          yield* reviving(from);
-          const text = yield* watching(agents.collect(on, null, questions));
-          if (text !== null) return text;
-        }
-      });
+      // Each budget spent idle, one that has gone is started again, as a resume once did;
+      // collected throughout, so a verify ending while it is started is still told to it.
+      const late = agents.collectedDuring(
+        on,
+        Effect.gen(function* () {
+          for (;;) {
+            yield* reviving(from);
+            const text = yield* watching(agents.collect(on, null, questions));
+            if (text !== null) return text;
+          }
+        }),
+      );
       const output = watching(agents.collect(on, null, questions)).pipe(
         Effect.flatMap((text) =>
           text !== null
@@ -2729,6 +2738,8 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     handOff,
     halt,
     collect,
+    collectedDuring: (launched, waiting) =>
+      collecting.during(launched.runId, launched.agent, waiting),
     repair,
     steer,
     tendQuestions,

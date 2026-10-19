@@ -14,6 +14,7 @@ import type { BunServices } from "@effect/platform-bun";
 import {
   Clock,
   ConfigProvider,
+  Deferred,
   Duration,
   Effect,
   Fiber,
@@ -952,6 +953,61 @@ test(
           }),
           { collectMs: 400 },
         );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "an agent collected past its budget stays collected while Collie looks for it to start again",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const starting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let blocking = false;
+        class SlowStart extends FakeHerdr {
+          override agentStart(...args: Parameters<FakeHerdr["agentStart"]>) {
+            return blocking
+              ? Deferred.succeed(starting, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(super.agentStart(...args)),
+                )
+              : super.agentStart(...args);
+          }
+        }
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null]);
+        const herdr = new SlowStart(rig.pluginEnv());
+        const marked = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* pastTheBudget;
+            yield* until(
+              steps("r1").pipe(
+                Effect.provideService(Path.Path, yield* Path.Path),
+                Effect.map(
+                  (found) =>
+                    found.length > 0 && found.every((one) => one.delivery.state === "acknowledged"),
+                ),
+              ),
+            );
+            blocking = true;
+            const pane = (yield* herdr.agentList()).find(
+              (one) => one.name === agentFor("r1"),
+            )?.paneId;
+            yield* herdr.paneClose(pane ?? "");
+            yield* Deferred.await(starting);
+            const marked = yield* (yield* Collecting).has("r1", agentFor("r1"));
+            blocking = false;
+            yield* Deferred.succeed(release, undefined);
+            yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"revived"}`);
+            yield* Fiber.join(fiber);
+            return marked;
+          }),
+          { herdr, collectMs: 400 },
+        );
+        expect(marked).toBe(true);
       }),
     ),
   120_000,
