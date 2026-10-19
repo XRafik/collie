@@ -85,15 +85,15 @@ Done only on the host's reply, and kept in `actions.log`. Tested in
 [ADR-0051](../docs/adr/0051-a-review-comment-is-written-on-desktops-own-views.md). Desktop never
 knows the delivery cap or the paste budget.
 
-| File                               | What it owns                                                                                                                                                    |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/shared/review-comments.ts`    | Drafts, anchors, whether a line is in a hunk, and the composed message (`desktop/test/review-comments.test.ts`)                                                 |
-| `src/shared/record-terminal.ts`    | `recipients`: who may get them                                                                                                                                  |
-| `src/shared/diff-view.ts`          | The Diff tab's tree in drawn order, the folders on a path, the file being read, and the height a file holds while it is read (`test/desktop-diff-view.test.ts`) |
-| `src/shared/evidence.ts`           | The Evidence tab's files sorted (`desktop/test/evidence.test.ts`), and whether it has anything to show (`test/desktop-evidence.test.ts`)                        |
-| `src/shared/record.ts`             | A record's tabs, the one shown, and what its Summary says (`test/desktop-record.test.ts`)                                                                       |
-| `src/shared/plan-view.ts`          | The Plan tab's "N of M tickets done" and the spec's headings for its contents (`test/desktop-plan-view.test.ts`)                                                |
-| `view/app/components/DiffFile.vue` | Each file, drawn with `@pierre/diffs`' `FileDiff`                                                                                                               |
+| File                               | What it owns                                                                                                                                                                                               |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/shared/review-comments.ts`    | Drafts, anchors, whether a line is in a hunk, and the composed message (`desktop/test/review-comments.test.ts`)                                                                                            |
+| `src/shared/record-terminal.ts`    | `recipients`: who may get them                                                                                                                                                                             |
+| `src/shared/diff-view.ts`          | The Diff tab's tree in drawn order, filtered by a path, each file row's facts, the folders on a path, the file being read, and the height a file holds while it is read (`test/desktop-diff-view.test.ts`) |
+| `src/shared/evidence.ts`           | The Evidence tab's files sorted (`desktop/test/evidence.test.ts`), and whether it has anything to show (`test/desktop-evidence.test.ts`)                                                                   |
+| `src/shared/record.ts`             | A record's tabs, the one shown, and what its Summary says (`test/desktop-record.test.ts`)                                                                                                                  |
+| `src/shared/plan-view.ts`          | The Plan tab's "N of M tickets done" and the spec's headings for its contents (`test/desktop-plan-view.test.ts`)                                                                                           |
+| `view/app/components/DiffFile.vue` | Each file, drawn with `@pierre/diffs`' `FileDiff`                                                                                                                                                          |
 
 ## Scale and Zoom
 

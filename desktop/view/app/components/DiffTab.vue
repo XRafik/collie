@@ -8,9 +8,11 @@ import {
   activeFile,
   type DiffTreeNode,
   diffTree,
+  filterTree,
   foldersOn,
   READING_LINE,
   reachBy,
+  rowFacts,
 } from "../../../src/shared/diff-view";
 
 /** Where a finding points: a file, and a line in it as it is now. */
@@ -75,11 +77,27 @@ watch(
 );
 
 const drawn = computed(() => diffTree(props.diff.files));
+const filter = ref("");
+const filtering = computed(() => filter.value.trim() !== "");
+const listed = computed(() => filterTree(drawn.value.tree, filter.value));
+
+const { drafts } = useReviewDrafts(() => props);
+const facts = computed(() => {
+  const onDiff = drafts.value.flatMap(({ anchor }) =>
+    anchor._tag === "Diff" ? [anchor.path] : [],
+  );
+  return new Map(drawn.value.files.map((file) => [file.path, rowFacts(file, onDiff)]));
+});
+
+type Row = TreeItem & { path: string };
+/** Nuxt UI draws a row's `<slot>-trailing`, which its slot types do not name. */
+const FILE_FACTS = "file-trailing";
+const factsOf = (row: Row) => facts.value.get(row.path);
 
 const items = computed(() => {
-  const byKey = new Map<string, TreeItem>();
-  const toItem = (node: DiffTreeNode): TreeItem => {
-    const item: TreeItem =
+  const byKey = new Map<string, Row>();
+  const toItem = (node: DiffTreeNode): Row => {
+    const item: Row =
       node.kind === "folder"
         ? {
             label: node.label,
@@ -91,12 +109,13 @@ const items = computed(() => {
             label: node.label,
             icon: "i-lucide-file",
             path: node.key,
+            slot: "file",
             onSelect: () => show(node.key),
           };
     byKey.set(node.key, item);
     return item;
   };
-  return { tree: drawn.value.tree.map(toItem), byKey };
+  return { tree: listed.value.map(toItem), byKey };
 });
 const selected = computed(() =>
   active.value === null ? undefined : items.value.byKey.get(active.value),
@@ -106,9 +125,22 @@ const folders = computed(() => [
   ...new Set(drawn.value.files.flatMap((file) => foldersOn(file.path))),
 ]);
 const closed = ref(new Set<string>());
-const expanded = computed(() => folders.value.filter((folder) => !closed.value.has(folder)));
-const setExpanded = (keys: ReadonlyArray<string>) =>
-  (closed.value = new Set(folders.value.filter((folder) => !keys.includes(folder))));
+const listedFolders = computed(() =>
+  [...items.value.byKey.keys()].filter((key) => key.endsWith("/")),
+);
+/** Folders closed while the filter is in effect; the human's own are kept for after it. */
+const closedFiltered = ref(new Set<string>());
+watch(filter, () => (closedFiltered.value = new Set()));
+const expanded = computed(() =>
+  filtering.value
+    ? listedFolders.value.filter((folder) => !closedFiltered.value.has(folder))
+    : folders.value.filter((folder) => !closed.value.has(folder)),
+);
+const setExpanded = (keys: ReadonlyArray<string>) => {
+  const shut = (all: ReadonlyArray<string>) => new Set(all.filter((key) => !keys.includes(key)));
+  if (filtering.value) closedFiltered.value = shut(listedFolders.value);
+  else closed.value = shut(folders.value);
+};
 
 const scroller = inject<Ref<HTMLElement | null>>("recordScroller", ref(null));
 const treeBox = ref<HTMLElement | null>(null);
@@ -172,12 +204,18 @@ watch(
 watch(() => drawn.value.files, measure, { flush: "post" });
 
 watch(
-  [active, () => props.shown],
-  async ([path, shown]) => {
+  [active, () => props.shown, listed],
+  async ([path, shown], [was]) => {
     if (path === null) return;
-    const hiding = foldersOn(path).filter((folder) => closed.value.has(folder));
-    if (hiding.length > 0) {
-      closed.value = new Set([...closed.value].filter((folder) => !hiding.includes(folder)));
+    const reopen = (folders: Ref<Set<string>>) => {
+      const hiding = foldersOn(path).filter((folder) => folders.value.has(folder));
+      if (hiding.length > 0) {
+        folders.value = new Set([...folders.value].filter((folder) => !hiding.includes(folder)));
+      }
+    };
+    if (path !== was) {
+      reopen(closed);
+      reopen(closedFiltered);
     }
     if (!shown) return;
     await nextTick();
@@ -219,14 +257,30 @@ watch(
         class="sticky top-0 w-56 shrink-0 overflow-y-auto"
         :style="visibleHeight === null ? undefined : { maxHeight: `${visibleHeight}px` }"
       >
+        <UInput
+          v-model="filter"
+          icon="i-lucide-search"
+          placeholder="Filter files"
+          size="sm"
+          class="sticky top-0 z-10 mb-2 w-full bg-default"
+          data-testid="diff-filter"
+        />
+        <p v-if="items.tree.length === 0" class="text-sm text-muted" data-testid="diff-no-match">
+          No file matches
+        </p>
         <UTree
+          v-else
           :items="items.tree"
-          :get-key="(item: TreeItem) => item.path"
+          :get-key="(item: Row) => item.path"
           :model-value="selected"
           :expanded="expanded"
           data-testid="diff-tree"
           @update:expanded="setExpanded"
-        />
+        >
+          <template #[FILE_FACTS]="{ item }">
+            <DiffRowFacts :facts="factsOf(item)" />
+          </template>
+        </UTree>
       </div>
       <div ref="sections" class="flex min-w-0 flex-1 flex-col gap-3">
         <DiffFile

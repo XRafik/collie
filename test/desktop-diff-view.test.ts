@@ -4,9 +4,11 @@ import {
   activeFile,
   type DiffTreeNode,
   diffTree,
+  filterTree,
   foldersOn,
   reachBy,
   readingHeight,
+  rowFacts,
 } from "../desktop/src/shared/diff-view";
 
 const file = (path: string): DiffFile => ({ path, status: "modified", added: 1, removed: 0 });
@@ -136,5 +138,74 @@ describe("a file being read", () => {
   test("holds one line where nothing is counted", () => {
     expect(readingHeight({ ...file("empty.ts"), added: 0, removed: 0 }, 600)).toBe(20);
     expect(readingHeight({ ...file("logo.png"), added: null, removed: null }, 600)).toBe(20);
+  });
+});
+
+describe("a file row's facts", () => {
+  test("say an added, a deleted and a modified file's status and counts", () => {
+    expect(rowFacts({ path: "new.ts", status: "added", added: 12, removed: 0 }, [])).toEqual({
+      status: "added",
+      lines: { added: 12, removed: 0 },
+      drafts: 0,
+    });
+    expect(rowFacts({ path: "old.ts", status: "deleted", added: 0, removed: 7 }, [])).toEqual({
+      status: "deleted",
+      lines: { added: 0, removed: 7 },
+      drafts: 0,
+    });
+    expect(rowFacts({ path: "a.ts", status: "modified", added: 3, removed: 2 }, [])).toEqual({
+      status: "modified",
+      lines: { added: 3, removed: 2 },
+      drafts: 0,
+    });
+  });
+
+  test("say binary for a file without counts", () => {
+    expect(
+      rowFacts({ path: "logo.png", status: "modified", added: null, removed: null }, []).lines,
+    ).toBe("binary");
+  });
+
+  test("count the drafts on the file", () => {
+    const drafts = ["a.ts", "b.ts", "a.ts"];
+    expect(rowFacts(file("a.ts"), drafts).drafts).toBe(2);
+    expect(rowFacts(file("c.ts"), drafts).drafts).toBe(0);
+  });
+});
+
+describe("the tree filtered by a path", () => {
+  const { tree } = diffTree(
+    ["src/ui/Board.tsx", "src/ui/Drawer.tsx", "src/host.ts", "docs/using.md"].map(file),
+  );
+  const kept = (text: string) => depthFirst(filterTree(tree, text));
+
+  test("keeps every file under a matching folder, and their folders", () => {
+    const narrowed = filterTree(tree, "ui/");
+    expect(depthFirst(narrowed)).toEqual(["src/ui/Board.tsx", "src/ui/Drawer.tsx"]);
+    expect(narrowed.map(({ key }) => key)).toEqual(["src/"]);
+  });
+
+  test("keeps a matching file's folders", () => {
+    const narrowed = filterTree(tree, "host");
+    expect(depthFirst(narrowed)).toEqual(["src/host.ts"]);
+    expect(narrowed).toEqual([
+      expect.objectContaining({
+        key: "src/",
+        children: [expect.objectContaining({ key: "src/host.ts" })],
+      }),
+    ]);
+  });
+
+  test("ignores case", () => {
+    expect(kept("BOARD")).toEqual(["src/ui/Board.tsx"]);
+  });
+
+  test("keeps nothing when nothing matches", () => {
+    expect(filterTree(tree, "nowhere")).toEqual([]);
+  });
+
+  test("keeps everything when empty", () => {
+    expect(filterTree(tree, "")).toEqual(tree);
+    expect(filterTree(tree, "  ")).toEqual(tree);
   });
 });

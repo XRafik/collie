@@ -56,6 +56,35 @@ export const diffTree = (changed: ReadonlyArray<DiffFile>): DiffTree => {
   return { tree: root, files: filesOf(root) };
 };
 
+export interface RowFacts {
+  readonly status: DiffFile["status"];
+  readonly lines: { readonly added: number; readonly removed: number } | "binary";
+  readonly drafts: number;
+}
+
+/** `drafts` is the path of each Diff-anchored Review comment draft. */
+export const rowFacts = (file: DiffFile, drafts: ReadonlyArray<string>): RowFacts => ({
+  status: file.status,
+  lines: file.added === null ? "binary" : { added: file.added, removed: file.removed ?? 0 },
+  drafts: drafts.filter((path) => path === file.path).length,
+});
+
+/** The rows whose file's path contains the text, ignoring case, and the folders above them. */
+export const filterTree = (
+  tree: ReadonlyArray<DiffTreeNode>,
+  text: string,
+): ReadonlyArray<DiffTreeNode> => {
+  const wanted = text.trim().toLowerCase();
+  if (wanted === "") return tree;
+  const kept = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<DiffTreeNode> =>
+    nodes.flatMap((node): ReadonlyArray<DiffTreeNode> => {
+      if (node.kind === "file") return node.key.toLowerCase().includes(wanted) ? [node] : [];
+      const children = kept(node.children);
+      return children.length === 0 ? [] : [{ ...node, children }];
+    });
+  return kept(tree);
+};
+
 interface Span {
   readonly top: number;
   readonly bottom: number;

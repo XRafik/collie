@@ -1595,7 +1595,12 @@ that file at the top of the tab. **Review** renders the review, read whole the s
 **Diff** at that line, or a read-only view of the file from the Run's checkout where no
 hunk shows it. **Diff** is the Run's branch against its merge base — live while the Run
 works, final after — as a file tree beside each file's diff, unified or side by side, kept
-as you left it while the record is open. The tree stays beside the diffs as you scroll,
+as you left it while the record is open. Each file's row in the tree says whether it was added (A), deleted (D) or modified (M),
+its `+N −M` lines or "binary", and how many Review comment drafts you have on it. A filter
+above the tree keeps only the files whose path contains what you type, ignoring case, with
+their folders shown open, and says "No file matches" when none does; it narrows the tree
+only, so every diff stays drawn, and clearing it brings back the folders as you had them.
+The tree stays beside the diffs as you scroll,
 highlights the file being read, scrolls itself to keep that file's row in view, and opens
 the folder it is in; a click in the tree, or a finding's jump, highlights its file at once,
 until you next scroll. The diffs are drawn in the tree's order with `@pierre/diffs` in the github-light
