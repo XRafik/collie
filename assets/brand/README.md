@@ -46,7 +46,6 @@ Use chalk text on black and deep black. Use ink text on silver, mist, and chalk.
 - **Nunito Sans 900:** the wordmark and identity lettering. The supplied signatures include the finished lettering.
 - **DM Sans 400–700:** body copy, labels, and interface headings.
 - Use direct, calm language: what changed, what is happening, and what needs a decision. Preserve the human's role in setting direction.
-- Brand line: **Good work. Good company.**
 
 The original font files and their SIL Open Font License notices are included in `fonts/`. Retain [Nunito Sans's license](fonts/nunito-sans-license.txt) and [DM Sans's license](fonts/dm-sans-license.txt) when distributing the fonts. Sources: [Nunito Sans](https://github.com/google/fonts/tree/main/ofl/nunitosans) and [DM Sans](https://github.com/google/fonts/tree/main/ofl/dmsans).
 
