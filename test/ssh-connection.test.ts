@@ -19,6 +19,7 @@ import {
 } from "../src/ssh-connection";
 import { runEffect } from "./support/effect";
 import { freePort, portOf, writeFakeSsh } from "./support/fake-ssh";
+import { root } from "./support/host";
 
 const vm = { label: "vm-mk", target: "mk@vm-mk" };
 
@@ -31,7 +32,11 @@ const rig = Effect.gen(function* () {
   return { dir, state: `${dir}/state`, ssh, fake };
 });
 
-const opens = (state: string, ssh: string, bound: Duration.Input = "2 minutes") =>
+const opens = (
+  state: string,
+  ssh: string,
+  bound: Duration.Input = "2 minutes",
+) =>
   Effect.gen(function* () {
     const stderr: Array<string> = [];
     const opened = yield* openConnection(state, vm, {
@@ -64,7 +69,9 @@ test("a Machine's control path is its own, private, and refused where a socket c
       expect(path.slice(`${state}/ssh/`.length)).toMatch(/^[0-9a-f]{16}$/);
       expect((yield* fs.stat(`${state}/ssh`)).mode & 0o777).toBe(0o700);
       expect(controlPathOf(state, { ...vm, label: "other" })).not.toBe(path);
-      expect(controlPathOf(state, { ...vm, target: "mk@elsewhere" })).not.toBe(path);
+      expect(controlPathOf(state, { ...vm, target: "mk@elsewhere" })).not.toBe(
+        path,
+      );
       expect(controlPathOf(`${state}x`, vm).length).toBe(path.length + 1);
 
       const deep = `${dir}/${"d".repeat(80)}`;
@@ -82,17 +89,71 @@ test("the opener starts one master, says what it said, and answers the path once
     Effect.gen(function* () {
       const { state, ssh, fake } = yield* rig;
       const opened = yield* opens(state, ssh);
-      expect(opened).toMatchObject({ path: controlPathOf(state, vm), opened: true });
+      expect(opened).toMatchObject({
+        path: controlPathOf(state, vm),
+        opened: true,
+      });
       expect(opened.stderr).toContain("Authenticated to mk@vm-mk");
-      expect((yield* fake.calls).filter((line) => line.startsWith("master"))).toEqual([
-        "master mk@vm-mk",
-      ]);
+      expect(
+        (yield* fake.calls).filter((line) => line.startsWith("master")),
+      ).toEqual(["master mk@vm-mk"]);
 
       const again = yield* opens(state, ssh);
       expect(again).toMatchObject({ path: opened.path, opened: false });
-      expect((yield* fake.calls).filter((line) => line.startsWith("master"))).toHaveLength(1);
+      expect(
+        (yield* fake.calls).filter((line) => line.startsWith("master")),
+      ).toHaveLength(1);
     }),
   ));
+
+test(
+  "openers in separate processes that come together start one master between them",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { dir, state, ssh, fake } = yield* rig;
+        const opener = `${dir}/opener.ts`;
+        yield* fs.writeFileString(
+          opener,
+          `import * as BunServices from "@effect/platform-bun/BunServices";
+import { Effect } from "effect";
+import { openConnection } from "${root}src/ssh-connection.ts";
+const opened = await Effect.runPromise(
+  openConnection(${JSON.stringify(state)}, ${JSON.stringify(vm)}, {
+    ssh: ${JSON.stringify(ssh)},
+    said: () => Effect.void,
+  }).pipe(Effect.provide(BunServices.layer)),
+);
+await Bun.write(process.argv[2]!, JSON.stringify(opened));
+`,
+        );
+        // Its answer goes to a file: the master it starts keeps a stdout pipe open.
+        const codes = yield* Effect.all(
+          [0, 1].map((one) =>
+            Effect.promise(
+              () =>
+                Bun.spawn([process.execPath, opener, `${dir}/opened-${one}`], {
+                  stdio: ["ignore", "ignore", "inherit"],
+                }).exited,
+            ),
+          ),
+          { concurrency: "unbounded" },
+        );
+        expect(codes).toEqual([0, 0]);
+        const opened = yield* Effect.forEach([0, 1], (one) =>
+          fs
+            .readFileString(`${dir}/opened-${one}`)
+            .pipe(Effect.map((text) => JSON.parse(text).opened)),
+        );
+        expect(opened.sort()).toEqual([false, true]);
+        expect(
+          (yield* fake.calls).filter((line) => line.startsWith("master")),
+        ).toEqual(["master mk@vm-mk"]);
+      }),
+    ),
+  30_000,
+);
 
 test("a master that never answers within the opener's bound fails with what ssh said", () =>
   runEffect(
@@ -114,9 +175,13 @@ test("the host's handle only asks an open master, and cancels its forward when i
       const { state, ssh, fake } = yield* rig;
       const handle = yield* sshConnection(state, vm, ssh);
       expect(yield* handle.check).toBe(false);
-      const refused = yield* Effect.scoped(handle.forward(1, 2)).pipe(Effect.flip);
+      const refused = yield* Effect.scoped(handle.forward(1, 2)).pipe(
+        Effect.flip,
+      );
       expect(refused._tag).toBe("HostRefused");
-      expect((yield* fake.calls).every((line) => line.startsWith("mux "))).toBe(true);
+      expect((yield* fake.calls).every((line) => line.startsWith("mux "))).toBe(
+        true,
+      );
 
       yield* opens(state, ssh);
       expect(yield* handle.check).toBe(true);
@@ -147,7 +212,11 @@ test("the host's handle only asks an open master, and cancels its forward when i
       expect(calls).toContain(`mux forward ${spec} mk@vm-mk`);
       expect(calls.at(-1)).toBe(`mux cancel ${spec} mk@vm-mk`);
       expect(calls.filter((line) => line.startsWith("master"))).toHaveLength(1);
-      expect(calls.some((line) => line.startsWith("login") || line.startsWith("ride"))).toBe(false);
+      expect(
+        calls.some(
+          (line) => line.startsWith("login") || line.startsWith("ride"),
+        ),
+      ).toBe(false);
     }),
   ));
 
@@ -165,7 +234,9 @@ test("`exit` ends an open master and its path, and only removes a path left behi
       yield* fs.writeFileString(path, "");
       yield* handle.exit;
       expect(yield* fs.exists(path)).toBe(false);
-      expect((yield* fake.calls).some((line) => line.startsWith("login"))).toBe(false);
+      expect((yield* fake.calls).some((line) => line.startsWith("login"))).toBe(
+        false,
+      );
     }),
   ));
 
@@ -176,13 +247,18 @@ test("the host closes every connection under its state but those of the machines
       const { state, ssh, fake } = yield* rig;
       const other = { label: "other", target: "mk@other" };
       const kept = (yield* opens(state, ssh)).path;
-      const gone = yield* openConnection(state, other, { ssh, said: () => Effect.void });
+      const gone = yield* openConnection(state, other, {
+        ssh,
+        said: () => Effect.void,
+      });
       yield* fs.writeFileString(`${state}/ssh/${"0".repeat(16)}.binding`, "");
       const closed = yield* closeConnections(state, [vm], ssh);
       expect(closed).toEqual([gone.path]);
       expect(yield* fs.exists(gone.path)).toBe(false);
       expect(yield* fs.exists(kept)).toBe(true);
-      expect(yield* fs.exists(`${state}/ssh/${"0".repeat(16)}.binding`)).toBe(true);
+      expect(yield* fs.exists(`${state}/ssh/${"0".repeat(16)}.binding`)).toBe(
+        true,
+      );
       expect(
         (yield* fake.calls).filter(
           (line) => !line.startsWith("master") && !line.startsWith("mux check"),
@@ -197,7 +273,9 @@ test("a session built from the rider argv rides an open master and never logs in
       const { state, ssh, fake } = yield* rig;
       const path = controlPathOf(state, vm);
       expect(yield* run(riderArgv(path, vm.target, "true", ssh))).toBe(255);
-      expect((yield* fake.calls).some((line) => line.startsWith("login"))).toBe(false);
+      expect((yield* fake.calls).some((line) => line.startsWith("login"))).toBe(
+        false,
+      );
 
       yield* opens(state, ssh);
       expect(yield* run(riderArgv(path, vm.target, "true", ssh))).toBe(0);

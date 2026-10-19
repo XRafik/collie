@@ -369,7 +369,9 @@ lifecycle and `collie bridge` (`pairs` on their env) where a link waits on one. 
 `ssh -M -N -S <path> -o ControlPersist=yes -o ServerAliveInterval=15 -o
 ServerAliveCountMax=3 -o ConnectTimeout=15 <target>`, not in a process group of its own,
 so the master ssh puts in the background outlives the command; its stderr goes to the
-command's, and it answers once `-O check` does, within two minutes. The host is given only
+command's, and it answers once `-O check` does, within two minutes. Openers that come
+together, in any process, take turns on `<path>.lock` and check again once they hold it,
+so one master and one SSO approval serve them all. The host is given only
 `sshConnection`'s handle, whose `check` and scoped `forward` are `ssh -S <path> -O
 check|forward|cancel <target>`, and whose `exit` is `ssh -S <path> -O exit <label>`,
 removing a path a master left behind: each talks to an open master or fails, so the host
