@@ -356,6 +356,61 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
+test.skipIf(process.platform !== "linux")(
+  "a check whose spawn lands once its host's checks are killed is killed too",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { gate, gated } = yield* gatedStat;
+        const { notes, checks } = yield* worldWith({}, gated);
+        gate.armed = true;
+        yield* runHeld(checks, notes);
+        yield* Deferred.await(gate.reached);
+        const ones = yield* startedIn(notes);
+
+        yield* checks.endAll;
+        const killed = yield* Effect.forkScoped(checks.killEnded);
+        yield* Deferred.succeed(gate.release, undefined);
+        yield* Fiber.join(killed);
+        const gone = yield* until(() => noneRunning(ones), Boolean).pipe(
+          Effect.timeoutOption("3 seconds"),
+        );
+        expect(Option.isSome(gone)).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a slow look at /proc while a host's checks get SIGTERM does not hold back their SIGKILL",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const listing = { armed: false, release: yield* Deferred.make<void>() };
+        const slow: FileSystem.FileSystem = {
+          ...fs,
+          readDirectory: (path, options) => {
+            if (!listing.armed || path !== "/proc") return fs.readDirectory(path, options);
+            listing.armed = false;
+            return Deferred.await(listing.release).pipe(
+              Effect.andThen(fs.readDirectory(path, options)),
+            );
+          },
+        };
+        const { notes, checks } = yield* worldWith({}, slow);
+        yield* Effect.addFinalizer(() => Deferred.succeed(listing.release, undefined));
+        yield* runHeld(checks, notes);
+        const ones = yield* startedIn(notes);
+
+        listing.armed = true;
+        yield* endAllWithin(checks, Duration.millis(2_000), () => Effect.void);
+        expect(yield* noneRunning(ones)).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
 const refusal = () => Object.assign(new Error("kill EPERM"), { code: "EPERM" });
 
 test.skipIf(process.platform !== "linux")(

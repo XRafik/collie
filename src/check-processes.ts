@@ -65,7 +65,7 @@ export interface CheckProcessesApi {
   >;
   /** Marks every check this host is collecting ended, then sends each SIGTERM. */
   readonly endAll: Effect.Effect<ReadonlyArray<CheckOf>>;
-  /** SIGKILL to whatever of an ended check is left, and its record gone once it is. */
+  /** SIGKILL to whatever of every check is left, and to one whose spawn lands meanwhile; its record goes once it is gone. */
   readonly killEnded: Effect.Effect<void>;
   /** The ids of the checks this host is collecting. */
   readonly collecting: Effect.Effect<ReadonlyArray<string>>;
@@ -264,6 +264,8 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   );
   const collecting = new Map<string, Collecting>();
   let stopping = false;
+  let killing = false;
+  let spawning = 0;
   // From before its spawn, so no check of this host is ever taken for a leftover.
   const ours = new Set<string>();
   const host = { pid: process.pid, started: (yield* startedOf(process.pid)) ?? "" };
@@ -343,6 +345,16 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       return outcome;
     }).pipe(Effect.provideContext(services));
 
+  /** Each group before the look at /proc for marked processes, so a slow look holds back no group. */
+  const signalAll = (entries: ReadonlyArray<Collecting>, name: NodeJS.Signals) =>
+    Effect.gen(function* () {
+      for (const entry of entries)
+        yield* signal(yield* provedIn(entry.record, new Map()), name, kill);
+      const marked = yield* markedBy(installation);
+      for (const entry of entries)
+        yield* signal({ group: null, marked: marked.get(entry.record.id) ?? [] }, name, kill);
+    });
+
   /** Ends the Run's leftovers, and again while one survives that (D6). */
   const clearOf = (run: string) =>
     Effect.gen(function* () {
@@ -369,31 +381,35 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       return yield* Effect.uninterruptible(
         Effect.gen(function* () {
           if (stopping) return endedCheck;
-          const handle = yield* spawnCheck(command, {
-            [CHECK_INSTALLATION]: installation,
-            [CHECK_ID]: id,
-          });
-          const record: CheckRecord = {
-            id,
-            run: check.run,
-            name: check.name,
-            ...(check.pass !== undefined && { pass: check.pass.pass }),
-            ...(check.pass?.round !== undefined && { round: check.pass.round }),
-            by: check.by,
-            leader: {
-              pid: handle.pid,
-              started: (yield* startedOf(handle.pid)) ?? "",
-              group: (yield* groupOf(handle.pid)) ?? handle.pid,
-            },
-            host,
-            started: began,
-          };
-          const entry: Collecting = { check, record, ended: stopping };
-          collecting.set(id, entry);
+          spawning += 1;
+          const { handle, record, entry } = yield* Effect.gen(function* () {
+            const handle = yield* spawnCheck(command, {
+              [CHECK_INSTALLATION]: installation,
+              [CHECK_ID]: id,
+            });
+            const record: CheckRecord = {
+              id,
+              run: check.run,
+              name: check.name,
+              ...(check.pass !== undefined && { pass: check.pass.pass }),
+              ...(check.pass?.round !== undefined && { round: check.pass.round }),
+              by: check.by,
+              leader: {
+                pid: handle.pid,
+                started: (yield* startedOf(handle.pid)) ?? "",
+                group: (yield* groupOf(handle.pid)) ?? handle.pid,
+              },
+              host,
+              started: began,
+            };
+            const entry: Collecting = { check, record, ended: stopping };
+            collecting.set(id, entry);
+            return { handle, record, entry };
+          }).pipe(Effect.ensuring(Effect.sync(() => (spawning -= 1))));
           yield* Effect.addFinalizer(() =>
             endCheck(record, installation, kill).pipe(Effect.andThen(forget(id)), Effect.ignore),
           );
-          if (entry.ended) yield* signal(yield* provedOf(record, installation), "SIGTERM", kill);
+          if (entry.ended) yield* signalAll([entry], killing ? "SIGKILL" : "SIGTERM");
           yield* fs.makeDirectory(runningChecksDir(dir), { recursive: true }).pipe(Effect.ignore);
           yield* fs
             .writeFileString(`${recordPath(dir, id)}.new`, encodeCheckRecord(record))
@@ -420,28 +436,24 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       entry.ended = true;
       ended.push(entry.check);
     }
-    const marked = yield* markedBy(installation);
-    for (const entry of collecting.values())
-      yield* signal(yield* provedIn(entry.record, marked), "SIGTERM", kill);
+    yield* signalAll([...collecting.values()], "SIGTERM");
     return ended;
   }).pipe(Effect.provideContext(services));
 
   const killEnded = Effect.gen(function* () {
-    let ended = [...collecting.values()].filter((entry) => entry.ended);
-    for (let waited = 0; ended.length > 0; waited += 100) {
+    stopping = true;
+    killing = true;
+    for (const entry of collecting.values()) entry.ended = true;
+    yield* signalAll([...collecting.values()], "SIGKILL");
+    for (let waited = 0; ; waited += 100) {
       const marked = yield* markedBy(installation);
-      const still: Collecting[] = [];
-      for (const entry of ended) {
+      for (const entry of collecting.values()) {
         const proved = yield* provedIn(entry.record, marked);
         if (isGone(proved)) yield* forget(entry.record.id);
-        else {
-          still.push(entry);
-          if (waited === 0) yield* signal(proved, "SIGKILL", kill);
-        }
+        else yield* signal(proved, "SIGKILL", kill);
       }
-      ended = still;
-      if (waited >= KILL_WAIT) return;
-      if (ended.length > 0) yield* Effect.sleep("100 millis");
+      if ((collecting.size === 0 && spawning === 0) || waited >= KILL_WAIT) return;
+      yield* Effect.sleep("100 millis");
     }
   }).pipe(Effect.provideContext(services));
 
@@ -467,9 +479,11 @@ export const endAllWithin = (
     Effect.all(
       [
         checks.endAll.pipe(Effect.flatMap(onEnded)),
-        Effect.sleep(Duration.millis(Duration.toMillis(grace) * 0.8)),
+        Effect.sleep(Duration.millis(Duration.toMillis(grace) * 0.8)).pipe(
+          Effect.andThen(checks.killEnded),
+        ),
       ],
       { concurrency: 2 },
-    ).pipe(Effect.andThen(checks.killEnded), Effect.andThen(Effect.never)),
+    ).pipe(Effect.andThen(Effect.never)),
     Effect.sleep(grace),
   );
