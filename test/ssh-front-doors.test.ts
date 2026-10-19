@@ -9,7 +9,7 @@ import { readEnv } from "../src/env";
 import { machineList } from "../src/lifecycle";
 import { peersOf } from "../src/peers";
 import { PeerView } from "../src/peers-model";
-import { controlPathOf, openConnection } from "../src/ssh-connection";
+import { controlPathOf } from "../src/ssh-connection";
 import { runEffect } from "./support/effect";
 import { freePort, resetter } from "./support/fake-ssh";
 import { stopHost, until } from "./support/host";
@@ -207,44 +207,6 @@ test(
       ),
     ),
   180_000,
-);
-
-test(
-  "pairing rides the connection COLLIE_SSH_CONTROL names and opens none of its own",
-  () =>
-    runEffect(
-      twoMachines(
-        "collie-given-",
-        (first, second) =>
-          Effect.gen(function* () {
-            const fs = yield* FileSystem.FileSystem;
-            const elsewhere = yield* fs.makeTempDirectoryScoped({ prefix: "collie-desk-" });
-            const desktop = yield* openConnection(
-              elsewhere,
-              { label: "second", target: "mk@second" },
-              { ssh: `${first.env.PATH!.split(":")[0]}/ssh`, said: () => Effect.void },
-            );
-            yield* first.lists([second]);
-            const masters = (yield* logged(first, 0, "master")).length;
-            const paired = yield* first.cli(["--machine", "second", "board"], {
-              COLLIE_SSH_CONTROL: desktop.path,
-            });
-            expect(paired.envelope.error).toBeUndefined();
-            expect(yield* logged(first, 0, "master")).toHaveLength(masters);
-            expect(yield* logged(first, 0, "login")).toEqual([]);
-            expect(
-              (yield* logged(first, 0, "ride")).some((line) => line.includes("'invite'")),
-            ).toBe(true);
-            expect(
-              yield* fs.exists(
-                controlPathOf(first.world.state, { label: "second", target: "mk@second" }),
-              ),
-            ).toBe(false);
-          }),
-        [],
-      ),
-    ),
-  120_000,
 );
 
 test(

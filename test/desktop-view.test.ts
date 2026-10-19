@@ -26,6 +26,7 @@ import {
   machineRows,
   type MachineRow,
   nameAsShown,
+  routeSaid,
   notLiveOf,
   type MachineMessage,
   machineToAdd,
@@ -40,6 +41,7 @@ import {
 } from "../desktop/src/shared/in-sync";
 import { agentRows } from "../desktop/src/shared/run-agents";
 import { type Column, columnOf } from "../desktop/src/shared/columns";
+import { PeerView } from "../src/peers-model";
 import { epochMs } from "../src/time";
 import { task } from "./support/task";
 
@@ -390,6 +392,53 @@ const routed = (machine: Machine): FlockItem => ({
   machine: { profile: machine.profile, name: machine.name, target: machine.target },
 });
 
+/** `vm`'s paired link, as `collie machine list` says it, with only the fields given. */
+const linked = (fields: Partial<typeof PeerView.Encoded>): FlockItem => ({
+  _tag: "Linked",
+  machine: { profile: vm.profile, name: vm.name, target: vm.target },
+  link: Schema.decodeUnknownSync(PeerView)({
+    installation: vm.installation,
+    name: vm.name,
+    dials: "out",
+    url: "wss://vm-mk:4100",
+    state: "live",
+    since: null,
+    failure: null,
+    ...fields,
+  }),
+});
+
+test("a Machine's row says which way its paired link goes, and why not direct", () => {
+  const rowWith = (...items: ReadonlyArray<FlockItem>) =>
+    machineRows([routed(vm), snapshot(vm, []), ...items].reduce(applyItem, EMPTY_FLOCK))[0];
+  const refused = "wss://vm-mk:4100 refused the connection";
+  expect(rowWith(linked({ transport: "ssh", direct: refused }))).toMatchObject({
+    transport: "ssh",
+    transportReason: refused,
+    reason: null,
+  });
+  expect(rowWith(linked({ transport: "direct" }))).toMatchObject({
+    transport: "direct",
+    transportReason: null,
+  });
+  expect(rowWith(linked({ state: "away", transport: "ssh", direct: refused }))).toMatchObject({
+    transport: null,
+    transportReason: null,
+  });
+  expect(rowWith(linked({}))).toMatchObject({ transport: null, transportReason: null });
+  expect(rowWith()).toMatchObject({ transport: null, transportReason: null });
+  expect(routeSaid({ route: "link", transport: "ssh" })).toBe("Paired link · over SSH");
+  expect(routeSaid({ route: "link", transport: "direct" })).toBe("Paired link · direct");
+  expect(routeSaid({ route: "link", transport: null })).toBe("Paired link");
+  expect(routeSaid({ route: "ssh", transport: null })).toBe("SSH");
+  expect(
+    rowWith(linked({ state: "away", direct: refused, waits: "ssh_connection" })),
+  ).toMatchObject({
+    transport: null,
+    reason: "Its link waits on an SSH connection, which Desktop opens when it next connects.",
+  });
+});
+
 test("the chat reads each Machine the window shows: a live one's board and protocol, or what stands in its way", () => {
   const old = { ...vm, installation: "inst-old" };
   const savedOld: FlockItem = { _tag: "Saved", machine: old, herds: [], tasks: [working], at: 7 };
@@ -489,6 +538,8 @@ const row = (over: Partial<MachineRow> = {}): MachineRow => ({
   definitions: null,
   credentials: {},
   reason: null,
+  transport: null,
+  transportReason: null,
   ...over,
 });
 const doctored = (ready: boolean) => ({

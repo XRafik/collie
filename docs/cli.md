@@ -51,9 +51,8 @@ Adding a Machine to herdr (`herdr machine add`) is all it takes. The first comma
 reaches it opens this computer's SSH connection to it, as
 [`collie machine connect`](#collie-machine) does, which asks for that login's approval
 once, where the command runs, and pairs the two through it; from then on the Machines talk
-over a TLS WebSocket the dialled one listens for on port 47217. With
-`COLLIE_SSH_CONTROL` set, pairing rides the connection at that path and opens none. A
-pairing whose connection has gone before it asks fails with what ssh said; it never logs
+over a TLS WebSocket the dialled one listens for on port 47217. A connection already
+open, as one Desktop opened, is ridden and nothing is asked. A pairing whose connection has gone before it asks fails with what ssh said; it never logs
 in by itself. Removing the Machine from herdr forgets the pairing on both sides. A host's
 own jobs never start an SSH login, so a Machine no command has reached yet is
 `invalid_state` for them: not paired yet.

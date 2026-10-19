@@ -213,8 +213,7 @@ const toStderr = (text: string) => Effect.sync(() => void process.stderr.write(t
 
 /**
  * A paired Machine by herdr's name for it: kept as it is, or paired now through its SSH
- * connection, opened by a front door that can show its login, or the one
- * `COLLIE_SSH_CONTROL` names. A host's own jobs never pair.
+ * connection, opened by a front door that can show its login. A host's own jobs never pair.
  */
 export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
   env: PluginEnv,
@@ -231,13 +230,11 @@ export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
     Effect.gen(function* () {
       const local = yield* connect(env.stateDir);
       const { installation } = yield* local.identity();
-      const control =
-        env.raw.COLLIE_SSH_CONTROL ??
-        (yield* openConnection(env.stateDir, machine, { said: toStderr })).path;
+      const { path } = yield* openConnection(env.stateDir, machine, { said: toStderr });
       const peer = yield* pairWith(machine, {
         installation: installation ?? "",
         name: machineName(),
-        control,
+        control: path,
       });
       yield* local.pair({ peer });
     }),

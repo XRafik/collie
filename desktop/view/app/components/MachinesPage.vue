@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { type OnboardRun, SETTLED } from "../../../src/shared/flock";
+import { type OnboardRun, routeSaid, SETTLED } from "../../../src/shared/flock";
 import { buildOf, type InSync, NOT_LIVE_SAID, syncable } from "../../../src/shared/in-sync";
 import { type Level, machineUsage } from "../../../src/shared/usage";
 import { type ScheduleAction, machineSchedules, scheduleAsk } from "../../../src/shared/schedules";
@@ -119,9 +119,7 @@ const missing = (run: OnboardRun) => run.steps.filter(({ status }) => !SETTLED.i
           <div class="flex items-center gap-2">
             <strong>{{ row.name }}</strong>
             <span class="text-sm text-muted">{{ row.target ?? "this computer" }}</span>
-            <span v-if="row.route" class="text-sm text-muted">{{
-              row.route === "link" ? "Paired link" : "SSH"
-            }}</span>
+            <span v-if="row.route" class="text-sm text-muted">{{ routeSaid(row) }}</span>
             <UBadge
               class="ml-auto"
               variant="subtle"
@@ -132,6 +130,13 @@ const missing = (run: OnboardRun) => run.steps.filter(({ status }) => !SETTLED.i
           </div>
           <p v-if="row.reason !== null" class="text-sm text-warning" data-testid="reason">
             {{ row.reason }}
+          </p>
+          <p
+            v-if="row.transportReason !== null"
+            class="text-sm text-muted"
+            data-testid="transport-reason"
+          >
+            {{ row.transportReason }}
           </p>
           <p class="text-sm text-muted" data-testid="build">{{ buildOf(row) }}</p>
           <template v-for="lag in verdict.behind" :key="lag.said">

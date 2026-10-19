@@ -416,8 +416,8 @@ the link with `test/support/peers.ts`: two real hosts, each with its own fake he
 through a fake `ssh`.
 
 **Pairing.** `ensurePaired` first opens the Machine's SSH connection with
-`openConnection`, whose login and SSO approval show on the command's stderr, or takes the
-path `COLLIE_SSH_CONTROL` names and opens nothing. `pairWith` resolves the herdr machine's
+`openConnection`, whose login and SSO approval show on the command's stderr, or finds it
+open and asks nothing. `pairWith` resolves the herdr machine's
 `HostName` with `ssh -G` and runs
 `collie --json machine invite --for <installation> --name <this Machine> --address <HostName>`
 there in a session that rides that connection. One that went before the invite fails
@@ -482,8 +482,10 @@ into Desktop, which reaches a Machine only through `collie bridge`. For a paired
 that command runs locally with `--machine <name>` and pipes the Local host's relay; for
 SSH it runs on the far Machine. Bounded shell calls carry commands and credentials over
 the door. After an upgrade, `refresh` asks the far Machine to run its new CLI and replace
-its host. Interactive terminal commands and login forwarding retain SSH. Pairing
-uses `COLLIE_SSH_CONTROL` to reuse Desktop's existing master.
+its host. Interactive terminal commands and login forwarding retain SSH, riding the
+Machine's shared connection with argv from `src/ssh-connection.ts`. Desktop opens that
+connection only through `collie --json machine connect <label>`, reading SSO lines from
+its stderr, and finds one gone with `-O check` before its next use; it never closes it.
 
 Each Machine's `desktop` channel is its _door_, and Desktop holds one per shown Machine, by
 installation (`DoorMap` in `desktop/src/bun/machine.ts`), for as long as its board stream
@@ -506,8 +508,8 @@ Desktop's own tools, not the Toolkit's, so Native chat's reach is unchanged.
 Go to pane is the one place Desktop touches a session, and it does so for the human
 ([ADR-0044](adr/0044-go-to-pane-opens-the-pane-in-desktop.md)): it runs herdr's terminal
 controller for the Run's pane, `herdr [--session <name>] terminal session control <pane>
---takeover --cols C --rows R`, through the Machine's route — one more channel on the SSH
-master Desktop already holds, or a local process for Local — and draws what it prints in
+--takeover --cols C --rows R`, through the Machine's route — one more channel on the
+Machine's shared SSH connection, or a local process for Local — and draws what it prints in
 the drawer's Terminal tab (`desktop/src/bun/terminal.ts`). The human's keys, pastes,
 resizes, wheel and clicks go back to it as herdr's own controller commands, and leaving
 the tab sends `terminal.release`. Desktop decodes each line only to hand the frame's bytes

@@ -13,12 +13,44 @@ import { readAudit } from "../src/audit";
 import { peersOf } from "../src/peers";
 import { exec } from "./support/command";
 import { runEffect } from "./support/effect";
-import { releaseBinary, twoMachines } from "./support/peers";
+import { releaseBinary, twoMachines, type Side } from "./support/peers";
+import { freePort } from "./support/fake-ssh";
 import { collieCommand } from "./support/world";
 import { runDir } from "../src/engine";
 import { readLaunches } from "../src/launches";
 import { BUILD, connect, ownerOf } from "../src/host";
 import { stopHost, until } from "./support/host";
+
+const SECOND = {
+  id: "second",
+  label: "second",
+  target: "mk@second",
+  session: "default",
+  enabled: true,
+};
+
+/** `side`'s own collie, logging each command it is given and the control path it was told. */
+const loggedCollie = (side: Side) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const command = `${side.world.home}/local-collie`;
+    const log = `${command}.log`;
+    const real = [
+      "env",
+      ...Object.entries(side.env).map(([key, value]) => `${key}=${value}`),
+      ...(yield* collieCommand),
+    ];
+    yield* fs.writeFileString(
+      command,
+      `#!/bin/sh\necho "control=\${COLLIE_SSH_CONTROL-} $*" >> '${log}'\nexec ${real.map((word) => `'${word}'`).join(" ")} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const asked = fs.readFileString(log).pipe(
+      Effect.orElseSucceed(() => ""),
+      Effect.map((text) => text.split("\n").filter((line) => line !== "")),
+    );
+    return { command: [command], asked };
+  });
 
 test(
   "a link upgrade replaces the far host even while Local is a development checkout",
@@ -119,7 +151,7 @@ test(
 );
 
 test(
-  "Desktop pairs on its existing SSH master after an older Collie gains invite, once per connection",
+  "Desktop pairs on the shared SSH connection its route opened after an older Collie gains invite, once",
   () =>
     runEffect(
       twoMachines(
@@ -137,23 +169,14 @@ test(
               `#!/bin/sh\nif [ "$1 $2 $3" = "--json machine invite" ] && [ ! -e '${ready}' ]; then echo 'invite is not installed' >&2; exit 1; fi\nexec '${bin}/collie-real' "$@"\n`,
               { mode: 0o755 },
             );
+            const local = yield* loggedCollie(first);
             const ssh = yield* remoteRoute(
               `${first.env.PATH!.split(":")[0]}/ssh`,
-              `${first.world.home}/ssh-control`,
-              {
-                id: "second",
-                label: "second",
-                target: "mk@second",
-                session: "default",
-                enabled: true,
-              },
+              local.command,
+              SECOND,
               "desktop-test",
               false,
-              [
-                "env",
-                ...Object.entries(first.env).map(([key, value]) => `${key}=${value}`),
-                ...(yield* collieCommand),
-              ],
+              true,
             );
             const route = linkRoute(
               yield* collieCommand,
@@ -179,6 +202,14 @@ test(
                 .filter((line) => line.startsWith("ride") && line.includes("invite")),
             ).toHaveLength(2);
             expect(calls.split("\n").filter((line) => line.startsWith("login"))).toEqual([]);
+            const locally = yield* local.asked;
+            expect(locally.filter((line) => line.endsWith("machine connect second"))).toHaveLength(
+              1,
+            );
+            expect(locally.filter((line) => line.endsWith("--machine second board"))).toHaveLength(
+              2,
+            );
+            expect(locally.every((line) => line.startsWith("control= "))).toBe(true);
           }),
         [],
       ),
@@ -187,7 +218,7 @@ test(
 );
 
 test(
-  "Desktop reads a paired board and runs commands and credentials over its link, with SSH used only on demand",
+  "Desktop reads a paired board and runs commands and credentials over its link, opening no SSH connection until one is needed",
   () =>
     runEffect(
       twoMachines(
@@ -215,20 +246,18 @@ test(
             yield* first.lists([second]);
             yield* first.cli(["--machine", "second", "board"]);
             const [peer] = yield* peersOf(first.world.state);
-            let ssh = 0;
+            const local = yield* loggedCollie(first);
+            const ssh = yield* remoteRoute(
+              `${first.env.PATH!.split(":")[0]}/ssh`,
+              local.command,
+              SECOND,
+              "desktop-test",
+              true,
+            );
             const fallback: ShellRoute = {
-              machine: { profile: "second", name: "second", target: "mk@second" },
+              ...ssh,
               open: () => Effect.fail({ state: "unreachable", reason: "not opened" }),
               collie: () => Effect.die("the link should carry this"),
-              sh: () =>
-                Effect.sync(() => {
-                  ssh++;
-                  return ["true"];
-                }),
-              forward: () =>
-                Effect.sync(() => {
-                  ssh++;
-                }),
             };
             const route = linkRoute(
               yield* collieCommand,
@@ -283,14 +312,14 @@ test(
             expect(yield* fs.readFileString(`${second.world.home}/.config/helle/env`)).toContain(
               "HELLE_API_TOKEN=helle-test",
             );
-            expect(ssh).toBe(0);
+            expect(yield* local.asked).toEqual([]);
             const [incoming] = yield* peersOf(second.world.state);
             expect((yield* readAudit(`${second.world.state}/shell`))[0]?.actor).toMatchObject({
               origin: "desktop",
               from: { machine: { installation: incoming!.installation }, client: "desktop-test" },
             });
-            yield* route.forward(9999);
-            expect(ssh).toBe(1);
+            yield* Effect.scoped(route.forward(yield* freePort));
+            expect(yield* local.asked).toEqual(["control= --json machine connect second"]);
           }),
         ["attended.workflow.ts"],
       ),
