@@ -13,11 +13,7 @@ import {
 import { DateTime } from "effect";
 import type { DesktopAction } from "../../../src/shared/flock";
 import type { Gesture } from "../../../src/shared/board-clicks";
-import {
-  answerShown,
-  type PendingAnswer,
-  pendingAnswers,
-} from "../../../src/shared/pending-answer";
+import { cardQuestion, openQuestions } from "../../../src/shared/pending-answer";
 
 const props = defineProps<{
   task: TaskView;
@@ -42,22 +38,26 @@ const act = (action: DesktopAction, tried?: (done: boolean | null) => void) =>
     tried,
   );
 
-const pending = ref<PendingAnswer | null>(null);
-const beginAnswer = pendingAnswers((shown) => (pending.value = shown));
-const answerSaid = computed(() => answerShown(pending.value, props.task.decision));
-const answer = (question: Question, value: string, shown: string) => {
-  const sending: PendingAnswer = {
-    runId: question.run,
-    decision: question.id,
-    shown,
-    machine: props.machine,
-    confirmed: false,
-  };
-  return act(
-    { _tag: "Answer", runId: question.run, decision: question.id, value },
-    beginAnswer(sending),
-  );
-};
+const answering = useAnswering();
+const open = computed(() => openQuestions(props.task));
+const asked = computed(() => cardQuestion(props.task, props.installation, answering.state.value));
+watch(
+  open,
+  (now) =>
+    answering.settle(
+      props.installation,
+      [
+        ...props.task.runs,
+        ...props.task.children.flatMap((child) => (child.run === null ? [] : [child.run])),
+        ...now.map((question) => question.run),
+      ],
+      now,
+    ),
+  { immediate: true },
+);
+const answeringOpen = ref(false);
+const answer = (question: Question, value: string, shown: string) =>
+  answering.answer(props.installation, props.machine, question, value, shown, act);
 
 const asOfLabel = computed(() => {
   if (props.asOf === null) return null;
@@ -96,8 +96,6 @@ const asking = ref<{ title: string; send: (text: string) => DesktopAction } | nu
 /** The offers dialog: closed, choosing, or on the offer a button named. */
 const offering = ref<{ offer: string | null } | null>(null);
 const reviewing = ref(false);
-
-const typed = ref("");
 
 const panes = usePanes();
 const pane = computed(() => panes.shownFor(props.cardKey));
@@ -235,33 +233,19 @@ const menu = computed(() =>
       <p v-if="task.held" class="text-sm text-muted">{{ task.held }}</p>
       <p v-if="task.drift" class="text-sm text-warning">{{ task.drift }}</p>
 
-      <div
-        v-if="task.decision?.kind === 'question'"
-        class="mt-3 flex flex-col gap-2"
-        data-testid="question"
-      >
-        <p class="text-sm font-medium">{{ task.decision.text }}</p>
-        <p v-if="answerSaid !== null" class="text-sm text-muted" data-testid="pending-answer">
-          {{ answerSaid }}
+      <div v-if="asked !== null" class="mt-3 flex flex-col gap-2" data-testid="question">
+        <p class="line-clamp-2 text-sm font-medium">{{ asked.text }}</p>
+        <p v-if="asked.pending !== null" class="text-sm text-muted" data-testid="pending-answer">
+          {{ asked.pending }}
         </p>
-        <div v-else-if="task.decision.options.length > 0" class="flex flex-wrap gap-2">
-          <UButton
-            v-for="option in task.decision.options"
-            :key="option.id"
-            :data-testid="`option-${option.id}`"
-            size="sm"
-            :label="option.title"
-            @click="answer(task.decision, option.id, option.title)"
-          />
-        </div>
-        <form
+        <UButton
           v-else
-          class="flex gap-2"
-          @submit.prevent="typed.trim() !== '' && answer(task.decision, typed.trim(), typed.trim())"
-        >
-          <UInput v-model="typed" class="flex-1" size="sm" data-testid="answer" />
-          <UButton type="submit" size="sm" label="Send" data-testid="send-answer" />
-        </form>
+          class="self-start"
+          size="sm"
+          :label="asked.label ?? ''"
+          data-testid="answer-questions"
+          @click="answeringOpen = true"
+        />
       </div>
 
       <div
@@ -335,6 +319,14 @@ const menu = computed(() =>
     :title="asking?.title ?? ''"
     @update:open="(open: boolean) => !open && (asking = null)"
     @send="(text: string) => asking && act(asking.send(text))"
+  />
+  <QuestionDialog
+    v-if="answeringOpen"
+    :title="task.name"
+    :installation="installation"
+    :open="open"
+    @answer="answer"
+    @close="answeringOpen = false"
   />
   <OffersDialog
     v-if="offering !== null"
