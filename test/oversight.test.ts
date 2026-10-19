@@ -7,7 +7,7 @@ import { Effect, FileSystem, Layer, Path, Schema } from "effect";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
 import { Rig, FakeHerdr } from "./support/recorder";
 import { exec } from "./support/command";
-import { runEffect } from "./support/effect";
+import { fastForward, runEffect } from "./support/effect";
 import { Agents, agentsLayer } from "../src/agents";
 import { Children, Host } from "../src/sdk";
 import { foundationLayer, loadEntry, runDir, type Herd } from "../src/engine";
@@ -728,6 +728,59 @@ test("a finishing Run runs what it was granted, and offers what is still blockin
       const log = yield* fs.readFileString(`${runDir(dir, "r1")}/log.txt`);
       expect(log).toContain("verification tests: pass (exit 0)");
       expect(log).toContain("aligned: false");
+    }),
+  ));
+
+test("a host that finds its Herd while a Run finishes offers that Run's blocking drift", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* repository();
+      yield* fs.writeFileString(`${dir}/notes.txt`, "somewhere it should not be\n");
+      const herdr = `${rig.root}/herdr-started`;
+      const started = { name: "herdr", executable: "touch", argv: [herdr], cwd: "." };
+      yield* intended(
+        "r1",
+        [
+          SRC_ONLY,
+          {
+            id: "herdr-up",
+            kind: "rule",
+            text: "herdr is started",
+            severity: "warn",
+            source: "human",
+            since: 1,
+            rule: { kind: "command_exit", name: "herdr", expect: 0 },
+          },
+        ],
+        { run_verification: [started] },
+      );
+      yield* fs.makeDirectory(`${dir}/evidence/r1`, { recursive: true });
+      yield* fs.writeFileString(
+        `${dir}/evidence/r1/approved.json`,
+        Schema.encodeSync(Schema.fromJsonString(Schema.Array(VerifySpecSchema)))([started]),
+      );
+      const socketPath = `${rig.root}/herd.sock`;
+      const locate = fs.exists(herdr).pipe(
+        Effect.map((up) => (up ? socketPath : null)),
+        Effect.orElseSucceed(() => null),
+      );
+
+      yield* fastForward(
+        executed(
+          "hello.workflow.ts",
+          "r1",
+          { name: "you" },
+          { socketPath: null, pluginRoot: rig.root, locate },
+        ),
+        60_000,
+      );
+
+      const key = yield* herdOf(socketPath);
+      const proposed = yield* readProposals(yield* proposalsPath(dir, key!));
+      expect(
+        proposed.map((one) => (one.kind === "proposal" ? one.interpretation : one.kind)),
+      ).toEqual(["r1 finished with 1 blocking constraint(s) still open"]);
     }),
   ));
 

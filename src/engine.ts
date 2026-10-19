@@ -3394,12 +3394,15 @@ export const hostLayer = (options: {
               );
             }
             yield* drift(runId, "finish", "finish");
-            const proposed = yield* settleAtFinish(at).pipe(Effect.provideContext(bun));
+            const settled = yield* watched(runId);
+            const proposed = yield* settleAtFinish(settled).pipe(Effect.provideContext(bun));
             if (proposed !== null)
               yield* notify(runId, "proposal-pending", `a follow-up for what is still blocking`, {
                 key: proposed,
               });
-            const card = yield* under(writeCard(at, { kind: "final", step: "finish", claims: [] }));
+            const card = yield* under(
+              writeCard(settled, { kind: "final", step: "finish", claims: [] }),
+            );
             yield* told(runId, [card]);
             // Once, here: the finish is the only moment at which nobody is left to make an
             // owed cross-run check, which is what makes it something a human has to know.
