@@ -2367,7 +2367,9 @@ const frontDoorHandlers = (
                     fresh,
                   });
             fresh = false;
-            return yield* buildRunDetail({ env, runId, runs: [run], mr, tail, pages, plans });
+            // Every Run, because another built from the same plan may have finished its tickets.
+            const runs = (yield* registry.views(null)).map((one) => factsOfView(env.stateDir, one));
+            return yield* buildRunDetail({ env, runId, runs, mr, tail, pages, plans });
           }).pipe(Effect.provideContext(bun));
           return followDetail(detail, changed).pipe(Stream.orDie);
         },

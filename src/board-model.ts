@@ -312,7 +312,7 @@ export const PlanTicket = Schema.Struct({
   /** Its file name inside `plan/issues/`, which is what orders the list. */
   file: Schema.String,
   title: Schema.String,
-  /** Whether every checkbox in it is checked. No boxes at all is not done. */
+  /** Whether every checkbox in it is checked, or a succeeded Run built from this plan finished it. */
   done: Schema.Boolean,
   /** Changes whenever its file does; an older host sends none. */
   stamp: Schema.optional(Schema.String),
