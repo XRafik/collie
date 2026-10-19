@@ -446,50 +446,61 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         : failed(result.message);
     }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
   );
-  registerExecutor("home_cleanup", (_action, _by, env) =>
-    Effect.gen(function* () {
-      const herdr = new Herdr(env);
-      const panes = yield* herdr.paneList();
-      // Only the panes that are Collie's alone: a legacy pane sharing a tab with
-      // something else is left, because taking somebody's window away is not cleanup.
-      const { close, listed } = closable(panes);
-      for (const paneId of close)
-        yield* herdr.paneClose(paneId).pipe(Effect.catch(() => Effect.void));
-      // A Task whose workspace herdr no longer has, and that no Run belongs to, is work
-      // nobody can reach. A listing that could not be read keeps every Task.
-      const open = new Set((yield* herdr.workspaceList()).map((one) => one.workspaceId));
-      const listing = yield* runViews(env, null);
-      const owned = new Set(listing.runs.map((run) => run.task));
-      const gone =
-        listing.unreadable === null
-          ? (yield* listTasks(env.stateDir)).filter(
-              (task) => !open.has(task.workspace) && !owned.has(task.id),
-            )
-          : [];
-      for (const task of gone) yield* removeTask(env.stateDir, task.id);
-      return {
-        state: "applied" as const,
-        note: `closed ${close.length}, left ${listed.length} sharing a tab, forgot ${gone.length} Tasks whose workspace is gone`,
-      };
-    }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
+  const onThisMachine = <R>(
+    machine: string | undefined,
+    instead: string,
+    act: Effect.Effect<ExecutionResult, never, R>,
+  ) =>
+    machine !== undefined && machine !== hostname()
+      ? Effect.succeed(failed(`Native chat acts on ${hostname()}; ${instead}`))
+      : act;
+  const elsewhereCleanup = "ask Desktop's Flock chat to clean up another Machine";
+  registerExecutor("home_cleanup", (action, _by, env) =>
+    onThisMachine(
+      action.machine,
+      elsewhereCleanup,
+      Effect.gen(function* () {
+        const herdr = new Herdr(env);
+        const panes = yield* herdr.paneList();
+        // Only the panes that are Collie's alone: a legacy pane sharing a tab with
+        // something else is left, because taking somebody's window away is not cleanup.
+        const { close, listed } = closable(panes);
+        for (const paneId of close)
+          yield* herdr.paneClose(paneId).pipe(Effect.catch(() => Effect.void));
+        // A Task whose workspace herdr no longer has, and that no Run belongs to, is work
+        // nobody can reach. A listing that could not be read keeps every Task.
+        const open = new Set((yield* herdr.workspaceList()).map((one) => one.workspaceId));
+        const listing = yield* runViews(env, null);
+        const owned = new Set(listing.runs.map((run) => run.task));
+        const gone =
+          listing.unreadable === null
+            ? (yield* listTasks(env.stateDir)).filter(
+                (task) => !open.has(task.workspace) && !owned.has(task.id),
+              )
+            : [];
+        for (const task of gone) yield* removeTask(env.stateDir, task.id);
+        return {
+          state: "applied" as const,
+          note: `closed ${close.length}, left ${listed.length} sharing a tab, forgot ${gone.length} Tasks whose workspace is gone`,
+        };
+      }).pipe(Effect.catch((cause) => Effect.succeed(failed(String(cause))))),
+    ),
   );
   const scheduleChange = (env: PluginEnv, by: Actor, change: ScheduleChange, machine?: string) =>
-    machine !== undefined && machine !== hostname()
-      ? Effect.succeed(
-          failed(
-            `Native chat acts on ${hostname()}; use collie schedule --machine ${machine} for another Machine`,
-          ),
-        )
-      : changeSchedule(env, { door: by, change, request: by.requestId }).pipe(
-          Effect.map((done): ExecutionResult =>
-            done.ok
-              ? {
-                  state: "applied",
-                  note: `Schedule ${done.value.name} on ${done.value.machine.hostname} (${done.value.machine.installation}): ${done.value.change}`,
-                }
-              : failed(done.error.message),
-          ),
-        );
+    onThisMachine(
+      machine,
+      `use collie schedule --machine ${machine} for another Machine`,
+      changeSchedule(env, { door: by, change, request: by.requestId }).pipe(
+        Effect.map((done): ExecutionResult =>
+          done.ok
+            ? {
+                state: "applied",
+                note: `Schedule ${done.value.name} on ${done.value.machine.hostname} (${done.value.machine.installation}): ${done.value.change}`,
+              }
+            : failed(done.error.message),
+        ),
+      ),
+    );
   registerExecutor("schedule_add", (action, by, env) =>
     Effect.gen(function* () {
       const named = action.start.workspace ?? "";
@@ -527,15 +538,19 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
     registerExecutor(kind, (action, by, env) =>
       scheduleChange(env, by, { change, name: action.name }, action.machine),
     );
-  registerExecutor("cleanup", (_action, by, env) =>
-    sweepNow(env, { door: by, request: by.requestId }).pipe(
-      Effect.map((swept) =>
-        swept.ok
-          ? {
-              state: "applied" as const,
-              note: `removed ${swept.value.remove.length} item(s), freeing ${humanBytes(swept.value.bytes)}; kept ${swept.value.keep.length}`,
-            }
-          : failed(swept.error.message),
+  registerExecutor("cleanup", (action, by, env) =>
+    onThisMachine(
+      action.machine,
+      elsewhereCleanup,
+      sweepNow(env, { door: by, request: by.requestId }).pipe(
+        Effect.map((swept) =>
+          swept.ok
+            ? {
+                state: "applied" as const,
+                note: `removed ${swept.value.remove.length} item(s), freeing ${humanBytes(swept.value.bytes)}; kept ${swept.value.keep.length}`,
+              }
+            : failed(swept.error.message),
+        ),
       ),
     ),
   );

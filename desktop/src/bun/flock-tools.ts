@@ -730,6 +730,19 @@ const machineRef = (
   return null;
 };
 
+/** The Machine an action's `machine` field names, or null where it names none. */
+const machineField = (
+  action: JsonObject,
+  known: Boards,
+): Result.Result<ChatMachine | null, string> => {
+  const explicit = textAt(action, "machine");
+  if (explicit === "") return Result.succeed(null);
+  const found = known.find((one) => one.machine.name === explicit);
+  return found === undefined
+    ? Result.fail(`No Machine "${explicit}". Nothing was done.`)
+    : Result.succeed(found.machine);
+};
+
 interface Localized {
   /** Null for an action that names no Machine. */
   readonly machine: ChatMachine | null;
@@ -741,14 +754,19 @@ const placeOne = Effect.fnUntraced(function* (
   action: JsonObject,
   known: Boards,
 ): Effect.fn.Return<Result.Result<Localized, string>> {
-  if (textAt(action, "kind").startsWith("schedule_")) {
-    const explicit = textAt(action, "machine");
-    let machine =
-      explicit === ""
-        ? null
-        : (known.find((one) => one.machine.name === explicit)?.machine ?? null);
-    if (explicit !== "" && machine === null)
-      return Result.fail(`No Machine "${explicit}". Nothing was done.`);
+  const kind = textAt(action, "kind");
+  if (kind === "cleanup" || kind === "home_cleanup") {
+    const named = machineField(action, known);
+    if (Result.isFailure(named)) return Result.fail(named.failure);
+    if (named.success === null && known.length > 1)
+      return Result.fail('Name the Machine this is for in its "machine" field. Nothing was done.');
+    const { machine: _, ...local } = action;
+    return Result.succeed({ machine: named.success, action: local });
+  }
+  if (kind.startsWith("schedule_")) {
+    const named = machineField(action, known);
+    if (Result.isFailure(named)) return Result.fail(named.failure);
+    let machine = named.success;
     const savedStart = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Json))(
       action.start,
     );
@@ -773,7 +791,7 @@ const placeOne = Effect.fnUntraced(function* (
       if (field === "name") local.name = placed.success.id;
       else if (start !== null) start.workspace = placed.success.id;
     }
-    if (machine === null && action.kind === "schedule_add" && known.length > 1)
+    if (machine === null && kind === "schedule_add" && known.length > 1)
       return Result.fail("Name the Machine this Schedule is for. Nothing was done.");
     if (start !== null) local.start = start;
     return Result.succeed({ machine, action: local });

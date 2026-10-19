@@ -16,6 +16,7 @@ import {
 } from "effect";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { expect, setDefaultTimeout, test } from "bun:test";
+import { hostname } from "node:os";
 import { readEnv, type PluginEnv } from "../src/env";
 import { readIntent } from "../src/intent";
 import { changeSchedule, runView, scheduleListing } from "../src/lifecycle";
@@ -1025,6 +1026,23 @@ const chatting = Effect.fn("test.chatting")(function* () {
 const hookInput = (session: string, prompt: string) =>
   encodeJson({ session_id: session, hook_event_name: "UserPromptSubmit", prompt });
 const stopInput = (session: string) => encodeJson({ session_id: session, hook_event_name: "Stop" });
+
+test("Native chat cleans up its own Machine, with or without naming it, and refuses another", () =>
+  inWorld(
+    Effect.gen(function* () {
+      yield* chatting();
+      const proposing = (action: JsonObject) =>
+        call("collie_propose", { interpretation: "clean up", actions: [action] });
+      expect(yield* proposing({ kind: "cleanup" })).toContain("cleanup: applied");
+      expect(yield* proposing({ kind: "cleanup", machine: hostname() })).toContain(
+        "cleanup: applied",
+      );
+      for (const kind of ["cleanup", "home_cleanup"])
+        expect(yield* proposing({ kind, machine: "another-machine" })).toContain(
+          `${kind}: failed — Native chat acts on ${hostname()}`,
+        );
+    }),
+  ));
 
 test("chat manages Schedules at once through the host, with the conversation and human's words", () =>
   inWorld(
