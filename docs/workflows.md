@@ -110,7 +110,7 @@ each with `collie run intent verification`. Nobody approves them, and the merge 
 lists each with its command ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 
 **Ends:** with the merge request, or fails with the reason there is none — a ticket stopped
-on a blocking finding, acceptance criteria still unmet, a review that halted — and says to
+on a blocking finding, acceptance criteria still unmet or unreadable, a review that halted — and says to
 continue with a follow-up Run, which **Keep going on this** starts. Nobody is asked along
 the way: the human verifies the work in the merge request, before it lands. Where a failed check's
 output names the tests that failed (bun test's does), the gate reruns each of those tests
