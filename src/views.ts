@@ -24,11 +24,12 @@ import { claudeTrust } from "./trust";
 import { isYamlMap, type YamlMap, type YamlValue } from "./yaml";
 import { NO_OUTCOME, type RunRow } from "./workspace";
 import { latest, readDispositions } from "./disposition";
-import { runAgents, stepsOf } from "./launches";
+import { readLaunches, runAgents } from "./launches";
 import { metricsOf, readMetrics } from "./metrics";
 import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } from "./board-model";
 import { newest, readCards, readCheckpoints } from "./cards";
 import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
+import { orderedTicketsOf } from "./plan";
 import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
@@ -259,47 +260,48 @@ const stampOf = (file: string) =>
 
 /**
  * The tickets of this Run's plan that a succeeded Run built from it finished: a slice that
- * landed, a step named after the ticket, or a whole-plan build of every ticket written
- * before that Run ended. A failed or stopped Run proves nothing.
+ * landed, a step named after the ticket, or a whole-plan build of its repository's tickets
+ * written before that build's Output. A failed or stopped Run proves nothing.
  */
 const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
   run: RunFacts,
   runs: ReadonlyArray<RunFacts>,
   stateDir: string,
 ) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const finished = new Set<string>();
   const dir = yield* planDirOf(run);
   if (dir === null) return finished;
   const issues = path.join(dir, "issues");
-  const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => []))).filter(
-    (name) => name.endsWith(".md"),
-  );
   for (const one of runs) {
-    if (one.state !== "succeeded" || one.finished === null) continue;
+    if (one.state !== "succeeded") continue;
     const mayShare =
       path.join(one.dir, PLAN_DIR) === dir || workSourceOf(one.settled)?.value === dir;
     if (!mayShare || (yield* planDirOf(one).pipe(Effect.orElseSucceed(() => null))) !== dir)
       continue;
     for (const { checkpoint } of yield* readCheckpoints(one.dir))
       if (checkpoint.status === "done") finished.add(checkpoint.ticket);
-    for (const step of yield* stepsOf(stateDir, one.id)) {
-      if (!step.done) continue;
-      if (files.includes(step.operation)) finished.add(step.operation);
-      if (step.operation !== "build") continue;
-      const ended = epochMs(one.finished);
-      for (const file of files) {
-        const info = yield* fs.stat(path.join(issues, file)).pipe(Effect.option);
-        const written = Option.getOrUndefined(
-          Option.flatMap(info, (stat) => stat.mtime),
-        )?.getTime();
-        if (written !== undefined && written <= ended) finished.add(file);
+    const mine = (yield* orderedTicketsOf(dir, one.repo ?? undefined)).map((t) => t.file);
+    for (const launch of yield* readLaunches(stateDir, one.id)) {
+      const output = yield* writtenAt(launch.output);
+      if (output === undefined) continue;
+      if (mine.includes(launch.operation)) finished.add(launch.operation);
+      if (launch.operation !== "build") continue;
+      for (const file of mine) {
+        const written = yield* writtenAt(path.join(issues, file));
+        if (written !== undefined && written <= output) finished.add(file);
       }
     }
   }
   return finished;
 });
+
+/** When a file was last written, or nothing where it is not there. */
+const writtenAt = (file: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(file)).pipe(
+    Effect.map((info) => Option.getOrUndefined(info.mtime)?.getTime()),
+    Effect.orElseSucceed(() => undefined),
+  );
 
 /** Every plan file's stamp, which changes whenever one of them is written. */
 const planStamps = Effect.fn("Views.planStamps")(function* (run: RunFacts) {

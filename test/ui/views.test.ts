@@ -60,6 +60,7 @@ const seed = Effect.fn("viewsTest.seed")(function* (opts: {
   review?: string;
   findings?: number;
   settled?: RunFacts["settled"];
+  repo?: string;
 }) {
   const env = rig.pluginEnv();
   const fs = yield* FileSystem.FileSystem;
@@ -72,6 +73,7 @@ const seed = Effect.fn("viewsTest.seed")(function* (opts: {
     state: opts.state ?? "succeeded",
     created: `2026-09-0${runs.length + 1}T10:00:00.000Z`,
     finished: opts.state === "running" ? null : `2026-09-0${runs.length + 1}T11:00:00.000Z`,
+    repo: opts.repo ?? null,
     settled: opts.settled ?? {
       inputs: opts.target ? { target: opts.target } : {},
       strategies: { target: "diff-target" },
@@ -445,6 +447,12 @@ const planned = Effect.fn("viewsTest.planned")(function* (
   }
 });
 
+/** The detail as the host builds it, whose Runs carry no time they finished. */
+const hostDetailOf = (
+  run: { id: string },
+  over: Partial<Parameters<typeof buildRunDetail>[0]> = {},
+) => detailOf(run, { runs: runs.map((one) => ({ ...one, finished: null })), ...over });
+
 /** What the implement workflow records as a slice starts and lands. */
 const progressed = Effect.fn("viewsTest.progressed")(function* (
   run: { dir: string },
@@ -461,12 +469,18 @@ const progressed = Effect.fn("viewsTest.progressed")(function* (
   );
 });
 
-/** A step whose agent was launched, and whose Output is in. */
-const stepped = Effect.fn("viewsTest.stepped")(function* (run: { id: string }, operation: string) {
+/** A step whose agent was launched, and whose Output came in at this moment. */
+const stepped = Effect.fn("viewsTest.stepped")(function* (
+  run: { id: string },
+  operation: string,
+  at = "2026-08-02T00:00:00.000Z",
+) {
   const fs = yield* FileSystem.FileSystem;
   const dir = `${rig.pluginEnv().stateDir}/agents/${run.id}`;
   yield* fs.makeDirectory(dir, { recursive: true });
   yield* fs.writeFileString(`${dir}/${operation}.json`, "{}");
+  const when = DateTime.toDateUtc(DateTime.makeUnsafe(at));
+  yield* fs.utimes(`${dir}/${operation}.json`, when, when);
   yield* fs.writeFileString(
     `${dir}/${operation}.launch.json`,
     encodeLaunched({
@@ -517,8 +531,8 @@ effectTest(
       { file: "05-boxes.md", done: false },
     ];
     // The planner's plan and its builder's read the same, whichever Run is selected.
-    expect((yield* detailOf(planner))!.plan!.tickets).toMatchObject(expected);
-    expect((yield* detailOf(builder))!.plan!.tickets).toMatchObject(expected);
+    expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject(expected);
+    expect((yield* hostDetailOf(builder))!.plan!.tickets).toMatchObject(expected);
   },
 );
 
@@ -534,10 +548,13 @@ effectTest(
       "02-two.md": "# Two\n\nProse.\n",
     });
     yield* stepped(whole, "build");
-    // Written after the Run ended, so no pass of it built this one.
-    yield* fs.writeFileString(path.join(whole.dir, "plan", "issues", "03-later.md"), "# Later\n");
+    // Added after the build's Output was in, though before the Run ended.
+    const later = path.join(whole.dir, "plan", "issues", "03-later.md");
+    yield* fs.writeFileString(later, "# Later\n");
+    const added = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-03T00:00:00.000Z"));
+    yield* fs.utimes(later, added, added);
 
-    expect((yield* detailOf(whole))!.plan!.tickets).toMatchObject([
+    expect((yield* hostDetailOf(whole))!.plan!.tickets).toMatchObject([
       { file: "01-one.md", done: true },
       { file: "02-two.md", done: true },
       { file: "03-later.md", done: false },
@@ -546,7 +563,7 @@ effectTest(
     // A planner wrote its plan and built none of it.
     const planner = yield* seed({ workflow: "plan" });
     yield* planned(path.join(planner.dir, "plan"), { "01-one.md": "# One\n\nProse.\n" });
-    expect((yield* detailOf(planner))!.plan!.tickets).toMatchObject([
+    expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
       { file: "01-one.md", done: false },
     ]);
 
@@ -554,11 +571,32 @@ effectTest(
     const stopped = yield* seed({ workflow: "implement", state: "stopped" });
     yield* planned(path.join(stopped.dir, "plan"), { "01-one.md": "# One\n\nProse.\n" });
     yield* stepped(stopped, "build");
-    expect((yield* detailOf(stopped))!.plan!.tickets).toMatchObject([
+    expect((yield* hostDetailOf(stopped))!.plan!.tickets).toMatchObject([
       { file: "01-one.md", done: false },
     ]);
   },
 );
+
+effectTest("a repository's build finishes only that repository's tickets", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, {
+    "01-api.md": "# Api\n\n**Repo:** api\n",
+    "02-web.md": "# Web\n\n**Repo:** web\n",
+  });
+  const api = yield* seed({
+    workflow: "implement",
+    repo: "api",
+    settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
+  });
+  yield* stepped(api, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-api.md", done: true },
+    { file: "02-web.md", done: false },
+  ]);
+});
 
 effectTest("a finished Run's cached plan is read again once a ticket lands", function* () {
   const path = yield* Path.Path;
@@ -571,11 +609,11 @@ effectTest("a finished Run's cached plan is read again once a ticket lands", fun
     settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
   });
   yield* progressed(builder, "01-one.md", "started");
-  expect((yield* detailOf(planner, { plans }))!.plan!.tickets[0]!.done).toBe(false);
+  expect((yield* hostDetailOf(planner, { plans }))!.plan!.tickets[0]!.done).toBe(false);
 
   yield* progressed(builder, "01-one.md", "done");
 
-  expect((yield* detailOf(planner, { plans }))!.plan!.tickets[0]!.done).toBe(true);
+  expect((yield* hostDetailOf(planner, { plans }))!.plan!.tickets[0]!.done).toBe(true);
 });
 
 effectTest(

@@ -1565,7 +1565,7 @@ The record's **Plan** tab renders the spec, read whole from the host where it is
 details carry, and lists the tickets, each expanding
 in place, read from the host when first opened. A ticket is ticked when every checkbox in
 it is checked, or when a succeeded Run built from that plan finished it: its slice landed, a
-step was named after it, or a whole-plan build ran after it was written. A failed or stopped
+step was named after it, or a whole-plan build of its repository finished after it was written. A failed or stopped
 Run ticks nothing. A link from one plan file to another opens
 that file at the top of the tab. **Review** renders the review, read whole the same way, and lists its findings; a
 `file:line` in a finding or anywhere in rendered markdown opens
