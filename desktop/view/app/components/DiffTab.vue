@@ -8,12 +8,15 @@ import { landingOf } from "../../../src/shared/record";
 import {
   activeFile,
   choiceForEvery,
+  closedFolders,
   type DiffTreeNode,
   diffTree,
   fileBeside,
   fileOpen,
+  fileSelected,
   filterTree,
   foldersOn,
+  openFolders,
   READING_LINE,
   reachBy,
   rowFacts,
@@ -144,7 +147,6 @@ const items = computed(() => {
             icon: "i-lucide-file",
             path: node.key,
             slot: "file",
-            onSelect: () => show(node.key),
           };
     byKey.set(node.key, item);
     return item;
@@ -154,6 +156,10 @@ const items = computed(() => {
 const selected = computed(() =>
   active.value === null ? undefined : items.value.byKey.get(active.value),
 );
+const selectRow = (event: Event, row: Row) => {
+  const path = fileSelected(event, row.path);
+  if (path !== null) show(path);
+};
 
 const folders = computed(() => [
   ...new Set(drawn.value.files.flatMap((file) => foldersOn(file.path))),
@@ -162,18 +168,15 @@ const closed = ref(new Set<string>());
 const listedFolders = computed(() =>
   [...items.value.byKey.keys()].filter((key) => key.endsWith("/")),
 );
-/** Folders closed while the filter is in effect; the human's own are kept for after it. */
-const closedFiltered = ref(new Set<string>());
-watch(filter, () => (closedFiltered.value = new Set()));
-const expanded = computed(() =>
-  filtering.value
-    ? listedFolders.value.filter((folder) => !closedFiltered.value.has(folder))
-    : folders.value.filter((folder) => !closed.value.has(folder)),
-);
+const folderFacts = computed(() => ({
+  all: folders.value,
+  listed: listedFolders.value,
+  closed: closed.value,
+  filtering: filtering.value,
+}));
+const expanded = computed(() => [...openFolders(folderFacts.value)]);
 const setExpanded = (keys: ReadonlyArray<string>) => {
-  const shut = (all: ReadonlyArray<string>) => new Set(all.filter((key) => !keys.includes(key)));
-  if (filtering.value) closedFiltered.value = shut(listedFolders.value);
-  else closed.value = shut(folders.value);
+  closed.value = new Set(closedFolders(folderFacts.value, keys));
 };
 
 const scroller = inject<Ref<HTMLElement | null>>("recordScroller", ref(null));
@@ -241,15 +244,9 @@ watch(
   [active, () => props.shown, listed],
   async ([path, shown], [was]) => {
     if (path === null) return;
-    const reopen = (folders: Ref<Set<string>>) => {
-      const hiding = foldersOn(path).filter((folder) => folders.value.has(folder));
-      if (hiding.length > 0) {
-        folders.value = new Set([...folders.value].filter((folder) => !hiding.includes(folder)));
-      }
-    };
-    if (path !== was) {
-      reopen(closed);
-      reopen(closedFiltered);
+    const hiding = foldersOn(path).filter((folder) => closed.value.has(folder));
+    if (path !== was && hiding.length > 0) {
+      closed.value = new Set([...closed.value].filter((folder) => !hiding.includes(folder)));
     }
     if (!shown) return;
     await nextTick();
@@ -313,8 +310,7 @@ watch(
     <p v-if="diff.files.length === 0" class="text-sm text-muted">Nothing has changed yet.</p>
     <div v-else class="flex items-start gap-3">
       <div
-        ref="treeBox"
-        class="sticky top-0 w-56 shrink-0 overflow-y-auto"
+        class="sticky top-0 flex w-56 shrink-0 flex-col gap-2"
         :style="visibleHeight === null ? undefined : { maxHeight: `${visibleHeight}px` }"
       >
         <UInput
@@ -322,25 +318,28 @@ watch(
           icon="i-lucide-search"
           placeholder="Filter files"
           size="sm"
-          class="sticky top-0 z-10 mb-2 w-full bg-default"
+          class="w-full"
           data-testid="diff-filter"
         />
-        <p v-if="items.tree.length === 0" class="text-sm text-muted" data-testid="diff-no-match">
-          No file matches
-        </p>
-        <UTree
-          v-else
-          :items="items.tree"
-          :get-key="(item: Row) => item.path"
-          :model-value="selected"
-          :expanded="expanded"
-          data-testid="diff-tree"
-          @update:expanded="setExpanded"
-        >
-          <template #[FILE_FACTS]="{ item }">
-            <DiffRowFacts :facts="factsOf(item)" :viewed="viewedOf(item)" />
-          </template>
-        </UTree>
+        <div ref="treeBox" class="min-h-0 overflow-y-auto">
+          <p v-if="items.tree.length === 0" class="text-sm text-muted" data-testid="diff-no-match">
+            No file matches
+          </p>
+          <UTree
+            v-else
+            :items="items.tree"
+            :get-key="(item: Row) => item.path"
+            :model-value="selected"
+            :expanded="expanded"
+            data-testid="diff-tree"
+            @select="selectRow"
+            @update:expanded="setExpanded"
+          >
+            <template #[FILE_FACTS]="{ item }">
+              <DiffRowFacts :facts="factsOf(item)" :viewed="viewedOf(item)" />
+            </template>
+          </UTree>
+        </div>
       </div>
       <div ref="sections" class="flex min-w-0 flex-1 flex-col gap-3">
         <DiffFile

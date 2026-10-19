@@ -56,6 +56,33 @@ export const diffTree = (changed: ReadonlyArray<DiffFile>): DiffTree => {
   return { tree: root, files: filesOf(root) };
 };
 
+export interface Folders {
+  /** Every folder in the diff, and those the filter leaves. */
+  readonly all: ReadonlyArray<string>;
+  readonly listed: ReadonlyArray<string>;
+  readonly closed: ReadonlySet<string>;
+  readonly filtering: boolean;
+}
+
+/** Every folder the filter leaves while it is in effect; else all but those the human closed. */
+export const openFolders = ({ all, listed, closed, filtering }: Folders): ReadonlyArray<string> =>
+  filtering ? listed : all.filter((folder) => !closed.has(folder));
+
+/** The folders the human has closed once the tree says which are open; none close while filtering. */
+export const closedFolders = (
+  folders: Folders,
+  open: ReadonlyArray<string>,
+): ReadonlySet<string> =>
+  folders.filtering
+    ? folders.closed
+    : new Set(folders.all.filter((folder) => !open.includes(folder)));
+
+/** A row's click selects nothing itself, so the active file stays the only selection. */
+export const fileSelected = (event: { preventDefault(): void }, key: string): string | null => {
+  event.preventDefault();
+  return key.endsWith("/") ? null : key;
+};
+
 export interface RowFacts {
   readonly status: DiffFile["status"];
   readonly lines: { readonly added: number; readonly removed: number } | "binary";

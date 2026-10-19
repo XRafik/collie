@@ -3,12 +3,16 @@ import type { DiffFile } from "../src/board-model";
 import {
   activeFile,
   choiceForEvery,
+  closedFolders,
   type DiffTreeNode,
   diffTree,
   filterTree,
   fileBeside,
   fileOpen,
+  fileSelected,
   foldersOn,
+  type Folders,
+  openFolders,
   reachBy,
   readingHeight,
   rowFacts,
@@ -214,6 +218,45 @@ describe("the tree filtered by a path", () => {
   test("keeps everything when empty", () => {
     expect(filterTree(tree, "")).toEqual(tree);
     expect(filterTree(tree, "  ")).toEqual(tree);
+  });
+});
+
+describe("the tree's open folders", () => {
+  const folders: Folders = {
+    all: ["src/", "src/ui/", "docs/"],
+    listed: ["src/", "src/ui/"],
+    closed: new Set(["src/ui/"]),
+    filtering: false,
+  };
+
+  test("are all but those the human closed", () => {
+    expect(openFolders(folders)).toEqual(["src/", "docs/"]);
+    expect(closedFolders(folders, ["src/"])).toEqual(new Set(["src/ui/", "docs/"]));
+  });
+
+  test("are every folder the filter leaves while it is in effect, which none closes", () => {
+    const filtered = { ...folders, filtering: true };
+    expect(openFolders(filtered)).toEqual(["src/", "src/ui/"]);
+    expect(closedFolders(filtered, ["src/ui/"])).toEqual(new Set(["src/ui/"]));
+  });
+});
+
+describe("a tree row clicked", () => {
+  const click = () => {
+    const event = { prevented: false, preventDefault: () => (event.prevented = true) };
+    return event;
+  };
+
+  test("shows a file's row and leaves the selection to the active file", () => {
+    const event = click();
+    expect(fileSelected(event, "src/host.ts")).toBe("src/host.ts");
+    expect(event.prevented).toBe(true);
+  });
+
+  test("shows nothing for a folder's row, which is not selected either", () => {
+    const event = click();
+    expect(fileSelected(event, "src/ui/")).toBeNull();
+    expect(event.prevented).toBe(true);
   });
 });
 
