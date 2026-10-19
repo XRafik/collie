@@ -1242,12 +1242,12 @@ const renderCriteria = (criteria: ReadonlyArray<string>) =>
 
 /**
  * Each answer as the whole wording it answered, so one given by a bold lead alone does not
- * answer that criterion once it is amended.
+ * answer that criterion once it is amended. One that answered none of that wording is dropped.
  */
 const boundTo = (wording: ReadonlyArray<string>, given: ReadonlyArray<Criterion>): Criterion[] =>
-  given.map((answer) => {
+  given.flatMap((answer) => {
     const criterion = wording.find((one) => answerFor(one, [answer], wording) !== undefined);
-    return criterion === undefined ? answer : { ...answer, criterion };
+    return criterion === undefined ? [] : [{ ...answer, criterion }];
   });
 
 /** What a builder said of one item's criteria, and what it decided that the plan did not. */

@@ -2542,6 +2542,65 @@ scenario(
 );
 
 scenario(
+  "an answer by a lead two criteria share answers neither, even once one of them is gone",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const shared = [
+          "## Acceptance criteria",
+          "",
+          "- [ ] **Checks.** The first is checked.",
+          "- [ ] **Checks.** The second is checked.",
+        ].join("\n");
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: shared },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        const amended = "**Checks.** The second is checked twice.";
+        yield* approve("r-shared-lead", ["unit"]);
+        yield* rig.queueOutputs([
+          { ...BUILT, criteria: [{ criterion: "Checks.", met: "test/check.test.ts" }] },
+          null,
+          { ...BUILT, criteria: [{ criterion: amended, met: "test/twice.test.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-shared-lead", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-shared-lead`;
+        yield* until(
+          () =>
+            fs
+              .exists(`${agents}/01-first.md.criteria-1.prompt.md`)
+              .pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket))
+            .replace("- [ ] **Checks.** The first is checked.\n", "")
+            .replace("The second is checked.", "The second is checked twice."),
+        );
+        yield* fs.writeFileString(`${agents}/01-first.md.criteria-1.json`, asJson(BUILT));
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const again = yield* asked("r-shared-lead", "01-first.md.criteria-2");
+        expect(again).toContain(`acceptance criterion not answered: ${amended}`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "an answer to the old wording of a criterion amended during a hand-back is handed back as unanswered",
   () =>
     runEffect(
