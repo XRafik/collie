@@ -15,7 +15,7 @@ export function remoteOf(url: string): { project: string; path: string } | null 
   return host && path ? { project: `${host}/${path}`, path } : null;
 }
 
-/** Working repositories under `root`, including hidden, nested and linked ones; a link to nothing is skipped, other inspection errors propagate. */
+/** Working repositories under `root`, including hidden, nested and linked ones; a link to nothing or a path the user cannot access is skipped, other inspection errors propagate. */
 export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(function* (
   root: string,
 ) {
@@ -24,6 +24,13 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
   const visited = new Set<string>();
   const checkouts = new Set<string>();
   const aliases: DirectoryAlias[] = [];
+  // A link to nothing, such as a forwarded agent socket left by a closed login, an entry
+  // removed during the walk, or a path the user cannot access, holds no checkout their Runs
+  // worked in.
+  const unseen = (error: PlatformError) =>
+    error.reason._tag === "NotFound" || error.reason._tag === "PermissionDenied"
+      ? Effect.succeed(null)
+      : Effect.fail(error);
   const canonicalRoot = yield* fs.realPath(root);
   const visit = (dir: string): Effect.Effect<void, PlatformError> =>
     Effect.gen(function* () {
@@ -39,18 +46,14 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
       visited.add(canonical);
       for (const name of yield* fs.readDirectory(canonical)) {
         const child = path.join(canonical, name);
-        // A link to nothing, such as a forwarded agent socket left by a closed login, or an
-        // entry removed during the walk, holds no checkout.
-        const info = yield* fs
-          .stat(child)
-          .pipe(
-            Effect.catchTag("PlatformError", (error) =>
-              error.reason._tag === "NotFound" ? Effect.succeed(null) : Effect.fail(error),
-            ),
-          );
+        const info = yield* fs.stat(child).pipe(Effect.catchTag("PlatformError", unseen));
         if (info?.type === "Directory") yield* visit(child);
       }
-    });
+    }).pipe(
+      Effect.catchTag("PlatformError", (error) =>
+        error.reason._tag === "PermissionDenied" ? Effect.void : Effect.fail(error),
+      ),
+    );
   yield* visit(root);
   return { checkouts: [...checkouts].sort(), aliases };
 });
