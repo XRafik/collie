@@ -5,26 +5,21 @@ const props = defineProps<{
   item: string;
   installation: string;
   runId: string;
-  initiallyOpen?: boolean;
 }>();
 const { textOf } = useActions();
-const open = ref(props.initiallyOpen ?? false);
+const open = ref(false);
 const text = ref<string | null>(null);
 const failed = ref(false);
 let reading = false;
-watch(
-  open,
-  (now) => {
-    if (!now || text.value !== null || reading) return;
-    reading = true;
-    void textOf(props.installation, props.runId, props.item).then((read) => {
-      reading = false;
-      text.value = read;
-      failed.value = read === null;
-    });
-  },
-  { immediate: true },
-);
+watch(open, (now) => {
+  if (!now || text.value !== null || reading) return;
+  reading = true;
+  void textOf(props.installation, props.runId, props.item).then((read) => {
+    reading = false;
+    text.value = read;
+    failed.value = read === null;
+  });
+});
 </script>
 
 <template>

@@ -641,6 +641,62 @@ test("a question the host holds is the card's Decision, and it is Needs you", ()
     }),
   ));
 
+test("a Task's card lists every question its Runs have open, in the order it asks them", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const first = yield* madeRun(dir, {
+        id: "r-first",
+        task: "task-1",
+        state: "waiting",
+        created: "2026-09-14T09:00:00Z",
+        asking: [
+          { name: "scope", prompt: "Which repository?", options: ["core", "tiger"] },
+          { name: "team", prompt: "Which Linear team?", options: [] },
+        ],
+      });
+      const second = yield* madeRun(dir, {
+        id: "r-second",
+        task: "task-1",
+        state: "waiting",
+        created: "2026-09-14T09:30:00Z",
+        asking: [{ name: "branch", prompt: "Which branch?", options: [] }],
+      });
+
+      const [view] = yield* board(env, [first, second]);
+
+      // Newest Run first, as the card's first question has always been chosen.
+      expect(view!.questions?.map((question) => [question.run, question.id])).toEqual([
+        ["r-second", "branch"],
+        ["r-first", "scope"],
+        ["r-first", "team"],
+      ]);
+      expect(view!.questions?.[2]).toEqual({
+        kind: "question",
+        run: "r-first",
+        id: "team",
+        step: first.workflow,
+        topic: "team",
+        text: "Which Linear team?",
+        options: [],
+      });
+      expect(view!.decision).toEqual(view!.questions![0]!);
+    }),
+  ));
+
+test("a Task with no question open lists none", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const run = yield* madeRun(dir, { task: "task-1" });
+
+      const [view] = yield* board(env, [run]);
+
+      expect(view!.questions).toEqual([]);
+      expect(view!.decision).toBeNull();
+    }),
+  ));
+
 test("a Run parked with nothing to answer is Needs you, in its pane", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1201,6 +1257,37 @@ test("a child Run's proposal is its Task's own decision", () =>
     }),
   ));
 
+test("a waiting proposal stays the decision, and the card still lists the questions open", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const run = yield* madeRun(dir, {
+        task: "task-1",
+        state: "waiting",
+        asking: [{ name: "scope", prompt: "Which repository?", options: ["core"] }],
+      });
+      const proposal: ProposalLine = {
+        kind: "proposal",
+        id: "p-1",
+        created_at: "2026-09-14T09:00:00Z",
+        expires_at: "2026-09-14T11:00:00Z",
+        interpretation: "the run drifted: it is editing docs",
+        targets: [{ run: run.id }],
+        actions: [{ kind: "stop", run: run.id }],
+        allowed_now: [],
+        intent_versions: {},
+        content_hash: "abc",
+        by: "evaluator:call-1",
+        state: "pending",
+      };
+
+      const [view] = yield* board(env, [run], { proposals: [proposal] });
+
+      expect(view!.decision).toMatchObject({ kind: "proposal", id: "p-1" });
+      expect(view!.questions?.map((question) => question.id)).toEqual(["scope"]);
+    }),
+  ));
+
 test("the board reads every Herd's proposals, not only the one its host came from", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1343,6 +1430,40 @@ test("a fan-out's card lists its Repo runs and every repository still to come, b
         { repo: "cli", run: null, state: "todo", mr: null },
       ]);
       expect(views[0]!.sentence).toBe("Wave 2 of 3. api landed, web is building, cli is next.");
+    }),
+  ));
+
+test("a fan-out's card lists the question each of its Repo runs is waiting on", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const root = `${dir}/root`;
+      const parent = yield* madeRun(dir, { id: "r-fan", task: "task-1", cwd: root });
+      yield* threeRepoPlan(parent.dir, root);
+      const api = yield* madeRun(dir, {
+        id: "r-api",
+        task: "task-1",
+        parent: "r-fan",
+        repo: "api",
+        state: "waiting",
+        asking: [{ name: "api-scope", prompt: "Which endpoints?", options: [] }],
+      });
+      const web = yield* madeRun(dir, {
+        id: "r-web",
+        task: "task-1",
+        parent: "r-fan",
+        repo: "web",
+        state: "waiting",
+        asking: [{ name: "web-scope", prompt: "Which pages?", options: [] }],
+      });
+
+      const [view] = yield* board(env, [api, web, parent]);
+
+      expect(view!.questions?.map((question) => [question.run, question.id])).toEqual([
+        ["r-api", "api-scope"],
+        ["r-web", "web-scope"],
+      ]);
+      expect(view!.decision).toEqual(view!.questions![0]!);
     }),
   ));
 

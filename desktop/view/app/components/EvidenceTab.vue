@@ -20,7 +20,7 @@ const links = computed(() => {
   });
 });
 
-/** What it was expected to do, and did not: these are opened first. */
+/** What it was expected to do, and did not: these are listed first. */
 const failedCheck = (check: VerificationView) => check.result !== check.expect;
 const checks = computed(() =>
   [...props.detail.verifications].sort((a, b) => Number(failedCheck(b)) - Number(failedCheck(a))),
@@ -80,7 +80,6 @@ const metrics = computed(() => {
         :item="`verification:${check.id}`"
         :installation="installation"
         :run-id="detail.id"
-        :initially-open="failedCheck(check)"
       >
         <template #leading>
           <UIcon

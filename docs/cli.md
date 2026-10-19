@@ -673,6 +673,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `drift`, `held`           | The one line each carries, or `null`.                                                                                                                           |
 | `heldBy`                  | Who set the hold that stands — the front door it came through — and the reason given with it, or `null`.                                                        |
 | `decision`                | The question or proposal waiting on you, or `null`. One of the two ways into Needs you.                                                                         |
+| `questions[]`             | Every question the Task's Runs have open, in the order the card asks them; `decision` is the first unless a proposal waits. Absent from an older host.          |
 | `agents[]`                | The live agents on it, its Repo runs' included.                                                                                                                 |
 | `children[]`              | Its plan's repositories, in wave order: `repo`, its `run` (`null` until it starts), its `state` (`done`, `active`, `blocked`, `failed` or `todo`) and its `mr`. |
 | `mr`, `mrState`, `branch` | What it is building, where it can be read, and what the forge last said about the merge request.                                                                |
