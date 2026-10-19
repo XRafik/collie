@@ -8,6 +8,7 @@ import {
 } from "@pierre/diffs";
 import type { Semaphore } from "effect";
 import type { DiffFile } from "../../../../src/board-model";
+import { readingHeight } from "../../../src/shared/diff-view";
 import { type Draft, inHunks, locationOf } from "../../../src/shared/review-comments";
 import type { DiffTarget } from "./DiffTab.vue";
 import { useDiffComments, WRITING } from "../composables/useDiffComments";
@@ -26,6 +27,7 @@ const open = defineModel<boolean>("open", { required: true });
 const emit = defineEmits<{ missing: [target: DiffTarget] }>();
 const { textOf } = useActions();
 const within = inject<Semaphore.Semaphore>("diffReads");
+const scroller = inject<Ref<HTMLElement | null>>("recordScroller", ref(null));
 const colorMode = useColorMode();
 const { drafts, add, edit, remove } = useReviewDrafts(() => props);
 
@@ -181,7 +183,12 @@ watch(
       <p v-else-if="unparsed" class="p-3 text-sm text-muted" data-testid="diff-unparsed">
         This file's diff could not be drawn.
       </p>
-      <p v-else-if="parsed === null" class="p-3 text-sm text-muted">Reading…</p>
+      <USkeleton
+        v-else-if="parsed === null"
+        data-testid="diff-reading"
+        class="m-3"
+        :style="{ height: `${readingHeight(file, scroller?.clientHeight ?? Infinity)}px` }"
+      />
       <p v-else-if="parsed.hunks.length === 0" class="p-3 text-sm text-muted">No text to show.</p>
       <div v-else ref="host" data-testid="diff-lines" />
     </div>

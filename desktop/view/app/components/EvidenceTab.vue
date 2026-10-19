@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { RunDetail, VerificationView } from "../../../../src/board-model";
-import { sortEvidence } from "../../../src/shared/evidence";
+import { hasEvidence, sortEvidence } from "../../../src/shared/evidence";
 import { webLinks } from "../../../src/shared/links";
 
 const props = defineProps<{ detail: RunDetail; installation: string }>();
@@ -19,6 +19,8 @@ const links = computed(() => {
     mr,
   });
 });
+
+const empty = computed(() => !hasEvidence({ ...props.detail, links: links.value }));
 
 /** What it was expected to do, and did not: these are listed first. */
 const failedCheck = (check: VerificationView) => check.result !== check.expect;
@@ -191,6 +193,9 @@ const metrics = computed(() => {
       </EvidenceText>
     </section>
 
+    <p v-if="empty" class="text-muted" data-testid="no-evidence">
+      This Run has kept no evidence yet.
+    </p>
     <section data-testid="metrics">
       <h3 class="mb-2 font-semibold">Metrics</h3>
       <table class="w-full">

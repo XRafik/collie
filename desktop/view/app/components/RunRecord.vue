@@ -17,6 +17,9 @@ const { value: read, trouble } = useHeld(() =>
 const detail = computed(() => read.value ?? null);
 const { notLive, protocolOf } = useFlock();
 const away = computed(() => notLive(props.placed.installation));
+const loading = computed(
+  () => trouble.value === null && away.value === null && read.value === undefined,
+);
 
 /** The location last followed: opened in the diff, or read-only in Review where there is none. */
 const target = ref<DiffTarget | null>(null);
@@ -104,13 +107,22 @@ const locationOf = (file: string, line: number | null) =>
           :title="`${away.title}; showing what it last said`"
           :description="away.reason"
         />
-        <p v-else-if="read === undefined" class="text-muted text-sm">Loading…</p>
         <p v-else-if="read === null" class="text-muted text-sm">
           This Run's details are not on its Machine.
         </p>
-        <UTabs v-model="tab" :items="tabs" :content="false" variant="link" />
+        <div v-if="loading" data-testid="record-loading" class="flex flex-col gap-4">
+          <div class="flex gap-4">
+            <USkeleton v-for="at in 5" :key="at" class="h-6 w-20" />
+          </div>
+          <USkeleton class="h-4 w-1/3" />
+          <USkeleton class="h-4 w-full" />
+          <USkeleton class="h-4 w-5/6" />
+          <USkeleton class="h-4 w-2/3" />
+        </div>
+        <UTabs v-else v-model="tab" :items="tabs" :content="false" variant="link" />
       </div>
       <div
+        v-if="!loading"
         class="flex flex-col gap-4"
         :class="[columnClass(tab ?? ''), { 'min-h-0 flex-1': tab === 'terminal' }]"
       >

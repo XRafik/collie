@@ -1571,7 +1571,9 @@ board.
 open page, and with no page open Escape lets the selected card go, wherever the focus is in
 the window. Escape typed in a field, such as the Log search, stays with the field.
 
-A record opens on **Summary**, unless the board asked for a tab or a jump chose one: the
+Until its details arrive, a record shows a row of placeholder tabs and a placeholder body;
+a Run whose details are not on its Machine says so, and a Machine out of reach shows its
+banner. A record opens on **Summary**, unless the board asked for a tab or a jump chose one: the
 Run's status; why it needs attention, in the board's words, unless nothing needs it; its
 outcome — what kind it is, what it still has to prove, what is in its way, what to do next
 and what it delivered; its steps, each with its status, note, how long it took and its
@@ -1598,7 +1600,7 @@ highlights the file being read, scrolls itself to keep that file's row in view, 
 the folder it is in; a click in the tree, or a finding's jump, highlights its file at once,
 until you next scroll. The diffs are drawn in the tree's order with `@pierre/diffs` in the github-light
 and github-dark colours as Desktop's theme follows. A file is read from the host when
-it is opened, and again when the Run changes how many lines it adds or removes, with no
+it is opened, holding a placeholder about as tall as its changed lines until it is drawn, and again when the Run changes how many lines it adds or removes, with no
 line cap; a file with more than
 500 changed lines, or a binary one, starts collapsed. **Evidence** shows the Run's
 verifications as a checklist, every one collapsed, those that did not do what they were
@@ -1611,10 +1613,12 @@ gallery, a `before` beside its `after` where their names pair them, twelve to a 
 videos, read and played when asked; its HTML reports, such as Lighthouse, in a sandboxed
 frame that runs their scripts in an origin of their own, which may neither load anything
 from the network nor navigate away; the logs and files it kept, each read when opened and
-searchable; and its metrics as a table. A report that keeps its attachments in files beside
+searchable; and its metrics as a table, under "This Run has kept no evidence yet." where it
+has none of the rest. A report that keeps its attachments in files beside
 it shows without them. **Log**
 follows the end of the Run's log as it is written, with a search that keeps only the lines
-that match. **Merge request** (**Pull request** for one on GitHub) shows what the host's
+that match; it says "The log is empty so far." before the Run has logged anything, and "No
+line matches <search>." when the search keeps none. **Merge request** (**Pull request** for one on GitHub) shows what the host's
 merge watch last read — title, state, pipeline or checks, approvals and comments — with
 Open in browser. **Facts** shows the files the Run was
 given, when it was given any (an image as a thumbnail, any other file by its name, type and

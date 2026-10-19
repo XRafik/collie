@@ -6,6 +6,7 @@ import {
   diffTree,
   foldersOn,
   reachBy,
+  readingHeight,
 } from "../desktop/src/shared/diff-view";
 
 const file = (path: string): DiffFile => ({ path, status: "modified", added: 1, removed: 0 });
@@ -120,5 +121,20 @@ describe("bringing the active row into the tree's reach", () => {
   test("scrolls just enough to the nearest edge", () => {
     expect(reachBy(box, { top: 60, bottom: 88 })).toBe(-40);
     expect(reachBy(box, { top: 450, bottom: 478 })).toBe(78);
+  });
+});
+
+describe("a file being read", () => {
+  test("holds about the height its changed lines draw", () => {
+    expect(readingHeight({ ...file("a.ts"), added: 3, removed: 2 }, 1000)).toBe(100);
+  });
+
+  test("holds at most the record's visible area", () => {
+    expect(readingHeight({ ...file("a.ts"), added: 400, removed: 0 }, 600)).toBe(600);
+  });
+
+  test("holds one line where nothing is counted", () => {
+    expect(readingHeight({ ...file("empty.ts"), added: 0, removed: 0 }, 600)).toBe(20);
+    expect(readingHeight({ ...file("logo.png"), added: null, removed: null }, 600)).toBe(20);
   });
 });

@@ -89,3 +89,10 @@ export const activeFile = ({ sections, readingLine, atEnd, held }: Reading): str
 /** How far a box scrolls to show a row inside it, to the nearest edge; 0 when it shows. */
 export const reachBy = (box: Span, row: Span): number =>
   row.top < box.top ? row.top - box.top : row.bottom > box.bottom ? row.bottom - box.bottom : 0;
+
+/** `@pierre/diffs`' default line height. */
+const DIFF_LINE = 20;
+
+/** The placeholder a file holds while it is read, so the page does not jump when it is drawn. */
+export const readingHeight = ({ added, removed }: DiffFile, visible: number): number =>
+  Math.min(Math.max(1, (added ?? 0) + (removed ?? 0)) * DIFF_LINE, visible);
