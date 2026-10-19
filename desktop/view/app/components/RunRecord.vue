@@ -2,7 +2,14 @@
 import { offersTerminal, opensHerdrWithoutPane } from "../../../src/shared/record-terminal";
 import type { PlacedTask } from "../../../src/shared/flock";
 import { mrTab } from "../../../src/shared/links";
-import { recordTabs, tabShown } from "../../../src/shared/record";
+import {
+  landingOf,
+  recordTabs,
+  rememberScroll,
+  type ScrollMemory,
+  scrollToRestore,
+  tabShown,
+} from "../../../src/shared/record";
 import { runDetailAtom, runDetailKey } from "../flock";
 import type { DiffTarget } from "./DiffTab.vue";
 
@@ -23,9 +30,21 @@ const loading = computed(
 
 /** The location last followed: opened in the diff, or read-only in Review where there is none. */
 const target = ref<DiffTarget | null>(null);
+const landing = computed(() =>
+  target.value === null
+    ? null
+    : landingOf(target.value, detail.value?.diff?.files.map(({ path }) => path) ?? null),
+);
+/** Whether the tab shown was reached by a jump, which lands on its target rather than restoring. */
+const landed = ref(false);
+let jumping = false;
 const jump = (file: string, line: number | null) => {
   target.value = { file, line };
-  chosen.value = detail.value?.diff ? "diff" : "review";
+  const next = landing.value?.tab ?? "review";
+  jumping = next !== tab.value;
+  landed.value = true;
+  stopRestoring();
+  chosen.value = next;
 };
 provide("jumpTo", jump);
 
@@ -65,6 +84,45 @@ const tab = computed({
 });
 
 watch(tab, (now) => now !== "terminal" && (wentToPane.value = false));
+
+const body = ref<HTMLElement | null>(null);
+let memory: ScrollMemory = new Map();
+let stopRestoring = () => {};
+const HUMAN_SCROLLS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+/** Shows the position, waiting while the tab is still too short for it until the human scrolls. */
+const restore = (position: number) => {
+  const box = scroller.value;
+  const content = body.value;
+  if (box === null) return;
+  const reached = () => {
+    box.scrollTop = position;
+    return box.scrollTop >= position - 1;
+  };
+  if (reached() || content === null) return;
+  const grown = new ResizeObserver(() => reached() && stopRestoring());
+  grown.observe(content);
+  const gaveUp = () => stopRestoring();
+  HUMAN_SCROLLS.forEach((event) => box.addEventListener(event, gaveUp, { passive: true }));
+  stopRestoring = () => {
+    grown.disconnect();
+    HUMAN_SCROLLS.forEach((event) => box.removeEventListener(event, gaveUp));
+    stopRestoring = () => {};
+  };
+};
+// Before the tab shown changes in the page, so the one left is measured as it was.
+watch(tab, (now, was) => {
+  const box = scroller.value;
+  if (box !== null && was !== undefined) memory = rememberScroll(memory, was, box.scrollTop);
+  stopRestoring();
+  if (jumping) {
+    jumping = false;
+    return;
+  }
+  landed.value = false;
+  const position = scrollToRestore(memory, now);
+  if (position !== null) void nextTick(() => restore(position));
+});
+onBeforeUnmount(() => stopRestoring());
 
 /** Mounted from its first visit on and kept, so its toggles and open files stay as left. */
 const diffSeen = ref(false);
@@ -123,6 +181,7 @@ const locationOf = (file: string, line: number | null) =>
       </div>
       <div
         v-if="!loading"
+        ref="body"
         class="flex flex-col gap-4"
         :class="[columnClass(tab ?? ''), { 'min-h-0 flex-1': tab === 'terminal' }]"
       >
@@ -144,9 +203,10 @@ const locationOf = (file: string, line: number | null) =>
           />
           <div v-else-if="tab === 'review'" data-testid="review" class="flex flex-col gap-4">
             <SourceFile
-              v-if="target !== null && !detail.diff"
-              :path="target.file"
-              :line="target.line"
+              v-if="landing?.tab === 'review'"
+              :path="landing.file"
+              :line="landing.line"
+              :reveal="landed"
               :installation="placed.installation"
               :run-id="detail.id"
               @close="target = null"

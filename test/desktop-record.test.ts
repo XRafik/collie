@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  landingOf,
   recordTabs,
+  rememberScroll,
+  scrollToRestore,
   type SummaryFacts,
   summaryOf,
   type TabFacts,
@@ -176,5 +179,69 @@ describe("what the Summary shows", () => {
 
   test("for a Run with only a status are its status", () => {
     expect(summaryOf(bare)).toEqual([{ section: "status", status: "running" }]);
+  });
+});
+
+describe("scroll memory", () => {
+  const none = new Map<string, number>();
+
+  test("starts a tab's first visit at the top", () => {
+    expect(scrollToRestore(none, "plan")).toBe(0);
+  });
+
+  test("restores a tab where it was left", () => {
+    expect(scrollToRestore(rememberScroll(none, "plan", 640), "plan")).toBe(640);
+  });
+
+  test("keeps two tabs apart", () => {
+    const memory = rememberScroll(rememberScroll(none, "plan", 640), "diff", 2400);
+    expect(scrollToRestore(memory, "plan")).toBe(640);
+    expect(scrollToRestore(memory, "diff")).toBe(2400);
+    expect(scrollToRestore(rememberScroll(memory, "plan", 0), "diff")).toBe(2400);
+  });
+
+  test("never records or restores Terminal", () => {
+    const memory = rememberScroll(none, "terminal", 300);
+    expect(memory.has("terminal")).toBe(false);
+    expect(scrollToRestore(memory, "terminal")).toBeNull();
+  });
+});
+
+describe("where a jump lands", () => {
+  const files = ["src/host.ts", "docs/using.md"];
+
+  test("at its line in the diff", () => {
+    expect(landingOf({ file: "src/host.ts", line: 12 }, files)).toEqual({
+      tab: "diff",
+      at: "line",
+      file: "src/host.ts",
+      line: 12,
+    });
+  });
+
+  test("at the file in the diff, when there is no line", () => {
+    expect(landingOf({ file: "docs/using.md", line: null }, files)).toEqual({
+      tab: "diff",
+      at: "file",
+      file: "docs/using.md",
+    });
+  });
+
+  test("in the read-only file view on Diff, when the file is not in the diff", () => {
+    expect(landingOf({ file: "README.md", line: 3 }, files)).toEqual({
+      tab: "diff",
+      at: "source",
+      file: "README.md",
+      line: 3,
+    });
+  });
+
+  test("in the read-only file view on Review, when there is no diff", () => {
+    expect(landingOf({ file: "src/host.ts", line: null }, null)).toEqual({
+      tab: "review",
+      at: "source",
+      file: "src/host.ts",
+      line: null,
+    });
   });
 });

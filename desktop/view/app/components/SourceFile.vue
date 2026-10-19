@@ -2,18 +2,32 @@
 import type { Token } from "../composables/useHighlight";
 
 /** A file of the Run's checkout, read-only, at the line a finding points at. */
-const props = defineProps<{
-  path: string;
-  line: number | null;
-  installation: string;
-  runId: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    path: string;
+    line: number | null;
+    installation: string;
+    runId: string;
+    /** Whether to scroll it into view, as for a jump; false where the record restores its place. */
+    reveal?: boolean;
+  }>(),
+  { reveal: true },
+);
 const emit = defineEmits<{ close: [] }>();
 const { textOf } = useActions();
 
 const lines = shallowRef<ReadonlyArray<ReadonlyArray<Token>> | null>(null);
 const failed = ref(false);
 const shown = ref<HTMLElement | null>(null);
+const whole = ref<HTMLElement | null>(null);
+
+watch(
+  () => [props.path, props.line] as const,
+  () => {
+    if (props.reveal) whole.value?.scrollIntoView({ block: "start" });
+  },
+  { immediate: true, flush: "post" },
+);
 
 watch(
   () => props.path,
@@ -33,7 +47,7 @@ watch(
 watch(
   () => [lines.value, props.line] as const,
   async ([, line]) => {
-    if (line === null || lines.value === null) return;
+    if (line === null || lines.value === null || !props.reveal) return;
     await nextTick();
     shown.value?.querySelector(`[data-line="${line}"]`)?.scrollIntoView({ block: "center" });
   },
@@ -42,7 +56,7 @@ watch(
 </script>
 
 <template>
-  <section data-testid="source-file" class="rounded border border-default">
+  <section ref="whole" data-testid="source-file" class="rounded border border-default">
     <div class="flex items-center gap-2 px-3 py-2 text-sm">
       <UIcon name="i-lucide-file" />
       <code class="flex-1 truncate" data-testid="source-file-name">{{ path }}</code>

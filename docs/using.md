@@ -1578,7 +1578,10 @@ Run's status; why it needs attention, in the board's words, unless nothing needs
 outcome — what kind it is, what it still has to prove, what is in its way, what to do next
 and what it delivered; its steps, each with its status, note, how long it took and its
 agents; and the Inputs it was given, each with whether it was given or inferred. A section
-with nothing to say is left out.
+with nothing to say is left out. Each tab keeps its place while the record is open: switching
+back to one brings it back scrolled where you left it, waiting for it to grow if it is still
+filling in, and a tab's first visit starts at the top. A jump to a finding lands on its
+target instead. Closing the record, or opening another Run's, forgets every place.
 
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the
 details carry, and lists the tickets, each expanding
@@ -1590,10 +1593,11 @@ done" says how far the plan is, beside **Expand all**, which opens every ticket,
 it is checked, or when a succeeded Run built from that plan finished it: its slice landed, a
 step was named after it, or a whole-plan build of its repository finished after it was written. A failed or stopped
 Run ticks nothing. A link from one plan file to another opens
-that file at the top of the tab. **Review** renders the review, read whole the same way, and lists its findings; a
+that file at the top of the tab and scrolls it into view. **Review** renders the review, read whole the same way, and lists its findings; a
 `file:line` in a finding or anywhere in rendered markdown opens
 **Diff** at that line, or a read-only view of the file from the Run's checkout where no
-hunk shows it. **Diff** is the Run's branch against its merge base — live while the Run
+hunk shows it, scrolled into view; a finding with a file and no line scrolls that file's diff
+to the top and holds it highlighted in the tree, as a click on its row does. **Diff** is the Run's branch against its merge base — live while the Run
 works, final after — as a file tree beside each file's diff, unified or side by side. **Wrap long lines** wraps
 each open diff's long lines instead of scrolling them sideways, and **Expand all** and
 **Collapse all** open or close every file in the diff, big and binary ones included; a file

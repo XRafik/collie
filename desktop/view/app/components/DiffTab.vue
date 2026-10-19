@@ -4,6 +4,7 @@ import { Semaphore } from "effect";
 import type { Ref } from "vue";
 import type { RunDiff } from "../../../../src/board-model";
 import { inField } from "../../../src/shared/board-clicks";
+import { landingOf } from "../../../src/shared/record";
 import {
   activeFile,
   choiceForEvery,
@@ -63,9 +64,13 @@ watch(
   () => props.target,
   (target) => {
     if (target === null) return;
-    const inDiff = props.diff.files.some((file) => file.path === target.file);
-    source.value = inDiff ? null : target;
-    if (!inDiff) return;
+    const landing = landingOf(
+      target,
+      props.diff.files.map(({ path }) => path),
+    );
+    source.value = landing.at === "source" ? target : null;
+    if (landing.at === "source") return;
+    if (landing.at === "file") return show(landing.file);
     opened.value.set(target.file, true);
     held.value = target.file;
     active.value = target.file;

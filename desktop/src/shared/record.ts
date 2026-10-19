@@ -1,4 +1,5 @@
-// A Task's record: its tabs, the one shown, and what its Summary says.
+// A Task's record: its tabs, the one shown, each tab's place, where a jump lands, and what its
+// Summary says.
 
 import type { RunDetail } from "../../../src/board-model";
 
@@ -43,6 +44,44 @@ export const recordTabs = (facts: TabFacts): Array<Tab> => {
 /** The chosen tab while it is present, else the first. */
 export const tabShown = (tabs: ReadonlyArray<Tab>, chosen: string | undefined): string =>
   (tabs.find(({ value }) => value === chosen) ?? tabs[0]!).value;
+
+/** Each tab's scroll position, by the tab's value, while the record is open. */
+export type ScrollMemory = ReadonlyMap<string, number>;
+
+/** Terminal fills the record and has no position of its own. */
+const UNSCROLLED = "terminal";
+
+export const rememberScroll = (
+  memory: ScrollMemory,
+  tab: string,
+  position: number,
+): ScrollMemory => (tab === UNSCROLLED ? memory : new Map(memory).set(tab, position));
+
+/** The position to show a tab at, 0 on its first visit; null for Terminal. */
+export const scrollToRestore = (memory: ScrollMemory, tab: string): number | null =>
+  tab === UNSCROLLED ? null : (memory.get(tab) ?? 0);
+
+export type Landing =
+  | { readonly tab: "diff"; readonly at: "line"; readonly file: string; readonly line: number }
+  | { readonly tab: "diff"; readonly at: "file"; readonly file: string }
+  | {
+      readonly tab: "diff" | "review";
+      readonly at: "source";
+      readonly file: string;
+      readonly line: number | null;
+    };
+
+/** `diff` is the paths of the diff's files, or null where the Run has no diff. */
+export const landingOf = (
+  { file, line }: { readonly file: string; readonly line: number | null },
+  diff: ReadonlyArray<string> | null,
+): Landing => {
+  if (diff === null) return { tab: "review", at: "source", file, line };
+  if (!diff.includes(file)) return { tab: "diff", at: "source", file, line };
+  return line === null
+    ? { tab: "diff", at: "file", file }
+    : { tab: "diff", at: "line", file, line };
+};
 
 export type SummaryFacts = Pick<RunDetail, "status" | "attention" | "steps" | "inputs"> & {
   readonly outcome: Omit<RunDetail["outcome"], "metrics">;

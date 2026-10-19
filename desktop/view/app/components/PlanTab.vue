@@ -32,8 +32,11 @@ const load = (file: string) => {
 
 /** The plan file a link opened, shown above the plan until it is closed. */
 const opened = ref<string | null>(null);
-provide("openPlanFile", (file: string) => {
+const openedBox = ref<HTMLElement | null>(null);
+provide("openPlanFile", async (file: string) => {
   opened.value = file;
+  await nextTick();
+  openedBox.value?.scrollIntoView({ block: "start" });
 });
 const wholeSpec = useWhole(
   () => props,
@@ -107,6 +110,7 @@ const comment = (text: string) => {
     />
     <section
       v-if="opened !== null"
+      ref="openedBox"
       data-testid="plan-file"
       class="rounded border border-default p-3"
     >
