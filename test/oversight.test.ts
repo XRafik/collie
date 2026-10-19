@@ -436,7 +436,6 @@ const evaluatorOnPath = Effect.gen(function* () {
   );
 });
 
-/** A boundary, then the card that follows it. */
 const boundaryThenCard = Effect.gen(function* () {
   const oversight = yield* Oversight;
   yield* oversight.drift("r1", "boundary before build", "boundary");
