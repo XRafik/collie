@@ -73,6 +73,7 @@ import {
   type CompactionPorts,
 } from "../src/compaction";
 import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
+import { hostLockOf } from "../src/lock";
 import { claudeTrust } from "../src/trust";
 import { FALLBACK_DEFAULTS } from "../src/settings";
 import type { AgentProfile } from "../src/profile";
@@ -954,6 +955,11 @@ const asksTwo = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   while (!(yield* fs.exists(`${dir}/agents/r1/review.launch.json`)))
     yield* TestClock.withLive(Effect.sleep("10 millis"));
+  // The host runs in this process; the hook puts a question on a Run only while one lives.
+  yield* fs.writeFileString(
+    hostLockOf(rig.pluginEnv().stateDir),
+    `{"pid":${process.pid},"start":null}`,
+  );
   yield* recordClaudeEvent(yield* controlDir(rig.pluginEnv().stateDir, agentFor("r1")), askedTwo);
 }).pipe(Effect.orDie);
 

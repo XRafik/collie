@@ -4263,6 +4263,8 @@ export interface RegistryApi {
     readonly mode?: AgentsSdk.DeliveryMode;
     readonly actor?: Asker;
   }) => Effect.Effect<typeof Steered.Type, HostRefused, HostServices>;
+  /** Puts every agent's question no step is reading on its Run, and sends back the answers. */
+  readonly tendQuestions: Effect.Effect<void, never, HostServices>;
   /** Every question this run has been asked, answered or not, oldest first. */
   readonly waiting: (runId: string) => Effect.Effect<ReadonlyArray<OpenDecision>>;
   /** One run as a front door shows it, or null where nothing was admitted under that id. */
@@ -6087,7 +6089,9 @@ const makeRegistry: (
     answer: Effect.fn("Engine.Registry.answer")(function* (
       options: Parameters<RegistryApi["answer"]>[0],
     ) {
-      const found = yield* routed(options.runId);
+      const found = yield* Effect.result(routed(options.runId));
+      if (found._tag === "Failure" && (yield* store.run(options.runId)) === null)
+        return yield* found.failure;
       const asks = yield* asked(options.runId);
       const open = asks.filter((one) => one.answer === null);
       const sole = options.decision === null ? soleOpen(options.runId, open) : null;
@@ -6111,6 +6115,11 @@ const makeRegistry: (
         });
       }
       const value = named ?? options.value;
+      // An agent's question needs no workflow to wake: a finished Run's module may be gone.
+      const byAgent = (yield* store.asked(options.runId)).some(
+        (row) => row.decision === name && row.asker !== null,
+      );
+      if (!byAgent && found._tag === "Failure") return yield* found.failure;
       // Recorded first, and only the caller the write hands the row to completes the
       // deferred: two answers racing are separated by the database, not by timing.
       const settled = yield* store.settle({
@@ -6125,12 +6134,11 @@ const makeRegistry: (
       }
       if (settled._tag === "accepted") yield* crash("answered");
       // Completed again on a repeat: the recording host may have died before the run was told.
-      // An agent's question is read by the collection that asked it; waking the workflow
-      // would replay it.
-      if (settled.row.asker === null)
-        yield* answerDecision(found.generation.registration, {
+      // An agent's question is answered to its agent; waking the workflow would replay it.
+      if (settled.row.asker === null && found._tag === "Success")
+        yield* answerDecision(found.success.generation.registration, {
           name,
-          executionId: found.execution,
+          executionId: found.success.execution,
           value,
         });
 
@@ -6224,6 +6232,15 @@ const makeRegistry: (
       }
       const sent = yield* (yield* Agents).steer(options);
       return sent.gone === true ? { ...sent, finished: yield* hasEnded(options.runId) } : sent;
+    }),
+
+    tendQuestions: Effect.gen(function* () {
+      const host = yield* Host;
+      yield* (yield* Agents).tendQuestions((runId) => ({
+        ask: (question, asker) => host.asking(runId, question, asker),
+        asked: host.asked(runId),
+        close: (decision, value) => host.close(runId, decision, value),
+      }));
     }),
   } satisfies RegistryApi;
 });
