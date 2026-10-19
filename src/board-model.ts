@@ -259,6 +259,8 @@ export const TaskView = Schema.Struct({
   /** Who asked for the hold and why, which the drawer says and the card does not. */
   heldBy: Schema.NullOr(Schema.Struct({ by: Schema.String, reason: Schema.String })),
   decision: Schema.NullOr(Decision),
+  /** Every question the Task's Runs have open, as the card asks them; absent from an older host. */
+  questions: Schema.optionalKey(Schema.Array(Question)),
   agents: Schema.Array(BoardAgent),
   children: Schema.Array(BoardChild),
   mr: Schema.NullOr(Schema.String),

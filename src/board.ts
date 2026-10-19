@@ -530,12 +530,10 @@ function stateOf(
   return silent ? "quiet" : "active";
 }
 
-/** The first question any of these Runs is waiting on, as a card asks it. */
-function questionOf(runs: ReadonlyArray<RunFacts>): Question | null {
-  for (const run of runs) {
-    const asked = run.asking[0];
-    if (asked === undefined) continue;
-    return {
+/** Every question these Runs are waiting on, in the order a card asks them. */
+function questionsOf(runs: ReadonlyArray<RunFacts>): ReadonlyArray<Question> {
+  return runs.flatMap((run) =>
+    run.asking.map((asked): Question => ({
       kind: "question",
       run: run.id,
       id: asked.name,
@@ -543,9 +541,8 @@ function questionOf(runs: ReadonlyArray<RunFacts>): Question | null {
       topic: asked.name,
       text: asked.prompt,
       options: asked.options.map((option) => ({ id: option, title: option, subtitle: null })),
-    };
-  }
-  return null;
+    })),
+  );
 }
 
 /**
@@ -960,7 +957,8 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         const fanned = runs.find((run) => repoRunsOf.has(run.id));
         const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
         const proposed = pending[0];
-        const decision: Decision | null = proposed ? asProposal(proposed) : questionOf(everyRun);
+        const questions = questionsOf(everyRun);
+        const decision: Decision | null = proposed ? asProposal(proposed) : (questions[0] ?? null);
 
         const status = leader.state;
         // A fan-out waiting on its Repo runs writes nothing itself: their work is its work.
@@ -1138,6 +1136,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           held: held === undefined ? null : heldLine(null),
           heldBy: held === undefined ? null : yield* holderOf(held),
           decision,
+          questions,
           agents,
           children: fan?.children ?? [],
           mr,
