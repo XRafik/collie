@@ -3,19 +3,22 @@ import { Effect, FileSystem, Schema } from "effect";
 import { signalProcess } from "../src/lock";
 import { exec } from "./support/command";
 import { runEffect } from "./support/effect";
-import { MARKER, sweepDeadRoots } from "./support/sweep";
+import { MARKER, marked, sweepDeadRoots } from "./support/sweep";
 
 const preload = `${import.meta.dir}/support/hosts.ts`;
 
 const Recorded = Schema.Struct({
   pid: Schema.optional(Schema.Number),
   dir: Schema.optional(Schema.String),
+  runs: Schema.optional(
+    Schema.Array(Schema.Struct({ pid: Schema.Number, root: Schema.String, home: Schema.String })),
+  ),
 });
 
 const alive = (pid: number | undefined) => signalProcess(pid ?? 0, 0);
 
 /** Runs one fixture file under the preload, in a temporary directory of its own. */
-const suite = (fixture: string) =>
+const suite = (fixture: string, args: ReadonlyArray<string> = []) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const dir = yield* fs.makeTempDirectoryScoped({ prefix: "preload-" });
@@ -24,7 +27,7 @@ const suite = (fixture: string) =>
     yield* fs.makeDirectory(base);
     yield* fs.writeFileString(`${dir}/bunfig.toml`, `[test]\npreload = ["${preload}"]\n`);
     yield* fs.writeFileString(`${dir}/fixture.test.ts`, fixture);
-    const ran = yield* exec(["bun", "test", "./fixture.test.ts"], {
+    const ran = yield* exec(["bun", "test", ...args, "./fixture.test.ts"], {
       cwd: dir,
       env: { ...process.env, TMPDIR: base, FIXTURE_OUT: out },
     });
@@ -33,7 +36,12 @@ const suite = (fixture: string) =>
           yield* fs.readFileString(out),
         )
       : {};
-    return { output: ran.stdout + ran.stderr, left: yield* fs.readDirectory(base), recorded };
+    return {
+      output: ran.stdout + ran.stderr,
+      base,
+      left: yield* fs.readDirectory(base),
+      recorded,
+    };
   }).pipe(Effect.scoped, Effect.orDie);
 
 const header = `
@@ -99,6 +107,64 @@ test("hangs", async () => {
           expect(run.recorded.dir).toBeDefined();
           expect(yield* fs.exists(run.recorded.dir ?? "")).toBe(false);
           expect(yield* alive(run.recorded.pid)).toBe(false);
+          expect(run.left).toEqual([]);
+        }),
+      ),
+    30_000,
+  );
+});
+
+describe("the test preload under --rerun-each", () => {
+  test(
+    "every run gets a root of its own, and none is left",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const run = yield* suite(
+            `${header}
+const runs = (globalThis.runs ??= []);
+test("sees its root", () => {
+  runs.push({ pid: process.pid, root: tmpdir(), home: process.env.HOME });
+  expect(process.env.${MARKER}).toBe(tmpdir());
+  expect(readdirSync(tmpdir())).toEqual(["home"]);
+  record({ runs });
+});
+`,
+            ["--rerun-each", "3"],
+          );
+          expect(run.output).toContain("3 pass");
+          expect(run.output).toContain("0 fail");
+          const runs = run.recorded.runs ?? [];
+          expect(runs).toHaveLength(3);
+          for (const one of runs) {
+            expect(one.root.startsWith(`${run.base}/collie-test-${one.pid}-`)).toBe(true);
+            expect(one.home.startsWith(`${one.root}/`)).toBe(true);
+            expect(marked(one.root)).toEqual([]);
+          }
+          expect(new Set(runs.map((one) => one.root)).size).toBe(3);
+          expect(run.left.filter((name) => name.startsWith("collie-test-"))).toEqual([]);
+        }),
+      ),
+    30_000,
+  );
+
+  test(
+    "a directory left on the second run fails that run, naming it, and is removed",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const run = yield* suite(
+            `${header}
+globalThis.runs = (globalThis.runs ?? 0) + 1;
+test("leaks on the second run", () => {
+  if (globalThis.runs === 2) mkdtempSync(join(tmpdir(), "leaked-"));
+});
+`,
+            ["--rerun-each", "3"],
+          );
+          expect(run.output).toContain("2 pass");
+          expect(run.output).toContain("1 fail");
+          expect(run.output).toMatch(/directory \S*leaked-/);
           expect(run.left).toEqual([]);
         }),
       ),
