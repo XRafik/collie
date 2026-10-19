@@ -24,6 +24,7 @@ import {
   Host,
   Run,
   WorkflowError,
+  afterMergeIn,
   agentWork,
   answerFor,
   checkGapsOf,
@@ -175,6 +176,12 @@ const SliceRecord = Schema.Struct({
   checks: Schema.Array(Schema.String),
   // A reading journaled before tickets carried their criteria has none.
   criteria: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
+/** A ticket's criteria and after-merge outcomes as one reading of its file found them. */
+const TicketReading = Schema.Struct({
+  criteria: Schema.Array(Schema.String),
+  afterMerge: Schema.Array(Schema.String),
 });
 
 /** What the step that opens the merge request reports, and what it linked. */
@@ -426,6 +433,7 @@ export default defineWorkflow({
       const built = new Set<string>();
       const handed: Handed[] = [];
       const assumed: string[] = [];
+      const afterMerged: string[] = [];
       const answeredFor: Answered[] = [];
       let build: typeof Built.Type | null = null;
       let rallied: Rallied | null = null;
@@ -476,7 +484,7 @@ export default defineWorkflow({
         });
         const item = ticket?.file ?? "build";
         // A Linear issue's criteria are read from its description as the builder copied it.
-        const criteria =
+        const spec =
           ticket === null && source.kind === "linear"
             ? yield* Activity.make({
                 name: "criteria.spec",
@@ -488,19 +496,56 @@ export default defineWorkflow({
                 ),
               })
             : given;
-        if (criteria === null) {
+        if (spec === null) {
           const why = `${item}: ${place.dir}/plan/SPEC.md cannot be read, so the issue's acceptance criteria cannot be checked and no review starts`;
           yield* host.record(runId, why);
           return yield* unbuilt(why);
         }
+        // A plan's tickets are read again before each judgement, so an amended one is judged
+        // and handed back as it reads now; one that cannot be read keeps its last reading.
+        let read: ReadonlyArray<{ file: string } & typeof TicketReading.Type> =
+          source.kind === "plan-dir"
+            ? (ticket === null ? tickets : [ticket]).map((one) => ({
+                file: one.file,
+                criteria: one.criteria,
+                afterMerge: [],
+              }))
+            : [];
+        let reads = 0;
+        const criteriaNow = Effect.gen(function* () {
+          if (read.length === 0) return spec;
+          reads += 1;
+          const now = yield* Activity.make({
+            name: `${item}.criteria.read-${reads}`,
+            success: Schema.Array(Schema.NullOr(TicketReading)),
+            execute: FileSystem.FileSystem.pipe(
+              Effect.flatMap((fs) =>
+                Effect.forEach(read, (one) =>
+                  fs.readFileString(`${source.value}/issues/${one.file}`).pipe(
+                    Effect.map((text) => ({
+                      criteria: criteriaIn(text),
+                      afterMerge: afterMergeIn(text),
+                    })),
+                    Effect.orElseSucceed(() => null),
+                  ),
+                ),
+              ),
+            ),
+          });
+          read = read.map((one, at) => (now[at] ? { file: one.file, ...now[at] } : one));
+          return read.flatMap((one) => one.criteria);
+        });
         // Each criterion answered before any reviewer is launched: one left unanswered or
         // unmet goes back to the builder, and the work stops if it still is.
         let answers: ReadonlyArray<Criterion> = build.criteria ?? [];
         const assumptions = [...(build.assumptions ?? [])];
         const commits = [...(build.commits ?? [])];
-        for (let tries = 1; tries <= CRITERIA_TRIES; tries++) {
-          const unmet = unmetCriteria(item, criteria, answers);
-          if (unmet.length === 0) break;
+        let criteria = spec;
+        let unmet: ReadonlyArray<Finding> = [];
+        for (let tries = 1; ; tries++) {
+          criteria = yield* criteriaNow;
+          unmet = unmetCriteria(item, criteria, answers);
+          if (unmet.length === 0 || tries > CRITERIA_TRIES) break;
           const answered = yield* agentWork({
             operation: `${item}.criteria-${tries}`,
             agent: BUILDER,
@@ -530,7 +575,6 @@ export default defineWorkflow({
             .map((one) => `${one.name}: ${one.result}`),
         };
         handed.push(done);
-        const unmet = unmetCriteria(item, criteria, answers);
         if (unmet.length > 0) {
           const why = `${item}: acceptance criteria still unanswered or unmet after ${CRITERIA_TRIES} hand-backs, so no review starts: ${unmet.map((one) => one.title).join("; ")}`;
           yield* host.record(runId, why);
@@ -538,6 +582,8 @@ export default defineWorkflow({
         }
         answeredFor.push({ item, criteria, answers, assumptions });
         for (const one of assumptions) assumed.push(`assumed in ${item}: ${one}`);
+        for (const one of read)
+          afterMerged.push(...one.afterMerge.map((line) => `${one.file}: after merge: ${line}`));
         built.add(done.item);
         if (ticket === null) for (const one of tickets) built.add(one.file);
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "done", claimsOf(build, ticket));
@@ -853,6 +899,7 @@ export default defineWorkflow({
       const preexisting = baseFailuresOf(journal);
       const unsettled = [
         ...assumed,
+        ...afterMerged,
         ...rallied.unsettled,
         ...(stalled?.disputed ?? []).map(
           (one) =>

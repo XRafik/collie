@@ -175,6 +175,7 @@ export { identityProblem, renderProgress, type Handed } from "./slices";
  * reads the plan it was given rather than being handed a reading of it.
  */
 export {
+  afterMergeIn,
   checksIn,
   criteriaIn,
   isSingleRepo,

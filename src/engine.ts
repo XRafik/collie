@@ -1443,9 +1443,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /**
    * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
-   * Acceptance criteria heading where it has one. A nested list and fenced code are not.
+   * Acceptance criteria heading where it has one, and never under ## After merge. A nested
+   * list and fenced code are not.
    */
   export function criteriaIn(text: string): string[];
+
+  /** What only CI, a merge or a deploy can show: the items under a ticket's ## After merge. */
+  export function afterMergeIn(text: string): string[];
 
   /** A plan's tickets in an order they can be built in, narrowed to one repository. */
   export function orderedTickets(

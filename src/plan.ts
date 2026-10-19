@@ -22,24 +22,32 @@ export function checksIn(text: string): string[] {
     .filter((part) => part !== "");
 }
 
-/**
- * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
- * Acceptance criteria heading where it has one. A nested list and fenced code are not.
- */
-export function criteriaIn(text: string): string[] {
-  const lines = text.split("\n");
-  const heading = lines.findIndex((line) => /^#+\s+acceptance criteria\b/i.test(line));
-  const section = heading === -1 ? lines : lines.slice(heading + 1);
-  const end = heading === -1 ? -1 : section.findIndex((line) => /^#+\s/.test(line));
-  const criteria: string[][] = [];
+const ACCEPTANCE = /^#+\s+acceptance criteria\b/i;
+const AFTER_MERGE = /^#+\s+after merge\b/i;
+const HEADING = /^#+\s/;
+const CHECKBOX = /^[-*]\s+\[[ xX]\]\s+(.*)$/;
+const LIST_ITEM = /^(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.*)$/;
+
+/** The lines under the first heading `heading` matches, up to the next heading; null where it has none. */
+function sectionOf(lines: ReadonlyArray<string>, heading: RegExp): ReadonlyArray<string> | null {
+  const at = lines.findIndex((line) => heading.test(line));
+  if (at === -1) return null;
+  const rest = lines.slice(at + 1);
+  const end = rest.findIndex((line) => HEADING.test(line));
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+/** Each top-level item `item` matches, with its wrapped lines. A nested list and fenced code are not. */
+function itemsIn(lines: ReadonlyArray<string>, item: RegExp): string[] {
+  const items: string[][] = [];
   let open: string[] | null = null;
   let fenced = false;
-  for (const line of end === -1 ? section : section.slice(0, end)) {
+  for (const line of lines) {
     if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
-    const box = fenced ? null : /^[-*]\s+\[[ xX]\]\s+(.*)$/.exec(line);
-    if (box) {
-      open = [box[1]!.trim()];
-      criteria.push(open);
+    const found = fenced ? null : item.exec(line);
+    if (found) {
+      open = [found[1]!.trim()];
+      items.push(open);
     } else if (
       !fenced &&
       open !== null &&
@@ -49,7 +57,27 @@ export function criteriaIn(text: string): string[] {
       open.push(line.trim());
     else open = null;
   }
-  return criteria.map((parts) => parts.join(" "));
+  return items.map((parts) => parts.join(" "));
+}
+
+/**
+ * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
+ * Acceptance criteria heading where it has one, and never under `## After merge`. A nested
+ * list and fenced code are not.
+ */
+export function criteriaIn(text: string): string[] {
+  const lines = text.split("\n");
+  const section = sectionOf(lines, ACCEPTANCE);
+  if (section !== null) return itemsIn(section, CHECKBOX);
+  const afterMerge = sectionOf(lines, AFTER_MERGE);
+  if (afterMerge === null) return itemsIn(lines, CHECKBOX);
+  const at = lines.findIndex((line) => AFTER_MERGE.test(line));
+  return itemsIn([...lines.slice(0, at), ...lines.slice(at + 1 + afterMerge.length)], CHECKBOX);
+}
+
+/** What only CI, a merge or a deploy can show: the items under a ticket's `## After merge`. */
+export function afterMergeIn(text: string): string[] {
+  return itemsIn(sectionOf(text.split("\n"), AFTER_MERGE) ?? [], LIST_ITEM);
 }
 
 /**

@@ -90,7 +90,13 @@ the work itself. Nobody is asked for one ([the full order](cli.md#start-a-run)).
 **What happens:** one implementer agent builds, a commit per ticket. It reviews what it
 built with the same pass `review` runs — one complete review — and loops on the findings for
 at most four review and fix rounds. Every commit is pushed, so the reviewers read the change
-rather than the state before it. The merge request is opened or updated last, and not at
+rather than the state before it. Before any reviewer sees a ticket, each of its acceptance
+criteria needs an answer, and one left unanswered or not met goes back to the builder. The
+criteria are read from the ticket again before each hand-back, so a ticket the planner
+amended is judged as it reads now. A ticket's `## After merge` outcomes are not criteria:
+the merge request names them under **Not settled by the run**
+([ADR-draft-a-criterion-is-what-the-run-can-show-before-its-merge-request](adr/draft-a-criterion-is-what-the-run-can-show-before-its-merge-request.md)).
+The merge request is opened or updated last, and not at
 all only where there is no GitLab to open one on. Missing evidence does not keep it
 closed: an opened merge request is not a gate that passed, and what is unproved is
 written into it (see **Ends:**).

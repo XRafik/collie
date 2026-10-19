@@ -2420,6 +2420,182 @@ scenario(
   120_000,
 );
 
+const AMENDED = "**Named.** Each one is named in the audit log.";
+
+scenario(
+  "a criterion amended while its ticket is being built is handed back as it reads now",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-amended", ["unit"]);
+        yield* rig.queueOutputs([
+          null,
+          { ...BUILT, criteria: [{ criterion: AMENDED, met: "src/audit.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-amended", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-amended`;
+        yield* until(
+          () =>
+            fs.exists(`${agents}/01-first.md.prompt.md`).pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace("named in the log", "named in the audit log"),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.json`,
+          asJson({
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "test/count.test.ts",
+              },
+            ],
+          }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const back = yield* asked("r-amended", "01-first.md.criteria-1");
+        expect(back).toContain(`- ${AMENDED}`);
+        expect(back).toContain(`acceptance criterion not answered: ${AMENDED}`);
+        expect(back).not.toContain("named in the log");
+        expect(yield* asked("r-amended", "review-1")).toContain(`- ${AMENDED}\n  → src/audit.ts`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "an answer to the old wording of a criterion amended during a hand-back is handed back as unanswered",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-old-words", ["unit"]);
+        yield* rig.queueOutputs([
+          {
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "test/count.test.ts",
+              },
+            ],
+          },
+          null,
+          { ...BUILT, criteria: [{ criterion: AMENDED, met: "src/audit.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-old-words", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-old-words`;
+        yield* until(
+          () =>
+            fs
+              .exists(`${agents}/01-first.md.criteria-1.prompt.md`)
+              .pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace("named in the log", "named in the audit log"),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.criteria-1.json`,
+          asJson({
+            ...BUILT,
+            criteria: [
+              { criterion: "**Named.** Each one is named in the log.", met: "src/log.ts" },
+            ],
+          }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const again = yield* asked("r-old-words", "01-first.md.criteria-2");
+        expect(again).toContain(`acceptance criterion not answered: ${AMENDED}`);
+        expect(again).not.toContain("named in the log");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a ticket's after-merge outcomes are not criteria, and the merge request names them as unsettled",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          {
+            file: "01-first.md",
+            title: "the first one",
+            checks: "unit",
+            body: [
+              "",
+              "## After merge",
+              "",
+              "- The nightly deploy counts each registry once.",
+              "- [ ] The dashboard shows it.",
+            ].join("\n"),
+          },
+        ]);
+        yield* approve("r-after-merge", ["unit"]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-after-merge",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* fs.exists(`${dir}/agents/r-after-merge/build.criteria-1.prompt.md`)).toBe(
+          false,
+        );
+        const opening = yield* asked("r-after-merge", "mr");
+        expect(opening).toContain(
+          "- 01-first.md: after merge: The nightly deploy counts each registry once.",
+        );
+        expect(opening).toContain("- 01-first.md: after merge: The dashboard shows it.");
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "the criteria in a work source given as words are answered as a ticket's are",
   () =>
