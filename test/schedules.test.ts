@@ -89,6 +89,7 @@ test(
           const runs = yield* scheduled(world, "hello-often");
           expect(new Set(runs.map((one) => one.occurrence)).size).toBe(runs.length);
 
+          // A listing says `run` only once that Run has ended; until then, `waiting-for-run`.
           const list = yield* until(
             () => listed(world),
             (now) => ["run", "refused"].includes(now.schedules[0]?.last?.outcome.kind ?? ""),
