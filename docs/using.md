@@ -1573,7 +1573,10 @@ the window. Escape typed in a field, such as the Log search, stays with the fiel
 
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the
 details carry, and lists the tickets, each expanding
-in place, read from the host when first opened; a link from one plan file to another opens
+in place, read from the host when first opened. A ticket is ticked when every checkbox in
+it is checked, or when a succeeded Run built from that plan finished it: its slice landed, a
+step was named after it, or a whole-plan build of its repository finished after it was written. A failed or stopped
+Run ticks nothing. A link from one plan file to another opens
 that file at the top of the tab. **Review** renders the review, read whole the same way, and lists its findings; a
 `file:line` in a finding or anywhere in rendered markdown opens
 **Diff** at that line, or a read-only view of the file from the Run's checkout where no

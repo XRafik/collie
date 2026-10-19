@@ -24,11 +24,13 @@ import { claudeTrust } from "./trust";
 import { isYamlMap, type YamlMap, type YamlValue } from "./yaml";
 import { NO_OUTCOME, type RunRow } from "./workspace";
 import { latest, readDispositions } from "./disposition";
-import { runAgents } from "./launches";
+import { readLaunches, runAgents } from "./launches";
 import { metricsOf, readMetrics } from "./metrics";
 import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } from "./board-model";
-import { newest, readCards } from "./cards";
-import { diffOf, planDirOf } from "./run-detail";
+import { newest, readCards, readCheckpoints } from "./cards";
+import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
+import { orderedTickets, REPO_LINE } from "./plan";
+import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
 
@@ -217,7 +219,11 @@ export function planTicket(file: string, text: string): PlanTicket {
  * The spec is capped and paged exactly like the review: an agent wrote it, so it can be
  * any size at all, and `m` is how the rest of it is read.
  */
-const buildPlan = Effect.fn("Views.buildPlan")(function* (run: RunFacts, cap: number) {
+const buildPlan = Effect.fn("Views.buildPlan")(function* (
+  run: RunFacts,
+  cap: number,
+  finished: ReadonlySet<string>,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const dir = yield* planDirOf(run);
@@ -235,8 +241,10 @@ const buildPlan = Effect.fn("Views.buildPlan")(function* (run: RunFacts, cap: nu
   for (const file of files) {
     // Capped like everything else the panel reads: a ticket is prose an agent wrote.
     const text = yield* capped(path.join(issues, file), OUTPUT_CAP);
+    const ticket = planTicket(file, text?.text ?? "");
     tickets.push({
-      ...planTicket(file, text?.text ?? ""),
+      ...ticket,
+      done: ticket.done || finished.has(file),
       stamp: yield* stampOf(path.join(issues, file)),
     });
   }
@@ -248,6 +256,95 @@ const stampOf = (file: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(file)).pipe(
     Effect.map((info) => `${info.size}:${Option.getOrUndefined(info.mtime)?.getTime() ?? ""}`),
     Effect.orElseSucceed(() => ""),
+  );
+
+/** The tickets of this Run's plan that a succeeded Run built from it finished. */
+const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
+  run: RunFacts,
+  runs: ReadonlyArray<RunFacts>,
+  stateDir: string,
+) {
+  const path = yield* Path.Path;
+  const finished = new Set<string>();
+  const dir = yield* planDirOf(run);
+  if (dir === null) return finished;
+  const issues = path.join(dir, "issues");
+  const isPlan = (other: string | null | undefined) =>
+    other != null && path.resolve(other) === path.resolve(dir);
+  let tickets: Array<{ file: string; text: string | null }> | undefined;
+  for (const one of runs) {
+    if (one.state !== "succeeded") continue;
+    const mayShare =
+      isPlan(path.join(one.dir, PLAN_DIR)) || isPlan(workSourceOf(one.settled)?.value);
+    if (!mayShare || !isPlan(yield* planDirOf(one).pipe(Effect.orElseSucceed(() => null))))
+      continue;
+    for (const { checkpoint } of yield* readCheckpoints(one.dir))
+      if (checkpoint.status === "done") finished.add(checkpoint.ticket);
+    const launches = yield* readLaunches(stateDir, one.id);
+    if (launches.length === 0) continue;
+    tickets ??= yield* ticketRepoLines(issues);
+    const known = one.repo ? tickets.filter((t) => t.text !== null) : tickets;
+    const mine = orderedTickets(
+      known.map((t) => ({ file: t.file, text: t.text ?? "" })),
+      one.repo ?? undefined,
+    ).map((t) => t.file);
+    for (const launch of launches) {
+      const output = yield* writtenAt(launch.output);
+      if (output === undefined) continue;
+      if (mine.includes(launch.operation)) finished.add(launch.operation);
+      if (launch.operation !== "build") continue;
+      for (const file of mine) {
+        const written = yield* writtenAt(path.join(issues, file));
+        if (written !== undefined && written <= output) finished.add(file);
+      }
+    }
+  }
+  return finished;
+});
+
+// ponytail: never evicted; a few bytes per ticket file ever seen.
+const repoLines = new Map<string, { readonly stamp: string; readonly line: string | null }>();
+
+/** How far into a ticket its `**Repo:**` line is looked for: past the panel's cap, but bounded. */
+const REPO_SCAN_CAP = 1024 * 1024;
+
+/**
+ * A ticket's `**Repo:**` match, or null where the part of the file not read could change it:
+ * an empty value can still run on to a later line.
+ */
+function repoLineIn(text: string, truncated: boolean): string | null {
+  const whole = truncated ? text.slice(0, text.lastIndexOf("\n") + 1) : text;
+  const found = REPO_LINE.exec(whole);
+  if (!truncated) return found?.[0] ?? "";
+  return found && found[1] !== "" ? found[0] : null;
+}
+
+/** Each ticket's `**Repo:**` match, null where it is unknown, read only when the ticket has changed. */
+const ticketRepoLines = Effect.fn("Views.ticketRepoLines")(function* (issues: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => [])))
+    .filter((name) => name.endsWith(".md"))
+    .sort();
+  const tickets: Array<{ file: string; text: string | null }> = [];
+  for (const file of files) {
+    const at = path.join(issues, file);
+    const stamp = yield* stampOf(at);
+    let kept = repoLines.get(at);
+    if (kept?.stamp !== stamp) {
+      const read = yield* capped(at, REPO_SCAN_CAP);
+      kept = { stamp, line: read === null ? "" : repoLineIn(read.text, read.truncated) };
+      repoLines.set(at, kept);
+    }
+    tickets.push({ file, text: kept.line });
+  }
+  return tickets;
+});
+
+const writtenAt = (file: string) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(file)).pipe(
+    Effect.map((info) => Option.getOrUndefined(info.mtime)?.getTime()),
+    Effect.orElseSucceed(() => undefined),
   );
 
 /** Every plan file's stamp, which changes whenever one of them is written. */
@@ -277,13 +374,16 @@ const plannedFor = Effect.fn("Views.plannedFor")(function* (
   run: RunFacts,
   cap: number,
   plans: PlanCache | undefined,
+  runs: ReadonlyArray<RunFacts>,
+  stateDir: string,
 ) {
-  if (!plans || !settled(run)) return yield* buildPlan(run, cap);
+  const finished = yield* finishedTickets(run, runs, stateDir);
+  if (!plans || !settled(run)) return yield* buildPlan(run, cap, finished);
   const key = `${run.id}:${cap}`;
-  const stamps = yield* planStamps(run);
+  const stamps = `${yield* planStamps(run)}\nfinished=${[...finished].sort().join(",")}`;
   const kept = plans.get(key);
   if (kept?.stamps === stamps) return kept.plan;
-  const plan = yield* buildPlan(run, cap);
+  const plan = yield* buildPlan(run, cap, finished);
   plans.set(key, { stamps, plan });
   return plan;
 });
@@ -382,7 +482,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
       Effect.catch(() => Effect.succeed(null)),
     ),
     review,
-    plan: yield* plannedFor(run, cap, opts.plans),
+    plan: yield* plannedFor(run, cap, opts.plans, opts.runs ?? [run], opts.env.stateDir),
     outputs: [],
     attention,
     outcome: {
