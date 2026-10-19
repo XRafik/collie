@@ -25,6 +25,9 @@ const jump = (file: string, line: number | null) => {
 };
 provide("jumpTo", jump);
 
+const scroller = ref<HTMLElement | null>(null);
+provide("recordScroller", scroller);
+
 const tabs = computed(() => {
   const shown = detail.value;
   return [
@@ -87,6 +90,7 @@ const locationOf = (file: string, line: number | null) =>
       </p>
     </PageHeader>
     <div
+      ref="scroller"
       class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4"
       :class="{ '[scrollbar-gutter:stable]': tab !== 'terminal' }"
     >
@@ -186,6 +190,7 @@ const locationOf = (file: string, line: number | null) =>
             :installation="placed.installation"
             :run-id="detail.id"
             :target="target"
+            :shown="tab === 'diff'"
           />
         </template>
         <FactsTab

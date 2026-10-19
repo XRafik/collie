@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import type { TreeItem } from "@nuxt/ui";
 import { Semaphore } from "effect";
+import type { Ref } from "vue";
 import type { DiffFile, RunDiff } from "../../../../src/board-model";
+import { inField } from "../../../src/shared/board-clicks";
+import {
+  activeFile,
+  type DiffTreeNode,
+  diffTree,
+  foldersOn,
+  READING_LINE,
+  reachBy,
+} from "../../../src/shared/diff-view";
 
 /** Where a finding points: a file, and a line in it as it is now. */
 export interface DiffTarget {
@@ -14,6 +24,8 @@ const props = defineProps<{
   installation: string;
   runId: string;
   target: DiffTarget | null;
+  /** Whether Diff is the record's tab now; nothing is measured while it is not. */
+  shown: boolean;
 }>();
 
 // Each diff read has the host run git again, so this record's are four at a time.
@@ -29,12 +41,21 @@ const isOpen = (file: DiffFile) =>
   (file.added !== null && file.added + (file.removed ?? 0) <= BIG_FILE_LINES);
 
 const sections = ref<HTMLElement | null>(null);
-const show = async (path: string) => {
+const scrollIntoDiff = async (path: string) => {
   opened.value.set(path, true);
   await nextTick();
   sections.value
     ?.querySelector(`[data-testid="diff-${CSS.escape(path)}"]`)
     ?.scrollIntoView({ block: "start" });
+};
+
+/** The file being read, and the one a click or a finding's jump holds until the human scrolls. */
+const active = ref<string | null>(null);
+const held = ref<string | null>(null);
+const show = (path: string) => {
+  held.value = path;
+  active.value = path;
+  void scrollIntoDiff(path);
 };
 
 /** The finding's file when it is not in the diff, shown read-only above it. */
@@ -45,44 +66,128 @@ watch(
     if (target === null) return;
     const inDiff = props.diff.files.some((file) => file.path === target.file);
     source.value = inDiff ? null : target;
-    if (inDiff) opened.value.set(target.file, true);
+    if (!inDiff) return;
+    opened.value.set(target.file, true);
+    held.value = target.file;
+    active.value = target.file;
   },
   { immediate: true },
 );
 
-/** The changed files as folders and files, each folder open. */
-const tree = computed(() => {
-  const root: TreeItem[] = [];
-  for (const file of props.diff.files) {
-    const parts = file.path.split("/");
-    let level = root;
-    parts.forEach((part, at) => {
-      if (at === parts.length - 1) {
-        level.push({
-          label: part,
-          icon: "i-lucide-file",
-          path: file.path,
-          onSelect: () => void show(file.path),
-        });
-        return;
-      }
-      const path = `${parts.slice(0, at + 1).join("/")}/`;
-      let folder = level.find((item) => item.path === path);
-      if (folder === undefined) {
-        folder = {
-          label: part,
-          icon: "i-lucide-folder",
-          path,
-          defaultExpanded: true,
-          children: [],
-        };
-        level.push(folder);
-      }
-      level = folder.children!;
-    });
-  }
-  return root;
+const drawn = computed(() => diffTree(props.diff.files));
+
+const items = computed(() => {
+  const byKey = new Map<string, TreeItem>();
+  const toItem = (node: DiffTreeNode): TreeItem => {
+    const item: TreeItem =
+      node.kind === "folder"
+        ? {
+            label: node.label,
+            icon: "i-lucide-folder",
+            path: node.key,
+            children: node.children.map(toItem),
+          }
+        : {
+            label: node.label,
+            icon: "i-lucide-file",
+            path: node.key,
+            onSelect: () => show(node.key),
+          };
+    byKey.set(node.key, item);
+    return item;
+  };
+  return { tree: drawn.value.tree.map(toItem), byKey };
 });
+const selected = computed(() =>
+  active.value === null ? undefined : items.value.byKey.get(active.value),
+);
+
+const folders = computed(() => [
+  ...new Set(drawn.value.files.flatMap((file) => foldersOn(file.path))),
+]);
+const closed = ref(new Set<string>());
+const expanded = computed(() => folders.value.filter((folder) => !closed.value.has(folder)));
+const setExpanded = (keys: ReadonlyArray<string>) =>
+  (closed.value = new Set(folders.value.filter((folder) => !keys.includes(folder))));
+
+const scroller = inject<Ref<HTMLElement | null>>("recordScroller", ref(null));
+const treeBox = ref<HTMLElement | null>(null);
+const visibleHeight = ref<number | null>(null);
+
+const measure = () => {
+  const box = scroller.value;
+  const column = sections.value;
+  if (!props.shown || box === null || column === null) return;
+  if (held.value !== null && !drawn.value.files.some(({ path }) => path === held.value)) {
+    held.value = null;
+  }
+  visibleHeight.value = box.clientHeight;
+  const visibleTop = box.getBoundingClientRect().top;
+  const measured = [...column.children].flatMap((section) => {
+    const path = section.getAttribute("data-path");
+    if (path === null) return [];
+    const { top, bottom } = section.getBoundingClientRect();
+    return [{ path, top: top - visibleTop, bottom: bottom - visibleTop }];
+  });
+  active.value = activeFile({
+    sections: measured,
+    readingLine: READING_LINE,
+    atEnd: box.scrollTop + box.clientHeight >= box.scrollHeight - 1,
+    held: held.value,
+  });
+};
+
+const SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+watch(
+  [() => props.shown, scroller, sections],
+  ([shown, box, column], _, onCleanup) => {
+    if (!shown || box === null || column === null) return;
+    const release = () => (held.value = null);
+    const releaseOnKey = (event: KeyboardEvent) => {
+      const typedIn = event.composedPath()[0];
+      if (SCROLL_KEYS.has(event.key) && !(typedIn instanceof Element && inField(typedIn)))
+        release();
+    };
+    const releaseOnScrollbar = (event: PointerEvent) => event.target === box && release();
+    const resized = new ResizeObserver(measure);
+    resized.observe(box);
+    resized.observe(column);
+    box.addEventListener("scroll", measure, { passive: true });
+    box.addEventListener("wheel", release, { passive: true });
+    box.addEventListener("touchmove", release, { passive: true });
+    box.addEventListener("keydown", releaseOnKey);
+    box.addEventListener("pointerdown", releaseOnScrollbar);
+    measure();
+    onCleanup(() => {
+      resized.disconnect();
+      box.removeEventListener("scroll", measure);
+      box.removeEventListener("wheel", release);
+      box.removeEventListener("touchmove", release);
+      box.removeEventListener("keydown", releaseOnKey);
+      box.removeEventListener("pointerdown", releaseOnScrollbar);
+    });
+  },
+  { immediate: true, flush: "post" },
+);
+watch(() => drawn.value.files, measure, { flush: "post" });
+
+watch(
+  [active, () => props.shown],
+  async ([path, shown]) => {
+    if (path === null) return;
+    const hiding = foldersOn(path).filter((folder) => closed.value.has(folder));
+    if (hiding.length > 0) {
+      closed.value = new Set([...closed.value].filter((folder) => !hiding.includes(folder)));
+    }
+    if (!shown) return;
+    await nextTick();
+    const box = treeBox.value;
+    const row = box?.querySelector("[data-selected]");
+    if (!box || !row) return;
+    box.scrollTop += reachBy(box.getBoundingClientRect(), row.getBoundingClientRect());
+  },
+  { flush: "post" },
+);
 </script>
 
 <template>
@@ -109,16 +214,25 @@ const tree = computed(() => {
     />
     <p v-if="diff.files.length === 0" class="text-sm text-muted">Nothing has changed yet.</p>
     <div v-else class="flex items-start gap-3">
-      <UTree
-        :items="tree"
-        :get-key="(item: TreeItem) => item.path"
-        class="w-56 shrink-0"
-        data-testid="diff-tree"
-      />
+      <div
+        ref="treeBox"
+        class="sticky top-0 w-56 shrink-0 overflow-y-auto"
+        :style="visibleHeight === null ? undefined : { maxHeight: `${visibleHeight}px` }"
+      >
+        <UTree
+          :items="items.tree"
+          :get-key="(item: TreeItem) => item.path"
+          :model-value="selected"
+          :expanded="expanded"
+          data-testid="diff-tree"
+          @update:expanded="setExpanded"
+        />
+      </div>
       <div ref="sections" class="flex min-w-0 flex-1 flex-col gap-3">
         <DiffFile
-          v-for="file in diff.files"
+          v-for="file in drawn.files"
           :key="file.path"
+          :data-path="file.path"
           :file="file"
           :installation="installation"
           :run-id="runId"
