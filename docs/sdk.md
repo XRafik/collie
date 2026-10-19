@@ -322,8 +322,9 @@ const verdict =
   only while herdr reports it `idle`, `done` or `unknown`, or cannot say. While it is
   `working` or `blocked` the clock stops, so a long suite is never parked for being slow.
   It stops too while a question the agent asked is open on the Run
-  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and `collie run resume`
-  collects what it writes late.
+  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and Collie
+  keeps collecting: an Output written later clears the park and the step goes on, with no
+  resume. A stop still ends the wait.
 - **`cwd` is where the host placed the Run** unless you name another checkout.
 - **`role`** defaults to the operation's name. The role is injected as a persona, and where
   `personas/<role>.md` exists in the project, on this machine or in the installation, that

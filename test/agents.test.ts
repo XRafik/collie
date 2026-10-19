@@ -51,6 +51,7 @@ import {
 import { readMetrics } from "../src/metrics";
 import { Launched, runAgents } from "../src/launches";
 import { Collected } from "../src/agents";
+import { Collecting } from "../src/collecting";
 import type { UsageReading } from "../src/usage-model";
 import { readCards } from "../src/cards";
 import { readDrift } from "../src/drift";
@@ -208,7 +209,7 @@ const session = <A, E>(
   run: Effect.Effect<
     A,
     E,
-    WorkflowEngine.WorkflowEngine | Agents | Store | BunServices.BunServices
+    WorkflowEngine.WorkflowEngine | Agents | Collecting | Store | BunServices.BunServices
   >,
   over?: Partial<AgentHost>,
 ) =>
@@ -826,19 +827,127 @@ test(
   120_000,
 );
 
+/** `r1`'s agent past its budget: the Run parked, and its work still out, not suspended. */
+const pastTheBudget = Effect.gen(function* () {
+  yield* until(parked("r1"));
+  expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
+    `has written nothing to ${outputPath("r1")} after 0 minutes idle. Collie keeps collecting it;`,
+  );
+  expect(yield* read(controlPath(dir, PARKED, "r1"))).not.toContain("resume");
+  yield* spend(5_000);
+  expect(yield* suspended("r1")).toBe(false);
+});
+
 test(
-  "an agent that outlives its budget parks the Run, and the resume reads what it wrote late",
+  "an agent idle past its budget parks the Run and is still collected, so its late Output needs no resume",
   () =>
     runEffect(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         // Nothing within the budget: a long build still working, not one that did nothing.
         yield* rig.queueOutputs([null]);
-        yield* interrupted("r1", suspended("r1"), { collectMs: 400 });
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* pastTheBudget;
+            yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"late"}`);
+            return yield* Fiber.join(fiber);
+          }),
+          { collectMs: 400 },
+        );
+        expect(result._tag === "Success" && result.success.note).toBe("late");
+        expect(yield* fs.exists(controlPath(dir, PARKED, "r1"))).toBe(false);
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a resume sent while the Run is collected past its budget starts no second delivery or collection",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null]);
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* pastTheBudget;
+            const engine = yield* WorkflowEngine.WorkflowEngine;
+            yield* engine.resume(
+              work,
+              yield* work.executionId({ runId: "r1", input: { skip: false } }),
+            );
+            yield* spend(5_000);
+            yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"late"}`);
+            return yield* Fiber.join(fiber);
+          }),
+          { collectMs: 400 },
+        );
+        expect(result._tag === "Success" && result.success.note).toBe("late");
+        expect(sent(yield* rig.calls(), "Your task for this step")).toBe(1);
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "an agent collected past its budget is still told when its background verify ends",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* pastTheBudget;
+            expect(yield* (yield* Collecting).has("r1", agentFor("r1"))).toBe(true);
+          }),
+          { collectMs: 400 },
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a stop while the Run is collected past its budget ends the wait",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null]);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* pastTheBudget;
+            yield* fs.writeFileString(controlPath(dir, STOP, "r1"), "").pipe(Effect.orDie);
+            yield* until(suspended("r1"));
+            expect(yield* (yield* Collecting).has("r1", agentFor("r1"))).toBe(false);
+          }),
+          { collectMs: 400 },
+        );
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a restart while the Run is collected past its budget reattaches and returns the late Output",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null]);
+        yield* interrupted("r1", parked("r1"), { collectMs: 400 });
+        expect(yield* suspended("r1").pipe(session)).toBe(false);
 
         yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"late"}`);
-        const result = yield* releasedInto("r1");
+        const result = yield* session(started("r1"), { collectMs: 400 });
         expect(result._tag === "Success" && result.success.note).toBe("late");
+        expect(yield* fs.exists(controlPath(dir, PARKED, "r1"))).toBe(false);
         expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
       }),
     ),
@@ -913,7 +1022,7 @@ for (const [what, herdr] of [
             collectMs: 120_000,
           });
           expect(yield* read(controlPath(dir, PARKED, "r1"))).toContain(
-            `has written nothing to ${outputPath("r1")} after 2 minutes idle. If it is still working,`,
+            `has written nothing to ${outputPath("r1")} after 2 minutes idle. Collie keeps collecting it;`,
           );
         }),
       ),
@@ -1584,6 +1693,36 @@ test("a waiting agent switches when a fallback is configured after it ran out", 
       expect(harnessesStarted(calls)).toEqual(["claude", "codex"]);
       expect((yield* runAgents(dir, "r1"))[1]?.model).toBe("gpt-6.1-sol");
     }).pipe(Effect.scoped),
+  ));
+
+test("an agent that ran out and stays idle past its budget parks the Run, and one with room takes the work with no resume", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([null, { verdict: "clean", note: "room came" }]);
+      let fallbacks: ReadonlyArray<string> = [];
+      const result = yield* session(
+        Effect.gen(function* () {
+          yield* Effect.forkChild(runsOut(agentFor("r1")));
+          const fiber = yield* Effect.forkChild(started("r1"));
+          yield* until(parkedSays("before writing"));
+          const why = yield* read(controlPath(dir, PARKED, "r1"));
+          expect(why).toContain("ran out (rate_limit) before writing");
+          expect(why).toEndWith("Collie keeps collecting it.");
+          expect(why).not.toContain("Resume");
+          yield* spend(5_000);
+          expect(yield* suspended("r1")).toBe(false);
+          fallbacks = ["codex/gpt-6.1-sol"];
+          yield* TestClock.adjust("1 minute");
+          return yield* Fiber.join(fiber);
+        }),
+        { fallbacks: Effect.sync(() => fallbacks), collectMs: 2_000 },
+      );
+      expect(result._tag === "Success" && result.success.note).toBe("room came");
+      expect(harnessesStarted(yield* rig.calls())).toEqual(["claude", "codex"]);
+      expect(yield* (yield* FileSystem.FileSystem).exists(controlPath(dir, PARKED, "r1"))).toBe(
+        false,
+      );
+    }),
   ));
 
 test("a replay rechecks a fallback after the earlier host recorded that nothing had room", () =>
