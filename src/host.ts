@@ -243,6 +243,7 @@ import {
   currentPid,
   ensureLockDir,
   holderLives,
+  hostLockOf,
   lockHolder,
   releaseOwnLock,
   signalProcess,
@@ -254,7 +255,7 @@ import {
 export const BUILD: string = manifest.version;
 
 export const socketOf = (dir: string) => `${dir}/host.sock`;
-const lockOf = (dir: string) => `${dir}/host.lock`;
+const lockOf = hostLockOf;
 const logOf = (dir: string) => `${dir}/host.log`;
 /** What a spawned host writes to its stdout and stderr. */
 export const outputOf = (dir: string) => `${dir}/host.out`;
@@ -1016,6 +1017,20 @@ const sideJobsLayer = (panels: MrPanels) =>
       );
     }),
   );
+
+/** Each agent's question no step is reading, put on its Run whenever anything may have moved. */
+const questionsLayer = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const { changed } = yield* SharedBoard;
+    const registry = yield* Registry;
+    const hosted = yield* Effect.context<HostServices>();
+    yield* Effect.forkScoped(
+      changed.pipe(
+        Stream.runForEach(() => registry.tendQuestions.pipe(Effect.provideContext(hosted))),
+      ),
+    );
+  }),
+);
 
 /** How many sweeps a front door asked for that a host keeps a record of. */
 const CLEANUP_TRAIL = 50;
@@ -2630,6 +2645,7 @@ const own = (dir: string) =>
             handlers(dir, installation, development, declared, peers),
             frontDoorHandlers(dir, installation, development, panels, declared, stamp),
             sideJobsLayer(panels),
+            questionsLayer,
             slowRpcsLayer,
             Layer.effectDiscard(
               Effect.gen(function* () {

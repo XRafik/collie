@@ -34,9 +34,13 @@ export interface Asked {
 export function steerTarget<C extends Candidate>(
   launches: ReadonlyArray<C>,
   asked: Asked,
+  launchedAs: (one: C, name: string) => boolean = () => false,
 ): C | undefined {
   const { agent, operation, to } = asked;
-  if (agent !== undefined) return launches.findLast((one) => one.agent === agent);
+  const named = (one: C, name: string) =>
+    one.operation === name || one.agent === name || launchedAs(one, name);
+  if (agent !== undefined)
+    return launches.findLast((one) => one.agent === agent || launchedAs(one, agent));
   if (operation !== undefined) return launches.findLast((one) => named(one, operation));
   const roles = to === undefined ? undefined : rolesFor(to);
   if (to !== undefined && roles === undefined) return launches.findLast((one) => named(one, to));
@@ -48,5 +52,3 @@ export function steerTarget<C extends Candidate>(
   if (active !== undefined || roles !== undefined) return active ?? among.at(-1);
   return among.findLast((one) => BUILDER_ROLES.includes(one.role)) ?? launches.at(-1);
 }
-
-const named = (one: Candidate, name: string) => one.operation === name || one.agent === name;
