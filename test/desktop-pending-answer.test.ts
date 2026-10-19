@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Question } from "../src/board-model";
+import { applyItem, EMPTY_FLOCK, type FlockItem, flockCards } from "../desktop/src/shared/flock";
 import {
   type Answering,
   answerKey,
@@ -19,6 +20,7 @@ import {
   sittingStarts,
   sittingView,
 } from "../desktop/src/shared/pending-answer";
+import { task } from "./support/task";
 
 const question = (id: string, run = "r-1"): Question => ({
   kind: "question",
@@ -45,9 +47,9 @@ const sending = (state: Answering, asked: Question, shown: string) => {
   const answer = sent(shown);
   return { state: answerSent(state, keyOf(asked), answer), answer };
 };
-/** The board as a card sees it: what it has open on Machine "vm". */
-const shownBy = (card: string, state: Answering, open: ReadonlyArray<Question>) =>
-  answersSettled(state, card, "vm", open);
+/** A board of one Task on Machine "vm", with `open` its open questions. */
+const shownBy = (state: Answering, open: ReadonlyArray<Question>) =>
+  answersSettled(state, [{ installation: "vm", task: { decision: null, questions: open } }]);
 
 const now = (open: ReadonlyArray<Question>, answering: Answering) => ({
   installation: "vm",
@@ -98,23 +100,70 @@ test("a try of an answer a newer one to the same question replaced changes nothi
 });
 
 test("an answer whose question left the board is dropped, and a late try of it changes nothing", () => {
-  const { state, answer } = sending(shownBy("card", nothingAnswered, [A, B]), A, "yes");
-  const settled = shownBy("card", state, [B]);
+  const { state, answer } = sending(shownBy(nothingAnswered, [A, B]), A, "yes");
+  const settled = shownBy(state, [B]);
   expect(settled.answers.has(keyOf(A))).toBe(false);
+  expect(settled.latest.has(keyOf(A))).toBe(false);
   expect(answerTried(settled, keyOf(A), answer, null)).toEqual(settled);
-  // Another card's question is not this card's to drop.
-  expect(shownBy("other", state, []).answers.has(keyOf(A))).toBe(true);
+  expect(answerTried(settled, keyOf(A), answer, true)).toEqual(settled);
+  expect(shownBy(settled, [B])).toBe(settled);
 });
 
-test("an answer is dropped when its question leaves the card, whichever Run asked it", () => {
-  // An older retry's question: the card's board lists the question, and later neither it nor its Run.
-  const retried = question("r", "r-old");
-  const typed = draftTyped(shownBy("card", nothingAnswered, [retried]), keyOf(retried), "half");
-  const { state, answer } = sending(typed, retried, "yes");
-  const settled = shownBy("card", state, []);
-  expect(settled.answers.has(keyOf(retried))).toBe(false);
-  expect(draftOf(settled, keyOf(retried))).toBe("");
-  expect(answerTried(settled, keyOf(retried), answer, true)).toEqual(settled);
+test("a question another Task or Machine still has open keeps what is held for it", () => {
+  const typed = draftTyped(
+    draftTyped(nothingAnswered, keyOf(A), "half"),
+    answerKey("vm-other", A.run, A.id),
+    "keep me",
+  );
+  const { state } = sending(typed, A, "yes");
+  const board = (installation: string, open: ReadonlyArray<Question>) => ({
+    installation,
+    task: { decision: null, questions: open },
+  });
+  const moved = answersSettled(state, [board("vm", []), board("vm", [A]), board("vm-other", [A])]);
+  expect(moved).toBe(state);
+  const elsewhere = answersSettled(state, [board("vm-other", [A])]);
+  expect(elsewhere.answers.has(keyOf(A))).toBe(false);
+  expect(draftOf(elsewhere, keyOf(A))).toBe("");
+  expect(draftOf(elsewhere, answerKey("vm-other", A.run, A.id))).toBe("keep me");
+});
+
+test("a Task that leaves its Machine's board, by a Snapshot without it or a Remove, drops its answers and drafts", () => {
+  const machine = { installation: "vm", profile: "remote", name: "vm-mk" };
+  const asked = question("scope");
+  const snapshot = (tasks: ReadonlyArray<ReturnType<typeof task>>, seq: number): FlockItem => ({
+    machine,
+    message: {
+      _tag: "Snapshot",
+      installation: "vm",
+      build: "0.1.0",
+      protocol: 1,
+      herds: [],
+      tasks,
+      seq,
+    },
+  });
+  const start = applyItem(
+    EMPTY_FLOCK,
+    snapshot([task({ id: "t-1", state: "blocked", decision: asked, questions: [asked] })], 1),
+  );
+  const settledOn = (state: Answering, flock: typeof start) => {
+    const board = flockCards(flock);
+    return answersSettled(state, board.tasks.map(board.placedOf));
+  };
+  const observed = settledOn(nothingAnswered, start);
+  const { state, answer } = sending(draftTyped(observed, keyOf(asked), "api"), asked, "api");
+  expect(settledOn(state, start)).toBe(state);
+  for (const gone of [
+    applyItem(start, snapshot([], 2)),
+    applyItem(start, { machine, message: { _tag: "Remove", seq: 2, id: "t-1" } }),
+  ]) {
+    const settled = settledOn(state, gone);
+    expect(settled.answers.size).toBe(0);
+    expect(settled.latest.size).toBe(0);
+    expect(settled.drafts.size).toBe(0);
+    expect(answerTried(settled, keyOf(asked), answer, null)).toBe(settled);
+  }
 });
 
 test("the card counts only questions with no answer in flight, and shows the first of those", () => {
@@ -223,13 +272,13 @@ test("an arrival leaves the dialog where it is while that question can still be 
 
 test("a question answered elsewhere stays, as no longer open; one this dialog answered still reads answered", () => {
   const confirmed = (() => {
-    const a = sending(shownBy("card", nothingAnswered, [A, B]), A, "yes");
+    const a = sending(shownBy(nothingAnswered, [A, B]), A, "yes");
     return answerTried(a.state, keyOf(A), a.answer, true);
   })();
   let sitting = sittingStarts(now([A, B], nothingAnswered));
   sitting = sittingAnswered(sitting, now([A, B], confirmed));
   // The board drops both: A because its answer landed, B because it was answered elsewhere.
-  const settled = shownBy("card", confirmed, []);
+  const settled = shownBy(confirmed, []);
   sitting = sittingSees(sitting, now([], settled));
   const shown = (k: number) =>
     sittingView(sittingMoved(sitting, k - 1 - sitting.cursor), now([], settled));
@@ -281,7 +330,7 @@ test("the sitting is done only once nothing is unanswered and nothing is still s
 });
 
 test("closed and reopened while an answer is sending, the dialog waits for it, and closes once it is confirmed", () => {
-  const a = sending(shownBy("card", nothingAnswered, [A, B]), A, "yes");
+  const a = sending(shownBy(nothingAnswered, [A, B]), A, "yes");
   // Reopened: A is still sending.
   let sitting = sittingStarts(now([A, B], a.state));
   expect(sittingView(sitting, now([A, B], a.state))).toMatchObject({ k: 2, question: B });
@@ -301,7 +350,7 @@ test("closed and reopened while an answer is sending, the dialog waits for it, a
     sittingView(sittingSees(sitting, now([A, B], aConfirmed)), now([A, B], aConfirmed)).done,
   ).toBe(true);
   // A leaving the board does too.
-  const aGone = shownBy("card", bConfirmed, [B]);
+  const aGone = shownBy(bConfirmed, [B]);
   expect(sittingView(sittingSees(sitting, now([B], aGone)), now([B], aGone)).done).toBe(true);
 });
 
@@ -326,7 +375,7 @@ test("closed and reopened while an answer is sending, its failure brings the reo
 
 test("a draft starts empty per question, is kept through a failure, and is dropped once confirmed or gone", () => {
   expect(draftOf(nothingAnswered, keyOf(A))).toBe("");
-  const shown = shownBy("card", nothingAnswered, [A, B]);
+  const shown = shownBy(nothingAnswered, [A, B]);
   const typed = draftTyped(draftTyped(shown, keyOf(A), "half"), keyOf(B), "other");
   expect(draftOf(typed, keyOf(A))).toBe("half");
   const a = sending(typed, A, "half");
@@ -334,8 +383,8 @@ test("a draft starts empty per question, is kept through a failure, and is dropp
   const confirmed = answerTried(a.state, keyOf(A), a.answer, true);
   expect(draftOf(confirmed, keyOf(A))).toBe("");
   expect(draftOf(confirmed, keyOf(B))).toBe("other");
-  expect(draftOf(shownBy("card", typed, [A]), keyOf(B))).toBe("");
-  expect(draftOf(shownBy("card", typed, [A]), keyOf(A))).toBe("half");
+  expect(draftOf(shownBy(typed, [A]), keyOf(B))).toBe("");
+  expect(draftOf(shownBy(typed, [A]), keyOf(A))).toBe("half");
 });
 
 test("a sitting's question is the one the board shows now, and N never shrinks", () => {

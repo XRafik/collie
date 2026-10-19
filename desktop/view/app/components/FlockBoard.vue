@@ -6,8 +6,21 @@ import type { Level } from "../../../src/shared/usage";
 import { updatesAtom } from "../flock";
 import tile from "../../../../assets/brand/logos/collie-tile-256.png";
 
-const { connecting, trouble, lost, notices, tasks, sections, header, waiting, placedBy, placedAt } =
-  useFlock();
+const {
+  connecting,
+  trouble,
+  lost,
+  notices,
+  tasks,
+  everyTask,
+  sections,
+  header,
+  waiting,
+  placedBy,
+  placedAt,
+} = useFlock();
+const answering = useAnswering();
+watch(everyTask, answering.settle, { immediate: true });
 const { summary } = useInSync();
 const usage = useUsage();
 usage.keepFresh();

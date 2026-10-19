@@ -18,15 +18,12 @@ export interface Answering {
   /** The newest send per question. */
   readonly latest: ReadonlyMap<string, number>;
   readonly drafts: ReadonlyMap<string, string>;
-  /** The card that last showed each question open, which drops it once it leaves. */
-  readonly shownOn: ReadonlyMap<string, string>;
 }
 
 export const nothingAnswered: Answering = {
   answers: new Map(),
   latest: new Map(),
   drafts: new Map(),
-  shownOn: new Map(),
 };
 
 export const answerKey = (installation: string, runId: string, questionId: string) =>
@@ -73,36 +70,31 @@ export const draftTyped = (state: Answering, key: string, text: string): Answeri
   drafts: withOne(state.drafts, key, text),
 });
 
-/** Notes what `card` shows open, and drops what is held for its questions that left it. */
+/** Drops what is held for each question no Task on the Flock's board has open. */
 export const answersSettled = (
   state: Answering,
-  card: string,
-  installation: string,
-  open: ReadonlyArray<Question>,
+  board: ReadonlyArray<{ readonly installation: string; readonly task: QuestionsOf }>,
 ): Answering => {
-  const kept = new Set(open.map((asked) => answerKey(installation, asked.run, asked.id)));
-  const gone = (key: string) => !kept.has(key) && state.shownOn.get(key) === card;
-  const stays = [...state.shownOn].filter(([key, on]) => kept.has(key) || on !== card);
-  const shownOn = new Map([...stays, ...[...kept].map((key) => [key, card] as const)]);
-  if (
-    shownOn.size === state.shownOn.size &&
-    [...shownOn].every(([key, on]) => state.shownOn.get(key) === on)
-  )
-    return state;
+  const open = new Set(
+    board.flatMap(({ installation, task }) =>
+      openQuestions(task).map((asked) => answerKey(installation, asked.run, asked.id)),
+    ),
+  );
+  const held = [...state.answers.keys(), ...state.latest.keys(), ...state.drafts.keys()];
+  if (held.every((key) => open.has(key))) return state;
   const settle = <A>(map: ReadonlyMap<string, A>) =>
-    new Map([...map].filter(([key]) => !gone(key)));
+    new Map([...map].filter(([key]) => open.has(key)));
   return {
     answers: settle(state.answers),
     latest: settle(state.latest),
     drafts: settle(state.drafts),
-    shownOn,
   };
 };
 
+type QuestionsOf = Pick<TaskView, "decision"> & { readonly questions?: ReadonlyArray<Question> };
+
 /** A card's open questions; an older host lists none, so its question decision stands alone. */
-export const openQuestions = (
-  task: Pick<TaskView, "decision"> & { readonly questions?: ReadonlyArray<Question> },
-): ReadonlyArray<Question> =>
+export const openQuestions = (task: QuestionsOf): ReadonlyArray<Question> =>
   task.questions ?? (task.decision?.kind === "question" ? [task.decision] : []);
 
 const sendingSaid = (answer: InFlight) =>

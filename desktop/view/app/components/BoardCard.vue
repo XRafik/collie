@@ -41,9 +41,6 @@ const act = (action: DesktopAction, tried?: (done: boolean | null) => void) =>
 const answering = useAnswering();
 const open = computed(() => openQuestions(props.task));
 const asked = computed(() => cardQuestion(props.task, props.installation, answering.state.value));
-watch(open, (now) => answering.settle(props.cardKey, props.installation, now), {
-  immediate: true,
-});
 const answeringOpen = ref(false);
 const answer = (question: Question, value: string, shown: string) =>
   answering.answer(props.installation, props.machine, question, value, shown, act);

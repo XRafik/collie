@@ -36,6 +36,7 @@ export const useAnswering = () => ({
     );
   },
   type: (key: string, text: string) => (state.value = draftTyped(state.value, key, text)),
-  settle: (card: string, installation: string, open: ReadonlyArray<Question>) =>
-    (state.value = answersSettled(state.value, card, installation, open)),
+  /** Called with every Task on the Flock's board, wherever it is drawn. */
+  settle: (board: Parameters<typeof answersSettled>[1]) =>
+    (state.value = answersSettled(state.value, board)),
 });
