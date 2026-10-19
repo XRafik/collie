@@ -295,6 +295,62 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
+/** This machine as macOS shows it: no `/proc`, and `ps -E` for a process's environment. */
+const withoutProc = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const hidden = (path: string) => path === "/proc" || path.startsWith("/proc/");
+  const noProc: FileSystem.FileSystem = {
+    ...fs,
+    exists: (path) => (hidden(path) ? Effect.succeed(false) : fs.exists(path)),
+    readDirectory: (path, options) =>
+      hidden(path) ? fs.readDirectory("/nonexistent/proc") : fs.readDirectory(path, options),
+    readFileString: (path, encoding) =>
+      hidden(path) ? fs.readFileString("/nonexistent/proc") : fs.readFileString(path, encoding),
+  };
+  // procps spells macOS's `-E` as `e`.
+  const macPs = ChildProcessSpawner.make((command) =>
+    command._tag === "StandardCommand" && command.command === "ps" && command.args.includes("-E")
+      ? spawner.spawn(
+          ChildProcess.make(
+            "ps",
+            [...command.args.filter((arg) => arg !== "-E"), "e"],
+            command.options,
+          ),
+        )
+      : spawner.spawn(command),
+  );
+  return { noProc, macPs };
+});
+
+test.skipIf(process.platform !== "linux")(
+  "without /proc, a marked check another host left is found and ended",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "collie-check-processes-" });
+        const notes = `${root}/notes`;
+        yield* fs.makeDirectory(notes);
+        yield* Effect.addFinalizer(() =>
+          fs.writeFileString(`${notes}/release`, "").pipe(Effect.ignore),
+        );
+        yield* leftBehind(notes, { installation, id: "run-1@1-left" });
+        const left = yield* startedIn(notes);
+        const { noProc, macPs } = yield* withoutProc;
+
+        const checks = yield* hostCheckProcesses({ dir: `${root}/state`, installation }).pipe(
+          Effect.provideService(FileSystem.FileSystem, noProc),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, macPs),
+        );
+
+        expect(yield* noneRunning(left)).toBe(true);
+        expect(yield* checks.left).toEqual([]);
+      }),
+    ),
+  30_000,
+);
+
 /** A FileSystem whose first read of a process's `stat` once `armed` waits for `release`. */
 const gatedStat = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;

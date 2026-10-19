@@ -142,6 +142,25 @@ export const groupOf = Effect.fn("Processes.groupOf")(function* (pid: number) {
   return group === "" ? null : Number(group);
 });
 
+/** Which of `names` these `NAME=value` entries bind; the last wins, as `ps -E` follows the command with the environment. */
+const bindingsIn = (entries: ReadonlyArray<string>, names: ReadonlyArray<string>) => {
+  const found: Record<string, string> = {};
+  for (const entry of entries) {
+    const at = entry.indexOf("=");
+    const name = entry.slice(0, at);
+    if (at > 0 && names.includes(name)) found[name] = entry.slice(at + 1);
+  }
+  return found;
+};
+
+/** `pid command ENV=…` rows from `ps -E`, whose bound values hold no space. */
+const psBindings = (text: string, names: ReadonlyArray<string>) =>
+  text
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter((words) => words.length >= 2 && words[0] !== "")
+    .map((words) => ({ pid: Number(words[0]), bound: bindingsIn(words.slice(1), names) }));
+
 /**
  * Which of `names` its environment binds, and to what; null where that cannot be read,
  * which proves nothing.
@@ -150,16 +169,36 @@ export const bindingsOf = Effect.fn("Processes.bindingsOf")(function* (
   pid: number,
   names: ReadonlyArray<string>,
 ) {
+  if (!(yield* readsSessions)) {
+    const [row] = psBindings(
+      yield* ps(["-E", "-ww", "-o", "pid=,command=", "-p", String(pid)]),
+      names,
+    );
+    return row?.bound ?? null;
+  }
   const fs = yield* FileSystem.FileSystem;
   const environ = yield* fs
     .readFileString(`${PROC}/${pid}/environ`)
     .pipe(Effect.orElseSucceed(() => null));
-  if (environ === null) return null;
-  const found: Record<string, string> = {};
-  for (const entry of environ.split("\0")) {
-    const at = entry.indexOf("=");
-    const name = entry.slice(0, at);
-    if (at > 0 && names.includes(name)) found[name] = entry.slice(at + 1);
+  return environ === null ? null : bindingsIn(environ.split("\0"), names);
+});
+
+/** Every running process whose environment binds one of `names`, with what it binds. */
+export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
+  names: ReadonlyArray<string>,
+) {
+  const found: Array<{ readonly pid: number; readonly bound: Record<string, string> }> = [];
+  if (!(yield* readsSessions)) {
+    for (const row of psBindings(yield* ps(["-A", "-E", "-ww", "-o", "pid=,command="]), names))
+      if (Object.keys(row.bound).length > 0) found.push(row);
+    return found;
+  }
+  const fs = yield* FileSystem.FileSystem;
+  for (const name of yield* fs.readDirectory(PROC).pipe(Effect.orElseSucceed(() => []))) {
+    const pid = Number(name);
+    if (!Number.isInteger(pid)) continue;
+    const bound = yield* bindingsOf(pid, names);
+    if (bound !== null && Object.keys(bound).length > 0) found.push({ pid, bound });
   }
   return found;
 });

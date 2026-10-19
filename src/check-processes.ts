@@ -6,7 +6,7 @@ import { Context, Duration, Effect, FileSystem, Option, Random, Schema, Stream }
 import type { PlatformError } from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Scope } from "effect";
-import { bindingsOf, groupOf, startedOf, stillRunning } from "./processes";
+import { boundProcesses, groupOf, startedOf, stillRunning } from "./processes";
 import { epochMs, nowIso } from "./time";
 
 export const CHECK_INSTALLATION = "COLLIE_CHECK_INSTALLATION";
@@ -140,14 +140,11 @@ export const CheckProcesses = Context.Reference<CheckProcessesApi>("collie/Check
 /** Every running process carrying this installation's binding, by the check id it carries. */
 const markedBy = (installation: string) =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
     const found = new Map<string, number[]>();
-    for (const name of yield* fs.readDirectory("/proc").pipe(Effect.orElseSucceed(() => []))) {
-      const pid = Number(name);
-      if (!Number.isInteger(pid) || pid === process.pid) continue;
-      const bound = yield* bindingsOf(pid, [CHECK_INSTALLATION, CHECK_ID]);
-      const id = bound?.[CHECK_ID];
-      if (bound?.[CHECK_INSTALLATION] !== installation || id === undefined) continue;
+    for (const { pid, bound } of yield* boundProcesses([CHECK_INSTALLATION, CHECK_ID])) {
+      const id = bound[CHECK_ID];
+      if (pid === process.pid || bound[CHECK_INSTALLATION] !== installation || id === undefined)
+        continue;
       if ((yield* groupOf(pid)) !== null) found.set(id, [...(found.get(id) ?? []), pid]);
     }
     return found;
