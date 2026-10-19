@@ -16,6 +16,7 @@ import {
   PlanOutputSchema,
   ReviewOutputSchema,
   SynthesisSchema,
+  afterMergeAnswers,
   parseFixOutput,
   parseReviewOutput,
   parseSynthesis,
@@ -185,5 +186,20 @@ test("each criterion is answered with how it is met, and one unanswered or unmet
   ).toEqual([
     "acceptance criterion not answered: **Checks.** Run the unit tests.",
     "acceptance criterion not answered: **Checks.** Run the typecheck.",
+  ]);
+});
+
+test("a criterion only a deploy can show is answered after merge, and neither blocks nor is lost", () => {
+  const criteria = ["**A.** It does a.", "**B.** It does b.", "**C.** It does c."];
+  const answers = [
+    { criterion: "**A.** It does a.", met: "After merge: only the deploy shows it" },
+    { criterion: "**B.** It does b.", met: "not met: b needs a service nobody has" },
+  ];
+  expect(unmetCriteria("05-x.md", criteria, answers).map((one) => one.title)).toEqual([
+    "acceptance criterion not met: **B.** It does b.",
+    "acceptance criterion not answered: **C.** It does c.",
+  ]);
+  expect(afterMergeAnswers(criteria, answers)).toEqual([
+    { criterion: "**A.** It does a.", met: "After merge: only the deploy shows it" },
   ]);
 });

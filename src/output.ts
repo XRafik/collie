@@ -178,7 +178,8 @@ export const CriterionSchema = Schema.Struct({
     description: "the criterion, copied from the ticket",
   }).pipe(said("criterion")),
   met: Schema.String.annotate({
-    description: 'how it is met — the test or the file that shows it — or "not met: <reason>"',
+    description:
+      'how it is met — the test or the file that shows it — "not met: <reason>", or "after merge: <reason>" where only CI, a merge or a deploy can show it',
   }).pipe(said("met")),
 });
 export type Criterion = typeof CriterionSchema.Type;
@@ -244,6 +245,16 @@ export function unmetCriteria(
     return [];
   });
 }
+
+/** Each criterion whose newest answer says only CI, a merge or a deploy can show it. */
+export const afterMergeAnswers = (
+  criteria: ReadonlyArray<string>,
+  answers: ReadonlyArray<Criterion>,
+): Criterion[] =>
+  criteria.flatMap((criterion) => {
+    const met = answerFor(criterion, answers, criteria)?.met;
+    return met !== undefined && /^after merge\b/i.test(met.trim()) ? [{ criterion, met }] : [];
+  });
 
 export const FixOutputSchema = Schema.Struct({
   verdict: VerdictSchema,

@@ -2597,6 +2597,107 @@ scenario(
 );
 
 scenario(
+  "a criterion answered after merge goes back to no one, and the reviewer and the merge request see it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+        ]);
+        yield* approve("r-answered-later", ["unit"]);
+        yield* rig.queueOutputs([
+          {
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "after merge: only the deploy shows it",
+              },
+              { criterion: "**Named.** Each one is named in the log.", met: "src/log.ts" },
+            ],
+          },
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-answered-later",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(
+          yield* fs.exists(`${dir}/agents/r-answered-later/01-first.md.criteria-1.prompt.md`),
+        ).toBe(false);
+        const review = yield* asked("r-answered-later", "review-1");
+        expect(review).toContain(
+          "- **Counted.** Every registry is counted once.\n  → after merge: only the deploy shows it",
+        );
+        expect(review).toContain(
+          "Raise as blocking an `after merge` answer to a criterion this Run could have shown",
+        );
+        expect(yield* asked("r-answered-later", "mr")).toContain(
+          "- 01-first.md: **Counted.** Every registry is counted once. — after merge: only the deploy shows it",
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a criterion still answered not met after every hand-back fails the Run before any review",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-not-met", ["unit"]);
+        const notMet = {
+          ...BUILT,
+          criteria: [
+            {
+              criterion: "**Counted.** Every registry is counted once.",
+              met: "test/count.test.ts",
+            },
+            {
+              criterion: "**Named.** Each one is named in the log.",
+              met: "not met: the log has no names",
+            },
+          ],
+        };
+        yield* rig.queueOutputs([notMet, notMet, notMet]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-not-met",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(result._tag).toBe("Failure");
+        expect(reasonOf(result)).toContain(
+          "acceptance criterion not met: **Named.** Each one is named in the log.",
+        );
+        const sent = (yield* prompts()).join("\n");
+        expect(sent).toContain("01-first.md.criteria-2.prompt.md");
+        expect(sent).not.toContain("review-1");
+        expect(sent).not.toContain("02-second.md.prompt.md");
+        expect(sent).not.toContain("mr.prompt.md");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "the criteria in a work source given as words are answered as a ticket's are",
   () =>
     runEffect(

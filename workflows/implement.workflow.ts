@@ -24,6 +24,7 @@ import {
   Host,
   Run,
   WorkflowError,
+  afterMergeAnswers,
   afterMergeIn,
   agentWork,
   answerFor,
@@ -584,6 +585,10 @@ export default defineWorkflow({
         for (const one of assumptions) assumed.push(`assumed in ${item}: ${one}`);
         for (const one of read)
           afterMerged.push(...one.afterMerge.map((line) => `${one.file}: after merge: ${line}`));
+        for (const { criterion, met } of afterMergeAnswers(criteria, answers))
+          afterMerged.push(
+            `${read.find((one) => one.criteria.includes(criterion))?.file ?? item}: ${criterion} — ${met}`,
+          );
         built.add(done.item);
         if (ticket === null) for (const one of tickets) built.add(one.file);
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "done", claimsOf(build, ticket));
@@ -1249,7 +1254,7 @@ const showsAnything = (one: Answered) => one.criteria.length > 0 || one.assumpti
 const renderAnswered = (all: ReadonlyArray<Answered>) =>
   all.some(showsAnything)
     ? [
-        "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts:",
+        "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts. Raise as blocking an `after merge` answer to a criterion this Run could have shown before its merge request:",
         ...all
           .filter(showsAnything)
           .map((one) =>

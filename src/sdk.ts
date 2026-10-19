@@ -83,6 +83,7 @@ export {
  * workflow says it the same way.
  */
 export {
+  afterMergeAnswers,
   answerFor,
   blockingKeys,
   findingKey,

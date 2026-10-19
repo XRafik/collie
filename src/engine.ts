@@ -1169,6 +1169,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     among?: ReadonlyArray<string>,
   ): Criterion | undefined;
 
+  /** Each criterion whose newest answer says only CI, a merge or a deploy can show it. */
+  export function afterMergeAnswers(
+    criteria: ReadonlyArray<string>,
+    answers: ReadonlyArray<Criterion>,
+  ): Criterion[];
+
   /**
    * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
    * as a blocking finding against the ticket.

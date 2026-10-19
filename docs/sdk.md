@@ -1352,9 +1352,12 @@ pieces they are built from.
 
 `CriterionSchema` is how a builder answers one of its ticket's acceptance criteria:
 `criterion`, copied from the ticket, and `met`, the test or file that shows it, or
-`not met: <reason>`. Implement's `Built` carries them as an optional `criteria` list.
+`not met: <reason>`, or `after merge: <reason>` where only CI, a merge or a deploy can show
+it. Implement's `Built` carries them as an optional `criteria` list.
 `unmetCriteria(ticket, criteria, answers)` turns each criterion left unanswered or not met
-into a blocking finding against the ticket. `answerFor(criterion, answers, among)` is the
+into a blocking finding against the ticket; an `after merge` answer is neither.
+`afterMergeAnswers(criteria, answers)` is each criterion answered `after merge`, which
+shipped `implement` names in its merge request as not settled by the Run. `answerFor(criterion, answers, among)` is the
 answer a criterion has; a copy that dropped the criterion's formatting still counts, and so
 does its bold lead alone where no other criterion `among` the ticket's shares it. Shipped
 `implement` hands what is unmet back to the builder before any reviewer is launched, twice at

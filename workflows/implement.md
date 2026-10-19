@@ -89,6 +89,10 @@ In your Output, `criteria` has one entry for each of them: `criterion` copied fr
 above, and `met` saying how it is met (the test or the file that shows it), or
 `not met: <reason>`. A criterion left out, or not met, comes back to you before any
 reviewer sees the work, and the reviewer is shown every answer and every assumption.
+Where only CI, a merge or a deploy can show a criterion, answer `after merge: <reason>`,
+saying what will show it and why this Run cannot: the merge request names it as unsettled,
+and the reviewer blocks one the Run could have shown. `not met: <reason>` is for one that
+cannot be met at all.
 
 Build it test first, with {{skill:tdd}} at the seams the spec names: the failing test,
 then the code that makes it pass. As you go, run the typecheck and the test files you
@@ -281,6 +285,9 @@ background job.
 
 Then write your Output: `criteria` answers every criterion in the whole list above, not
 only these, with `met` naming the test or the file that shows it or `not met: <reason>`.
+Where only CI, a merge or a deploy can show one, answer `after merge: <reason>`, saying what
+will show it and why this Run cannot; the reviewer blocks one the Run could have shown, and
+`not met: <reason>` stays for one that cannot be met at all.
 List the commits you left and any decision you made under `assumptions`.
 
 ## merge

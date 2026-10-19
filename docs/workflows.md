@@ -94,7 +94,10 @@ rather than the state before it. Before any reviewer sees a ticket, each of its 
 criteria needs an answer, and one left unanswered or not met goes back to the builder. The
 criteria are read from the ticket again before each hand-back, so a ticket the planner
 amended is judged as it reads now. A ticket's `## After merge` outcomes are not criteria:
-the merge request names them under **Not settled by the run**
+the merge request names them under **Not settled by the run**. A criterion only CI, a merge
+or a deploy can show may be answered `after merge: <reason>`: it does not end the Run, the
+reviewer blocks one the Run could have shown, and the merge request names the ticket, the
+criterion and the reason under the same heading
 ([ADR-draft-a-criterion-is-what-the-run-can-show-before-its-merge-request](adr/draft-a-criterion-is-what-the-run-can-show-before-its-merge-request.md)).
 The merge request is opened or updated last, and not at
 all only where there is no GitLab to open one on. Missing evidence does not keep it
