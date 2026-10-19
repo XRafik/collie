@@ -2757,6 +2757,8 @@ removed. [Schedules](#schedules) under `schedules/` are the host's own: listed a
 
 `collie cleanup` lists what a sweep would remove now, with each item's size and the total,
 and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.
+The Flock chat sweeps the Machine a `cleanup` names in its `machine` field, and refuses one
+that names none while several Machines are reachable; Native chat sweeps its own Machine.
 Every removal is judged again at the moment it is made, never forced, and recorded in the
 state directory's `cleanup.jsonl` with when, what, how big, why and who asked, for 30 days.
 Anything a sweep cannot judge is kept, with the reason.

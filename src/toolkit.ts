@@ -341,7 +341,8 @@ export const CollieTools = Toolkit.make(
       "or schedule_add, schedule_pause, schedule_resume and schedule_remove. " +
       "A schedule_add names its cron, optional tz and start (workflow, every Input, " +
       "workspace and optional verify); the others name the Schedule. In Desktop's Flock " +
-      "chat name machine, or qualify the Schedule's name or start.workspace with <machine>:. " +
+      "chat name machine, or qualify the Schedule's name or start.workspace with <machine>:; " +
+      "a cleanup or home_cleanup there names machine. " +
       "Native chat acts on its own Machine and reports which. No separate " +
       "confirmation: they asked. " +
       "Reuse request_id when retrying the same request. Use reads for questions, not this. " +
