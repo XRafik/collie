@@ -313,7 +313,7 @@ ran is a breach, not a pass. A judgement Collie could not make — no evaluator,
 timed out or answered outside its schema — is recorded as `skipped` with the reason, so a
 card can say why it says nothing rather than reading as clean. A card names each reason
 once, however many boundaries it was skipped at, and a judgement that is made later answers
-the judgements skipped before it. A skipped rule check is not answered by a judgement. A `claude --help` that
+the judgements skipped before it; one that fails afterwards takes nothing back. A skipped rule check is not answered by a judgement. A `claude --help` that
 fails or prints nothing is such a reason, said with its exit code and stderr, never read as
 a CLI missing every flag, and a `git diff` that fails is a reason too, never an empty
 change: a judgement is skipped in git's words, and a rule check is recorded as skipped and

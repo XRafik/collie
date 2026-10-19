@@ -402,9 +402,13 @@ const SMALL: Constraint = {
 };
 
 /** `claude` on PATH as the evaluator: it takes every flag a judgement needs, and finds nothing. */
-const evaluatorOnPath = Effect.gen(function* () {
+const evaluatorOnPath = Effect.suspend(() =>
+  evaluatorAnswering(`cat > /dev/null\necho '{"result":{"reports":[]}}'`),
+);
+
+const evaluatorAnswering = Effect.fnUntraced(function* (answer: string) {
   const fs = yield* FileSystem.FileSystem;
-  const bin = `${rig.root}/evaluator-bin`;
+  const bin = `${rig.root}/evaluator-bin-${Bun.hash(answer)}`;
   yield* fs.makeDirectory(bin, { recursive: true });
   const flags = [
     "--print",
@@ -420,7 +424,7 @@ const evaluatorOnPath = Effect.gen(function* () {
   ].join(" ");
   yield* fs.writeFileString(
     `${bin}/claude`,
-    `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "${flags}"; exit 0; fi\ncat > /dev/null\necho '{"result":{"reports":[]}}'\n`,
+    `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "${flags}"; exit 0; fi\n${answer}\n`,
   );
   yield* fs.chmod(`${bin}/claude`, 0o755);
   yield* Effect.acquireRelease(
@@ -507,6 +511,25 @@ test("a judgement made after one was skipped leaves the Run aligned, not unverif
       const card = (yield* cardsOf("r1")).at(-1)!;
       expect(card.aligned).toBe("true");
       expect(card.missing).toEqual([]);
+    }),
+  ));
+
+test("a judgement that fails after one that answered leaves only its own failure on the card", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* repository();
+      yield* intended("r1", [SMALL]);
+      yield* session(boundaryThenCard);
+      const herd = { socketPath: `${rig.root}/herd.sock`, pluginRoot: rig.root };
+      yield* evaluatorOnPath;
+      yield* session(boundaryThenCard, herd);
+      yield* evaluatorAnswering("exit 1");
+      yield* session(boundaryThenCard, herd);
+
+      const card = (yield* cardsOf("r1")).at(-1)!;
+      expect(card.aligned).toBe("unverified");
+      expect(card.missing).toHaveLength(1);
+      expect(card.missing[0]).toStartWith("a judgement was skipped: the judgement did not answer");
     }),
   ));
 

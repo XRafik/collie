@@ -411,7 +411,7 @@ export interface Judged {
   readonly truncated: boolean;
   /** The goal was judged, where there is one. */
   readonly goal: boolean;
-  /** When; a judgement answers every skip before it. */
+  /** When a judgement last answered; it answers every skip before it. */
   readonly at?: string;
 }
 
@@ -728,10 +728,10 @@ export interface Alignment {
 /** Why a judgement was skipped, once per reason, leaving out what a later judgement answered. */
 export function standingSkips(
   lines: ReadonlyArray<DriftLine>,
-  judged: Pick<Judged, "semantic" | "at">,
+  judged: Pick<Judged, "at">,
 ): string[] {
   const answered = (line: Schema.Schema.Type<typeof SkippedSchema>) =>
-    line.check === undefined && judged.semantic && judged.at !== undefined && line.at < judged.at;
+    line.check === undefined && judged.at !== undefined && line.at < judged.at;
   const reasons = lines.flatMap((line) =>
     line.kind === "skipped" && !answered(line) ? [line.reason] : [],
   );

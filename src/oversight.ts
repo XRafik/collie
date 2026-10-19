@@ -357,12 +357,16 @@ const judgeDrift = Effect.fn("Oversight.judgeDrift")(function* (
       ),
     ),
   );
+  const answeredAt = outcome.judged.semantic ? judgedAt : (yield* judgedOf(at)).at;
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(`${at.runDir}/steering`, { recursive: true }).pipe(Effect.ignore);
   yield* fs
     .writeFileString(
       judgedPath(at.runDir),
-      Schema.encodeSync(JudgedJson)({ ...outcome.judged, at: judgedAt }),
+      Schema.encodeSync(JudgedJson)({
+        ...outcome.judged,
+        ...(answeredAt !== undefined && { at: answeredAt }),
+      }),
     )
     .pipe(Effect.ignore);
   const before = yield* readDrift(at.runDir).pipe(Effect.orElseSucceed(() => []));
