@@ -69,7 +69,10 @@ export interface CheckProcessesApi {
   readonly endAll: Effect.Effect<ReadonlyArray<CheckOf>>;
   /** SIGKILL to whatever of an ended check is left, and its record gone once it is. */
   readonly killEnded: Effect.Effect<void>;
+  /** The ids of the checks this host is collecting. */
+  readonly collecting: Effect.Effect<ReadonlyArray<string>>;
   readonly left: Effect.Effect<ReadonlyArray<Leftover>>;
+  readonly stillRuns: (leftover: Leftover) => Effect.Effect<boolean>;
   /** Ends it for good, removes its record, and says so in `host.log` and on its Run. */
   readonly endLeftover: (leftover: Leftover) => Effect.Effect<LeftoverEnd>;
 }
@@ -116,7 +119,9 @@ const unrecorded: CheckProcessesApi = {
     })),
   endAll: Effect.succeed([]),
   killEnded: Effect.void,
+  collecting: Effect.succeed([]),
   left: Effect.succeed([]),
+  stillRuns: () => Effect.succeed(false),
   endLeftover: () => Effect.succeed("already gone"),
 };
 
@@ -300,12 +305,20 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     return [...found.values()];
   }).pipe(Effect.provideContext(services));
 
+  const proofOf = (leftover: Leftover) => ({
+    id: leftover.id,
+    leader: leftover.recorded ? leftover.leader : { ...leftover.leader, started: "" },
+  });
+
+  const stillRuns = (leftover: Leftover) =>
+    provedOf(proofOf(leftover), installation).pipe(
+      Effect.map((proved) => !isGone(proved)),
+      Effect.provideContext(services),
+    );
+
   const endLeftover = (leftover: Leftover) =>
     Effect.gen(function* () {
-      const proof = {
-        id: leftover.id,
-        leader: leftover.recorded ? leftover.leader : { ...leftover.leader, started: "" },
-      };
+      const proof = proofOf(leftover);
       const outcome: LeftoverEnd = isGone(yield* provedOf(proof, installation))
         ? "already gone"
         : (yield* endCheck(proof, installation))
@@ -391,5 +404,13 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   }).pipe(Effect.provideContext(services));
 
   yield* endAllOf(yield* left);
-  return { run, endAll, killEnded, left, endLeftover } satisfies CheckProcessesApi;
+  return {
+    run,
+    endAll,
+    killEnded,
+    collecting: Effect.sync(() => [...collecting.keys()]),
+    left,
+    stillRuns,
+    endLeftover,
+  } satisfies CheckProcessesApi;
 });

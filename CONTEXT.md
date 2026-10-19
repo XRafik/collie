@@ -484,7 +484,10 @@ now. In order:
 
 What each kind keeps and why is canonical in
 [ADR-0045](docs/adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md). Every
-removal is recorded with who asked, and none is forced.
+removal is recorded with who asked, and none is forced. A check's processes are proved by
+their record or by the marker they run with. Any that no host is collecting are ended,
+SIGKILL included, because a check's result is thrown away
+(ADR-draft-a-check-ends-with-the-host-that-runs-it).
 
 **Renovate Run** — One execution of the `renovate` Workflow: one repository, from claiming
 it in Helle to checking it off in Linear. Its Worktree is detached and roams — it holds no

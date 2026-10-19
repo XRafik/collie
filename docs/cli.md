@@ -1622,6 +1622,16 @@ Under `--json`, both answer with the same `data`:
 bytes it freed; `bytes` is their total. A thing a sweep could not judge — herdr not
 answering, say — is in `keep` with that reason, never removed.
 
+The `check` kind is a check's processes that no host is collecting, such as a child that left
+its group, or one a starting host could not end. Its target is the check's id, and its
+reason names the Run, the check, its pid and how long it has run; it frees 0 bytes. It is
+proved by the check's record under `running-checks/`, or by the marker in its environment
+naming this installation and the check. A process proved by neither, or marked for another
+state directory, is never listed. A sweep ends it with SIGTERM, then SIGKILL if that leaves
+it running, because a check's result is thrown away
+([ADR-draft-a-check-ends-with-the-host-that-runs-it](adr/draft-a-check-ends-with-the-host-that-runs-it.md)).
+A check this host is collecting is kept, with "this host is collecting it".
+
 ## Usage
 
 ```sh
@@ -1976,6 +1986,10 @@ that installed herdr. Collie never runs `herdr update` or `herdr server stop` it
 worktrees and the temporary directory, once each. One with less than 10% or 5 GiB free is a
 `!` warning naming it, with what [`collie cleanup`](#cleaning-up) would free where a host has
 served this state directory, and `collie cleanup --apply` as the fix. It never fails the run.
+
+**Checks**, where a host has served this state directory: a `!` warning while
+[`collie cleanup`](#cleaning-up) lists a `check` no host is collecting, saying how many and
+naming the first's Run and pid, with `collie cleanup --apply` as the fix. It never fails the run.
 
 **Host herd**, where a host is running: the Herd it works for, or a `!` warning that
 [it has none](#the-local-workflow-host) and its judgements will be skipped. It never fails the run.

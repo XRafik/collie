@@ -7,10 +7,20 @@ import { loadEntry } from "../src/engine";
 import { connect } from "../src/host";
 import { proposalsPath, record as recordProposal } from "../src/proposals";
 import { CleanupReport } from "../src/board-model";
-import { generationsSweeper } from "../src/cleanup";
+import {
+  CHECK_ID,
+  CHECK_INSTALLATION,
+  hostCheckProcesses,
+  runningChecksDir,
+} from "../src/check-processes";
+import { checksSweeper, generationsSweeper } from "../src/cleanup";
+import { signalProcess } from "../src/lock";
+import { startedOf, stillRunning } from "../src/processes";
 import { sweepEvery } from "../src/side-jobs";
+import { VerifySpecSchema } from "../src/verify-spec";
+import { exec, startDetached } from "./support/command";
 import { fastForward, runEffect } from "./support/effect";
-import { fixtures, until } from "./support/host";
+import { fixtures, root, until } from "./support/host";
 import { collie, proves, type World } from "./support/world";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -35,6 +45,50 @@ const generation = (world: World, name: string, days: number, bytes = 8192) =>
     yield* fs.utimes(dir, at, at);
     return dir;
   });
+
+/** A `sleep` left running by nobody, carrying only the bindings in `env`. */
+const leftRunning = (env: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const pid = yield* startDetached([
+      "env",
+      "-u",
+      CHECK_INSTALLATION,
+      "-u",
+      CHECK_ID,
+      ...env,
+      "sleep",
+      "120",
+    ]);
+    yield* Effect.addFinalizer(() => signalProcess(pid, "SIGKILL"));
+    return { pid, started: (yield* startedOf(pid)) ?? "" };
+  });
+
+const RUNNING_FOR_MS = (2 * 60 + 10) * 60_000;
+
+/** A check of `run-left` started 2h10m ago, marked for `installation` and left by its host. */
+const leftCheck = (installation: string) =>
+  Effect.gen(function* () {
+    const id = `run-left@${(yield* Clock.currentTimeMillis) - RUNNING_FOR_MS - 30_000}-left`;
+    const left = yield* leftRunning([`${CHECK_INSTALLATION}=${installation}`, `${CHECK_ID}=${id}`]);
+    return { id, ...left };
+  });
+
+/** This world's installation id, which its host writes as it starts. */
+const installationIn = (world: World) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.readFileString(`${world.state}/installation`),
+  ).pipe(
+    Effect.map((text) => text.trim()),
+    Effect.orDie,
+  );
+
+const checkItems = (listed: { readonly envelope: { readonly data?: unknown } }) => {
+  const report = Listed(listed.envelope.data);
+  return {
+    remove: report.remove.filter((item) => item.kind === "check"),
+    keep: report.keep.filter((item) => item.kind === "check"),
+  };
+};
 
 const journalOf = (world: World) =>
   Effect.gen(function* () {
@@ -250,6 +304,50 @@ test(
   60_000,
 );
 
+test.skipIf(process.platform !== "linux")(
+  "doctor warns while a check no host is collecting runs, and passes once cleanup ends it",
+  () =>
+    proves(
+      "collie-cleanup-doctor-check-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* collie(world, ["cleanup"]);
+          const left = yield* leftCheck(yield* installationIn(world));
+          const checksOf = Effect.gen(function* () {
+            const doctor = yield* collie(world, ["doctor"]);
+            const report = Schema.decodeUnknownSync(
+              Schema.Struct({
+                checks: Schema.Array(
+                  Schema.Struct({
+                    name: Schema.String,
+                    detail: Schema.String,
+                    fix: Schema.String,
+                    warn: Schema.optional(Schema.Boolean),
+                  }),
+                ),
+              }),
+            )(doctor.envelope.data ?? doctor.envelope.error?.details);
+            return report.checks.find((check) => check.name === "checks");
+          });
+
+          expect(yield* checksOf).toEqual({
+            name: "checks",
+            detail: `1 check process(es) no host is collecting: run-left's check ${left.id}, pid ${left.pid}, running 2h10m; no host is collecting it`,
+            fix: "collie cleanup --apply",
+            warn: true,
+          });
+          yield* collie(world, ["cleanup", "--apply"]);
+          expect(yield* checksOf).toEqual({
+            name: "checks",
+            detail: "no check is running that no host is collecting",
+            fix: "",
+          });
+        }),
+      [],
+    ),
+  60_000,
+);
+
 test(
   "cleanup keeps the compaction controls of an agent in a session opened while the host runs",
   () =>
@@ -295,6 +393,143 @@ test(
           );
         }),
       [],
+    ),
+  60_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "cleanup lists a check no host is collecting and --apply ends it, leaving another installation's and an unmarked process alone",
+  () =>
+    proves(
+      "collie-cleanup-check-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* collie(world, ["cleanup"]);
+          const left = yield* leftCheck(yield* installationIn(world));
+          const theirs = yield* leftRunning([
+            `${CHECK_INSTALLATION}=another-installation`,
+            `${CHECK_ID}=run-theirs@1-theirs`,
+          ]);
+          const unmarked = yield* leftRunning([]);
+
+          const listed = checkItems(yield* collie(world, ["cleanup"]));
+          expect(listed.keep).toEqual([]);
+          expect(listed.remove).toEqual([
+            {
+              kind: "check",
+              target: left.id,
+              bytes: 0,
+              reason: `run-left's check ${left.id}, pid ${left.pid}, running 2h10m; no host is collecting it`,
+            },
+          ]);
+
+          const swept = yield* collie(world, ["cleanup", "--apply", "--request-id", "c-1"]);
+          expect(checkItems(swept).remove.map((item) => item.target)).toEqual([left.id]);
+          expect(yield* stillRunning(left)).toBe(false);
+          expect(yield* Effect.forEach([theirs, unmarked], stillRunning)).toEqual([true, true]);
+          expect(parsed((yield* journalOf(world)).trim())).toMatchObject({
+            by: { origin: "cli", request: "c-1" },
+            kind: "check",
+            target: left.id,
+            bytes: 0,
+          });
+          expect(checkItems(yield* collie(world, ["cleanup"])).remove).toEqual([]);
+        }),
+      [],
+    ),
+  60_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "the host's own sweep ends a check no host is collecting, and journals it as its own",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "swept-checks-" });
+        const checks = yield* hostCheckProcesses({ dir, installation: "installation-under-test" });
+        const left = yield* leftCheck("installation-under-test");
+        yield* Effect.forkScoped(
+          fastForward(sweepEvery(dir, Effect.succeed([checksSweeper(checks)])), 60_000),
+        );
+        const journal = yield* until(
+          () => fs.readFileString(`${dir}/cleanup.jsonl`).pipe(Effect.orElseSucceed(() => "")),
+          (text) => text !== "",
+        );
+        expect(parsed(journal.trim())).toMatchObject({
+          by: "host",
+          kind: "check",
+          target: left.id,
+        });
+        expect(yield* stillRunning(left)).toBe(false);
+      }),
+    ),
+);
+
+test.skipIf(process.platform !== "linux")(
+  "cleanup keeps a check its host is collecting, and --apply leaves it running",
+  () =>
+    proves(
+      "collie-cleanup-collected-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const notes = `${world.home}/notes`;
+          yield* fs.makeDirectory(notes);
+          yield* Effect.addFinalizer(() =>
+            fs.writeFileString(`${notes}/release`, "").pipe(Effect.ignore),
+          );
+          yield* fs.makeDirectory(`${world.project}/.collie`);
+          yield* fs.writeFileString(
+            `${world.project}/.collie/verify.json`,
+            Schema.encodeSync(Schema.fromJsonString(Schema.Array(VerifySpecSchema)))([
+              {
+                name: "held",
+                executable: `${root}test/fixtures/checks/held.sh`,
+                argv: [notes],
+                cwd: ".",
+              },
+            ]),
+          );
+          for (const args of [
+            ["-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"],
+            ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "first"],
+          ])
+            yield* exec(["git", ...args], { cwd: world.project });
+          yield* collie(world, [
+            "run",
+            "start",
+            "checking",
+            "--input",
+            "check=held",
+            "--input",
+            `cwd=${world.project}`,
+          ]);
+          const pid = Number(
+            (yield* until(
+              () => fs.readFileString(`${notes}/starts`).pipe(Effect.orElseSucceed(() => "")),
+              (text) => text.trim() !== "",
+            )).trim(),
+          );
+          const check = { pid, started: (yield* startedOf(pid)) ?? "" };
+          const [record] = yield* until(
+            () =>
+              fs.readDirectory(runningChecksDir(world.state)).pipe(Effect.orElseSucceed(() => [])),
+            (files) => files.length === 1,
+          );
+          const kept = {
+            kind: "check",
+            target: (record ?? "").replace(/\.json$/, ""),
+            reason: "this host is collecting it",
+          };
+
+          const listed = checkItems(yield* collie(world, ["cleanup"]));
+          expect(listed).toEqual({ remove: [], keep: [kept] });
+          const swept = checkItems(yield* collie(world, ["cleanup", "--apply"]));
+          expect(swept).toEqual({ remove: [], keep: [kept] });
+          expect(yield* stillRunning(check)).toBe(true);
+        }),
+      ["checking.workflow.ts"],
     ),
   60_000,
 );

@@ -119,6 +119,7 @@ import { dataHomeOf, desktopRootOf } from "./desktop";
 import type * as MessageStorage from "effect/cluster/MessageStorage";
 import {
   collieCache,
+  checksSweeper,
   compactionSweeper,
   desktopSweeper,
   renovateClonesSweeper,
@@ -842,6 +843,7 @@ const servingEnv = (dir: string) =>
 const hostBoard = (dir: string) =>
   Effect.gen(function* () {
     const registry = yield* Registry;
+    const checks = yield* CheckProcesses;
     const bun = yield* Effect.context<BunServices>();
     const hosted = yield* Effect.context<HostServices>();
     const env = yield* servingEnv(dir);
@@ -916,6 +918,7 @@ const hostBoard = (dir: string) =>
         uploadsSweeper(env.stateDir),
         compactionSweeper(env.stateDir, sessions),
         runnersSweeper(`${collieCache()}/runners`, BUILD),
+        checksSweeper(checks),
         renovateClonesSweeper(env.stateDir, all),
         desktopSweeper(
           desktopRootOf(dataHomeOf(env.home, env.raw["XDG_DATA_HOME"])),

@@ -159,6 +159,7 @@ test("a healthy machine passes every check and says so", () =>
         "personas",
         "projects root",
         "disk",
+        "checks",
         "glab",
         "gitlab token",
         "git push",

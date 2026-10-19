@@ -50,7 +50,10 @@ Collie knows, proved the way that kind is proved:
 - **A workspace:** proved by a Task's record. Never the Home, and never a workspace that
   is no Task's.
 - **A pane:** proved by a launch record.
-- **A process:** proved by its lock or its control record.
+- **A process:** proved by its lock or its control record. Amended by
+  [ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md):
+  a check's process is proved by its record or by the marker it runs with, and is ended
+  with SIGKILL if SIGTERM leaves it running.
 
 Nothing outside these is globbed. Removal never forces: git's refusal to drop a dirty or
 unmerged checkout stays the last guard, so a wrong judgement can fail to clean but never
