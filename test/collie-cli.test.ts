@@ -547,6 +547,9 @@ test(
           ["remote", "add", "upstream", "git@gitlab.example.com:group/app.git"],
         ])
           yield* exec(["git", ...args], { cwd: checkout });
+        const bin = join(tree.dir, "bin");
+        yield* fs.makeDirectory(bin, { recursive: true });
+        yield* fs.writeFileString(join(bin, "glab"), "#!/bin/sh\necho '[]'\n", { mode: 0o755 });
         const starts = yield* documentedStarts();
         expect(starts.length).toBeGreaterThan(2);
         for (const line of starts) {
@@ -554,7 +557,7 @@ test(
             COLLIE_CWD: checkout,
             GITTE_CWD: tree.root,
             GITLAB_USER_LOGIN: "tester",
-            PATH: "/usr/bin:/bin",
+            PATH: `${bin}:/usr/bin:/bin`,
           });
           const envelope = yield* parseEnvelope(started.stdout);
           expect({ line, ok: envelope.ok, error: envelope.error?.message }).toEqual({
