@@ -18,7 +18,15 @@ what's still missing and how to fix it:
 curl -fsSL https://github.com/cego/collie/releases/latest/download/setup.sh | sh
 ```
 
-Before you run it, you need:
+Collie Desktop, one board for every Machine you reach with the Flock chat beside it, is
+released for Linux (x64) and macOS (Apple silicon), and installs with one more command; see
+[Collie Desktop](docs/using.md#collie-desktop) for the detail:
+
+```sh
+curl -fsSL https://github.com/cego/collie/releases/latest/download/install-desktop.sh | sh
+```
+
+Before you run setup.sh, you need:
 
 - **herdr** installed and started once. See the [herdr install guide](https://herdr.dev/docs/install/).
 - **A `glab auth login` to `gitlab.cego.dk`**, so the workflows can open merge requests there.
@@ -35,9 +43,6 @@ the required skills, and runs `collie doctor`. Later, `collie upgrade` brings al
 to date. Helle and a Linear MCP are optional; doctor tells you when a workflow you'd run
 needs one. See [Install](docs/using.md#install) and
 [Optional integrations](docs/using.md#optional-integrations) for the detail.
-
-Collie Desktop, the board for every Machine you reach, installs on Linux (x64) and macOS
-(Apple silicon) with one more command; see [Collie Desktop](docs/using.md#collie-desktop).
 
 ## Four keys
 
