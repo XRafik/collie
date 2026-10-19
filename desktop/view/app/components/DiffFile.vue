@@ -25,6 +25,7 @@ const props = defineProps<{
   target: DiffTarget | null;
 }>();
 const open = defineModel<boolean>("open", { required: true });
+const viewed = defineModel<boolean>("viewed", { required: true });
 const emit = defineEmits<{ missing: [target: DiffTarget] }>();
 const { textOf } = useActions();
 const within = inject<Semaphore.Semaphore>("diffReads");
@@ -165,21 +166,24 @@ watch(
 
 <template>
   <section :data-testid="`diff-${file.path}`" class="rounded border border-default">
-    <button
-      type="button"
-      class="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm"
-      data-testid="diff-file-header"
-      @click="open = !open"
-    >
-      <UIcon :name="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" />
-      <code class="flex-1 truncate">{{ file.path }}</code>
-      <small class="text-muted">{{ file.status }}</small>
-      <template v-if="file.added !== null">
-        <small class="text-success">+{{ file.added }}</small>
-        <small class="text-error">−{{ file.removed }}</small>
-      </template>
-      <small v-else class="text-muted">binary</small>
-    </button>
+    <div class="flex items-center gap-3 pe-3">
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 ps-3 text-left text-sm"
+        data-testid="diff-file-header"
+        @click="open = !open"
+      >
+        <UIcon :name="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" />
+        <code class="flex-1 truncate">{{ file.path }}</code>
+        <small class="text-muted">{{ file.status }}</small>
+        <template v-if="file.added !== null">
+          <small class="text-success">+{{ file.added }}</small>
+          <small class="text-error">−{{ file.removed }}</small>
+        </template>
+        <small v-else class="text-muted">binary</small>
+      </button>
+      <UCheckbox v-model="viewed" label="Viewed" size="sm" data-testid="diff-viewed" />
+    </div>
     <div v-if="open" class="border-t border-default">
       <p v-if="failed" class="p-3 text-sm text-muted">This file's diff could not be read.</p>
       <p v-else-if="unparsed" class="p-3 text-sm text-muted" data-testid="diff-unparsed">

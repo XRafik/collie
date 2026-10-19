@@ -85,6 +85,55 @@ export const filterTree = (
   return kept(tree);
 };
 
+/** What a viewed tick saw, so a file the Run changes again loses it. */
+interface ViewedTick {
+  readonly status: DiffFile["status"];
+  readonly added: number | null;
+  readonly removed: number | null;
+  readonly base: string;
+}
+
+/** Each viewed tick by its file's path. */
+export type ViewedTicks = ReadonlyMap<string, ViewedTick>;
+
+export const tickViewed = (ticks: ViewedTicks, file: DiffFile, base: string): ViewedTicks =>
+  new Map(ticks).set(file.path, {
+    status: file.status,
+    added: file.added,
+    removed: file.removed,
+    base,
+  });
+
+export const untickViewed = (ticks: ViewedTicks, path: string): ViewedTicks => {
+  const kept = new Map(ticks);
+  kept.delete(path);
+  return kept;
+};
+
+export const viewedFiles = (
+  ticks: ViewedTicks,
+  files: ReadonlyArray<DiffFile>,
+  base: string,
+): ReadonlySet<string> =>
+  new Set(
+    files.flatMap((file) => {
+      const seen = ticks.get(file.path);
+      const same =
+        seen !== undefined &&
+        seen.status === file.status &&
+        seen.added === file.added &&
+        seen.removed === file.removed &&
+        seen.base === base;
+      return same ? [file.path] : [];
+    }),
+  );
+
+export const viewedCount = (
+  ticks: ViewedTicks,
+  files: ReadonlyArray<DiffFile>,
+  base: string,
+): string => `${viewedFiles(ticks, files, base).size} of ${files.length} viewed`;
+
 const BIG_FILE_LINES = 500;
 
 /** The human's choice for the file, else open for a text file of at most 500 changed lines. */

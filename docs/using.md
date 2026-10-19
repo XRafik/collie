@@ -1624,7 +1624,11 @@ until you next scroll. The diffs are drawn in the tree's order with `@pierre/dif
 and github-dark colours as Desktop's theme follows. A file is read from the host when
 it is opened, holding a placeholder about as tall as its changed lines until it is drawn, and again when the Run changes how many lines it adds or removes, with no
 line cap; a file with more than
-500 changed lines, or a binary one, starts collapsed. **Evidence** shows the Run's
+500 changed lines, or a binary one, starts collapsed. Each file's header has a **Viewed**
+checkbox: ticking it collapses the file, unticking leaves it as it is, and the tree shows a
+tick on its row and "N of M viewed" beside the file count. A file the Run changes again — its
+added or removed lines, its status, or the base the diff is against — loses its tick, and
+stays as it was rather than opening by itself. **Evidence** shows the Run's
 verifications as a checklist, every one collapsed, those that did not do what they were
 expected to first; opening one reads its output in its terminal colours; then every web
 link the Run's Outputs, handoffs, review and findings name, as a card: a Claude artifact
@@ -1659,7 +1663,8 @@ the **Diff** tab, select a line or a range of lines on either side, unified or s
 side, or press the gutter's button beside a line, and the comment opens under those lines;
 once added it stays drawn there, where you can edit or remove it too. Each
 comment is a draft that Desktop keeps for that Run while it runs, through tab switches and
-closing the record, and sends to no host until you send it. While a Run has drafts, the
+closing the record, and sends to no host until you send it. The Diff tab's viewed ticks are
+kept the same way, until Desktop quits, and no host is told of them. While a Run has drafts, the
 Plan and Diff tabs show them in one list, where you can edit or remove each, choose who
 gets them — **The agent at work** by default (the agent whose step is active, else the
 builder), a role the Run has a live agent in, or one of its live agents, labelled as the

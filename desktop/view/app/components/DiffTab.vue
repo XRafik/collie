@@ -2,7 +2,7 @@
 import type { TreeItem } from "@nuxt/ui";
 import { Semaphore } from "effect";
 import type { Ref } from "vue";
-import type { RunDiff } from "../../../../src/board-model";
+import type { DiffFile, RunDiff } from "../../../../src/board-model";
 import { inField } from "../../../src/shared/board-clicks";
 import { landingOf } from "../../../src/shared/record";
 import {
@@ -103,6 +103,18 @@ const filtering = computed(() => filter.value.trim() !== "");
 const listed = computed(() => filterTree(drawn.value.tree, filter.value));
 
 const { drafts } = useReviewDrafts(() => props);
+const {
+  viewed,
+  count: viewedSoFar,
+  mark,
+} = useViewedFiles(
+  () => props,
+  () => props.diff,
+);
+const markViewed = (file: DiffFile, now: boolean) => {
+  mark(file, now);
+  if (now) opened.value.set(file.path, false);
+};
 const facts = computed(() => {
   const onDiff = drafts.value.flatMap(({ anchor }) =>
     anchor._tag === "Diff" ? [anchor.path] : [],
@@ -114,6 +126,7 @@ type Row = TreeItem & { path: string };
 /** Nuxt UI draws a row's `<slot>-trailing`, which its slot types do not name. */
 const FILE_FACTS = "file-trailing";
 const factsOf = (row: Row) => facts.value.get(row.path);
+const viewedOf = (row: Row) => viewed.value.has(row.path);
 
 const items = computed(() => {
   const byKey = new Map<string, Row>();
@@ -261,6 +274,9 @@ watch(
         {{ diff.files.length }} {{ diff.files.length === 1 ? "file" : "files" }} against
         <code>{{ diff.base.slice(0, 7) }}</code>
       </span>
+      <span v-if="diff.files.length > 0" class="text-muted" data-testid="diff-viewed-count">
+        {{ viewedSoFar }}
+      </span>
       <div class="ml-auto flex flex-wrap items-center justify-end gap-3">
         <USwitch v-model="split" label="Side by side" data-testid="split" />
         <USwitch v-model="wrap" label="Wrap long lines" data-testid="wrap" />
@@ -322,7 +338,7 @@ watch(
           @update:expanded="setExpanded"
         >
           <template #[FILE_FACTS]="{ item }">
-            <DiffRowFacts :facts="factsOf(item)" />
+            <DiffRowFacts :facts="factsOf(item)" :viewed="viewedOf(item)" />
           </template>
         </UTree>
       </div>
@@ -339,6 +355,8 @@ watch(
           :wrap="wrap"
           :target="target?.file === file.path ? target : null"
           :open="fileOpen(file, opened)"
+          :viewed="viewed.has(file.path)"
+          @update:viewed="(now: boolean) => markViewed(file, now)"
           @update:open="(now: boolean) => opened.set(file.path, now)"
           @missing="(missed: DiffTarget) => (source = missed)"
         />

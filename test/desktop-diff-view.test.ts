@@ -12,6 +12,10 @@ import {
   reachBy,
   readingHeight,
   rowFacts,
+  tickViewed,
+  untickViewed,
+  viewedCount,
+  viewedFiles,
 } from "../desktop/src/shared/diff-view";
 
 const file = (path: string): DiffFile => ({ path, status: "modified", added: 1, removed: 0 });
@@ -284,5 +288,49 @@ describe("the file beside the active one", () => {
   test("is nothing with no files", () => {
     expect(fileBeside([], null, 1)).toBeNull();
     expect(fileBeside([], "a.ts", -1)).toBeNull();
+  });
+});
+
+describe("viewed ticks", () => {
+  const base = "abc1234";
+  const a: DiffFile = { path: "a.ts", status: "modified", added: 3, removed: 1 };
+  const b: DiffFile = { path: "b.ts", status: "added", added: 9, removed: 0 };
+  const logo: DiffFile = { path: "logo.png", status: "modified", added: null, removed: null };
+  const none = new Map();
+  const viewed = (
+    ticks: Parameters<typeof viewedFiles>[0],
+    files: ReadonlyArray<DiffFile>,
+    at = base,
+  ) => [...viewedFiles(ticks, files, at)];
+
+  test("survive a refresh with the same values", () => {
+    const ticks = tickViewed(none, a, base);
+    expect(viewed(ticks, [{ ...a }, b])).toEqual(["a.ts"]);
+  });
+
+  test("are lost when the added or removed count, the status or the base changes", () => {
+    const ticks = tickViewed(none, a, base);
+    expect(viewed(ticks, [{ ...a, added: 4 }])).toEqual([]);
+    expect(viewed(ticks, [{ ...a, removed: 2 }])).toEqual([]);
+    expect(viewed(ticks, [{ ...a, status: "added" }])).toEqual([]);
+    expect(viewed(ticks, [a], "def5678")).toEqual([]);
+  });
+
+  test("count N of M, ignoring ticks for files no longer in the diff", () => {
+    const ticks = tickViewed(tickViewed(none, a, base), b, base);
+    expect(viewedCount(ticks, [a, b, logo], base)).toBe("2 of 3 viewed");
+    expect(viewedCount(ticks, [b, logo], base)).toBe("1 of 2 viewed");
+  });
+
+  test("tick a binary file like any other", () => {
+    const ticks = tickViewed(none, logo, base);
+    expect(viewed(ticks, [logo])).toEqual(["logo.png"]);
+    expect(viewed(ticks, [{ ...logo, added: 2, removed: 0 }])).toEqual([]);
+  });
+
+  test("untick a file", () => {
+    const ticks = untickViewed(tickViewed(tickViewed(none, a, base), b, base), "a.ts");
+    expect(viewed(ticks, [a, b])).toEqual(["b.ts"]);
+    expect(viewedCount(ticks, [a, b], base)).toBe("1 of 2 viewed");
   });
 });
