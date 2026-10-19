@@ -44,6 +44,7 @@ import {
   type Judged,
   type JudgementDeps,
   gitOutput,
+  merging,
   type RuleFacts,
 } from "./drift";
 import {
@@ -268,9 +269,12 @@ const judgedOf = (at: Watched) =>
 /** What a rule check compares against: the tree, every Output, and what was verified. */
 export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched) {
   const fs = yield* FileSystem.FileSystem;
-  const base = yield* baseOf(at.cwd);
-  const committed = yield* gitOutput(["diff", "--name-only", `${base}..HEAD`], at.cwd);
-  const dirty = yield* gitOutput(["diff", "--name-only", "HEAD"], at.cwd);
+  const changed = (yield* merging(at.cwd))
+    ? yield* gitOutput(["diff", "--name-only", "MERGE_HEAD"], at.cwd)
+    : [
+        yield* gitOutput(["diff", "--name-only", `${yield* baseOf(at.cwd)}..HEAD`], at.cwd),
+        yield* gitOutput(["diff", "--name-only", "HEAD"], at.cwd),
+      ].join("\n");
   // Untracked too: a file an agent created is exactly what a `protected_paths` rule is
   // for, and it is in no diff until somebody commits it.
   const untracked = yield* gitOutput(["ls-files", "--others", "--exclude-standard"], at.cwd);
@@ -290,7 +294,7 @@ export const ruleFacts = Effect.fn("Oversight.ruleFacts")(function* (at: Watched
     if (!ranOneTest(one)) verifications[one.name] = { exit: one.exit, ref: one.id };
   const mr = parseMrUrl(at.mr ?? "");
   return {
-    changedFiles: [...new Set(lines(`${committed}\n${dirty}\n${untracked}`))],
+    changedFiles: [...new Set(lines(`${changed}\n${untracked}`))],
     branch: branch.code === 0 ? branch.stdout.trim() : null,
     mrTarget: mr?.project == null ? null : { project: mrPath(mr), iid: mr.iid },
     outputs,
@@ -556,7 +560,11 @@ export const checkDrift = Effect.fn("Oversight.checkDrift")(function* (
   yield* followRunPlan(at);
   const intent = yield* readIntent(at.runDir).pipe(Effect.orElseSucceed(() => null));
   if (intent === null) return NOTHING_CORRECTED;
-  if (judging !== "none") yield* judgeDrift(at, intent, where, judging === "finish", deps);
+  // A boundary mid-Integration would take the default branch's changes for the Run's own.
+  const deferred = judging === "boundary" && (yield* merging(at.cwd));
+  if (deferred)
+    yield* said(at, `drift not judged at ${where}: an integration's conflicts are open`);
+  else if (judging !== "none") yield* judgeDrift(at, intent, where, judging === "finish", deps);
   const rules = intent.constraints.some((constraint) => constraint.kind === "rule");
   if (rules) yield* checkRuleDrift(at, intent, where);
   // With no rule to check there may still be something to correct, from the judgement.

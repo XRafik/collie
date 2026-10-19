@@ -313,6 +313,17 @@ cites a file whose diff the judgement was shown, and it keeps that file as the d
 it; one citing only the goal, plan text, a commit or a file it was not shown is dropped
 ([ADR-0036](adr/0036-a-runs-own-plan-bounds-it.md), amended 2026-10-19).
 
+The evidence is the change since the Run left the default branch, committed or not:
+`git diff <base>..HEAD` and `git diff HEAD`, and for the rules the untracked files too. An
+[Integration](../CONTEXT.md) left with its conflicts for the builder changes that. Until its
+merge commit is made, the worktree has a `MERGE_HEAD`, and `git diff HEAD` would hold every
+change the default branch is bringing in. So both the judgement and the rules then read the
+Run's side only, `git diff MERGE_HEAD`, which compares the incoming tip with the working
+tree; the untracked files are still listed. A work boundary reached in that state is not
+judged at all: the Run log says `drift not judged at <where>: an integration's conflicts are
+open`, nothing is recorded as skipped, and the rules still run. The finish is judged as
+always.
+
 The rule that keeps this honest: **nothing passes on an absence**. A verification nobody
 ran is a breach, not a pass. A judgement Collie could not make — no evaluator, a call that
 timed out or answered outside its schema — is recorded as `skipped` with the reason, so a

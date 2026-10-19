@@ -291,6 +291,14 @@ export const gitOutput = Effect.fn("Drift.gitOutput")(function* (args: string[],
 });
 
 /**
+ * Whether `worktree` is in an unfinished merge, such as an Integration left conflicted.
+ * Its working tree against `MERGE_HEAD` is then the Run's side of it alone.
+ */
+export const merging = Effect.fn("Drift.merging")(function* (worktree: string) {
+  return (yield* shell("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], worktree)).code === 0;
+});
+
+/**
  * The actual diff a judgement is made from, capped and redacted. Actual, because a
  * summary of a change is a second thing to be wrong about; capped, because a judgement
  * given the whole of a large change is a judgement about whatever fitted; redacted by
@@ -302,9 +310,13 @@ export const evidenceFor = Effect.fn("Drift.evidenceFor")(function* (
   base: string,
 ) {
   const scope = paths.length === 0 ? [] : ["--", ...paths];
-  const committed = yield* gitOutput(["diff", `${base}..HEAD`, "--unified=3", ...scope], worktree);
-  const dirty = yield* gitOutput(["diff", "HEAD", "--unified=3", ...scope], worktree);
-  const blocks = splitDiff(`${committed}\n${dirty}`);
+  const diff = (yield* merging(worktree))
+    ? yield* gitOutput(["diff", "MERGE_HEAD", "--unified=3", ...scope], worktree)
+    : [
+        yield* gitOutput(["diff", `${base}..HEAD`, "--unified=3", ...scope], worktree),
+        yield* gitOutput(["diff", "HEAD", "--unified=3", ...scope], worktree),
+      ].join("\n");
+  const blocks = splitDiff(diff);
   return {
     blocks: blocks.slice(0, MAX_FILES),
     truncated: blocks.length > MAX_FILES || blocks.some((block) => block.truncated),

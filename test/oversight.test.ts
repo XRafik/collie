@@ -26,6 +26,7 @@ import {
   alignment,
   currentReports,
   electionsPath,
+  evidenceFor,
   findingKey,
   readDrift,
   readElections,
@@ -1049,6 +1050,100 @@ test("a related Run's work cut to the cap is said to be, and so is what is filed
         expect(currentReports(yield* readDrift(runDir(dir, "r2")))).toMatchObject([
           { evidence: cited, evidence_truncated: true },
         ]);
+      }),
+    ),
+  ));
+
+// --- Drift during an unfinished integration -------------------------------------------
+
+/**
+ * The host's repository left mid-merge: the Run changed `src/own.ts` and `src/shared.ts`,
+ * the default branch changed `src/shared.ts` and `src/upstream.ts`, and `src/shared.ts`
+ * conflicts. Returns where the Run left the default branch.
+ */
+const midMerge = () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* repository();
+    yield* fs.makeDirectory(`${dir}/src`, { recursive: true });
+    const commitFiles = (files: Readonly<Record<string, string>>) =>
+      Effect.gen(function* () {
+        for (const [name, text] of Object.entries(files))
+          yield* fs.writeFileString(`${dir}/${name}`, text);
+        yield* git(["add", ...Object.keys(files)]);
+        yield* git(["commit", "-qm", Object.keys(files).join(" ")]);
+      });
+    yield* git(["checkout", "-q", "-b", "trunk"]);
+    yield* commitFiles({ "src/shared.ts": "one\n" });
+    const base = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+    yield* git(["checkout", "-q", "-b", "work"]);
+    yield* commitFiles({ "src/own.ts": "mine\n", "src/shared.ts": "ours\n" });
+    yield* git(["checkout", "-q", "trunk"]);
+    yield* commitFiles({ "src/shared.ts": "theirs\n", "src/upstream.ts": "incoming\n" });
+    yield* git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    yield* git(["checkout", "-q", "work"]);
+    yield* git(["merge", "--no-edit", "origin/main"]);
+    expect((yield* git(["rev-parse", "-q", "--verify", "MERGE_HEAD"])).exitCode).toBe(0);
+    return base;
+  });
+
+test("mid-merge, drift's evidence is the Run's side only, never the default branch's", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const base = yield* midMerge();
+      const evidence = yield* evidenceFor(dir, [], base);
+      expect(evidence.blocks.map((block) => block.path)).toEqual(["src/own.ts", "src/shared.ts"]);
+      const facts = yield* ruleFacts(watchedAt("r1"));
+      expect(facts.changedFiles).toContain("src/own.ts");
+      expect(facts.changedFiles).toContain("src/shared.ts");
+      expect(facts.changedFiles).not.toContain("src/upstream.ts");
+    }),
+  ));
+
+test("with no merge under way, drift's evidence is what was committed and what is not", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* repository();
+      const base = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+      yield* fs.makeDirectory(`${dir}/src`, { recursive: true });
+      yield* fs.writeFileString(`${dir}/src/kept.ts`, "one\n");
+      yield* git(["add", "src/kept.ts"]);
+      yield* git(["commit", "-qm", "kept"]);
+      yield* fs.writeFileString(`${dir}/src/kept.ts`, "two\n");
+      yield* fs.writeFileString(`${dir}/notes.txt`, "new\n");
+
+      const evidence = yield* evidenceFor(dir, [], base);
+      expect(evidence.blocks.map((block) => block.path)).toEqual(["src/kept.ts", "src/kept.ts"]);
+      expect(evidence.blocks[0]?.diff).toContain("+one");
+      expect(evidence.blocks[1]?.diff).toContain("+two");
+      expect((yield* ruleFacts(watchedAt("r1"))).changedFiles).toEqual([
+        "src/kept.ts",
+        "notes.txt",
+      ]);
+    }),
+  ));
+
+test("a boundary reached with an integration's conflicts open is not judged, and nothing is skipped", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* midMerge();
+        yield* intended("r1", [SMALL]);
+        const deps = yield* crossRunJudge([]);
+        yield* checkDrift(watchedAt("r1"), "boundary before build", "boundary", deps, null);
+
+        expect(yield* fs.exists(`${rig.root}/pack.txt`)).toBe(false);
+        expect(yield* fs.readFileString(`${runDir(dir, "r1")}/log.txt`)).toContain(
+          "drift not judged at boundary before build: an integration's conflicts are open",
+        );
+        expect(yield* readDrift(runDir(dir, "r1"))).toEqual([]);
+
+        yield* fs.writeFileString(`${dir}/src/shared.ts`, "both\n");
+        yield* git(["commit", "-qam", "integrated"]);
+        yield* checkDrift(watchedAt("r1"), "finish", "finish", deps, null);
+        expect(yield* fs.exists(`${rig.root}/pack.txt`)).toBe(true);
       }),
     ),
   ));
