@@ -23,12 +23,19 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { connect, outputOf, ownerOf, restartHost } from "../src/host";
+import {
+  CHECK_ID,
+  CHECK_INSTALLATION,
+  encodeCheckRecord,
+  runningChecksDir,
+  type CheckRecord,
+} from "../src/check-processes";
 import { evidenceDir } from "../src/engine";
 import { signalProcess } from "../src/lock";
 import { startedOf, stillRunning } from "../src/processes";
-import { readVerifications } from "../src/verify";
+import { readVerifications, verifyingIn } from "../src/verify";
 import { VerifySpecSchema } from "../src/verify-spec";
-import { exec } from "./support/command";
+import { exec, startDetached } from "./support/command";
 import { fastForward, runEffect, suiteEnv } from "./support/effect";
 import { stopHost, until } from "./support/host";
 import { FakeHerdr, Rig } from "./support/recorder";
@@ -580,12 +587,9 @@ const heldCheck = `${root}test/fixtures/checks/held.sh`;
  * `watch`, then ends the host with `end`. Gives back the check's two processes, each with
  * its start token, once the host's pid is gone.
  */
-const endsWithAHeldCheck = (
+const endsWithAHeldCheck = <R>(
   watch: string,
-  end: (host: {
-    readonly state: string;
-    readonly pid: number;
-  }) => Effect.Effect<void, never, FileSystem.FileSystem>,
+  end: (host: { readonly state: string; readonly pid: number }) => Effect.Effect<void, never, R>,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -638,7 +642,7 @@ const endsWithAHeldCheck = (
       (alive) => !alive,
     );
     const running = yield* Effect.forEach(check, stillRunning);
-    return { state, runId, running };
+    return { state, runId, running, check, notes, project, host: who.pid };
   });
 
 test.skipIf(process.platform !== "linux")(
@@ -684,6 +688,189 @@ test.skipIf(process.platform !== "linux")(
           Effect.asVoid(signalProcess(outlived, "SIGKILL")),
         );
         expect(watched.running).toEqual([false, false]);
+      }),
+    ),
+  120_000,
+);
+
+/** The pids the held check noted in `file`, one per line. */
+const notedIn = (notes: string, file: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(`${notes}/${file}`)),
+    Effect.map((text) => text.split("\n").filter((line) => line !== "")),
+    Effect.orElseSucceed((): ReadonlyArray<string> => []),
+  );
+
+/** Lets the held check end, waits for its Run to complete, and gives back its verifications. */
+const releasedOnce = (state: string, runId: string, notes: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const client = yield* connect(state);
+      yield* fs.writeFileString(`${notes}/release`, "");
+      yield* until(
+        () => client.status({ runId }),
+        (status) => status.status === "complete",
+      );
+      const recorded = yield* readVerifications(evidenceDir(state, runId));
+      return recorded.filter((one) => one.name === "held");
+    }),
+  ).pipe(Effect.orDie);
+
+test.skipIf(process.platform !== "linux")(
+  "a check a killed host left is ended by the next host, named on its Run, and run once more",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const killed = yield* endsWithAHeldCheck("", ({ pid }) =>
+          Effect.asVoid(signalProcess(pid, "SIGKILL")),
+        );
+        const { state, runId, notes } = killed;
+        expect(killed.running).toEqual([true, true]);
+        const run = `${state}/runs/${runId}`;
+        const stale = yield* verifyingIn(run);
+        expect(stale).not.toBeNull();
+        const [record] = yield* fs.readDirectory(runningChecksDir(state));
+        yield* Effect.addFinalizer(() => stopHost(state).pipe(Effect.ignore));
+
+        yield* Effect.scoped(
+          connect(state).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.orDie);
+        yield* until(
+          () => notedIn(notes, "starts"),
+          (pids) => pids.length === 2,
+        );
+        expect(yield* Effect.forEach(killed.check, stillRunning)).toEqual([false, false]);
+        expect(yield* notedIn(notes, "overlaps")).toEqual([]);
+        expect(yield* fs.readFileString(`${run}/log.txt`)).toContain(
+          `check held (pass gate) of ${runId}, left running by host ${killed.host} `,
+        );
+        expect(yield* fs.readDirectory(runningChecksDir(state))).not.toContain(record);
+        expect((yield* verifyingIn(run))?.started).not.toBe(stale?.started);
+
+        expect(yield* releasedOnce(state, runId, notes)).toHaveLength(1);
+        expect(yield* notedIn(notes, "starts")).toHaveLength(2);
+      }),
+    ),
+  120_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a restart while a check runs leaves one check of the Run running, and one verification",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const restarted = yield* endsWithAHeldCheck("", ({ state }) =>
+          restartHost(state).pipe(Effect.asVoid, Effect.orDie),
+        );
+        const { state, runId, notes } = restarted;
+        yield* Effect.addFinalizer(() => stopHost(state).pipe(Effect.ignore));
+        expect(restarted.running).toEqual([false, false]);
+
+        yield* until(
+          () => notedIn(notes, "starts"),
+          (pids) => pids.length === 2,
+        );
+        expect(yield* fs.readDirectory(runningChecksDir(state))).toHaveLength(1);
+        expect(yield* notedIn(notes, "overlaps")).toEqual([]);
+        expect(yield* releasedOnce(state, runId, notes)).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a starting host ends only the checks its installation left, and says which it found gone",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { state } = yield* workspace("collie-host-leftovers-");
+        const installation = "installation-under-test";
+        yield* fs.writeFileString(`${state}/installation`, `${installation}\n`);
+        const notes = `${state}-notes`;
+        yield* fs.makeDirectory(notes);
+        yield* Effect.addFinalizer(() =>
+          fs.writeFileString(`${notes}/release`, "").pipe(Effect.ignore),
+        );
+        /** Left running by nobody, with only the bindings in `env`. */
+        const nobodys = (env: ReadonlyArray<string>, argv: ReadonlyArray<string>) =>
+          startDetached(["env", "-u", CHECK_INSTALLATION, "-u", CHECK_ID, ...env, ...argv]);
+        const sleeper = (env: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            const pid = yield* nobodys(env, ["sleep", "60"]);
+            yield* Effect.addFinalizer(() => signalProcess(pid, "SIGKILL"));
+            return { pid, started: (yield* startedOf(pid)) ?? "" };
+          });
+
+        const reused = yield* sleeper([]);
+        const theirs = yield* sleeper([
+          `${CHECK_INSTALLATION}=another-installation`,
+          `${CHECK_ID}=run-two@1-theirs`,
+        ]);
+        const unmarked = yield* sleeper([]);
+        yield* nobodys(
+          [`${CHECK_INSTALLATION}=${installation}`, `${CHECK_ID}=run-four@1-ours`],
+          [heldCheck, notes],
+        );
+        const ours = yield* Effect.forEach(["starts", "children"], (file) =>
+          until(
+            () => notedIn(notes, file),
+            (pids) => pids.length === 1,
+          ).pipe(
+            Effect.map(([pid]) => Number(pid)),
+            Effect.flatMap((pid) =>
+              Effect.map(startedOf(pid), (started) => ({ pid, started: started ?? "" })),
+            ),
+          ),
+        );
+        yield* fs.makeDirectory(runningChecksDir(state));
+        yield* fs.makeDirectory(`${state}/runs/run-four`, { recursive: true });
+        const recorded = (record: CheckRecord) =>
+          fs.writeFileString(
+            `${runningChecksDir(state)}/${record.id}.json`,
+            encodeCheckRecord(record),
+          );
+        yield* recorded({
+          id: "run-one@1-reused",
+          run: "run-one",
+          name: "held",
+          by: "collie",
+          leader: { pid: reused.pid, started: "not-its-start", group: reused.pid },
+          host: { pid: 4241, started: "1" },
+          started: "2026-10-19T00:00:00.000Z",
+        });
+        yield* recorded({
+          id: "run-four@1-ours",
+          run: "run-four",
+          name: "held",
+          pass: "gate",
+          by: "collie",
+          leader: { pid: ours[0]!.pid, started: ours[0]!.started, group: ours[0]!.pid },
+          host: { pid: 4242, started: "2" },
+          started: "2026-10-19T00:00:00.000Z",
+        });
+
+        yield* Effect.addFinalizer(() => stopHost(state).pipe(Effect.ignore));
+        yield* Effect.scoped(
+          connect(state).pipe(Effect.flatMap((client) => client.identity())),
+        ).pipe(Effect.orDie);
+
+        expect(yield* Effect.forEach([reused, theirs, unmarked], stillRunning)).toEqual([
+          true,
+          true,
+          true,
+        ]);
+        expect(yield* Effect.forEach(ours, stillRunning)).toEqual([false, false]);
+        expect(yield* fs.readDirectory(runningChecksDir(state))).toEqual([]);
+        expect(yield* fs.readFileString(`${state}/runs/run-four/log.txt`)).toContain(
+          "check held (pass gate) of run-four, left running by host 4242 (started 2): ended",
+        );
+        expect(yield* fs.readFileString(`${state}/host.log`)).toContain(
+          "check held of run-one, left running by host 4241 (started 1): already gone",
+        );
       }),
     ),
   120_000,

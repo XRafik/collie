@@ -2027,7 +2027,9 @@ running, `before` is null and it says it started one. A stopped host never answe
 with its pid and `build unknown`. Nothing about a Run is touched: the new host recovers
 what the old one was doing, exactly as on any start, so a parked Run is still parked and a
 step that was cut short runs again. A check the old host was running is ended with it and
-runs again on the new one. The herdr action "Restart the Collie host" does the
+runs again on the new one. One a host left without ending it, because it was killed or
+crashed, is ended by the next host to start, named in the Run's log, and runs once more.
+The herdr action "Restart the Collie host" does the
 same and says what it did as a notification.
 
 A host works for one Herd: the herdr session a judgement is charged to and its cross-run

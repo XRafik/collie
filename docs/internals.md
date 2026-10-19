@@ -82,6 +82,13 @@ value came from, its options, its decisions and its receipts. The request id is 
 the same request twice is one Run, and a Run recorded and not yet handed to the engine is
 handed over when the host starts again ([ADR-0017](adr/0017-one-request-is-one-run.md)).
 
+Before it hands any Run back, a starting host ends every check a previous host left
+running in its state directory: one recorded under `running-checks/`, or a process marked
+with this installation's id. It gets SIGTERM, then SIGKILL two seconds later, and is never
+adopted. The Run's log and `host.log` name the check and the host that left it, and the
+step that ran it runs it once more. No check of a Run starts while one a previous host left
+of that Run is still running.
+
 Recovery re-enters the module as it is now. Completed Activities are reused, a question
 already asked is still asked, and an agent already launched is reattached to. There is no
 frozen copy of the workflow: an unchanged one resumes where it was, one edited out of shape

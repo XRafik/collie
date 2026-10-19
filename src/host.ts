@@ -85,7 +85,13 @@ import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
 import { removedNotice, scrub, scrubJson } from "./redact";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
-import { CheckProcesses, hostCheckProcesses, type CheckProcessesApi } from "./check-processes";
+import {
+  CheckProcesses,
+  hostCheckProcesses,
+  type CheckProcessesApi,
+  type Leftover,
+  type LeftoverEnd,
+} from "./check-processes";
 import { readDrift } from "./drift";
 import {
   readIntent,
@@ -218,7 +224,9 @@ import { carryOut, carryOutAsked, followUpField } from "./run-actions";
 import { VerifySpecSchema } from "./verify-spec";
 import { everyRegistered } from "./registry";
 import { listTasks, readTask } from "./task";
-import { nowIso } from "./time";
+import { epochMs, nowIso } from "./time";
+import { appendLog } from "./oversight";
+import { VERIFYING_FILE, verifyingIn } from "./verify";
 import { reason } from "./naming";
 import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-files";
 import { receive, uploadsDir } from "./uploads";
@@ -2411,6 +2419,25 @@ const installationOf = Effect.fn("Host.installationOf")(function* (dir: string) 
   return made;
 });
 
+/** On the Run of a check a host left: its marker gone where that names it, and a line in its log. */
+const onLeftoversRun = (dir: string) => (leftover: Leftover, outcome: LeftoverEnd, line: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const at = runDir(dir, leftover.run);
+    if (!(yield* fs.exists(at).pipe(Effect.orElseSucceed(() => false)))) return;
+    const marker = yield* verifyingIn(at);
+    // A marker started after the check is a later check's.
+    if (
+      outcome !== "still running" &&
+      marker !== null &&
+      marker.name === leftover.name &&
+      marker.pass === leftover.pass &&
+      epochMs(marker.started) <= leftover.started
+    )
+      yield* fs.remove(`${at}/${VERIFYING_FILE}`, { force: true }).pipe(Effect.ignore);
+    yield* appendLog(at, line).pipe(Effect.ignore);
+  });
+
 /**
  * One host, for as long as it owns this directory. It runs until it is interrupted:
  * every resource it holds — the socket, the registrations, the SQLite client and the
@@ -2439,7 +2466,11 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
       Effect.void,
       Effect.gen(function* () {
         const installation = yield* installationOf(dir);
-        const checks = yield* hostCheckProcesses({ dir, installation });
+        const checks = yield* hostCheckProcesses({
+          dir,
+          installation,
+          onRun: onLeftoversRun(dir),
+        });
         const stop = yield* boundedStop(lock, checks);
         yield* Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`);
         yield* Effect.forkScoped(

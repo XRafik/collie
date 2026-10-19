@@ -6,7 +6,7 @@
 // not proved the check's: its recorded leader by pid and start token, or a process
 // carrying both bindings. A check this host ended reports no exit, so nothing records it.
 
-import { Context, Effect, FileSystem, Random, Schema, Stream } from "effect";
+import { Context, Effect, FileSystem, Option, Random, Schema, Stream } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Scope } from "effect";
@@ -38,6 +38,23 @@ export interface RunningCheck {
   readonly exit: Effect.Effect<number, PlatformError>;
 }
 
+/** A check a host recorded or marked in this state directory that no host is collecting. */
+export interface Leftover {
+  readonly id: string;
+  readonly run: string;
+  /** Null where only its marked processes are left, which carry neither. */
+  readonly name: string | null;
+  readonly pass: string | null;
+  readonly leader: { readonly pid: number; readonly started: string; readonly group: number };
+  /** Whether a record names its leader, which is what proves its group. */
+  readonly recorded: boolean;
+  readonly host: { readonly pid: number; readonly started: string } | null;
+  /** When it started, in epoch ms. */
+  readonly started: number;
+}
+
+export type LeftoverEnd = "ended" | "already gone" | "still running";
+
 export interface CheckProcessesApi {
   /** Starts the check in the caller's Scope, whose close ends its processes for good. */
   readonly run: (
@@ -52,6 +69,9 @@ export interface CheckProcessesApi {
   readonly endAll: Effect.Effect<ReadonlyArray<CheckOf>>;
   /** SIGKILL to whatever of an ended check is left, and its record gone once it is. */
   readonly killEnded: Effect.Effect<void>;
+  readonly left: Effect.Effect<ReadonlyArray<Leftover>>;
+  /** Ends it for good, removes its record, and says so in `host.log` and on its Run. */
+  readonly endLeftover: (leftover: Leftover) => Effect.Effect<LeftoverEnd>;
 }
 
 const RecordSchema = Schema.Struct({
@@ -66,7 +86,8 @@ const RecordSchema = Schema.Struct({
   started: Schema.String,
 });
 export type CheckRecord = Schema.Schema.Type<typeof RecordSchema>;
-const encodeRecord = Schema.encodeSync(Schema.fromJsonString(RecordSchema));
+export const encodeCheckRecord = Schema.encodeSync(Schema.fromJsonString(RecordSchema));
+const decodeRecord = Schema.decodeUnknownOption(Schema.fromJsonString(RecordSchema));
 
 export const runningChecksDir = (stateDir: string) => `${stateDir}/running-checks`;
 const recordPath = (stateDir: string, id: string) => `${runningChecksDir(stateDir)}/${id}.json`;
@@ -95,26 +116,32 @@ const unrecorded: CheckProcessesApi = {
     })),
   endAll: Effect.succeed([]),
   killEnded: Effect.void,
+  left: Effect.succeed([]),
+  endLeftover: () => Effect.succeed("already gone"),
 };
 
 export const CheckProcesses = Context.Reference<CheckProcessesApi>("collie/CheckProcesses", {
   defaultValue: () => unrecorded,
 });
 
-/** Every running process carrying this installation's and this check's bindings. */
-const markedWith = (installation: string, id: string) =>
+/** Every running process carrying this installation's binding, by the check id it carries. */
+const markedBy = (installation: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const found: number[] = [];
+    const found = new Map<string, number[]>();
     for (const name of yield* fs.readDirectory("/proc").pipe(Effect.orElseSucceed(() => []))) {
       const pid = Number(name);
       if (!Number.isInteger(pid) || pid === process.pid) continue;
       const bound = yield* bindingsOf(pid, [CHECK_INSTALLATION, CHECK_ID]);
-      if (bound?.[CHECK_INSTALLATION] !== installation || bound[CHECK_ID] !== id) continue;
-      if ((yield* groupOf(pid)) !== null) found.push(pid);
+      const id = bound?.[CHECK_ID];
+      if (bound?.[CHECK_INSTALLATION] !== installation || id === undefined) continue;
+      if ((yield* groupOf(pid)) !== null) found.set(id, [...(found.get(id) ?? []), pid]);
     }
     return found;
   });
+
+const markedWith = (installation: string, id: string) =>
+  Effect.map(markedBy(installation), (marked) => marked.get(id) ?? []);
 
 /** What of a check is proved still running: its group, while its leader is the recorded one, and each marked process. */
 const provedOf = (record: Pick<CheckRecord, "id" | "leader">, installation: string) =>
@@ -175,16 +202,41 @@ export const endCheck = Effect.fn("CheckProcesses.endCheck")(function* (
   return yield* goneWithin(record, installation, 1_000);
 });
 
+/** A check id is `<run>@<epoch ms>-<random hex>`. */
+const runOfId = (id: string) => id.slice(0, id.lastIndexOf("@"));
+const startOfId = (id: string) => Number(id.slice(id.lastIndexOf("@") + 1).split("-")[0]);
+
+const saidOf = (leftover: Leftover, outcome: LeftoverEnd) => {
+  const check =
+    leftover.name === null
+      ? `check ${leftover.id}`
+      : `check ${leftover.name}${leftover.pass === null ? "" : ` (pass ${leftover.pass})`}`;
+  const host =
+    leftover.host === null
+      ? "an earlier host"
+      : `host ${leftover.host.pid} (started ${leftover.host.started})`;
+  return `${check} of ${leftover.run}, left running by ${host}: ${outcome}`;
+};
+
 interface Collecting {
   readonly check: CheckOf;
   readonly record: CheckRecord;
   ended: boolean;
 }
 
-/** The host's adapter for the state directory `dir`, whose installation id is `installation`. */
+/**
+ * The host's adapter for the state directory `dir`, whose installation id is `installation`.
+ * Building it ends every check a previous host left. `onRun` is what ending one does on its
+ * Run, given the line `host.log` gets.
+ */
 export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (options: {
   readonly dir: string;
   readonly installation: string;
+  readonly onRun?: (
+    leftover: Leftover,
+    outcome: LeftoverEnd,
+    line: string,
+  ) => Effect.Effect<void, never, FileSystem.FileSystem>;
 }) {
   const { dir, installation } = options;
   const fs = yield* FileSystem.FileSystem;
@@ -196,6 +248,8 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     ),
   );
   const collecting = new Map<string, Collecting>();
+  // From before its spawn, so no check of this host is ever taken for a leftover.
+  const ours = new Set<string>();
   const host = { pid: process.pid, started: (yield* startedOf(process.pid)) ?? "" };
 
   const forget = (id: string) =>
@@ -203,11 +257,79 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       .remove(recordPath(dir, id), { force: true })
       .pipe(Effect.ignore, Effect.andThen(Effect.sync(() => collecting.delete(id))));
 
+  const left = Effect.gen(function* () {
+    const found = new Map<string, Leftover>();
+    const records = runningChecksDir(dir);
+    for (const file of yield* fs.readDirectory(records).pipe(Effect.orElseSucceed(() => []))) {
+      if (!file.endsWith(".json")) continue;
+      const text = yield* fs
+        .readFileString(`${records}/${file}`)
+        .pipe(Effect.orElseSucceed(() => ""));
+      const read = decodeRecord(text);
+      if (Option.isNone(read) || ours.has(read.value.id)) continue;
+      const record = read.value;
+      found.set(record.id, {
+        id: record.id,
+        run: record.run,
+        name: record.name,
+        pass: record.pass ?? null,
+        leader: record.leader,
+        recorded: true,
+        host: record.host,
+        started: epochMs(record.started),
+      });
+    }
+    for (const [id, pids] of yield* markedBy(installation)) {
+      if (found.has(id) || ours.has(id)) continue;
+      const pid = Math.min(...pids);
+      found.set(id, {
+        id,
+        run: runOfId(id),
+        name: null,
+        pass: null,
+        leader: {
+          pid,
+          started: (yield* startedOf(pid)) ?? "",
+          group: (yield* groupOf(pid)) ?? pid,
+        },
+        recorded: false,
+        host: null,
+        started: startOfId(id),
+      });
+    }
+    return [...found.values()];
+  }).pipe(Effect.provideContext(services));
+
+  const endLeftover = (leftover: Leftover) =>
+    Effect.gen(function* () {
+      const proof = {
+        id: leftover.id,
+        leader: leftover.recorded ? leftover.leader : { ...leftover.leader, started: "" },
+      };
+      const outcome: LeftoverEnd = isGone(yield* provedOf(proof, installation))
+        ? "already gone"
+        : (yield* endCheck(proof, installation))
+          ? "ended"
+          : "still running";
+      if (outcome !== "still running")
+        yield* fs.remove(recordPath(dir, leftover.id), { force: true }).pipe(Effect.ignore);
+      const line = saidOf(leftover, outcome);
+      yield* Effect.logInfo(line);
+      if (options.onRun !== undefined) yield* options.onRun(leftover, outcome, line);
+      return outcome;
+    }).pipe(Effect.provideContext(services));
+
+  const endAllOf = (leftovers: ReadonlyArray<Leftover>) =>
+    Effect.forEach(leftovers, endLeftover, { concurrency: "unbounded", discard: true });
+
   const run: CheckProcessesApi["run"] = (check, command) =>
     Effect.gen(function* () {
       const began = yield* nowIso();
       const salt = (yield* Random.next).toString(16).slice(2);
       const id = `${check.run}@${epochMs(began)}-${salt}`;
+      ours.add(id);
+      yield* Effect.addFinalizer(() => Effect.sync(() => ours.delete(id)));
+      yield* endAllOf((yield* left).filter((leftover) => leftover.run === check.run));
       const handle = yield* spawnCheck(command, {
         [CHECK_INSTALLATION]: installation,
         [CHECK_ID]: id,
@@ -234,7 +356,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       );
       yield* fs.makeDirectory(runningChecksDir(dir), { recursive: true }).pipe(Effect.ignore);
       yield* fs
-        .writeFileString(`${recordPath(dir, id)}.new`, encodeRecord(record))
+        .writeFileString(`${recordPath(dir, id)}.new`, encodeCheckRecord(record))
         .pipe(Effect.andThen(fs.rename(`${recordPath(dir, id)}.new`, recordPath(dir, id))))
         .pipe(Effect.ignore);
       return {
@@ -268,5 +390,6 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       if (yield* goneWithin(entry.record, installation, 1_000)) yield* forget(entry.record.id);
   }).pipe(Effect.provideContext(services));
 
-  return { run, endAll, killEnded } satisfies CheckProcessesApi;
+  yield* endAllOf(yield* left);
+  return { run, endAll, killEnded, left, endLeftover } satisfies CheckProcessesApi;
 });

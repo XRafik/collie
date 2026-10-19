@@ -15,6 +15,7 @@ import {
 import { bindingsOf, readsSessions, startedOf, stillRunning } from "../src/processes";
 import { collect, readVerifications } from "../src/verify";
 import { runEffect } from "./support/effect";
+import { startDetached } from "./support/command";
 import { until } from "./support/host";
 
 const held = new URL("./fixtures/checks/held.sh", import.meta.url).pathname;
@@ -182,6 +183,63 @@ test.skipIf(process.platform !== "linux")(
 
         expect(yield* reused.isRunning).toBe(true);
         expect(yield* theirs.isRunning).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+/** The held check, left running by nobody, marked as check `id` of `installation`. */
+const leftBehind = (
+  notes: string,
+  marker: { readonly installation: string; readonly id: string },
+) =>
+  startDetached([
+    "env",
+    `${CHECK_INSTALLATION}=${marker.installation}`,
+    `${CHECK_ID}=${marker.id}`,
+    held,
+    notes,
+  ]);
+
+test.skipIf(process.platform !== "linux")(
+  "a check of a Run ends what another host left of that Run before it starts, and nothing of another Run",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { root, notes, checks } = yield* world;
+        const others = `${root}/others`;
+        yield* fs.makeDirectory(others);
+        yield* Effect.addFinalizer(() =>
+          Effect.all([
+            fs.writeFileString(`${notes}/release`, ""),
+            fs.writeFileString(`${others}/release`, ""),
+          ]).pipe(Effect.ignore),
+        );
+        yield* leftBehind(notes, { installation, id: "run-1@1-left" });
+        yield* leftBehind(others, { installation, id: "run-2@1-left" });
+        const left = yield* startedIn(notes);
+        const another = yield* startedIn(others);
+
+        const exit = yield* Effect.forkScoped(
+          Effect.scoped(
+            checks
+              .run(check, { executable: held, argv: [notes], cwd: notes })
+              .pipe(Effect.flatMap((one) => one.exit)),
+          ),
+        );
+        yield* until(
+          () => fs.readFileString(`${notes}/starts`),
+          (text) => text.trim().split("\n").length === 2,
+        );
+
+        expect(yield* noneRunning(left)).toBe(true);
+        expect(yield* fs.exists(`${notes}/overlaps`)).toBe(false);
+        expect(yield* Effect.forEach(another, stillRunning)).toEqual([true, true]);
+        yield* fs.writeFileString(`${notes}/release`, "");
+        expect(yield* Fiber.join(exit)).toBe(0);
+        yield* fs.writeFileString(`${others}/release`, "");
+        yield* until(() => noneRunning(another), Boolean);
       }),
     ),
   30_000,
