@@ -1,14 +1,18 @@
 <script setup lang="ts">
+import { inField, overlayOpen } from "../../../src/shared/board-clicks";
 import { offersTerminal, opensHerdrWithoutPane } from "../../../src/shared/record-terminal";
 import type { PlacedTask } from "../../../src/shared/flock";
 import { mrTab } from "../../../src/shared/links";
 import {
+  keyAction,
   landingOf,
   recordTabs,
   rememberScroll,
   type ScrollMemory,
   scrollToRestore,
+  tabBeside,
   tabShown,
+  typedIn,
 } from "../../../src/shared/record";
 import { runDetailAtom, runDetailKey } from "../flock";
 import type { DiffTarget } from "./DiffTab.vue";
@@ -124,6 +128,35 @@ watch(tab, (now, was) => {
 });
 onBeforeUnmount(() => stopRestoring());
 
+const record = ref<HTMLElement | null>(null);
+const diffTab = ref<{ step: (by: 1 | -1) => void } | null>(null);
+const key = (event: KeyboardEvent) => {
+  const focused = document.activeElement;
+  const action = keyAction({
+    key: event.key,
+    ctrlOrMeta: event.ctrlKey || event.metaKey,
+    inField: inField(
+      typedIn(event.composedPath().map((entry) => (entry instanceof Element ? entry : null))),
+    ),
+    overlay: overlayOpen(document),
+    tab: tab.value,
+    inRecord:
+      focused === null || focused === document.body || (record.value?.contains(focused) ?? false),
+  });
+  if (action === null) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (action === "next-file" || action === "previous-file") {
+    diffTab.value?.step(action === "next-file" ? 1 : -1);
+    return;
+  }
+  const next = tabBeside(tabs.value, tab.value, action === "next-tab" ? 1 : -1);
+  if (next !== null) chosen.value = next;
+};
+// Captured, so the tree's type-to-find does not also take j and k.
+onMounted(() => window.addEventListener("keydown", key, { capture: true }));
+onUnmounted(() => window.removeEventListener("keydown", key, { capture: true }));
+
 /** Mounted from its first visit on and kept, so its toggles and open files stay as left. */
 const diffSeen = ref(false);
 watch(tab, (now) => now === "diff" && (diffSeen.value = true), { immediate: true });
@@ -139,7 +172,7 @@ const locationOf = (file: string, line: number | null) =>
 </script>
 
 <template>
-  <section data-testid="record" class="flex flex-col bg-default">
+  <section ref="record" data-testid="record" class="flex flex-col bg-default">
     <PageHeader :title="placed.task.name" @back="emit('close')">
       <p class="text-sm text-muted" data-testid="record-description">
         {{ detail?.title ?? placed.task.run }}
@@ -253,6 +286,7 @@ const locationOf = (file: string, line: number | null) =>
           <MrPanel v-else-if="tab === 'mr' && detail.mr" :mr="detail.mr" />
           <DiffTab
             v-if="detail.diff && diffSeen"
+            ref="diffTab"
             v-show="tab === 'diff'"
             :diff="detail.diff"
             :installation="placed.installation"

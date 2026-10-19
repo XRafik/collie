@@ -1,7 +1,8 @@
-// A Task's record: its tabs, the one shown, each tab's place, where a jump lands, and what its
-// Summary says.
+// A Task's record: its tabs, the one shown, each tab's place, where a jump lands, its keys, and
+// what its Summary says.
 
 import type { RunDetail } from "../../../src/board-model";
+import type { Target } from "./board-clicks";
 
 export interface TabFacts {
   /** Whether the Run's details are loaded; every tab but Log, Terminal and Facts needs them. */
@@ -82,6 +83,50 @@ export const landingOf = (
     ? { tab: "diff", at: "file", file }
     : { tab: "diff", at: "line", file, line };
 };
+
+/** The tab one step from the one shown, skipping Terminal, whose pane keeps the keys. */
+export const tabBeside = (tabs: ReadonlyArray<Tab>, shown: string, step: 1 | -1): string | null => {
+  const stops = tabs.filter(({ value }) => value !== UNSCROLLED || value === shown);
+  const at = stops.findIndex(({ value }) => value === shown);
+  return at === -1 ? null : (stops[at + step]?.value ?? null);
+};
+
+export interface KeyFacts {
+  /** The character typed, which Alt or AltGr may have made. */
+  readonly key: string;
+  readonly ctrlOrMeta: boolean;
+  readonly inField: boolean;
+  readonly overlay: boolean;
+  readonly tab: string;
+  /** Whether focus is in the record, or on nothing. */
+  readonly inRecord: boolean;
+}
+
+export type KeyAction = "previous-tab" | "next-tab" | "next-file" | "previous-file";
+
+export const keyAction = (facts: KeyFacts): KeyAction | null => {
+  if (facts.ctrlOrMeta || facts.inField || facts.overlay || !facts.inRecord) return null;
+  if (facts.tab === UNSCROLLED) return null;
+  const onDiff = facts.tab === "diff";
+  switch (facts.key) {
+    case "[":
+      return "previous-tab";
+    case "]":
+      return "next-tab";
+    case "j":
+      return onDiff ? "next-file" : null;
+    case "k":
+      return onDiff ? "previous-file" : null;
+    default:
+      return null;
+  }
+};
+
+/**
+ * The element a key was typed in, from the event's composed path with each entry that is not an
+ * element as null: inside a shadow root the event's target is only its host.
+ */
+export const typedIn = (composedPath: ReadonlyArray<Target>): Target => composedPath[0] ?? null;
 
 export type SummaryFacts = Pick<RunDetail, "status" | "attention" | "steps" | "inputs"> & {
   readonly outcome: Omit<RunDetail["outcome"], "metrics">;

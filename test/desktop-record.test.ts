@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { inField } from "../desktop/src/shared/board-clicks";
 import {
+  type KeyFacts,
+  keyAction,
   landingOf,
   recordTabs,
   rememberScroll,
@@ -7,7 +10,9 @@ import {
   type SummaryFacts,
   summaryOf,
   type TabFacts,
+  tabBeside,
   tabShown,
+  typedIn,
 } from "../desktop/src/shared/record";
 
 const everything: TabFacts = {
@@ -243,5 +248,89 @@ describe("where a jump lands", () => {
       file: "src/host.ts",
       line: null,
     });
+  });
+});
+
+describe("a key in the record", () => {
+  const plain: KeyFacts = {
+    key: "]",
+    ctrlOrMeta: false,
+    inField: false,
+    overlay: false,
+    tab: "diff",
+    inRecord: true,
+  };
+  const action = (facts: Partial<KeyFacts>) => keyAction({ ...plain, ...facts });
+
+  test("[ and ] give the previous and next tab", () => {
+    expect(action({ key: "[" })).toBe("previous-tab");
+    expect(action({ key: "]" })).toBe("next-tab");
+    expect(action({ key: "]", tab: "plan" })).toBe("next-tab");
+  });
+
+  test("j and k give the next and previous file on Diff", () => {
+    expect(action({ key: "j" })).toBe("next-file");
+    expect(action({ key: "k" })).toBe("previous-file");
+  });
+
+  test("j and k give nothing off Diff, or in uppercase", () => {
+    expect(action({ key: "j", tab: "plan" })).toBeNull();
+    expect(action({ key: "k", tab: "review" })).toBeNull();
+    expect(action({ key: "J" })).toBeNull();
+    expect(action({ key: "K" })).toBeNull();
+  });
+
+  test("gives nothing with Ctrl or Meta, but Alt does not stop it", () => {
+    expect(action({ ctrlOrMeta: true })).toBeNull();
+    expect(action({ key: "j", ctrlOrMeta: true })).toBeNull();
+    // What Alt or AltGr typed is the key itself: `]` on a Nordic layout.
+    expect(action({ key: "]" })).toBe("next-tab");
+  });
+
+  test("gives nothing typed in a field, with an overlay open, on Terminal or outside the record", () => {
+    expect(action({ inField: true })).toBeNull();
+    expect(action({ overlay: true })).toBeNull();
+    expect(action({ tab: "terminal" })).toBeNull();
+    expect(action({ inRecord: false })).toBeNull();
+  });
+
+  test("gives nothing for any other key, Escape included", () => {
+    expect(action({ key: "Escape" })).toBeNull();
+    expect(action({ key: "x" })).toBeNull();
+  });
+});
+
+describe("the element a key was typed in", () => {
+  const found = { getAttribute: () => null, hasAttribute: () => false };
+  const field = {
+    closest: (selectors: string) => (selectors.includes("textarea") ? found : null),
+  };
+  const shadowHost = { closest: () => null };
+
+  test("is the first of the composed path, a field inside a shadow root", () => {
+    const path = [field, null, shadowHost];
+    expect(inField(typedIn(path))).toBe(true);
+    expect(inField(typedIn([shadowHost]))).toBe(false);
+  });
+
+  test("is nothing when the path does not start with an element", () => {
+    expect(typedIn([])).toBeNull();
+    expect(typedIn([null, shadowHost])).toBeNull();
+  });
+});
+
+describe("the tab beside the one shown", () => {
+  const tabs = recordTabs(everything);
+
+  test("steps through the tabs, skipping Terminal", () => {
+    expect(tabBeside(tabs, "summary", 1)).toBe("plan");
+    expect(tabBeside(tabs, "plan", -1)).toBe("summary");
+    expect(tabBeside(tabs, "log", 1)).toBe("mr");
+    expect(tabBeside(tabs, "mr", -1)).toBe("log");
+  });
+
+  test("stops at the first and last tab", () => {
+    expect(tabBeside(tabs, "summary", -1)).toBeNull();
+    expect(tabBeside(tabs, "facts", 1)).toBeNull();
   });
 });

@@ -6,6 +6,7 @@ import {
   type DiffTreeNode,
   diffTree,
   filterTree,
+  fileBeside,
   fileOpen,
   foldersOn,
   reachBy,
@@ -259,5 +260,29 @@ describe("whether a file is open", () => {
     const choices = choiceForEvery(files, true);
     const arrived = [counted("new.ts", 2, 0), counted("huge.ts", 501, 0)];
     expect(openAfter(choices, [...files, ...arrived])).toEqual([true, true, true, true, false]);
+  });
+});
+
+describe("the file beside the active one", () => {
+  const files = ["a.ts", "b.ts", "c.ts"].map(file);
+
+  test("steps in drawn order", () => {
+    expect(fileBeside(files, "a.ts", 1)).toBe("b.ts");
+    expect(fileBeside(files, "c.ts", -1)).toBe("b.ts");
+  });
+
+  test("stops at the first and last file", () => {
+    expect(fileBeside(files, "a.ts", -1)).toBeNull();
+    expect(fileBeside(files, "c.ts", 1)).toBeNull();
+  });
+
+  test("is the first file while none is active", () => {
+    expect(fileBeside(files, null, 1)).toBe("a.ts");
+    expect(fileBeside(files, null, -1)).toBe("a.ts");
+  });
+
+  test("is nothing with no files", () => {
+    expect(fileBeside([], null, 1)).toBeNull();
+    expect(fileBeside([], "a.ts", -1)).toBeNull();
   });
 });

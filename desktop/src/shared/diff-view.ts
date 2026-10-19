@@ -98,6 +98,16 @@ export const choiceForEvery = (
   open: boolean,
 ): ReadonlyMap<string, boolean> => new Map(files.map(({ path }) => [path, open]));
 
+/** The file one step from the active one in drawn order; the first while none is active. */
+export const fileBeside = (
+  files: ReadonlyArray<DiffFile>,
+  active: string | null,
+  step: 1 | -1,
+): string | null => {
+  const at = files.findIndex(({ path }) => path === active);
+  return (at === -1 ? files[0] : files[at + step])?.path ?? null;
+};
+
 interface Span {
   readonly top: number;
   readonly bottom: number;

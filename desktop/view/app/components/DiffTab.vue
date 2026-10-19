@@ -10,6 +10,7 @@ import {
   choiceForEvery,
   type DiffTreeNode,
   diffTree,
+  fileBeside,
   fileOpen,
   filterTree,
   foldersOn,
@@ -41,12 +42,15 @@ const wrap = ref(false);
 const opened = ref(new Map<string, boolean>());
 
 const sections = ref<HTMLElement | null>(null);
-const scrollIntoDiff = async (path: string) => {
-  opened.value.set(path, true);
+const scrollToFile = async (path: string) => {
   await nextTick();
   sections.value
     ?.querySelector(`[data-testid="diff-${CSS.escape(path)}"]`)
     ?.scrollIntoView({ block: "start" });
+};
+const scrollIntoDiff = (path: string) => {
+  opened.value.set(path, true);
+  return scrollToFile(path);
 };
 
 /** The file being read, and the one a click or a finding's jump holds until the human scrolls. */
@@ -57,6 +61,15 @@ const show = (path: string) => {
   active.value = path;
   void scrollIntoDiff(path);
 };
+/** `j` and `k`: the next or previous file held as a click holds it, left open or closed. */
+const step = (by: 1 | -1) => {
+  const path = fileBeside(drawn.value.files, active.value, by);
+  if (path === null) return;
+  held.value = path;
+  active.value = path;
+  void scrollToFile(path);
+};
+defineExpose({ step });
 
 /** The finding's file when it is not in the diff, shown read-only above it. */
 const source = ref<DiffTarget | null>(null);

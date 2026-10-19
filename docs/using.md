@@ -1571,6 +1571,15 @@ board.
 open page, and with no page open Escape lets the selected card go, wherever the focus is in
 the window. Escape typed in a field, such as the Log search, stays with the field.
 
+In an open record, `[` and `]` move to the previous and next tab, passing over Terminal and
+stopping at the first and last, and on **Diff** `j` and `k` move to the next and previous file:
+its header scrolls to the top and the tree highlights it, as a click on its row does, without
+opening or closing it. The keys go by the character typed, so `[` and `]` typed with Alt or
+AltGr, as on Nordic layouts, work too, while Ctrl or Meta with them, or an uppercase `J` or
+`K`, does nothing. They also do nothing while focus is in a field, a Review comment box
+included; while a dialog, menu or popover is open; on Terminal, whose pane takes the keys;
+and while focus is elsewhere in the window, such as the Flock chat.
+
 Until its details arrive, a record shows a row of placeholder tabs and a placeholder body;
 a Run whose details are not on its Machine says so, and a Machine out of reach shows its
 banner. A record opens on **Summary**, unless the board asked for a tab or a jump chose one: the
