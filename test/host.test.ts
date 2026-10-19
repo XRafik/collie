@@ -561,17 +561,29 @@ test(
   120_000,
 );
 
-test(
+/**
+ * A process for a host to watch, nobody's child so that once killed it is gone rather than a
+ * zombie a signal reaches, and its kill, which first proves it was still running.
+ */
+const watchable = Effect.gen(function* () {
+  const pid = yield* startDetached(["sleep", "60"]);
+  yield* Effect.addFinalizer(() => signalProcess(pid, "SIGKILL"));
+  const kill = Effect.gen(function* () {
+    expect(yield* signalProcess(pid)).toBe(true);
+    yield* signalProcess(pid, "SIGKILL");
+  });
+  return { pid, kill };
+});
+
+test.skipIf(process.platform !== "linux")(
   "a host whose watched process exits while a step will not end is gone within its grace",
   () =>
     proves(
       Effect.gen(function* () {
-        // Nobody's child here, so once killed it is gone rather than a zombie a signal reaches.
-        const detached = yield* exec(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"]);
-        const outlived = Number(detached.stdout.trim());
-        yield* Effect.addFinalizer(() => signalProcess(outlived, "SIGKILL"));
-        const { took, log, bound } = yield* outlivesAStubbornStep(String(outlived), () =>
-          signalProcess(outlived, "SIGKILL"),
+        const outlived = yield* watchable;
+        const { took, log, bound } = yield* outlivesAStubbornStep(
+          String(outlived.pid),
+          () => outlived.kill,
         );
         expect(Duration.isLessThanOrEqualTo(took, bound)).toBe(true);
         expect(log).toContain("the process it watches has exited; stopping");
@@ -681,12 +693,8 @@ test.skipIf(process.platform !== "linux")(
         );
         expect(removed.running).toEqual([false, false]);
 
-        const detached = yield* exec(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"]);
-        const outlived = Number(detached.stdout.trim());
-        yield* Effect.addFinalizer(() => signalProcess(outlived, "SIGKILL"));
-        const watched = yield* endsWithAHeldCheck(String(outlived), () =>
-          Effect.asVoid(signalProcess(outlived, "SIGKILL")),
-        );
+        const outlived = yield* watchable;
+        const watched = yield* endsWithAHeldCheck(String(outlived.pid), () => outlived.kill);
         expect(watched.running).toEqual([false, false]);
       }),
     ),
