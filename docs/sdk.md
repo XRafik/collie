@@ -1358,9 +1358,9 @@ it. Implement's `Built` carries them as an optional `criteria` list.
 `unmetCriteria(ticket, criteria, answers)` turns each criterion left unanswered or not met
 into a blocking finding against the ticket; an `after merge` answer is neither.
 `afterMergeAnswers(criteria, answers)` is each criterion answered `after merge`, which
-shipped `implement` names in its merge request as not settled by the Run. `answerFor(criterion, answers, among)` is the
-answer a criterion has; a copy that dropped the criterion's formatting still counts, and so
-does its bold lead alone where no other criterion `among` the ticket's shares it. Shipped
+shipped `implement` names in its merge request as not settled by the Run. `answerFor(criterion, answers)` is the
+answer a criterion has: one to its whole wording, where a copy that dropped the criterion's
+formatting still counts, so an answer to earlier wording does not answer an amended criterion. Shipped
 `implement` hands what is unmet back to the builder before any reviewer is launched, twice at
 most, and stops the work if any is still unmet, so no reviewer starts on it. A text work
 source's criteria are its own checkboxes; a Linear issue's are read from `plan/SPEC.md`, the

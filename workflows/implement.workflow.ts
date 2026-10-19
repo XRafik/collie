@@ -1240,13 +1240,10 @@ const renderCriteria = (criteria: ReadonlyArray<string>) =>
     ? "None: this work names no checkbox criteria, so `criteria` stays empty."
     : criteria.map((one) => `- ${one}`).join("\n");
 
-/**
- * Each answer as the whole wording it answered, so one given by a bold lead alone does not
- * answer that criterion once it is amended. One that answered none of that wording is dropped.
- */
+/** Each answer as the wording it answered; one that answered none of it is dropped. */
 const boundTo = (wording: ReadonlyArray<string>, given: ReadonlyArray<Criterion>): Criterion[] =>
   given.flatMap((answer) => {
-    const criterion = wording.find((one) => answerFor(one, [answer], wording) !== undefined);
+    const criterion = wording.find((one) => answerFor(one, [answer]) !== undefined);
     return criterion === undefined ? [] : [{ ...answer, criterion }];
   });
 
@@ -1272,7 +1269,7 @@ const renderAnswered = (all: ReadonlyArray<Answered>) =>
               `\n${one.item}:`,
               ...one.criteria.map(
                 (criterion) =>
-                  `- ${criterion}\n  → ${answerFor(criterion, one.answers, one.criteria)?.met ?? "not answered"}`,
+                  `- ${criterion}\n  → ${answerFor(criterion, one.answers)?.met ?? "not answered"}`,
               ),
               ...one.assumptions.map((assumption) => `- assumed: ${assumption}`),
             ].join("\n"),

@@ -2483,8 +2483,11 @@ scenario(
   120_000,
 );
 
+const COUNTED = "**Counted.** Every registry is counted once.";
+const COUNTED_AMENDED = "**Counted. Every registry is counted once.** Each count is logged.";
+
 scenario(
-  "an answer by a criterion's bold lead alone does not answer its amended wording",
+  "a build's answer to a criterion's earlier wording does not answer it once that wording is only the amended one's lead",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -2499,7 +2502,7 @@ scenario(
         yield* approve("r-lead", ["unit"]);
         yield* rig.queueOutputs([
           null,
-          { ...BUILT, criteria: [{ criterion: AMENDED, met: "src/audit.ts" }] },
+          { ...BUILT, criteria: [{ criterion: COUNTED_AMENDED, met: "test/logged.test.ts" }] },
           BUILT,
           CLEAN_SYNTHESIS,
           OPENED,
@@ -2516,15 +2519,15 @@ scenario(
         const ticket = `${plan}/issues/01-first.md`;
         yield* fs.writeFileString(
           ticket,
-          (yield* fs.readFileString(ticket)).replace("named in the log", "named in the audit log"),
+          (yield* fs.readFileString(ticket)).replace(COUNTED, COUNTED_AMENDED),
         );
         yield* fs.writeFileString(
           `${agents}/01-first.md.json`,
           asJson({
             ...BUILT,
             criteria: [
-              { criterion: "Counted.", met: "test/count.test.ts" },
-              { criterion: "Named.", met: "src/log.ts" },
+              { criterion: COUNTED, met: "test/count.test.ts" },
+              { criterion: "**Named.** Each one is named in the log.", met: "src/log.ts" },
             ],
           }),
         );
@@ -2533,9 +2536,69 @@ scenario(
 
         expect(said(result)).toBe(OPENED.mr_url);
         const back = yield* asked("r-lead", "01-first.md.criteria-1");
-        expect(back).toContain(`acceptance criterion not answered: ${AMENDED}`);
-        expect(back).not.toContain("not answered: **Counted.**");
-        expect(yield* asked("r-lead", "review-1")).toContain(`- ${AMENDED}\n  → src/audit.ts`);
+        expect(back).toContain(`acceptance criterion not answered: ${COUNTED_AMENDED}`);
+        expect(back).not.toContain("not answered: **Named.**");
+        expect(yield* asked("r-lead", "review-1")).toContain(
+          `- ${COUNTED_AMENDED}\n  → test/logged.test.ts`,
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a hand-back's answer to a criterion's earlier wording does not answer it once that wording is only the amended one's lead",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        const named = "**Named.** Each one is named in the log.";
+        const amended = "**Named. Each one is named in the log.** Each name is quoted.";
+        yield* approve("r-lead-back", ["unit"]);
+        yield* rig.queueOutputs([
+          { ...BUILT, criteria: [{ criterion: COUNTED, met: "test/count.test.ts" }] },
+          null,
+          { ...BUILT, criteria: [{ criterion: amended, met: "test/quoted.test.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-lead-back", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-lead-back`;
+        yield* until(
+          () =>
+            fs
+              .exists(`${agents}/01-first.md.criteria-1.prompt.md`)
+              .pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace(named, amended),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.criteria-1.json`,
+          asJson({ ...BUILT, criteria: [{ criterion: named, met: "src/log.ts" }] }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const again = yield* asked("r-lead-back", "01-first.md.criteria-2");
+        expect(again).toContain(`acceptance criterion not answered: ${amended}`);
+        expect(yield* asked("r-lead-back", "review-1")).toContain(
+          `- ${amended}\n  → test/quoted.test.ts`,
+        );
       }),
     ),
   120_000,

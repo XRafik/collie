@@ -1159,14 +1159,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly met: string;
   }
 
-  /**
-   * The newest answer to this criterion. A copy without its formatting counts, and so does its
-   * bold lead alone where no other criterion \`among\` the ticket's opens with the same lead.
-   */
+  /** The newest answer to this criterion's whole wording; a copy without its formatting counts. */
   export function answerFor(
     criterion: string,
     answers: ReadonlyArray<Criterion>,
-    among?: ReadonlyArray<string>,
   ): Criterion | undefined;
 
   /** Each criterion whose newest answer says only CI, a merge or a deploy can show it. */

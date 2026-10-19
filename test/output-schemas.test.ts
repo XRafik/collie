@@ -176,16 +176,24 @@ test("each criterion is answered with how it is met, and one unanswered or unmet
     },
   ]);
   expect(unmetCriteria("05-x.md", [], [])).toEqual([]);
-  // Answered by its bold lead alone, it is still answered, where no other criterion shares it.
-  expect(unmetCriteria("05-x.md", criteria.slice(0, 1), [{ criterion: "A.", met: "t" }])).toEqual(
-    [],
-  );
-  const shared = ["**Checks.** Run the unit tests.", "**Checks.** Run the typecheck."];
   expect(
-    unmetCriteria("05-x.md", shared, [{ criterion: "Checks.", met: "t" }]).map((one) => one.title),
+    unmetCriteria("05-x.md", criteria.slice(0, 1), [{ criterion: "A.", met: "t" }]).map(
+      (one) => one.title,
+    ),
+  ).toEqual(["acceptance criterion not answered: **A.** It does `a`, with one entry per thing."]);
+});
+
+test("an answer to a criterion's earlier wording does not answer it once amended", () => {
+  const answers = [{ criterion: "All six tests pass.", met: "one run of test/flake.test.ts" }];
+  expect(unmetCriteria("01.md", ["All six tests pass."], answers)).toEqual([]);
+  expect(
+    unmetCriteria(
+      "01.md",
+      ["**All six tests pass.** Each passes twenty consecutive runs."],
+      answers,
+    ).map((one) => one.title),
   ).toEqual([
-    "acceptance criterion not answered: **Checks.** Run the unit tests.",
-    "acceptance criterion not answered: **Checks.** Run the typecheck.",
+    "acceptance criterion not answered: **All six tests pass.** Each passes twenty consecutive runs.",
   ]);
 });
 

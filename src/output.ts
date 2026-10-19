@@ -193,25 +193,12 @@ const criterionKey = (text: string) =>
     .replace(/[.:;\s]+$/, "")
     .trim();
 
-/** A criterion's bold lead, where it opens with one. */
-const leadOf = (criterion: string) => /^\*\*(.+?)\*\*/.exec(criterion)?.[1];
-
-/**
- * The newest answer to this criterion. A copy without its formatting counts, and so does its
- * bold lead alone where no other criterion `among` the ticket's opens with the same lead.
- */
+/** The newest answer to this criterion's whole wording; a copy without its formatting counts. */
 export const answerFor = (
   criterion: string,
   answers: ReadonlyArray<Criterion>,
-  among: ReadonlyArray<string> = [criterion],
-): Criterion | undefined => {
-  const lead = leadOf(criterion);
-  const unique =
-    lead !== undefined &&
-    among.filter((other) => criterionKey(leadOf(other) ?? "") === criterionKey(lead)).length <= 1;
-  const keys = [criterionKey(criterion), ...(unique ? [criterionKey(lead)] : [])];
-  return answers.findLast((one) => keys.includes(criterionKey(one.criterion)));
-};
+): Criterion | undefined =>
+  answers.findLast((one) => criterionKey(one.criterion) === criterionKey(criterion));
 
 /**
  * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
@@ -223,7 +210,7 @@ export function unmetCriteria(
   answers: ReadonlyArray<Criterion>,
 ): Finding[] {
   return criteria.flatMap((criterion): Finding[] => {
-    const met = answerFor(criterion, answers, criteria)?.met;
+    const met = answerFor(criterion, answers)?.met;
     if (met === undefined)
       return [
         {
@@ -252,7 +239,7 @@ export const afterMergeAnswers = (
   answers: ReadonlyArray<Criterion>,
 ): Criterion[] =>
   criteria.flatMap((criterion) => {
-    const met = answerFor(criterion, answers, criteria)?.met;
+    const met = answerFor(criterion, answers)?.met;
     return met !== undefined && /^after merge\b/i.test(met.trim()) ? [{ criterion, met }] : [];
   });
 
