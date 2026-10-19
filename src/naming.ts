@@ -39,6 +39,12 @@ export function agentName(
   return layout(slug, stepId, variantKey, `${sum}-r${seq}`).name;
 }
 
+/** Whether this launch's agent is the one launched under `name`, as `build`. */
+export const launchedAs = (
+  one: { readonly agent: string; readonly runId: string; readonly sequence?: number },
+  name: string,
+) => one.agent === agentName(one.runId, name, null, one.sequence ?? 1);
+
 function layout(slug: string, stepId: string, variantKey: string | null, suffix: string) {
   const trim = (text: string, room: number) => text.slice(0, Math.max(0, room)).replace(/-+$/g, "");
   const step = sanitize([stepId, variantKey].filter((p) => p).join("-"));
