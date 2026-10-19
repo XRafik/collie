@@ -538,7 +538,7 @@ export default defineWorkflow({
         });
         // Each criterion answered before any reviewer is launched: one left unanswered or
         // unmet goes back to the builder, and the work stops if it still is.
-        let answers: ReadonlyArray<Criterion> = build.criteria ?? [];
+        let answers = boundTo(spec, build.criteria ?? []);
         const assumptions = [...(build.assumptions ?? [])];
         const commits = [...(build.commits ?? [])];
         let criteria = spec;
@@ -563,7 +563,7 @@ export default defineWorkflow({
             },
             output: Built,
           });
-          answers = [...answers, ...(answered.criteria ?? [])];
+          answers = [...answers, ...boundTo(criteria, answered.criteria ?? [])];
           assumptions.push(...(answered.assumptions ?? []));
           commits.push(...(answered.commits ?? []));
         }
@@ -1239,6 +1239,16 @@ const renderCriteria = (criteria: ReadonlyArray<string>) =>
   criteria.length === 0
     ? "None: this work names no checkbox criteria, so `criteria` stays empty."
     : criteria.map((one) => `- ${one}`).join("\n");
+
+/**
+ * Each answer as the whole wording it answered, so one given by a bold lead alone does not
+ * answer that criterion once it is amended.
+ */
+const boundTo = (wording: ReadonlyArray<string>, given: ReadonlyArray<Criterion>): Criterion[] =>
+  given.map((answer) => {
+    const criterion = wording.find((one) => answerFor(one, [answer], wording) !== undefined);
+    return criterion === undefined ? answer : { ...answer, criterion };
+  });
 
 /** What a builder said of one item's criteria, and what it decided that the plan did not. */
 interface Answered {

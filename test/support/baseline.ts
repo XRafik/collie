@@ -2484,6 +2484,64 @@ scenario(
 );
 
 scenario(
+  "an answer by a criterion's bold lead alone does not answer its amended wording",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-lead", ["unit"]);
+        yield* rig.queueOutputs([
+          null,
+          { ...BUILT, criteria: [{ criterion: AMENDED, met: "src/audit.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-lead", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-lead`;
+        yield* until(
+          () =>
+            fs.exists(`${agents}/01-first.md.prompt.md`).pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace("named in the log", "named in the audit log"),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.json`,
+          asJson({
+            ...BUILT,
+            criteria: [
+              { criterion: "Counted.", met: "test/count.test.ts" },
+              { criterion: "Named.", met: "src/log.ts" },
+            ],
+          }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const back = yield* asked("r-lead", "01-first.md.criteria-1");
+        expect(back).toContain(`acceptance criterion not answered: ${AMENDED}`);
+        expect(back).not.toContain("not answered: **Counted.**");
+        expect(yield* asked("r-lead", "review-1")).toContain(`- ${AMENDED}\n  → src/audit.ts`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "an answer to the old wording of a criterion amended during a hand-back is handed back as unanswered",
   () =>
     runEffect(
