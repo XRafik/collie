@@ -162,7 +162,12 @@ const porcelain = (checkouts: ReadonlyArray<{ path: string; branch: string }>) =
  */
 const fakeGitWithCheckouts = (
   checkouts: ReadonlyArray<{ path: string; branch: string }>,
-  opts: { branch?: string; remoteBranches?: string[]; refusals?: Record<string, string> } = {},
+  opts: {
+    branch?: string;
+    remoteBranches?: string[];
+    refusals?: Record<string, string>;
+    scripts?: Record<string, string>;
+  } = {},
 ) =>
   fakeGitAnswering(
     {
@@ -176,6 +181,7 @@ const fakeGitWithCheckouts = (
       "worktree add":
         'for a in "$@"; do case "$a" in /*) mkdir -p "$a" && printf "gitdir: $a/.gitdir\\n" > "$a/.git"; break ;; esac; done',
       "worktree remove": 'rm -rf "$3"',
+      ...opts.scripts,
     },
   );
 
@@ -706,6 +712,8 @@ const collieWorktree = (
         path: worktreePath,
         branch,
         created_by_collie: true,
+        created_branch: false,
+        created_on: null,
         managed_by: opts.managedBy ?? "herdr",
         workspace_id: workspaceId,
         made_at: madeAt.mtime.pipe(Option.getOrNull)?.getTime() ?? null,
@@ -1477,6 +1485,8 @@ test("a mutating run makes its checkout with git and stays in the workspace it s
         managed_by: "git",
         workspace_id: null,
         created_by_collie: true,
+        created_branch: false,
+        created_on: null,
         made_at: expect.any(Number),
         // No workspace, so no shell tab of its own to take over.
         root_tab_id: null,
@@ -1596,7 +1606,11 @@ test("the checkout a branch already has is reused, never added twice", () =>
       });
 
       expect(checkout.cwd).toBe(existing);
-      expect(checkout.worktree).toMatchObject({ created_by_collie: false, managed_by: "git" });
+      expect(checkout.worktree).toMatchObject({
+        created_by_collie: false,
+        created_branch: false,
+        managed_by: "git",
+      });
       expect(yield* asked()).not.toContain(`worktree add ${existing}`);
     }),
   ));
@@ -1627,6 +1641,38 @@ test("a Run that asks for its own workspace has herdr make the checkout, and tak
       expect(yield* rig.cmds()).toEqual(["worktree list", "worktree create"]);
       // git is asked only about the branch, never to make the checkout.
       expect(yield* asked()).not.toContain("worktree list --porcelain");
+    }),
+  ));
+
+test("a branch neither local nor on origin is one the Run created, and one origin has is not", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const branch = `${LOGIN}/add-a-picker`;
+      const place = (remote: string) =>
+        Effect.gen(function* () {
+          yield* fakeGitWithCheckouts([{ path: rig.projectDir, branch: "master" }], {
+            scripts: { [`ls-remote --exit-code --heads origin refs/heads/${branch}`]: remote },
+          });
+          return yield* checkoutFor(new Herdr(rig.pluginEnv()), {
+            stateDir: rig.stateDir,
+            cwd: rig.projectDir,
+            workflow: "implement",
+            checkout: "branch",
+            name: "Add a picker",
+            login: LOGIN,
+            inputs: { plan_kind: "text" },
+            workspaceId: "wTasks",
+          });
+        });
+
+      expect((yield* place("exit 2")).worktree).toMatchObject({
+        created_branch: true,
+        created_on: "git@gitlab.example.com:acme/app.git",
+      });
+      expect((yield* place(`printf 'deadbeef\\trefs/heads/${branch}\\n'`)).worktree).toMatchObject({
+        created_branch: false,
+        created_on: null,
+      });
     }),
   ));
 
@@ -1720,7 +1766,7 @@ test("a roaming Run's repository is cloned through its URL's forge, and one on n
   runEffect(
     Effect.gen(function* () {
       yield* fakeGitAnswering(
-        { ...gitAnswers(), "worktree list --porcelain": porcelain([]) },
+        { ...gitAnswers(), "worktree list --porcelain": porcelain([]), config: "" },
         {},
         { clone: 'mkdir -p "$4/.git"' },
       );
@@ -1756,6 +1802,43 @@ test("a roaming Run's repository is cloned through its URL's forge, and one on n
     }),
   ));
 
+test("a clone made before Collie kept its credentials gets the helper on its next use", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const url = "https://gitlab.example.com/acme/old";
+      const source = join(rig.stateDir, "renovate-repositories", Bun.hash(url).toString(16));
+      yield* fs.makeDirectory(join(source, ".git"), { recursive: true });
+      yield* fakeGitAnswering(
+        {
+          ...gitAnswers(),
+          "worktree list --porcelain": porcelain([{ path: source, branch: "master" }]),
+          config: "",
+        },
+        {},
+        {
+          "worktree add":
+            'for a in "$@"; do case "$a" in /*) mkdir -p "$a" && printf "gitdir: $a/.gitdir\\n" > "$a/.git"; break ;; esac; done',
+        },
+      );
+
+      const checkout = yield* renovateCheckout({ repository: url });
+
+      expect(checkout.refused).toBeNull();
+      const configured = (yield* askedIn()).filter(
+        (call) => call.cwd === source && call.command.startsWith("config --local"),
+      );
+      expect(configured.map((call) => call.command)).toEqual([
+        "config --local --unset-all credential.https://gitlab.example.com.helper",
+        "config --local --add credential.https://gitlab.example.com.helper ",
+        expect.stringMatching(
+          /^config --local --add credential\.https:\/\/gitlab\.example\.com\.helper !.*glab config get token --host 'gitlab\.example\.com'/,
+        ),
+      ]);
+      expect((yield* asked()).some((command) => command.startsWith("clone"))).toBe(false);
+    }),
+  ));
+
 test("a Renovate Run gets a detached checkout at the default branch, bound to no branch", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1778,6 +1861,8 @@ test("a Renovate Run gets a detached checkout at the default branch, bound to no
         managed_by: "git",
         workspace_id: null,
         created_by_collie: true,
+        created_branch: false,
+        created_on: null,
         made_at: expect.any(Number),
         root_tab_id: null,
         root_pane_id: null,
@@ -1825,6 +1910,7 @@ test("a GitLab URL is cloned before the Renovate worktree is cut", () =>
         {
           ...gitAnswers(),
           "worktree list --porcelain": porcelain([{ path: source, branch: "master" }]),
+          config: "",
         },
         {},
         {
@@ -1990,6 +2076,8 @@ const renovateRunAt = (at: string) =>
         path: at,
         branch: "",
         created_by_collie: true,
+        created_branch: false,
+        created_on: null,
         managed_by: "git",
         workspace_id: null,
         made_at: Option.getOrThrow(made.mtime).getTime(),

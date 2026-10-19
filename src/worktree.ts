@@ -35,6 +35,7 @@ import {
 import { mrWords, parseMrTarget } from "./board-model";
 import { FORGES, forgeOf, forgeOfHost } from "./forge/forge";
 import { withLock } from "./lock";
+import { withoutCredentials } from "./automode";
 import type { AgentEntry } from "./registry";
 import type { WorktreeRecord } from "./run";
 // Type-only: the host imports this module, and `runs.ts` reads through the host.
@@ -659,6 +660,28 @@ const gitCheckout = Effect.fn("worktree.gitCheckout")(function* (opts: {
 });
 
 /**
+ * The origin, credentials removed, where `branch` is neither local nor on it, so a checkout
+ * made now creates it; null where it exists or that is unsure.
+ */
+const newOnOrigin = Effect.fn("worktree.newOnOrigin")(function* (branch: string, cwd: string) {
+  const local = yield* shell(
+    "git",
+    ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+    cwd,
+  );
+  if (local.code === 0) return null;
+  // 2 is ls-remote's own "no such ref"; a remote it cannot reach says nothing.
+  const remote = yield* shell(
+    "git",
+    ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`],
+    cwd,
+  );
+  if (remote.code !== 2) return null;
+  const url = yield* shell("git", ["remote", "get-url", "origin"], cwd);
+  return url.code === 0 && url.stdout.trim() !== "" ? withoutCredentials(url.stdout.trim()) : null;
+});
+
+/**
  * The checkout for a branch: the one it already has, or a new one. `herdr worktree
  * open` is what gives an existing checkout its workspace back, so a Run handed to a
  * live implementer and a Run started fresh on the same branch both land in one place.
@@ -693,6 +716,8 @@ export const worktreeFor = Effect.fn("worktree.worktreeFor")(function* (
       managed_by: "herdr",
       workspace_id: opened.workspaceId,
       created_by_collie: !existing,
+      created_branch: false,
+      created_on: null,
       made_at: yield* madeAt(opened.path),
       root_tab_id: opened.rootTab?.tabId ?? null,
       root_pane_id: opened.rootTab?.paneId ?? null,
@@ -818,6 +843,8 @@ const roamingCheckout = Effect.fn("worktree.roamingCheckout")(function* (opts: {
         managed_by: "git",
         workspace_id: null,
         created_by_collie: true,
+        created_branch: false,
+        created_on: null,
         made_at: yield* madeAt(made.path),
         root_tab_id: null,
         root_pane_id: null,
@@ -958,16 +985,20 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       from = path.join(opts.stateDir, "renovate-repositories", Bun.hash(repository).toString(16));
+      const host = project.split("/")[0]!;
+      const forge = forgeOfHost(host, opts.gitlabHost);
+      if (forge === null) return { ...here, refused: `${host} is neither GitHub nor GitLab` };
       if (!(yield* fs.exists(path.join(from, ".git")))) {
         yield* fs.makeDirectory(path.dirname(from), { recursive: true });
-        const host = project.split("/")[0]!;
-        const forge = forgeOfHost(host, opts.gitlabHost);
-        if (forge === null) return { ...here, refused: `${host} is neither GitHub nor GitLab` };
         const cloned = yield* FORGES[forge].clone(project, from, opts.stateDir, shell);
         if (!cloned.ok) {
           return { ...here, refused: `could not clone ${repository}: ${cloned.reason}` };
         }
       }
+      // Every use, so a clone made before the helper existed gets it too.
+      const kept = yield* FORGES[forge].credentials(project, from, shell);
+      if (!kept.ok)
+        return { ...here, refused: `could not keep credentials for ${repository}: ${kept.reason}` };
     }
     const made = yield* roamingCheckout({
       cwd: from,
@@ -1026,6 +1057,7 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
   const refuse = (why: string) =>
     ({ ...here, refused: `no worktree for ${plan.branch}: ${why}` }) satisfies Checkout;
 
+  const newOn = yield* newOnOrigin(plan.branch, opts.cwd);
   if (opts.separate === true) {
     // The Task's own name where the caller worked one out, so the workspace herdr opens
     // reads like every other task workspace rather than like the branch under it.
@@ -1035,7 +1067,13 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
       worktreeFor(herdr, { cwd: opts.cwd, branch: plan.branch, base: plan.base, label }),
     );
     if (found._tag === "Failure") return refuse(herdrFailureReason(found.failure));
-    const { worktree, workspaceLabel } = found.success;
+    const { workspaceLabel } = found.success;
+    const made = found.success.worktree.created_by_collie && newOn !== null;
+    const worktree = {
+      ...found.success.worktree,
+      created_branch: made,
+      created_on: made ? newOn : null,
+    };
     return {
       ...here,
       cwd: worktree.path,
@@ -1064,6 +1102,8 @@ export const checkoutFor = Effect.fn("worktree.checkoutFor")(function* (
     managed_by: "git",
     workspace_id: null,
     created_by_collie: made.created,
+    created_branch: made.created && newOn !== null,
+    created_on: made.created ? newOn : null,
     made_at: yield* madeAt(made.path),
     // A git checkout opens no workspace, so there is no shell tab of its own to take
     // over — the Run stays where it was started and uses that tab as it always did.

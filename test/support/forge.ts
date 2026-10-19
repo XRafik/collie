@@ -97,6 +97,8 @@ export const ForgeModel = Schema.Struct({
   /** Hosts the CLI is logged in to. */
   loggedIn: Schema.Array(Schema.String),
   login: Schema.NullOr(Schema.String),
+  /** The token the CLI hands out for its host, where a test changes it. */
+  token: Schema.optionalKey(Schema.String),
   mrs: Schema.Array(FakeMr),
   issues: Schema.optionalKey(Schema.Array(FakeIssue)),
   issueNotes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
@@ -137,6 +139,18 @@ export const ForgeModel = Schema.Struct({
   approved: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The forge refuses an approval, as it does one by the author. */
   refusesApproval: Schema.optionalKey(Schema.Boolean),
+  /** `main` where unsaid. */
+  defaultBranch: Schema.optionalKey(Schema.String),
+  /** GitLab's protected branches, or GitHub's classic protection rules, by pattern. */
+  protectedBranches: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({ name: Schema.String, allowForcePush: Schema.optionalKey(Schema.Boolean) }),
+    ),
+  ),
+  /** GitHub's rulesets, by the branch pattern each includes. */
+  rulesets: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** Neither the repository nor its protection can be read. */
+  protectionDown: Schema.optionalKey(Schema.Boolean),
 });
 export type ForgeModel = typeof ForgeModel.Type;
 const ModelJson = Schema.fromJsonString(ForgeModel);
@@ -347,7 +361,7 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   }
   if (verb === "config" && sub === "get" && args[2] === "token") {
     const host = flag(args, "--host") ?? "";
-    return model.loggedIn.includes(host) ? ok("glpat-fake\n") : ok("");
+    return model.loggedIn.includes(host) ? ok(`${model.token ?? "glpat-fake"}\n`) : ok("");
   }
   if (verb === "mr" && sub === "list" && args[3] === "@me")
     return json(
@@ -364,8 +378,21 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     return { ...ok(), noted: { key: keyOf("gitlab", mr), body: flag(args, "--message") ?? "" } };
   }
   if (verb === "api" && flag(args, "--hostname") !== undefined) {
-    if (model.deploysDown === true) return no();
     const route = args.at(-1) ?? "";
+    if (/^projects\/[^/]+$/.test(route))
+      return model.protectionDown === true
+        ? no()
+        : json({ default_branch: model.defaultBranch ?? "main" });
+    if (/^projects\/[^/]+\/protected_branches/.test(route))
+      return model.protectionDown === true
+        ? no()
+        : json(
+            (model.protectedBranches ?? []).map((one) => ({
+              name: one.name,
+              allow_force_push: one.allowForcePush ?? false,
+            })),
+          );
+    if (model.deploysDown === true) return no();
     const environments = model.environments ?? [];
     if (route.endsWith("/environments"))
       return json(environments.map(({ name, tier }) => ({ name, tier })));
@@ -454,6 +481,31 @@ const deploymentsOf = (model: ForgeModel) =>
 
 /** `gh api repos/<o>/<r>/…`, for deployments, compare and Actions runs. */
 function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): Answer {
+  if (/^repos\/[^/]+\/[^/]+$/.test(route))
+    return model.protectionDown === true
+      ? no()
+      : json({ default_branch: model.defaultBranch ?? "main" });
+  const ruled = /\/rules\/branches\/(.+)$/.exec(route);
+  if (ruled)
+    return model.protectionDown === true
+      ? no()
+      : json(
+          (model.rulesets ?? [])
+            .filter((pattern) => new Bun.Glob(pattern).match(decodeURIComponent(ruled[1]!)))
+            .map((_, at) => ({ type: "pull_request", ruleset_id: at + 1 })),
+        );
+  if (route === "graphql")
+    return model.protectionDown === true
+      ? no()
+      : json({
+          data: {
+            repository: {
+              branchProtectionRules: {
+                nodes: (model.protectedBranches ?? []).map((one) => ({ pattern: one.name })),
+              },
+            },
+          },
+        });
   if (model.deploysDown === true) return no();
   const tierOf = (name: string) =>
     (model.environments ?? []).find((env) => env.name === name)?.tier;
@@ -548,6 +600,10 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (verb === "auth" && sub === "status")
     return model.loggedIn.includes(flag(args, "--hostname") ?? FORGE_HOST.github) ? ok() : no();
   if (!model.loggedIn.includes(FORGE_HOST.github)) return no(4);
+  if (verb === "auth" && sub === "git-credential" && args[2] === "get")
+    return ok(
+      `protocol=https\nhost=${FORGE_HOST.github}\nusername=x-access-token\npassword=${model.token ?? "gho-fake"}\n`,
+    );
   if (verb === "issue") return issueAnswer("github", model, args);
   if (verb === "api" && sub === "user")
     return model.login === null ? no() : json({ login: model.login });
@@ -666,7 +722,9 @@ export function answer(
             : undefined
         : args.join(" ") === "rev-parse --abbrev-ref HEAD"
           ? model.branch
-          : undefined;
+          : args.join(" ") === "symbolic-ref --quiet --short HEAD" && model.branch !== "HEAD"
+            ? model.branch
+            : undefined;
     return { ran: said === undefined ? no().ran : ok(`${said}\n`).ran, model };
   }
   // GitLab's clone is git's own, with glab's token as its header.
@@ -743,7 +801,9 @@ export const forgeBin = Effect.fn("forge.bin")(function* (
   const model = Schema.decodeSync(ModelJson)(yield* fs.readFileString(file));
   yield* fs.writeFileString(`${file}.log`, `${[CLI[forge], ...args].join(" ")}\n`, { flag: "a" });
   const said = answer(forge, model, CLI[forge], args);
-  yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(said.model));
+  // Writing back an unchanged model would undo a test's write that landed since the read.
+  if (said.model !== model)
+    yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(said.model));
   return said.ran;
 });
 
