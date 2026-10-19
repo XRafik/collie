@@ -29,7 +29,7 @@ import { metricsOf, readMetrics } from "./metrics";
 import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } from "./board-model";
 import { newest, readCards, readCheckpoints } from "./cards";
 import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
-import { orderedTicketsOf } from "./plan";
+import { orderedTickets } from "./plan";
 import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
@@ -258,11 +258,7 @@ const stampOf = (file: string) =>
     Effect.orElseSucceed(() => ""),
   );
 
-/**
- * The tickets of this Run's plan that a succeeded Run built from it finished: a slice that
- * landed, a step named after the ticket, or a whole-plan build of its repository's tickets
- * written before that build's Output. A failed or stopped Run proves nothing.
- */
+/** The tickets of this Run's plan that a succeeded Run built from it finished. */
 const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
   run: RunFacts,
   runs: ReadonlyArray<RunFacts>,
@@ -273,6 +269,7 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
   const dir = yield* planDirOf(run);
   if (dir === null) return finished;
   const issues = path.join(dir, "issues");
+  let tickets: Array<{ file: string; text: string }> | undefined;
   for (const one of runs) {
     if (one.state !== "succeeded") continue;
     const mayShare =
@@ -281,8 +278,11 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
       continue;
     for (const { checkpoint } of yield* readCheckpoints(one.dir))
       if (checkpoint.status === "done") finished.add(checkpoint.ticket);
-    const mine = (yield* orderedTicketsOf(dir, one.repo ?? undefined)).map((t) => t.file);
-    for (const launch of yield* readLaunches(stateDir, one.id)) {
+    const launches = yield* readLaunches(stateDir, one.id);
+    if (launches.length === 0) continue;
+    tickets ??= yield* cappedTickets(issues);
+    const mine = orderedTickets(tickets, one.repo ?? undefined).map((t) => t.file);
+    for (const launch of launches) {
       const output = yield* writtenAt(launch.output);
       if (output === undefined) continue;
       if (mine.includes(launch.operation)) finished.add(launch.operation);
@@ -296,7 +296,18 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
   return finished;
 });
 
-/** When a file was last written, or nothing where it is not there. */
+const cappedTickets = Effect.fn("Views.cappedTickets")(function* (issues: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => [])))
+    .filter((name) => name.endsWith(".md"))
+    .sort();
+  const tickets: Array<{ file: string; text: string }> = [];
+  for (const file of files)
+    tickets.push({ file, text: (yield* capped(path.join(issues, file), OUTPUT_CAP))?.text ?? "" });
+  return tickets;
+});
+
 const writtenAt = (file: string) =>
   Effect.flatMap(FileSystem.FileSystem, (fs) => fs.stat(file)).pipe(
     Effect.map((info) => Option.getOrUndefined(info.mtime)?.getTime()),
