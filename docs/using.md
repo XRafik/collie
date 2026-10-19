@@ -1574,10 +1574,10 @@ and github-dark colours as Desktop's theme follows. A file is read from the host
 it is opened, and again when the Run changes how many lines it adds or removes, with no
 line cap; a file with more than
 500 changed lines, or a binary one, starts collapsed. **Evidence** shows the Run's
-verifications as a checklist, those that did not do what they were expected to first and
-already open with their output in its terminal colours; then every web link the Run's
-Outputs, handoffs, review and findings name, as a card: a Claude artifact by the title its
-link was given, the merge request with its state, its pipelines with the head pipeline's
+verifications as a checklist, every one collapsed, those that did not do what they were
+expected to first; opening one reads its output in its terminal colours; then every web
+link the Run's Outputs, handoffs, review and findings name, as a card: a Claude artifact
+by the title its link was given, the merge request with its state, its pipelines with the head pipeline's
 status, and any other pipeline with the status GitLab gives it where `glab` is signed in to
 its host, or a GitHub Actions run with its conclusion where `gh` is; its screenshots as a
 gallery, a `before` beside its `after` where their names pair them, twelve to a page; its
