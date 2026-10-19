@@ -24,11 +24,12 @@ import { claudeTrust } from "./trust";
 import { isYamlMap, type YamlMap, type YamlValue } from "./yaml";
 import { NO_OUTCOME, type RunRow } from "./workspace";
 import { latest, readDispositions } from "./disposition";
-import { runAgents } from "./launches";
+import { runAgents, stepsOf } from "./launches";
 import { metricsOf, readMetrics } from "./metrics";
 import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } from "./board-model";
-import { newest, readCards } from "./cards";
-import { diffOf, planDirOf } from "./run-detail";
+import { newest, readCards, readCheckpoints } from "./cards";
+import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
+import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
 
@@ -217,7 +218,11 @@ export function planTicket(file: string, text: string): PlanTicket {
  * The spec is capped and paged exactly like the review: an agent wrote it, so it can be
  * any size at all, and `m` is how the rest of it is read.
  */
-const buildPlan = Effect.fn("Views.buildPlan")(function* (run: RunFacts, cap: number) {
+const buildPlan = Effect.fn("Views.buildPlan")(function* (
+  run: RunFacts,
+  cap: number,
+  finished: ReadonlySet<string>,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const dir = yield* planDirOf(run);
@@ -235,8 +240,10 @@ const buildPlan = Effect.fn("Views.buildPlan")(function* (run: RunFacts, cap: nu
   for (const file of files) {
     // Capped like everything else the panel reads: a ticket is prose an agent wrote.
     const text = yield* capped(path.join(issues, file), OUTPUT_CAP);
+    const ticket = planTicket(file, text?.text ?? "");
     tickets.push({
-      ...planTicket(file, text?.text ?? ""),
+      ...ticket,
+      done: ticket.done || finished.has(file),
       stamp: yield* stampOf(path.join(issues, file)),
     });
   }
@@ -249,6 +256,50 @@ const stampOf = (file: string) =>
     Effect.map((info) => `${info.size}:${Option.getOrUndefined(info.mtime)?.getTime() ?? ""}`),
     Effect.orElseSucceed(() => ""),
   );
+
+/**
+ * The tickets of this Run's plan that a succeeded Run built from it finished: a slice that
+ * landed, a step named after the ticket, or a whole-plan build of every ticket written
+ * before that Run ended. A failed or stopped Run proves nothing.
+ */
+const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
+  run: RunFacts,
+  runs: ReadonlyArray<RunFacts>,
+  stateDir: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const finished = new Set<string>();
+  const dir = yield* planDirOf(run);
+  if (dir === null) return finished;
+  const issues = path.join(dir, "issues");
+  const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => []))).filter(
+    (name) => name.endsWith(".md"),
+  );
+  for (const one of runs) {
+    if (one.state !== "succeeded" || one.finished === null) continue;
+    const mayShare =
+      path.join(one.dir, PLAN_DIR) === dir || workSourceOf(one.settled)?.value === dir;
+    if (!mayShare || (yield* planDirOf(one).pipe(Effect.orElseSucceed(() => null))) !== dir)
+      continue;
+    for (const { checkpoint } of yield* readCheckpoints(one.dir))
+      if (checkpoint.status === "done") finished.add(checkpoint.ticket);
+    for (const step of yield* stepsOf(stateDir, one.id)) {
+      if (!step.done) continue;
+      if (files.includes(step.operation)) finished.add(step.operation);
+      if (step.operation !== "build") continue;
+      const ended = epochMs(one.finished);
+      for (const file of files) {
+        const info = yield* fs.stat(path.join(issues, file)).pipe(Effect.option);
+        const written = Option.getOrUndefined(
+          Option.flatMap(info, (stat) => stat.mtime),
+        )?.getTime();
+        if (written !== undefined && written <= ended) finished.add(file);
+      }
+    }
+  }
+  return finished;
+});
 
 /** Every plan file's stamp, which changes whenever one of them is written. */
 const planStamps = Effect.fn("Views.planStamps")(function* (run: RunFacts) {
@@ -277,13 +328,16 @@ const plannedFor = Effect.fn("Views.plannedFor")(function* (
   run: RunFacts,
   cap: number,
   plans: PlanCache | undefined,
+  runs: ReadonlyArray<RunFacts>,
+  stateDir: string,
 ) {
-  if (!plans || !settled(run)) return yield* buildPlan(run, cap);
+  const finished = yield* finishedTickets(run, runs, stateDir);
+  if (!plans || !settled(run)) return yield* buildPlan(run, cap, finished);
   const key = `${run.id}:${cap}`;
-  const stamps = yield* planStamps(run);
+  const stamps = `${yield* planStamps(run)}\nfinished=${[...finished].sort().join(",")}`;
   const kept = plans.get(key);
   if (kept?.stamps === stamps) return kept.plan;
-  const plan = yield* buildPlan(run, cap);
+  const plan = yield* buildPlan(run, cap, finished);
   plans.set(key, { stamps, plan });
   return plan;
 });
@@ -382,7 +436,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
       Effect.catch(() => Effect.succeed(null)),
     ),
     review,
-    plan: yield* plannedFor(run, cap, opts.plans),
+    plan: yield* plannedFor(run, cap, opts.plans, opts.runs ?? [run], opts.env.stateDir),
     outputs: [],
     attention,
     outcome: {
