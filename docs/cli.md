@@ -1156,7 +1156,11 @@ nothing already answers for it: it relies on the latest record of exactly that c
 command on the same tree, where it is a pass collected in the same environment by this
 host, whoever asked for it, and logs `<pass>: <check> relies on verification <id>`. So a
 check that passed on a tree, an agent's `collie verify` of it included, is not run again
-on that tree, and nor is one whose every failed test there was a Flake or fails at the base too. A changed tree or set of checks also gets fresh proof while
+on that tree, and nor is one whose every failed test there was a Flake or fails at the base too.
+Nor is a check that failed on a tree run again on it after a gate fix that left the tree as
+it was: the round is read from the records already there, and the proof's whole `recheck`
+is only for a check whose failures named no tests and that has had none on that tree
+(ADR-0034, amended 2026-10-19). A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. Apart from

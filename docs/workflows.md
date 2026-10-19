@@ -126,7 +126,14 @@ failing before the Run's changes, and a check whose every such test does is not 
 implementer; a test that passes there, or that the base does not have, is the Run's own. A check
 whose failures name no tests has no baseline and is handed to the fixes. A fix that changes nothing and disputes every finding it was
 handed ends the fixes, since another would check the same tree: the outcome stays unproved,
-and the merge request names each disputed gap with the fixer's reason. A gate fix lands after the last
+and the merge request names each disputed gap with the fixer's reason. A check is not run whole
+again on a tree it failed on: after a fix that left HEAD and the fingerprint as they were,
+nothing runs and the round is read from the records already on that tree, and a check whose
+failures named tests is read from its runs alone and at the base rather than rechecked. A
+check re-granted with another command or directory still runs. When the four fixes run out
+with a check still failing and no stall, the Run is parked "Outcome unproved after 4 gate
+fixes …", naming the gaps; repair the checks and resume it, and a resume from that park runs
+each check still failing whole once more, since a repair can be outside the tree. A gate fix lands after the last
 review, so the merge request says it was not re-reviewed. What the Run could not settle —
 checks still unproved, blocking disputes the reviewers left unanswered, and the assumptions
 an implementer made where the spec was silent — goes into the description under **Not

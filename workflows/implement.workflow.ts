@@ -27,6 +27,7 @@ import {
   agentWork,
   answerFor,
   checkGapsOf,
+  checkProof,
   classifyWorkSource,
   contentOf,
   criteriaIn,
@@ -46,6 +47,7 @@ import {
   planReposOf,
   renderApproved,
   renderEvidence,
+  recheckOwed,
   renderProgress,
   rerunsOwed,
   settledChecks,
@@ -593,10 +595,13 @@ export default defineWorkflow({
         return { gaps: evidenceGapsOf(asked), fixable: checkGapsOf(asked) };
       });
       // Why each pass runs, which every door shows while it does (ADR-0042).
-      const gapsNow = Effect.fn("implement.gapsNow")(function* (why: {
-        readonly pass: "gate" | "recheck" | "fix";
-        readonly round?: number;
-      }) {
+      const gapsNow = Effect.fn("implement.gapsNow")(function* (
+        why: {
+          readonly pass: "gate" | "recheck" | "fix";
+          readonly round?: number;
+        },
+        since?: typeof Tree.Type,
+      ) {
         passes += 1;
         const pass = yield* Activity.make({
           name: `gate.${passes}`,
@@ -612,14 +617,17 @@ export default defineWorkflow({
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
             const now = [...passed];
+            const journal = { ...(yield* host.evidence(runId, cwd)), approved: checks };
+            // On a tree a fix left as it was, its records stand: only a check with none runs.
+            const unmoved =
+              since?.head === journal.final.head_sha &&
+              since.fingerprint === journal.final.fingerprint;
             // A failure that named its tests had them run again alone instead.
-            const whole =
-              why.pass === "recheck"
-                ? wholeRunsOwed({ ...(yield* host.evidence(runId, cwd)), approved: checks })
-                : null;
+            const whole = why.pass === "recheck" ? wholeRunsOwed(journal) : null;
             for (const spec of owedLocally(checks)) {
               if (now.includes(spec.name)) continue;
               if (whole !== null && !whole.includes(spec.name)) continue;
+              if (unmoved && checkProof(journal, spec.name, "collie").last !== undefined) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
@@ -718,7 +726,7 @@ export default defineWorkflow({
           },
           output: FixOutputSchema,
         });
-        gaps = yield* settleFailed(yield* gapsNow({ pass: "fix", round: at }));
+        gaps = yield* settleFailed(yield* gapsNow({ pass: "fix", round: at }, before));
         if (stalledFix(before, gaps.tree, findings, fixed))
           stalled = { at, disputed: fixed.disputed ?? [] };
         const settled = settleFinalFix(findings, fixed, yield* host.evidence(runId, cwd));
@@ -753,17 +761,33 @@ export default defineWorkflow({
               fixable: fixable.filter(undisputed),
             })),
           );
-          // A check settled on this tree by its tests run alone is not run again; one that is
-          // has its named failures run alone too, before any gap is read.
-          const rely = Effect.gen(function* () {
-            const settled = settledChecks({ ...(yield* host.evidence(runId, cwd)), approved });
+          // A check that failed on this tree is run whole again only where its failures named no
+          // tests and it has had no recheck here, or on a resume from the park below; one that is
+          // has its named failures run alone too, before any gap is read (ADR-0034, amended
+          // 2026-10-19).
+          const rely = Effect.fn("implement.rely")(function* (resumed: boolean) {
+            const journal = { ...(yield* host.evidence(runId, cwd)), approved };
+            const settled = settledChecks(journal);
+            const whole = recheckOwed(journal);
             for (const spec of owedLocally(approved).filter((one) => !settled.includes(one.name))) {
-              const relied = yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" });
-              yield* host.record(runId, `proof: ${spec.name} relies on verification ${relied.id}`);
+              const proof = checkProof(journal, spec.name, "collie");
+              const relied =
+                proof.state === "passed" || resumed || whole.includes(spec.name)
+                  ? yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" })
+                  : proof.last;
+              if (relied !== undefined)
+                yield* host.record(
+                  runId,
+                  `proof: ${spec.name} relies on verification ${relied.id}`,
+                );
             }
             yield* settleTests;
           });
-          yield* rely;
+          const fs = yield* FileSystem.FileSystem;
+          const unprovedPark = `${place.dir}/proof-parked-unproved`;
+          const resumed = yield* fs.exists(unprovedPark).pipe(Effect.orDie);
+          yield* rely(resumed);
+          if (resumed) yield* fs.remove(unprovedPark).pipe(Effect.orDie);
           if (stalled !== null) {
             const standing = (yield* readGaps(approved, reviewed)).fixable.filter(
               (gap) => !undisputed(gap),
@@ -776,6 +800,7 @@ export default defineWorkflow({
           }
           let missing = yield* reading;
           if (missing.fixable.length > 0) {
+            yield* fs.writeFileString(unprovedPark, "").pipe(Effect.orDie);
             yield* host.parked(
               runId,
               `Outcome unproved after ${fixes} gate fixes: ${missing.gaps.join("; ")}. Repair the checks, then resume ${runId}.`,
@@ -789,7 +814,7 @@ export default defineWorkflow({
             yield* integrated("merge-proof");
             const now = (yield* host.evidence(runId, cwd)).final;
             if (now.head_sha !== checked.head_sha || now.fingerprint !== checked.fingerprint)
-              yield* rely;
+              yield* rely(false);
             reviewed = yield* reviewPass({
               target: "",
               plan: source.kind === "plan-dir" ? source.value : "",

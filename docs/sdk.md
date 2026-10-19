@@ -1097,8 +1097,9 @@ A `rerun` runs `bun test ./<file> -t <its whole name>` in the check's directory,
 sources (a bare path is a filter bun matches against every file), and records it under the
 check's name. It passes only where exactly one test ran and passed, and it is never the
 check's own pass. `rerunsOwed` says which tests are still to be rerun, `wholeRunsOwed` which
-checks only a whole recheck can tell, and `flakesOf` which failures were Flakes (ADR-0034,
-amended 2026-10-15).
+checks only a whole recheck can tell, `recheckOwed` which of those have had no `recheck` on
+this tree yet (ADR-0034, amended 2026-10-19), and `flakesOf` which failures were Flakes
+(ADR-0034, amended 2026-10-15).
 
 A test still failing after its rerun is run alone at the base with `at: "default-base"` and
 that `test`, once per base revision and check directory. Its `baseline` record fails only

@@ -227,6 +227,17 @@ export function wholeRunsOwed(got: Journal & Pick<Collected, "approved">): strin
     .map((spec) => spec.name);
 }
 
+/**
+ * The checks the proof runs whole once more: those a whole run is owed by that have had no
+ * `recheck` of their command on this tree (ADR-0034, amended 2026-10-19).
+ */
+export function recheckOwed(got: Journal & Pick<Collected, "approved">): string[] {
+  return wholeRunsOwed(got).filter(
+    (name) =>
+      !runsOf(got, name).runs.some((v) => v.pass === "recheck" && !earlierTree(v, got.final)),
+  );
+}
+
 /** Whether this kind of result is proved by Collie's own run of the Run's checks. */
 export function needsChecks(kind: Outcome): boolean {
   return kind !== "investigation" && kind !== "plan" && kind !== "review";

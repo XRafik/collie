@@ -1581,6 +1581,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   ): Array<{ readonly check: string; readonly test: FailedTest }>;
   /** The checks whose latest run on this tree failed without naming its tests, or that have none of their command. */
   export function wholeRunsOwed(got: FailedChecks): string[];
+  /** Of those, the ones with no recheck of their command on this tree yet. */
+  export function recheckOwed(got: FailedChecks): string[];
   /** Each Flake on this tree, by the check it failed in: never a pass. */
   export function flakesOf(got: FailedChecks): Array<FailedTest & { readonly check: string }>;
   /** Each test still failing after its rerun that the base has not been asked about since. */

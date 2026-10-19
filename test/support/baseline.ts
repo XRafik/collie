@@ -3469,7 +3469,7 @@ scenario(
           disputed: [],
           checks: [{ name: "unit" }],
         };
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, fix, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(fix), OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-gate-fix",
@@ -3524,7 +3524,7 @@ scenario(
           disputed: [],
           checks: [{ name: "unit" }],
         };
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, fix, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(fix), OPENED]);
         yield* ran({
           entry: shipped("implement"),
           runId: "r-passes",
@@ -4089,6 +4089,12 @@ const reliedOn = (runId: string) =>
 
 const GATE_FIX = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
 
+/** A gate fix that moves the tree, so the gate runs its checks again on it. */
+const moving = <A>(output: A, n = 1) => ({
+  writes: [{ path: `${rig.projectDir}/fixed-${n}`, text: "fixed\n" }],
+  output,
+});
+
 scenario(
   "a green Run runs each check once: the proof relies on the gate's own pass",
   () =>
@@ -4149,12 +4155,24 @@ scenario(
         yield* fs.writeFileString(
           `${evidenceDir(dir, runId)}/approved.json`,
           asApproved([
-            // Red at the gate and on the recheck, green after the fix.
-            counting("unit", `${rig.root}/unit-runs`, `[ $n -ge 3 ]`),
+            // Red at the gate and on the recheck, until the fix re-grants it.
+            counting("unit", `${rig.root}/unit-runs`, "false"),
             counting("lint", `${rig.root}/lint-runs`),
           ]),
         );
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const regranting = {
+          writes: [
+            {
+              path: `${evidenceDir(dir, runId)}/approved.json`,
+              text: asApproved([
+                { name: "unit", executable: "true", argv: [], cwd: rig.projectDir },
+                counting("lint", `${rig.root}/lint-runs`),
+              ]),
+            },
+          ],
+          output: GATE_FIX,
+        };
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, regranting, OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4166,7 +4184,7 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         // The fix left the tree as it was, so lint's pass at the gate still answers.
         expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
-        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(3);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(2);
         const records = yield* readVerifications(evidenceDir(dir, runId));
         const last = (name: string, pass: string) =>
           records.findLast((one) => one.name === name && one.pass === pass)!.id;
@@ -4295,7 +4313,7 @@ scenario(
           printed: FLAKY_OUTPUT,
           rerun: `printf ' 0 pass\\n 1 fail\\n' >&2; exit 1`,
         });
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(GATE_FIX), OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4421,7 +4439,7 @@ scenario(
           rerun: ONE_FAILS,
           atBase: `case "$4" in *old*) ${FAILS_AT_BASE};; *) ${ONE_PASSES};; esac`,
         });
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(GATE_FIX), OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4453,7 +4471,13 @@ scenario(
           rerun: ONE_FAILS,
           atBase: `echo 'error: regex "^the flaky one$" matched 0 tests.' >&2; exit 1`,
         });
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, GATE_FIX, OPENED]);
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          moving(GATE_FIX),
+          moving(GATE_FIX, 2),
+          OPENED,
+        ]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4553,7 +4577,7 @@ scenario(
         expect(yield* asked(runId, "mr")).toContain(
           `- ${disputed}: gate fix 1 disputed it and changed nothing`,
         );
-        expect((yield* passesOf(runId)).filter((pass) => pass === "recheck")).toHaveLength(1);
+        expect((yield* passesOf(runId)).filter((pass) => pass === "recheck")).toEqual([]);
       }),
     ),
   120_000,
@@ -4641,8 +4665,12 @@ const disputing = (titles: ReadonlyArray<string>) => ({
   })),
 });
 
+/** A fix that repairs the checks and moves the tree, so the gate runs them again. */
 const repairing = () => ({
-  writes: [{ path: `${rig.root}/repaired`, text: "fixed\n" }],
+  writes: [
+    { path: `${rig.root}/repaired`, text: "fixed\n" },
+    { path: `${rig.projectDir}/repaired`, text: "fixed\n" },
+  ],
   output: GATE_FIX,
 });
 
@@ -4676,6 +4704,8 @@ scenario(
         );
         const records = yield* readVerifications(evidenceDir(dir, runId));
         expect(records.findLast((one) => one.name === "unit")?.result).toBe("fail");
+        // Nothing runs again on the tree the fix left as it was, not even the proof's recheck.
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck"]);
       }),
     ),
   120_000,
@@ -4706,6 +4736,8 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         expect(yield* asked(runId, "gate-fix-2")).toContain("unit failed");
         expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+        // Each fix moved the tree, so each is followed by the check run whole.
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck", "fix", "fix"]);
       }),
     ),
   120_000,
@@ -4736,62 +4768,132 @@ scenario(
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
-        expect(yield* asked(runId, "gate-fix-2")).toContain("lint failed");
+        const second = yield* asked(runId, "gate-fix-2");
+        expect(second).toContain("unit failed");
+        expect(second).toContain("lint failed");
         expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+        // Gate fix 1 left the tree as it was, so nothing ran between the two fixes.
+        expect(yield* passesOf(runId)).toEqual([
+          "gate",
+          "gate",
+          "recheck",
+          "recheck",
+          "fix",
+          "fix",
+        ]);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "after a restart the host runs again a check it collected before it started",
+  "a check re-granted with another command by a gate fix that leaves the tree as it was is run",
   () =>
     runEffect(
       Effect.gen(function* () {
-        const bin = yield* FakeBin.make(`${rig.root}/bin`);
-        yield* bin.add("glab", `exit 0`);
+        const runId = "r-gate-regranted";
         yield* ahead();
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        const runId = "r-gate-resumed";
-        yield* approve(runId, ["unit", "lint"]);
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(
-          `${evidenceDir(dir, runId)}/approved.json`,
-          asApproved([
-            counting("unit", `${rig.root}/unit-runs`),
-            counting("lint", `${rig.root}/lint-runs`, `[ -f ${rig.root}/repaired ]`),
-          ]),
-        );
-        yield* rig.queueOutputs([
-          BUILT,
-          CLEAN_SYNTHESIS,
-          GATE_FIX,
-          GATE_FIX,
-          GATE_FIX,
-          GATE_FIX,
-          OPENED,
-        ]);
-        const options = {
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit"]);
+        const regranting = { writes: [naming(runId, ["unit"])], output: GATE_FIX };
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, regranting, OPENED]);
+        const result = yield* ran({
           entry: shipped("implement"),
           runId,
           input: { plan },
           options: { outcome: "feature" },
-        };
-        const result = yield* running(options, (status) =>
-          until(
-            () => status,
-            (got) => got !== "pending",
-          ),
-        );
-        expect(result).toBe("suspended");
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck", "fix"]);
+      }),
+    ),
+  120_000,
+);
+
+/** A Run whose lint fails until `${rig.root}/repaired` exists, parked once its four gate fixes run out. */
+const heldUnproved = (runId: string) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* ahead();
+    const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+    yield* approve(runId, ["unit", "lint"]);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      `${evidenceDir(dir, runId)}/approved.json`,
+      asApproved([
+        counting("unit", `${rig.root}/unit-runs`),
+        counting("lint", `${rig.root}/lint-runs`, `[ -f ${rig.root}/repaired ]`),
+      ]),
+    );
+    yield* rig.queueOutputs([
+      BUILT,
+      CLEAN_SYNTHESIS,
+      GATE_FIX,
+      GATE_FIX,
+      GATE_FIX,
+      GATE_FIX,
+      OPENED,
+    ]);
+    const options = {
+      entry: shipped("implement"),
+      runId,
+      input: { plan },
+      options: { outcome: "feature" },
+    };
+    const result = yield* running(options, (status) =>
+      until(
+        () => status,
+        (got) => got !== "pending",
+      ),
+    );
+    expect(result).toBe("suspended");
+    expect(yield* parkedWhy(runId)).toContain("Outcome unproved after 4 gate fixes: lint failed");
+    return { bin, options };
+  });
+
+scenario(
+  "after a restart the host runs again a check it collected before it started",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-resumed";
+        const { bin, options } = yield* heldUnproved(runId);
         const suspended = yield* runsOf(`${rig.root}/unit-runs`);
         // The gate's pass answered each fix, which left the tree as it was.
         expect(suspended).toBe(1);
+        // Its gate run and one recheck.
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(2);
 
+        const fs = yield* FileSystem.FileSystem;
         yield* fs.writeFileString(`${rig.root}/repaired`, "");
         expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
         yield* bin.restore();
         expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(suspended + 1);
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(3);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a Run held unproved and resumed with nothing repaired runs its failing check whole once more, and is held again",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-resumed-unrepaired";
+        const { bin, options } = yield* heldUnproved(runId);
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(2);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(controlPath(dir, PARKED, runId));
+
+        const why = yield* resumedUntilParked(options);
+        yield* bin.restore();
+        expect(why).toContain("Outcome unproved after 4 gate fixes: lint failed");
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(3);
       }),
     ),
   120_000,
@@ -4916,7 +5018,7 @@ scenario(
         yield* rig.queueOutputs([
           BUILT,
           CLEAN_SYNTHESIS,
-          { verdict: "clean", fixed: [], disputed: [], checks: [{ name: "unit" }] },
+          moving({ verdict: "clean", fixed: [], disputed: [], checks: [{ name: "unit" }] }),
           OPENED,
         ]);
         const result = yield* ran({
@@ -5865,6 +5967,24 @@ const parkedWhy = (runId: string) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.readFileString(controlPath(dir, PARKED, runId))),
     Effect.orElseSucceed(() => ""),
+  );
+
+/** A Run resumed whose park was cleared, waited on until it parks again, and why. */
+const resumedUntilParked = (options: ShippedRun) =>
+  session(
+    Effect.gen(function* () {
+      const made = yield* loaded(options.entry, options.runId);
+      const engine = yield* WorkflowEngine.WorkflowEngine;
+      const payload = { runId: options.runId, input: options.input };
+      return yield* Effect.gen(function* () {
+        yield* engine.resume(made.workflow, yield* made.workflow.executionId(payload));
+        yield* made.workflow.execute(payload, { discard: true });
+        return yield* parkedWhy(options.runId).pipe(
+          Effect.filterOrFail((why) => why !== ""),
+          Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+        );
+      }).pipe(Effect.provide(made.layer));
+    }),
   );
 
 /** What `collie run intent verification` leaves for a Run: its checks, as the host keeps them. */

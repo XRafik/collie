@@ -553,7 +553,10 @@ Run's branch, `rerun` of only the tests that just failed, on the same tree, to t
 **Flake**, `baseline` where the branch left the default branch, `recheck` of a whole check
 whose failures name no tests, on the same tree, `fix` after gate fix N, `finish` at the
 Run's end, `ci` for a check left to CI, read from the merge request's pipeline, or a plain
-`check`. The pass is the Workflow's declaration, never read off its
+`check`. Past that one `recheck`, a check is not run whole again on a tree it already
+failed on: after a gate fix that left the tree as it was, the records on that tree stand.
+A resume of a Run held unproved is the exception, because a repair can be outside the tree:
+each check still failing there runs whole once more (ADR-0034, amended 2026-10-19). The pass is the Workflow's declaration, never read off its
 id. While it runs, the card and chat say the check, the pass, how long it has run against
 how long it usually takes, and where its output is being written (ADR-0042).
 

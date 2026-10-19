@@ -144,6 +144,7 @@ export {
   baselinesOwed,
   flakesOf,
   isOutcome,
+  recheckOwed,
   renderEvidence,
   renderRecordedChecks,
   rerunsOwed,
