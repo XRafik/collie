@@ -1,12 +1,38 @@
 // `collie machine`: the Machines this one is paired with (ADR-0057). Pairing happens by
-// itself on first reach and forgetting follows herdr's list, so `list` is the only one a
-// human has a use for; `invite` is what pairing runs on the other Machine over SSH.
+// itself on first reach and forgetting follows herdr's list, so `list` and `connect`, which
+// opens the SSH connection a blocked link rides, are what a human has a use for; `invite`
+// is what pairing runs on the other Machine over SSH.
 
 import { Effect, Option } from "effect";
-import { Command, Flag } from "effect/cli";
-import { inviteFrom, machineList } from "../lifecycle";
+import { Argument, Command, Flag } from "effect/cli";
+import { inviteFrom, machineConnect, machineList } from "../lifecycle";
+import type { PeerView } from "../peers-model";
 import { BUILD } from "../host";
 import { answering } from "./shared";
+
+/** How a link stands, and which way it went or what each way saw. */
+const standing = (peer: PeerView) => {
+  const state =
+    peer.state === "away" && peer.since !== null ? `away since ${peer.since}` : peer.state;
+  if (peer.state === "live")
+    return [
+      state,
+      ...(peer.transport === "ssh"
+        ? [`ssh${peer.direct === null ? "" : ` (direct: ${peer.direct})`}`]
+        : peer.transport === "direct"
+          ? ["direct"]
+          : []),
+      ...(peer.failure === null ? [] : [peer.failure]),
+    ];
+  const ways = [
+    ...(peer.direct === null ? [] : [`direct: ${peer.direct}`]),
+    ...(peer.ssh === null ? [] : [`ssh: ${peer.ssh}`]),
+  ];
+  return [
+    state,
+    ...(ways.length > 0 ? [ways.join("; ")] : peer.failure === null ? [] : [peer.failure]),
+  ];
+};
 
 const list = Command.make("list", {}, () =>
   answering((env) =>
@@ -27,10 +53,7 @@ const list = Command.make("list", {}, () =>
                       peer.name,
                       peer.dials === "out" ? "dialled from here" : "dials in",
                       peer.build === null ? "build not read" : `collie ${peer.build}`,
-                      peer.state === "away" && peer.since !== null
-                        ? `away since ${peer.since}`
-                        : peer.state,
-                      ...(peer.failure === null ? [] : [peer.failure]),
+                      ...standing(peer),
                     ].join("\t"),
                   )
                   .join("\n")),
@@ -39,6 +62,31 @@ const list = Command.make("list", {}, () =>
     ),
   ),
 ).pipe(Command.withDescription("The Machines paired with this one, and whether each is live"));
+
+const connect = Command.make(
+  "connect",
+  { name: Argument.String("name").pipe(Argument.withDescription("herdr's name for the Machine")) },
+  ({ name }) =>
+    answering((env) =>
+      machineConnect(env, name, (text) => Effect.sync(() => void process.stderr.write(text))).pipe(
+        Effect.map((read) =>
+          read.ok
+            ? {
+                ok: true as const,
+                data: read.value,
+                human: read.value.opened
+                  ? `Opened an SSH connection to ${name} at ${read.value.path}.`
+                  : `${name} already has an SSH connection at ${read.value.path}.`,
+              }
+            : read,
+        ),
+      ),
+    ),
+).pipe(
+  Command.withDescription(
+    "Open this computer's SSH connection to a Machine, which a link its network blocks rides",
+  ),
+);
 
 const invite = Command.make(
   "invite",
@@ -74,5 +122,5 @@ const invite = Command.make(
 
 export const machine = Command.make("machine").pipe(
   Command.withDescription("The Machines paired with this one"),
-  Command.withSubcommands([list, invite]),
+  Command.withSubcommands([list, connect, invite]),
 );

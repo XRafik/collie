@@ -44,6 +44,7 @@ import {
 } from "./host";
 import { Herdr } from "./herdr";
 import { machineName, pairWith, peersOf } from "./peers";
+import { openConnection } from "./ssh-connection";
 import type { HerdrMachine, MachineUnreachable, RelayHeader } from "./peers-model";
 import {
   sortBoard,
@@ -211,10 +212,7 @@ export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
 ) {
   if ((yield* peersOf(env.stateDir)).some((peer) => peer.name === name)) return;
   const machine = (yield* herdrMachines(env)).find((one) => one.label === name);
-  if (machine === undefined)
-    return yield* new HostRefused({
-      reason: `${REFUSED_INPUT}: no Machine "${name}": herdr lists no machine by that name`,
-    });
+  if (machine === undefined) return yield* notListed(name);
   if (env.pairs !== true)
     return yield* new HostRefused({
       reason: `invalid_state: ${name} is not paired yet; a command in a terminal pairs it`,
@@ -232,6 +230,11 @@ export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
     }),
   );
 });
+
+const notListed = (name: string) =>
+  new HostRefused({
+    reason: `${REFUSED_INPUT}: no Machine "${name}": herdr lists no machine by that name`,
+  });
 
 /** herdr's saved machines, or none where herdr could not say. */
 const herdrMachines = (env: PluginEnv) =>
@@ -1648,6 +1651,29 @@ export const restartHostAt = (dir: string): Effect.Effect<OpResult, never, Clien
 
 /** This Machine's peers, with the standings its host keeps. */
 export const machineList = (env: PluginEnv) => asks(env, (client) => client.peers());
+
+/**
+ * Opens this computer's SSH connection to herdr's machine `name`, where none is open, and
+ * wakes this host's link to it. What ssh says goes to `said`, where the person who has to
+ * answer a login is.
+ */
+export const machineConnect = (
+  env: PluginEnv,
+  name: string,
+  said: (text: string) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const machine = (yield* herdrMachines(env)).find((one) => one.label === name);
+    if (machine === undefined) return refusal(notListed(name));
+    const opened = yield* openConnection(env.stateDir, machine, { said }).pipe(Effect.result);
+    if (opened._tag === "Failure") return refusal(opened.failure);
+    yield* asks({ ...env, machine: undefined }, (client) => client.wake({ machine: name }));
+    return {
+      ok: true as const,
+      value: { machine: name, ...opened.success },
+      machine: null,
+    } satisfies Answered<unknown>;
+  });
 
 /** Pairs this Machine with the installation asking, which `pairWith` runs over SSH. */
 export const inviteFrom = (

@@ -62,6 +62,7 @@ The receiving host records each operation as the front door that asked — `cli`
 
 ```sh
 collie machine list
+collie machine connect <name>
 collie machine invite --for <installation> --name <name> [--address <host>]
 ```
 
@@ -69,7 +70,37 @@ collie machine invite --for <installation> --name <name> [--address <host>]
 `in`: it dials this one), and whether it answers now. Its `data.machines` is each one's
 `installation`, `name`, `dials`, `url`, `build` (last read, or null), `state` (`live`, `connecting` or `away`), `since`
 and `failure`, never the secret. `data.build` is this Machine's build. A listener that could not take its port says why in
-`failure`.
+`failure`. Each also says which way its link goes, and what each way saw:
+
+- `transport`: `direct` or `ssh` for a live link, else null. The side that is dialled
+  says what its dialler declared.
+- `direct`: what the direct way saw when it last failed; a live `ssh` link keeps why
+  direct failed.
+- `ssh`: what the SSH way saw when it was last tried and failed.
+- `connection`: for a Machine this one dials, whether this computer holds an SSH
+  connection to it; null for one that dials in.
+- `waits`: `ssh_connection` while the link is not up because direct failed and no SSH
+  connection is open, else null.
+
+Each is null in an older Machine's answer. The human line puts the transport after the
+state, as `live	ssh (direct: <why>)` or `live	direct`, and a link not up as
+`connecting	direct: <why>; ssh: <what it saw>`.
+
+**Over SSH by itself.** Each connect tries the peer's port first, bounded to five seconds.
+Where that fails and this computer holds an SSH connection to the Machine, the link goes
+through a tunnel that connection forwards, with the same pinned certificate and secret.
+Its channels and dial-backs go the same way while it is up, and its next connect tries
+direct again. The host never logs in: with no connection open, the link waits, and
+`machine list` says what opens one.
+
+`connect` opens this computer's SSH connection to herdr's machine by that name, where
+none is open: one `ssh` master with `ControlPersist`, under the user's SSH config, whose
+login prompt or SSO banner shows on this command's stderr. ssh keeps it open after the
+command returns. It is bounded to two minutes, after which it is `machine_unreachable`
+naming the Machine and the last thing ssh said. It then wakes this host's link to that
+Machine, so the link does not wait out its backoff. Its `data` is `machine`, `path` (the
+control path) and `opened`, false where a connection was already open. A name herdr does
+not list is `invalid_input`.
 
 `live` means the control link is up. `connecting` names the dialler's last failure while
 it retries. `away` says when the listener lost its peer's control link and why. A call

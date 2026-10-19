@@ -33,6 +33,8 @@
     "test/support/sweep.ts",
     // A stand-in for `codex app-server`, run as a process of its own in that program's place.
     "test/support/codex-server.ts",
+    // A stand-in for `ssh`, and the master it keeps, run as processes of their own in its place.
+    "test/support/fake-ssh-main.ts",
     // Desktop's Electrobun build hooks and what they share: plain scripts Electrobun's own
     // runtime runs while packing Desktop, before any Effect program does.
     "desktop/scripts/name-desktop-entry.ts",

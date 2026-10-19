@@ -132,7 +132,11 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `verify-model.ts`      | Verification and stream Schemas shared with front doors without loading the collector                     |
 
 The Machine link is `peers.ts`: pairing, TLS channels, relay sockets, dial-back and
-keeping paired Machines level. `peers-model.ts` holds the peer records and states
+keeping paired Machines level. `peer-transport.ts` is the way to a peer this Machine
+dials: direct, then through the Machine's SSH connection, with its bounds and its words.
+`ssh-connection.ts` holds every ssh argv run against a Machine: its control path, the one
+opener `collie machine connect` runs, the host's `-O`-only handle, and the rider argv a
+session through the connection uses. `peers-model.ts` holds the peer records and states
 Desktop shares. `flock-settings.ts` holds the latest-edit rule and merge both hosts and
 Desktop use. `shared-definitions.ts` reads and writes the user Layer's files a Flock
 shares, keeping replaced text under `replaced/`. `channel.ts` declares and pipes the channel the bridge and peer link share.

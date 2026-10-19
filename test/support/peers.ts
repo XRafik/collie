@@ -1,6 +1,7 @@
 // Two Machines on one computer, as a pairing test needs them: two installations, each with
-// its state directory, its own fake herdr and its own `collie`, and a fake `ssh` on the
-// first's PATH that runs a command as a login on the second would. Nothing above the
+// its state directory, its own fake herdr and its own `collie`, and the fake `ssh` on the
+// first's PATH, whose sessions run as a login on the second would and whose forwards reach
+// the second's loopback. Nothing above the
 // sockets is faked: both hosts are the shipped `collie host`, started by the CLI as an
 // installation's are, and the link between them is the real listener on 127.0.0.1.
 
@@ -11,6 +12,7 @@ import { Effect, FileSystem, Schema, type Scope } from "effect";
 import { exec } from "./command";
 import { suiteEnv } from "./effect";
 import { writeFakeHerdrShim } from "./fake-herdr-core";
+import { type FakeSsh, writeFakeSsh } from "./fake-ssh";
 import { fixtures, root, stopHost } from "./host";
 import { collie, collieCommand, type World } from "./world";
 
@@ -27,6 +29,8 @@ export interface Side {
   readonly herdrLog: string;
   /** Every command its fake `ssh` was asked to run. */
   readonly sshLog: string;
+  /** The first's fake `ssh`, which reaches the second Machine. */
+  readonly ssh: FakeSsh;
   /** `collie --json …` on this Machine, as an operator types it there. */
   readonly cli: (
     args: ReadonlyArray<string>,
@@ -46,36 +50,6 @@ const freePort = Effect.callback<number>((resume) => {
   });
 });
 const Bound = Schema.Struct({ port: Schema.Number });
-
-/** A fake `ssh`: `-G` resolves every target to 127.0.0.1; anything else runs as a login on `to`. */
-const fakeSsh = (log: string, env: Readonly<Record<string, string>>) => {
-  const exports = Object.entries(env)
-    .map(([key, value]) => `${key}='${value.replaceAll("'", `'\\''`)}'`)
-    .join(" ");
-  return `#!/bin/sh
-if [ "$1" = "-G" ]; then printf 'hostname 127.0.0.1\\nport 22\\n'; exit 0; fi
-master=; control=; operation=
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -S) control="$2"; echo "option $1 $2" >> '${log}'; shift 2 ;;
-    -O) operation="$2"; shift 2 ;;
-    -o|-L) echo "option $1 $2" >> '${log}'; shift 2 ;;
-    -M) master=1; echo "option $1" >> '${log}'; shift ;;
-    -T|-N) echo "option $1" >> '${log}'; shift ;;
-    *) break ;;
-  esac
-done
-target="$1"; shift
-if [ -n "$master" ]; then
-  touch "$control"
-  trap 'rm -f "$control"; exit 0' TERM
-  while :; do sleep 1; done
-fi
-if [ -n "$operation" ]; then [ -e "$control" ]; exit; fi
-echo "login $target $*" >> '${log}'
-exec env -i ${exports} /bin/sh -c "$*"
-`;
-};
 
 const machineOf = (side: Side) => ({
   id: side.name,
@@ -140,26 +114,29 @@ export const twoMachines = <A, E>(
           FAKE_HERDR_LOG: herdrLog,
           ...suite,
         };
-        const side: Side = {
+        const sshDir = `${dir}/ssh`;
+        yield* fs.makeDirectory(sshDir);
+        const side = (ssh: FakeSsh): Side => ({
           name,
           world,
           env,
           herdrLog,
-          sshLog: `${dir}/ssh-calls.log`,
+          sshLog: ssh.log,
+          ssh,
           cli: (args, extra = {}) => collie(world, args, { ...env, ...extra }),
           lists: (machines) =>
             fs
               .writeFileString(`${herdrLog}.machines.json`, encode(machines.map(machineOf)))
               .pipe(Effect.orDie),
-        };
-        return { side, bin };
+        });
+        return { side, bin, sshDir, env };
       });
     const first = yield* make("first", yield* freePort);
     const second = yield* make("second", yield* freePort);
-    yield* fs.writeFileString(`${first.bin}/ssh`, fakeSsh(first.side.sshLog, second.side.env), {
-      mode: 0o755,
-    });
-    return yield* body(first.side, second.side);
+    const toSecond = yield* writeFakeSsh(`${first.bin}/ssh`, first.sshDir, second.env);
+    // Off the second's PATH: only the first reaches the other over SSH.
+    const unused = yield* writeFakeSsh(`${second.sshDir}/ssh`, second.sshDir);
+    return yield* body(first.side(toSecond), second.side(unused));
   }).pipe(Effect.orDie);
 
 export const releaseBinary = Effect.fn("PeerTest.releaseBinary")(function* (

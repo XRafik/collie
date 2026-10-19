@@ -341,11 +341,49 @@ the channel into its own host with the listener's authenticated Machine identity
 Tickets belong to one installation, expire after ten seconds and can be used only once.
 Both relay directions refuse with `MachineUnreachable` within five seconds.
 
+**The way to a dialled peer.** Every socket the dialler opens, its `/control`, each
+`/channel` and each `/reverse`, opens through `openPeer` in `src/peer-transport.ts`
+(ADR-draft-a-blocked-link-rides-the-machines-ssh-connection). Without a way given, it tries
+direct, to `<url><path>`, bounded to five seconds; only where that fails, it asks the
+Machine's SSH connection to forward a free loopback port to the peer's `127.0.0.1:<port>`
+and dials `wss://127.0.0.1:<local><path>` with the same pinned certificate, whose names
+carry `127.0.0.1`, and the same secret. The forward belongs to the socket's scope, so
+whatever ends the socket cancels it. Where no connection is open, the failure says so,
+names `collie machine connect`, and carries `waits: "ssh_connection"`; the dialler keeps
+that in its standing for `machine list`. While a control link is up, its channels and
+dial-backs go its way; while it is down, a channel runs the ladder itself. A link over SSH
+stays there until it ends, and its next connect tries direct again. The dialler declares
+its way on `/control?transport=<way>[&direct=<why>]`, and the listener records it for its
+own `machine list`; one that declares nothing is recorded as `direct`. The listener never
+guesses from the address, which is loopback over SSH and for a peer on the same computer
+alike.
+
+**The SSH connection.** `src/ssh-connection.ts` holds every ssh argv Collie runs against a
+Machine. Its control path is `<state dir>/ssh/<16 hex of sha256(label, target)>`, in a 0700
+directory, so a changed target is another path and the length depends only on the state
+directory; one too long for ssh to bind with its 17-byte temporary suffix is refused,
+naming it. `openConnection` is the one way a connection is opened, and only `collie machine
+connect` runs it: `ssh -M -N -S <path> -o ControlPersist=yes -o ServerAliveInterval=15 -o
+ServerAliveCountMax=3 -o ConnectTimeout=15 <target>`, not in a process group of its own,
+so the master ssh puts in the background outlives the command; its stderr goes to the
+command's, and it answers once `-O check` does, within two minutes. The host is given only
+`sshConnection`'s handle, whose `check` and scoped `forward` are `ssh -S <path> -O
+check|forward|cancel <target>`: each talks to an open master or fails, so the host never
+logs in. A session that rides the connection is built by `riderArgv`, `ssh -S <path> -o
+ControlMaster=no -o ProxyCommand=false -T <target> <remote>`: where the socket has gone,
+ssh would otherwise fall back to a login of its own, and `ProxyCommand=false` fails that
+fallback at once (OpenSSH 10.2 exits 255 in under 10 ms). `connect` then asks the local
+host's `wake`, which ends that Machine's dialler's backoff. `test/support/fake-ssh.ts`
+models all of this, logging each call as `master`, `mux <verb>`, `ride` or `login`.
+Still to confirm on a real OpenSSH: that a `ControlPersist` master releases its opener's
+stdio, that `-O forward` and `-O cancel` act on the master `-S` names, and that a rider
+session with `ProxyCommand=false` runs through a live master.
+
 The listener sends a heartbeat every fifteen seconds. Silence past that interval ends a
 control link. Reconnection backs off from one second to one minute, resetting after a
 live link. `doctor` reports a listener whose port is occupied, as does `machine list`.
-`machine list` reports `live`, `connecting` with the last failure, or `away`
-with its time and reason. Each host keeps running its local Runs while its peer is away.
+`machine list` reports `live` with its transport, `connecting` with what each way saw, or
+`away` with its time and reason. Each host keeps running its local Runs while its peer is away.
 
 `src/channel.ts` is the one declare-then-pipe: `collie bridge` hands it stdio, the listener
 a WebSocket, as does the dial-back. The client side is `connectPeer` in `src/host.ts`, which opens the relay, asks
@@ -1243,8 +1281,8 @@ its time.
   were asked, such as `herdr agent list` or `collie host` (`src/starts.ts`). The suite
   ends with `test: <N> processes started` and the ten largest sources. The count leaves
   out what never reaches those entry points: `collie` running as bun under `BUN_BE_BUN`,
-  real `git`, `ps` and `sleep`, the `sh` shims and stubs, and the fake `ssh` master's
-  `sleep`. It first showed `herdr session list` as the largest source, at 3,970 of
+  real `git`, `ps` and `sleep`, the `sh` shims and stubs, and the fake `ssh` and the
+  master it keeps. It first showed `herdr session list` as the largest source, at 3,970 of
   11,125: every board build read the sessions again, and a build follows every write
   under the state directory. A host's board now reads them once a minute, as often as its
   event watch does (`SESSIONS_EVERY` in `src/herds.ts`), so a session that starts later

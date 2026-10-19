@@ -172,12 +172,13 @@ test(
             expect((yield* route.open(() => Effect.void)).machine.route).toBe("link");
             expect(yield* peersOf(first.world.state)).toHaveLength(1);
             const calls = yield* fs.readFileString(first.sshLog);
-            expect(calls.split("\n").filter((line) => line === "option -M")).toHaveLength(1);
+            expect(calls.split("\n").filter((line) => line.startsWith("master"))).toHaveLength(1);
             expect(
               calls
                 .split("\n")
-                .filter((line) => line.startsWith("login") && line.includes("invite")),
+                .filter((line) => line.startsWith("ride") && line.includes("invite")),
             ).toHaveLength(2);
+            expect(calls.split("\n").filter((line) => line.startsWith("login"))).toEqual([]);
           }),
         [],
       ),
