@@ -765,12 +765,7 @@ export const ensureHomeFor = Effect.fn("Home.ensureFor")(function* (
   // launch often has none. herdr's own status is what says where its server is
   // listening, which is the probe SPEC §7.12 names; neither is `herdr_unreachable`, and
   // there is deliberately no cwd fallback.
-  const key = yield* herdKey(env.socketPath, () =>
-    herdr.serverInfo().pipe(
-      Effect.map((server) => (server.socket === "" ? null : server.socket)),
-      Effect.catch(() => Effect.succeed(null)),
-    ),
-  );
+  const key = yield* herdKey(env.socketPath, () => serverSocket(herdr));
   const schema = yield* herdr.apiSchema().pipe(Effect.catch(() => Effect.succeed("")));
   const missing = missingRuntime(schema);
   if (missing.length > 0) {
@@ -795,6 +790,13 @@ export const ensureHomeFor = Effect.fn("Home.ensureFor")(function* (
     homeDeps(herdr, log),
   );
 });
+
+/** Where herdr says its running server listens, or null where it cannot say. */
+export const serverSocket = (herdr: Herdr) =>
+  herdr.serverInfo().pipe(
+    Effect.map((server) => (server.socket === "" ? null : server.socket)),
+    Effect.catch(() => Effect.succeed(null)),
+  );
 
 /** What `ensureHome` needs of herdr. A failed call is "nothing there", never a crash. */
 export function homeDeps(herdr: Herdr, log: (line: string) => HomeAnswer<void>): HomeDeps {

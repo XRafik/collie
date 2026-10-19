@@ -1977,6 +1977,9 @@ worktrees and the temporary directory, once each. One with less than 10% or 5 Gi
 `!` warning naming it, with what [`collie cleanup`](#cleaning-up) would free where a host has
 served this state directory, and `collie cleanup --apply` as the fix. It never fails the run.
 
+**Host herd**, where a host is running: the Herd it works for, or a `!` warning that
+[it has none](#the-local-workflow-host) and its judgements will be skipped. It never fails the run.
+
 Two more are optional, and reported rather than required. **Helle**, where a loaded
 workflow waits on it (`renovate` does): the credentials file the Helle MCP wrapper sources,
 `~/.config/helle/env` (or `HELLE_ENV_FILE`), whose token is tried against
@@ -2025,6 +2028,14 @@ with its pid and `build unknown`. Nothing about a Run is touched: the new host r
 what the old one was doing, exactly as on any start, so a parked Run is still parked and a
 step that was cut short runs again. The herdr action "Restart the Collie host" does the
 same and says what it did as a notification.
+
+A host works for one Herd: the herdr session a judgement is charged to and its cross-run
+checks are held in. It is the one `HERDR_SOCKET_PATH` names, which a client that starts a
+host hands on; a host started with none asks herdr's status where its server listens, at
+start and then once a minute until it is told. A Run whose Task recorded a Herd is judged in
+that one. A host with no Herd says so in `host.log` and as a `!` **host herd** line in
+`collie doctor` — "this host has no Herd: judgements will be skipped" — and each judgement
+it cannot make is recorded as skipped; start herdr and run `collie host restart`.
 
 A host a client started has no terminal, so its own stdout and stderr — a crash's stack
 trace among them — are appended to `host.out` in the state directory, beside `host.log`.
