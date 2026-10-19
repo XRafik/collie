@@ -1370,8 +1370,9 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       readonly paneId: string;
       readonly workspaceId: string | null;
     } | null,
+    through = deps,
   ) =>
-    dispatch.entryFromLive(deps, {
+    dispatch.entryFromLive(through, {
       role: about.role,
       agent,
       paneId: place?.paneId ?? null,
@@ -1399,9 +1400,12 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       readonly attempt?: number;
       readonly requestId?: string;
       readonly actor?: Asker;
+      /** The session the agent is in, where it is not the host's own. */
+      readonly herdr?: Herdr;
     },
   ) {
-    const found = yield* entryFor(about, about.agent, null);
+    const through = delivery.herdr === undefined ? deps : { ...deps, herdr: delivery.herdr };
+    const found = yield* entryFor(about, about.agent, null, through);
     if (found.entry === null)
       return {
         sent: false,
@@ -1437,8 +1441,8 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     // So does a correction: another attempt at one is Collie's to decide, not a retry's.
     const outcome = yield* (
       delivery.kind === "steer" || delivery.kind === "correction"
-        ? dispatch.transaction(deps, entry, (channel) => channel.submit(fitted.words, draft))
-        : dispatch.submitPatiently(deps, entry, fitted.words, draft, host.patience)
+        ? dispatch.transaction(through, entry, (channel) => channel.submit(fitted.words, draft))
+        : dispatch.submitPatiently(through, entry, fitted.words, draft, host.patience)
     ).pipe(Effect.catch((cause) => Effect.succeed(undeliverable(cause))));
     const pane = entry.paneId;
     if (outcome.ok) {
@@ -1449,7 +1453,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       return {
         sent: true,
         why: "",
-        observed: yield* observe(about, entry, draft),
+        observed: yield* observe(about, entry, draft, delivery.herdr),
         pane,
         kept: fitted.kept,
       };
@@ -1475,13 +1479,18 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
    * submit hook, or Enter pressed on it still in the prompt box — or null where nothing
    * showed it within `observeMs`.
    */
-  const observe = (about: Launched, entry: AgentEntry, draft: dispatch.DeliveryDraft) =>
+  const observe = (
+    about: Launched,
+    entry: AgentEntry,
+    draft: dispatch.DeliveryDraft,
+    herdr = host.herdr,
+  ) =>
     Effect.gen(function* () {
       const dir = yield* controlDir(host.env.stateDir, about.agent);
       return yield* dispatch.confirmSubmitted(
         {
           stateDir: host.env.stateDir,
-          herdr: host.herdr,
+          herdr,
           log: (line) => log(about.runId, line),
           taken: (delivery) =>
             submittedDelivery(dir, delivery.id).pipe(
@@ -2134,7 +2143,12 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
    * on its Run, and sends the answers to one call as one Delivery once all of them are
    * answered. True while any is open. `closing` records and closes with it instead.
    */
-  const questionsOf = (launched: Launched, questions: Questions, until = Infinity) =>
+  const questionsOf = (
+    launched: Launched,
+    questions: Questions,
+    until = Infinity,
+    herdr: Effect.Effect<Herdr, never, AgentServices> = Effect.succeed(host.herdr),
+  ) =>
     Effect.gen(function* () {
       const dir = yield* controlDir(host.env.stateDir, launched.agent);
       const stem = stemOf(launched);
@@ -2185,7 +2199,12 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
                 group.at.length === 1
                   ? `Your question ${label(group.at[0]!)} is answered: ${given[group.at[0]!]}`
                   : `Your questions are answered: ${group.at.map((at) => `${label(at)}: ${given[at]}`).join("; ")}`,
-                { kind: "steer", ref: names[group.at[0]!] ?? stem, actor: group.by },
+                {
+                  kind: "steer",
+                  ref: names[group.at[0]!] ?? stem,
+                  actor: group.by,
+                  herdr: yield* herdr,
+                },
               );
               if (!sent.sent) sentAll = false;
               if (sent.refused) {
@@ -2228,10 +2247,15 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               listed.length === 0
                 ? [host.herdr]
                 : listed.map((one) => host.herdr.inSession(one.socketPath));
-            const agents = yield* Effect.forEach(sessions, (one) => one.agentList(), {
-              concurrency: "unbounded",
-            });
-            return agents.flat().map((one) => one.name);
+            const agents = yield* Effect.forEach(
+              sessions,
+              (herdr) =>
+                Effect.map(herdr.agentList(), (listed) =>
+                  listed.map((one) => ({ name: one.name, herdr })),
+                ),
+              { concurrency: "unbounded" },
+            );
+            return agents.flat();
           }).pipe(Effect.option),
         );
         for (const agent of asking) {
@@ -2248,9 +2272,15 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               launched,
               questionsFor(launched.runId),
               next?.at ?? Infinity,
+              Effect.map(
+                alive,
+                (found) =>
+                  Option.getOrUndefined(found)?.find((one) => one.name === agent)?.herdr ??
+                  host.herdr,
+              ),
             );
             if (!(yield* tend(null))) continue;
-            if (Option.exists(yield* alive, (names) => !names.includes(agent)))
+            if (Option.exists(yield* alive, (found) => !found.some((one) => one.name === agent)))
               yield* tend(goneAnswer(agent));
           }
         }

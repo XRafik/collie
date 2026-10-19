@@ -1205,6 +1205,35 @@ test("a question whose agent is live in another Herd, or whose Herds cannot be l
     }),
   ));
 
+test("an answer to an agent live only in another Herd is sent to it there", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* finishedThenAsked;
+      const first = `${rig.root}/first.sock`;
+      const second = `${rig.root}/second.sock`;
+      const herdr = new FakeHerdr(
+        rig.pluginEnv({
+          HERDR_SOCKET_PATH: first,
+          FAKE_HERDR_AGENTS_IN: second,
+          FAKE_HERDR_SESSIONS: Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))([
+            { name: "desk", socket_path: first },
+            { name: "builds", socket_path: second },
+          ]),
+        }),
+      );
+      yield* session(
+        Effect.gen(function* () {
+          yield* tendR1;
+          yield* answer("ask-review-1", "Postgres");
+          yield* answer("ask-review-2", "lint");
+          yield* tendR1;
+        }),
+        { herdr },
+      );
+      expect(sent(yield* rig.calls(), ANSWERED)).toBe(1);
+    }),
+  ));
+
 test("a question asked before the agent's next launch is answered while that launch is collected", () =>
   runEffect(
     Effect.gen(function* () {
