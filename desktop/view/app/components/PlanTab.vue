@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { PlanPanel } from "../../../../src/board-model";
-import { planProgress, specHeadings } from "../../../src/shared/plan-view";
+import { planProgress, type SpecHeading, specHeadings } from "../../../src/shared/plan-view";
 import { locationOf, type PlanAnchor, planAnchor } from "../../../src/shared/review-comments";
 import type { PlanText } from "./PlanFile.vue";
 
@@ -51,7 +51,17 @@ const spec = computed<PlanText>(() =>
     : { failed: props.plan.spec.reason },
 );
 
-const headings = computed(() => specHeadings("text" in spec.value ? spec.value.text : ""));
+const headings = shallowRef<ReadonlyArray<SpecHeading>>([]);
+watch(
+  () => ("text" in spec.value ? spec.value.text : ""),
+  async (text, _, onCleanup) => {
+    let stale = false;
+    onCleanup(() => (stale = true));
+    const found = await specHeadings(text);
+    if (!stale) headings.value = found;
+  },
+  { immediate: true },
+);
 const contents = computed(() =>
   headings.value.length < 2 ? [] : headings.value.filter(({ level }) => level <= 3),
 );

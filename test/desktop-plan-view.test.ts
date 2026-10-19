@@ -17,10 +17,10 @@ describe("the plan's progress", () => {
   });
 });
 
-const texts = (spec: string) => specHeadings(spec).map(({ text }) => text);
+const texts = (spec: string) => specHeadings(spec).then((found) => found.map(({ text }) => text));
 
 describe("the spec's headings", () => {
-  test("are ATX headings at each level, trailing #s trimmed", () => {
+  test("are ATX headings at each level, trailing #s trimmed", () =>
     expect(
       specHeadings(
         [
@@ -35,7 +35,7 @@ describe("the spec's headings", () => {
           "# a # b #",
         ].join("\n"),
       ),
-    ).toEqual([
+    ).resolves.toEqual([
       { level: 1, text: "One", position: 0 },
       { level: 2, text: "Two", position: 1 },
       { level: 3, text: "Three", position: 2 },
@@ -43,17 +43,17 @@ describe("the spec's headings", () => {
       { level: 5, text: "Five", position: 4 },
       { level: 6, text: "Six", position: 5 },
       { level: 1, text: "a # b", position: 6 },
-    ]);
-  });
+    ]));
 
-  test("are setext headings, = for level 1 and - for level 2", () => {
-    expect(specHeadings("Title\n=====\n\nSome\nlines\n---\n\n---\n- item\n---\n")).toEqual([
-      { level: 1, text: "Title", position: 0 },
-      { level: 2, text: "Some lines", position: 1 },
-    ]);
-  });
+  test("are setext headings, = for level 1 and - for level 2", () =>
+    expect(specHeadings("Title\n=====\n\nSome\nlines\n---\n\n---\n- item\n---\n")).resolves.toEqual(
+      [
+        { level: 1, text: "Title", position: 0 },
+        { level: 2, text: "Some lines", position: 1 },
+      ],
+    ));
 
-  test("skip heading-like lines inside fenced code and indented four spaces", () => {
+  test("skip heading-like lines inside fenced code and indented four spaces", () =>
     expect(
       texts(
         [
@@ -73,33 +73,43 @@ describe("the spec's headings", () => {
           "# After",
         ].join("\n"),
       ),
-    ).toEqual(["Before", "After"]);
-  });
+    ).resolves.toEqual(["Before", "After"]));
 
-  test("drop the marks of inline code, emphasis and links", () => {
+  test("are their text as drawn, without inline code, emphasis or link marks", () =>
     expect(
       texts(
         "## The `plan-view` **module** and _its_ [tests](test/x.ts)\n# ~~Old~~ *new* ![logo](a.png) snake_case_name",
       ),
-    ).toEqual(["The plan-view module and its tests", "Old new logo snake_case_name"]);
-  });
+    ).resolves.toEqual(["The plan-view module and its tests", "Old new snake_case_name"]));
 
-  test("are counted across all levels", () => {
+  test("are counted across all levels", () =>
     expect(
-      specHeadings("# A\n#### deep\n## B\n###### deeper\n### C").map(({ level, position }) => [
-        level,
-        position,
-      ]),
-    ).toEqual([
+      specHeadings("# A\n#### deep\n## B\n###### deeper\n### C").then((found) =>
+        found.map(({ level, position }) => [level, position]),
+      ),
+    ).resolves.toEqual([
       [1, 0],
       [4, 1],
       [2, 2],
       [6, 3],
       [3, 4],
-    ]);
-  });
+    ]));
 
-  test("leave out front matter, which is not rendered", () => {
-    expect(texts("---\ntitle: x\n---\n\n# A\n")).toEqual(["A"]);
-  });
+  test("leave out front matter, which is not rendered", () =>
+    expect(texts("---\ntitle: x\n---\n\n# A\n")).resolves.toEqual(["A"]));
+
+  test("are counted inside quotes, raw HTML and components, as they are drawn", () =>
+    expect(
+      texts(
+        [
+          "# Start",
+          "> ## Quoted heading",
+          "<h3>Raw</h3>",
+          "::card",
+          "## In card",
+          "::",
+          "## End",
+        ].join("\n\n"),
+      ),
+    ).resolves.toEqual(["Start", "Quoted heading", "Raw", "In card", "End"]));
 });

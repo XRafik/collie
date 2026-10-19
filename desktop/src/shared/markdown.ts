@@ -1,6 +1,7 @@
 // A Comark plugin for agent-written markdown. No Bun-only import: the view bundles this.
 
 import type { ComarkPlugin, ElementNodeAttributes, Node } from "comark";
+import security from "comark/plugins/security";
 import { shortUrl } from "./links";
 
 const FILE_LINE = /(?<![\w/:.@-])((?:[\w@.-]+\/)*[\w@-][\w@.-]*\.[A-Za-z]\w*):(\d+)(?![\w:])/g;
@@ -79,3 +80,25 @@ export const confined = (): ComarkPlugin => ({
     tree.nodes = tree.nodes.flatMap(confine(true));
   },
 });
+
+/** What every view of agent-written markdown parses it with, before its own drawing plugins. */
+export const SAFE_PLUGINS = [
+  security({
+    blockedTags: [
+      "script",
+      "style",
+      "iframe",
+      "object",
+      "embed",
+      "form",
+      "base",
+      "link",
+      "meta",
+      // Modal, so it would make the whole window inert.
+      "dialog",
+    ],
+    // Nothing is fetched from the network: an image a Run kept is evidence, read from its host.
+    allowedImagePrefixes: ["data:image/"],
+  }),
+  confined(),
+];
