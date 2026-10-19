@@ -35,7 +35,7 @@ import {
   turnFor,
   workersFor,
 } from "./test-run";
-import { sweepDeadRoots } from "../test/support/sweep";
+import { SOCKET_BASE, sweepDeadRoots } from "../test/support/sweep";
 import { LIVE_HARNESSES } from "../test/support/live-switch";
 
 const args = Bun.argv.slice(2);
@@ -53,6 +53,7 @@ const run = (targeted: boolean, out: string, flags: ReadonlyArray<string>) => as
   const starts = `${out}/starts`;
   const started = performance.now();
   sweepDeadRoots(tmpdir());
+  if (tmpdir() !== SOCKET_BASE) sweepDeadRoots(SOCKET_BASE);
   const built = await Promise.all([
     Bun.spawn(["bun", "run", "tools/build.ts", `${process.platform}-${process.arch}`, collie], {
       stdout: "ignore",

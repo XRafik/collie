@@ -9,13 +9,13 @@ import { BRIDGE_READY } from "../src/board-model";
 import { riderArgv } from "../src/ssh-connection";
 import { bridgeCommand, linkRoute, remoteRoute, type ShellRoute } from "../desktop/src/bun/machine";
 import { runEffect } from "./support/effect";
-import { freePort, writeFakeSsh } from "./support/fake-ssh";
+import { freePort, writeFakeSsh, socketDir } from "./support/fake-ssh";
 
 const vm = { id: "vm", label: "vm-mk", target: "mk@vm-mk", session: "default", enabled: true };
 
 const rig = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-route-" });
+  const dir = yield* socketDir("route-");
   const ssh = `${dir}/ssh`;
   yield* fs.makeDirectory(`${dir}/far`);
   const fake = yield* writeFakeSsh(ssh, dir, {

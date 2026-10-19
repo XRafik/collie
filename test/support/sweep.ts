@@ -7,6 +7,8 @@ import { chmodSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 export const MARKER = "COLLIE_TEST_ROOT";
+/** Where a fixture whose control socket must bind keeps its directory, whatever `TMPDIR` says. */
+export const SOCKET_BASE = "/tmp";
 
 export const alive = (pid: number) => {
   try {

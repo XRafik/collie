@@ -18,15 +18,14 @@ import {
   sshConnection,
 } from "../src/ssh-connection";
 import { runEffect } from "./support/effect";
-import { freePort, portOf, writeFakeSsh } from "./support/fake-ssh";
+import { freePort, portOf, writeFakeSsh, socketDir } from "./support/fake-ssh";
 import { root } from "./support/host";
 
 const vm = { label: "vm-mk", target: "mk@vm-mk" };
 
 /** A fake ssh in a directory of its own, and a state directory beside it. */
 const rig = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-ssh-" });
+  const dir = yield* socketDir("ssh-");
   const ssh = `${dir}/ssh`;
   const fake = yield* writeFakeSsh(ssh, dir);
   return { dir, state: `${dir}/state`, ssh, fake };
@@ -111,13 +110,14 @@ test(
           `import * as BunServices from "@effect/platform-bun/BunServices";
 import { Effect } from "effect";
 import { openConnection } from "${root}src/ssh-connection.ts";
-const opened = await Effect.runPromise(
-  openConnection(${JSON.stringify(state)}, ${JSON.stringify(vm)}, {
-    ssh: ${JSON.stringify(ssh)},
+const [state, ssh, out] = process.argv.slice(2);
+const { opened } = await Effect.runPromise(
+  openConnection(state!, { label: "${vm.label}", target: "${vm.target}" }, {
+    ssh,
     said: () => Effect.void,
   }).pipe(Effect.provide(BunServices.layer)),
 );
-await Bun.write(process.argv[2]!, JSON.stringify(opened));
+await Bun.write(out!, String(opened));
 `,
         );
         // Its answer goes to a file: the master it starts keeps a stdout pipe open.
@@ -125,8 +125,9 @@ await Bun.write(process.argv[2]!, JSON.stringify(opened));
           [0, 1].map((one) =>
             Effect.promise(
               () =>
-                Bun.spawn([process.execPath, opener, `${dir}/opened-${one}`], {
+                Bun.spawn([process.execPath, opener, state, ssh, `${dir}/opened-${one}`], {
                   stdio: ["ignore", "ignore", "inherit"],
+                  env: { ...process.env, TMPDIR: dir },
                 }).exited,
             ),
           ),
@@ -134,11 +135,9 @@ await Bun.write(process.argv[2]!, JSON.stringify(opened));
         );
         expect(codes).toEqual([0, 0]);
         const opened = yield* Effect.forEach([0, 1], (one) =>
-          fs
-            .readFileString(`${dir}/opened-${one}`)
-            .pipe(Effect.map((text) => JSON.parse(text).opened)),
+          fs.readFileString(`${dir}/opened-${one}`),
         );
-        expect(opened.sort()).toEqual([false, true]);
+        expect(opened.toSorted((a, b) => a.localeCompare(b))).toEqual(["false", "true"]);
         expect((yield* fake.calls).filter((line) => line.startsWith("master"))).toEqual([
           "master mk@vm-mk",
         ]);

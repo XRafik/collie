@@ -5,8 +5,24 @@
 import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { Effect, FileSystem, Schema, type Scope } from "effect";
 import { root } from "./host";
+import { SOCKET_BASE } from "./sweep";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/**
+ * A directory for the scope, short enough for a control socket under it to bind: macOS's
+ * `TMPDIR` alone is 49 bytes. Named as the suite's roots are, so a killed suite's is swept.
+ */
+export const socketDir = (prefix: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      fs.makeTempDirectoryScoped({
+        directory: SOCKET_BASE,
+        prefix: `collie-test-${process.pid}-${prefix}`,
+      }),
+    ),
+    Effect.orDie,
+  );
 
 /** A fake `ssh` written to `bin`, and what a test does to it. */
 export interface FakeSsh {

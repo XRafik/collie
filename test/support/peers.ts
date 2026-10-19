@@ -12,7 +12,7 @@ import { Effect, FileSystem, Schema, type Scope } from "effect";
 import { exec } from "./command";
 import { suiteEnv } from "./effect";
 import { writeFakeHerdrShim } from "./fake-herdr-core";
-import { type FakeSsh, writeFakeSsh } from "./fake-ssh";
+import { type FakeSsh, writeFakeSsh, socketDir } from "./fake-ssh";
 import { fixtures, root, stopHost } from "./host";
 import { collie, collieCommand, type World } from "./world";
 
@@ -74,8 +74,7 @@ export const twoMachines = <A, E>(
     const suite = yield* suiteEnv;
     const make = (name: string, port: number) =>
       Effect.gen(function* () {
-        // Short enough for its SSH connection's control path to bind as a socket.
-        const dir = yield* fs.makeTempDirectoryScoped({ prefix: `${prefix.slice(0, 12)}${name}-` });
+        const dir = yield* socketDir(`${prefix.slice(0, 12)}${name}-`);
         const world: World = {
           install: `${dir}/install`,
           user: `${dir}/install/user/workflows`,

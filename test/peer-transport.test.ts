@@ -12,7 +12,7 @@ import { certificateFor, keyOf } from "../src/peers";
 import type { Peer } from "../src/peers-model";
 import { openConnection, sshConnection } from "../src/ssh-connection";
 import { runEffect } from "./support/effect";
-import { freePort, portOf, resetter, writeFakeSsh } from "./support/fake-ssh";
+import { freePort, portOf, resetter, writeFakeSsh, socketDir } from "./support/fake-ssh";
 
 const vm = { label: "vm-mk", target: "mk@vm-mk" };
 const SECRET = "the-secret";
@@ -61,7 +61,7 @@ const listener = (dir: string) =>
 
 const rig = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-way-" });
+  const dir = yield* socketDir("way-");
   const ssh = `${dir}/ssh`;
   const fake = yield* writeFakeSsh(ssh, dir);
   const state = `${dir}/state`;
