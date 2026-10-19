@@ -7,7 +7,18 @@
 // none of them has an answer in one process with an in-memory engine.
 
 import { expect, test } from "bun:test";
-import { Config, ConfigProvider, Effect, FileSystem, Layer, Option, Scope, Stream } from "effect";
+import {
+  Clock,
+  Config,
+  ConfigProvider,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Scope,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { connect, outputOf, ownerOf, restartHost } from "../src/host";
 import { signalProcess } from "../src/lock";
@@ -475,6 +486,82 @@ test(
         const log = yield* fs.readFileString(`${state}/host.log`);
         expect(log).toContain("host started");
         expect(log).toContain("still stopping after");
+      }),
+    ),
+  120_000,
+);
+
+/**
+ * Starts the `stubborn` step on a host watching `watch`, takes the host's end away with
+ * `end`, and gives back how long the host took to be gone and what its `host.log` said.
+ */
+const outlivesAStubbornStep = (
+  watch: string,
+  end: (state: string) => Effect.Effect<void, never, FileSystem.FileSystem>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const { project, state } = yield* workspace("collie-host-ends-");
+    const marker = `${state}/started`;
+    const who = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* connect(state, { hostEnv: { COLLIE_HOST_WATCH_PID: watch } });
+        yield* client.start({ project, id: "stubborn", request: "req-1", input: { marker } });
+        return yield* client.identity();
+      }),
+    ).pipe(Effect.orDie);
+    yield* Effect.addFinalizer(() => signalProcess(who.pid, "SIGKILL"));
+    yield* until(() => fs.exists(marker), Boolean);
+
+    const endedAt = yield* Clock.currentTimeMillis;
+    yield* end(state);
+    yield* until(
+      () => signalProcess(who.pid),
+      (alive) => !alive,
+    );
+    const took = Duration.millis((yield* Clock.currentTimeMillis) - endedAt);
+    const log = yield* fs.readFileString(`${state}/host.log`);
+    const grace = yield* Config.Duration("COLLIE_HOST_STOP_GRACE").pipe(
+      Config.withDefault(Duration.millis(500)),
+    );
+    return { took, log, bound: Duration.sum(grace, Duration.seconds(5)) };
+  });
+
+test(
+  "a host whose state directory is taken away while a step will not end is gone within its grace",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const { took, log, bound } = yield* outlivesAStubbornStep("", (state) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            // Moved away rather than deleted, as a recursive delete races the host's writes;
+            // an empty one put back in its place is where the host's last lines land.
+            yield* fs.rename(state, `${state}.gone`);
+            yield* fs.makeDirectory(state);
+          }).pipe(Effect.orDie),
+        );
+        expect(Duration.isLessThanOrEqualTo(took, bound)).toBe(true);
+        expect(log).toContain("its lock is gone; stopping");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a host whose watched process exits while a step will not end is gone within its grace",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        // Nobody's child here, so once killed it is gone rather than a zombie a signal reaches.
+        const detached = yield* exec(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"]);
+        const outlived = Number(detached.stdout.trim());
+        yield* Effect.addFinalizer(() => signalProcess(outlived, "SIGKILL"));
+        const { took, log, bound } = yield* outlivesAStubbornStep(String(outlived), () =>
+          signalProcess(outlived, "SIGKILL"),
+        );
+        expect(Duration.isLessThanOrEqualTo(took, bound)).toBe(true);
+        expect(log).toContain("the process it watches has exited; stopping");
       }),
     ),
   120_000,

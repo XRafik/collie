@@ -2434,16 +2434,14 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
     return yield* withLock(
       lock,
       Effect.void,
-      boundedStop(lock).pipe(
-        Effect.andThen(Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`)),
-        Effect.andThen(
-          Effect.forkScoped(
-            rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
-          ),
-        ),
-        Effect.andThen(Effect.race(own(dir), orphaned(dir))),
-        Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true })),
-      ),
+      Effect.gen(function* () {
+        const stop = yield* boundedStop(lock);
+        yield* Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`);
+        yield* Effect.forkScoped(
+          rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
+        );
+        yield* Effect.race(own(dir), orphaned(dir).pipe(Effect.flatMap(stop)));
+      }).pipe(Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true }))),
       0,
     );
   }).pipe(Effect.orDie);
@@ -2457,14 +2455,17 @@ const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 /** Long enough for the log's next flush, which an exit does not wait for. */
 const LOG_FLUSH = "200 millis";
 
-/** A stop signal gives the shutdown the grace, then exits however far it got (ADR-0014). */
+/**
+ * Whatever ends a host, a stop signal or what `orphaned` finds, gives the shutdown the
+ * grace, then exits however far it got (ADR-0014). Gives back that stop, for `orphaned`.
+ */
 const boundedStop = (lock: string) =>
   Effect.gen(function* () {
     const grace = yield* stopGrace;
-    const stopping = yield* Deferred.make<void>();
+    const stopping = yield* Deferred.make<string>();
     // In the outer scope, which closes only once the shutdown it bounds has finished.
     yield* Deferred.await(stopping).pipe(
-      Effect.andThen(Effect.logInfo("asked to stop")),
+      Effect.flatMap(Effect.logInfo),
       Effect.andThen(Effect.sleep(grace)),
       Effect.andThen(Effect.logWarning(`still stopping after ${Duration.format(grace)}; exiting`)),
       Effect.andThen(Effect.sleep(LOG_FLUSH)),
@@ -2474,7 +2475,7 @@ const boundedStop = (lock: string) =>
       Effect.andThen(Effect.sync(() => process.exit(1))),
       Effect.forkScoped,
     );
-    const signalled = () => Deferred.doneUnsafe(stopping, Effect.void);
+    const signalled = () => Deferred.doneUnsafe(stopping, Effect.succeed("asked to stop"));
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         for (const signal of STOP_SIGNALS) process.once(signal, signalled);
@@ -2484,12 +2485,13 @@ const boundedStop = (lock: string) =>
           for (const signal of STOP_SIGNALS) process.off(signal, signalled);
         }),
     );
+    return (why: string) => Deferred.succeed(stopping, why).pipe(Effect.asVoid);
   });
 
 /**
- * Resolves once nothing is left for this host to serve: its lock is gone with the state
- * directory it was in, or the process named in `COLLIE_HOST_WATCH_PID` — whatever it was
- * started to live no longer than, a test's own process — has gone. A host is otherwise
+ * Resolves, with why, once nothing is left for this host to serve: its lock is gone with the
+ * state directory it was in, or the process named in `COLLIE_HOST_WATCH_PID` — whatever it
+ * was started to live no longer than, a test's own process — has gone. A host is otherwise
  * meant to outlive the client that started it, so nothing else ends it but a stop.
  *
  * The lock rather than the directory: a host still starting binds its socket in the
@@ -2511,8 +2513,12 @@ const orphaned = (dir: string) =>
     };
     for (;;) {
       yield* Effect.sleep("1 second");
-      if (!(yield* fs.exists(lockOf(dir)).pipe(Effect.orElseSucceed(() => true)))) return;
-      if (Option.isSome(watched) && !alive(watched.value)) return;
+      if (!(yield* fs.exists(lockOf(dir)).pipe(Effect.orElseSucceed(() => true)))) {
+        return "its lock is gone; stopping";
+      }
+      if (Option.isSome(watched) && !alive(watched.value)) {
+        return "the process it watches has exited; stopping";
+      }
     }
   });
 
