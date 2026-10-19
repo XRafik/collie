@@ -32,8 +32,9 @@ export interface CheckCommand {
 export interface RunningCheck {
   readonly stdout: Stream.Stream<Uint8Array, PlatformError>;
   readonly stderr: Stream.Stream<Uint8Array, PlatformError>;
-  /** Never resolves for a check this host ended. */
   readonly exit: Effect.Effect<number, PlatformError>;
+  /** What `collecting` gathers of it, never completing for a check this host ended (D4). */
+  readonly collected: <A, E, R>(collecting: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
 }
 
 /** A check a host recorded or marked in this state directory that no host is collecting. */
@@ -114,6 +115,7 @@ const unrecorded: CheckProcessesApi = {
       stdout: handle.stdout,
       stderr: handle.stderr,
       exit: Effect.map(handle.exitCode, Number),
+      collected: (collecting) => collecting,
     })),
   endAll: Effect.succeed([]),
   killEnded: Effect.void,
@@ -124,7 +126,12 @@ const unrecorded: CheckProcessesApi = {
 };
 
 /** A check this host ended, or would not start once it began to end. */
-const endedCheck: RunningCheck = { stdout: Stream.empty, stderr: Stream.empty, exit: Effect.never };
+const endedCheck: RunningCheck = {
+  stdout: Stream.empty,
+  stderr: Stream.empty,
+  exit: Effect.never,
+  collected: () => Effect.never,
+};
 
 export const CheckProcesses = Context.Reference<CheckProcessesApi>("collie/CheckProcesses", {
   defaultValue: () => unrecorded,
@@ -232,10 +239,15 @@ const saidOf = (leftover: Leftover, outcome: LeftoverEnd) => {
   return `${check} of ${leftover.run}, left running by ${host}: ${outcome}`;
 };
 
-interface Collecting {
+interface Ending {
   readonly check: CheckOf;
-  readonly record: CheckRecord;
   ended: boolean;
+  /** Collected in full before its host began to end, so not among those it ended. */
+  settled: boolean;
+}
+
+interface Collecting extends Ending {
+  readonly record: CheckRecord;
 }
 
 /**
@@ -266,7 +278,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   let stopping = false;
   let killing = false;
   // Their processes carry their markers before their record is read.
-  const spawning = new Map<string, { readonly check: CheckOf; ended: boolean }>();
+  const spawning = new Map<string, Ending>();
   // From before its spawn, so no check of this host is ever taken for a leftover.
   const ours = new Set<string>();
   const host = { pid: process.pid, started: (yield* startedOf(process.pid)) ?? "" };
@@ -386,7 +398,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       return yield* Effect.uninterruptible(
         Effect.gen(function* () {
           if (stopping) return endedCheck;
-          spawning.set(id, { check, ended: false });
+          spawning.set(id, { check, ended: false, settled: false });
           const { handle, record, entry } = yield* Effect.gen(function* () {
             const handle = yield* spawnCheck(command, {
               [CHECK_INSTALLATION]: installation,
@@ -407,7 +419,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
               host,
               started: began,
             };
-            const entry: Collecting = { check, record, ended: stopping };
+            const entry: Collecting = { check, record, ended: stopping, settled: false };
             collecting.set(id, entry);
             return { handle, record, entry };
           }).pipe(Effect.ensuring(Effect.sync(() => spawning.delete(id))));
@@ -423,11 +435,16 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
           return {
             stdout: handle.stdout,
             stderr: handle.stderr,
-            exit: handle.exitCode.pipe(
-              Effect.exit,
-              Effect.flatMap((exit) => (entry.ended ? Effect.never : exit)),
-              Effect.map(Number),
-            ),
+            exit: Effect.map(handle.exitCode, Number),
+            collected: (collecting) =>
+              collecting.pipe(
+                Effect.exit,
+                Effect.flatMap((exit) => {
+                  if (entry.ended) return Effect.never;
+                  entry.settled = true;
+                  return exit;
+                }),
+              ),
           };
         }),
       );
@@ -437,7 +454,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     stopping = true;
     const ended: CheckOf[] = [];
     for (const entry of [...collecting.values(), ...spawning.values()]) {
-      if (entry.ended) continue;
+      if (entry.ended || entry.settled) continue;
       entry.ended = true;
       ended.push(entry.check);
     }

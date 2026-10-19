@@ -347,11 +347,13 @@ export const collect = Effect.fn("Verify.collect")(function* (
           (kept: string, chunk: string) => tail(kept + chunk),
         ),
       );
-    return yield* Effect.all(
-      [drain(handle.stdout, echo?.stdout), drain(handle.stderr, echo?.stderr), handle.exit],
-      {
-        concurrency: "unbounded",
-      },
+    return yield* handle.collected(
+      Effect.all(
+        [drain(handle.stdout, echo?.stdout), drain(handle.stderr, echo?.stderr), handle.exit],
+        {
+          concurrency: "unbounded",
+        },
+      ),
     );
   }).pipe(Effect.scoped, Effect.orDie);
   const end = yield* fingerprint(what.cwd);

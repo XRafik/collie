@@ -21,6 +21,7 @@ import { startDetached } from "./support/command";
 import { until } from "./support/host";
 
 const held = new URL("./fixtures/checks/held.sh", import.meta.url).pathname;
+const leaves = new URL("./fixtures/checks/leaves.sh", import.meta.url).pathname;
 const installation = "installation-under-test";
 
 /** A state directory, a directory the check notes its pids in, and the host's adapter. */
@@ -107,6 +108,46 @@ test.skipIf(process.platform !== "linux")(
           }).pipe(Effect.provideService(CheckProcesses, checks)),
         );
         const ones = yield* startedIn(notes);
+
+        expect((yield* checks.endAll).map((one) => one.name)).toEqual(["held"]);
+        yield* checks.killEnded;
+        yield* until(() => noneRunning(ones), Boolean);
+
+        const after = yield* Fiber.join(collecting).pipe(Effect.timeoutOption("1 second"));
+        expect(Option.isNone(after)).toBe(true);
+        expect(yield* readVerifications(evidence).pipe(Effect.orElseSucceed(() => []))).toEqual([]);
+      }),
+    ),
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a check its host ended after its leader exited, while a child held its output, records nothing",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { root, notes, checks } = yield* world;
+        const evidence = `${root}/evidence`;
+        const collecting = yield* Effect.forkScoped(
+          collect(evidence, {
+            ...check,
+            executable: leaves,
+            argv: [notes],
+            cwd: notes,
+          }).pipe(Effect.provideService(CheckProcesses, checks)),
+        );
+        const [leader, child] = yield* Effect.forEach(["starts", "children"], (file) =>
+          until(
+            () => fs.readFileString(`${notes}/${file}`).pipe(Effect.orElseSucceed(() => "")),
+            (text) => text.trim() !== "",
+          ).pipe(Effect.map((text) => Number(text.trim()))),
+        );
+        yield* until(
+          () => startedOf(leader!),
+          (started) => started === null,
+        );
+        const ones = [{ pid: child!, started: (yield* startedOf(child!)) ?? "" }];
 
         expect((yield* checks.endAll).map((one) => one.name)).toEqual(["held"]);
         yield* checks.killEnded;
@@ -282,7 +323,7 @@ const runHeld = (checks: Effect.Success<typeof world>["checks"], notes: string) 
     Effect.scoped(
       checks
         .run(check, { executable: held, argv: [notes], cwd: notes })
-        .pipe(Effect.flatMap((one) => one.exit)),
+        .pipe(Effect.flatMap((one) => one.collected(one.exit))),
     ),
   );
 
