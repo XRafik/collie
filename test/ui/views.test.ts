@@ -3,7 +3,7 @@
 
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, FileSystem, Path, PlatformError, Schema } from "effect";
+import { DateTime, Effect, FileSystem, Path, PlatformError, Schema } from "effect";
 import { Rig, type RigError } from "../support/recorder";
 import { installBaseline } from "../support/engine";
 import { installFakeSkills } from "../support/defs";
@@ -20,9 +20,12 @@ import { FINDINGS_FILE, FindingSchema, REVIEW_FILE } from "../../src/output";
 import type { RunFacts } from "../../src/runs";
 import { madeRun } from "../support/records";
 import { writeSettingsSet } from "../../src/config";
+import { Launched } from "../../src/launches";
 
 let rig: Rig;
 const encodeFindings = Schema.encodeSync(Schema.fromJsonString(Schema.Array(FindingSchema)));
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeLaunched = Schema.encodeSync(Schema.fromJsonString(Launched));
 /** Every Run a test has made, newest first, as the host would list them. */
 let runs: RunFacts[] = [];
 
@@ -57,6 +60,7 @@ const seed = Effect.fn("viewsTest.seed")(function* (opts: {
   review?: string;
   findings?: number;
   settled?: RunFacts["settled"];
+  repo?: string;
 }) {
   const env = rig.pluginEnv();
   const fs = yield* FileSystem.FileSystem;
@@ -69,6 +73,7 @@ const seed = Effect.fn("viewsTest.seed")(function* (opts: {
     state: opts.state ?? "succeeded",
     created: `2026-09-0${runs.length + 1}T10:00:00.000Z`,
     finished: opts.state === "running" ? null : `2026-09-0${runs.length + 1}T11:00:00.000Z`,
+    repo: opts.repo ?? null,
     settled: opts.settled ?? {
       inputs: opts.target ? { target: opts.target } : {},
       strategies: { target: "diff-target" },
@@ -426,6 +431,250 @@ effectTest(
     });
   },
 );
+
+/** A plan dir of tickets, each written before every seeded Run finished. */
+const planned = Effect.fn("viewsTest.planned")(function* (
+  dir: string,
+  tickets: Record<string, string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.makeDirectory(path.join(dir, "issues"), { recursive: true });
+  const before = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-01T00:00:00.000Z"));
+  for (const [file, text] of Object.entries(tickets)) {
+    yield* fs.writeFileString(path.join(dir, "issues", file), text);
+    yield* fs.utimes(path.join(dir, "issues", file), before, before);
+  }
+});
+
+/** The detail as the host builds it, whose Runs carry no time they finished. */
+const hostDetailOf = (
+  run: { id: string },
+  over: Partial<Parameters<typeof buildRunDetail>[0]> = {},
+) => detailOf(run, { runs: runs.map((one) => ({ ...one, finished: null })), ...over });
+
+/** What the implement workflow records as a slice starts and lands. */
+const progressed = Effect.fn("viewsTest.progressed")(function* (
+  run: { dir: string },
+  ticket: string,
+  status: "started" | "done",
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const dir = path.join(run.dir, "steering", "progress");
+  yield* fs.makeDirectory(dir, { recursive: true });
+  yield* fs.writeFileString(
+    path.join(dir, ticket.replace(/\.md$/, ".json")),
+    encodeJson({ ticket, status, claims: [], at: "2026-09-01T10:30:00.000Z" }),
+  );
+});
+
+/** A step whose agent was launched, and whose Output came in at this moment. */
+const stepped = Effect.fn("viewsTest.stepped")(function* (
+  run: { id: string },
+  operation: string,
+  at = "2026-08-02T00:00:00.000Z",
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const dir = `${rig.pluginEnv().stateDir}/agents/${run.id}`;
+  yield* fs.makeDirectory(dir, { recursive: true });
+  yield* fs.writeFileString(`${dir}/${operation}.json`, "{}");
+  const when = DateTime.toDateUtc(DateTime.makeUnsafe(at));
+  yield* fs.utimes(`${dir}/${operation}.json`, when, when);
+  yield* fs.writeFileString(
+    `${dir}/${operation}.launch.json`,
+    encodeLaunched({
+      agent: `${run.id}-build`,
+      output: `${dir}/${operation}.json`,
+      reused: false,
+      runId: run.id,
+      operation,
+      role: "implementer",
+      workflow: "implement",
+      harness: "claude",
+    }),
+  );
+});
+
+effectTest(
+  "a prose ticket is done once a succeeded Run built from its plan finished it",
+  function* () {
+    const path = yield* Path.Path;
+    const planner = yield* seed({ workflow: "plan" });
+    const dir = path.join(planner.dir, "plan");
+    yield* planned(dir, {
+      "01-landed.md": "# Landed\n\nProse only.\n",
+      "02-stepped.md": "# Stepped\n\nProse only.\n",
+      "03-started.md": "# Started\n\nProse only.\n",
+      "04-failed.md": "# Failed\n\nProse only.\n",
+      "05-boxes.md": "# Boxes\n\n- [ ] a\n",
+    });
+    const fromPlan = {
+      inputs: { plan: dir, plan_kind: "plan-dir" },
+      strategies: { plan: "work-source" },
+    };
+
+    const builder = yield* seed({ workflow: "implement", settled: fromPlan });
+    yield* progressed(builder, "01-landed.md", "done");
+    yield* stepped(builder, "02-stepped.md");
+    yield* progressed(builder, "03-started.md", "started");
+    // A Run that failed proves nothing, whatever its slices said.
+    const failed = yield* seed({ workflow: "implement", state: "failed", settled: fromPlan });
+    yield* progressed(failed, "04-failed.md", "done");
+    yield* stepped(failed, "04-failed.md");
+
+    const expected = [
+      { file: "01-landed.md", done: true },
+      { file: "02-stepped.md", done: true },
+      { file: "03-started.md", done: false },
+      { file: "04-failed.md", done: false },
+      { file: "05-boxes.md", done: false },
+    ];
+    // The planner's plan and its builder's read the same, whichever Run is selected.
+    expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject(expected);
+    expect((yield* hostDetailOf(builder))!.plan!.tickets).toMatchObject(expected);
+  },
+);
+
+effectTest(
+  "a succeeded Run's whole-plan build finishes the tickets it had, and nothing else",
+  function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const whole = yield* seed({ workflow: "implement" });
+    yield* planned(path.join(whole.dir, "plan"), {
+      "01-one.md": "# One\n\nProse.\n",
+      "02-two.md": "# Two\n\nProse.\n",
+    });
+    yield* stepped(whole, "build");
+    // Added after the build's Output was in, though before the Run ended.
+    const later = path.join(whole.dir, "plan", "issues", "03-later.md");
+    yield* fs.writeFileString(later, "# Later\n");
+    const added = DateTime.toDateUtc(DateTime.makeUnsafe("2026-08-03T00:00:00.000Z"));
+    yield* fs.utimes(later, added, added);
+
+    expect((yield* hostDetailOf(whole))!.plan!.tickets).toMatchObject([
+      { file: "01-one.md", done: true },
+      { file: "02-two.md", done: true },
+      { file: "03-later.md", done: false },
+    ]);
+
+    const planner = yield* seed({ workflow: "plan" });
+    yield* planned(path.join(planner.dir, "plan"), { "01-one.md": "# One\n\nProse.\n" });
+    expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+      { file: "01-one.md", done: false },
+    ]);
+
+    const stopped = yield* seed({ workflow: "implement", state: "stopped" });
+    yield* planned(path.join(stopped.dir, "plan"), { "01-one.md": "# One\n\nProse.\n" });
+    yield* stepped(stopped, "build");
+    expect((yield* hostDetailOf(stopped))!.plan!.tickets).toMatchObject([
+      { file: "01-one.md", done: false },
+    ]);
+  },
+);
+
+effectTest("a repository's build finishes only that repository's tickets", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, {
+    "01-api.md": "# Api\n\n**Repo:** api\n",
+    "02-web.md": "# Web\n\n**Repo:** web\n",
+  });
+  const api = yield* seed({
+    workflow: "implement",
+    repo: "api",
+    settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
+  });
+  yield* stepped(api, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-api.md", done: true },
+    { file: "02-web.md", done: false },
+  ]);
+});
+
+effectTest("a long ticket's repository is read past what the panel shows", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, {
+    "01-root.md": "# Root\n\n**Repo:** .\n",
+    "02-web.md": `# Web\n\n${"Prose.\n".repeat(1500)}\n**Repo:** web\n`,
+  });
+  const root = yield* seed({
+    workflow: "implement",
+    repo: ".",
+    settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
+  });
+  yield* stepped(root, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-root.md", done: true },
+    { file: "02-web.md", done: false },
+  ]);
+});
+
+effectTest("a root build leaves a ticket whose repository it cannot tell", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, {
+    "01-root.md": "# Root\n\n**Repo:** .\n",
+    "02-wrapped.md": "# Wrapped\n\n**Repo:**\nweb\n",
+    "03-far.md": `# Far\n\n${"x".repeat(1024 * 1024)}\n**Repo:** web\n`,
+  });
+  const root = yield* seed({
+    workflow: "implement",
+    repo: ".",
+    settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
+  });
+  yield* stepped(root, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-root.md", done: true },
+    { file: "02-wrapped.md", done: false },
+    { file: "03-far.md", done: false },
+  ]);
+});
+
+effectTest("a plan named with a trailing slash is the same plan", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, { "01-one.md": "# One\n\nProse.\n" });
+  const builder = yield* seed({
+    workflow: "implement",
+    settled: {
+      inputs: { plan: `${dir}/`, plan_kind: "plan-dir" },
+      strategies: { plan: "work-source" },
+    },
+  });
+  yield* stepped(builder, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-one.md", done: true },
+  ]);
+});
+
+effectTest("a finished Run's cached plan is read again once a ticket lands", function* () {
+  const path = yield* Path.Path;
+  const plans: PlanCache = new Map();
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, { "01-one.md": "# One\n\nProse.\n" });
+  const builder = yield* seed({
+    workflow: "implement",
+    settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
+  });
+  yield* progressed(builder, "01-one.md", "started");
+  expect((yield* hostDetailOf(planner, { plans }))!.plan!.tickets[0]!.done).toBe(false);
+
+  yield* progressed(builder, "01-one.md", "done");
+
+  expect((yield* hostDetailOf(planner, { plans }))!.plan!.tickets[0]!.done).toBe(true);
+});
 
 effectTest(
   "Settings offers how a question is presented, defaulting to automatic focus",
