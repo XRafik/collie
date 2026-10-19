@@ -21,7 +21,16 @@ import {
   type Watched,
 } from "../src/oversight";
 import { readCards } from "../src/cards";
-import { alignment, currentReports, electionsPath, readDrift, readElections } from "../src/drift";
+import {
+  MAX_FILES,
+  alignment,
+  currentReports,
+  electionsPath,
+  findingKey,
+  readDrift,
+  readElections,
+  type JudgementDeps,
+} from "../src/drift";
 import { proposalsPath, read as readProposals } from "../src/proposals";
 import { budgetPath, herdOf } from "../src/steering";
 import { serverSocket } from "../src/home";
@@ -406,25 +415,26 @@ const evaluatorOnPath = Effect.suspend(() =>
   evaluatorAnswering(`cat > /dev/null\necho '{"result":{"reports":[]}}'`),
 );
 
+const EVALUATOR_FLAGS = [
+  "--print",
+  "--output-format",
+  "--json-schema",
+  "--tools",
+  "--restricted",
+  "--strict-mcp-config",
+  "--setting-sources",
+  "--no-session-persistence",
+  "--max-budget-usd",
+  "--append-system-prompt-file",
+].join(" ");
+
 const evaluatorAnswering = Effect.fnUntraced(function* (answer: string) {
   const fs = yield* FileSystem.FileSystem;
   const bin = `${rig.root}/evaluator-bin-${Bun.hash(answer)}`;
   yield* fs.makeDirectory(bin, { recursive: true });
-  const flags = [
-    "--print",
-    "--output-format",
-    "--json-schema",
-    "--tools",
-    "--restricted",
-    "--strict-mcp-config",
-    "--setting-sources",
-    "--no-session-persistence",
-    "--max-budget-usd",
-    "--append-system-prompt-file",
-  ].join(" ");
   yield* fs.writeFileString(
     `${bin}/claude`,
-    `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "${flags}"; exit 0; fi\n${answer}\n`,
+    `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "${EVALUATOR_FLAGS}"; exit 0; fi\n${answer}\n`,
   );
   yield* fs.chmod(`${bin}/claude`, 0o755);
   yield* Effect.acquireRelease(
@@ -844,4 +854,201 @@ test("a Run with relatives stands for the cross-run check, and one leaving unans
       );
       expect(card.cross_run).toBe("pending");
     }),
+  ));
+
+// --- The cross-run judgement reads the work ------------------------------------------
+
+const R1_ONLY: Constraint = { ...SMALL, id: "r1-only", text: "touch only the docs" };
+
+const git = (args: string[], cwd = dir) => exec(["git", ...args], { cwd });
+
+/** `files` committed on a branch of the host's repository, and a card of `runId` at it. */
+const cardedWork = (runId: string, files: Readonly<Record<string, string>>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* git(["checkout", "-q", "-b", `${runId}-work`]);
+    yield* fs.makeDirectory(`${dir}/src`, { recursive: true });
+    for (const [name, text] of Object.entries(files))
+      yield* fs.writeFileString(`${dir}/${name}`, text);
+    yield* git(["add", ...Object.keys(files)]);
+    yield* git(["commit", "-qm", `${runId}'s work`]);
+    yield* writeCard(watchedAt(runId), { kind: "slice", step: "build", claims: [] });
+    yield* git(["checkout", "-q", "-"]);
+  });
+
+/** A judge that keeps the pack it was given and answers with `reports`. */
+const crossRunJudge = (reports: ReadonlyArray<object>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const reply = `${rig.root}/cross-run-reply.json`;
+    yield* fs.writeFileString(
+      reply,
+      Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({ result: { reports } }),
+    );
+    yield* evaluatorAnswering(`cat > ${rig.root}/pack.txt\ncat ${reply}`);
+    const limits = { maxSeconds: 5, maxOutputBytes: 262_144, model: "sonnet", effort: "low" };
+    const deps: JudgementDeps = {
+      evaluator: {
+        help: Effect.succeed(EVALUATOR_FLAGS),
+        systemPromptFile: `${dir}/steward.md`,
+        limits,
+      },
+      budgetFile: `${dir}/budget.jsonl`,
+      limits,
+      newId: Effect.succeed("call-1"),
+      log: () => Effect.void,
+    };
+    return deps;
+  });
+
+const reportOn = (run: string, constraint: string, evidence: ReadonlyArray<object>) => ({
+  id: "the-models-own",
+  at: "t",
+  run,
+  intent_version: 9,
+  constraint,
+  kind: "rule",
+  severity: "warn",
+  evidence,
+  evidence_truncated: false,
+  resolution: "open",
+});
+
+/** What the pack says under one Run, up to the next. */
+const under = (pack: string, runId: string) =>
+  pack.split(/^(?=run: )/m).find((section) => section.startsWith(`run: ${runId}\n`)) ?? "";
+
+const judgedAcross = (family: ReadonlyArray<string>, deps: JudgementDeps) =>
+  Effect.gen(function* () {
+    const key = (yield* herdOf(`${rig.root}/herd.sock`))!;
+    yield* standForElection({ ...watchedAt("r1"), herd: key, family }, "boundary", false, deps);
+    const fs = yield* FileSystem.FileSystem;
+    return {
+      pack: yield* fs.readFileString(`${rig.root}/pack.txt`),
+      log: yield* fs.readFileString(`${runDir(dir, "r1")}/log.txt`),
+    };
+  });
+
+test("the cross-run judge reads each related Run's work, and files only what cites it", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* repository();
+        yield* git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        yield* intended("r1", [R1_ONLY]);
+        yield* intended("r2", [SMALL]);
+        yield* intended("r3", [SMALL]);
+        yield* intended("r4", [SMALL]);
+        yield* cardedWork("r2", {
+          "src/a.ts": "export const a = 1;\n",
+          "src/api-token.ts": "export const TOKEN = 'hunter2';\n",
+        });
+        yield* fs.makeDirectory(`${dir}/agents/r2`, { recursive: true });
+        yield* fs.writeFileString(
+          `${dir}/agents/r2/build.json`,
+          '{"verdict":"clean","note":"a picker"}',
+        );
+        yield* fs.writeFileString(`${dir}/agents/r2/build.launch.json`, '{"argv":"LAUNCHED"}');
+        yield* fs.writeFileString(`${dir}/agents/r2/build.mcp.json`, '{"servers":"MCP-CONFIG"}');
+        yield* fs.makeDirectory(`${dir}/agents/r3`, { recursive: true });
+        yield* fs.writeFileString(`${dir}/agents/r3/plan.json`, '{"verdict":"planned"}');
+        // A card at a commit this repository does not have: a Run of another one.
+        const elsewhere = `${rig.root}/elsewhere`;
+        yield* fs.makeDirectory(elsewhere, { recursive: true });
+        for (const args of [
+          ["init", "-q"],
+          [
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "x",
+          ],
+        ])
+          yield* git(args, elsewhere);
+        yield* writeCard(
+          { ...watchedAt("r4"), cwd: elsewhere },
+          { kind: "slice", step: "build", claims: [] },
+        );
+
+        const cited = [{ kind: "diff" as const, path: "src/a.ts" }];
+        const deps = yield* crossRunJudge([
+          reportOn("r2", "small", cited),
+          reportOn("r2", "small", [{ kind: "output", path: "build" }]),
+          // Another Run's constraint.
+          reportOn("r2", "r1-only", cited),
+          // The goal, and a commit alone.
+          reportOn("r2", "small", [{ kind: "plan", excerpt: "add a picker" }]),
+          reportOn("r2", "small", [{ kind: "git", sha: "abc123" }]),
+          // A file another Run changed.
+          reportOn("r1", "r1-only", cited),
+        ]);
+        const { pack, log } = yield* judgedAcross(["r1", "r2", "r3", "r4"], deps);
+
+        expect(pack).toContain(
+          "A constraint read from the plan narrows the goal it was cut from: the goal is what was asked, not work done, and it is never evidence of drift.",
+        );
+        const r2 = under(pack, "r2");
+        expect(r2).toContain("--- src/a.ts");
+        expect(r2).toContain("+export const a = 1;");
+        expect(r2).toContain("--- src/api-token.ts\n<redacted>");
+        expect(pack).not.toContain("hunter2");
+        expect(r2).toContain("--- output build");
+        expect(r2).toContain('"verdict": "clean"');
+        expect(pack).not.toContain("LAUNCHED");
+        expect(pack).not.toContain("MCP-CONFIG");
+        expect(r2.indexOf("constraint: small")).toBeLessThan(r2.indexOf("--- src/a.ts"));
+        const r3 = under(pack, "r3");
+        expect(r3).toContain("work: none yet (no card)");
+        expect(r3).toContain("--- output plan");
+        expect(under(pack, "r4")).toContain("diff: could not be read: ");
+
+        const filed = currentReports(yield* readDrift(runDir(dir, "r2")));
+        expect(filed.map((report) => report.evidence)).toEqual([
+          cited,
+          [{ kind: "output", path: "build" }],
+        ]);
+        expect(filed[0]).toMatchObject({
+          id: `d-${findingKey("small", cited)}`,
+          kind: "semantic",
+          run: "r2",
+          intent_version: 1,
+          evidence_truncated: false,
+        });
+        expect(currentReports(yield* readDrift(runDir(dir, "r1")))).toEqual([]);
+        expect(log).toContain("2 report(s) filed");
+        expect(log).toContain("r3: no card");
+        expect(log).toMatch(/r4: diff could not be read: /);
+      }),
+    ),
+  ));
+
+test("a related Run's work cut to the cap is said to be, and so is what is filed against it", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* repository();
+        yield* git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        yield* intended("r1", [R1_ONLY]);
+        yield* intended("r2", [SMALL]);
+        const files: Record<string, string> = {};
+        for (let n = 0; n <= MAX_FILES; n += 1)
+          files[`src/f${String(n).padStart(2, "0")}.ts`] = `${n}\n`;
+        yield* cardedWork("r2", files);
+        const cited = [{ kind: "diff" as const, path: "src/f00.ts" }];
+        const deps = yield* crossRunJudge([reportOn("r2", "small", cited)]);
+        const { pack } = yield* judgedAcross(["r1", "r2"], deps);
+
+        expect(under(pack, "r2")).toContain("TRUNCATED to the cap; judge only what is here");
+        expect(under(pack, "r2")).not.toContain(`--- src/f${MAX_FILES}.ts`);
+        expect(currentReports(yield* readDrift(runDir(dir, "r2")))).toMatchObject([
+          { evidence: cited, evidence_truncated: true },
+        ]);
+      }),
+    ),
   ));

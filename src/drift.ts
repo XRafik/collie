@@ -444,6 +444,12 @@ export function judgementPaths(intent: Intent): string[] {
   return [...new Set(named)];
 }
 
+/** What both judgements are told about a plan's constraints and the goal they were cut from. */
+export const PLAN_NARROWS_GOAL = [
+  "A constraint read from the plan narrows the goal it was cut from: the goal is what was asked, not work done, and it is never evidence of drift.",
+  "A report must cite the work it was shown.",
+];
+
 /**
  * What the model is asked. The Intent's own words and the actual diff, and nothing else:
  * no pane text, no agent transcript, no narrative anybody wrote about the work.
@@ -462,6 +468,8 @@ export function judgementPack(
     `intent_version: ${intent.version}`,
     `goal: ${intent.goal ?? "(none stated)"}`,
     "",
+    ...PLAN_NARROWS_GOAL,
+    "",
     "constraints to judge:",
     ...semantic.map(
       (constraint) => `- ${constraint.id} (${constraint.severity}): ${constraint.text}`,
@@ -478,6 +486,28 @@ export function judgementPack(
     .join("\n");
 }
 
+/** The work a pack showed: the files whose diff it quoted, and the Outputs by operation. */
+export interface ShownWork {
+  readonly files: ReadonlyArray<string>;
+  readonly outputs: ReadonlyArray<string>;
+}
+
+/**
+ * The reference as it cites work the pack showed, or null where it cites none. A file
+ * may be named under `worktree`, and is kept as the pack named it.
+ */
+export const citedIn =
+  (shown: ShownWork, worktree: string) =>
+  (ref: Ref): Ref | null => {
+    if (ref.path === undefined) return null;
+    if (ref.kind === "output") return shown.outputs.includes(ref.path) ? ref : null;
+    if (ref.kind !== "diff") return null;
+    const file = ref.path.startsWith(`${worktree}/`)
+      ? ref.path.slice(worktree.length + 1)
+      : ref.path;
+    return shown.files.includes(file) ? { ...ref, path: file } : null;
+  };
+
 /**
  * One report as Collie will keep it, whatever the model returned. The model says which
  * constraint and how bad; it does not say which Run, which Intent version, when, or
@@ -489,14 +519,17 @@ export function judgementPack(
  */
 export function judgedReport(
   report: DriftReport,
-  intent: Intent,
+  intent: Pick<Intent, "run" | "version">,
   at_: string,
   roots: ReadonlyArray<string>,
   truncated: boolean,
+  cited: (ref: Ref) => Ref | null = () => null,
 ): DriftReport {
-  const evidence = report.evidence.filter(
-    (ref) => ref.path === undefined || insideKnown(ref.path, roots),
-  );
+  const evidence = report.evidence.flatMap((ref) => {
+    const work = cited(ref);
+    if (work !== null) return [work];
+    return ref.path === undefined || insideKnown(ref.path, roots) ? [ref] : [];
+  });
   return {
     id: `d-${findingKey(report.constraint, evidence)}`,
     at: at_,
@@ -596,13 +629,27 @@ export const judge = Effect.fn("Drift.judge")(function* (
     return NOTHING;
   }
 
-  // Only the constraints this Intent actually has: a report about something nobody asked
-  // for is a model inventing a rule, and it is dropped rather than filed.
+  // Only the constraints this Intent actually has, and only a report citing the change it
+  // was shown: one about something nobody asked for is a model inventing a rule.
   const known = new Set(semantic.map((constraint) => constraint.id));
+  const cited = citedIn(
+    { files: evidence.blocks.map((block) => block.path), outputs: [] },
+    what.worktree,
+  );
   const reports = asked.reports
-    .filter((report) => known.has(report.constraint))
+    .filter(
+      (report) =>
+        known.has(report.constraint) && report.evidence.some((ref) => cited(ref) !== null),
+    )
     .map((report) =>
-      judgedReport(report, intent, what.at, [what.runDir, what.worktree], evidence.truncated),
+      judgedReport(
+        report,
+        intent,
+        what.at,
+        [what.runDir, what.worktree],
+        evidence.truncated,
+        cited,
+      ),
     );
   yield* deps.log(
     `judged ${semantic.length} semantic constraint(s) at ${what.at}: ${reports.length} report(s)${
