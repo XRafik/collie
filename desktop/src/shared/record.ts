@@ -1,5 +1,5 @@
-// A Task's record: its tabs, the one shown, each tab's place, where a jump lands, its keys, and
-// what its Summary says.
+// A Task's record: its tabs, the one shown, each tab's place and the Log's, where a jump lands,
+// its keys, and what its Summary says.
 
 import type { RunDetail } from "../../../src/board-model";
 import type { Target } from "./board-clicks";
@@ -61,6 +61,28 @@ export const rememberScroll = (
 /** The position to show a tab at, 0 on its first visit; null for Terminal. */
 export const scrollToRestore = (memory: ScrollMemory, tab: string): number | null =>
   tab === UNSCROLLED ? null : (memory.get(tab) ?? 0);
+
+/** Where the Log's own lines are scrolled, kept while the record is open. */
+export interface LogPlace {
+  readonly top: number;
+  readonly following: boolean;
+}
+
+export const FOLLOWING_LOG: LogPlace = { top: 0, following: true };
+
+/** Followed to its end unless the human scrolled up to read. */
+export const logPlaceOf = ({
+  scrollTop,
+  clientHeight,
+  scrollHeight,
+}: {
+  readonly scrollTop: number;
+  readonly clientHeight: number;
+  readonly scrollHeight: number;
+}): LogPlace => ({ top: scrollTop, following: scrollTop + clientHeight >= scrollHeight - 2 });
+
+export const logScrollTop = (place: LogPlace, scrollHeight: number): number =>
+  place.following ? scrollHeight : place.top;
 
 export type Landing =
   | { readonly tab: "diff"; readonly at: "line"; readonly file: string; readonly line: number }

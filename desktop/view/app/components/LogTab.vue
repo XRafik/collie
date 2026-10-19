@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Panel } from "../../../../src/board-model";
+import { FOLLOWING_LOG, type LogPlace, logPlaceOf, logScrollTop } from "../../../src/shared/record";
 
 const props = defineProps<{ tail: Panel | null }>();
 
@@ -14,19 +15,23 @@ const lines = computed(() =>
     : all.value.filter((line) => line.toLowerCase().includes(wanted.value.toLowerCase())),
 );
 
+/** The record's, so the human's place outlasts the tab; written back only as the tab is left. */
+const place = defineModel<LogPlace>("place", { default: () => FOLLOWING_LOG });
+let at = place.value;
+onBeforeUnmount(() => (place.value = at));
 const shown = ref<HTMLElement | null>(null);
-/** Followed to its end unless the human scrolled up to read. */
-let following = true;
 const scrolled = () => {
-  const box = shown.value;
-  if (box !== null) following = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+  if (shown.value !== null) at = logPlaceOf(shown.value);
 };
+const showPlace = (box: HTMLElement | null) =>
+  box?.scrollTo({ top: logScrollTop(at, box.scrollHeight) });
+watch(shown, showPlace, { flush: "post" });
 watch(
   lines,
   async () => {
-    if (!following) return;
+    if (!at.following) return;
     await nextTick();
-    shown.value?.scrollTo({ top: shown.value.scrollHeight });
+    showPlace(shown.value);
   },
   { immediate: true },
 );

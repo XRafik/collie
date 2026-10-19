@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { inField } from "../desktop/src/shared/board-clicks";
 import {
+  FOLLOWING_LOG,
   type KeyFacts,
   keyAction,
   landingOf,
+  logPlaceOf,
+  logScrollTop,
   recordTabs,
   rememberScroll,
   scrollToRestore,
@@ -209,6 +212,24 @@ describe("scroll memory", () => {
     const memory = rememberScroll(none, "terminal", 300);
     expect(memory.has("terminal")).toBe(false);
     expect(scrollToRestore(memory, "terminal")).toBeNull();
+  });
+});
+
+describe("the Log's place", () => {
+  test("follows the end at first", () => {
+    expect(logScrollTop(FOLLOWING_LOG, 5000)).toBe(5000);
+  });
+
+  test("is where the human scrolled up to read, shown there again", () => {
+    const place = logPlaceOf({ scrollTop: 100, clientHeight: 400, scrollHeight: 5000 });
+    expect(place).toEqual({ top: 100, following: false });
+    expect(logScrollTop(place, 5200)).toBe(100);
+  });
+
+  test("follows the end again once scrolled back down to it", () => {
+    const place = logPlaceOf({ scrollTop: 4599, clientHeight: 400, scrollHeight: 5000 });
+    expect(place.following).toBe(true);
+    expect(logScrollTop(place, 5200)).toBe(5200);
   });
 });
 

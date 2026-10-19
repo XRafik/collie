@@ -4,6 +4,7 @@ import { offersTerminal, opensHerdrWithoutPane } from "../../../src/shared/recor
 import type { PlacedTask } from "../../../src/shared/flock";
 import { mrTab } from "../../../src/shared/links";
 import {
+  FOLLOWING_LOG,
   keyAction,
   landingOf,
   recordTabs,
@@ -91,6 +92,7 @@ watch(tab, (now) => now !== "terminal" && (wentToPane.value = false));
 
 const body = ref<HTMLElement | null>(null);
 let memory: ScrollMemory = new Map();
+const logPlace = ref(FOLLOWING_LOG);
 let stopRestoring = () => {};
 const HUMAN_SCROLLS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
 /** Shows the position, waiting while the tab is still too short for it until the human scrolls. */
@@ -282,7 +284,7 @@ const locationOf = (file: string, line: number | null) =>
             :detail="detail"
             :installation="placed.installation"
           />
-          <LogTab v-else-if="tab === 'log'" :tail="detail.tail" />
+          <LogTab v-else-if="tab === 'log'" v-model:place="logPlace" :tail="detail.tail" />
           <MrPanel v-else-if="tab === 'mr' && detail.mr" :mr="detail.mr" />
           <DiffTab
             v-if="detail.diff && diffSeen"
