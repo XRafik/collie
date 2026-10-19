@@ -224,6 +224,7 @@ import { receive, uploadsDir } from "./uploads";
 import { loadDefaults, SettingRefused, sharedSettings, takeShared } from "./config";
 import { decodeAnswer, machineName, relayOf, runShell, startPeers, type Peers } from "./peers";
 import type { SshMachine } from "./ssh-connection";
+import { LADDER_BOUND } from "./peer-transport";
 import {
   Invited,
   MachineUnreachable,
@@ -2931,11 +2932,14 @@ export const connectPeer = (
       schedule: Schedule.spaced("200 millis"),
     }),
     Effect.timeoutOrElse({
-      duration: ASK_TIMEOUT,
+      duration: REACH_TIMEOUT,
       orElse: () =>
         Effect.fail(
           mismatch ??
-            new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+            new MachineUnreachable({
+              machine: name,
+              seen: `no answer within ${Duration.format(REACH_TIMEOUT)}`,
+            }),
         ),
     }),
   );
@@ -2979,6 +2983,11 @@ const liveOwner = (dir: string) =>
 const HOST_START_TIMEOUT = "30 seconds";
 /** A host that takes longer than this to say who it is cannot serve anything anyway. */
 const ASK_TIMEOUT = "5 seconds";
+/** A peer is asked once its relay has tried each way to it. */
+const REACH_TIMEOUT = Duration.sum(
+  Duration.fromInputUnsafe(LADDER_BOUND),
+  Duration.fromInputUnsafe(ASK_TIMEOUT),
+);
 
 /**
  * The owner of `dir` when it does not answer and recorded itself as an older build of this

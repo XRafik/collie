@@ -11,7 +11,7 @@ import { peersOf } from "../src/peers";
 import { PeerView } from "../src/peers-model";
 import { controlPathOf } from "../src/ssh-connection";
 import { runEffect } from "./support/effect";
-import { freePort, resetter } from "./support/fake-ssh";
+import { blackhole, freePort, resetter } from "./support/fake-ssh";
 import { stopHost, until } from "./support/host";
 import { twoMachines, type Side } from "./support/peers";
 
@@ -157,6 +157,49 @@ test(
             expect(yield* logged(first, opened, "master", "login")).toEqual([]);
             expect(yield* onlyMuxFromTheHost(first)).toEqual([]);
             yield* Scope.close(blocking, Exit.void);
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "a link whose direct way never answers still says it waits on an SSH connection, and a command opens it",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-mute-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const advertised = Number(second.env.COLLIE_PEER_PORT);
+            const moved = yield* freePort;
+            const muting = yield* Scope.make();
+            yield* stopHost(second.world.state);
+            yield* blackhole(advertised).pipe(Scope.provide(muting));
+            yield* first.ssh.maps({ [advertised]: moved });
+            yield* second.cli(["machine", "list"], { COLLIE_PEER_PORT: String(moved) });
+            yield* first.ssh.drop;
+            yield* until(
+              () => listed(first, "second"),
+              (view) => view.waits === "ssh_connection",
+            );
+
+            const job = yield* machineList({
+              ...readEnv(first.env),
+              machine: "second",
+              pairs: false,
+            });
+            expect(job.ok).toBe(false);
+            if (!job.ok) expect(job.error.details?.waits).toBe("ssh_connection");
+
+            const dropped = (yield* first.ssh.calls).length;
+            const board = yield* first.cli(["--machine", "second", "board"]);
+            expect(board.envelope.error).toBeUndefined();
+            expect(yield* logged(first, dropped, "master", "login")).toEqual(["master mk@second"]);
+            yield* Scope.close(muting, Exit.void);
           }),
         [],
       ),

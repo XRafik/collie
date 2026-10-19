@@ -2,7 +2,7 @@
 // port is: a resetter that drops each connection at its first bytes, as Cloudflare WARP
 // resets the TLS ClientHello on a peer's port.
 
-import { createConnection, createServer, type Server } from "node:net";
+import { createConnection, createServer, type Server, type Socket } from "node:net";
 import { Effect, FileSystem, Schema, type Scope } from "effect";
 import { root } from "./host";
 
@@ -100,14 +100,27 @@ export const writeFakeSsh = Effect.fn("FakeSsh.write")(function* (
 });
 
 /** A TCP server on `port` of 127.0.0.1 that destroys each connection at its first bytes. */
-export const resetter = (port: number): Effect.Effect<Server, never, Scope.Scope> =>
-  Effect.acquireRelease(
+export const resetter = (port: number) => blocker(port, true);
+
+/** A TCP server on `port` of 127.0.0.1 that takes each connection and never answers. */
+export const blackhole = (port: number) => blocker(port, false);
+
+const blocker = (port: number, resets: boolean): Effect.Effect<Server, never, Scope.Scope> => {
+  const held = new Set<Socket>();
+  return Effect.acquireRelease(
     Effect.callback<Server>((resume) => {
       const server = createServer((conn) => {
-        conn.once("data", () => conn.destroy());
+        held.add(conn);
+        conn.once("close", () => held.delete(conn));
+        if (resets) conn.once("data", () => conn.destroy());
         conn.once("error", () => {});
       });
       server.listen(port, "127.0.0.1", () => resume(Effect.succeed(server)));
     }),
-    (server) => Effect.callback<void>((resume) => void server.close(() => resume(Effect.void))),
+    (server) =>
+      Effect.callback<void>((resume) => {
+        server.close(() => resume(Effect.void));
+        held.forEach((conn) => conn.destroy());
+      }),
   );
+};

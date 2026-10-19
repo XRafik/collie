@@ -353,7 +353,9 @@ whatever ends the socket cancels it. Where no connection is open, the failure sa
 names `collie machine connect`, and carries `waits: "ssh_connection"`; the dialler keeps
 that in its standing for `machine list`. While a control link is up, its channels and
 dial-backs go its way; while it is down, a channel runs the ladder itself. A link over SSH
-stays there until it ends, and its next connect tries direct again. The dialler declares
+stays there until it ends, and its next connect tries direct again. A client asking a
+peer's host through the relay waits fifteen seconds for the ladder and five more for the
+host to say who it is, so a silent direct way still ends in the SSH way's answer. The dialler declares
 its way on `/control?transport=<way>[&direct=<why>]`, and the listener records it for its
 own `machine list`; one that declares nothing is recorded as `direct`. The listener never
 guesses from the address, which is loopback over SSH and for a peer on the same computer

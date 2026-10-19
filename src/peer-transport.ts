@@ -17,6 +17,8 @@ type Ways = { -readonly [K in "direct" | "ssh" | "waits"]?: NonNullable<MachineU
 
 /** How long a way may take to open before it has failed. */
 export const REACH_BOUND = "5 seconds";
+/** How long `openPeer` may take: both ways' bounds, and the SSH calls between them. */
+export const LADDER_BOUND = "15 seconds";
 
 // SAFETY: Bun's WebSocket takes these options; where DOM's declaration of the global wins, its type does not say so.
 const BunWebSocket = WebSocket as new (
