@@ -20,7 +20,6 @@ test("a running process's group and bindings are read, and a gone one has neithe
   runEffect(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      // Its own group, so the group it is in is its own pid.
       const leader = yield* spawner.spawn(
         ChildProcess.make("sleep", ["30"], {
           env: { COLLIE_PROBE: "carried" },
@@ -31,9 +30,10 @@ test("a running process's group and bindings are read, and a gone one has neithe
         }),
       );
       expect(yield* groupOf(leader.pid)).toBe(leader.pid);
-      expect(yield* bindingsOf(leader.pid, ["COLLIE_PROBE", "COLLIE_ABSENT"])).toEqual({
-        COLLIE_PROBE: "carried",
-      });
+      // Without a readable /proc, a binding proves nothing.
+      expect(yield* bindingsOf(leader.pid, ["COLLIE_PROBE", "COLLIE_ABSENT"])).toEqual(
+        process.platform === "linux" ? { COLLIE_PROBE: "carried" } : null,
+      );
 
       const gone = 2 ** 22 + 1;
       expect(yield* groupOf(gone)).toBeNull();
