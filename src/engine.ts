@@ -344,7 +344,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly lineage: ReadonlyArray<string>;
     /** What a Claude agent's auto mode is told this Run authorises: the branch it made, and who started it. */
     readonly authority: {
-      readonly createdBranch: string | null;
+      readonly created: {
+        readonly branch: string;
+        readonly checkout: string;
+        readonly origin: string;
+      } | null;
       readonly roaming: boolean;
       readonly started: { readonly door: "board" | "desktop" | "cli-tty" | "chat"; readonly words: string } | null;
     };
@@ -3802,7 +3806,10 @@ const authorityOf = (
   worktree: WorktreeRecord | null,
   started: Started | undefined,
 ): RunAuthority => ({
-  createdBranch: worktree?.created_branch === true ? worktree.branch : null,
+  created:
+    worktree?.created_branch === true && worktree.created_on !== null
+      ? { branch: worktree.branch, checkout: worktree.path, origin: worktree.created_on }
+      : null,
   roaming: worktree !== null && worktree.branch === "",
   started: started ?? null,
 });

@@ -32,9 +32,16 @@ export function startedOf(
   return { door: origin, words: words.join("\n") };
 }
 
+/** A branch a Run made: in which checkout, and on which origin, credentials removed. */
+export interface CreatedBranch {
+  readonly branch: string;
+  readonly checkout: string;
+  readonly origin: string;
+}
+
 /** What a Run's own record says: the branch it created, whether it roams, and who started it. */
 export interface RunAuthority {
-  readonly createdBranch: string | null;
+  readonly created: CreatedBranch | null;
   readonly roaming: boolean;
   readonly started: Started | null;
 }
@@ -84,7 +91,13 @@ export const autoModeFacts = <R>(
     const url = remote.code === 0 ? remote.stdout.trim() || null : null;
     const head = yield* run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], session.cwd);
     const branch = head.code === 0 ? head.stdout.trim() || null : null;
-    const created = !own.roaming && branch !== null && branch === own.createdBranch;
+    const created =
+      !own.roaming &&
+      own.created !== null &&
+      branch === own.created.branch &&
+      url !== null &&
+      withoutCredentials(url) === own.created.origin &&
+      (yield* sameRepository(session.cwd, own.created.checkout, run));
     const project = url === null ? null : projectFromRemote(url);
     const forge = project === null ? null : forgeOfHost(project.split("/")[0]!, gitlabHost);
     const protects =
@@ -102,7 +115,17 @@ export const autoModeFacts = <R>(
     };
   });
 
-const withoutCredentials = (url: string) =>
+const sameRepository = <R>(cwd: string, checkout: string, run: Runner<R>) =>
+  Effect.gen(function* () {
+    const top = (dir: string) =>
+      Effect.map(run("git", ["rev-parse", "--show-toplevel"], dir), (said) =>
+        said.code === 0 ? said.stdout.trim() : null,
+      );
+    const here = yield* top(cwd);
+    return here !== null && here === (yield* top(checkout));
+  });
+
+export const withoutCredentials = (url: string) =>
   redact(url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1"));
 
 const quoted = (words: string) => {

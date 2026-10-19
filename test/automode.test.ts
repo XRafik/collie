@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import type { MrForge } from "../src/board-model";
 import { autoModeBlock, autoModeFacts, startedOf, type RunAuthority } from "../src/automode";
+import type { Runner } from "../src/mr";
 import { runEffect } from "./support/effect";
 import { FORGE_HOST, fakeForge, type ForgeModel } from "./support/forge";
 
@@ -19,12 +20,16 @@ const SESSION = {
   cwd: "/work/app",
 };
 
-const OWN: RunAuthority = { createdBranch: "me/new-work", roaming: false, started: null };
+/** The Run made `branch` in the session's checkout, on the forge's origin. */
+const made = (forge: MrForge, branch: string) => ({
+  created: { branch, checkout: SESSION.cwd, origin: ORIGIN[forge] },
+});
 
 const blockFor = (
   forge: MrForge,
   own: Partial<RunAuthority> = {},
   over: Partial<ForgeModel> = {},
+  toplevels: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const fake = fakeForge(forge, {
@@ -36,7 +41,12 @@ const blockFor = (
       branch: "me/new-work",
       ...over,
     });
-    const facts = yield* autoModeFacts(SESSION, { ...OWN, ...own }, fake.run);
+    const run: Runner = (cmd, args, cwd) =>
+      args.join(" ") === "rev-parse --show-toplevel"
+        ? Effect.succeed({ code: 0, stdout: `${toplevels[cwd] ?? cwd}\n`, stderr: "" })
+        : fake.run(cmd, args, cwd);
+    const base: RunAuthority = { ...made(forge, "me/new-work"), roaming: false, started: null };
+    const facts = yield* autoModeFacts(SESSION, { ...base, ...own }, run);
     return { block: autoModeBlock(facts), calls: fake.calls };
   });
 
@@ -81,11 +91,10 @@ for (const forge of ["gitlab", "github"] as const) {
   test(`a ${forge} branch the Run created that is the default branch gets no history allowance`, () =>
     runEffect(
       Effect.gen(function* () {
-        const { block } = yield* blockFor(
-          forge,
-          { createdBranch: "main" },
-          { branch: "main", defaultBranch: "main" },
-        );
+        const { block } = yield* blockFor(forge, made(forge, "main"), {
+          branch: "main",
+          defaultBranch: "main",
+        });
         expect(block.allow.some((one) => one.startsWith(HISTORY))).toBe(false);
         expect(block.environment[2]).toContain(
           "which the forge reports protected or could not say",
@@ -111,7 +120,13 @@ test("an origin's embedded credentials never reach the block", () =>
       const token = ["glpat", "synthetic0000000000test"].join("-");
       const { block } = yield* blockFor(
         "gitlab",
-        {},
+        {
+          created: {
+            branch: "me/new-work",
+            checkout: SESSION.cwd,
+            origin: "https://gitlab.example.com/group/app.git",
+          },
+        },
         { origin: `https://oauth2:${token}@gitlab.example.com/group/app.git` },
       );
       const text = [...block.environment, ...block.allow].join("\n");
@@ -127,12 +142,11 @@ test("an origin's embedded credentials never reach the block", () =>
 test("a created branch a GitLab wildcard rule or a GitHub ruleset matches gets no history allowance", () =>
   runEffect(
     Effect.gen(function* () {
-      const own = { createdBranch: "release/2.0" };
-      const gitlab = yield* blockFor("gitlab", own, {
+      const gitlab = yield* blockFor("gitlab", made("gitlab", "release/2.0"), {
         branch: "release/2.0",
         protectedBranches: [{ name: "release/*" }],
       });
-      const github = yield* blockFor("github", own, {
+      const github = yield* blockFor("github", made("github", "release/2.0"), {
         branch: "release/2.0",
         rulesets: ["release/*"],
       });
@@ -144,7 +158,7 @@ test("a created branch a GitLab wildcard rule or a GitHub ruleset matches gets n
 test("a branch the Run was given, as a review's fix agent works on, gets no history allowance and asks no forge", () =>
   runEffect(
     Effect.gen(function* () {
-      const { block, calls } = yield* blockFor("gitlab", { createdBranch: null });
+      const { block, calls } = yield* blockFor("gitlab", { created: null });
       expect(block.allow.some((one) => one.startsWith(HISTORY))).toBe(false);
       expect(block.environment[2]).toContain("which this Run was given and did not create");
       expect(calls.filter((call) => call.startsWith("glab"))).toEqual([]);
@@ -154,8 +168,46 @@ test("a branch the Run was given, as a review's fix agent works on, gets no hist
 test("an agent working another branch than the one its Run created gets no history allowance", () =>
   runEffect(
     Effect.gen(function* () {
-      const { block } = yield* blockFor("gitlab", { createdBranch: "me/other" });
+      const { block } = yield* blockFor("gitlab", made("gitlab", "me/other"));
       expect(block.allow.some((one) => one.startsWith(HISTORY))).toBe(false);
+    }),
+  ));
+
+test("a branch of the same name in another repository than the Run's checkout gets no history allowance", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const elsewhere = {
+        created: { branch: "me/new-work", checkout: "/work/other", origin: ORIGIN.gitlab },
+      };
+      const { block } = yield* blockFor("gitlab", elsewhere);
+      expect(block.allow.some((one) => one.startsWith(HISTORY))).toBe(false);
+      expect(block.environment[2]).toContain("which this Run was given and did not create");
+    }),
+  ));
+
+test("a subdirectory of the Run's checkout keeps the history allowance", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { block } = yield* blockFor(
+        "gitlab",
+        { created: { branch: "me/new-work", checkout: "/work", origin: ORIGIN.gitlab } },
+        {},
+        { "/work/app": "/work" },
+      );
+      expect(block.allow.some((one) => one.startsWith(HISTORY))).toBe(true);
+    }),
+  ));
+
+test("a checkout whose origin was retargeted since the Run made its branch gets no history allowance", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { block } = yield* blockFor(
+        "gitlab",
+        {},
+        { origin: "git@gitlab.example.com:other/app.git" },
+      );
+      expect(block.allow.some((one) => one.startsWith(HISTORY))).toBe(false);
+      expect(block.environment[2]).toContain("which this Run was given and did not create");
     }),
   ));
 
@@ -164,7 +216,7 @@ test("a roaming Run's checkout is detached at the default branch and gets no his
     Effect.gen(function* () {
       const { block } = yield* blockFor(
         "gitlab",
-        { createdBranch: null, roaming: true },
+        { created: null, roaming: true },
         { branch: "HEAD" },
       );
       expect(block.environment[2]).toContain("detached at the default branch");

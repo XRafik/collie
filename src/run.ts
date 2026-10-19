@@ -15,6 +15,10 @@ export const WorktreeRecordSchema = Schema.Struct({
    * written before this was kept is `false`.
    */
   created_branch: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  /** The origin, credentials removed, that the branch was new on; null where this Run did not make it. */
+  created_on: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   /**
    * Who made this checkout, and so who takes it away again: Collie with git itself,
    * or herdr as a workspace of its own. A record written before this existed is

@@ -713,6 +713,7 @@ const collieWorktree = (
         branch,
         created_by_collie: true,
         created_branch: false,
+        created_on: null,
         managed_by: opts.managedBy ?? "herdr",
         workspace_id: workspaceId,
         made_at: madeAt.mtime.pipe(Option.getOrNull)?.getTime() ?? null,
@@ -1485,6 +1486,7 @@ test("a mutating run makes its checkout with git and stays in the workspace it s
         workspace_id: null,
         created_by_collie: true,
         created_branch: false,
+        created_on: null,
         made_at: expect.any(Number),
         // No workspace, so no shell tab of its own to take over.
         root_tab_id: null,
@@ -1663,10 +1665,14 @@ test("a branch neither local nor on origin is one the Run created, and one origi
           });
         });
 
-      expect((yield* place("exit 2")).worktree?.created_branch).toBe(true);
-      expect(
-        (yield* place(`printf 'deadbeef\\trefs/heads/${branch}\\n'`)).worktree?.created_branch,
-      ).toBe(false);
+      expect((yield* place("exit 2")).worktree).toMatchObject({
+        created_branch: true,
+        created_on: "git@gitlab.example.com:acme/app.git",
+      });
+      expect((yield* place(`printf 'deadbeef\\trefs/heads/${branch}\\n'`)).worktree).toMatchObject({
+        created_branch: false,
+        created_on: null,
+      });
     }),
   ));
 
@@ -1856,6 +1862,7 @@ test("a Renovate Run gets a detached checkout at the default branch, bound to no
         workspace_id: null,
         created_by_collie: true,
         created_branch: false,
+        created_on: null,
         made_at: expect.any(Number),
         root_tab_id: null,
         root_pane_id: null,
@@ -2070,6 +2077,7 @@ const renovateRunAt = (at: string) =>
         branch: "",
         created_by_collie: true,
         created_branch: false,
+        created_on: null,
         managed_by: "git",
         workspace_id: null,
         made_at: Option.getOrThrow(made.mtime).getTime(),

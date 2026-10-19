@@ -2798,7 +2798,7 @@ const write = (path: string, text: string) =>
 
 const encodeSettings = Schema.encodeSync(Schema.fromJsonString(Schema.Json));
 
-const NO_AUTHORITY: RunAuthority = { createdBranch: null, roaming: false, started: null };
+const NO_AUTHORITY: RunAuthority = { created: null, roaming: false, started: null };
 
 /**
  * Claude's `--settings` with the operator's overlay and the Run's `autoMode` merged in: into

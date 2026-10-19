@@ -2361,7 +2361,11 @@ test("a Run's authority is the branch it created and who started it; an older re
   runEffect(
     Effect.gen(function* () {
       const store = yield* Store;
-      const placedOn = (run: string, branch: string, worktree: { created_branch?: boolean }) =>
+      const placedOn = (
+        run: string,
+        branch: string,
+        worktree: { created_branch?: boolean; created_on?: string },
+      ) =>
         Effect.gen(function* () {
           yield* store.admit({
             request: `req-${run}`,
@@ -2394,18 +2398,21 @@ test("a Run's authority is the branch it created and who started it; an older re
             task: null,
           });
         });
-      yield* placedOn("run-new", "me/x", { created_branch: true });
+      const origin = "https://gitlab.example.com/group/app.git";
+      yield* placedOn("run-new", "me/x", { created_branch: true, created_on: origin });
+      yield* placedOn("run-unbound", "me/x", { created_branch: true });
       yield* placedOn("run-old", "me/x", {});
       yield* placedOn("run-roams", "", {});
       const host = yield* Host;
       const authority = (run: string) => Effect.map(host.place(run), (place) => place.authority);
       expect(yield* authority("run-new")).toEqual({
-        createdBranch: "me/x",
+        created: { branch: "me/x", checkout: dir, origin },
         roaming: false,
         started: null,
       });
-      expect((yield* authority("run-old")).createdBranch).toBeNull();
-      expect(yield* authority("run-roams")).toMatchObject({ createdBranch: null, roaming: true });
+      expect((yield* authority("run-unbound")).created).toBeNull();
+      expect((yield* authority("run-old")).created).toBeNull();
+      expect(yield* authority("run-roams")).toMatchObject({ created: null, roaming: true });
     }).pipe(Effect.provide(foundationLayer({ dir })), Effect.scoped, Effect.orDie),
   ));
 
@@ -4412,6 +4419,7 @@ test("a Run that created its branch, which the forge leaves unprotected, may rew
               branch,
               created_by_collie: true,
               created_branch: true,
+              created_on: origin,
               managed_by: "git",
               workspace_id: null,
               made_at: null,

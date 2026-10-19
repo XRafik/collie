@@ -82,9 +82,11 @@ into the settings file it already passes, at launch:
   rewording.
 - `allow` covers history on the Run's branch: `commit --amend`, a rebase onto the default
   branch, and `push --force-with-lease` of that branch to that remote. It is written only
-  where the Run created the branch and, when the agent is launched, the forge says the branch
-  is not the default branch and matches no protection rule or ruleset, whatever that rule
-  allows. Creating a branch does not make it unprotected: a new `release/*` branch can match a
+  where the Run created the branch and, when the agent is launched, the agent works in the
+  checkout the Run made it in, that checkout's origin is still the one the branch was new on,
+  and the forge says the branch is not the default branch and matches no protection rule or
+  ruleset, whatever that rule allows. A branch of the same name in another repository, or
+  behind a retargeted origin, is not the Run's. Creating a branch does not make it unprotected: a new `release/*` branch can match a
   rule already. A forge that cannot say counts as protected. Where a human started the Run,
   an action their starting words name directly and specifically, on this Run's repository,
   is the user's stated intent.
