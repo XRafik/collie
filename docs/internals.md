@@ -36,10 +36,14 @@ A stopped host gives its running steps a grace (`COLLIE_HOST_STOP_GRACE`, five s
 then exits whatever is left, letting go of its lock: upstream's shutdown waits on each
 step, and one that never yields kept an old host past every client that tried to replace
 it. The grace bounds every end of a host: a stop signal, its lock or state directory gone,
-or the process named in `COLLIE_HOST_WATCH_PID` exited. `host.log` names which it was. A newer client that asked a host to stop kills it five seconds after its grace. A host
-that does not say who it is within five seconds is replaced too when `host.build`, which it
-writes as it starts, names an older build of the same installation; otherwise the client
-reports it as `HostUnavailable` with its pid.
+or the process named in `COLLIE_HOST_WATCH_PID` exited. `host.log` names which it was. A
+check the host is running is ended first, not waited for: its processes get SIGTERM at once
+and SIGKILL before the lock goes, and `host.log` names each one. Its step does not complete
+and nothing is recorded for it, so the next host runs it once more. A newer client that
+asked a host to stop kills it five seconds after its grace. A host that does not say who it
+is within five seconds is replaced too when `host.build`, which it writes as it starts,
+names an older build of the same installation; otherwise the client reports it as
+`HostUnavailable` with its pid.
 
 Desktop starts a host the way any client does: it runs `collie bridge --as desktop` (or
 `--as chat`), and the bridge starts `collie host --dir <state>` where none answers. Desktop

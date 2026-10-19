@@ -119,6 +119,22 @@ test(
   60_000,
 );
 
+test("cleanup lists nothing of a running check's record, fresh or a day old", () =>
+  hosted("collie-cleanup-checks-", ({ world }) =>
+    Effect.gen(function* () {
+      const state = world.state;
+      yield* written(`${state}/running-checks/run-deadbeef@1-a.json`, "{}", 0);
+      yield* written(`${state}/running-checks/run-deadbeef@2-b.json`, "{}", 2);
+      yield* aged(`${state}/running-checks`, 2);
+
+      const listed = Listed((yield* collie(world, ["cleanup"])).envelope.data);
+      const named = [...listed.remove, ...listed.keep].filter((item) =>
+        item.target.includes("running-checks"),
+      );
+      expect(named).toEqual([]);
+    }),
+  ));
+
 let rig: Rig;
 beforeEach(() =>
   runEffect(

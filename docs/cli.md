@@ -2026,7 +2026,8 @@ old and new pid and build, `data.before` and `data.after` under `--json`; with n
 running, `before` is null and it says it started one. A stopped host never answered is named
 with its pid and `build unknown`. Nothing about a Run is touched: the new host recovers
 what the old one was doing, exactly as on any start, so a parked Run is still parked and a
-step that was cut short runs again. The herdr action "Restart the Collie host" does the
+step that was cut short runs again. A check the old host was running is ended with it and
+runs again on the new one. The herdr action "Restart the Collie host" does the
 same and says what it did as a notification.
 
 A host works for one Herd: the herdr session a judgement is charged to and its cross-run
@@ -2274,7 +2275,9 @@ the executable and its arguments. Unset, it is this executable.
 
 `COLLIE_HOST_STOP_GRACE` is how long a stopped host waits for running steps before it exits
 anyway, as a duration (`5 seconds` unset). It bounds every end of a host: a stop signal, its
-lock or state directory gone, or the process it watches exited.
+lock or state directory gone, or the process it watches exited. A check the host is running
+is not waited for: it gets SIGTERM as the host starts to stop and SIGKILL once the grace is
+up, records nothing, and runs again on the next host.
 
 `COLLIE_HOST_CRASH_AT=admitted|executed` is for the recovery proof alone: the host kills
 itself in one of the two windows a start has — with the run recorded and the engine not yet

@@ -143,6 +143,9 @@ back as Waiting on you.
   has exited. This was already true. What changes is that every temporary state directory a
   test or a tool makes is now removed, so its host goes too.
 - A bridge or `collie mcp` ends when either side hangs up.
+- A check's processes end with the host that collects them. A host that starts ends any
+  check a previous host left running. Added by
+  [ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md).
 
 **D7. Low disk is something `collie doctor` reports.** It warns when the filesystem
 holding the state directory, the cache, the worktrees or the temporary directory has less

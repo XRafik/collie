@@ -403,6 +403,7 @@ const KEPT_KINDS = new Set([
   "uploads",
   "files",
   "claude.json.bak",
+  "running-checks",
 ]);
 const MARKER_KINDS = ["stop", "hold", "parked", "notified"];
 const MARKER = new RegExp(`^(?:${MARKER_KINDS.join("|")})\\.(.+)$`);

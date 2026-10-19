@@ -16,12 +16,18 @@ import {
   FileSystem,
   Layer,
   Option,
+  Path,
+  Schema,
   Scope,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { connect, outputOf, ownerOf, restartHost } from "../src/host";
+import { evidenceDir } from "../src/engine";
 import { signalProcess } from "../src/lock";
+import { startedOf, stillRunning } from "../src/processes";
+import { readVerifications } from "../src/verify";
+import { VerifySpecSchema } from "../src/verify-spec";
 import { exec } from "./support/command";
 import { fastForward, runEffect, suiteEnv } from "./support/effect";
 import { stopHost, until } from "./support/host";
@@ -52,7 +58,7 @@ const proves = <A, E>(
   effect: Effect.Effect<
     A,
     E,
-    FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
+    FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner | Scope.Scope
   >,
   how?: Layer.Layer<never>,
 ) =>
@@ -562,6 +568,122 @@ test(
         );
         expect(Duration.isLessThanOrEqualTo(took, bound)).toBe(true);
         expect(log).toContain("the process it watches has exited; stopping");
+      }),
+    ),
+  120_000,
+);
+
+const heldCheck = `${root}test/fixtures/checks/held.sh`;
+
+/**
+ * Runs the `held` check, which ignores SIGTERM and has a `setsid` child, on a host watching
+ * `watch`, then ends the host with `end`. Gives back the check's two processes, each with
+ * its start token, once the host's pid is gone.
+ */
+const endsWithAHeldCheck = (
+  watch: string,
+  end: (host: {
+    readonly state: string;
+    readonly pid: number;
+  }) => Effect.Effect<void, never, FileSystem.FileSystem>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const { wf, project, state } = yield* workspace("collie-host-check-");
+    yield* fs.copyFile(`${fixtures}/checking.workflow.ts`, `${wf}/checking.workflow.ts`);
+    const notes = `${project}-notes`;
+    yield* fs.makeDirectory(notes);
+    yield* fs.writeFileString(
+      `${project}/.collie/verify.json`,
+      Schema.encodeSync(Schema.fromJsonString(Schema.Array(VerifySpecSchema)))([
+        { name: "held", executable: heldCheck, argv: [notes], cwd: "." },
+      ]),
+    );
+    for (const args of [
+      ["init", "-q"],
+      ["-c", "user.email=t@example.com", "-c", "user.name=t", "add", "-A"],
+      ["-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qm", "first"],
+    ])
+      yield* exec(["git", ...args], { cwd: project });
+
+    const { who, runId } = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const client = yield* connect(state, { hostEnv: { COLLIE_HOST_WATCH_PID: watch } });
+        const started = yield* client.start({
+          project,
+          id: "checking",
+          request: "req-1",
+          input: { check: "held", cwd: project },
+        });
+        return { who: yield* client.identity(), runId: started.runId };
+      }),
+    ).pipe(Effect.orDie);
+    yield* Effect.addFinalizer(() => signalProcess(who.pid, "SIGKILL"));
+    const pidIn = (file: string) =>
+      until(
+        () => fs.readFileString(`${notes}/${file}`).pipe(Effect.orElseSucceed(() => "")),
+        (text) => text.trim() !== "",
+      ).pipe(Effect.map((text) => Number(text.trim())));
+    const check = yield* Effect.forEach([yield* pidIn("starts"), yield* pidIn("children")], (pid) =>
+      Effect.map(startedOf(pid), (started) => ({ pid, started: started ?? "" })),
+    );
+    // Released for whatever this did not end, so nothing outlives the test.
+    yield* Effect.addFinalizer(() =>
+      fs.writeFileString(`${notes}/release`, "").pipe(Effect.ignore),
+    );
+
+    yield* end({ state, pid: who.pid });
+    yield* until(
+      () => signalProcess(who.pid),
+      (alive) => !alive,
+    );
+    const running = yield* Effect.forEach(check, stillRunning);
+    return { state, runId, running };
+  });
+
+test.skipIf(process.platform !== "linux")(
+  "a host told to stop ends the check it is running, records nothing for it, and says so",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { state, runId, running } = yield* endsWithAHeldCheck("", ({ pid }) =>
+          Effect.asVoid(signalProcess(pid, "SIGTERM")),
+        );
+        expect(yield* ownerOf(state)).toBeNull();
+        expect(running).toEqual([false, false]);
+        const recorded = yield* readVerifications(evidenceDir(state, runId)).pipe(
+          Effect.orElseSucceed(() => []),
+        );
+        expect(recorded.filter((one) => one.name === "held")).toEqual([]);
+        expect(yield* fs.readFileString(`${state}/host.log`)).toContain(
+          `ended check held of ${runId}`,
+        );
+      }),
+    ),
+  120_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a host whose directory is taken away, or whose watched process exits, ends its check",
+  () =>
+    proves(
+      Effect.gen(function* () {
+        const removed = yield* endsWithAHeldCheck("", ({ state }) =>
+          FileSystem.FileSystem.pipe(
+            Effect.flatMap((fs) => fs.rename(state, `${state}.gone`)),
+            Effect.orDie,
+          ),
+        );
+        expect(removed.running).toEqual([false, false]);
+
+        const detached = yield* exec(["sh", "-c", "sleep 60 >/dev/null 2>&1 & echo $!"]);
+        const outlived = Number(detached.stdout.trim());
+        yield* Effect.addFinalizer(() => signalProcess(outlived, "SIGKILL"));
+        const watched = yield* endsWithAHeldCheck(String(outlived), () =>
+          Effect.asVoid(signalProcess(outlived, "SIGKILL")),
+        );
+        expect(watched.running).toEqual([false, false]);
       }),
     ),
   120_000,

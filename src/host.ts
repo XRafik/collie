@@ -85,6 +85,7 @@ import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
 import { removedNotice, scrub, scrubJson } from "./redact";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
+import { CheckProcesses, hostCheckProcesses, type CheckProcessesApi } from "./check-processes";
 import { readDrift } from "./drift";
 import {
   readIntent,
@@ -2437,12 +2438,14 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
       lock,
       Effect.void,
       Effect.gen(function* () {
-        const stop = yield* boundedStop(lock);
+        const installation = yield* installationOf(dir);
+        const checks = yield* hostCheckProcesses({ dir, installation });
+        const stop = yield* boundedStop(lock, checks);
         yield* Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`);
         yield* Effect.forkScoped(
           rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
         );
-        yield* Effect.race(own(dir), orphaned(dir).pipe(Effect.flatMap(stop)));
+        yield* Effect.race(own(dir, checks), orphaned(dir).pipe(Effect.flatMap(stop)));
       }).pipe(Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true }))),
       0,
     );
@@ -2458,18 +2461,26 @@ const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 const LOG_FLUSH = "200 millis";
 
 /**
- * Whatever ends a host, a stop signal or what `orphaned` finds, gives the shutdown the
- * grace, then exits however far it got (ADR-0014). Gives back that stop, for `orphaned`.
+ * Whatever ends a host, a stop signal or what `orphaned` finds, ends its checks, gives the
+ * shutdown the grace, then exits however far it got (ADR-0014). Gives back that stop, for
+ * `orphaned`.
  */
-const boundedStop = (lock: string) =>
+const boundedStop = (lock: string, checks: CheckProcessesApi) =>
   Effect.gen(function* () {
     const grace = yield* stopGrace;
     const stopping = yield* Deferred.make<string>();
     // In the outer scope, which closes only once the shutdown it bounds has finished.
     yield* Deferred.await(stopping).pipe(
       Effect.flatMap(Effect.logInfo),
+      Effect.andThen(checks.endAll),
+      Effect.flatMap((ended) =>
+        Effect.forEach(ended, (check) =>
+          Effect.logInfo(`ended check ${check.name} of ${check.run}`),
+        ),
+      ),
       Effect.andThen(Effect.sleep(grace)),
       Effect.andThen(Effect.logWarning(`still stopping after ${Duration.format(grace)}; exiting`)),
+      Effect.andThen(checks.killEnded),
       Effect.andThen(Effect.sleep(LOG_FLUSH)),
       // Let go of here rather than left for the next host to judge stale.
       Effect.andThen(releaseOwnLock(lock)),
@@ -2567,7 +2578,7 @@ const scheduleSeconds = Config.option(Config.String("COLLIE_HOST_SCHEDULE_SECOND
   Effect.orDie,
 );
 
-const own = (dir: string) =>
+const own = (dir: string, checks: CheckProcessesApi) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const env = yield* currentEnv.pipe(Effect.orDie);
@@ -2670,7 +2681,7 @@ const own = (dir: string) =>
             herd: { socketPath: herdSocket, pluginRoot: env.pluginRoot, locate },
             readings: usage.readings,
             messagePoll: seconds ? "1 second" : undefined,
-          }),
+          }).pipe(Layer.provideMerge(Layer.succeed(CheckProcesses, checks))),
         ),
         Layer.provide(yield* configuredAgents(dir, usage.readings)),
       ),
