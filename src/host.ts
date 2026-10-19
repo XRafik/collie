@@ -87,6 +87,7 @@ import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
 import {
   CheckProcesses,
+  endAllWithin,
   hostCheckProcesses,
   type CheckProcessesApi,
   type Leftover,
@@ -2494,11 +2495,7 @@ const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 /** Long enough for the log's next flush, which an exit does not wait for. */
 const LOG_FLUSH = "200 millis";
 
-/**
- * Whatever ends a host, a stop signal or what `orphaned` finds, ends its checks, gives the
- * shutdown the grace, then exits however far it got (ADR-0014). Gives back that stop, for
- * `orphaned`.
- */
+/** Any end of a host gives the shutdown the grace, then exits however far it got (ADR-0014). */
 const boundedStop = (lock: string, checks: CheckProcessesApi) =>
   Effect.gen(function* () {
     const grace = yield* stopGrace;
@@ -2506,15 +2503,16 @@ const boundedStop = (lock: string, checks: CheckProcessesApi) =>
     // In the outer scope, which closes only once the shutdown it bounds has finished.
     yield* Deferred.await(stopping).pipe(
       Effect.flatMap(Effect.logInfo),
-      Effect.andThen(checks.endAll),
-      Effect.flatMap((ended) =>
-        Effect.forEach(ended, (check) =>
-          Effect.logInfo(`ended check ${check.name} of ${check.run}`),
+      Effect.andThen(
+        endAllWithin(checks, grace, (ended) =>
+          Effect.forEach(
+            ended,
+            (check) => Effect.logInfo(`ended check ${check.name} of ${check.run}`),
+            { discard: true },
+          ),
         ),
       ),
-      Effect.andThen(Effect.sleep(grace)),
       Effect.andThen(Effect.logWarning(`still stopping after ${Duration.format(grace)}; exiting`)),
-      Effect.andThen(checks.killEnded),
       Effect.andThen(Effect.sleep(LOG_FLUSH)),
       // Let go of here rather than left for the next host to judge stale.
       Effect.andThen(releaseOwnLock(lock)),

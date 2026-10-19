@@ -1,12 +1,8 @@
 // A check's processes, from spawn to gone (ADR-draft-a-check-ends-with-the-host-that-runs-it).
-//
-// A host's adapter marks every process of a check with this state directory's
-// installation and the check's id, records the check under `running-checks/`, and keeps
-// the checks it is collecting so that its end can end them. Nothing is signalled that is
-// not proved the check's: its recorded leader by pid and start token, or a process
-// carrying both bindings. A check this host ended reports no exit, so nothing records it.
+// Nothing is signalled that is not proved the check's: its recorded leader by pid and start
+// token, or a process carrying both of its bindings.
 
-import { Context, Effect, FileSystem, Option, Random, Schema, Stream } from "effect";
+import { Context, Duration, Effect, FileSystem, Option, Random, Schema, Stream } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Scope } from "effect";
@@ -16,6 +12,8 @@ import { epochMs, nowIso } from "./time";
 export const CHECK_INSTALLATION = "COLLIE_CHECK_INSTALLATION";
 export const CHECK_ID = "COLLIE_CHECK_ID";
 const KILL_AFTER = "2 seconds";
+const KILL_WAIT = 1_000;
+const GUARD_RETRY = "1 second";
 
 /** Which check of which Run, as its record and the host's log name it. */
 export interface CheckOf {
@@ -125,6 +123,9 @@ const unrecorded: CheckProcessesApi = {
   endLeftover: () => Effect.succeed("already gone"),
 };
 
+/** A check this host ended, or would not start once it began to end. */
+const endedCheck: RunningCheck = { stdout: Stream.empty, stderr: Stream.empty, exit: Effect.never };
+
 export const CheckProcesses = Context.Reference<CheckProcessesApi>("collie/CheckProcesses", {
   defaultValue: () => unrecorded,
 });
@@ -145,11 +146,11 @@ const markedBy = (installation: string) =>
     return found;
   });
 
-const markedWith = (installation: string, id: string) =>
-  Effect.map(markedBy(installation), (marked) => marked.get(id) ?? []);
-
 /** What of a check is proved still running: its group, while its leader is the recorded one, and each marked process. */
-const provedOf = (record: Pick<CheckRecord, "id" | "leader">, installation: string) =>
+const provedIn = (
+  record: Pick<CheckRecord, "id" | "leader">,
+  marked: ReadonlyMap<string, ReadonlyArray<number>>,
+) =>
   Effect.gen(function* () {
     const { leader } = record;
     const group =
@@ -158,17 +159,24 @@ const provedOf = (record: Pick<CheckRecord, "id" | "leader">, installation: stri
       (yield* groupOf(leader.pid)) === leader.group
         ? leader.group
         : null;
-    return { group, marked: yield* markedWith(installation, record.id) };
+    return { group, marked: marked.get(record.id) ?? [] };
   });
-type Proved = Effect.Success<ReturnType<typeof provedOf>>;
+type Proved = Effect.Success<ReturnType<typeof provedIn>>;
+
+const provedOf = (record: Pick<CheckRecord, "id" | "leader">, installation: string) =>
+  Effect.flatMap(markedBy(installation), (marked) => provedIn(record, marked));
 
 const isGone = (proved: Proved) => proved.group === null && proved.marked.length === 0;
 
-const signal = (proved: Proved, name: NodeJS.Signals) =>
+/** Sends a signal, throwing where it cannot, as `process.kill` does. */
+export type Kill = (target: number, name: NodeJS.Signals) => void;
+const processKill: Kill = (target, name) => process.kill(target, name);
+
+const signal = (proved: Proved, name: NodeJS.Signals, kill: Kill) =>
   Effect.sync(() => {
     const send = (target: number) => {
       try {
-        process.kill(target, name);
+        kill(target, name);
       } catch {
         // Gone already.
       }
@@ -198,12 +206,13 @@ const goneWithin = (
 export const endCheck = Effect.fn("CheckProcesses.endCheck")(function* (
   record: Pick<CheckRecord, "id" | "leader">,
   installation: string,
+  kill: Kill = processKill,
 ) {
   const proved = yield* provedOf(record, installation);
   if (isGone(proved)) return true;
-  yield* signal(proved, "SIGTERM");
+  yield* signal(proved, "SIGTERM", kill);
   if (yield* goneWithin(record, installation, 2_000)) return true;
-  yield* signal(yield* provedOf(record, installation), "SIGKILL");
+  yield* signal(yield* provedOf(record, installation), "SIGKILL", kill);
   return yield* goneWithin(record, installation, 1_000);
 });
 
@@ -242,8 +251,9 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     outcome: LeftoverEnd,
     line: string,
   ) => Effect.Effect<void, never, FileSystem.FileSystem>;
+  readonly kill?: Kill;
 }) {
-  const { dir, installation } = options;
+  const { dir, installation, kill = processKill } = options;
   const fs = yield* FileSystem.FileSystem;
   // Only these, so a check's spawn and finalizer stay in its caller's Scope.
   const services = Context.make(FileSystem.FileSystem, fs).pipe(
@@ -253,6 +263,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     ),
   );
   const collecting = new Map<string, Collecting>();
+  let stopping = false;
   // From before its spawn, so no check of this host is ever taken for a leftover.
   const ours = new Set<string>();
   const host = { pid: process.pid, started: (yield* startedOf(process.pid)) ?? "" };
@@ -321,7 +332,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       const proof = proofOf(leftover);
       const outcome: LeftoverEnd = isGone(yield* provedOf(proof, installation))
         ? "already gone"
-        : (yield* endCheck(proof, installation))
+        : (yield* endCheck(proof, installation, kill))
           ? "ended"
           : "still running";
       if (outcome !== "still running")
@@ -332,78 +343,109 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       return outcome;
     }).pipe(Effect.provideContext(services));
 
-  const endAllOf = (leftovers: ReadonlyArray<Leftover>) =>
-    Effect.forEach(leftovers, endLeftover, { concurrency: "unbounded", discard: true });
+  /** Ends the Run's leftovers, and again while one survives that (D6). */
+  const clearOf = (run: string) =>
+    Effect.gen(function* () {
+      while (!stopping) {
+        const leftovers = (yield* left).filter((leftover) => leftover.run === run);
+        const outcomes = yield* Effect.forEach(leftovers, endLeftover, {
+          concurrency: "unbounded",
+        });
+        if (!outcomes.includes("still running")) return;
+        yield* Effect.sleep(GUARD_RETRY);
+      }
+    });
 
   const run: CheckProcessesApi["run"] = (check, command) =>
     Effect.gen(function* () {
+      if (stopping) return endedCheck;
       const began = yield* nowIso();
       const salt = (yield* Random.next).toString(16).slice(2);
       const id = `${check.run}@${epochMs(began)}-${salt}`;
       ours.add(id);
       yield* Effect.addFinalizer(() => Effect.sync(() => ours.delete(id)));
-      yield* endAllOf((yield* left).filter((leftover) => leftover.run === check.run));
-      const handle = yield* spawnCheck(command, {
-        [CHECK_INSTALLATION]: installation,
-        [CHECK_ID]: id,
-      });
-      const record: CheckRecord = {
-        id,
-        run: check.run,
-        name: check.name,
-        ...(check.pass !== undefined && { pass: check.pass.pass }),
-        ...(check.pass?.round !== undefined && { round: check.pass.round }),
-        by: check.by,
-        leader: {
-          pid: handle.pid,
-          started: (yield* startedOf(handle.pid)) ?? "",
-          group: (yield* groupOf(handle.pid)) ?? handle.pid,
-        },
-        host,
-        started: began,
-      };
-      const entry: Collecting = { check, record, ended: false };
-      collecting.set(id, entry);
-      yield* Effect.addFinalizer(() =>
-        endCheck(record, installation).pipe(Effect.andThen(forget(id)), Effect.ignore),
+      yield* clearOf(check.run);
+      // From the spawn to its finalizer, so no interruption leaves it unended.
+      return yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          if (stopping) return endedCheck;
+          const handle = yield* spawnCheck(command, {
+            [CHECK_INSTALLATION]: installation,
+            [CHECK_ID]: id,
+          });
+          const record: CheckRecord = {
+            id,
+            run: check.run,
+            name: check.name,
+            ...(check.pass !== undefined && { pass: check.pass.pass }),
+            ...(check.pass?.round !== undefined && { round: check.pass.round }),
+            by: check.by,
+            leader: {
+              pid: handle.pid,
+              started: (yield* startedOf(handle.pid)) ?? "",
+              group: (yield* groupOf(handle.pid)) ?? handle.pid,
+            },
+            host,
+            started: began,
+          };
+          const entry: Collecting = { check, record, ended: stopping };
+          collecting.set(id, entry);
+          yield* Effect.addFinalizer(() =>
+            endCheck(record, installation, kill).pipe(Effect.andThen(forget(id)), Effect.ignore),
+          );
+          if (entry.ended) yield* signal(yield* provedOf(record, installation), "SIGTERM", kill);
+          yield* fs.makeDirectory(runningChecksDir(dir), { recursive: true }).pipe(Effect.ignore);
+          yield* fs
+            .writeFileString(`${recordPath(dir, id)}.new`, encodeCheckRecord(record))
+            .pipe(Effect.andThen(fs.rename(`${recordPath(dir, id)}.new`, recordPath(dir, id))))
+            .pipe(Effect.ignore);
+          return {
+            stdout: handle.stdout,
+            stderr: handle.stderr,
+            exit: handle.exitCode.pipe(
+              Effect.exit,
+              Effect.flatMap((exit) => (entry.ended ? Effect.never : exit)),
+              Effect.map(Number),
+            ),
+          };
+        }),
       );
-      yield* fs.makeDirectory(runningChecksDir(dir), { recursive: true }).pipe(Effect.ignore);
-      yield* fs
-        .writeFileString(`${recordPath(dir, id)}.new`, encodeCheckRecord(record))
-        .pipe(Effect.andThen(fs.rename(`${recordPath(dir, id)}.new`, recordPath(dir, id))))
-        .pipe(Effect.ignore);
-      return {
-        stdout: handle.stdout,
-        stderr: handle.stderr,
-        exit: handle.exitCode.pipe(
-          Effect.exit,
-          Effect.flatMap((exit) => (entry.ended ? Effect.never : exit)),
-          Effect.map(Number),
-        ),
-      };
     }).pipe(Effect.provideContext(services));
 
   const endAll = Effect.gen(function* () {
+    stopping = true;
     const ended: CheckOf[] = [];
     for (const entry of collecting.values()) {
       if (entry.ended) continue;
       entry.ended = true;
       ended.push(entry.check);
     }
+    const marked = yield* markedBy(installation);
     for (const entry of collecting.values())
-      yield* signal(yield* provedOf(entry.record, installation), "SIGTERM");
+      yield* signal(yield* provedIn(entry.record, marked), "SIGTERM", kill);
     return ended;
   }).pipe(Effect.provideContext(services));
 
   const killEnded = Effect.gen(function* () {
-    const ended = [...collecting.values()].filter((entry) => entry.ended);
-    for (const entry of ended)
-      yield* signal(yield* provedOf(entry.record, installation), "SIGKILL");
-    for (const entry of ended)
-      if (yield* goneWithin(entry.record, installation, 1_000)) yield* forget(entry.record.id);
+    let ended = [...collecting.values()].filter((entry) => entry.ended);
+    for (let waited = 0; ended.length > 0; waited += 100) {
+      const marked = yield* markedBy(installation);
+      const still: Collecting[] = [];
+      for (const entry of ended) {
+        const proved = yield* provedIn(entry.record, marked);
+        if (isGone(proved)) yield* forget(entry.record.id);
+        else {
+          still.push(entry);
+          if (waited === 0) yield* signal(proved, "SIGKILL", kill);
+        }
+      }
+      ended = still;
+      if (waited >= KILL_WAIT) return;
+      if (ended.length > 0) yield* Effect.sleep("100 millis");
+    }
   }).pipe(Effect.provideContext(services));
 
-  yield* endAllOf(yield* left);
+  yield* Effect.forEach(yield* left, endLeftover, { concurrency: "unbounded", discard: true });
   return {
     run,
     endAll,
@@ -414,3 +456,20 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     endLeftover,
   } satisfies CheckProcessesApi;
 });
+
+/** SIGTERM to what `checks` is collecting at once, SIGKILL in the grace's last fifth, and done when the grace is. */
+export const endAllWithin = (
+  checks: CheckProcessesApi,
+  grace: Duration.Duration,
+  onEnded: (ended: ReadonlyArray<CheckOf>) => Effect.Effect<void>,
+) =>
+  Effect.race(
+    Effect.all(
+      [
+        checks.endAll.pipe(Effect.flatMap(onEnded)),
+        Effect.sleep(Duration.millis(Duration.toMillis(grace) * 0.8)),
+      ],
+      { concurrency: 2 },
+    ).pipe(Effect.andThen(checks.killEnded), Effect.andThen(Effect.never)),
+    Effect.sleep(grace),
+  );
