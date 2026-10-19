@@ -1594,8 +1594,12 @@ that file at the top of the tab. **Review** renders the review, read whole the s
 `file:line` in a finding or anywhere in rendered markdown opens
 **Diff** at that line, or a read-only view of the file from the Run's checkout where no
 hunk shows it. **Diff** is the Run's branch against its merge base — live while the Run
-works, final after — as a file tree beside each file's diff, unified or side by side, kept
-as you left it while the record is open. Each file's row in the tree says whether it was added (A), deleted (D) or modified (M),
+works, final after — as a file tree beside each file's diff, unified or side by side. **Wrap long lines** wraps
+each open diff's long lines instead of scrolling them sideways, and **Expand all** and
+**Collapse all** open or close every file in the diff, big and binary ones included; a file
+that arrives in a live diff afterwards opens or not by the usual rule. Side by side, Wrap
+long lines and each file's open or closed state are kept as you left them while the record
+is open. Each file's row in the tree says whether it was added (A), deleted (D) or modified (M),
 its `+N −M` lines or "binary", and how many Review comment drafts you have on it. A filter
 above the tree keeps only the files whose path contains what you type, ignoring case, with
 their folders shown open, and says "No file matches" when none does; it narrows the tree

@@ -20,6 +20,7 @@ const props = defineProps<{
   installation: string;
   runId: string;
   split: boolean;
+  wrap: boolean;
   /** What a finding points at in this file; each new one is scrolled to once. */
   target: DiffTarget | null;
 }>();
@@ -108,6 +109,7 @@ const options = (): FileDiffOptions<string, undefined> => ({
   theme: { light: "github-light", dark: "github-dark" },
   themeType: colorMode.value === "dark" ? "dark" : "light",
   diffStyle: props.split ? "split" : "unified",
+  overflow: props.wrap ? "wrap" : "scroll",
   disableFileHeader: true,
   enableLineSelection: true,
   enableGutterUtility: true,
@@ -132,7 +134,7 @@ watch(
   },
   { immediate: true, flush: "post" },
 );
-watch([() => props.split, () => colorMode.value], () => {
+watch([() => props.split, () => props.wrap, () => colorMode.value], () => {
   view?.setOptions(options());
   view?.render({ forceRender: true });
 });

@@ -2,12 +2,14 @@
 import type { TreeItem } from "@nuxt/ui";
 import { Semaphore } from "effect";
 import type { Ref } from "vue";
-import type { DiffFile, RunDiff } from "../../../../src/board-model";
+import type { RunDiff } from "../../../../src/board-model";
 import { inField } from "../../../src/shared/board-clicks";
 import {
   activeFile,
+  choiceForEvery,
   type DiffTreeNode,
   diffTree,
+  fileOpen,
   filterTree,
   foldersOn,
   READING_LINE,
@@ -33,14 +35,9 @@ const props = defineProps<{
 // Each diff read has the host run git again, so this record's are four at a time.
 provide("diffReads", Semaphore.makeUnsafe(4));
 
-/** A file with more changed lines than this, or a binary one, starts collapsed. */
-const BIG_FILE_LINES = 500;
-
 const split = ref(false);
+const wrap = ref(false);
 const opened = ref(new Map<string, boolean>());
-const isOpen = (file: DiffFile) =>
-  opened.value.get(file.path) ??
-  (file.added !== null && file.added + (file.removed ?? 0) <= BIG_FILE_LINES);
 
 const sections = ref<HTMLElement | null>(null);
 const scrollIntoDiff = async (path: string) => {
@@ -77,6 +74,12 @@ watch(
 );
 
 const drawn = computed(() => diffTree(props.diff.files));
+const openEvery = async (open: boolean) => {
+  opened.value = new Map(choiceForEvery(drawn.value.files, open));
+  held.value = null;
+  await nextTick();
+  measure();
+};
 const filter = ref("");
 const filtering = computed(() => filter.value.trim() !== "");
 const listed = computed(() => filterTree(drawn.value.tree, filter.value));
@@ -240,7 +243,30 @@ watch(
         {{ diff.files.length }} {{ diff.files.length === 1 ? "file" : "files" }} against
         <code>{{ diff.base.slice(0, 7) }}</code>
       </span>
-      <USwitch v-model="split" class="ml-auto" label="Side by side" data-testid="split" />
+      <div class="ml-auto flex flex-wrap items-center justify-end gap-3">
+        <USwitch v-model="split" label="Side by side" data-testid="split" />
+        <USwitch v-model="wrap" label="Wrap long lines" data-testid="wrap" />
+        <UButton
+          v-if="diff.files.length > 0"
+          label="Expand all"
+          icon="i-lucide-chevrons-up-down"
+          size="xs"
+          variant="ghost"
+          color="neutral"
+          data-testid="diff-expand-all"
+          @click="openEvery(true)"
+        />
+        <UButton
+          v-if="diff.files.length > 0"
+          label="Collapse all"
+          icon="i-lucide-chevrons-down-up"
+          size="xs"
+          variant="ghost"
+          color="neutral"
+          data-testid="diff-collapse-all"
+          @click="openEvery(false)"
+        />
+      </div>
     </div>
     <SourceFile
       v-if="source !== null"
@@ -292,8 +318,9 @@ watch(
           :run-id="runId"
           :base="diff.base"
           :split="split"
+          :wrap="wrap"
           :target="target?.file === file.path ? target : null"
-          :open="isOpen(file)"
+          :open="fileOpen(file, opened)"
           @update:open="(now: boolean) => opened.set(file.path, now)"
           @missing="(missed: DiffTarget) => (source = missed)"
         />

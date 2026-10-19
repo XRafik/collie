@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { DiffFile } from "../src/board-model";
 import {
   activeFile,
+  choiceForEvery,
   type DiffTreeNode,
   diffTree,
   filterTree,
+  fileOpen,
   foldersOn,
   reachBy,
   readingHeight,
@@ -207,5 +209,55 @@ describe("the tree filtered by a path", () => {
   test("keeps everything when empty", () => {
     expect(filterTree(tree, "")).toEqual(tree);
     expect(filterTree(tree, "  ")).toEqual(tree);
+  });
+});
+
+describe("whether a file is open", () => {
+  const counted = (path: string, added: number, removed: number): DiffFile => ({
+    path,
+    status: "modified",
+    added,
+    removed,
+  });
+  const binary: DiffFile = { path: "logo.png", status: "modified", added: null, removed: null };
+  const none = new Map<string, boolean>();
+
+  test("is open by default for a text file of at most 500 changed lines", () => {
+    expect(fileOpen(counted("a.ts", 300, 200), none)).toBe(true);
+    expect(fileOpen(counted("a.ts", 0, 0), none)).toBe(true);
+  });
+
+  test("starts collapsed for a file of 501 changed lines, or a binary one", () => {
+    expect(fileOpen(counted("a.ts", 301, 200), none)).toBe(false);
+    expect(fileOpen(binary, none)).toBe(false);
+  });
+
+  test("is the human's own choice where there is one", () => {
+    expect(fileOpen(counted("a.ts", 1, 0), new Map([["a.ts", false]]))).toBe(false);
+    expect(fileOpen(counted("a.ts", 900, 0), new Map([["a.ts", true]]))).toBe(true);
+    expect(fileOpen(binary, new Map([["logo.png", true]]))).toBe(true);
+  });
+
+  const files = [counted("small.ts", 1, 1), counted("big.ts", 600, 0), binary];
+  const openAfter = (choices: ReadonlyMap<string, boolean>, shown = files) =>
+    shown.map((shownFile) => fileOpen(shownFile, choices));
+
+  test("is every file, big and binary ones too, after Expand all", () => {
+    expect(openAfter(choiceForEvery(files, true))).toEqual([true, true, true]);
+  });
+
+  test("is no file after Collapse all", () => {
+    expect(openAfter(choiceForEvery(files, false))).toEqual([false, false, false]);
+  });
+
+  test("is a single choice made after Expand all", () => {
+    const choices = new Map(choiceForEvery(files, true)).set("big.ts", false);
+    expect(openAfter(choices)).toEqual([true, false, true]);
+  });
+
+  test("follows the default rule for a file that arrives after Expand all", () => {
+    const choices = choiceForEvery(files, true);
+    const arrived = [counted("new.ts", 2, 0), counted("huge.ts", 501, 0)];
+    expect(openAfter(choices, [...files, ...arrived])).toEqual([true, true, true, true, false]);
   });
 });

@@ -85,6 +85,19 @@ export const filterTree = (
   return kept(tree);
 };
 
+const BIG_FILE_LINES = 500;
+
+/** The human's choice for the file, else open for a text file of at most 500 changed lines. */
+export const fileOpen = (file: DiffFile, choices: ReadonlyMap<string, boolean>): boolean =>
+  choices.get(file.path) ??
+  (file.added !== null && file.added + (file.removed ?? 0) <= BIG_FILE_LINES);
+
+/** Expand all or Collapse all: one choice for each file in the diff now. */
+export const choiceForEvery = (
+  files: ReadonlyArray<DiffFile>,
+  open: boolean,
+): ReadonlyMap<string, boolean> => new Map(files.map(({ path }) => [path, open]));
+
 interface Span {
   readonly top: number;
   readonly bottom: number;
