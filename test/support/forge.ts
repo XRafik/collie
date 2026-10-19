@@ -620,7 +620,9 @@ export const forgeBin = Effect.fn("forge.bin")(function* (
   const model = Schema.decodeSync(ModelJson)(yield* fs.readFileString(file));
   yield* fs.writeFileString(`${file}.log`, `${[CLI[forge], ...args].join(" ")}\n`, { flag: "a" });
   const said = answer(forge, model, CLI[forge], args);
-  yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(said.model));
+  // Writing back an unchanged model would undo a test's write that landed since the read.
+  if (said.model !== model)
+    yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(said.model));
   return said.ran;
 });
 

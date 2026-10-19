@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigProvider, Effect, FileSystem } from "effect";
+import { ConfigProvider, Effect, FileSystem, Schema } from "effect";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
@@ -13,6 +13,7 @@ import {
   FORGE_HOST,
   PROJECT,
   fakeForge,
+  forgeBin,
   forgeOnPath,
   CLI,
   type FakeMr,
@@ -634,6 +635,18 @@ test("the suite's compiled forge fake receives its model and arguments literally
       } finally {
         yield* bin.restore();
       }
+    }),
+  ));
+
+test("a forge call that changes nothing leaves the model as a test last wrote it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const file = `${yield* fs.makeTempDirectoryScoped({ prefix: "forge-bin-" })}/gitlab.model.json`;
+      const written = `${Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))(model("gitlab"))}\n`;
+      yield* fs.writeFileString(file, written);
+      yield* forgeBin("gitlab", file, ["api", "--hostname", FORGE_HOST.gitlab, "environments"]);
+      expect(yield* fs.readFileString(file)).toBe(written);
     }),
   ));
 
