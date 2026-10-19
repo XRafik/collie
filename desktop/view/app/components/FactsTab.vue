@@ -84,11 +84,11 @@ const agents = computed(() => agentRows(props.detail?.agents ?? []));
         </li>
       </ul>
     </section>
-    <section data-testid="taskview">
-      <h3 class="font-semibold">TaskView</h3>
-      <pre class="overflow-auto rounded bg-elevated p-2 text-xs">{{
+    <details data-testid="taskview">
+      <summary class="cursor-pointer font-semibold">TaskView</summary>
+      <pre class="mt-2 overflow-auto rounded bg-elevated p-2 text-xs">{{
         JSON.stringify(task, null, 2)
       }}</pre>
-    </section>
+    </details>
   </div>
 </template>

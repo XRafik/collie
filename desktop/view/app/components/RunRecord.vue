@@ -2,6 +2,7 @@
 import { offersTerminal, opensHerdrWithoutPane } from "../../../src/shared/record-terminal";
 import type { PlacedTask } from "../../../src/shared/flock";
 import { mrTab } from "../../../src/shared/links";
+import { recordTabs, tabShown } from "../../../src/shared/record";
 import { runDetailAtom, runDetailKey } from "../flock";
 import type { DiffTarget } from "./DiffTab.vue";
 
@@ -30,23 +31,18 @@ provide("recordScroller", scroller);
 
 const tabs = computed(() => {
   const shown = detail.value;
-  return [
-    ...(shown?.plan ? [{ label: "Plan", value: "plan" }] : []),
-    ...(shown !== null &&
-    (shown.review._tag === "Text" || shown.findings.length > 0 || target.value !== null)
-      ? [{ label: "Review", value: "review" }]
-      : []),
-    ...(shown?.diff ? [{ label: "Diff", value: "diff" }] : []),
-    ...(shown !== null ? [{ label: "Evidence", value: "evidence" }] : []),
-    { label: "Log", value: "log" },
-    ...(offersTerminal(props.placed.asOf, chosen.value)
-      ? [{ label: "Terminal", value: "terminal" }]
-      : []),
-    ...(shown?.mr ? [{ label: mrTab(props.placed.task.mr), value: "mr" }] : []),
-    { label: "Facts", value: "facts" },
-  ];
+  return recordTabs({
+    loaded: shown !== null,
+    plan: Boolean(shown?.plan),
+    reviewText: shown?.review._tag === "Text",
+    findings: (shown?.findings.length ?? 0) > 0,
+    target: target.value !== null,
+    diff: Boolean(shown?.diff),
+    terminal: offersTerminal(props.placed.asOf, chosen.value),
+    mr: shown?.mr ? mrTab(props.placed.task.mr) : null,
+  });
 });
-/** The tab the human chose while it is there, else the first: Plan, where there is one. */
+/** The tab the human chose while it is there, else the first: Summary, where there is one. */
 const chosen = ref<string>();
 const { asked: tabAsked, taken } = usePage();
 const wentToPane = ref(false);
@@ -61,8 +57,7 @@ watch(
   { immediate: true },
 );
 const tab = computed({
-  get: () =>
-    tabs.value.some(({ value }) => value === chosen.value) ? chosen.value : tabs.value[0]!.value,
+  get: () => tabShown(tabs.value, chosen.value),
   set: (value) => (chosen.value = value),
 });
 
@@ -128,8 +123,9 @@ const locationOf = (file: string, line: number | null) =>
             :live="placed.task.agents"
             :protocol="protocolOf(placed.installation)"
           />
+          <SummaryTab v-if="tab === 'summary'" :detail="detail" />
           <PlanTab
-            v-if="tab === 'plan' && detail.plan"
+            v-else-if="tab === 'plan' && detail.plan"
             :plan="detail.plan"
             :installation="placed.installation"
             :run-id="detail.id"

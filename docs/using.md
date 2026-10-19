@@ -1571,6 +1571,13 @@ board.
 open page, and with no page open Escape lets the selected card go, wherever the focus is in
 the window. Escape typed in a field, such as the Log search, stays with the field.
 
+A record opens on **Summary**, unless the board asked for a tab or a jump chose one: the
+Run's status; why it needs attention, in the board's words, unless nothing needs it; its
+outcome — what kind it is, what it still has to prove, what is in its way, what to do next
+and what it delivered; its steps, each with its status, note, how long it took and its
+agents; and the Inputs it was given, each with whether it was given or inferred. A section
+with nothing to say is left out.
+
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the
 details carry, and lists the tickets, each expanding
 in place, read from the host when first opened. A ticket is ticked when every checkbox in
@@ -1608,7 +1615,7 @@ merge watch last read — title, state, pipeline or checks, approvals and commen
 Open in browser. **Facts** shows the files the Run was
 given, when it was given any (an image as a thumbnail, any other file by its name, type and
 size), its **Agents** — one row per agent the Run started, in launch order, with the
-harness, model and effort it ran on — its intent, its steering cards and the card's TaskView as the host sent it. Markdown is rendered with
+harness, model and effort it ran on — its intent, its steering cards and, folded until you open it, the card's TaskView as the host sent it. Markdown is rendered with
 Comark: tables, Shiki-highlighted code and mermaid diagrams, with anything that could run
 and every inline style removed, because agents write it. The view's own policy lets nothing
 on a page load from the network, and nothing may move Desktop's window off its own page;

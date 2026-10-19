@@ -870,6 +870,7 @@ test("a record says its Machine is not live in the board's words, and nothing on
 });
 
 test.each<[string, Column]>([
+  ["summary", "reading"],
   ["plan", "reading"],
   ["review", "reading"],
   ["facts", "reading"],

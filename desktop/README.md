@@ -90,6 +90,7 @@ knows the delivery cap or the paste budget.
 | `src/shared/review-comments.ts`    | Drafts, anchors, whether a line is in a hunk, and the composed message (`desktop/test/review-comments.test.ts`)       |
 | `src/shared/record-terminal.ts`    | `recipients`: who may get them                                                                                        |
 | `src/shared/diff-view.ts`          | The Diff tab's tree in drawn order, the folders on a path, and the file being read (`test/desktop-diff-view.test.ts`) |
+| `src/shared/record.ts`             | A record's tabs, the one shown, and what its Summary says (`test/desktop-record.test.ts`)                             |
 | `view/app/components/DiffFile.vue` | Each file, drawn with `@pierre/diffs`' `FileDiff`                                                                     |
 
 ## Scale and Zoom
