@@ -619,6 +619,25 @@ effectTest("a long ticket's repository is read past what the panel shows", funct
   ]);
 });
 
+effectTest("a ticket's repository is looked for only in its first MiB", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, {
+    "01-web.md": `# Web\n\n${"x".repeat(1024 * 1024)}\n**Repo:** web\n`,
+  });
+  const root = yield* seed({
+    workflow: "implement",
+    repo: ".",
+    settled: { inputs: { plan: dir, plan_kind: "plan-dir" }, strategies: { plan: "work-source" } },
+  });
+  yield* stepped(root, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-web.md", done: true },
+  ]);
+});
+
 effectTest("a finished Run's cached plan is read again once a ticket lands", function* () {
   const path = yield* Path.Path;
   const plans: PlanCache = new Map();
