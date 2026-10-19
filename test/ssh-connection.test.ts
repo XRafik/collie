@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 import { createConnection, createServer, type Server } from "node:net";
-import { type Duration, Effect, FileSystem } from "effect";
+import { Clock, Deferred, type Duration, Effect, FileSystem } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   closeConnections,
@@ -14,6 +14,7 @@ import {
   riderArgv,
   sshConnection,
 } from "../src/ssh-connection";
+import { withLock } from "../src/lock";
 import { runEffect } from "./support/effect";
 import { freePort, portOf, writeFakeSsh, socketDir } from "./support/fake-ssh";
 import { root } from "./support/host";
@@ -154,6 +155,26 @@ test("a master that never answers within the opener's bound fails with what ssh 
         expect(failed.machine).toBe("vm-mk");
         expect(failed.seen).toContain("Waiting for SSO login");
       }
+    }),
+  ));
+
+test("waiting on another opener counts against the opener's bound", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { state, ssh, fake } = yield* rig;
+      yield* fake.hangs(true);
+      const path = yield* controlPath(state, vm);
+      const held = yield* Deferred.make<void>();
+      yield* withLock(
+        `${path}.lock`,
+        Effect.die("the lock was taken"),
+        Deferred.succeed(held, undefined).pipe(Effect.andThen(Effect.sleep("400 millis"))),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      const started = yield* Clock.currentTimeMillis;
+      const failed = yield* opens(state, ssh, "600 millis").pipe(Effect.flip);
+      expect(failed._tag).toBe("MachineUnreachable");
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(900);
     }),
   ));
 

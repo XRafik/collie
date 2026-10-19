@@ -6,7 +6,7 @@
 // such a call talks to an open master or fails, so a host can never log in. Effect alone,
 // so Desktop builds the same argv.
 
-import { Duration, Effect, FileSystem, Option, Schema, type Scope, Stream } from "effect";
+import { Clock, Duration, Effect, FileSystem, Option, Schema, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HostRefused } from "./board-model";
 import { LOCK_CLAIM_SPACING_MS, withLock } from "./lock";
@@ -193,16 +193,20 @@ export const openConnection = Effect.fn("SshConnection.open")(function* (
   const { path } = connection;
   if (yield* connection.check) return { path, opened: false };
   const bound = Duration.fromInputUnsafe(options.bound ?? OPEN_BOUND);
+  const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(bound);
+  const contended = new MachineUnreachable({
+    machine: machine.label,
+    seen: `another opener held its SSH connection for longer than ${Duration.format(bound)}`,
+  });
   // Another process opening it may be waiting on the same SSO login: wait for it, then look again.
   return yield* withLock(
     `${path}.lock`,
-    new MachineUnreachable({
-      machine: machine.label,
-      seen: `another opener held its SSH connection for longer than ${Duration.format(bound)}`,
-    }),
+    contended,
     Effect.gen(function* () {
       if (yield* connection.check) return { path, opened: false };
-      return yield* opened(connection, machine, ssh, bound, options.said);
+      const left = deadline - (yield* Clock.currentTimeMillis);
+      if (left <= 0) return yield* contended;
+      return yield* opened(connection, machine, ssh, Duration.millis(left), options.said);
     }),
     Math.ceil(Duration.toMillis(bound) / LOCK_CLAIM_SPACING_MS),
   ).pipe(
