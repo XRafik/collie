@@ -2220,19 +2220,30 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           .readDirectory(launchDir(host.dir, ""))
           .pipe(Effect.orElseSucceed(() => []));
         const launches = (yield* Effect.forEach(runs, launchesOf)).flat();
+        // Every Herd's, and none where one cannot be read: an agent there may be live.
         const alive = yield* Effect.cached(
-          host.herdr.agentList().pipe(
-            Effect.map((listed) => listed.map((one) => one.name)),
-            Effect.option,
-          ),
+          Effect.gen(function* () {
+            const listed = yield* host.herdr.sessionList();
+            const sessions =
+              listed.length === 0
+                ? [host.herdr]
+                : listed.map((one) => host.herdr.inSession(one.socketPath));
+            const agents = yield* Effect.forEach(sessions, (one) => one.agentList(), {
+              concurrency: "unbounded",
+            });
+            return agents.flat().map((one) => one.name);
+          }).pipe(Effect.option),
         );
         for (const agent of asking) {
           const own = launches
             .filter((one) => one.agent === agent)
             .toSorted((one, other) => (one.at ?? 0) - (other.at ?? 0));
+          // A collection reads its launch's questions and every later one's.
+          let collected = false;
           for (const [at, launched] of own.entries()) {
             const next = own[at + 1];
-            if (yield* collecting.has(launched.runId, agent)) continue;
+            collected ||= yield* collecting.has(launched.runId, agent, stemOf(launched));
+            if (collected) continue;
             const tend = yield* questionsOf(
               launched,
               questionsFor(launched.runId),
@@ -2270,6 +2281,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           if (text !== null && asking !== null) yield* asking(closedAnswer(launched.operation));
           return text;
         }),
+        stemOf(launched),
       ),
     );
 

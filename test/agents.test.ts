@@ -72,7 +72,8 @@ import {
   type CompactionOutcome,
   type CompactionPorts,
 } from "../src/compaction";
-import { COMPACTION_PORTS, recordClaudeEvent } from "../src/compactors";
+import { COMPACTION_PORTS, questionsSince, recordClaudeEvent } from "../src/compactors";
+import { Collecting } from "../src/collecting";
 import { hostLockOf } from "../src/lock";
 import { claudeTrust } from "../src/trust";
 import { FALLBACK_DEFAULTS } from "../src/settings";
@@ -209,7 +210,7 @@ const session = <A, E>(
   run: Effect.Effect<
     A,
     E,
-    WorkflowEngine.WorkflowEngine | Agents | Store | BunServices.BunServices
+    WorkflowEngine.WorkflowEngine | Agents | Collecting | Store | BunServices.BunServices
   >,
   over?: Partial<AgentHost>,
 ) =>
@@ -1131,6 +1132,105 @@ test(
     ),
   120_000,
 );
+
+/** `r1`'s questions as the host tends them, read from and written to its Store. */
+const tendR1 = Effect.gen(function* () {
+  const store = yield* Store;
+  yield* (yield* Agents).tendQuestions((run) => ({
+    ask: (question, asker) =>
+      store.asking({
+        run,
+        decision: question.name,
+        prompt: question.prompt,
+        options: question.options,
+        asker,
+      }),
+    asked: store
+      .asked(run)
+      .pipe(Effect.map((rows) => rows.map((row) => ({ name: row.decision, answer: row.answer })))),
+    close: (decision, value) =>
+      store.settle({ run, decision, value, request: `closed-${decision}` }).pipe(Effect.asVoid),
+  }));
+});
+
+/** `r1` finished, and its agent asked two questions after. */
+const finishedThenAsked = Effect.gen(function* () {
+  yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+  yield* session(
+    Effect.gen(function* () {
+      expect((yield* started("r1"))._tag).toBe("Success");
+      yield* asksTwo;
+    }),
+  );
+});
+
+const answersOfR1 = Effect.suspend(() =>
+  session(
+    Store.pipe(Effect.flatMap((store) => store.asked("r1"))).pipe(
+      Effect.map((rows) => rows.map((one) => one.answer)),
+    ),
+  ),
+);
+
+test("a question whose agent is live in another Herd, or whose Herds cannot be listed, stays open", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* finishedThenAsked;
+      const first = `${rig.root}/first.sock`;
+      const second = `${rig.root}/second.sock`;
+      const sessions = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))([
+        { name: "desk", socket_path: first },
+        { name: "builds", socket_path: second },
+      ]);
+      for (const over of [
+        { FAKE_HERDR_SESSIONS: sessions, FAKE_HERDR_FAIL: "" },
+        { FAKE_HERDR_SESSIONS: "", FAKE_HERDR_FAIL: '{"session list":"herdr is restarting"}' },
+      ])
+        yield* session(tendR1, {
+          herdr: new FakeHerdr(
+            rig.pluginEnv({ HERDR_SOCKET_PATH: first, FAKE_HERDR_AGENTS_IN: second, ...over }),
+          ),
+        });
+      expect(yield* answersOfR1).toEqual([null, null]);
+
+      yield* session(tendR1, {
+        herdr: new FakeHerdr(
+          rig.pluginEnv({ FAKE_HERDR_SESSIONS: sessions, FAKE_HERDR_AGENTS_GONE: agentFor("r1") }),
+        ),
+      });
+      expect(yield* answersOfR1).toEqual([
+        `closed: ${agentFor("r1")} is gone`,
+        `closed: ${agentFor("r1")} is gone`,
+      ]);
+    }),
+  ));
+
+test("a question asked before the agent's next launch is answered while that launch is collected", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* finishedThenAsked;
+      const fs = yield* FileSystem.FileSystem;
+      const asked = yield* questionsSince(
+        yield* controlDir(rig.pluginEnv().stateDir, agentFor("r1")),
+        0,
+      );
+      const first = Schema.decodeUnknownSync(Schema.fromJsonString(Launched))(
+        yield* fs.readFileString(`${dir}/agents/r1/review.launch.json`),
+      );
+      const next = { ...first, operation: "fix", at: Math.max(...asked.map((one) => one.at)) + 1 };
+      yield* fs.writeFileString(
+        `${dir}/agents/r1/fix.launch.json`,
+        Schema.encodeSync(Schema.fromJsonString(Launched))(next),
+      );
+      yield* session(
+        Effect.gen(function* () {
+          const collecting = yield* Collecting;
+          yield* collecting.during("r1", agentFor("r1"), tendR1, "fix");
+        }),
+      );
+      expect(yield* answersOfR1).toEqual([null, null]);
+    }),
+  ));
 
 test(
   "a restart between the attempts hands out no second repair",
