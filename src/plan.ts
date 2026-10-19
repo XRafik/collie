@@ -4,7 +4,7 @@
 
 import { Effect, FileSystem, Path } from "effect";
 
-const REPO_LINE = /^\s*\*\*Repo:\*\*\s*(.*?)\s*$/m;
+export const REPO_LINE = /^\s*\*\*Repo:\*\*\s*(.*?)\s*$/m;
 const BLOCKED_LINE = /^\s*\*\*Blocked by:\*\*\s*(.*?)\s*$/m;
 const CHECKS_LINE = /^\s*\*\*Checks:\*\*\s*(.*?)\s*$/m;
 

@@ -29,7 +29,7 @@ import { metricsOf, readMetrics } from "./metrics";
 import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } from "./board-model";
 import { newest, readCards, readCheckpoints } from "./cards";
 import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
-import { orderedTickets } from "./plan";
+import { orderedTickets, REPO_LINE } from "./plan";
 import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
@@ -280,7 +280,7 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
       if (checkpoint.status === "done") finished.add(checkpoint.ticket);
     const launches = yield* readLaunches(stateDir, one.id);
     if (launches.length === 0) continue;
-    tickets ??= yield* cappedTickets(issues);
+    tickets ??= yield* ticketRepoLines(issues);
     const mine = orderedTickets(tickets, one.repo ?? undefined).map((t) => t.file);
     for (const launch of launches) {
       const output = yield* writtenAt(launch.output);
@@ -296,15 +296,28 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
   return finished;
 });
 
-const cappedTickets = Effect.fn("Views.cappedTickets")(function* (issues: string) {
+// ponytail: never evicted; a few bytes per ticket file ever seen.
+const repoLines = new Map<string, { readonly stamp: string; readonly line: string }>();
+
+/** Each ticket's `**Repo:**` line, read in full only when the ticket has changed. */
+const ticketRepoLines = Effect.fn("Views.ticketRepoLines")(function* (issues: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => [])))
     .filter((name) => name.endsWith(".md"))
     .sort();
   const tickets: Array<{ file: string; text: string }> = [];
-  for (const file of files)
-    tickets.push({ file, text: (yield* capped(path.join(issues, file), OUTPUT_CAP))?.text ?? "" });
+  for (const file of files) {
+    const at = path.join(issues, file);
+    const stamp = yield* stampOf(at);
+    let kept = repoLines.get(at);
+    if (kept?.stamp !== stamp) {
+      const text = yield* fs.readFileString(at).pipe(Effect.orElseSucceed(() => ""));
+      kept = { stamp, line: REPO_LINE.exec(text)?.[0] ?? "" };
+      repoLines.set(at, kept);
+    }
+    tickets.push({ file, text: kept.line });
+  }
   return tickets;
 });
 
