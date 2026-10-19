@@ -1,7 +1,7 @@
 // Which of a Run's agents a steer reaches when nobody names one, and when someone names a role.
 
 import { expect, test } from "bun:test";
-import { agentName } from "../src/naming";
+import { agentName, launchedAs } from "../src/naming";
 import { steerTarget, type Candidate } from "../src/steer-target";
 
 const builder = (done: boolean): Candidate => ({
@@ -73,8 +73,7 @@ test("an agent is found by the name it was launched under, though its operations
     { agent, operation: "01-a.md", role: "implementer", done: true, runId, sequence: 1 },
     { agent, operation: "02-b.md", role: "implementer", done: true, runId, sequence: 1 },
   ];
-  expect(steerTarget(tickets, { agent: "build" })).toMatchObject({ operation: "02-b.md" });
-  expect(steerTarget(tickets, { operation: "build" })).toMatchObject({ operation: "02-b.md" });
-  expect(steerTarget(tickets, { to: "build" })).toMatchObject({ operation: "02-b.md" });
-  expect(steerTarget(tickets, { agent: "review" })).toBeUndefined();
+  for (const asked of [{ agent: "build" }, { operation: "build" }, { to: "build" }])
+    expect(steerTarget(tickets, asked, launchedAs)).toMatchObject({ operation: "02-b.md" });
+  expect(steerTarget(tickets, { agent: "review" }, launchedAs)).toBeUndefined();
 });

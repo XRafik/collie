@@ -1,17 +1,12 @@
 // Which of a Run's agents a steer or a correction reaches. Pure, so the host and its tests
 // decide the same way.
 
-import { agentName } from "./naming";
-
 /** One launch, and whether the work it was given has its Output yet. */
 export interface Candidate {
   readonly agent: string;
   readonly operation: string;
   readonly role: string;
   readonly done: boolean;
-  /** With its sequence, what names the agent by the name it was launched under, as `build`. */
-  readonly runId?: string;
-  readonly sequence?: number;
 }
 
 const BUILDER_ROLES: ReadonlyArray<string> = ["implementer"];
@@ -39,8 +34,11 @@ export interface Asked {
 export function steerTarget<C extends Candidate>(
   launches: ReadonlyArray<C>,
   asked: Asked,
+  launchedAs: (one: C, name: string) => boolean = () => false,
 ): C | undefined {
   const { agent, operation, to } = asked;
+  const named = (one: C, name: string) =>
+    one.operation === name || one.agent === name || launchedAs(one, name);
   if (agent !== undefined)
     return launches.findLast((one) => one.agent === agent || launchedAs(one, agent));
   if (operation !== undefined) return launches.findLast((one) => named(one, operation));
@@ -54,9 +52,3 @@ export function steerTarget<C extends Candidate>(
   if (active !== undefined || roles !== undefined) return active ?? among.at(-1);
   return among.findLast((one) => BUILDER_ROLES.includes(one.role)) ?? launches.at(-1);
 }
-
-const launchedAs = (one: Candidate, name: string) =>
-  one.runId !== undefined && one.agent === agentName(one.runId, name, null, one.sequence ?? 1);
-
-const named = (one: Candidate, name: string) =>
-  one.operation === name || one.agent === name || launchedAs(one, name);

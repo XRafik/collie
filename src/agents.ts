@@ -95,7 +95,14 @@ import {
   type Preferences,
 } from "./harness";
 import { Herdr, herdrFailureReason, type AgentInfo, type HerdrError } from "./herdr";
-import { agentName, agentTabLabel, reason, shellQuote, unsafePathComponent } from "./naming";
+import {
+  agentName,
+  agentTabLabel,
+  launchedAs,
+  reason,
+  shellQuote,
+  unsafePathComponent,
+} from "./naming";
 import { machineName } from "./peers";
 import { askRouteTo } from "./handoff";
 import { nowIso } from "./time";
@@ -2571,7 +2578,11 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     under(
       Effect.gen(function* () {
         const { to, operation, agent } = options;
-        const launched = steerTarget(yield* candidatesOf(options.runId), { to, operation, agent });
+        const launched = steerTarget(
+          yield* candidatesOf(options.runId),
+          { to, operation, agent },
+          launchedAs,
+        );
         if (launched === undefined) {
           const named = agent ?? operation ?? to;
           return {
