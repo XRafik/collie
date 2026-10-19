@@ -2480,7 +2480,9 @@ scenario(
           runId: "r-linear-uncopied",
           input: { plan: "ABC-124" },
         });
+        expect(stopped._tag).toBe("Failure");
         expect(reasonOf(stopped)).toContain("plan/SPEC.md cannot be read");
+        expect(reasonOf(stopped)).toContain("Continue with a follow-up Run to finish delivery.");
         expect(yield* prompts()).not.toContainEqual(expect.stringContaining("review-1"));
       }),
     ),
