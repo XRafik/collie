@@ -58,7 +58,7 @@ import {
   terminate,
   type ProcessInfo,
 } from "./processes";
-import { withLock } from "./lock";
+import { holderLives, hostLockOf, lockHolder, withLock } from "./lock";
 import { carriedDelivery } from "./dispatcher";
 
 /**
@@ -773,6 +773,9 @@ export const recordClaudeEvent = Effect.fn("Compactors.recordClaudeEvent")(funct
     if (asked === null || asked._tag === "None") return "";
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    // No live host to put it on the Run, so the agent asks in its pane. `dir` is `controlDir(stateDir, agent)`.
+    const owner = yield* lockHolder(hostLockOf(path.dirname(path.dirname(dir))));
+    if (owner === null || !(yield* holderLives(owner))) return "";
     const at = yield* Clock.currentTimeMillis;
     const line = encodeAskedCall({
       at,

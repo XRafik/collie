@@ -21,6 +21,9 @@ const LockHolderSchema = Schema.Struct({ pid: Schema.Int, start: Schema.NullOr(S
 const LockHolderJson = Schema.fromJsonString(LockHolderSchema);
 const decodeLockHolderJson = Schema.decodeUnknownSync(LockHolderJson);
 
+/** The lock the host that owns a state directory holds. */
+export const hostLockOf = (stateDir: string) => `${stateDir}/host.lock`;
+
 export const currentPid = Effect.sync(() => globalThis.process.pid);
 export const signalProcess = (id: number, signal: NodeJS.Signals | 0 = 0) =>
   Effect.sync(() => {

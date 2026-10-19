@@ -95,7 +95,14 @@ import {
   type Preferences,
 } from "./harness";
 import { Herdr, herdrFailureReason, type AgentInfo, type HerdrError } from "./herdr";
-import { agentName, agentTabLabel, reason, shellQuote, unsafePathComponent } from "./naming";
+import {
+  agentName,
+  agentTabLabel,
+  launchedAs,
+  reason,
+  shellQuote,
+  unsafePathComponent,
+} from "./naming";
 import { machineName } from "./peers";
 import { askRouteTo } from "./handoff";
 import { nowIso } from "./time";
@@ -244,6 +251,7 @@ const bySender = (answerers: ReadonlyArray<Asker | undefined>) => {
 };
 
 const closedAnswer = (operation: string) => `closed: ${operation} finished before it was answered`;
+const goneAnswer = (agent: string) => `closed: ${agent} is gone`;
 
 /**
  * The header and the question, then its options. A question takes no fixed options, so
@@ -395,6 +403,11 @@ export interface AgentsApi {
       readonly mode: DeliveryMode;
     },
   ) => Effect.Effect<boolean>;
+  /**
+   * Puts on its Run every question an agent asked that no collection is reading — its Run
+   * finished or parked, or the agent between steps — and sends it the answers.
+   */
+  readonly tendQuestions: (questionsFor: (runId: string) => Questions) => Effect.Effect<void>;
 }
 
 export type DeliveryMode = "boundary" | "now" | "interrupt";
@@ -1367,8 +1380,9 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       readonly paneId: string;
       readonly workspaceId: string | null;
     } | null,
+    through = deps,
   ) =>
-    dispatch.entryFromLive(deps, {
+    dispatch.entryFromLive(through, {
       role: about.role,
       agent,
       paneId: place?.paneId ?? null,
@@ -1396,9 +1410,12 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       readonly attempt?: number;
       readonly requestId?: string;
       readonly actor?: Asker;
+      /** The session the agent is in, where it is not the host's own. */
+      readonly herdr?: Herdr;
     },
   ) {
-    const found = yield* entryFor(about, about.agent, null);
+    const through = delivery.herdr === undefined ? deps : { ...deps, herdr: delivery.herdr };
+    const found = yield* entryFor(about, about.agent, null, through);
     if (found.entry === null)
       return {
         sent: false,
@@ -1434,8 +1451,8 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     // So does a correction: another attempt at one is Collie's to decide, not a retry's.
     const outcome = yield* (
       delivery.kind === "steer" || delivery.kind === "correction"
-        ? dispatch.transaction(deps, entry, (channel) => channel.submit(fitted.words, draft))
-        : dispatch.submitPatiently(deps, entry, fitted.words, draft, host.patience)
+        ? dispatch.transaction(through, entry, (channel) => channel.submit(fitted.words, draft))
+        : dispatch.submitPatiently(through, entry, fitted.words, draft, host.patience)
     ).pipe(Effect.catch((cause) => Effect.succeed(undeliverable(cause))));
     const pane = entry.paneId;
     if (outcome.ok) {
@@ -1446,7 +1463,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       return {
         sent: true,
         why: "",
-        observed: yield* observe(about, entry, draft),
+        observed: yield* observe(about, entry, draft, delivery.herdr),
         pane,
         kept: fitted.kept,
       };
@@ -1472,13 +1489,18 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
    * submit hook, or Enter pressed on it still in the prompt box — or null where nothing
    * showed it within `observeMs`.
    */
-  const observe = (about: Launched, entry: AgentEntry, draft: dispatch.DeliveryDraft) =>
+  const observe = (
+    about: Launched,
+    entry: AgentEntry,
+    draft: dispatch.DeliveryDraft,
+    herdr = host.herdr,
+  ) =>
     Effect.gen(function* () {
       const dir = yield* controlDir(host.env.stateDir, about.agent);
       return yield* dispatch.confirmSubmitted(
         {
           stateDir: host.env.stateDir,
-          herdr: host.herdr,
+          herdr,
           log: (line) => log(about.runId, line),
           taken: (delivery) =>
             submittedDelivery(dir, delivery.id).pipe(
@@ -2123,24 +2145,33 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       ),
     );
 
+  /** Calls whose answers were sent, or refused for good, by agent and call. */
+  const answeredCalls = new Set<string>();
+
   /**
-   * Puts each question the agent asked since it was given this work on its Run, and sends
-   * the answers to one call as one Delivery once all of them are answered. True while any
-   * is open. `ending` records and closes instead: the Output has come, so nothing is sent.
+   * Puts each question the agent asked since it was given this work, and before `until`,
+   * on its Run, and sends the answers to one call as one Delivery once all of them are
+   * answered. True while any is open. `closing` records and closes with it instead.
    */
-  const questionsOf = (launched: Launched, questions: Questions) =>
+  const questionsOf = (
+    launched: Launched,
+    questions: Questions,
+    until = Infinity,
+    herdr: Effect.Effect<Herdr, never, AgentServices> = Effect.succeed(host.herdr),
+  ) =>
     Effect.gen(function* () {
       const dir = yield* controlDir(host.env.stateDir, launched.agent);
       const stem = stemOf(launched);
-      const closed = closedAnswer(launched.operation);
-      const refused = new Set<string>();
-      return (ending: boolean) =>
+      const closings = [closedAnswer(launched.operation), goneAnswer(launched.agent)];
+      return (closing: string | null) =>
         Effect.gen(function* () {
           let n = 0;
-          const calls = (yield* questionsSince(dir, launched.at ?? 0)).map((call) => ({
-            call,
-            names: call.questions.map(() => agentQuestionName(stem, ++n)),
-          }));
+          const calls = (yield* questionsSince(dir, launched.at ?? 0))
+            .filter((call) => call.at < until)
+            .map((call) => ({
+              call,
+              names: call.questions.map(() => agentQuestionName(stem, ++n)),
+            }));
           const asked = yield* questions.asked;
           const answers = new Map(asked.map((one) => [one.name, one.answer]));
           const answerers = new Map(asked.map((one) => [one.name, one.by]));
@@ -2156,16 +2187,19 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               answers.set(name, null);
             }
             const given = names.map((name) => answers.get(name) ?? null);
-            if (ending) {
+            if (closing !== null) {
               for (const [at, name] of names.entries())
-                if (given[at] === null) yield* questions.close(name, closed);
+                if (given[at] === null) yield* questions.close(name, closing);
               continue;
             }
             if (given.some((answer) => answer === null)) {
               open = true;
               continue;
             }
-            if (given.includes(closed) || refused.has(call.id)) continue;
+            const key = `${launched.agent}\n${call.id}`;
+            if (given.some((answer) => closings.includes(answer ?? "")) || answeredCalls.has(key))
+              continue;
+            let sentAll = true;
             // The ledger refuses a second copy, so a replay sends nothing again.
             const label = (at: number) =>
               call.questions[at]?.header || call.questions[at]?.question || names[at];
@@ -2175,20 +2209,93 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
                 group.at.length === 1
                   ? `Your question ${label(group.at[0]!)} is answered: ${given[group.at[0]!]}`
                   : `Your questions are answered: ${group.at.map((at) => `${label(at)}: ${given[at]}`).join("; ")}`,
-                { kind: "steer", ref: names[group.at[0]!] ?? stem, actor: group.by },
+                {
+                  kind: "steer",
+                  ref: names[group.at[0]!] ?? stem,
+                  actor: group.by,
+                  herdr: yield* herdr,
+                },
               );
+              if (!sent.sent) sentAll = false;
               if (sent.refused) {
-                refused.add(call.id);
+                answeredCalls.add(key);
                 yield* log(
                   launched.runId,
                   `${launched.agent}: was not sent the answers to ${group.at.map((at) => names[at]).join(", ")} (${sent.why})`,
                 );
               }
             }
+            if (sentAll) answeredCalls.add(key);
           }
           return open;
         }).pipe(Effect.orElseSucceed(() => false));
     });
+
+  const tendQuestions = (questionsFor: (runId: string) => Questions) =>
+    under(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const named = yield* fs
+          .readDirectory(yield* controlDir(host.env.stateDir, ""))
+          .pipe(Effect.orElseSucceed(() => []));
+        const asking = yield* Effect.filter(named, (agent) =>
+          Effect.map(
+            Effect.flatMap(controlDir(host.env.stateDir, agent), (dir) => questionsSince(dir, 0)),
+            (calls) => calls.length > 0,
+          ),
+        );
+        if (asking.length === 0) return;
+        const runs = yield* fs
+          .readDirectory(launchDir(host.dir, ""))
+          .pipe(Effect.orElseSucceed(() => []));
+        const launches = (yield* Effect.forEach(runs, launchesOf)).flat();
+        // Every Herd's, and none where one cannot be read: an agent there may be live.
+        const alive = yield* Effect.cached(
+          Effect.gen(function* () {
+            const listed = yield* host.herdr.sessionList();
+            const sessions =
+              listed.length === 0
+                ? [host.herdr]
+                : listed.map((one) => host.herdr.inSession(one.socketPath));
+            const agents = yield* Effect.forEach(
+              sessions,
+              (herdr) =>
+                Effect.map(herdr.agentList(), (listed) =>
+                  listed.map((one) => ({ name: one.name, herdr })),
+                ),
+              { concurrency: "unbounded" },
+            );
+            return agents.flat();
+          }).pipe(Effect.option),
+        );
+        for (const agent of asking) {
+          const own = launches
+            .filter((one) => one.agent === agent)
+            .toSorted((one, other) => (one.at ?? 0) - (other.at ?? 0));
+          // A collection reads its launch's questions and every later one's.
+          let collected = false;
+          for (const [at, launched] of own.entries()) {
+            const next = own[at + 1];
+            collected ||= yield* collecting.has(launched.runId, agent, stemOf(launched));
+            if (collected) continue;
+            const tend = yield* questionsOf(
+              launched,
+              questionsFor(launched.runId),
+              next?.at ?? Infinity,
+              Effect.map(
+                alive,
+                (found) =>
+                  Option.getOrUndefined(found)?.find((one) => one.name === agent)?.herdr ??
+                  host.herdr,
+              ),
+            );
+            if (!(yield* tend(null))) continue;
+            if (Option.exists(yield* alive, (found) => !found.some((one) => one.name === agent)))
+              yield* tend(goneAnswer(agent));
+          }
+        }
+      }),
+    ).pipe(Effect.orElseSucceed(() => undefined));
 
   const collect = (
     launched: Launched,
@@ -2207,7 +2314,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               pollMs: host.pollMs ?? DEFAULT_POLL_MS,
               budgetMs: budgetMs ?? host.collectMs ?? DEFAULT_COLLECT_MS,
               counts: Effect.gen(function* () {
-                if (asking !== null && (yield* asking(false))) return false;
+                if (asking !== null && (yield* asking(null))) return false;
                 const status = yield* host.herdr
                   .agentStatus(launched.agent)
                   .pipe(Effect.orElseSucceed(() => null));
@@ -2216,9 +2323,10 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             }),
             confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
           );
-          if (text !== null && asking !== null) yield* asking(true);
+          if (text !== null && asking !== null) yield* asking(closedAnswer(launched.operation));
           return text;
         }),
+        stemOf(launched),
       ),
     );
 
@@ -2478,7 +2586,11 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     under(
       Effect.gen(function* () {
         const { to, operation, agent } = options;
-        const launched = steerTarget(yield* candidatesOf(options.runId), { to, operation, agent });
+        const launched = steerTarget(
+          yield* candidatesOf(options.runId),
+          { to, operation, agent },
+          launchedAs,
+        );
         if (launched === undefined) {
           const named = agent ?? operation ?? to;
           return {
@@ -2619,6 +2731,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     collect,
     repair,
     steer,
+    tendQuestions,
     atWork: (runId) =>
       under(candidatesOf(runId).pipe(Effect.map((all) => steerTarget(all, {}) ?? null))).pipe(
         Effect.orElseSucceed(() => null),

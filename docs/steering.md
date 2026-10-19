@@ -154,7 +154,9 @@ implementer, such as an investigation, has no builder, and `--to builder` there 
 agent was launched for it. A busy builder is reached even when an idle reviewer was
 launched after it. `--to builder|reviewer|planner` names a role, `--to <agent>` an agent or
 an operation, and `--operation` still works; where both are given, an agent's name wins,
-then `--operation`, then `--to`.
+then `--operation`, then `--to`. An agent is also named by the short name it was launched
+under, such as `build` for `run-…-build-r1`, which reaches it in a Run whose operations are
+its tickets, finished or not.
 
 A steer or correction that herdr did not see start a turn is confirmed as a step's prompt
 is: a turn starting once the agent has settled, Claude's prompt-submit receipt, or, with
