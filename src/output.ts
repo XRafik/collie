@@ -711,7 +711,9 @@ function checkGap(name: string, evidence: CheckEvidence): string | null {
     case "proved":
       return null;
     case "never":
-      return `check "${name}" has no verification record — run it through collie verify`;
+      return evidence.commands?.some((command) => command.name === name)
+        ? `check "${name}" has no verification record on this tree — Collie's gate runs it itself, on the final tree`
+        : `check "${name}" has no verification record — run it through collie verify`;
     case "failed":
       return `check failed: ${name}`;
     case "unstable":

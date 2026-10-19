@@ -1847,19 +1847,23 @@ const frontDoorHandlers = (
                 return yield* new HostRefused({
                   reason: `${REFUSED_INPUT}: "${where}" is not inside run ${runId}; a verification names the tree it ran on.`,
                 });
-              const kept =
-                expect === "fail"
-                  ? null
-                  : yield* reliance.relied(runId, { executable, argv, cwd: where });
-              if (kept !== null)
+              const check = yield* reliance.relied(runId, { executable, argv, cwd: where });
+              if (check !== null) {
+                const { record } = check;
+                if (record === null)
+                  return yield* new HostRefused({
+                    reason: `invalid_state: "${check.check}" is one of this Run's Checks and has no record on this tree; Collie's gate runs it itself, on the final tree.`,
+                  });
+                const log = record.log === undefined ? "" : `; its log is ${record.log}`;
                 return Stream.make(
                   {
                     _tag: "Output" as const,
                     stream: "stderr" as const,
-                    text: `not run again: verification ${kept.id} already passed on this tree\n`,
+                    text: `not run again: verification ${record.id} of "${check.check}" ${record.result === "pass" ? "passed" : "failed"} on this tree${log}\n`,
                   },
-                  { _tag: "Result" as const, verification: kept, ran: false },
+                  { _tag: "Result" as const, verification: record, ran: false },
                 );
+              }
               return Stream.callback<typeof import("./verify-model").VerifyEvent.Type, HostRefused>(
                 (queue) =>
                   Effect.gen(function* () {

@@ -188,6 +188,7 @@ import {
   insideRun,
   ranCommand,
   readVerifications,
+  recordFor,
   reliedFor,
   rerunTest,
   resolveExecutable,
@@ -2315,14 +2316,17 @@ const recordedClaim = (
     Effect.orElseSucceed((): HelleClaim | null => null),
   );
 
-/** A pass this host already collected that answers for exactly one of a Run's Checks. */
+/**
+ * The Run's Check a command is, with the latest record this host collected of it on this
+ * tree, or null where the command is none of the Run's Checks.
+ */
 export class Reliance extends Context.Service<
   Reliance,
   {
     readonly relied: (
       runId: string,
       command: Pick<Verification, "executable" | "argv" | "cwd">,
-    ) => Effect.Effect<Verification | null>;
+    ) => Effect.Effect<{ readonly check: string; readonly record: Verification | null } | null>;
   }
 >()("collie/Reliance") {}
 
@@ -3419,8 +3423,14 @@ export const hostLayer = (options: {
             const executable = yield* resolveExecutable(command.executable, command.cwd);
             if (executable === null) return null;
             for (const spec of yield* approvedOf(dir, runId)) {
-              if (ranCommand({ ...command, executable }, yield* commandOf(own, spec)))
-                return yield* relyOn(runId, own, spec, { pass: "check" });
+              if (!ranCommand({ ...command, executable }, yield* commandOf(own, spec))) continue;
+              const record = yield* recordFor(evidenceDir(dir, runId), own, spec, hostStarted);
+              if (record !== null)
+                yield* appendLog(
+                  runDir(dir, runId),
+                  `check: ${spec.name} answered by verification ${record.id}`,
+                ).pipe(Effect.orDie);
+              return { check: spec.name, record };
             }
             return null;
           }),

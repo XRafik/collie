@@ -344,7 +344,7 @@ written, in the description under this heading:
 - This branch's open {{mr.noun}}: {{mr.existing}}
 
 Run every test, lint and typecheck command through
-`collie verify -- <command>`; Collie records the result
+`collie verify -- <command>`, and never the whole suite: it is the gate's. Collie records the result
 against the tree it ran on, and only that is a verification — an Output that says the
 tests pass is a claim. Say in your Output which verifications you ran, by name.
 
