@@ -48,11 +48,21 @@ the caller recorded. `verify` runs inside its checkout and streams output back.
 `run checks --follow` streams that host's live log; paths it returns belong to that Machine.
 
 Adding a Machine to herdr (`herdr machine add`) is all it takes. The first command that
-reaches it pairs the two over its SSH login, which asks for that login's approval once,
-where the command runs; from then on the Machines talk over a TLS WebSocket the dialled
-one listens for on port 47217, with no SSH. Removing the Machine from herdr forgets the
-pairing on both sides. A host's own jobs never start an SSH login, so a Machine no command
-has reached yet is `invalid_state` for them: not paired yet.
+reaches it opens this computer's SSH connection to it, as
+[`collie machine connect`](#collie-machine) does, which asks for that login's approval
+once, where the command runs, and pairs the two through it; from then on the Machines talk
+over a TLS WebSocket the dialled one listens for on port 47217. With
+`COLLIE_SSH_CONTROL` set, pairing rides the connection at that path and opens none. A
+pairing whose connection has gone before it asks fails with what ssh said; it never logs
+in by itself. Removing the Machine from herdr forgets the pairing on both sides. A host's
+own jobs never start an SSH login, so a Machine no command has reached yet is
+`invalid_state` for them: not paired yet.
+
+A command that reaches a Machine whose link waits on an SSH connection (`waits` in
+[`machine list`](#collie-machine)) opens one the same way, then reaches it once more. A
+host's own jobs — Schedules, reports, settings and definitions sync — open nothing: theirs
+is `machine_unreachable` with `details.waits` `ssh_connection`, naming
+`collie machine connect <name>`.
 
 The receiving host records each operation as the front door that asked — `cli`, or
 `cli-tty` for a person at a terminal — with `from.machine` naming the Machine it came from
@@ -101,6 +111,12 @@ naming the Machine and the last thing ssh said. It then wakes this host's link t
 Machine, so the link does not wait out its backoff. Its `data` is `machine`, `path` (the
 control path) and `opened`, false where a connection was already open. A name herdr does
 not list is `invalid_input`.
+
+**Closing.** Each time the host reads herdr's machines — at start, at `machine list`, and
+when a link comes up — it ends every SSH connection under its state directory that is not
+the one for a machine herdr lists now, with `ssh -O exit`: a Machine herdr forgot, after it
+is told and forgotten, and one herdr lists at another target. It opens none for the new
+target. Where herdr cannot say, nothing is closed.
 
 `live` means the control link is up. `connecting` names the dialler's last failure while
 it retries. `away` says when the listener lost its peer's control link and why. A call
@@ -1553,21 +1569,21 @@ human line and a failure prints `error.message`.
 
 ### Error codes
 
-| Code                  | When                                                                                                               |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `workspace_required`  | The command needs a workspace and none could be determined.                                                        |
-| `workspace_not_found` | The `--workspace` id is not a workspace herdr has.                                                                 |
-| `workflow_not_found`  | No layer defines that workflow.                                                                                    |
-| `persona_not_found`   | No layer defines that persona.                                                                                     |
-| `run_not_found`       | No run with that id, or none by that id in the Task this command is scoped to.                                     |
-| `task_not_found`      | `--task` named a Task that does not exist.                                                                         |
-| `target_exists`       | A fork would overwrite a file that is already there.                                                               |
-| `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                             |
-| `timeout`             | `run wait --timeout` gave up.                                                                                      |
-| `machine_unreachable` | A paired Machine did not answer within its bound; `details` name the `machine` and what was `seen`.                |
-| `invalid_state`       | The run, or the installation, is not in a state where that makes sense — `upgrade --to` on a development checkout. |
-| `invalid_input`       | A flag or argument was wrong.                                                                                      |
-| `operation_failed`    | Anything else, including a caught defect.                                                                          |
+| Code                  | When                                                                                                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `workspace_required`  | The command needs a workspace and none could be determined.                                                                                                                    |
+| `workspace_not_found` | The `--workspace` id is not a workspace herdr has.                                                                                                                             |
+| `workflow_not_found`  | No layer defines that workflow.                                                                                                                                                |
+| `persona_not_found`   | No layer defines that persona.                                                                                                                                                 |
+| `run_not_found`       | No run with that id, or none by that id in the Task this command is scoped to.                                                                                                 |
+| `task_not_found`      | `--task` named a Task that does not exist.                                                                                                                                     |
+| `target_exists`       | A fork would overwrite a file that is already there.                                                                                                                           |
+| `needs_input`         | Inputs are missing; `details.inputs` says which, with their questions.                                                                                                         |
+| `timeout`             | `run wait --timeout` gave up.                                                                                                                                                  |
+| `machine_unreachable` | A paired Machine did not answer within its bound; `details` name the `machine` and what was `seen`, and `waits` is `ssh_connection` where its link waits on an SSH connection. |
+| `invalid_state`       | The run, or the installation, is not in a state where that makes sense — `upgrade --to` on a development checkout.                                                             |
+| `invalid_input`       | A flag or argument was wrong.                                                                                                                                                  |
+| `operation_failed`    | Anything else, including a caught defect.                                                                                                                                      |
 
 ## Retrying safely
 
@@ -2007,6 +2023,11 @@ that installed herdr. Collie never runs `herdr update` or `herdr server stop` it
 worktrees and the temporary directory, once each. One with less than 10% or 5 GiB free is a
 `!` warning naming it, with what [`collie cleanup`](#cleaning-up) would free where a host has
 served this state directory, and `collie cleanup --apply` as the fix. It never fails the run.
+
+**Paired links**, where this Machine is paired: a failure where the listener could not
+take its port. A link live over SSH passes, its detail naming why direct failed. A link
+that waits on an SSH connection is a `!` warning with `collie machine connect <name>` as
+the fix; it never fails the run, since a laptop just woken is in that state.
 
 **Host herd**, where a host is running: the Herd it works for, or a `!` warning that
 [it has none](#the-local-workflow-host) and its judgements will be skipped. It never fails the run.

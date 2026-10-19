@@ -74,7 +74,8 @@ export const twoMachines = <A, E>(
     const suite = yield* suiteEnv;
     const make = (name: string, port: number) =>
       Effect.gen(function* () {
-        const dir = yield* fs.makeTempDirectoryScoped({ prefix: `${prefix}${name}-` });
+        // Short enough for its SSH connection's control path to bind as a socket.
+        const dir = yield* fs.makeTempDirectoryScoped({ prefix: `${prefix.slice(0, 12)}${name}-` });
         const world: World = {
           install: `${dir}/install`,
           user: `${dir}/install/user/workflows`,

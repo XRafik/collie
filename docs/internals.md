@@ -323,7 +323,8 @@ Each host keeps its peers in `src/peers.ts`, started in the host's scope
   record and the lower one the incoming record, so one listener and matching credentials remain.
 - **A relay socket per peer,** `peers/<name>.sock`. A client writes one
   header line, `{"as": <front door>, "client": <name>}`, and is answered with one line —
-  `{"ok":true}`, or why not (`refused`, or `unreachable` with what was seen) — then speaks
+  `{"ok":true}`, or why not (`refused`, or `unreachable` with what was seen, and `waits`
+  where the link waits on an SSH connection) — then speaks
   the host protocol. Behind it the relay opens a fresh WebSocket to the peer's `/channel`,
   pinning the peer's certificate as the only CA and sending the secret as a bearer, and
   pipes bytes. `as: "host"` is taken only with the relay's own host's stamp.
@@ -362,26 +363,47 @@ alike.
 Machine. Its control path is `<state dir>/ssh/<16 hex of sha256(label, target)>`, in a 0700
 directory, so a changed target is another path and the length depends only on the state
 directory; one too long for ssh to bind with its 17-byte temporary suffix is refused,
-naming it. `openConnection` is the one way a connection is opened, and only `collie machine
-connect` runs it: `ssh -M -N -S <path> -o ControlPersist=yes -o ServerAliveInterval=15 -o
+naming it. `openConnection` is the one way a connection is opened, and only a front door
+that can show its login runs it: `collie machine connect`, pairing, and `reach` in the
+lifecycle and `collie bridge` (`pairs` on their env) where a link waits on one. It runs
+`ssh -M -N -S <path> -o ControlPersist=yes -o ServerAliveInterval=15 -o
 ServerAliveCountMax=3 -o ConnectTimeout=15 <target>`, not in a process group of its own,
 so the master ssh puts in the background outlives the command; its stderr goes to the
 command's, and it answers once `-O check` does, within two minutes. The host is given only
 `sshConnection`'s handle, whose `check` and scoped `forward` are `ssh -S <path> -O
-check|forward|cancel <target>`: each talks to an open master or fails, so the host never
-logs in. A session that rides the connection is built by `riderArgv`, `ssh -S <path> -o
+check|forward|cancel <target>`, and whose `exit` is `ssh -S <path> -O exit <label>`,
+removing a path a master left behind: each talks to an open master or fails, so the host
+never logs in. `-G` and the invite's session are the module's too (`resolvedHost`,
+`ride`); `src/peers.ts` builds no ssh argv. A session that rides the connection is built by `riderArgv`, `ssh -S <path> -o
 ControlMaster=no -o ProxyCommand=false -T <target> <remote>`: where the socket has gone,
 ssh would otherwise fall back to a login of its own, and `ProxyCommand=false` fails that
 fallback at once (OpenSSH 10.2 exits 255 in under 10 ms). `connect` then asks the local
 host's `wake`, which ends that Machine's dialler's backoff. `test/support/fake-ssh.ts`
 models all of this, logging each call as `master`, `mux <verb>`, `ride` or `login`.
 Still to confirm on a real OpenSSH: that a `ControlPersist` master releases its opener's
-stdio, that `-O forward` and `-O cancel` act on the master `-S` names, and that a rider
-session with `ProxyCommand=false` runs through a live master.
+stdio, that `-O forward`, `-O cancel` and `-O exit` act on the master `-S` names whatever
+destination follows, and that a rider session with `ProxyCommand=false` runs through a
+live master.
+
+**Who opens it.** `MachineUnreachable` carries `waits: "ssh_connection"` from
+`openPeer`, through the relay's answer and `peerChannel`, into the `machine_unreachable`
+envelope's details, whose message names `collie machine connect <name>`. `riding` in the
+lifecycle catches that one failure for a front door with `pairs`: it opens the connection
+as `machine connect` does, wakes the host's link, and reaches once more, returning a
+second failure as it is. Everything else — reports (`pairs: false`), Schedules, sync and
+the dialler through the host's own `connectPeer` — gets the typed refusal and opens
+nothing.
+
+**Closing.** `reconcileMachines` runs `closeConnections` each time it reads herdr's list:
+every 16-hex path under `<state dir>/ssh/` that is not `controlPathOf` a machine herdr
+lists now is ended with `-O exit` (the path no longer names its Machine, so the
+destination is `collie`) and removed. A forgotten peer is told and dropped first. Where
+herdr cannot say, nothing is closed.
 
 The listener sends a heartbeat every fifteen seconds. Silence past that interval ends a
 control link. Reconnection backs off from one second to one minute, resetting after a
-live link. `doctor` reports a listener whose port is occupied, as does `machine list`.
+live link. `doctor` reports a listener whose port is occupied, as does `machine list`;
+it notes a link live over SSH and warns, without failing, about one that waits.
 `machine list` reports `live` with its transport, `connecting` with what each way saw, or
 `away` with its time and reason. Each host keeps running its local Runs while its peer is away.
 
@@ -393,12 +415,14 @@ each herdr machine not paired yet, for the Run a command names. `test/peers.test
 the link with `test/support/peers.ts`: two real hosts, each with its own fake herdr, paired
 through a fake `ssh`.
 
-**Pairing.** `pairWith` resolves the herdr machine's `HostName` with `ssh -G` and runs
+**Pairing.** `ensurePaired` first opens the Machine's SSH connection with
+`openConnection`, whose login and SSO approval show on the command's stderr, or takes the
+path `COLLIE_SSH_CONTROL` names and opens nothing. `pairWith` resolves the herdr machine's
+`HostName` with `ssh -G` and runs
 `collie --json machine invite --for <installation> --name <this Machine> --address <HostName>`
-there over `ssh` — through a caller's SSH master where one is given, and as a plain login
-otherwise, whose output goes to the command's stderr so the human sees the approval it
-asks for. The first login, including SSO approval, is bounded to two minutes; a timeout
-closes the SSH process and says which Machine did not pair. The invited host makes its certificate with `openssl` the first time,
+there in a session that rides that connection. One that went before the invite fails
+with what ssh said, never a login of its own. The invite is bounded to two minutes; a
+timeout closes the session and says which Machine did not pair. The invited host makes its certificate with `openssl` the first time,
 mints or reuses the installation's secret, keeps the pairing
 and starts listening; the asker's host keeps its side and opens the relay. A relay path
 longer than a unix socket takes (104 bytes on macOS) is refused rather than truncated.

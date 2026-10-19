@@ -40,8 +40,11 @@ import {
 import { channelInto } from "./channel";
 import { openPeer, REACH_BOUND, type Way } from "./peer-transport";
 import {
+  closeConnections,
   quoted,
   remoteCollie,
+  resolvedHost,
+  ride,
   SOCKET_PATH_MAX,
   sshConnection,
   type SshMachine,
@@ -54,6 +57,7 @@ import {
   PEER_PORT,
   PeersFile,
   RelayHeaderJson,
+  Waits,
   AgentAddress,
   AgentAddressJson,
   type HerdrMachine,
@@ -391,6 +395,7 @@ export const RelayAnswer = Schema.Struct({
   ok: Schema.Boolean,
   refused: Schema.optionalKey(Schema.String),
   unreachable: Schema.optionalKey(Schema.String),
+  waits: Schema.optionalKey(Waits),
 });
 export type RelayAnswer = typeof RelayAnswer.Type;
 const encodeAnswer = Schema.encodeSync(Schema.fromJsonString(RelayAnswer));
@@ -655,6 +660,10 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         yield* forget(peer.installation);
         yield* Effect.logInfo(`forgot ${peer.name}: herdr no longer lists it`);
       }
+      for (const path of yield* closeConnections(link.dir, listed).pipe(
+        Effect.provideContext(services),
+      ))
+        yield* Effect.logInfo(`closed the SSH connection at ${path}: herdr no longer names it`);
     }
   });
 
@@ -741,8 +750,16 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         return conn.end(answer({ ok: false, refused: "only this Machine's host speaks as host" }));
       const reach = peer.dials === "out" ? dialOut : dialBack;
       const far = yield* reach(peer, as, client, header.value.sender).pipe(Effect.result);
-      if (far._tag === "Failure")
-        return conn.end(answer({ ok: false, unreachable: far.failure.seen }));
+      if (far._tag === "Failure") {
+        const { seen, waits } = far.failure;
+        return conn.end(
+          answer(
+            waits === undefined
+              ? { ok: false, unreachable: seen }
+              : { ok: false, unreachable: seen, waits },
+          ),
+        );
+      }
       const ws = far.success;
       conn.write(answer({ ok: true }));
       if (rest.length > 0) ws.send(rest);
@@ -1313,10 +1330,9 @@ const decodeRefusal = Schema.decodeUnknownOption(
 );
 
 /**
- * Pairs with a herdr machine over its SSH login, the one approval its first reach asks
- * for, and answers the pairing for this Machine to keep. Whatever the login prints goes to
- * this process's stderr, where the human who has to approve it is. Only a front door that
- * can show that login calls this; a host's own jobs never do.
+ * Pairs with a herdr machine through this computer's open SSH connection to it, and
+ * answers the pairing for this Machine to keep. Only a front door that can show the login
+ * opening that connection calls this; a connection that went is a failure, never a login.
  */
 export const pairWith = Effect.fn("Peers.pairWith")(
   function* (
@@ -1324,58 +1340,37 @@ export const pairWith = Effect.fn("Peers.pairWith")(
     asker: {
       readonly installation: string;
       readonly name: string;
-      /** An SSH master already open to the machine, whose login is reused. */
-      readonly control?: string;
+      /** The control path of the open connection the invite rides. */
+      readonly control: string;
     },
   ) {
-    const ssh = "ssh";
-    const resolved = yield* shell(ssh, ["-G", machine.target], ".");
-    const address =
-      /^hostname (.+)$/m.exec(resolved.stdout)?.[1]?.trim() ?? machine.target.replace(/^.*@/, "");
-    const through =
-      asker.control === undefined ? [] : ["-S", asker.control, "-o", "ControlMaster=no"];
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const said = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(
-            ssh,
-            [
-              ...through,
-              "-o",
-              "ConnectTimeout=10",
-              "-T",
-              machine.target,
-              remoteCollie([
-                "--json",
-                "machine",
-                "invite",
-                "--for",
-                asker.installation,
-                "--name",
-                asker.name,
-                "--address",
-                address,
-              ]),
-            ],
-            { stdin: "ignore", stdout: "pipe", stderr: "inherit", extendEnv: true },
-          ),
-        );
-        return yield* handle.stdout.pipe(
-          Stream.decodeText(),
-          Stream.runFold(
-            () => "",
-            (all, chunk) => all + chunk,
-          ),
-        );
-      }),
-    ).pipe(Effect.orElseSucceed(() => ""));
+    const address = (yield* resolvedHost(machine.target)) ?? machine.target.replace(/^.*@/, "");
+    const { stdout: said, said: ssh } = yield* ride(
+      asker.control,
+      machine.target,
+      remoteCollie([
+        "--json",
+        "machine",
+        "invite",
+        "--for",
+        asker.installation,
+        "--name",
+        asker.name,
+        "--address",
+        address,
+      ]),
+    );
     const last = said.trim().split("\n").at(-1) ?? "";
     const invited = decodeInvited(last);
     if (Option.isNone(invited))
       return yield* new HostRefused({
         reason: `${machine.label} did not pair: ${Option.match(decodeRefusal(last), {
-          onNone: () => (last === "" ? "its collie answered nothing over ssh" : last),
+          onNone: () =>
+            last !== ""
+              ? last
+              : ssh === ""
+                ? "its collie answered nothing over ssh"
+                : `ssh said: ${ssh}`,
           onSome: (refused) => refused.error.message,
         })}`,
       });

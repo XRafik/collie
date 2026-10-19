@@ -1,0 +1,272 @@
+// Who opens a Machine's SSH connection and who closes it
+// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection), across two real hosts: an
+// operator's command opens it, pairing rides it, a host job is refused while a link waits
+// on one, and the host closes a connection herdr no longer names.
+
+import { expect, test } from "bun:test";
+import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
+import { readEnv } from "../src/env";
+import { machineList } from "../src/lifecycle";
+import { peersOf } from "../src/peers";
+import { PeerView } from "../src/peers-model";
+import { controlPathOf, openConnection } from "../src/ssh-connection";
+import { runEffect } from "./support/effect";
+import { freePort, resetter } from "./support/fake-ssh";
+import { stopHost, until } from "./support/host";
+import { twoMachines, type Side } from "./support/peers";
+
+const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const Listed = Schema.Struct({ machines: Schema.Array(PeerView) });
+const Checks = Schema.Struct({
+  checks: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      ok: Schema.Boolean,
+      detail: Schema.String,
+      fix: Schema.String,
+    }),
+  ),
+});
+
+const listed = (side: Side, name: string) =>
+  side.cli(["machine", "list"]).pipe(
+    Effect.map((read) => {
+      const found = Schema.decodeUnknownSync(Listed)(read.envelope.data).machines.find(
+        (one) => one.name === name,
+      );
+      if (found === undefined)
+        throw new Error(`${side.name} does not list ${name}: ${encode(read.envelope)}`);
+      return found;
+    }),
+  );
+
+const pairedLinks = (side: Side) =>
+  side
+    .cli(["doctor"])
+    .pipe(
+      Effect.map((read) =>
+        Schema.decodeUnknownSync(Checks)(
+          read.envelope.data ?? read.envelope.error?.details,
+        ).checks.find((one) => one.name === "paired links")!,
+      ),
+    );
+
+/** What the fake ssh logged from `from` on that starts as one of `kinds`. */
+const logged = (side: Side, from: number, ...kinds: ReadonlyArray<string>) =>
+  side.ssh.calls.pipe(
+    Effect.map((all) =>
+      all.slice(from).filter((line) => kinds.some((kind) => line.startsWith(kind))),
+    ),
+  );
+
+/** herdr's machines on `side`, with `second` at `target`. */
+const listsSecondAt = (side: Side, target: string | null) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      `${side.herdrLog}.machines.json`,
+      encode(
+        target === null
+          ? []
+          : [{ id: "second", label: "second", target, session: "default", enabled: true }],
+      ),
+    );
+  }).pipe(Effect.orDie);
+
+/** Every line of the log is the host's `-O` call or a front door's master or ride. */
+const onlyMuxFromTheHost = (side: Side) =>
+  side.ssh.calls.pipe(
+    Effect.map((all) =>
+      all.filter((line) => !/^(master|ride|mux (check|forward|cancel|exit)) /.test(line)),
+    ),
+  );
+
+test(
+  "pairing rides one connection, a host job is refused while the link waits on one, and a command opens it and carries on",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-front-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            expect(yield* logged(first, 0, "master", "login")).toEqual(["master mk@second"]);
+            const rides = yield* logged(first, 0, "ride");
+            expect(rides).toHaveLength(1);
+            expect(rides[0]).toContain("'invite'");
+
+            // The network starts refusing the port: the link comes up over the open connection.
+            const advertised = Number(second.env.COLLIE_PEER_PORT);
+            const moved = yield* freePort;
+            const blocking = yield* Scope.make();
+            yield* stopHost(second.world.state);
+            yield* resetter(advertised).pipe(Scope.provide(blocking));
+            yield* first.ssh.maps({ [advertised]: moved });
+            yield* second.cli(["machine", "list"], { COLLIE_PEER_PORT: String(moved) });
+            const paired = (yield* first.ssh.calls).length;
+            const over = yield* until(
+              () => listed(first, "second"),
+              (view) => view.state === "live" && view.transport === "ssh",
+            );
+            expect(over.direct).toContain(`${advertised}`);
+            expect(yield* logged(first, paired, "master", "login")).toEqual([]);
+            const viaSsh = yield* pairedLinks(first);
+            expect(viaSsh.ok).toBe(true);
+            expect(viaSsh.detail).toBe(`second's link goes over SSH: direct ${over.direct}.`);
+
+            // The connection drops: a host job is refused, and nothing logs in.
+            yield* first.ssh.drop;
+            yield* until(
+              () => listed(first, "second"),
+              (view) => view.waits === "ssh_connection",
+            );
+            const dropped = (yield* first.ssh.calls).length;
+            const job = yield* machineList({
+              ...readEnv(first.env),
+              machine: "second",
+              pairs: false,
+            });
+            expect(job.ok).toBe(false);
+            if (!job.ok) {
+              expect(job.error.code).toBe("machine_unreachable");
+              expect(job.error.details?.waits).toBe("ssh_connection");
+              expect(job.error.message).toBe(
+                "second did not answer: its link waits on an SSH connection, and none is open; collie machine connect second opens one.",
+              );
+            }
+            const waiting = yield* pairedLinks(first);
+            expect(waiting).toMatchObject({
+              ok: true,
+              detail: "second's link waits on an SSH connection",
+              fix: "collie machine connect second",
+            });
+            expect(yield* logged(first, dropped, "master", "login")).toEqual([]);
+
+            // A command opens it, once, and carries on.
+            const board = yield* first.cli(["--machine", "second", "board"]);
+            expect(board.envelope.error).toBeUndefined();
+            expect(yield* logged(first, dropped, "master", "login")).toEqual(["master mk@second"]);
+            const live = yield* until(
+              () => listed(first, "second"),
+              (view) => view.state === "live",
+            );
+            expect(live.transport).toBe("ssh");
+            const opened = (yield* first.ssh.calls).length;
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            expect(yield* logged(first, opened, "master", "login")).toEqual([]);
+            expect(yield* onlyMuxFromTheHost(first)).toEqual([]);
+            yield* Scope.close(blocking, Exit.void);
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "the host closes the connection of a Machine herdr lists at another target, and of one it forgot",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-close-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            yield* first.lists([second]);
+            expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            const before = controlPathOf(first.world.state, {
+              label: "second",
+              target: "mk@second",
+            });
+            expect(yield* fs.exists(before)).toBe(true);
+
+            const paired = (yield* first.ssh.calls).length;
+            yield* listsSecondAt(first, "mk@second-moved");
+            yield* first.cli(["machine", "list"]);
+            expect(yield* logged(first, paired, "mux exit")).toHaveLength(1);
+            expect(yield* fs.exists(before)).toBe(false);
+            const after = controlPathOf(first.world.state, {
+              label: "second",
+              target: "mk@second-moved",
+            });
+            expect(yield* fs.exists(after)).toBe(false);
+            expect(yield* logged(first, paired, "master", "login")).toEqual([]);
+
+            expect((yield* first.cli(["machine", "connect", "second"])).envelope.ok).toBe(true);
+            expect(yield* fs.exists(after)).toBe(true);
+            const connected = (yield* first.ssh.calls).length;
+            yield* listsSecondAt(first, null);
+            yield* first.cli(["machine", "list"]);
+            expect(yield* logged(first, connected, "mux exit")).toHaveLength(1);
+            expect(yield* fs.exists(after)).toBe(false);
+            expect(yield* peersOf(first.world.state)).toEqual([]);
+            expect(yield* onlyMuxFromTheHost(first)).toEqual([]);
+          }),
+        [],
+      ),
+    ),
+  180_000,
+);
+
+test(
+  "pairing rides the connection COLLIE_SSH_CONTROL names and opens none of its own",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-given-",
+        (first, second) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const elsewhere = yield* fs.makeTempDirectoryScoped({ prefix: "collie-desk-" });
+            const desktop = yield* openConnection(
+              elsewhere,
+              { label: "second", target: "mk@second" },
+              { ssh: `${first.env.PATH!.split(":")[0]}/ssh`, said: () => Effect.void },
+            );
+            yield* first.lists([second]);
+            const masters = (yield* logged(first, 0, "master")).length;
+            const paired = yield* first.cli(["--machine", "second", "board"], {
+              COLLIE_SSH_CONTROL: desktop.path,
+            });
+            expect(paired.envelope.error).toBeUndefined();
+            expect(yield* logged(first, 0, "master")).toHaveLength(masters);
+            expect(yield* logged(first, 0, "login")).toEqual([]);
+            expect(
+              (yield* logged(first, 0, "ride")).some((line) => line.includes("'invite'")),
+            ).toBe(true);
+            expect(
+              yield* fs.exists(
+                controlPathOf(first.world.state, { label: "second", target: "mk@second" }),
+              ),
+            ).toBe(false);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);
+
+test(
+  "pairing whose connection ends before its invite fails with what ssh said and never logs in",
+  () =>
+    runEffect(
+      twoMachines(
+        "collie-ends-",
+        (first, second) =>
+          Effect.gen(function* () {
+            yield* first.lists([second]);
+            yield* first.ssh.dropsBeforeRide(true);
+            const failed = yield* first.cli(["--machine", "second", "board"]);
+            expect(failed.envelope.ok).toBe(false);
+            expect(failed.envelope.error?.message).toContain(
+              "Connection closed by UNKNOWN port 65535",
+            );
+            expect(yield* logged(first, 0, "login")).toEqual([]);
+            expect(yield* logged(first, 0, "master")).toEqual(["master mk@second"]);
+          }),
+        [],
+      ),
+    ),
+  120_000,
+);

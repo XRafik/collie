@@ -2834,8 +2834,13 @@ export const peerChannel = (stateDir: string, name: string, header: RelayHeader)
         }
         if (!answer.value.ok) {
           conn.destroy();
+          const { unreachable, waits } = answer.value;
           return resume(
-            Effect.fail(new MachineUnreachable({ machine: name, seen: answer.value.unreachable! })),
+            Effect.fail(
+              waits === undefined
+                ? new MachineUnreachable({ machine: name, seen: unreachable! })
+                : new MachineUnreachable({ machine: name, seen: unreachable!, waits }),
+            ),
           );
         }
         const rest = seen.subarray(end + 1);

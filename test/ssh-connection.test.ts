@@ -8,6 +8,7 @@ import { createConnection, createServer, type Server } from "node:net";
 import { type Duration, Effect, FileSystem } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
+  closeConnections,
   controlPath,
   controlPathOf,
   openConnection,
@@ -147,6 +148,46 @@ test("the host's handle only asks an open master, and cancels its forward when i
       expect(calls.at(-1)).toBe(`mux cancel ${spec} mk@vm-mk`);
       expect(calls.filter((line) => line.startsWith("master"))).toHaveLength(1);
       expect(calls.some((line) => line.startsWith("login") || line.startsWith("ride"))).toBe(false);
+    }),
+  ));
+
+test("`exit` ends an open master and its path, and only removes a path left behind by one that ended", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { state, ssh, fake } = yield* rig;
+      const { path } = yield* opens(state, ssh);
+      const handle = yield* sshConnection(state, vm, ssh);
+      yield* handle.exit;
+      expect((yield* fake.calls).at(-1)).toBe("mux exit vm-mk");
+      expect(yield* fs.exists(path)).toBe(false);
+
+      yield* fs.writeFileString(path, "");
+      yield* handle.exit;
+      expect(yield* fs.exists(path)).toBe(false);
+      expect((yield* fake.calls).some((line) => line.startsWith("login"))).toBe(false);
+    }),
+  ));
+
+test("the host closes every connection under its state but those of the machines it keeps", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { state, ssh, fake } = yield* rig;
+      const other = { label: "other", target: "mk@other" };
+      const kept = (yield* opens(state, ssh)).path;
+      const gone = yield* openConnection(state, other, { ssh, said: () => Effect.void });
+      yield* fs.writeFileString(`${state}/ssh/${"0".repeat(16)}.binding`, "");
+      const closed = yield* closeConnections(state, [vm], ssh);
+      expect(closed).toEqual([gone.path]);
+      expect(yield* fs.exists(gone.path)).toBe(false);
+      expect(yield* fs.exists(kept)).toBe(true);
+      expect(yield* fs.exists(`${state}/ssh/${"0".repeat(16)}.binding`)).toBe(true);
+      expect(
+        (yield* fake.calls).filter(
+          (line) => !line.startsWith("master") && !line.startsWith("mux check"),
+        ),
+      ).toEqual(["mux exit collie"]);
     }),
   ));
 

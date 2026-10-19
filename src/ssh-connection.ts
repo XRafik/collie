@@ -93,7 +93,29 @@ export interface SshConnection {
   readonly check: Effect.Effect<boolean>;
   /** Forwards this computer's `127.0.0.1:<local>` to the Machine's `127.0.0.1:<peer>` for the scope. */
   readonly forward: (local: number, peer: number) => Effect.Effect<void, HostRefused, Scope.Scope>;
+  /** Ends the master, and removes its path where it had already gone. */
+  readonly exit: Effect.Effect<void>;
 }
+
+/** `ssh -S <path> -O <verb> … <destination>`: answered by an open master, or failed. */
+const mux = (
+  ssh: string,
+  path: string,
+  verb: "check" | "forward" | "cancel" | "exit",
+  destination: string,
+  ...forward: ReadonlyArray<string>
+) =>
+  ran([ssh, "-S", path, "-O", verb, ...forward, destination]).pipe(
+    Effect.orElseSucceed(() => ({ code: -1, stderr: `${ssh} could not be run` })),
+  );
+
+const exitAt = (ssh: string, path: string, destination: string) =>
+  mux(ssh, path, "exit", destination).pipe(
+    Effect.andThen(
+      FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.remove(path, { force: true }))),
+    ),
+    Effect.ignore,
+  );
 
 export const sshConnection = Effect.fn("SshConnection.handle")(function* (
   stateDir: string,
@@ -101,19 +123,19 @@ export const sshConnection = Effect.fn("SshConnection.handle")(function* (
   ssh = "ssh",
 ) {
   const path = yield* controlPath(stateDir, machine);
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const mux = (verb: "check" | "forward" | "cancel", ...forward: ReadonlyArray<string>) =>
-    ran([ssh, "-S", path, "-O", verb, ...forward, machine.target]).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Effect.orElseSucceed(() => ({ code: -1, stderr: `${ssh} could not be run` })),
-    );
+  const services = yield* Effect.context<
+    ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+  >();
+  const asked = (verb: "check" | "forward" | "cancel", ...forward: ReadonlyArray<string>) =>
+    mux(ssh, path, verb, machine.target, ...forward).pipe(Effect.provideContext(services));
   const connection: SshConnection = {
     path,
-    check: mux("check").pipe(Effect.map(({ code }) => code === 0)),
+    check: asked("check").pipe(Effect.map(({ code }) => code === 0)),
+    exit: exitAt(ssh, path, machine.label).pipe(Effect.provideContext(services)),
     forward: (local, peer) => {
       const spec = ["-L", `127.0.0.1:${local}:127.0.0.1:${peer}`];
       return Effect.acquireRelease(
-        mux("forward", ...spec).pipe(
+        asked("forward", ...spec).pipe(
           Effect.flatMap(({ code, stderr }) =>
             code === 0
               ? Effect.void
@@ -124,7 +146,7 @@ export const sshConnection = Effect.fn("SshConnection.handle")(function* (
                 ),
           ),
         ),
-        () => mux("cancel", ...spec),
+        () => asked("cancel", ...spec),
       );
     },
   };
@@ -203,3 +225,63 @@ export const openConnection = Effect.fn("SshConnection.open")(function* (
     seen: last === "" ? why : `${why}; ssh said: ${last}`,
   });
 });
+
+/**
+ * Ends every connection held under `stateDir` but those of `kept`, answering the paths it
+ * ended. A path no longer names its Machine, so each is told by a fixed destination.
+ */
+export const closeConnections = Effect.fn("SshConnection.closeOthers")(function* (
+  stateDir: string,
+  kept: ReadonlyArray<SshMachine>,
+  ssh = "ssh",
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const keep = new Set(kept.map((machine) => controlPathOf(stateDir, machine)));
+  const held = (yield* fs
+    .readDirectory(`${stateDir}/ssh`)
+    .pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])))
+    .filter((name) => /^[0-9a-f]{16}$/.test(name))
+    .map((name) => `${stateDir}/ssh/${name}`)
+    .filter((path) => !keep.has(path));
+  yield* Effect.forEach(held, (path) => exitAt(ssh, path, "collie"), { discard: true });
+  return held;
+});
+
+/** The host name ssh's own configuration resolves `target` to, or null where it says none. */
+export const resolvedHost = (target: string, ssh = "ssh") =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const said = yield* spawner.string(
+      ChildProcess.make(ssh, ["-G", target], { stdin: "ignore", stderr: "ignore" }),
+    );
+    return /^hostname (.+)$/m.exec(said)?.[1]?.trim() ?? null;
+  }).pipe(Effect.orElseSucceed(() => null));
+
+/**
+ * Runs `remote` in a session riding the connection at `path`, answering what it printed
+ * and the last thing ssh said.
+ */
+export const ride = (path: string, target: string, remote: string, ssh = "ssh") =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const [command, ...args] = riderArgv(path, target, remote, ssh);
+    const child = yield* spawner.spawn(
+      ChildProcess.make(command!, args, {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        extendEnv: true,
+      }),
+    );
+    const [stdout, stderr] = yield* Effect.all(
+      [
+        child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { stdout, said: stderr.trim().split("\n").at(-1) ?? "" };
+  }).pipe(
+    Effect.scoped,
+    Effect.orElseSucceed(() => ({ stdout: "", said: `${ssh} could not be run` })),
+  );

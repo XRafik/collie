@@ -79,6 +79,8 @@ test(
             yield* second.cli(["machine", "list"], extra);
             yield* first.lists([second]);
             expect((yield* first.cli(["--machine", "second", "board"])).envelope.ok).toBe(true);
+            // Pairing's connection ends, as a laptop's does when it sleeps.
+            yield* first.ssh.drop;
             const [laptop] = yield* peersOf(second.world.state);
             const advertised = Number(second.env.COLLIE_PEER_PORT);
             const url = `wss://127.0.0.1:${advertised}`;

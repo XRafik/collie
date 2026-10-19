@@ -12,7 +12,7 @@ import { exec } from "./support/command";
 import { until } from "./support/host";
 
 test(
-  "an unapproved first SSH pairing times out and closes its login",
+  "a pairing whose invite never answers times out and closes its session",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -31,7 +31,7 @@ read -r approval < '${fifo}'`,
         const clock = yield* TestClock.make();
         const pairing = yield* pairWith(
           { id: "vm", label: "vm", target: "mk@vm", session: "default", enabled: true },
-          { installation: "requester", name: "laptop" },
+          { installation: "requester", name: "laptop", control: `${dir}/control` },
         ).pipe(Effect.result, Effect.provideService(Clock.Clock, clock), Effect.forkChild);
         yield* until(
           () => fs.exists(`${dir}/started`),

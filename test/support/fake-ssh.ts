@@ -20,6 +20,8 @@ export interface FakeSsh {
   readonly hangs: (hanging: boolean) => Effect.Effect<void>;
   /** Ends every master, as a sleep or a dropped network does, logging nothing. */
   readonly drop: Effect.Effect<void>;
+  /** Whether a master ends just before a session rides it. */
+  readonly dropsBeforeRide: (dropping: boolean) => Effect.Effect<void>;
 }
 
 const Bound = Schema.Struct({ port: Schema.Number });
@@ -78,6 +80,11 @@ export const writeFakeSsh = Effect.fn("FakeSsh.write")(function* (
     ),
   );
   yield* Effect.addFinalizer(() => drop);
+  const flag = (name: string) => (on: boolean) =>
+    (on
+      ? fs.writeFileString(`${dir}/${name}`, "")
+      : fs.remove(`${dir}/${name}`, { force: true })
+    ).pipe(Effect.orDie);
   const fake: FakeSsh = {
     log,
     calls: fs.readFileString(log).pipe(
@@ -85,12 +92,9 @@ export const writeFakeSsh = Effect.fn("FakeSsh.write")(function* (
       Effect.orDie,
     ),
     maps: (ports) => fs.writeFileString(`${dir}/ports.json`, encode(ports)).pipe(Effect.orDie),
-    hangs: (hanging) =>
-      (hanging
-        ? fs.writeFileString(`${dir}/master-hangs`, "")
-        : fs.remove(`${dir}/master-hangs`, { force: true })
-      ).pipe(Effect.orDie),
+    hangs: flag("master-hangs"),
     drop,
+    dropsBeforeRide: flag("drops-before-ride"),
   };
   return fake;
 });

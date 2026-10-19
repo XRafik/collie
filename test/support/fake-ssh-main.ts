@@ -150,6 +150,7 @@ const main = async (argv: ReadonlyArray<string>) => {
     return process.exit(255);
   }
 
+  if (path !== undefined && existsSync(`${dir}/drops-before-ride`)) await ask(path, { op: "drop" });
   const rides =
     path !== undefined && options.get("ControlMaster") === "no"
       ? (await ask(path, { op: "check" })) === "ok"
