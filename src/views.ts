@@ -299,7 +299,7 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
 // ponytail: never evicted; a few bytes per ticket file ever seen.
 const repoLines = new Map<string, { readonly stamp: string; readonly line: string }>();
 
-/** Each ticket's `**Repo:**` line, read in full only when the ticket has changed. */
+/** Each ticket's `**Repo:**` line, streamed line by line and only when the ticket has changed. */
 const ticketRepoLines = Effect.fn("Views.ticketRepoLines")(function* (issues: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -312,8 +312,14 @@ const ticketRepoLines = Effect.fn("Views.ticketRepoLines")(function* (issues: st
     const stamp = yield* stampOf(at);
     let kept = repoLines.get(at);
     if (kept?.stamp !== stamp) {
-      const text = yield* fs.readFileString(at).pipe(Effect.orElseSucceed(() => ""));
-      kept = { stamp, line: REPO_LINE.exec(text)?.[0] ?? "" };
+      const line = yield* fs.stream(at).pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.filter((one) => REPO_LINE.test(one)),
+        Stream.runHead,
+        Effect.orElseSucceed(() => Option.none<string>()),
+      );
+      kept = { stamp, line: Option.getOrElse(line, () => "") };
       repoLines.set(at, kept);
     }
     tickets.push({ file, text: kept.line });
