@@ -1187,10 +1187,7 @@ export const desktopSweeper = (root: string, state: string, installedPath: strin
   };
 };
 
-/**
- * Check processes no host is collecting (ADR-draft-a-check-ends-with-the-host-that-runs-it
- * D7): each ended, SIGKILL included, and one this host is collecting kept.
- */
+/** Check processes no host is collecting (ADR-draft-a-check-ends-with-the-host-that-runs-it D7). */
 export const checksSweeper = (checks: CheckProcessesApi): Sweeper => {
   const kind = "check";
   const collecting = "this host is collecting it";
