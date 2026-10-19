@@ -880,7 +880,15 @@ test(
             const fiber = yield* Effect.forkChild(started("r1"));
             yield* pastTheBudget;
             // Past the confirmation of its delivery, which would start it again itself.
-            yield* TestClock.withLive(Effect.sleep("500 millis"));
+            yield* until(
+              steps("r1").pipe(
+                Effect.provideService(Path.Path, yield* Path.Path),
+                Effect.map(
+                  (found) =>
+                    found.length > 0 && found.every((one) => one.delivery.state === "acknowledged"),
+                ),
+              ),
+            );
             const pane = (yield* herdr.agentList()).find(
               (one) => one.name === agentFor("r1"),
             )?.paneId;
