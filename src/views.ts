@@ -269,19 +269,25 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
   const dir = yield* planDirOf(run);
   if (dir === null) return finished;
   const issues = path.join(dir, "issues");
-  let tickets: Array<{ file: string; text: string }> | undefined;
+  const isPlan = (other: string | null | undefined) =>
+    other != null && path.resolve(other) === path.resolve(dir);
+  let tickets: Array<{ file: string; text: string | null }> | undefined;
   for (const one of runs) {
     if (one.state !== "succeeded") continue;
     const mayShare =
-      path.join(one.dir, PLAN_DIR) === dir || workSourceOf(one.settled)?.value === dir;
-    if (!mayShare || (yield* planDirOf(one).pipe(Effect.orElseSucceed(() => null))) !== dir)
+      isPlan(path.join(one.dir, PLAN_DIR)) || isPlan(workSourceOf(one.settled)?.value);
+    if (!mayShare || !isPlan(yield* planDirOf(one).pipe(Effect.orElseSucceed(() => null))))
       continue;
     for (const { checkpoint } of yield* readCheckpoints(one.dir))
       if (checkpoint.status === "done") finished.add(checkpoint.ticket);
     const launches = yield* readLaunches(stateDir, one.id);
     if (launches.length === 0) continue;
     tickets ??= yield* ticketRepoLines(issues);
-    const mine = orderedTickets(tickets, one.repo ?? undefined).map((t) => t.file);
+    const known = one.repo ? tickets.filter((t) => t.text !== null) : tickets;
+    const mine = orderedTickets(
+      known.map((t) => ({ file: t.file, text: t.text ?? "" })),
+      one.repo ?? undefined,
+    ).map((t) => t.file);
     for (const launch of launches) {
       const output = yield* writtenAt(launch.output);
       if (output === undefined) continue;
@@ -297,32 +303,37 @@ const finishedTickets = Effect.fn("Views.finishedTickets")(function* (
 });
 
 // ponytail: never evicted; a few bytes per ticket file ever seen.
-const repoLines = new Map<string, { readonly stamp: string; readonly line: string }>();
+const repoLines = new Map<string, { readonly stamp: string; readonly line: string | null }>();
 
 /** How far into a ticket its `**Repo:**` line is looked for: past the panel's cap, but bounded. */
 const REPO_SCAN_CAP = 1024 * 1024;
 
-/** Each ticket's `**Repo:**` line, read only when the ticket has changed. */
+/**
+ * A ticket's `**Repo:**` match, or null where the part of the file not read could change it:
+ * an empty value can still run on to a later line.
+ */
+function repoLineIn(text: string, truncated: boolean): string | null {
+  const whole = truncated ? text.slice(0, text.lastIndexOf("\n") + 1) : text;
+  const found = REPO_LINE.exec(whole);
+  if (!truncated) return found?.[0] ?? "";
+  return found && found[1] !== "" ? found[0] : null;
+}
+
+/** Each ticket's `**Repo:**` match, null where it is unknown, read only when the ticket has changed. */
 const ticketRepoLines = Effect.fn("Views.ticketRepoLines")(function* (issues: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const files = (yield* fs.readDirectory(issues).pipe(Effect.orElseSucceed(() => [])))
     .filter((name) => name.endsWith(".md"))
     .sort();
-  const tickets: Array<{ file: string; text: string }> = [];
+  const tickets: Array<{ file: string; text: string | null }> = [];
   for (const file of files) {
     const at = path.join(issues, file);
     const stamp = yield* stampOf(at);
     let kept = repoLines.get(at);
     if (kept?.stamp !== stamp) {
-      const line = yield* fs.stream(at, { bytesToRead: REPO_SCAN_CAP }).pipe(
-        Stream.decodeText(),
-        Stream.splitLines,
-        Stream.filter((one) => REPO_LINE.test(one)),
-        Stream.runHead,
-        Effect.orElseSucceed(() => Option.none<string>()),
-      );
-      kept = { stamp, line: Option.getOrElse(line, () => "") };
+      const read = yield* capped(at, REPO_SCAN_CAP);
+      kept = { stamp, line: read === null ? "" : repoLineIn(read.text, read.truncated) };
       repoLines.set(at, kept);
     }
     tickets.push({ file, text: kept.line });

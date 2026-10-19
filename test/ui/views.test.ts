@@ -541,7 +541,6 @@ effectTest(
   function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    // A Run that wrote its own plan and built it in one pass.
     const whole = yield* seed({ workflow: "implement" });
     yield* planned(path.join(whole.dir, "plan"), {
       "01-one.md": "# One\n\nProse.\n",
@@ -560,14 +559,12 @@ effectTest(
       { file: "03-later.md", done: false },
     ]);
 
-    // A planner wrote its plan and built none of it.
     const planner = yield* seed({ workflow: "plan" });
     yield* planned(path.join(planner.dir, "plan"), { "01-one.md": "# One\n\nProse.\n" });
     expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
       { file: "01-one.md", done: false },
     ]);
 
-    // Stopped part way, after its build step's Output was in.
     const stopped = yield* seed({ workflow: "implement", state: "stopped" });
     yield* planned(path.join(stopped.dir, "plan"), { "01-one.md": "# One\n\nProse.\n" });
     yield* stepped(stopped, "build");
@@ -619,12 +616,14 @@ effectTest("a long ticket's repository is read past what the panel shows", funct
   ]);
 });
 
-effectTest("a ticket's repository is looked for only in its first MiB", function* () {
+effectTest("a root build leaves a ticket whose repository it cannot tell", function* () {
   const path = yield* Path.Path;
   const planner = yield* seed({ workflow: "plan" });
   const dir = path.join(planner.dir, "plan");
   yield* planned(dir, {
-    "01-web.md": `# Web\n\n${"x".repeat(1024 * 1024)}\n**Repo:** web\n`,
+    "01-root.md": "# Root\n\n**Repo:** .\n",
+    "02-wrapped.md": "# Wrapped\n\n**Repo:**\nweb\n",
+    "03-far.md": `# Far\n\n${"x".repeat(1024 * 1024)}\n**Repo:** web\n`,
   });
   const root = yield* seed({
     workflow: "implement",
@@ -634,7 +633,28 @@ effectTest("a ticket's repository is looked for only in its first MiB", function
   yield* stepped(root, "build");
 
   expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
-    { file: "01-web.md", done: true },
+    { file: "01-root.md", done: true },
+    { file: "02-wrapped.md", done: false },
+    { file: "03-far.md", done: false },
+  ]);
+});
+
+effectTest("a plan named with a trailing slash is the same plan", function* () {
+  const path = yield* Path.Path;
+  const planner = yield* seed({ workflow: "plan" });
+  const dir = path.join(planner.dir, "plan");
+  yield* planned(dir, { "01-one.md": "# One\n\nProse.\n" });
+  const builder = yield* seed({
+    workflow: "implement",
+    settled: {
+      inputs: { plan: `${dir}/`, plan_kind: "plan-dir" },
+      strategies: { plan: "work-source" },
+    },
+  });
+  yield* stepped(builder, "build");
+
+  expect((yield* hostDetailOf(planner))!.plan!.tickets).toMatchObject([
+    { file: "01-one.md", done: true },
   ]);
 });
 
