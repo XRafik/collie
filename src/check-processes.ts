@@ -266,7 +266,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   let stopping = false;
   let killing = false;
   // Their processes carry their markers before their record is read.
-  const spawning = new Set<string>();
+  const spawning = new Map<string, { readonly check: CheckOf; ended: boolean }>();
   // From before its spawn, so no check of this host is ever taken for a leftover.
   const ours = new Set<string>();
   const host = { pid: process.pid, started: (yield* startedOf(process.pid)) ?? "" };
@@ -358,7 +358,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       for (const id of ids)
         yield* signal({ group: null, marked: marked.get(id) ?? [] }, name, kill);
     });
-  const unended = () => [...collecting.keys(), ...spawning];
+  const unended = () => [...collecting.keys(), ...spawning.keys()];
 
   /** Ends the Run's leftovers, and again while one survives that (D6). */
   const clearOf = (run: string) =>
@@ -386,7 +386,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       return yield* Effect.uninterruptible(
         Effect.gen(function* () {
           if (stopping) return endedCheck;
-          spawning.add(id);
+          spawning.set(id, { check, ended: false });
           const { handle, record, entry } = yield* Effect.gen(function* () {
             const handle = yield* spawnCheck(command, {
               [CHECK_INSTALLATION]: installation,
@@ -436,7 +436,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   const endAll = Effect.gen(function* () {
     stopping = true;
     const ended: CheckOf[] = [];
-    for (const entry of collecting.values()) {
+    for (const entry of [...collecting.values(), ...spawning.values()]) {
       if (entry.ended) continue;
       entry.ended = true;
       ended.push(entry.check);
@@ -457,7 +457,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
         if (isGone(proved)) yield* forget(entry.record.id);
         else yield* signal(proved, "SIGKILL", kill);
       }
-      for (const id of spawning)
+      for (const id of spawning.keys())
         yield* signal({ group: null, marked: marked.get(id) ?? [] }, "SIGKILL", kill);
       if ((collecting.size === 0 && spawning.size === 0) || waited >= KILL_WAIT) return;
       yield* Effect.sleep("100 millis");

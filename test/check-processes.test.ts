@@ -382,6 +382,31 @@ test.skipIf(process.platform !== "linux")(
 );
 
 test.skipIf(process.platform !== "linux")(
+  "a check whose spawn is under way as its host begins to end is named once among those ended",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { gate, gated } = yield* gatedStat;
+        const { notes, checks } = yield* worldWith({}, gated);
+        gate.armed = true;
+        yield* runHeld(checks, notes);
+        // Before the check's own finalizer, which waits for it.
+        yield* Effect.addFinalizer(() => Deferred.succeed(gate.release, undefined));
+        yield* Deferred.await(gate.reached);
+
+        expect(yield* checks.endAll).toEqual([check]);
+        yield* Deferred.succeed(gate.release, undefined);
+        yield* until(
+          () => checks.collecting,
+          (ids) => ids.length === 1,
+        );
+        expect(yield* checks.endAll).toEqual([]);
+      }),
+    ),
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux")(
   "a check whose spawn has not landed when its host's grace is up is ended by then",
   () =>
     runEffect(
