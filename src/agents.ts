@@ -744,23 +744,23 @@ export const agentWork = <
       );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
     const collecting = (on: Launched, from: AgentAsk, waiting?: string) => {
-      // Each budget spent idle, one that has gone is started again, as a resume once did;
-      // collected throughout, so a verify ending while it is started is still told to it.
-      const late = agents.collectedDuring(
+      // Each budget spent idle, one that has gone is started again, as a resume once did.
+      const late = Effect.gen(function* () {
+        for (;;) {
+          yield* reviving(from);
+          const text = yield* watching(agents.collect(on, null, questions));
+          if (text !== null) return text;
+        }
+      });
+      // Collected throughout, so a verify ending between attempts is still told to it.
+      const output = agents.collectedDuring(
         on,
-        Effect.gen(function* () {
-          for (;;) {
-            yield* reviving(from);
-            const text = yield* watching(agents.collect(on, null, questions));
-            if (text !== null) return text;
-          }
-        }),
-      );
-      const output = watching(agents.collect(on, null, questions)).pipe(
-        Effect.flatMap((text) =>
-          text !== null
-            ? Effect.succeed(text)
-            : host.parked(runId, waiting ?? pastBudget(on)).pipe(Effect.andThen(late)),
+        watching(agents.collect(on, null, questions)).pipe(
+          Effect.flatMap((text) =>
+            text !== null
+              ? Effect.succeed(text)
+              : host.parked(runId, waiting ?? pastBudget(on)).pipe(Effect.andThen(late)),
+          ),
         ),
       );
       return stoppable(

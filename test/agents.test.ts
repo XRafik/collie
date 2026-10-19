@@ -1014,6 +1014,48 @@ test(
 );
 
 test(
+  "an agent is still collected while its Run is parked past its budget",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null]);
+        let marked: boolean | undefined;
+        const markedWhenParked = Layer.effect(Host)(
+          Effect.gen(function* () {
+            const host = yield* Host;
+            const collecting = yield* Collecting;
+            return Host.of({
+              ...host,
+              parked: (runId, why) =>
+                Effect.gen(function* () {
+                  if (why?.includes("has written nothing") && marked === undefined)
+                    marked = yield* collecting.has(runId, agentFor(runId));
+                  yield* host.parked(runId, why);
+                }),
+            });
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const fiber = yield* Effect.forkChild(started("r1"));
+          yield* pastTheBudget;
+          yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"late"}`);
+          yield* Fiber.join(fiber);
+        }).pipe(
+          Effect.provide(body),
+          Effect.provide(markedWhenParked),
+          Effect.provide(agentsLayer({ ...hostOf(), collectMs: 400 })),
+          Effect.provide(foundationLayer({ dir })),
+          Effect.scoped,
+          Effect.orDie,
+        );
+        expect(marked).toBe(true);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a stop while the Run is collected past its budget ends the wait",
   () =>
     runEffect(
