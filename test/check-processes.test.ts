@@ -382,6 +382,30 @@ test.skipIf(process.platform !== "linux")(
 );
 
 test.skipIf(process.platform !== "linux")(
+  "a check whose spawn has not landed when its host's grace is up is ended by then",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { gate, gated } = yield* gatedStat;
+        const { notes, checks } = yield* worldWith({}, gated);
+        gate.armed = true;
+        yield* runHeld(checks, notes);
+        // Before the check's own finalizer, which waits for it.
+        yield* Effect.addFinalizer(() => Deferred.succeed(gate.release, undefined));
+        yield* Deferred.await(gate.reached);
+        const ones = yield* startedIn(notes);
+
+        yield* endAllWithin(checks, Duration.millis(500), () => Effect.void);
+        const gone = yield* until(() => noneRunning(ones), Boolean).pipe(
+          Effect.timeoutOption("2 seconds"),
+        );
+        expect(Option.isSome(gone)).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux")(
   "a slow look at /proc while a host's checks get SIGTERM does not hold back their SIGKILL",
   () =>
     runEffect(
