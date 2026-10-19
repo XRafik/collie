@@ -419,6 +419,44 @@ test("a Schedule add names its Machine, and an unnamed or conflicting target cha
     }),
   ));
 
+test("a cleanup goes to the Machine it names, and naming none of several changes nothing", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      for (const kind of ["cleanup", "home_cleanup"]) {
+        asked.length = 0;
+        const proposing = (action: JsonObject) =>
+          call(asked, "collie_propose", {
+            interpretation: "clean up the vm",
+            actions: [action],
+          });
+        expect(yield* proposing({ kind, machine: "vm-mk" })).toContain("Carried out.");
+        expect(asked.map(({ machine, op }) => `${machine} ${op}`)).toEqual([
+          "vm-mk declare",
+          "vm-mk propose",
+        ]);
+        expect(asked.at(-1)?.payload).toMatchObject({ actions: [{ kind }] });
+        asked.length = 0;
+        yield* call(asked, "collie_do", {
+          actions: [{ kind, machine: "vm-mk" }],
+        });
+        expect(asked.at(-1)).toMatchObject({
+          machine: "vm-mk",
+          op: "act",
+          payload: { actions: [{ kind }] },
+        });
+        asked.length = 0;
+        const unnamed = 'Name the Machine this is for in its "machine" field. Nothing was done.';
+        expect(yield* proposing({ kind })).toBe(unnamed);
+        expect(yield* call(asked, "collie_do", { actions: [{ kind }] })).toBe(
+          `${kind}: failed — ${unnamed}`,
+        );
+        expect(yield* proposing({ kind, machine: "unknown" })).toContain('No Machine "unknown"');
+        expect(asked).toEqual([]);
+      }
+    }),
+  ));
+
 test("a Machine whose Schedules cannot be read is named, with no empty list claimed", () =>
   Effect.runPromise(
     Effect.gen(function* () {

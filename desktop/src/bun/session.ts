@@ -52,6 +52,8 @@ and schedule_remove name machine and name, or the qualified <machine>:<name>. An
 no Machine named is refused when several are reachable. A saved start has no here or
 attachments. Name each Schedule as <machine>:<name> when reporting what happened.
 
+A cleanup or home_cleanup, through collie_propose, names the Machine it sweeps in machine.
+
 A message that starts "${DESKTOP_SAID}" is Desktop handing you News, not the human
 speaking: tell them briefly what in it needs them, and do nothing they have not asked for.`;
 

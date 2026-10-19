@@ -138,8 +138,11 @@ export const ActionSchema = Schema.Union([
     layer: Schema.optionalKey(Schema.Literals(["user", "project"])),
     mode: Schema.optionalKey(Schema.Literals(["extends", "copy"])),
   }),
-  Schema.Struct({ kind: Schema.Literal("home_cleanup") }),
-  Schema.Struct({ kind: Schema.Literal("cleanup") }),
+  Schema.Struct({
+    kind: Schema.Literal("home_cleanup"),
+    machine: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({ kind: Schema.Literal("cleanup"), machine: Schema.optionalKey(Schema.String) }),
   Schema.Struct({
     kind: Schema.Literal("schedule_add"),
     machine: Schema.optionalKey(Schema.String),
