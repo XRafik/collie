@@ -1,6 +1,3 @@
-// A card's open questions, answered from a dialog: each answer shows as in flight until the
-// host's board no longer has its question open, and the dialog walks the questions in turn.
-
 import { expect, test } from "bun:test";
 import type { Question } from "../src/board-model";
 import {
@@ -48,6 +45,10 @@ const sending = (state: Answering, asked: Question, shown: string) => {
   const answer = sent(shown);
   return { state: answerSent(state, keyOf(asked), answer), answer };
 };
+/** The board as a card sees it: what it has open on Machine "vm". */
+const shownBy = (card: string, state: Answering, open: ReadonlyArray<Question>) =>
+  answersSettled(state, card, "vm", open);
+
 const now = (open: ReadonlyArray<Question>, answering: Answering) => ({
   installation: "vm",
   open,
@@ -97,13 +98,23 @@ test("a try of an answer a newer one to the same question replaced changes nothi
 });
 
 test("an answer whose question left the board is dropped, and a late try of it changes nothing", () => {
-  const { state, answer } = sending(nothingAnswered, A, "yes");
-  const settled = answersSettled(state, "vm", ["r-1"], [B]);
+  const { state, answer } = sending(shownBy("card", nothingAnswered, [A, B]), A, "yes");
+  const settled = shownBy("card", state, [B]);
   expect(settled.answers.has(keyOf(A))).toBe(false);
   expect(answerTried(settled, keyOf(A), answer, null)).toEqual(settled);
-  // Another Machine's, or another card's Run's, answer is not this card's to drop.
-  expect(answersSettled(state, "other", ["r-1"], []).answers.has(keyOf(A))).toBe(true);
-  expect(answersSettled(state, "vm", ["r-9"], []).answers.has(keyOf(A))).toBe(true);
+  // Another card's question is not this card's to drop.
+  expect(shownBy("other", state, []).answers.has(keyOf(A))).toBe(true);
+});
+
+test("an answer is dropped when its question leaves the card, whichever Run asked it", () => {
+  // An older retry's question: the card's board lists the question, and later neither it nor its Run.
+  const retried = question("r", "r-old");
+  const typed = draftTyped(shownBy("card", nothingAnswered, [retried]), keyOf(retried), "half");
+  const { state, answer } = sending(typed, retried, "yes");
+  const settled = shownBy("card", state, []);
+  expect(settled.answers.has(keyOf(retried))).toBe(false);
+  expect(draftOf(settled, keyOf(retried))).toBe("");
+  expect(answerTried(settled, keyOf(retried), answer, true)).toEqual(settled);
 });
 
 test("the card counts only questions with no answer in flight, and shows the first of those", () => {
@@ -212,13 +223,13 @@ test("an arrival leaves the dialog where it is while that question can still be 
 
 test("a question answered elsewhere stays, as no longer open; one this dialog answered still reads answered", () => {
   const confirmed = (() => {
-    const a = sending(nothingAnswered, A, "yes");
+    const a = sending(shownBy("card", nothingAnswered, [A, B]), A, "yes");
     return answerTried(a.state, keyOf(A), a.answer, true);
   })();
   let sitting = sittingStarts(now([A, B], nothingAnswered));
   sitting = sittingAnswered(sitting, now([A, B], confirmed));
   // The board drops both: A because its answer landed, B because it was answered elsewhere.
-  const settled = answersSettled(confirmed, "vm", ["r-1"], []);
+  const settled = shownBy("card", confirmed, []);
   sitting = sittingSees(sitting, now([], settled));
   const shown = (k: number) =>
     sittingView(sittingMoved(sitting, k - 1 - sitting.cursor), now([], settled));
@@ -270,7 +281,7 @@ test("the sitting is done only once nothing is unanswered and nothing is still s
 });
 
 test("closed and reopened while an answer is sending, the dialog waits for it, and closes once it is confirmed", () => {
-  const a = sending(nothingAnswered, A, "yes");
+  const a = sending(shownBy("card", nothingAnswered, [A, B]), A, "yes");
   // Reopened: A is still sending.
   let sitting = sittingStarts(now([A, B], a.state));
   expect(sittingView(sitting, now([A, B], a.state))).toMatchObject({ k: 2, question: B });
@@ -290,7 +301,7 @@ test("closed and reopened while an answer is sending, the dialog waits for it, a
     sittingView(sittingSees(sitting, now([A, B], aConfirmed)), now([A, B], aConfirmed)).done,
   ).toBe(true);
   // A leaving the board does too.
-  const aGone = answersSettled(bConfirmed, "vm", ["r-1"], [B]);
+  const aGone = shownBy("card", bConfirmed, [B]);
   expect(sittingView(sittingSees(sitting, now([B], aGone)), now([B], aGone)).done).toBe(true);
 });
 
@@ -315,15 +326,16 @@ test("closed and reopened while an answer is sending, its failure brings the reo
 
 test("a draft starts empty per question, is kept through a failure, and is dropped once confirmed or gone", () => {
   expect(draftOf(nothingAnswered, keyOf(A))).toBe("");
-  const typed = draftTyped(draftTyped(nothingAnswered, keyOf(A), "half"), keyOf(B), "other");
+  const shown = shownBy("card", nothingAnswered, [A, B]);
+  const typed = draftTyped(draftTyped(shown, keyOf(A), "half"), keyOf(B), "other");
   expect(draftOf(typed, keyOf(A))).toBe("half");
   const a = sending(typed, A, "half");
   expect(draftOf(answerTried(a.state, keyOf(A), a.answer, false), keyOf(A))).toBe("half");
   const confirmed = answerTried(a.state, keyOf(A), a.answer, true);
   expect(draftOf(confirmed, keyOf(A))).toBe("");
   expect(draftOf(confirmed, keyOf(B))).toBe("other");
-  expect(draftOf(answersSettled(typed, "vm", ["r-1"], [A]), keyOf(B))).toBe("");
-  expect(draftOf(answersSettled(typed, "vm", ["r-1"], [A]), keyOf(A))).toBe("half");
+  expect(draftOf(shownBy("card", typed, [A]), keyOf(B))).toBe("");
+  expect(draftOf(shownBy("card", typed, [A]), keyOf(A))).toBe("half");
 });
 
 test("a sitting's question is the one the board shows now, and N never shrinks", () => {

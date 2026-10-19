@@ -1,5 +1,4 @@
-// Answers in flight and typed answers, held by Desktop for as long as it runs and sent to no
-// host but as the answer itself, so every card and dialog reads the same ones.
+// Answers in flight and drafts, shared by every card and dialog for as long as Desktop runs.
 
 import { shallowRef } from "vue";
 import type { Question } from "../../../../src/board-model";
@@ -37,13 +36,6 @@ export const useAnswering = () => ({
     );
   },
   type: (key: string, text: string) => (state.value = draftTyped(state.value, key, text)),
-  settle: (installation: string, runs: ReadonlyArray<string>, open: ReadonlyArray<Question>) => {
-    const settled = answersSettled(state.value, installation, runs, open);
-    if (
-      settled.answers.size !== state.value.answers.size ||
-      settled.latest.size !== state.value.latest.size ||
-      settled.drafts.size !== state.value.drafts.size
-    )
-      state.value = settled;
-  },
+  settle: (card: string, installation: string, open: ReadonlyArray<Question>) =>
+    (state.value = answersSettled(state.value, card, installation, open)),
 });

@@ -1,6 +1,4 @@
-// A card's open questions and the answers to them in flight, as the card and its Answer
-// dialog show them, until the host's board no longer has a question open.
-// No Bun-only import: the view bundles this.
+// A card's questions and answers in flight; no Bun-only import, as the view bundles this.
 
 import type { Decision, Question, TaskView } from "../../../src/board-model";
 
@@ -20,12 +18,15 @@ export interface Answering {
   /** The newest send per question. */
   readonly latest: ReadonlyMap<string, number>;
   readonly drafts: ReadonlyMap<string, string>;
+  /** The card that last showed each question open, which drops it once it leaves. */
+  readonly shownOn: ReadonlyMap<string, string>;
 }
 
 export const nothingAnswered: Answering = {
   answers: new Map(),
   latest: new Map(),
   drafts: new Map(),
+  shownOn: new Map(),
 };
 
 export const answerKey = (installation: string, runId: string, questionId: string) =>
@@ -72,22 +73,29 @@ export const draftTyped = (state: Answering, key: string, text: string): Answeri
   drafts: withOne(state.drafts, key, text),
 });
 
-/** Drops what is held for `runs`' questions on that Machine that its board no longer has open. */
+/** Notes what `card` shows open, and drops what is held for its questions that left it. */
 export const answersSettled = (
   state: Answering,
+  card: string,
   installation: string,
-  runs: ReadonlyArray<string>,
   open: ReadonlyArray<Question>,
 ): Answering => {
   const kept = new Set(open.map((asked) => answerKey(installation, asked.run, asked.id)));
-  const ours = runs.map((run) => answerKey(installation, run, ""));
-  const gone = (key: string) => !kept.has(key) && ours.some((run) => key.startsWith(run));
+  const gone = (key: string) => !kept.has(key) && state.shownOn.get(key) === card;
+  const stays = [...state.shownOn].filter(([key, on]) => kept.has(key) || on !== card);
+  const shownOn = new Map([...stays, ...[...kept].map((key) => [key, card] as const)]);
+  if (
+    shownOn.size === state.shownOn.size &&
+    [...shownOn].every(([key, on]) => state.shownOn.get(key) === on)
+  )
+    return state;
   const settle = <A>(map: ReadonlyMap<string, A>) =>
     new Map([...map].filter(([key]) => !gone(key)));
   return {
     answers: settle(state.answers),
     latest: settle(state.latest),
     drafts: settle(state.drafts),
+    shownOn,
   };
 };
 
