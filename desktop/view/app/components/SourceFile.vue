@@ -22,11 +22,11 @@ const shown = ref<HTMLElement | null>(null);
 const whole = ref<HTMLElement | null>(null);
 
 watch(
-  () => [props.path, props.line] as const,
-  () => {
-    if (props.reveal) whole.value?.scrollIntoView({ block: "start" });
+  [whole, () => props.path, () => props.line],
+  ([section]) => {
+    if (props.reveal) section?.scrollIntoView({ block: "start" });
   },
-  { immediate: true, flush: "post" },
+  { flush: "post" },
 );
 
 watch(
