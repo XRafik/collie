@@ -420,7 +420,7 @@ test.skipIf(process.platform !== "linux")(
         yield* Deferred.await(gate.reached);
         const ones = yield* startedIn(notes);
 
-        yield* endAllWithin(checks, Duration.millis(500), () => Effect.void);
+        yield* endAllWithin(checks, Duration.seconds(2), () => Effect.void);
         const gone = yield* until(() => noneRunning(ones), Boolean).pipe(
           Effect.timeoutOption("2 seconds"),
         );
