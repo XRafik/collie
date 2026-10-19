@@ -726,11 +726,14 @@ export const agentWork = <
       );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
     const collecting = (on: Launched, from: AgentAsk, waiting?: string) => {
-      const late = watching(agents.collect(on, null, questions, Number.POSITIVE_INFINITY)).pipe(
-        Effect.flatMap((text) =>
-          text === null ? Effect.die("a collect with no budget gave up") : Effect.succeed(text),
-        ),
-      );
+      // Each budget spent idle, one that has gone is started again, as a resume once did.
+      const late = Effect.gen(function* () {
+        for (;;) {
+          yield* reviving(from);
+          const text = yield* watching(agents.collect(on, null, questions));
+          if (text !== null) return text;
+        }
+      });
       const output = watching(agents.collect(on, null, questions)).pipe(
         Effect.flatMap((text) =>
           text !== null

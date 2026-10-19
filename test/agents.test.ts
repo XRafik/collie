@@ -864,6 +864,42 @@ test(
 );
 
 test(
+  "an agent that goes while it is collected past its budget is started again, and its Output read",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null]);
+        const herdr = new FakeHerdr(rig.pluginEnv());
+        const starts = rig.cmds().pipe(
+          Effect.orDie,
+          Effect.map((cmds) => cmds.filter((cmd) => cmd === "agent start").length),
+        );
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* pastTheBudget;
+            // Past the confirmation of its delivery, which would start it again itself.
+            yield* TestClock.withLive(Effect.sleep("500 millis"));
+            const pane = (yield* herdr.agentList()).find(
+              (one) => one.name === agentFor("r1"),
+            )?.paneId;
+            yield* herdr.paneClose(pane ?? "");
+            yield* until(starts.pipe(Effect.map((count) => count === 2)));
+            yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"revived"}`);
+            return yield* Fiber.join(fiber);
+          }),
+          { herdr, collectMs: 400 },
+        );
+        expect(result._tag === "Success" && result.success.note).toBe("revived");
+        expect(yield* fs.exists(controlPath(dir, PARKED, "r1"))).toBe(false);
+        expect(yield* starts).toBe(2);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a resume sent while the Run is collected past its budget starts no second delivery or collection",
   () =>
     runEffect(
