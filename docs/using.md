@@ -1580,7 +1580,11 @@ with nothing to say is left out.
 
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the
 details carry, and lists the tickets, each expanding
-in place, read from the host when first opened. A ticket is ticked when every checkbox in
+in place, read from the host when first opened. Where the spec has two headings or more, a
+contents list above it names those of levels 1 to 3, and pressing one scrolls its heading to
+the top; it follows the spec as the agent rewrites it. Above the tickets, "N of M tickets
+done" says how far the plan is, beside **Expand all**, which opens every ticket, and
+**Collapse all**, which closes them. A ticket is ticked when every checkbox in
 it is checked, or when a succeeded Run built from that plan finished it: its slice landed, a
 step was named after it, or a whole-plan build of its repository finished after it was written. A failed or stopped
 Run ticks nothing. A link from one plan file to another opens

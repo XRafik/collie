@@ -91,6 +91,7 @@ knows the delivery cap or the paste budget.
 | `src/shared/record-terminal.ts`    | `recipients`: who may get them                                                                                        |
 | `src/shared/diff-view.ts`          | The Diff tab's tree in drawn order, the folders on a path, and the file being read (`test/desktop-diff-view.test.ts`) |
 | `src/shared/record.ts`             | A record's tabs, the one shown, and what its Summary says (`test/desktop-record.test.ts`)                             |
+| `src/shared/plan-view.ts`          | The Plan tab's "N of M tickets done" and the spec's headings for its contents (`test/desktop-plan-view.test.ts`)      |
 | `view/app/components/DiffFile.vue` | Each file, drawn with `@pierre/diffs`' `FileDiff`                                                                     |
 
 ## Scale and Zoom
