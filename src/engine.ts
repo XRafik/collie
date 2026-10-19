@@ -167,7 +167,7 @@ import { Herdr, herdrFailureReason } from "./herdr";
 import type { PluginEnv } from "./env";
 import { StartedSchema, type RunAuthority, type Started } from "./automode";
 import { WorktreeRecordSchema, type WorktreeRecord } from "./run";
-import { listTasks, newTask, taskOfWorkspace, writeTask } from "./task";
+import { listTasks, newTask, readTask, taskOfWorkspace, writeTask } from "./task";
 import { nowIso, epochMs } from "./time";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
 import type { BunServices } from "@effect/platform-bun/BunServices";
@@ -3246,10 +3246,35 @@ export const hostLayer = (options: {
             ),
           ),
       });
+      let herdSocket = options.herd?.socketPath ?? null;
+      let locatedAt = Number.NEGATIVE_INFINITY;
+      /** The host's Herd: its own socket, else herdr's, asked again each minute until it answers. */
+      const hostHerd = Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          herdSocket === null &&
+          options.herd?.locate !== undefined &&
+          now - locatedAt >= 60_000
+        ) {
+          locatedAt = now;
+          herdSocket = yield* options.herd.locate.pipe(Effect.provideContext(bun));
+        }
+        return yield* herdOf(herdSocket).pipe(
+          Effect.provideContext(bun),
+          Effect.orElseSucceed(() => null),
+        );
+      });
       /** A Run as a card sees it: where it works, and where its records are. */
       const watched = (runId: string): Effect.Effect<Watched> =>
         Effect.gen(function* () {
           const row = yield* store.run(runId);
+          const task =
+            row?.task == null
+              ? null
+              : yield* readTask(dir, row.task).pipe(
+                  Effect.provideContext(bun),
+                  Effect.orElseSucceed(() => null),
+                );
           const placed =
             row === null
               ? null
@@ -3273,7 +3298,7 @@ export const hostLayer = (options: {
             held: yield* set(HOLD, runId),
             family: row === null ? [runId] : familyOf(yield* store.runs, row),
             dirOf: (id: string) => runDir(dir, id),
-            socketPath: options.herd?.socketPath ?? null,
+            herd: task?.herd ?? (yield* hostHerd),
           };
         });
       /** A card that is something a human could go and try is worth telling them about. */
@@ -3286,9 +3311,8 @@ export const hostLayer = (options: {
       /** What judging a Run's drift takes, or null where there is no Herd to charge it to. */
       const judging = (at: Watched) =>
         Effect.gen(function* () {
-          if (options.herd === undefined) return null;
-          const built = yield* evaluationDeps(options.herd);
-          if (built.herdKey === null) return null;
+          if (options.herd === undefined || at.herd === null) return null;
+          const built = yield* evaluationDeps({ ...options.herd, herdKey: at.herd });
           return {
             evaluator: built.evaluator,
             budgetFile: yield* budgetPath(dir, built.herdKey),
@@ -3425,6 +3449,8 @@ export type Toast = (title: string, body: string, sound: Sound) => Effect.Effect
 export interface Herd {
   readonly socketPath: string | null;
   readonly pluginRoot: string;
+  /** Where herdr's server listens, asked while `socketPath` is null. */
+  readonly locate?: Effect.Effect<string | null, never, BunServices>;
 }
 
 /** Which toasts a Run has raised, so a replay or a second host does not raise them again. */

@@ -10,6 +10,7 @@ import { installBaseline } from "./support/engine";
 import { installFakeSkills } from "./support/defs";
 import { FakeBin } from "./support/bin";
 import { doctor } from "../src/doctor";
+import { withLock } from "../src/lock";
 import { claudeSettingsPath, installStatusLine } from "../src/statusline";
 import { hostname } from "node:os";
 import { shell } from "../src/mr";
@@ -1027,5 +1028,37 @@ test("a gh that did not answer reads differently from one that said no", () =>
         detail: "installed, but did not answer within 20 seconds",
         fix: "gh auth status --hostname github.com",
       });
+    }),
+  ));
+
+test("a host started with no Herd is a warning, saying its judgements will be skipped", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* healthy();
+      const hostRecord = (herd: string | null) =>
+        fs.writeFileString(
+          `${rig.stateDir}/host.build`,
+          JSON.stringify({ pid: process.pid, build: "0.0.0", root: rig.baselineDir, herd }),
+        );
+      expect(reported(yield* report()).map((c) => c.name)).not.toContain("host herd");
+
+      yield* withLock(
+        `${rig.stateDir}/host.lock`,
+        Effect.die("the host lock is taken"),
+        Effect.gen(function* () {
+          yield* hostRecord(null);
+          expect(check(yield* report(), "host herd")).toMatchObject({
+            ok: true,
+            warn: true,
+            detail: "this host has no Herd: judgements will be skipped",
+          });
+          yield* hostRecord(`${rig.root}/herd.sock`);
+          expect(check(yield* report(), "host herd")).toMatchObject({
+            ok: true,
+            detail: `the host works for the Herd at ${rig.root}/herd.sock`,
+          });
+        }),
+      );
     }),
   ));

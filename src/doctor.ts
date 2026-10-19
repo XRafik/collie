@@ -30,6 +30,7 @@ import { claudeSettingsPath, readStatusLine, STATUS_LINE_ARGS } from "./statusli
 import { collieCache, humanBytes } from "./cleanup";
 import { anyRuns, cleanupListing, machineList } from "./lifecycle";
 import { peersOf } from "./peers";
+import { HERDLESS, herdOfHost } from "./host";
 import { tmpdir } from "node:os";
 import {
   FETCH_LIMIT,
@@ -468,6 +469,15 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
     });
   }
   checks.push({ name: "disk", ...(yield* diskSpace(env, run)) });
+
+  const herd = yield* herdOfHost(env.stateDir);
+  if (herd !== undefined)
+    checks.push({
+      name: "host herd",
+      ...(herd === null
+        ? warned(HERDLESS, "start herdr, then run `collie host restart`")
+        : passed(`the host works for the Herd at ${herd}`)),
+    });
 
   checks.push(...(yield* gitlabChecks(env, search, run)));
   checks.push(...(yield* githubChecks(env, search, run)));

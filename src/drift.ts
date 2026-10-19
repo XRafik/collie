@@ -44,6 +44,8 @@ const SkippedSchema = Schema.Struct({
   at: Schema.String,
   run: Schema.String,
   reason: Schema.String,
+  /** A rule check's skip, which no judgement answers. */
+  check: Schema.optionalKey(Schema.Literal("rule")),
 });
 
 export const DriftLineSchema = Schema.Union([SkippedSchema, DriftReportSchema]);
@@ -386,8 +388,15 @@ export const recordSkipped = Effect.fn("Drift.recordSkipped")(function* (
   runDir: string,
   run: string,
   reason: string,
+  check?: "rule",
 ) {
-  yield* appendDrift(runDir, { kind: "skipped", at: yield* nowIso(), run, reason });
+  yield* appendDrift(runDir, {
+    kind: "skipped",
+    at: yield* nowIso(),
+    run,
+    reason,
+    ...(check && { check }),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -402,6 +411,8 @@ export interface Judged {
   readonly truncated: boolean;
   /** The goal was judged, where there is one. */
   readonly goal: boolean;
+  /** When; a judgement answers every skip before it. */
+  readonly at?: string;
 }
 
 /** Nothing was judged. The honest default, and what every refusal answers with. */
@@ -714,16 +725,29 @@ export interface Alignment {
   readonly why: string;
 }
 
+/** Why a judgement was skipped, once per reason, leaving out what a later judgement answered. */
+export function standingSkips(
+  lines: ReadonlyArray<DriftLine>,
+  judged: Pick<Judged, "semantic" | "at">,
+): string[] {
+  const answered = (line: Schema.Schema.Type<typeof SkippedSchema>) =>
+    line.check === undefined && judged.semantic && judged.at !== undefined && line.at < judged.at;
+  const reasons = lines.flatMap((line) =>
+    line.kind === "skipped" && !answered(line) ? [line.reason] : [],
+  );
+  return [...new Set(reasons)];
+}
+
 export function alignment(
   intent: Intent | null,
   lines: ReadonlyArray<DriftLine>,
-  judged: { readonly semantic: boolean; readonly truncated: boolean; readonly goal: boolean },
+  judged: Judged,
 ): Alignment {
   if (intent === null) return { aligned: "unverified", why: "the Run has no Intent to compare to" };
   const open = openReports(lines);
   if (open.some((report) => report.severity === "block"))
     return { aligned: "false", why: `${open.length} open report(s), at least one blocking` };
-  const skippedReasons = lines.flatMap((line) => (line.kind === "skipped" ? [line.reason] : []));
+  const skippedReasons = standingSkips(lines, judged);
   if (skippedReasons.length > 0)
     return {
       aligned: "unverified",

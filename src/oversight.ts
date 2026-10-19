@@ -31,6 +31,7 @@ import {
   readDrift,
   readElections,
   recordSkipped,
+  standingSkips,
   shouldStand,
   staleSince,
   type Judged,
@@ -60,7 +61,6 @@ import {
 import {
   appendLine,
   deliveriesOf,
-  herdOf,
   ledgerPath,
   newestById,
   overrideActive,
@@ -93,7 +93,8 @@ export interface Watched {
   readonly family: ReadonlyArray<string>;
   /** Where any Run's records are, by its id. */
   readonly dirOf: (runId: string) => string;
-  readonly socketPath: string | null;
+  /** The Herd this Run is judged and charged in, or null where there is none. */
+  readonly herd: string | null;
 }
 
 type Services = FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner;
@@ -110,7 +111,7 @@ const lines = (text: string) => text.split("\n").filter((line) => line.trim() !=
 
 /** Whether the Herd still owes this Run a cross-run check, has made one, or has none to make. */
 const crossRunOf = Effect.fn("Oversight.crossRunOf")(function* (at: Watched) {
-  const key = yield* herdOf(at.socketPath).pipe(Effect.orElseSucceed(() => null));
+  const key = at.herd;
   if (key === null) return "none" as const;
   const found = yield* readElections(yield* electionsPath(at.stateDir, key)).pipe(
     Effect.orElseSucceed(() => []),
@@ -122,7 +123,7 @@ const crossRunOf = Effect.fn("Oversight.crossRunOf")(function* (at: Watched) {
 
 /** Proposals about this Run nobody has answered. */
 const pendingProposals = Effect.fn("Oversight.pendingProposals")(function* (at: Watched) {
-  const key = yield* herdOf(at.socketPath).pipe(Effect.orElseSucceed(() => null));
+  const key = at.herd;
   if (key === null) return [];
   const found = yield* readProposals(yield* proposalsPath(at.stateDir, key)).pipe(
     Effect.orElseSucceed(() => []),
@@ -177,8 +178,9 @@ export const writeCard = Effect.fn("Oversight.writeCard")(function* (
     if (rule?.kind === "command_exit" && !verifications.some((one) => one.name === rule.name))
       missing.push(`no verification named ${rule.name}`);
   }
-  for (const line of drift)
-    if (line.kind === "skipped") missing.push(`a judgement was skipped: ${line.reason}`);
+  const judged = yield* judgedOf(at);
+  for (const reason of standingSkips(drift, judged))
+    missing.push(`a judgement was skipped: ${reason}`);
 
   const card = buildCard({
     run: at.runId,
@@ -207,7 +209,7 @@ export const writeCard = Effect.fn("Oversight.writeCard")(function* (
     deliveries: (yield* deliveriesOf(at.stateDir, at.runId).pipe(
       Effect.orElseSucceed(() => []),
     )).map((entry) => entry.delivery.id),
-    aligned: alignment(intent, drift, yield* judgedOf(at)).aligned,
+    aligned: alignment(intent, drift, judged).aligned,
     crossRun: yield* crossRunOf(at),
     significance: {
       readiness: "claimed",
@@ -239,7 +241,12 @@ export const said = (at: { readonly runDir: string }, line: string) =>
   appendLog(at.runDir, line).pipe(Effect.ignore);
 
 const JudgedJson = Schema.fromJsonString(
-  Schema.Struct({ semantic: Schema.Boolean, truncated: Schema.Boolean, goal: Schema.Boolean }),
+  Schema.Struct({
+    semantic: Schema.Boolean,
+    truncated: Schema.Boolean,
+    goal: Schema.Boolean,
+    at: Schema.optionalKey(Schema.String),
+  }),
 );
 const judgedPath = (runDir: string) => `${runDir}/steering/judged.json`;
 
@@ -293,7 +300,7 @@ const checkRuleDrift = Effect.fn("Oversight.checkRuleDrift")(function* (
   const facts = yield* ruleFacts(at).pipe(Effect.result);
   if (facts._tag === "Failure") {
     const skipped = `rule check skipped at ${where}: ${facts.failure.reason}`;
-    yield* recordSkipped(at.runDir, at.runId, skipped).pipe(Effect.ignore);
+    yield* recordSkipped(at.runDir, at.runId, skipped, "rule").pipe(Effect.ignore);
     return yield* said(at, skipped);
   }
   const found = checkRules(intent, facts.success, yield* nowIso());
@@ -336,11 +343,12 @@ const judgeDrift = Effect.fn("Oversight.judgeDrift")(function* (
     );
     return;
   }
+  const judgedAt = yield* nowIso();
   const outcome = yield* judge(deps, intent, {
     runDir: at.runDir,
     worktree: at.cwd,
     base: yield* baseOf(at.cwd),
-    at: yield* nowIso(),
+    at: judgedAt,
   }).pipe(
     Effect.catch((cause) =>
       recordSkipped(at.runDir, at.runId, `the judgement failed: ${reason(cause)}`).pipe(
@@ -352,7 +360,10 @@ const judgeDrift = Effect.fn("Oversight.judgeDrift")(function* (
   const fs = yield* FileSystem.FileSystem;
   yield* fs.makeDirectory(`${at.runDir}/steering`, { recursive: true }).pipe(Effect.ignore);
   yield* fs
-    .writeFileString(judgedPath(at.runDir), Schema.encodeSync(JudgedJson)(outcome.judged))
+    .writeFileString(
+      judgedPath(at.runDir),
+      Schema.encodeSync(JudgedJson)({ ...outcome.judged, at: judgedAt }),
+    )
     .pipe(Effect.ignore);
   const before = yield* readDrift(at.runDir).pipe(Effect.orElseSucceed(() => []));
   for (const report of newReports(outcome.reports, before)) {
@@ -658,8 +669,12 @@ export const standForElection = Effect.fn("Oversight.standForElection")(function
   leaving: boolean,
   deps: JudgementDeps | null,
 ): Effect.fn.Return<void, never, BunServices> {
-  const key = yield* herdOf(at.socketPath).pipe(Effect.orElseSucceed(() => null));
-  if (key === null) return;
+  const key = at.herd;
+  if (key === null) {
+    if (at.family.length > 1)
+      yield* said(at, `cross-run check not stood for at ${where}: this host has no Herd`);
+    return;
+  }
   const file = yield* electionsPath(at.stateDir, key);
   const standing = yield* readElections(file).pipe(Effect.orElseSucceed(() => []));
   if (!shouldStand(standing, at.family.length > 1)) return;
@@ -747,7 +762,7 @@ export const settleAtFinish = Effect.fn("Oversight.settleAtFinish")(function* (a
   yield* said(at, `aligned: ${verdict.aligned} — ${verdict.why}`);
   const blocking = openReports(drift).filter((report) => report.severity === "block");
   if (blocking.length === 0) return null;
-  const key = yield* herdOf(at.socketPath).pipe(Effect.orElseSucceed(() => null));
+  const key = at.herd;
   if (key === null) {
     yield* said(at, "no Herd to record a follow-up proposal in; drift is on the Run's journal");
     return null;

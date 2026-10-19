@@ -23,7 +23,8 @@ import {
 import { readCards } from "../src/cards";
 import { alignment, currentReports, electionsPath, readDrift, readElections } from "../src/drift";
 import { proposalsPath, read as readProposals } from "../src/proposals";
-import { herdOf } from "../src/steering";
+import { budgetPath, herdOf } from "../src/steering";
+import { serverSocket } from "../src/home";
 import { readVerifications } from "../src/verify";
 import { VerifySpecSchema } from "../src/verify-spec";
 import {
@@ -391,6 +392,143 @@ test("a judgement no Herd can be charged for is recorded as skipped, and the car
     }),
   ));
 
+const SMALL: Constraint = {
+  id: "small",
+  kind: "semantic",
+  text: "keep it small",
+  severity: "warn",
+  source: "human",
+  since: 1,
+};
+
+/** `claude` on PATH as the evaluator: it takes every flag a judgement needs, and finds nothing. */
+const evaluatorOnPath = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const bin = `${rig.root}/evaluator-bin`;
+  yield* fs.makeDirectory(bin, { recursive: true });
+  const flags = [
+    "--print",
+    "--output-format",
+    "--json-schema",
+    "--tools",
+    "--restricted",
+    "--strict-mcp-config",
+    "--setting-sources",
+    "--no-session-persistence",
+    "--max-budget-usd",
+    "--append-system-prompt-file",
+  ].join(" ");
+  yield* fs.writeFileString(
+    `${bin}/claude`,
+    `#!/bin/sh\nif [ "$1" = "--help" ]; then echo "${flags}"; exit 0; fi\ncat > /dev/null\necho '{"result":{"reports":[]}}'\n`,
+  );
+  yield* fs.chmod(`${bin}/claude`, 0o755);
+  yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      const before = Bun.env.PATH ?? "";
+      Bun.env.PATH = `${bin}:${before}`;
+      return before;
+    }),
+    (before) =>
+      Effect.sync(() => {
+        Bun.env.PATH = before;
+      }),
+  );
+});
+
+/** A boundary, then the card that follows it. */
+const boundaryThenCard = Effect.gen(function* () {
+  const oversight = yield* Oversight;
+  yield* oversight.drift("r1", "boundary before build", "boundary");
+  yield* oversight.card("r1", { kind: "slice", step: "build", claims: [] });
+});
+
+test("a host whose environment names no socket finds its Herd in herdr's status, and judges", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* repository();
+      yield* intended("r1", [SMALL]);
+      yield* evaluatorOnPath;
+      const socketPath = `${rig.root}/herd.sock`;
+      const env = rig.pluginEnv({ HERDR_SOCKET_PATH: "", FAKE_HERDR_STATUS_SOCKET: socketPath });
+      expect(env.socketPath).toBeNull();
+
+      yield* session(boundaryThenCard, {
+        socketPath: env.socketPath,
+        pluginRoot: rig.root,
+        locate: serverSocket(new FakeHerdr(env)),
+      });
+
+      expect(yield* readDrift(runDir(dir, "r1"))).toEqual([]);
+      const log = yield* (yield* FileSystem.FileSystem).readFileString(
+        `${runDir(dir, "r1")}/log.txt`,
+      );
+      expect(log).toContain("judged 1 semantic constraint(s)");
+      const key = yield* herdOf(socketPath);
+      expect(yield* (yield* FileSystem.FileSystem).exists(yield* budgetPath(dir, key!))).toBe(true);
+      const [card] = yield* cardsOf("r1");
+      expect(card!.aligned).toBe("true");
+    }),
+  ));
+
+test("a judgement skipped at every boundary for one reason is one line on the card", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* intended("r1", [SMALL]);
+      yield* session(
+        Effect.gen(function* () {
+          const oversight = yield* Oversight;
+          for (const step of ["build", "review", "final"])
+            yield* oversight.drift("r1", `boundary before ${step}`, "boundary");
+          yield* oversight.card("r1", { kind: "slice", step: "final", claims: [] });
+        }),
+      );
+      expect(yield* readDrift(runDir(dir, "r1"))).toHaveLength(3);
+      const [card] = yield* cardsOf("r1");
+      expect(card!.missing).toEqual([
+        "a judgement was skipped: there is no Herd to charge a judgement to",
+      ]);
+    }),
+  ));
+
+test("a judgement made after one was skipped leaves the Run aligned, not unverified", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* repository();
+      yield* intended("r1", [SMALL]);
+      yield* session(boundaryThenCard);
+      expect((yield* cardsOf("r1")).at(-1)!.aligned).toBe("unverified");
+
+      yield* evaluatorOnPath;
+      yield* session(boundaryThenCard, {
+        socketPath: `${rig.root}/herd.sock`,
+        pluginRoot: rig.root,
+      });
+
+      const card = (yield* cardsOf("r1")).at(-1)!;
+      expect(card.aligned).toBe("true");
+      expect(card.missing).toEqual([]);
+    }),
+  ));
+
+test("a rule check skipped is not answered by a judgement made after it", () => {
+  const intent = seedIntent("r1", { constraints: [SRC_ONLY, SMALL] });
+  const skipped = (reason: string, check?: "rule") => ({
+    kind: "skipped" as const,
+    at: "2026-01-01T00:00:00.000Z",
+    run: "r1",
+    reason,
+    ...(check && { check }),
+  });
+  const judged = { semantic: true, truncated: false, goal: false, at: "2026-01-02T00:00:00.000Z" };
+  expect(alignment(intent, [skipped("there is no Herd to charge a judgement to")], judged)).toEqual(
+    { aligned: "true", why: "every constraint was checked and none is open" },
+  );
+  expect(
+    alignment(intent, [skipped("rule check skipped at build: git diff", "rule")], judged).aligned,
+  ).toBe("unverified");
+});
+
 const SRC_ONLY: Constraint = {
   id: "src-only",
   kind: "rule",
@@ -413,7 +551,7 @@ const watchedAt = (runId: string, held = false, worktree: string | null = null):
   mr: null,
   asking: false,
   held,
-  socketPath: null,
+  herd: null,
   family: [runId],
   dirOf: (id) => runDir(dir, id),
 });
@@ -609,7 +747,7 @@ test("a Run with relatives stands for the cross-run check, and one leaving unans
             ),
           ),
         );
-      const parent = { ...watchedAt("r1"), socketPath, family: ["r1", "r2"] };
+      const parent = { ...watchedAt("r1"), herd: key, family: ["r1", "r2"] };
 
       // Nobody can judge it here, and a boundary is not the moment to say it is owed.
       yield* standForElection(parent, "boundary before build", false, null);
@@ -619,14 +757,14 @@ test("a Run with relatives stands for the cross-run check, and one leaving unans
       expect(yield* said()).toEqual(["candidate:r1", "candidate:r1", "pending:r1,r2"]);
 
       // Owed, so any Run stands — once — even one with no relatives of its own.
-      const stranger = { ...watchedAt("r3"), socketPath, family: ["r3"] };
+      const stranger = { ...watchedAt("r3"), herd: key, family: ["r3"] };
       yield* standForElection(stranger, "boundary before build", false, null);
       yield* standForElection(stranger, "boundary before test", false, null);
       expect((yield* said()).slice(3)).toEqual(["candidate:r3"]);
 
       // And the relative's card says a check about it is still owed.
       const card = yield* writeCard(
-        { ...watchedAt("r2"), socketPath, family: ["r1", "r2"] },
+        { ...watchedAt("r2"), herd: key, family: ["r1", "r2"] },
         { kind: "final", step: "finish", claims: [] },
       );
       expect(card.cross_run).toBe("pending");

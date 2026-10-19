@@ -135,6 +135,7 @@ import { usagePhrase } from "./usage-model";
 import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
 import { Herdr, isSettled, type AgentInfo } from "./herdr";
+import { serverSocket } from "./home";
 import { buildBoard, mrOf } from "./board";
 import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
@@ -258,7 +259,13 @@ export const outputOf = (dir: string) => `${dir}/host.out`;
 /** Which build owns the directory, written down for a client the host does not answer. */
 const recordOf = (dir: string) => `${dir}/host.build`;
 const HostRecord = Schema.fromJsonString(
-  Schema.Struct({ pid: Schema.Int, build: Schema.String, root: Schema.String }),
+  Schema.Struct({
+    pid: Schema.Int,
+    build: Schema.String,
+    root: Schema.String,
+    /** The herdr socket naming its Herd; absent from a host older than this field. */
+    herd: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  }),
 );
 const encodeRecord = Schema.encodeSync(HostRecord);
 
@@ -2563,12 +2570,18 @@ const own = (dir: string) =>
     // Under the lock, so anything at this path belongs to a host that is gone: a unix
     // socket cannot be bound while its file is there, and a dead host's is still there.
     yield* fs.remove(socketOf(dir), { force: true }).pipe(Effect.orDie);
-    yield* fs
-      .writeFileString(
+    const pid = yield* currentPid;
+    const record = (herd: string | null) =>
+      fs.writeFileString(
         recordOf(dir),
-        encodeRecord({ pid: yield* currentPid, build: BUILD, root: env.pluginRoot }),
-      )
-      .pipe(Effect.orDie);
+        encodeRecord({ pid, build: BUILD, root: env.pluginRoot, herd }),
+      );
+    const herdSocket = env.socketPath ?? (yield* serverSocket(herdr));
+    yield* record(herdSocket).pipe(Effect.orDie);
+    if (herdSocket === null) yield* Effect.logWarning(HERDLESS);
+    const locate = serverSocket(herdr).pipe(
+      Effect.tap((found) => (found === null ? Effect.void : record(found).pipe(Effect.ignore))),
+    );
     const installation = yield* installationOf(dir).pipe(Effect.orDie);
     const installed = yield* installedRelease(env.pluginRoot, env.collieDir, BUILD);
     const development: Development = installed.release ? {} : { development: installed.build };
@@ -2646,7 +2659,7 @@ const own = (dir: string) =>
             userDir: env.userDir,
             toast: (title, body, sound) =>
               herdr.notify(title, body, sound).pipe(Effect.provideContext(bun), Effect.ignore),
-            herd: { socketPath: env.socketPath, pluginRoot: env.pluginRoot },
+            herd: { socketPath: herdSocket, pluginRoot: env.pluginRoot, locate },
             readings: usage.readings,
             messagePoll: seconds ? "1 second" : undefined,
           }),
@@ -2919,6 +2932,23 @@ export const connectPeer = (
 
 const unavailable = (dir: string, reason: string) => new HostUnavailable({ dir, reason });
 
+export const HERDLESS = "this host has no Herd: judgements will be skipped";
+
+/**
+ * The Herd the live host of `dir` works for, by its herdr socket, or null for one with none.
+ * Undefined where no host is running, or one too old to say.
+ */
+export const herdOfHost = Effect.fn("Host.herdOfHost")(function* (dir: string) {
+  const owner = yield* liveOwner(dir);
+  if (owner === null) return undefined;
+  const recorded = yield* (yield* FileSystem.FileSystem)
+    .readFileString(recordOf(dir))
+    .pipe(Effect.flatMap(Schema.decodeUnknownEffect(HostRecord)), Effect.option);
+  return Option.isSome(recorded) && recorded.value.pid === owner.pid
+    ? recorded.value.herd
+    : undefined;
+});
+
 /** Which process owns this directory, or null when none does. */
 export const ownerOf = (
   dir: string,
@@ -3040,7 +3070,8 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
   const command = yield* hostCommand;
   // Which installation's and user's workflows this host serves, decided by the client that
   // needed it rather than guessed from wherever the host process happens to start.
-  const { pluginRoot, userDir } = yield* currentEnv.pipe(Effect.orDie);
+  const env = yield* currentEnv.pipe(Effect.orDie);
+  const { pluginRoot, userDir } = env;
   return yield* Effect.gen(function* () {
     yield* fs.makeDirectory(named, { recursive: true });
     // The host starts in it, so a relative one would name somewhere else from there.
@@ -3065,6 +3096,7 @@ const spawnHost = Effect.fn("Host.spawn")(function* (
           // oxlint-disable-next-line effecttsgo/process-env
           env: withoutLauncher({
             ...process.env,
+            ...(env.socketPath !== null && { HERDR_SOCKET_PATH: env.socketPath }),
             ...hostEnv,
             HERDR_PLUGIN_ROOT: pluginRoot,
             COLLIE_USER_DIR: userDir,

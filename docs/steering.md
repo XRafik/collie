@@ -311,7 +311,9 @@ with `token` or `secret` in it — are listed by name with `<redacted>` rather t
 The rule that keeps this honest: **nothing passes on an absence**. A verification nobody
 ran is a breach, not a pass. A judgement Collie could not make — no evaluator, a call that
 timed out or answered outside its schema — is recorded as `skipped` with the reason, so a
-card can say why it says nothing rather than reading as clean. A `claude --help` that
+card can say why it says nothing rather than reading as clean. A card names each reason
+once, however many boundaries it was skipped at, and a judgement that is made later answers
+the judgements skipped before it. A skipped rule check is not answered by a judgement. A `claude --help` that
 fails or prints nothing is such a reason, said with its exit code and stderr, never read as
 a CLI missing every flag, and a `git diff` that fails is a reason too, never an empty
 change: a judgement is skipped in git's words, and a rule check is recorded as skipped and
@@ -448,6 +450,7 @@ tells the winner its snapshot is behind — it judges again, a bounded number of
 
 A report is filed on the Run it is about: its drift journal while it is working, and the
 board's pending reports once it has ended, since a finished Run's record does not change.
+A host with no Herd holds no election, and says so in the log of a Run with relatives.
 A check nobody could make is written down as owed by the Run leaving without an answer,
 and while one is owed every Run in the Herd stands for it — otherwise an owed check waits
 for a Run that may never work again. A Run's final card says `cross_run: pending` while
