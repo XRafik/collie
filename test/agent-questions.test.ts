@@ -13,7 +13,7 @@ import { controlDir } from "../src/compaction";
 import { recordClaudeEvent } from "../src/compactors";
 import { Launched } from "../src/launches";
 import { stopHost, until } from "./support/host";
-import { collie, proves } from "./support/world";
+import { collie, proves, type World } from "./support/world";
 
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const decodeLaunched = Schema.decodeUnknownSync(Schema.fromJsonString(Launched));
@@ -51,6 +51,48 @@ const askedOne = encode({
   },
 });
 
+/**
+ * A host for this world over a fake herdr whose agent answers its prompts with `outputs`,
+ * and the env the board's actions are carried out in.
+ */
+const hostedOver = Effect.fn("test.hostedOver")(function* (
+  world: World,
+  outputs: ReadonlyArray<unknown>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const file = `${world.home}/outputs.json`;
+  yield* fs.writeFileString(file, encode(outputs)).pipe(Effect.orDie);
+  // The host a client spawns inherits this process's environment: it has to own this
+  // world's state, never the operator's.
+  const set = {
+    FAKE_HERDR_OUTPUTS: file,
+    HERDR_PLUGIN_STATE_DIR: world.state,
+    COLLIE_USER_DIR: world.config,
+  };
+  yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      const before = Object.fromEntries(Object.keys(set).map((key) => [key, Bun.env[key]]));
+      Object.assign(Bun.env, set);
+      return before;
+    }),
+    (before) =>
+      Effect.sync(() => {
+        for (const [key, value] of Object.entries(before))
+          if (value === undefined) delete Bun.env[key];
+          else Bun.env[key] = value;
+      }),
+  );
+  resetExecutors();
+  const env = readEnv({
+    HERDR_PLUGIN_ROOT: world.install,
+    HERDR_PLUGIN_STATE_DIR: world.state,
+    COLLIE_USER_DIR: world.config,
+    HOME: world.home,
+    COLLIE_CWD: world.project,
+  });
+  return { env, client: yield* connect(world.state).pipe(Effect.orDie) };
+});
+
 test(
   "an agent's questions are answered from the CLI and the card, and each answer reaches it under its own sender",
   () =>
@@ -59,35 +101,7 @@ test(
       (world) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const outputs = `${world.home}/outputs.json`;
-          yield* fs.writeFileString(outputs, encode([null])).pipe(Effect.orDie);
-          const set = {
-            FAKE_HERDR_OUTPUTS: outputs,
-            HERDR_PLUGIN_STATE_DIR: world.state,
-            COLLIE_USER_DIR: world.config,
-          };
-          yield* Effect.acquireRelease(
-            Effect.sync(() => {
-              const before = Object.fromEntries(Object.keys(set).map((key) => [key, Bun.env[key]]));
-              Object.assign(Bun.env, set);
-              return before;
-            }),
-            (before) =>
-              Effect.sync(() => {
-                for (const [key, value] of Object.entries(before))
-                  if (value === undefined) delete Bun.env[key];
-                  else Bun.env[key] = value;
-              }),
-          );
-          resetExecutors();
-          const env = readEnv({
-            HERDR_PLUGIN_ROOT: world.install,
-            HERDR_PLUGIN_STATE_DIR: world.state,
-            COLLIE_USER_DIR: world.config,
-            HOME: world.home,
-            COLLIE_CWD: world.project,
-          });
-          const client = yield* connect(world.state).pipe(Effect.orDie);
+          const { env, client } = yield* hostedOver(world, [null]);
           const { runId } = yield* client
             .start({ project: world.project, id: "told", request: "start", input: { work: "it" } })
             .pipe(Effect.orDie);
@@ -165,6 +179,71 @@ test(
             (one) => one !== null && isSettled(one),
           );
           expect(view?.status.status).toBe("complete");
+        }).pipe(Effect.ensuring(stopHost(world.state))),
+      ["told.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a question from a succeeded Run's agent after a steer is a Choice, and its answer reaches the agent",
+  () =>
+    proves(
+      "collie-finished-question-",
+      (world) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { env, client } = yield* hostedOver(world, [{ verdict: "built" }]);
+          const { runId } = yield* client
+            .start({ project: world.project, id: "told", request: "start", input: { work: "it" } })
+            .pipe(Effect.orDie);
+          const view = yield* until(
+            () => client.run({ runId }).pipe(Effect.orDie),
+            (one) => one !== null && isSettled(one),
+          );
+          expect(view?.status.status).toBe("complete");
+          const launched = decodeLaunched(
+            yield* fs.readFileString(`${world.state}/agents/${runId}/build.launch.json`),
+          );
+
+          const [steered] = yield* carryOutAsked(
+            env,
+            [
+              {
+                kind: "deliver",
+                run: runId,
+                agent: launched.agent,
+                text: "test the merge request",
+                mode: "boundary",
+              },
+            ],
+            { origin: "chat", requestId: "chat-steer" },
+          );
+          expect(steered).toMatchObject({ kind: "deliver", state: "applied" });
+          const printed = yield* recordClaudeEvent(
+            yield* controlDir(world.state, launched.agent),
+            askedOne,
+          ).pipe(Effect.orDie);
+          expect(printed).toContain("on your Run");
+
+          const asked = yield* until(
+            () => client.run({ runId }).pipe(Effect.orDie),
+            (one) => (one?.waiting ?? []).some((question) => question.answer === null),
+          );
+          const [open] = (asked?.waiting ?? []).filter((question) => question.answer === null);
+          expect(open?.prompt).toContain("Which region?");
+
+          const [answered] = yield* carryOutAsked(
+            env,
+            [{ kind: "answer", run: runId, choiceId: open!.name, answer: "eu-west" }],
+            { origin: "board", requestId: "card-finished" },
+          );
+          expect(answered).toMatchObject({ kind: "answer", state: "applied" });
+          yield* until(
+            () =>
+              fs.readFileString(Bun.env.FAKE_HERDR_LOG ?? "").pipe(Effect.orElseSucceed(() => "")),
+            (all) => all.includes("Your question Region is answered: eu-west"),
+          );
         }).pipe(Effect.ensuring(stopHost(world.state))),
       ["told.workflow.ts"],
     ),

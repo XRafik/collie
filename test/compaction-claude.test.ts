@@ -357,9 +357,18 @@ const TWO = [
   },
 ];
 
+/** This process as the live host of the state directory `dir` is the control directory of. */
+const hostLive = Effect.suspend(() =>
+  fs.writeFileString(
+    path.join(rig.root, "host.lock"),
+    encodeJsonText({ pid: process.pid, start: null }),
+  ),
+);
+
 test("an AskUserQuestion call is recorded whole for its Run, and denied at once", () =>
   runEffect(
     Effect.gen(function* () {
+      yield* hostLive;
       const printed = yield* recordClaudeEvent(dir, asking("AskUserQuestion", TWO));
 
       expect(yield* questionsSince(dir, 0)).toEqual([
@@ -374,6 +383,19 @@ test("an AskUserQuestion call is recorded whole for its Run, and denied at once"
       });
       expect(printed).toContain("End your turn now");
       expect(printed).toContain("your next message");
+    }),
+  ));
+
+test("with no live host, a question is left to the agent's pane and never said to be on its Run", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(yield* recordClaudeEvent(dir, asking("AskUserQuestion", TWO))).toBe("");
+      yield* fs.writeFileString(
+        path.join(rig.root, "host.lock"),
+        encodeJsonText({ pid: 2 ** 22 + 1, start: null }),
+      );
+      expect(yield* recordClaudeEvent(dir, asking("AskUserQuestion", TWO))).toBe("");
+      expect(yield* questionsSince(dir, 0)).toEqual([]);
     }),
   ));
 
