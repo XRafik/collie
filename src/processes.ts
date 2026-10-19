@@ -153,13 +153,33 @@ const bindingsIn = (entries: ReadonlyArray<string>, names: ReadonlyArray<string>
   return found;
 };
 
-/** `pid command ENV=…` rows from `ps -E`, whose bound values hold no space. */
-const psBindings = (text: string, names: ReadonlyArray<string>) =>
-  text
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/))
-    .filter((words) => words.length >= 2 && words[0] !== "")
-    .map((words) => ({ pid: Number(words[0]), bound: bindingsIn(words.slice(1), names) }));
+/** `pid command` rows by pid. */
+const psCommands = (text: string) =>
+  new Map(
+    text.split("\n").flatMap((line) => {
+      const row = /^\s*(\d+) (.*)$/.exec(line);
+      return row === null ? [] : [[Number(row[1]), row[2]!] as const];
+    }),
+  );
+
+/**
+ * What `ps -E` shows after each process's command, which is its environment and never its
+ * arguments; a process whose command differs between the two looks proves nothing.
+ */
+const psBindings = (select: ReadonlyArray<string>, names: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const commands = psCommands(yield* ps(["-ww", "-o", "pid=,command=", ...select]));
+    const shown = psCommands(yield* ps(["-E", "-ww", "-o", "pid=,command=", ...select]));
+    const found: Array<{ readonly pid: number; readonly bound: Record<string, string> }> = [];
+    for (const [pid, line] of shown) {
+      const command = commands.get(pid);
+      if (command === undefined || !line.startsWith(command)) continue;
+      const environment = line.slice(command.length);
+      if (environment !== "" && !environment.startsWith(" ")) continue;
+      found.push({ pid, bound: bindingsIn(environment.trim().split(/\s+/), names) });
+    }
+    return found;
+  });
 
 /**
  * Which of `names` its environment binds, and to what; null where that cannot be read,
@@ -170,10 +190,7 @@ export const bindingsOf = Effect.fn("Processes.bindingsOf")(function* (
   names: ReadonlyArray<string>,
 ) {
   if (!(yield* readsSessions)) {
-    const [row] = psBindings(
-      yield* ps(["-E", "-ww", "-o", "pid=,command=", "-p", String(pid)]),
-      names,
-    );
+    const [row] = yield* psBindings(["-p", String(pid)], names);
     return row?.bound ?? null;
   }
   const fs = yield* FileSystem.FileSystem;
@@ -189,7 +206,7 @@ export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
 ) {
   const found: Array<{ readonly pid: number; readonly bound: Record<string, string> }> = [];
   if (!(yield* readsSessions)) {
-    for (const row of psBindings(yield* ps(["-A", "-E", "-ww", "-o", "pid=,command="]), names))
+    for (const row of yield* psBindings(["-A"], names))
       if (Object.keys(row.bound).length > 0) found.push(row);
     return found;
   }

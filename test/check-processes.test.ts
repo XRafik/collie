@@ -351,6 +351,46 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
+test.skipIf(process.platform !== "linux")(
+  "without /proc, a process naming a check's markers only in its arguments is never Collie's",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "collie-check-processes-" });
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const posing = yield* spawner.spawn(
+          ChildProcess.make(
+            "sh",
+            [
+              "-c",
+              "sleep 30",
+              `${CHECK_INSTALLATION}=${installation}`,
+              `${CHECK_ID}=run-1@1-posing`,
+            ],
+            { stdout: "ignore", stderr: "ignore" },
+          ),
+        );
+        const { noProc, macPs } = yield* withoutProc;
+
+        const checks = yield* hostCheckProcesses({ dir: `${root}/state`, installation }).pipe(
+          Effect.provideService(FileSystem.FileSystem, noProc),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, macPs),
+        );
+
+        expect(yield* checks.left).toEqual([]);
+        expect(
+          yield* bindingsOf(posing.pid, [CHECK_INSTALLATION, CHECK_ID]).pipe(
+            Effect.provideService(FileSystem.FileSystem, noProc),
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, macPs),
+          ),
+        ).toEqual({});
+        expect(yield* posing.isRunning).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
 /** A FileSystem whose first read of a process's `stat` once `armed` waits for `release`. */
 const gatedStat = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
