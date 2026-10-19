@@ -1,7 +1,5 @@
-// Desktop's SSH route (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection): it opens
-// its Machine's shared connection only through the local `collie machine connect`, rides the
-// path that answers, and never logs in by itself. A fake local `collie` stands in for the
-// command, and the shared fake ssh for the connection and the far Machine.
+// ADR-draft-a-blocked-link-rides-the-machines-ssh-connection: a fake local `collie` stands
+// in for `machine connect`.
 
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Scope, Exit } from "effect";

@@ -1,8 +1,5 @@
-// The way to a dialled peer (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection),
-// at `src/peer-transport.ts`'s own interface: direct first, then through the Machine's
-// open SSH connection, with the same pinned certificate and secret. No host is started:
-// a TLS WebSocket server stands in for the peer's listener, a resetter for a network that
-// refuses its port, and the fake ssh for the connection.
+// ADR-draft-a-blocked-link-rides-the-machines-ssh-connection: a TLS WebSocket server stands
+// in for the peer, a resetter for a network refusing its port.
 
 import { expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";

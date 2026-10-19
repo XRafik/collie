@@ -1,7 +1,4 @@
-// A Machine's SSH connection (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection),
-// at `src/ssh-connection.ts`'s own interface, against the fake ssh: where its control path
-// is, the one way it is opened, a host's handle that cannot log in, and a session that
-// rides it and fails rather than logs in where it has gone.
+// ADR-draft-a-blocked-link-rides-the-machines-ssh-connection, against the fake ssh.
 
 import { expect, test } from "bun:test";
 import { createConnection, createServer, type Server } from "node:net";

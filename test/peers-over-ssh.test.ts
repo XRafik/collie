@@ -1,7 +1,5 @@
-// A link whose port the network refuses rides the Machine's SSH connection
-// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection), across two real hosts:
-// what only crossing hosts proves. The second's listener moves to another port, a resetter
-// holds the one it advertised, and the first's fake ssh forwards to where it moved.
+// ADR-draft-a-blocked-link-rides-the-machines-ssh-connection: a resetter holds the port the
+// second advertised, and the first's fake ssh forwards to where it moved.
 
 import { expect, test } from "bun:test";
 import { Clock, Effect, Exit, FileSystem, Schema, Scope } from "effect";

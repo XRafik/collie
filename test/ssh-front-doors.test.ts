@@ -1,7 +1,4 @@
-// Who opens a Machine's SSH connection and who closes it
-// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection), across two real hosts: an
-// operator's command opens it, pairing rides it, a host job is refused while a link waits
-// on one, and the host closes a connection herdr no longer names.
+// ADR-draft-a-blocked-link-rides-the-machines-ssh-connection, across two real hosts.
 
 import { expect, test } from "bun:test";
 import { Effect, Exit, FileSystem, Schema, Scope } from "effect";
