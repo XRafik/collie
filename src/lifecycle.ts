@@ -160,7 +160,7 @@ type HostFailure =
 type Client = FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner;
 
 /** A refusal as the front doors say one, with the host's own sentence inside it. */
-const refusal = (cause: HostFailure): Failure => {
+export const refusal = (cause: HostFailure): Failure => {
   switch (cause._tag) {
     case "HostRefused":
       // The host says so first where the input is why, and that is exit 2, not exit 1.

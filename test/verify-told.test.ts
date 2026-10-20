@@ -81,21 +81,41 @@ test(
           const pane = (yield* everyRegistered(world.state)).find(
             (entry) => entry.runId === runId,
           )!.paneId;
-          yield* client
-            .grant({
-              runId,
-              name: "unit",
-              command: { executable: "/bin/true", argv: [], cwd: "." },
-              request: "grant-unit",
-            })
-            .pipe(Effect.orDie);
-
-          const verify = (name: string, executable: string, extra: Record<string, string>) =>
+          const asked = (
+            name: string,
+            executable: string,
+            extra: Record<string, string>,
+            expecting: ReadonlyArray<string> = [],
+          ) =>
             collie(
               world,
-              ["verify", "--run", runId, "--cwd", world.project, "--name", name, "--", executable],
+              [
+                "verify",
+                "--run",
+                runId,
+                "--cwd",
+                world.project,
+                "--name",
+                name,
+                ...expecting,
+                "--",
+                executable,
+              ],
               extra,
-            ).pipe(Effect.map((ran) => Schema.decodeUnknownSync(Ran)(ran.envelope.data)));
+            );
+          const verify = (name: string, executable: string, extra: Record<string, string>) =>
+            asked(name, executable, extra).pipe(
+              Effect.map((ran) => Schema.decodeUnknownSync(Ran)(ran.envelope.data)),
+            );
+          const grant = (name: string, executable: string) =>
+            client
+              .grant({
+                runId,
+                name,
+                command: { executable, argv: [], cwd: "." },
+                request: `grant-${name}`,
+              })
+              .pipe(Effect.orDie);
           const asAgent = { HERDR_PANE_ID: pane };
           const told = () =>
             deliveriesOf(world.state, runId).pipe(
@@ -130,8 +150,33 @@ test(
           for (const part of ['"unit"', "pass (exit 0)", head.trim(), ran.verification.log!])
             expect(said).toContain(part);
 
+          // Once it is one of the Run's Checks, it is answered from its record, never run,
+          // for an agent as for a human, whatever it expects.
+          yield* grant("unit", "/bin/true");
+          const asHuman = { HERDR_PANE_ID: "not-an-agent" };
           const again = yield* verify("unit", "/bin/true", asAgent);
-          expect(again.ran).toBe(false);
+          expect(again).toEqual({ ...ran, ran: false });
+          for (const [extra, expecting] of [
+            [asHuman, []],
+            [asAgent, ["--expect", "fail"]],
+            [asHuman, ["--expect", "fail"]],
+          ] as const)
+            expect(
+              Schema.decodeUnknownSync(Ran)(
+                (yield* asked("unit", "/bin/true", extra, expecting)).envelope.data,
+              ),
+            ).toEqual(again);
+          yield* grant("gate-only", "/bin/echo");
+          for (const [extra, expecting] of [
+            [asAgent, []],
+            [asHuman, []],
+            [asAgent, ["--expect", "fail"]],
+            [asHuman, ["--expect", "fail"]],
+          ] as const) {
+            const refused = yield* asked("gate-only", "/bin/echo", extra, expecting);
+            expect(refused.envelope.error?.code).toBe("invalid_state");
+            expect(refused.envelope.error?.message).toContain("gate");
+          }
           expect(yield* told()).toHaveLength(1);
 
           yield* fs

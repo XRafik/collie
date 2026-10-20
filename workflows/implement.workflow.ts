@@ -24,9 +24,12 @@ import {
   Host,
   Run,
   WorkflowError,
+  afterMergeAnswers,
+  afterMergeIn,
   agentWork,
   answerFor,
   checkGapsOf,
+  checkProof,
   classifyWorkSource,
   contentOf,
   criteriaIn,
@@ -46,6 +49,7 @@ import {
   planReposOf,
   renderApproved,
   renderEvidence,
+  recheckOwed,
   renderProgress,
   rerunsOwed,
   settledChecks,
@@ -173,6 +177,12 @@ const SliceRecord = Schema.Struct({
   checks: Schema.Array(Schema.String),
   // A reading journaled before tickets carried their criteria has none.
   criteria: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
+/** A ticket's criteria and after-merge outcomes as one reading of its file found them. */
+const TicketReading = Schema.Struct({
+  criteria: Schema.Array(Schema.String),
+  afterMerge: Schema.Array(Schema.String),
 });
 
 /** What the step that opens the merge request reports, and what it linked. */
@@ -424,6 +434,7 @@ export default defineWorkflow({
       const built = new Set<string>();
       const handed: Handed[] = [];
       const assumed: string[] = [];
+      const afterMerged: string[] = [];
       const answeredFor: Answered[] = [];
       let build: typeof Built.Type | null = null;
       let rallied: Rallied | null = null;
@@ -474,7 +485,7 @@ export default defineWorkflow({
         });
         const item = ticket?.file ?? "build";
         // A Linear issue's criteria are read from its description as the builder copied it.
-        const criteria =
+        const spec =
           ticket === null && source.kind === "linear"
             ? yield* Activity.make({
                 name: "criteria.spec",
@@ -486,19 +497,56 @@ export default defineWorkflow({
                 ),
               })
             : given;
-        if (criteria === null) {
+        if (spec === null) {
           const why = `${item}: ${place.dir}/plan/SPEC.md cannot be read, so the issue's acceptance criteria cannot be checked and no review starts`;
           yield* host.record(runId, why);
           return yield* unbuilt(why);
         }
+        // A plan's tickets are read again before each judgement, so an amended one is judged
+        // and handed back as it reads now; one that cannot be read keeps its last reading.
+        let read: ReadonlyArray<{ file: string } & typeof TicketReading.Type> =
+          source.kind === "plan-dir"
+            ? (ticket === null ? tickets : [ticket]).map((one) => ({
+                file: one.file,
+                criteria: one.criteria,
+                afterMerge: [],
+              }))
+            : [];
+        let reads = 0;
+        const criteriaNow = Effect.gen(function* () {
+          if (read.length === 0) return spec;
+          reads += 1;
+          const now = yield* Activity.make({
+            name: `${item}.criteria.read-${reads}`,
+            success: Schema.Array(Schema.NullOr(TicketReading)),
+            execute: FileSystem.FileSystem.pipe(
+              Effect.flatMap((fs) =>
+                Effect.forEach(read, (one) =>
+                  fs.readFileString(`${source.value}/issues/${one.file}`).pipe(
+                    Effect.map((text) => ({
+                      criteria: criteriaIn(text),
+                      afterMerge: afterMergeIn(text),
+                    })),
+                    Effect.orElseSucceed(() => null),
+                  ),
+                ),
+              ),
+            ),
+          });
+          read = read.map((one, at) => (now[at] ? { file: one.file, ...now[at] } : one));
+          return read.flatMap((one) => one.criteria);
+        });
         // Each criterion answered before any reviewer is launched: one left unanswered or
         // unmet goes back to the builder, and the work stops if it still is.
-        let answers: ReadonlyArray<Criterion> = build.criteria ?? [];
+        let answers = boundTo(spec, build.criteria ?? []);
         const assumptions = [...(build.assumptions ?? [])];
         const commits = [...(build.commits ?? [])];
-        for (let tries = 1; tries <= CRITERIA_TRIES; tries++) {
-          const unmet = unmetCriteria(item, criteria, answers);
-          if (unmet.length === 0) break;
+        let criteria = spec;
+        let unmet: ReadonlyArray<Finding> = [];
+        for (let tries = 1; ; tries++) {
+          criteria = yield* criteriaNow;
+          unmet = unmetCriteria(item, criteria, answers);
+          if (unmet.length === 0 || tries > CRITERIA_TRIES) break;
           const answered = yield* agentWork({
             operation: `${item}.criteria-${tries}`,
             agent: BUILDER,
@@ -515,7 +563,7 @@ export default defineWorkflow({
             },
             output: Built,
           });
-          answers = [...answers, ...(answered.criteria ?? [])];
+          answers = [...answers, ...boundTo(criteria, answered.criteria ?? [])];
           assumptions.push(...(answered.assumptions ?? []));
           commits.push(...(answered.commits ?? []));
         }
@@ -528,7 +576,6 @@ export default defineWorkflow({
             .map((one) => `${one.name}: ${one.result}`),
         };
         handed.push(done);
-        const unmet = unmetCriteria(item, criteria, answers);
         if (unmet.length > 0) {
           const why = `${item}: acceptance criteria still unanswered or unmet after ${CRITERIA_TRIES} hand-backs, so no review starts: ${unmet.map((one) => one.title).join("; ")}`;
           yield* host.record(runId, why);
@@ -536,6 +583,12 @@ export default defineWorkflow({
         }
         answeredFor.push({ item, criteria, answers, assumptions });
         for (const one of assumptions) assumed.push(`assumed in ${item}: ${one}`);
+        for (const one of read)
+          afterMerged.push(...one.afterMerge.map((line) => `${one.file}: after merge: ${line}`));
+        for (const { criterion, met } of afterMergeAnswers(criteria, answers))
+          afterMerged.push(
+            `${read.find((one) => one.criteria.includes(criterion))?.file ?? item}: ${criterion} — ${met}`,
+          );
         built.add(done.item);
         if (ticket === null) for (const one of tickets) built.add(one.file);
         if (ticket !== null) yield* checkpoint(place.dir, ticket, "done", claimsOf(build, ticket));
@@ -593,10 +646,13 @@ export default defineWorkflow({
         return { gaps: evidenceGapsOf(asked), fixable: checkGapsOf(asked) };
       });
       // Why each pass runs, which every door shows while it does (ADR-0042).
-      const gapsNow = Effect.fn("implement.gapsNow")(function* (why: {
-        readonly pass: "gate" | "recheck" | "fix";
-        readonly round?: number;
-      }) {
+      const gapsNow = Effect.fn("implement.gapsNow")(function* (
+        why: {
+          readonly pass: "gate" | "recheck" | "fix";
+          readonly round?: number;
+        },
+        since?: typeof Tree.Type,
+      ) {
         passes += 1;
         const pass = yield* Activity.make({
           name: `gate.${passes}`,
@@ -612,14 +668,17 @@ export default defineWorkflow({
           execute: Effect.gen(function* () {
             const checks = yield* host.approved(runId);
             const now = [...passed];
+            const journal = { ...(yield* host.evidence(runId, cwd)), approved: checks };
+            // On a tree a fix left as it was, its records stand: only a check with none runs.
+            const unmoved =
+              since?.head === journal.final.head_sha &&
+              since.fingerprint === journal.final.fingerprint;
             // A failure that named its tests had them run again alone instead.
-            const whole =
-              why.pass === "recheck"
-                ? wholeRunsOwed({ ...(yield* host.evidence(runId, cwd)), approved: checks })
-                : null;
+            const whole = why.pass === "recheck" ? wholeRunsOwed(journal) : null;
             for (const spec of owedLocally(checks)) {
               if (now.includes(spec.name)) continue;
               if (whole !== null && !whole.includes(spec.name)) continue;
+              if (unmoved && checkProof(journal, spec.name, "collie").last !== undefined) continue;
               const ran = yield* host.verify({ runId, name: spec.name, cwd, ...why });
               if (ran.result === "pass") now.push(spec.name);
             }
@@ -718,7 +777,7 @@ export default defineWorkflow({
           },
           output: FixOutputSchema,
         });
-        gaps = yield* settleFailed(yield* gapsNow({ pass: "fix", round: at }));
+        gaps = yield* settleFailed(yield* gapsNow({ pass: "fix", round: at }, before));
         if (stalledFix(before, gaps.tree, findings, fixed))
           stalled = { at, disputed: fixed.disputed ?? [] };
         const settled = settleFinalFix(findings, fixed, yield* host.evidence(runId, cwd));
@@ -753,17 +812,33 @@ export default defineWorkflow({
               fixable: fixable.filter(undisputed),
             })),
           );
-          // A check settled on this tree by its tests run alone is not run again; one that is
-          // has its named failures run alone too, before any gap is read.
-          const rely = Effect.gen(function* () {
-            const settled = settledChecks({ ...(yield* host.evidence(runId, cwd)), approved });
+          // A check that failed on this tree is run whole again only where its failures named no
+          // tests and it has had no recheck here, or on a resume from the park below; one that is
+          // has its named failures run alone too, before any gap is read (ADR-0034, amended
+          // 2026-10-19).
+          const rely = Effect.fn("implement.rely")(function* (resumed: boolean) {
+            const journal = { ...(yield* host.evidence(runId, cwd)), approved };
+            const settled = settledChecks(journal);
+            const whole = recheckOwed(journal);
             for (const spec of owedLocally(approved).filter((one) => !settled.includes(one.name))) {
-              const relied = yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" });
-              yield* host.record(runId, `proof: ${spec.name} relies on verification ${relied.id}`);
+              const proof = checkProof(journal, spec.name, "collie");
+              const relied =
+                proof.state === "passed" || resumed || whole.includes(spec.name)
+                  ? yield* host.verify({ runId, name: spec.name, cwd, pass: "recheck" })
+                  : proof.last;
+              if (relied !== undefined)
+                yield* host.record(
+                  runId,
+                  `proof: ${spec.name} relies on verification ${relied.id}`,
+                );
             }
             yield* settleTests;
           });
-          yield* rely;
+          const fs = yield* FileSystem.FileSystem;
+          const unprovedPark = `${place.dir}/proof-parked-unproved`;
+          const resumed = yield* fs.exists(unprovedPark).pipe(Effect.orDie);
+          yield* rely(resumed);
+          if (resumed) yield* fs.remove(unprovedPark).pipe(Effect.orDie);
           if (stalled !== null) {
             const standing = (yield* readGaps(approved, reviewed)).fixable.filter(
               (gap) => !undisputed(gap),
@@ -776,6 +851,7 @@ export default defineWorkflow({
           }
           let missing = yield* reading;
           if (missing.fixable.length > 0) {
+            yield* fs.writeFileString(unprovedPark, "").pipe(Effect.orDie);
             yield* host.parked(
               runId,
               `Outcome unproved after ${fixes} gate fixes: ${missing.gaps.join("; ")}. Repair the checks, then resume ${runId}.`,
@@ -789,7 +865,7 @@ export default defineWorkflow({
             yield* integrated("merge-proof");
             const now = (yield* host.evidence(runId, cwd)).final;
             if (now.head_sha !== checked.head_sha || now.fingerprint !== checked.fingerprint)
-              yield* rely;
+              yield* rely(false);
             reviewed = yield* reviewPass({
               target: "",
               plan: source.kind === "plan-dir" ? source.value : "",
@@ -828,6 +904,7 @@ export default defineWorkflow({
       const preexisting = baseFailuresOf(journal);
       const unsettled = [
         ...assumed,
+        ...afterMerged,
         ...rallied.unsettled,
         ...(stalled?.disputed ?? []).map(
           (one) =>
@@ -1163,6 +1240,13 @@ const renderCriteria = (criteria: ReadonlyArray<string>) =>
     ? "None: this work names no checkbox criteria, so `criteria` stays empty."
     : criteria.map((one) => `- ${one}`).join("\n");
 
+/** Each answer as the wording it answered; one that answered none of it is dropped. */
+const boundTo = (wording: ReadonlyArray<string>, given: ReadonlyArray<Criterion>): Criterion[] =>
+  given.flatMap((answer) => {
+    const criterion = wording.find((one) => answerFor(one, [answer]) !== undefined);
+    return criterion === undefined ? [] : [{ ...answer, criterion }];
+  });
+
 /** What a builder said of one item's criteria, and what it decided that the plan did not. */
 interface Answered {
   readonly item: string;
@@ -1177,7 +1261,7 @@ const showsAnything = (one: Answered) => one.criteria.length > 0 || one.assumpti
 const renderAnswered = (all: ReadonlyArray<Answered>) =>
   all.some(showsAnything)
     ? [
-        "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts:",
+        "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts. Raise as blocking an `after merge` answer to a criterion this Run could have shown before its merge request:",
         ...all
           .filter(showsAnything)
           .map((one) =>
@@ -1185,7 +1269,7 @@ const renderAnswered = (all: ReadonlyArray<Answered>) =>
               `\n${one.item}:`,
               ...one.criteria.map(
                 (criterion) =>
-                  `- ${criterion}\n  → ${answerFor(criterion, one.answers, one.criteria)?.met ?? "not answered"}`,
+                  `- ${criterion}\n  → ${answerFor(criterion, one.answers)?.met ?? "not answered"}`,
               ),
               ...one.assumptions.map((assumption) => `- assumed: ${assumption}`),
             ].join("\n"),

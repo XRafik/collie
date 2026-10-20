@@ -1350,6 +1350,12 @@ its time.
 - **A test can go red.** Break `src/` the way its name says and watch it fail before relying
   on it. A test that cannot fail, or whose every failure another test already has, is
   deleted.
+- **A test is flaky.** Measure it with `bun test --rerun-each N <file>`, narrowed with
+  `-t "<name>"`, run through `collie verify` under the Machine's own load. Each run of the
+  file gets a fresh root, `TMPDIR`, `HOME` and marker from the preload, and is checked and
+  cleaned as a single run is. Never add load to provoke it: no busy loops, no stress tools,
+  and no script that starts processes of its own. A builder's own loop for #130 left 16
+  busy loops orphaned on the Machine.
 - **An installed harness creates temporary files.** Give a server probe a scoped
   `TMPDIR`, including its extracted native libraries, and wait for the server to exit
   before removing it.

@@ -2420,6 +2420,463 @@ scenario(
   120_000,
 );
 
+const AMENDED = "**Named.** Each one is named in the audit log.";
+
+scenario(
+  "a criterion amended while its ticket is being built is handed back as it reads now",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-amended", ["unit"]);
+        yield* rig.queueOutputs([
+          null,
+          { ...BUILT, criteria: [{ criterion: AMENDED, met: "src/audit.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-amended", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-amended`;
+        yield* until(
+          () =>
+            fs.exists(`${agents}/01-first.md.prompt.md`).pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace("named in the log", "named in the audit log"),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.json`,
+          asJson({
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "test/count.test.ts",
+              },
+            ],
+          }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const back = yield* asked("r-amended", "01-first.md.criteria-1");
+        expect(back).toContain(`- ${AMENDED}`);
+        expect(back).toContain(`acceptance criterion not answered: ${AMENDED}`);
+        expect(back).not.toContain("named in the log");
+        expect(yield* asked("r-amended", "review-1")).toContain(`- ${AMENDED}\n  → src/audit.ts`);
+      }),
+    ),
+  120_000,
+);
+
+const COUNTED = "**Counted.** Every registry is counted once.";
+const COUNTED_AMENDED = "**Counted. Every registry is counted once.** Each count is logged.";
+
+scenario(
+  "a build's answer to a criterion's earlier wording does not answer it once that wording is only the amended one's lead",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-lead", ["unit"]);
+        yield* rig.queueOutputs([
+          null,
+          { ...BUILT, criteria: [{ criterion: COUNTED_AMENDED, met: "test/logged.test.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-lead", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-lead`;
+        yield* until(
+          () =>
+            fs.exists(`${agents}/01-first.md.prompt.md`).pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace(COUNTED, COUNTED_AMENDED),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.json`,
+          asJson({
+            ...BUILT,
+            criteria: [
+              { criterion: COUNTED, met: "test/count.test.ts" },
+              { criterion: "**Named.** Each one is named in the log.", met: "src/log.ts" },
+            ],
+          }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const back = yield* asked("r-lead", "01-first.md.criteria-1");
+        expect(back).toContain(`acceptance criterion not answered: ${COUNTED_AMENDED}`);
+        expect(back).not.toContain("not answered: **Named.**");
+        expect(yield* asked("r-lead", "review-1")).toContain(
+          `- ${COUNTED_AMENDED}\n  → test/logged.test.ts`,
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a hand-back's answer to a criterion's earlier wording does not answer it once that wording is only the amended one's lead",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        const named = "**Named.** Each one is named in the log.";
+        const amended = "**Named. Each one is named in the log.** Each name is quoted.";
+        yield* approve("r-lead-back", ["unit"]);
+        yield* rig.queueOutputs([
+          { ...BUILT, criteria: [{ criterion: COUNTED, met: "test/count.test.ts" }] },
+          null,
+          { ...BUILT, criteria: [{ criterion: amended, met: "test/quoted.test.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-lead-back", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-lead-back`;
+        yield* until(
+          () =>
+            fs
+              .exists(`${agents}/01-first.md.criteria-1.prompt.md`)
+              .pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace(named, amended),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.criteria-1.json`,
+          asJson({ ...BUILT, criteria: [{ criterion: named, met: "src/log.ts" }] }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const again = yield* asked("r-lead-back", "01-first.md.criteria-2");
+        expect(again).toContain(`acceptance criterion not answered: ${amended}`);
+        expect(yield* asked("r-lead-back", "review-1")).toContain(
+          `- ${amended}\n  → test/quoted.test.ts`,
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "an answer by a lead two criteria share answers neither, even once one of them is gone",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const shared = [
+          "## Acceptance criteria",
+          "",
+          "- [ ] **Checks.** The first is checked.",
+          "- [ ] **Checks.** The second is checked.",
+        ].join("\n");
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: shared },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        const amended = "**Checks.** The second is checked twice.";
+        yield* approve("r-shared-lead", ["unit"]);
+        yield* rig.queueOutputs([
+          { ...BUILT, criteria: [{ criterion: "Checks.", met: "test/check.test.ts" }] },
+          null,
+          { ...BUILT, criteria: [{ criterion: amended, met: "test/twice.test.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-shared-lead", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-shared-lead`;
+        yield* until(
+          () =>
+            fs
+              .exists(`${agents}/01-first.md.criteria-1.prompt.md`)
+              .pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket))
+            .replace("- [ ] **Checks.** The first is checked.\n", "")
+            .replace("The second is checked.", "The second is checked twice."),
+        );
+        yield* fs.writeFileString(`${agents}/01-first.md.criteria-1.json`, asJson(BUILT));
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const again = yield* asked("r-shared-lead", "01-first.md.criteria-2");
+        expect(again).toContain(`acceptance criterion not answered: ${amended}`);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "an answer to the old wording of a criterion amended during a hand-back is handed back as unanswered",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-old-words", ["unit"]);
+        yield* rig.queueOutputs([
+          {
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "test/count.test.ts",
+              },
+            ],
+          },
+          null,
+          { ...BUILT, criteria: [{ criterion: AMENDED, met: "src/audit.ts" }] },
+          BUILT,
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const running = yield* Effect.forkChild(
+          ran({ entry: shipped("implement"), runId: "r-old-words", input: { plan } }),
+        );
+        const agents = `${dir}/agents/r-old-words`;
+        yield* until(
+          () =>
+            fs
+              .exists(`${agents}/01-first.md.criteria-1.prompt.md`)
+              .pipe(Effect.orElseSucceed(() => false)),
+          (there) => there,
+        );
+        const ticket = `${plan}/issues/01-first.md`;
+        yield* fs.writeFileString(
+          ticket,
+          (yield* fs.readFileString(ticket)).replace("named in the log", "named in the audit log"),
+        );
+        yield* fs.writeFileString(
+          `${agents}/01-first.md.criteria-1.json`,
+          asJson({
+            ...BUILT,
+            criteria: [
+              { criterion: "**Named.** Each one is named in the log.", met: "src/log.ts" },
+            ],
+          }),
+        );
+        const result = yield* Fiber.join(running);
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        const again = yield* asked("r-old-words", "01-first.md.criteria-2");
+        expect(again).toContain(`acceptance criterion not answered: ${AMENDED}`);
+        expect(again).not.toContain("named in the log");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a ticket's after-merge outcomes are not criteria, and the merge request names them as unsettled",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          {
+            file: "01-first.md",
+            title: "the first one",
+            checks: "unit",
+            body: [
+              "",
+              "## After merge",
+              "",
+              "- The nightly deploy counts each registry once.",
+              "- [ ] The dashboard shows it.",
+            ].join("\n"),
+          },
+        ]);
+        yield* approve("r-after-merge", ["unit"]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-after-merge",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* fs.exists(`${dir}/agents/r-after-merge/build.criteria-1.prompt.md`)).toBe(
+          false,
+        );
+        const opening = yield* asked("r-after-merge", "mr");
+        expect(opening).toContain(
+          "- 01-first.md: after merge: The nightly deploy counts each registry once.",
+        );
+        expect(opening).toContain("- 01-first.md: after merge: The dashboard shows it.");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a criterion answered after merge goes back to no one, and the reviewer and the merge request see it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+        ]);
+        yield* approve("r-answered-later", ["unit"]);
+        yield* rig.queueOutputs([
+          {
+            ...BUILT,
+            criteria: [
+              {
+                criterion: "**Counted.** Every registry is counted once.",
+                met: "after merge: only the deploy shows it",
+              },
+              { criterion: "**Named.** Each one is named in the log.", met: "src/log.ts" },
+            ],
+          },
+          CLEAN_SYNTHESIS,
+          OPENED,
+        ]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-answered-later",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(
+          yield* fs.exists(`${dir}/agents/r-answered-later/01-first.md.criteria-1.prompt.md`),
+        ).toBe(false);
+        const review = yield* asked("r-answered-later", "review-1");
+        expect(review).toContain(
+          "- **Counted.** Every registry is counted once.\n  → after merge: only the deploy shows it",
+        );
+        expect(review).toContain(
+          "Raise as blocking an `after merge` answer to a criterion this Run could have shown",
+        );
+        expect(yield* asked("r-answered-later", "mr")).toContain(
+          "- 01-first.md: **Counted.** Every registry is counted once. — after merge: only the deploy shows it",
+        );
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a criterion still answered not met after every hand-back fails the Run before any review",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-not-met", ["unit"]);
+        const notMet = {
+          ...BUILT,
+          criteria: [
+            {
+              criterion: "**Counted.** Every registry is counted once.",
+              met: "test/count.test.ts",
+            },
+            {
+              criterion: "**Named.** Each one is named in the log.",
+              met: "not met: the log has no names",
+            },
+          ],
+        };
+        yield* rig.queueOutputs([notMet, notMet, notMet]);
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId: "r-not-met",
+          input: { plan },
+        });
+        yield* bin.restore();
+
+        expect(result._tag).toBe("Failure");
+        expect(reasonOf(result)).toContain(
+          "acceptance criterion not met: **Named.** Each one is named in the log.",
+        );
+        const sent = (yield* prompts()).join("\n");
+        expect(sent).toContain("01-first.md.criteria-2.prompt.md");
+        expect(sent).not.toContain("review-1");
+        expect(sent).not.toContain("02-second.md.prompt.md");
+        expect(sent).not.toContain("mr.prompt.md");
+      }),
+    ),
+  120_000,
+);
+
 scenario(
   "the criteria in a work source given as words are answered as a ticket's are",
   () =>
@@ -3469,7 +3926,7 @@ scenario(
           disputed: [],
           checks: [{ name: "unit" }],
         };
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, fix, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(fix), OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-gate-fix",
@@ -3524,7 +3981,7 @@ scenario(
           disputed: [],
           checks: [{ name: "unit" }],
         };
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, fix, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(fix), OPENED]);
         yield* ran({
           entry: shipped("implement"),
           runId: "r-passes",
@@ -4089,6 +4546,12 @@ const reliedOn = (runId: string) =>
 
 const GATE_FIX = { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [] };
 
+/** A gate fix that moves the tree, so the gate runs its checks again on it. */
+const moving = <A>(output: A, n = 1) => ({
+  writes: [{ path: `${rig.projectDir}/fixed-${n}`, text: "fixed\n" }],
+  output,
+});
+
 scenario(
   "a green Run runs each check once: the proof relies on the gate's own pass",
   () =>
@@ -4149,12 +4612,24 @@ scenario(
         yield* fs.writeFileString(
           `${evidenceDir(dir, runId)}/approved.json`,
           asApproved([
-            // Red at the gate and on the recheck, green after the fix.
-            counting("unit", `${rig.root}/unit-runs`, `[ $n -ge 3 ]`),
+            // Red at the gate and on the recheck, until the fix re-grants it.
+            counting("unit", `${rig.root}/unit-runs`, "false"),
             counting("lint", `${rig.root}/lint-runs`),
           ]),
         );
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        const regranting = {
+          writes: [
+            {
+              path: `${evidenceDir(dir, runId)}/approved.json`,
+              text: asApproved([
+                { name: "unit", executable: "true", argv: [], cwd: rig.projectDir },
+                counting("lint", `${rig.root}/lint-runs`),
+              ]),
+            },
+          ],
+          output: GATE_FIX,
+        };
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, regranting, OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4166,7 +4641,7 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         // The fix left the tree as it was, so lint's pass at the gate still answers.
         expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
-        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(3);
+        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(2);
         const records = yield* readVerifications(evidenceDir(dir, runId));
         const last = (name: string, pass: string) =>
           records.findLast((one) => one.name === name && one.pass === pass)!.id;
@@ -4295,7 +4770,7 @@ scenario(
           printed: FLAKY_OUTPUT,
           rerun: `printf ' 0 pass\\n 1 fail\\n' >&2; exit 1`,
         });
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(GATE_FIX), OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4421,7 +4896,7 @@ scenario(
           rerun: ONE_FAILS,
           atBase: `case "$4" in *old*) ${FAILS_AT_BASE};; *) ${ONE_PASSES};; esac`,
         });
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, OPENED]);
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, moving(GATE_FIX), OPENED]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4453,7 +4928,13 @@ scenario(
           rerun: ONE_FAILS,
           atBase: `echo 'error: regex "^the flaky one$" matched 0 tests.' >&2; exit 1`,
         });
-        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, GATE_FIX, GATE_FIX, OPENED]);
+        yield* rig.queueOutputs([
+          BUILT,
+          CLEAN_SYNTHESIS,
+          moving(GATE_FIX),
+          moving(GATE_FIX, 2),
+          OPENED,
+        ]);
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
@@ -4553,7 +5034,7 @@ scenario(
         expect(yield* asked(runId, "mr")).toContain(
           `- ${disputed}: gate fix 1 disputed it and changed nothing`,
         );
-        expect((yield* passesOf(runId)).filter((pass) => pass === "recheck")).toHaveLength(1);
+        expect((yield* passesOf(runId)).filter((pass) => pass === "recheck")).toEqual([]);
       }),
     ),
   120_000,
@@ -4641,8 +5122,12 @@ const disputing = (titles: ReadonlyArray<string>) => ({
   })),
 });
 
+/** A fix that repairs the checks and moves the tree, so the gate runs them again. */
 const repairing = () => ({
-  writes: [{ path: `${rig.root}/repaired`, text: "fixed\n" }],
+  writes: [
+    { path: `${rig.root}/repaired`, text: "fixed\n" },
+    { path: `${rig.projectDir}/repaired`, text: "fixed\n" },
+  ],
   output: GATE_FIX,
 });
 
@@ -4676,6 +5161,8 @@ scenario(
         );
         const records = yield* readVerifications(evidenceDir(dir, runId));
         expect(records.findLast((one) => one.name === "unit")?.result).toBe("fail");
+        // Nothing runs again on the tree the fix left as it was, not even the proof's recheck.
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck"]);
       }),
     ),
   120_000,
@@ -4706,6 +5193,8 @@ scenario(
         expect(said(result)).toBe(OPENED.mr_url);
         expect(yield* asked(runId, "gate-fix-2")).toContain("unit failed");
         expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+        // Each fix moved the tree, so each is followed by the check run whole.
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck", "fix", "fix"]);
       }),
     ),
   120_000,
@@ -4736,62 +5225,132 @@ scenario(
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
-        expect(yield* asked(runId, "gate-fix-2")).toContain("lint failed");
+        const second = yield* asked(runId, "gate-fix-2");
+        expect(second).toContain("unit failed");
+        expect(second).toContain("lint failed");
         expect(yield* asked(runId, "mr")).not.toContain("disputed it and changed nothing");
+        // Gate fix 1 left the tree as it was, so nothing ran between the two fixes.
+        expect(yield* passesOf(runId)).toEqual([
+          "gate",
+          "gate",
+          "recheck",
+          "recheck",
+          "fix",
+          "fix",
+        ]);
       }),
     ),
   120_000,
 );
 
 scenario(
-  "after a restart the host runs again a check it collected before it started",
+  "a check re-granted with another command by a gate fix that leaves the tree as it was is run",
   () =>
     runEffect(
       Effect.gen(function* () {
-        const bin = yield* FakeBin.make(`${rig.root}/bin`);
-        yield* bin.add("glab", `exit 0`);
+        const runId = "r-gate-regranted";
         yield* ahead();
-        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
-        const runId = "r-gate-resumed";
-        yield* approve(runId, ["unit", "lint"]);
-        const fs = yield* FileSystem.FileSystem;
-        yield* fs.writeFileString(
-          `${evidenceDir(dir, runId)}/approved.json`,
-          asApproved([
-            counting("unit", `${rig.root}/unit-runs`),
-            counting("lint", `${rig.root}/lint-runs`, `[ -f ${rig.root}/repaired ]`),
-          ]),
-        );
-        yield* rig.queueOutputs([
-          BUILT,
-          CLEAN_SYNTHESIS,
-          GATE_FIX,
-          GATE_FIX,
-          GATE_FIX,
-          GATE_FIX,
-          OPENED,
-        ]);
-        const options = {
+        const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "" }]);
+        const bin = yield* stuck(runId, ["unit"]);
+        const regranting = { writes: [naming(runId, ["unit"])], output: GATE_FIX };
+        yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, regranting, OPENED]);
+        const result = yield* ran({
           entry: shipped("implement"),
           runId,
           input: { plan },
           options: { outcome: "feature" },
-        };
-        const result = yield* running(options, (status) =>
-          until(
-            () => status,
-            (got) => got !== "pending",
-          ),
-        );
-        expect(result).toBe("suspended");
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* passesOf(runId)).toEqual(["gate", "recheck", "fix"]);
+      }),
+    ),
+  120_000,
+);
+
+/** A Run whose lint fails until `${rig.root}/repaired` exists, parked once its four gate fixes run out. */
+const heldUnproved = (runId: string) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* ahead();
+    const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+    yield* approve(runId, ["unit", "lint"]);
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.writeFileString(
+      `${evidenceDir(dir, runId)}/approved.json`,
+      asApproved([
+        counting("unit", `${rig.root}/unit-runs`),
+        counting("lint", `${rig.root}/lint-runs`, `[ -f ${rig.root}/repaired ]`),
+      ]),
+    );
+    yield* rig.queueOutputs([
+      BUILT,
+      CLEAN_SYNTHESIS,
+      GATE_FIX,
+      GATE_FIX,
+      GATE_FIX,
+      GATE_FIX,
+      OPENED,
+    ]);
+    const options = {
+      entry: shipped("implement"),
+      runId,
+      input: { plan },
+      options: { outcome: "feature" },
+    };
+    const result = yield* running(options, (status) =>
+      until(
+        () => status,
+        (got) => got !== "pending",
+      ),
+    );
+    expect(result).toBe("suspended");
+    expect(yield* parkedWhy(runId)).toContain("Outcome unproved after 4 gate fixes: lint failed");
+    return { bin, options };
+  });
+
+scenario(
+  "after a restart the host runs again a check it collected before it started",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-resumed";
+        const { bin, options } = yield* heldUnproved(runId);
         const suspended = yield* runsOf(`${rig.root}/unit-runs`);
         // The gate's pass answered each fix, which left the tree as it was.
         expect(suspended).toBe(1);
+        // Its gate run and one recheck.
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(2);
 
+        const fs = yield* FileSystem.FileSystem;
         yield* fs.writeFileString(`${rig.root}/repaired`, "");
         expect(said(yield* resumed(options))).toBe(OPENED.mr_url);
         yield* bin.restore();
         expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(suspended + 1);
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(3);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a Run held unproved and resumed with nothing repaired runs its failing check whole once more, and is held again",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-gate-resumed-unrepaired";
+        const { bin, options } = yield* heldUnproved(runId);
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(2);
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.remove(controlPath(dir, PARKED, runId));
+
+        const why = yield* resumedUntilParked(options);
+        yield* bin.restore();
+        expect(why).toContain("Outcome unproved after 4 gate fixes: lint failed");
+        expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(3);
       }),
     ),
   120_000,
@@ -4916,7 +5475,7 @@ scenario(
         yield* rig.queueOutputs([
           BUILT,
           CLEAN_SYNTHESIS,
-          { verdict: "clean", fixed: [], disputed: [], checks: [{ name: "unit" }] },
+          moving({ verdict: "clean", fixed: [], disputed: [], checks: [{ name: "unit" }] }),
           OPENED,
         ]);
         const result = yield* ran({
@@ -5865,6 +6424,24 @@ const parkedWhy = (runId: string) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.readFileString(controlPath(dir, PARKED, runId))),
     Effect.orElseSucceed(() => ""),
+  );
+
+/** A Run resumed whose park was cleared, waited on until it parks again, and why. */
+const resumedUntilParked = (options: ShippedRun) =>
+  session(
+    Effect.gen(function* () {
+      const made = yield* loaded(options.entry, options.runId);
+      const engine = yield* WorkflowEngine.WorkflowEngine;
+      const payload = { runId: options.runId, input: options.input };
+      return yield* Effect.gen(function* () {
+        yield* engine.resume(made.workflow, yield* made.workflow.executionId(payload));
+        yield* made.workflow.execute(payload, { discard: true });
+        return yield* parkedWhy(options.runId).pipe(
+          Effect.filterOrFail((why) => why !== ""),
+          Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+        );
+      }).pipe(Effect.provide(made.layer));
+    }),
   );
 
 /** What `collie run intent verification` leaves for a Run: its checks, as the host keeps them. */

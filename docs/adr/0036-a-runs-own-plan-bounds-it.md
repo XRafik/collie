@@ -49,3 +49,30 @@ directory's `SPEC.md`, is touched, and authority is never read from text.
   bumps the version. An open drift report found again at the new version is moved to it,
   so its correction and escalation carry on.
 - If planners start writing other headings, they are added only when a real SPEC uses them.
+
+## Amended 2026-10-19: a plan's constraints narrow its goal, and the goal is not evidence
+
+run-ed73efbf.implement filed three semantic warnings and then the same three again;
+run-103d22dc.implement filed six (cego/collie#129). Every one cited the Run's own goal,
+`kind: plan`, as breaching an `Out of scope` constraint that the Run's `plan/SPEC.md` had cut
+from that very goal, and asked for something to be removed "from the plan", which no agent
+can do. The cross-run judgement gave the judge each related Run's goal and constraints side
+by side and none of its work, nothing said that the constraints narrow the goal, and what
+it filed was stored as the model wrote it.
+
+- **A constraint read from the plan narrows the goal it was cut from.** A goal is what was
+  asked, not work done, and it is never evidence of drift. A Run's own judgement and the
+  cross-run judgement are both told so.
+- **A judgement reads the work.** A Run's own judgement keeps its diff. The cross-run
+  judgement is given, for each related Run, the work at its newest card, beside its
+  constraints: the diff from where that card's commit left the default branch, and the
+  Run's Outputs, under the caps and redaction a Run's own diff has. A file name or a
+  commit subject says where work happened, not what it did, so neither is enough to judge
+  by. Where a Run's work cannot be read, because it has no card yet or its commit is not in
+  the judging Run's repository, the judgement is told why and judges the work it can read.
+- **What is filed is checked before it is.** A report is filed only when it cites work the
+  judgement was shown: a file whose diff it was given, or one of the Run's Outputs. A
+  report whose evidence is a goal, another Intent's text, or a commit alone is dropped. A
+  cross-run report is filed only against a constraint of the Run it names, citing that
+  Run's work, and is normalised the way a Run's own report is, its kind and id set by
+  Collie rather than taken from the model.

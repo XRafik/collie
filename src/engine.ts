@@ -188,6 +188,7 @@ import {
   insideRun,
   ranCommand,
   readVerifications,
+  recordFor,
   reliedFor,
   rerunTest,
   resolveExecutable,
@@ -1158,15 +1159,17 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly met: string;
   }
 
-  /**
-   * The newest answer to this criterion. A copy without its formatting counts, and so does its
-   * bold lead alone where no other criterion \`among\` the ticket's opens with the same lead.
-   */
+  /** The newest answer to this criterion's whole wording; a copy without its formatting counts. */
   export function answerFor(
     criterion: string,
     answers: ReadonlyArray<Criterion>,
-    among?: ReadonlyArray<string>,
   ): Criterion | undefined;
+
+  /** Each criterion whose newest answer says only CI, a merge or a deploy can show it. */
+  export function afterMergeAnswers(
+    criteria: ReadonlyArray<string>,
+    answers: ReadonlyArray<Criterion>,
+  ): Criterion[];
 
   /**
    * Each criterion of the ticket the builder's answers leave unanswered or say is not met,
@@ -1442,9 +1445,13 @@ export const SDK_DECLARATIONS = `declare module "collie" {
 
   /**
    * A ticket's acceptance criteria: each checkbox item with its wrapped lines, under its
-   * Acceptance criteria heading where it has one. A nested list and fenced code are not.
+   * Acceptance criteria heading where it has one, and never under ## After merge. A nested
+   * list and fenced code are not.
    */
   export function criteriaIn(text: string): string[];
+
+  /** What only CI, a merge or a deploy can show: the items under a ticket's ## After merge. */
+  export function afterMergeIn(text: string): string[];
 
   /** A plan's tickets in an order they can be built in, narrowed to one repository. */
   export function orderedTickets(
@@ -1581,6 +1588,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   ): Array<{ readonly check: string; readonly test: FailedTest }>;
   /** The checks whose latest run on this tree failed without naming its tests, or that have none of their command. */
   export function wholeRunsOwed(got: FailedChecks): string[];
+  /** Of those, the ones with no recheck of their command on this tree yet. */
+  export function recheckOwed(got: FailedChecks): string[];
   /** Each Flake on this tree, by the check it failed in: never a pass. */
   export function flakesOf(got: FailedChecks): Array<FailedTest & { readonly check: string }>;
   /** Each test still failing after its rerun that the base has not been asked about since. */
@@ -2313,14 +2322,17 @@ const recordedClaim = (
     Effect.orElseSucceed((): HelleClaim | null => null),
   );
 
-/** A pass this host already collected that answers for exactly one of a Run's Checks. */
+/**
+ * The Run's Check a command is, with the latest record this host collected of it on this
+ * tree, or null where the command is none of the Run's Checks.
+ */
 export class Reliance extends Context.Service<
   Reliance,
   {
     readonly relied: (
       runId: string,
       command: Pick<Verification, "executable" | "argv" | "cwd">,
-    ) => Effect.Effect<Verification | null>;
+    ) => Effect.Effect<{ readonly check: string; readonly record: Verification | null } | null>;
   }
 >()("collie/Reliance") {}
 
@@ -3417,8 +3429,14 @@ export const hostLayer = (options: {
             const executable = yield* resolveExecutable(command.executable, command.cwd);
             if (executable === null) return null;
             for (const spec of yield* approvedOf(dir, runId)) {
-              if (ranCommand({ ...command, executable }, yield* commandOf(own, spec)))
-                return yield* relyOn(runId, own, spec, { pass: "check" });
+              if (!ranCommand({ ...command, executable }, yield* commandOf(own, spec))) continue;
+              const record = yield* recordFor(evidenceDir(dir, runId), own, spec, hostStarted);
+              if (record !== null)
+                yield* appendLog(
+                  runDir(dir, runId),
+                  `check: ${spec.name} answered by verification ${record.id}`,
+                ).pipe(Effect.orDie);
+              return { check: spec.name, record };
             }
             return null;
           }),

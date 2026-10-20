@@ -841,59 +841,179 @@ test(
   240_000,
 );
 
+/** A Run of `workflow` whose one check, `unit`, is `command`, finished. */
+const checkedRun = (world: World, workflow: string, command: ReadonlyArray<string>) =>
+  Effect.gen(function* () {
+    const started = yield* collie(world, [
+      "run",
+      "start",
+      workflow,
+      "--input",
+      "note=x",
+      "--verify",
+      Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+        name: "unit",
+        executable: command[0],
+        argv: command.slice(1),
+        cwd: "worktree",
+      }),
+    ]);
+    expect(started.envelope.ok).toBe(true);
+    const runId = (yield* payloadOf(started.envelope)).runId ?? "";
+    yield* collie(world, ["run", "wait", runId]);
+    return runId;
+  });
+
+/** How often a command ran, counted outside the tree so counting moves nothing it is bound to. */
+const counted = (world: World) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const counter = `${world.home}/ran`;
+    return {
+      counter,
+      runs: fs.readFileString(counter).pipe(
+        Effect.map((text) => text.split("\n").length - 1),
+        Effect.orElseSucceed(() => 0),
+      ),
+    };
+  });
+
+/** What a Run has recorded: its verifications and the logs `collie verify` wrote. */
+const recordsOf = (world: World, runId: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const evidence = `${world.state}/evidence/${runId}`;
+    return {
+      journal: yield* fs
+        .readFileString(`${evidence}/steering/verifications.jsonl`)
+        .pipe(Effect.orElseSucceed(() => "")),
+      logs: yield* fs.readDirectory(`${evidence}/verify`).pipe(Effect.orElseSucceed(() => [])),
+    };
+  });
+
+const Answer = Schema.Struct({
+  ran: Schema.Boolean,
+  verification: Schema.Struct({
+    id: Schema.String,
+    result: Schema.String,
+    exit: Schema.Number,
+    by: Schema.String,
+    pass: Schema.optional(Schema.String),
+  }),
+});
+
 test(
   "collie verify of one of a Run's Checks that already passed on this tree answers without running it",
   () =>
-    proves("collie-lifecycle-verify-once-", (world) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const client = yield* connect(world.state).pipe(Effect.orDie);
-        const started = yield* client
-          .start({ project: world.project, id: "proof", request: "req-1", input: { note: "x" } })
-          .pipe(Effect.orDie);
-        // Outside the tree, so counting its runs moves nothing a verification is bound to.
-        const counter = `${world.home}/ran`;
-        const command = ["sh", "-c", `echo ran >> ${counter}`];
-        const runs = fs.readFileString(counter).pipe(
-          Effect.map((text) => text.split("\n").length - 1),
-          Effect.orElseSucceed(() => 0),
-        );
-        const granted = yield* collie(world, [
-          "run",
-          "intent",
-          "verification",
-          started.runId,
-          "--name",
-          "unit",
-          "--",
-          ...command,
-        ]);
-        expect(granted.envelope.ok).toBe(true);
-        const verify = (...args: ReadonlyArray<string>) =>
-          collie(world, ["verify", "--run", started.runId, ...args]);
+    provesWith(
+      "collie-lifecycle-verify-once-",
+      (world) =>
+        Effect.gen(function* () {
+          const { counter, runs } = yield* counted(world);
+          const command = ["sh", "-c", `echo ran >> ${counter}`];
+          const runId = yield* checkedRun(world, "checked", command);
+          expect(yield* runs).toBe(1);
+          const verify = (...args: ReadonlyArray<string>) =>
+            collie(world, ["verify", "--run", runId, ...args]);
 
-        const first = yield* verify("--", ...command);
-        expect(first.exit).toBe(0);
-        expect(first.envelope.data).toMatchObject({ ran: true });
-        expect(yield* runs).toBe(1);
+          const again = yield* verify("--", ...command);
+          expect(again.exit).toBe(0);
+          expect(yield* runs).toBe(1);
+          const answer = Schema.decodeUnknownSync(Answer)(again.envelope.data);
+          expect(answer).toMatchObject({
+            ran: false,
+            verification: { result: "pass", pass: "gate" },
+          });
+          expect(again.stderr).toContain(`not run again: verification ${answer.verification.id}`);
 
-        const again = yield* verify("--", ...command);
-        expect(again.exit).toBe(0);
-        expect(yield* runs).toBe(1);
-        const { id } = Schema.decodeUnknownSync(
-          Schema.Struct({ verification: Schema.Struct({ id: Schema.String }) }),
-        )(first.envelope.data).verification;
-        expect(again.envelope.data).toMatchObject({ ran: false, verification: { id } });
-        expect(again.stderr).toContain(`not run again: verification ${id}`);
+          // Expecting a failure is no reason to run a Check.
+          const expecting = yield* verify("--expect", "fail", "--", ...command);
+          expect(expecting.envelope.data).toMatchObject({
+            ran: false,
+            verification: answer.verification,
+          });
+          expect(yield* runs).toBe(1);
 
-        // Expecting a failure, or a command that is not one of the Run's Checks, always runs.
-        yield* verify("--expect", "fail", "--", ...command);
-        expect(yield* runs).toBe(2);
-        yield* verify("--", "sh", "-c", `echo ran >> ${counter}; true`);
-        yield* verify("--", "sh", "-c", `echo ran >> ${counter}; true`);
-        expect(yield* runs).toBe(4);
-        yield* stopHost(world.state);
-      }),
+          // A command that is not one of the Run's Checks runs, every time.
+          const other = yield* verify("--", "sh", "-c", `echo ran >> ${counter}; true`);
+          yield* verify("--", "sh", "-c", `echo ran >> ${counter}; true`);
+          expect(yield* runs).toBe(3);
+          expect(other.envelope.data).toMatchObject({ ran: true, verification: { by: "agent" } });
+          yield* stopHost(world.state);
+        }),
+      ["checked.workflow.ts"],
+    ),
+  240_000,
+);
+
+test(
+  "collie verify of a Run's Check that failed on this tree answers with that failure and runs nothing",
+  () =>
+    provesWith(
+      "collie-lifecycle-verify-failed-",
+      (world) =>
+        Effect.gen(function* () {
+          const { counter, runs } = yield* counted(world);
+          const command = ["sh", "-c", `echo ran >> ${counter}; exit 3`];
+          const runId = yield* checkedRun(world, "checked", command);
+          expect(yield* runs).toBe(1);
+          const before = yield* recordsOf(world, runId);
+
+          for (const expecting of [[], ["--expect", "fail"]]) {
+            const answered = yield* collie(world, [
+              "verify",
+              "--run",
+              runId,
+              ...expecting,
+              "--",
+              ...command,
+            ]);
+            expect(answered.exit).toBe(3);
+            expect(answered.envelope.data).toMatchObject({
+              ran: false,
+              verification: { result: "fail", exit: 3, pass: "gate" },
+            });
+            expect(answered.stderr).not.toContain("already passed");
+          }
+          expect(yield* runs).toBe(1);
+          expect(yield* recordsOf(world, runId)).toEqual(before);
+          yield* stopHost(world.state);
+        }),
+      ["checked.workflow.ts"],
+    ),
+  240_000,
+);
+
+test(
+  "collie verify of a Run's Check with no record on this tree is refused, naming the gate",
+  () =>
+    provesWith(
+      "collie-lifecycle-verify-gate-",
+      (world) =>
+        Effect.gen(function* () {
+          const { counter, runs } = yield* counted(world);
+          const command = ["sh", "-c", `echo ran >> ${counter}`];
+          // `proved` reads its checks and runs none of them.
+          const runId = yield* checkedRun(world, "proved", command);
+
+          for (const expecting of [[], ["--expect", "fail"]]) {
+            const refused = yield* collie(world, [
+              "verify",
+              "--run",
+              runId,
+              ...expecting,
+              "--",
+              ...command,
+            ]);
+            expect(refused.envelope.ok).toBe(false);
+            expect(refused.envelope.error?.code).toBe("invalid_state");
+            expect(refused.envelope.error?.message).toContain("gate");
+          }
+          expect(yield* runs).toBe(0);
+          expect(yield* recordsOf(world, runId)).toEqual({ journal: "", logs: [] });
+          yield* stopHost(world.state);
+        }),
+      ["proved.workflow.ts"],
     ),
   240_000,
 );
