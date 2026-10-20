@@ -90,7 +90,16 @@ the work itself. Nobody is asked for one ([the full order](cli.md#start-a-run)).
 **What happens:** one implementer agent builds, a commit per ticket. It reviews what it
 built with the same pass `review` runs — one complete review — and loops on the findings for
 at most four review and fix rounds. Every commit is pushed, so the reviewers read the change
-rather than the state before it. The merge request is opened or updated last, and not at
+rather than the state before it. Before any reviewer sees a ticket, each of its acceptance
+criteria needs an answer, and one left unanswered or not met goes back to the builder. The
+criteria are read from the ticket again before each hand-back, so a ticket the planner
+amended is judged as it reads now. A ticket's `## After merge` outcomes are not criteria:
+the merge request names them under **Not settled by the run**. A criterion only CI, a merge
+or a deploy can show may be answered `after merge: <reason>`: it does not end the Run, the
+reviewer blocks one the Run could have shown, and the merge request names the ticket, the
+criterion and the reason under the same heading
+([ADR-draft-a-criterion-is-what-the-run-can-show-before-its-merge-request](adr/draft-a-criterion-is-what-the-run-can-show-before-its-merge-request.md)).
+The merge request is opened or updated last, and not at
 all only where there is no GitLab to open one on. Missing evidence does not keep it
 closed: an opened merge request is not a gate that passed, and what is unproved is
 written into it (see **Ends:**).
@@ -126,7 +135,14 @@ failing before the Run's changes, and a check whose every such test does is not 
 implementer; a test that passes there, or that the base does not have, is the Run's own. A check
 whose failures name no tests has no baseline and is handed to the fixes. A fix that changes nothing and disputes every finding it was
 handed ends the fixes, since another would check the same tree: the outcome stays unproved,
-and the merge request names each disputed gap with the fixer's reason. A gate fix lands after the last
+and the merge request names each disputed gap with the fixer's reason. A check is not run whole
+again on a tree it failed on: after a fix that left HEAD and the fingerprint as they were,
+nothing runs and the round is read from the records already on that tree, and a check whose
+failures named tests is read from its runs alone and at the base rather than rechecked. A
+check re-granted with another command or directory still runs. When the four fixes run out
+with a check still failing and no stall, the Run is parked "Outcome unproved after 4 gate
+fixes …", naming the gaps; repair the checks and resume it, and a resume from that park runs
+each check still failing whole once more, since a repair can be outside the tree. A gate fix lands after the last
 review, so the merge request says it was not re-reviewed. What the Run could not settle —
 checks still unproved, blocking disputes the reviewers left unanswered, and the assumptions
 an implementer made where the spec was silent — goes into the description under **Not

@@ -110,3 +110,30 @@ and nothing here turns a failure into a pass.
   exemption.
 - A check red on the base no longer hides a new failure in it: a new failing test is not
   one the base reports, and a check that names no tests is not exempted at all.
+
+## Amended 2026-10-19: a check is not run whole again on a tree it failed on
+
+The stall rule above ended the gate fixes, but it was read only after the stalled round had
+run every failing check whole again on the unchanged tree, and the proof then ran each
+unsettled failing check whole once more as a `recheck` (cego/collie#123). On Collie's own
+suite under load that is two more suites, often 20 minutes or more each, on a tree whose
+result Collie already held.
+
+- **A check's result on a tree stands for that tree.** After a gate fix that left HEAD and
+  the fingerprint as they were, no check runs again: the round is read against the records
+  already on that tree. A tree that moved is checked whole, as before, and so is a check
+  re-granted with another command or directory.
+- **The whole `recheck` is only for a check whose failures name no tests.** A check whose
+  failures named tests has had them run alone and at the base already; the proof reads
+  those records rather than running the check again.
+- **Fixes that run out still hold the Run.** When the rounds are spent and a gap is left
+  that is not a stall, the Run is held unproved, as
+  [ADR-0023's 2026-10-09 amendment](0023-a-rally-is-a-loop-and-a-claim-is-not-proof.md) and
+  [ADR-0055](0055-a-run-never-asks-to-run-its-checks.md) D2 say. `docs/workflows.md` lists
+  that end beside the others.
+- **A resume is the ask to run them again.** The Run held unproved asks a human to repair
+  the checks and resume, and a repair can be outside the tree: a tool, an environment, a
+  file a check reads. So the first proof after that resume runs each check still failing
+  on the tree whole once more, and its named failures alone and at the base, as before.
+  From there the rule above holds again, so a resume with nothing repaired costs one more
+  run of each failing check and holds the Run again.

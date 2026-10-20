@@ -1,6 +1,6 @@
 // A test file leaves nothing behind.
 //
-// Each test file gets a temporary root of its own, removed when the file ends: `TMPDIR`
+// Each run of a test file gets a temporary root of its own, removed when the run ends: `TMPDIR`
 // points into it, and every process a test starts carries `COLLIE_TEST_ROOT` naming it.
 // A host is started detached, to outlive the client that needed it, so every host a test
 // starts is told to live no longer than this process, and one whose directory goes stops by
@@ -13,20 +13,36 @@
 // directories, reach a test unless it sets them itself. HOME is the suite's own, so a suite
 // run from a herdr pane cannot reach the live herd.
 
-import { afterAll, afterEach, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, beforeAll, beforeEach } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { alive, kill, MARKER, marked } from "./sweep";
 import { testBunfig } from "./packages";
 
-const root = mkdtempSync(join(tmpdir(), `collie-test-${process.pid}-`));
-process.env.TMPDIR = root;
+const base = tmpdir();
+let root = "";
+const makeRoot = () => {
+  root = mkdtempSync(join(base, `collie-test-${process.pid}-`));
+  process.env.TMPDIR = root;
+  process.env[MARKER] = root;
+  process.env.HOME = join(root, "home");
+  mkdirSync(process.env.HOME);
+  writeFileSync(join(process.env.HOME, ".bunfig.toml"), testBunfig);
+};
+makeRoot();
 process.env.COLLIE_HOST_WATCH_PID = String(process.pid);
 // A stopped host waits this long for its steps before exiting; well inside `settled` below,
 // so a host told to stop is gone before the check, not reported as left behind.
 process.env.COLLIE_HOST_STOP_GRACE ??= "500 millis";
-process.env[MARKER] = root;
 for (const key of Object.keys(process.env))
   if (key.startsWith("HERDR_") && key !== "HERDR_API_SCHEMA") delete process.env[key];
 delete process.env.COLLIE_USER_DIR;
@@ -34,13 +50,10 @@ delete process.env.COLLIE_USER_DIR;
 process.env.COLLIE_RELEASES = "http://127.0.0.1:9";
 delete process.env.COLLIE_CWD;
 delete process.env.XDG_CONFIG_HOME;
-process.env.HOME = join(root, "home");
-mkdirSync(process.env.HOME);
 process.env.BUN_INSTALL_CACHE_DIR = new URL(
   "../../.scratch/test-packages",
   import.meta.url,
 ).pathname;
-writeFileSync(join(process.env.HOME, ".bunfig.toml"), testBunfig);
 
 // Bun.spawn's default environment is the one this process started with, not process.env.
 type Spawn = (first: unknown, options?: { env?: unknown }) => unknown;
@@ -84,6 +97,11 @@ const settled = async <A>(find: () => ReadonlyArray<A>) => {
   }
   return left;
 };
+
+// The next `--rerun-each` run's, its last one having been removed.
+beforeAll(() => {
+  if (!existsSync(root)) makeRoot();
+});
 
 let before = new Set<string>();
 beforeEach(() => {

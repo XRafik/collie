@@ -148,7 +148,9 @@ While you iterate, run what covers what you touched, each through `collie verify
 - `bun run typecheck`;
 - `bun test <files>`, which runs the sources and takes no suite lock;
 - never the whole suite (`bun run test`, `bun run check`): that is the gate's, which runs
-  the Run's Checks on the final tree.
+  the Run's Checks on the final tree. Given one of the Run's Checks, `collie verify` runs
+  nothing: it answers with that Check's latest record on the tree, or refuses with
+  `invalid_state` and names the gate.
 
 Tests are unit tests only: they call the code through its own interface, with fakes at
 its edges. No Playwright and no test that drives a built app or a browser — a behaviour

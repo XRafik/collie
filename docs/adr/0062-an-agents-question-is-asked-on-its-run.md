@@ -70,3 +70,25 @@ asks, and is now asked on the Run.
   with the step.
 - Only Claude has a hook that can take a question before it reaches the pane. Codex,
   OpenCode and Pi agents stay as they are, with the budget paused while they are blocked.
+
+## Amended 2026-10-19: the budget parks the Run, and collection goes on
+
+run-33c8f85a.implement's builder kept working after its park and wrote `build.json` two
+hours later. Nothing read it until a human resumed the Run seven minutes after that
+(cego/collie#127). Counting only idle time makes that park rarer, but a park still
+suspended the Run, and after it nothing read the Output file.
+
+- **When the budget runs out, the Run is parked and keeps waiting.** It shows that it needs
+  you: the agent has written nothing, Collie is still collecting, and an agent that has
+  stopped should be asked to write it. Collection goes on reading the Output with no budget,
+  as a slow compaction does since [ADR-0007's 2026-10-15 amendment](0007-compact-a-reused-agent-at-a-work-boundary.md).
+  An Output that arrives later clears the park and the step goes on, without a resume.
+- **An agent whose subscription ran out is waited for the same way.** While no agent has
+  room ([ADR-0049](0049-work-goes-to-an-agent-with-usage-left.md) D8), its budget's park no
+  longer ends the wait for one that has. Its Output or an agent with room, whichever comes
+  first, clears the park and the step goes on.
+- **Everything a human could do still works.** A stop ends the wait, a hold takes effect
+  as it does inside the budget, a steer reaches the agent, a host restart reattaches to the
+  wait, and a gone agent is revived or repaired as it is today. A background `collie verify` is still reported to the agent
+  ([ADR-draft-an-agent-is-told-when-its-verify-ends](draft-an-agent-is-told-when-its-verify-ends.md)),
+  because Collie is still collecting from it.

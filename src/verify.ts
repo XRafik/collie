@@ -507,10 +507,10 @@ export const ranOneTest = (v: Pick<Verification, "test">) => v.test !== undefine
 export const passed = (v: Verification) => v.result === "pass" && v.expect === "pass";
 
 /**
- * The latest record of exactly this command on this tree, where it is a pass collected in
- * this environment since `since`. Whoever asked for it does not matter: the host ran it.
+ * The latest record of exactly this command on this tree, where it was collected in this
+ * environment since `since`. Whoever asked for it does not matter: the host ran it.
  */
-export function reliedPass(
+function latestRecord(
   records: ReadonlyArray<Verification>,
   wanted: Pick<Verification, "executable" | "argv" | "cwd"> & {
     readonly environment: string | null;
@@ -520,11 +520,7 @@ export function reliedPass(
 ): Verification | null {
   const latest = records.findLast((one) => sameCommand(one, wanted) && !staleAgainst(one, now));
   if (latest === undefined || wanted.environment === null) return null;
-  const holds =
-    latest.result === "pass" &&
-    latest.expect === "pass" &&
-    latest.environment === wanted.environment &&
-    epochMs(latest.at) > epochMs(since);
+  const holds = latest.environment === wanted.environment && epochMs(latest.at) > epochMs(since);
   return holds ? latest : null;
 }
 
@@ -536,8 +532,8 @@ export const commandOf = Effect.fn("Verify.commandOf")(function* (run: CheckRun,
   return spec.ci === undefined ? command : { ...command, ci: spec.ci };
 });
 
-/** `reliedPass` for one of a Run's checks, read from its journal against its tree now. */
-export const reliedFor = Effect.fn("Verify.reliedFor")(function* (
+/** `latestRecord` for one of a Run's checks, read from its journal against its tree now. */
+export const recordFor = Effect.fn("Verify.recordFor")(function* (
   runDir: string,
   run: CheckRun,
   spec: VerifySpec,
@@ -546,10 +542,16 @@ export const reliedFor = Effect.fn("Verify.reliedFor")(function* (
   const cwd = yield* checkCwd(run, spec);
   const executable = yield* resolveExecutable(spec.executable, cwd);
   if (executable === null) return null;
-  return reliedPass(
+  return latestRecord(
     yield* readVerifications(runDir).pipe(Effect.orElseSucceed(() => [])),
     { executable, argv: spec.argv, cwd, environment: yield* environmentOf(executable) },
     yield* fingerprint(cwd),
     since,
   );
 });
+
+/** `recordFor`, where it is a pass. */
+export const reliedFor = (...args: Parameters<typeof recordFor>) =>
+  recordFor(...args).pipe(
+    Effect.map((latest) => (latest !== null && passed(latest) ? latest : null)),
+  );

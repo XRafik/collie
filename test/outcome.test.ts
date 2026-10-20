@@ -13,6 +13,7 @@ import {
   isOutcome,
   KINDS,
   noCheckNamed,
+  recheckOwed,
   renderEvidence,
   wholeRunsOwed,
   renderRecordedChecks,
@@ -732,4 +733,26 @@ test("a whole run is owed by a check that failed naming no tests, or has no run 
     wholeRunsOwed(collected({ verifications: [record({ ...tests })], commands: [tests] })),
   ).toEqual([]);
   expect(wholeRunsOwed(collected({ verifications: gateThenReruns([QUICK], []) }))).toEqual([]);
+});
+
+test("a recheck is owed once on a tree, by a check that failed there naming no tests or has no run of its command there", () => {
+  const tests = { name: "tests", executable: "/usr/bin/bun", argv: ["test"], cwd: "/repo" };
+  const failedWhole = record({ ...tests, result: "fail", exit: 1 });
+  const rechecked = { ...failedWhole, id: "tests-2", pass: "recheck" as const };
+  expect(recheckOwed(collected({ verifications: [failedWhole], commands: [tests] }))).toEqual([
+    "tests",
+  ]);
+  expect(
+    recheckOwed(collected({ verifications: [failedWhole, rechecked], commands: [tests] })),
+  ).toEqual([]);
+  // A recheck on an earlier tree, or of a command since re-granted, does not count here.
+  const earlier = { ...rechecked, start: EARLIER, end: EARLIER };
+  expect(
+    recheckOwed(collected({ verifications: [failedWhole, earlier], commands: [tests] })),
+  ).toEqual(["tests"]);
+  const regranted = [{ ...tests, argv: ["test", "--regranted"] }];
+  expect(
+    recheckOwed(collected({ verifications: [failedWhole, rechecked], commands: regranted })),
+  ).toEqual(["tests"]);
+  expect(recheckOwed(collected({ verifications: gateThenReruns([QUICK], []) }))).toEqual([]);
 });
