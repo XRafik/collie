@@ -175,7 +175,7 @@ test("a wait whose host died, reading nothing for three of its periods, is no lo
         yield* fs.makeDirectory(`${runDir()}/memory-waits`, { recursive: true });
         yield* fs.writeFileString(
           `${runDir()}/memory-waits/0-1.json`,
-          Schema.encodeSync(Schema.UnknownFromJsonString)({
+          Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
             what: "build's agent",
             sentence: "waiting for memory on vm-mk: 2.0 of 100.0 GB available",
             since: 0,

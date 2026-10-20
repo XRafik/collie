@@ -1448,7 +1448,7 @@ const waitingForMemory = (runDir: string) =>
     yield* fs.makeDirectory(`${runDir}/memory-waits`, { recursive: true });
     yield* fs.writeFileString(
       `${runDir}/memory-waits/1-1.json`,
-      Schema.encodeSync(Schema.UnknownFromJsonString)({
+      Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
         what: 'collie verify "unit"',
         sentence: "waiting for memory on vm-mk: 2.1 of 62.0 GB available",
         since: now,
