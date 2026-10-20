@@ -8,6 +8,7 @@ import {
 } from "@pierre/diffs";
 import type { Semaphore } from "effect";
 import type { DiffFile } from "../../../../src/board-model";
+import { readingHeight } from "../../../src/shared/diff-view";
 import { type Draft, inHunks, locationOf } from "../../../src/shared/review-comments";
 import type { DiffTarget } from "./DiffTab.vue";
 import { useDiffComments, WRITING } from "../composables/useDiffComments";
@@ -19,13 +20,16 @@ const props = defineProps<{
   installation: string;
   runId: string;
   split: boolean;
+  wrap: boolean;
   /** What a finding points at in this file; each new one is scrolled to once. */
   target: DiffTarget | null;
 }>();
 const open = defineModel<boolean>("open", { required: true });
+const viewed = defineModel<boolean>("viewed", { required: true });
 const emit = defineEmits<{ missing: [target: DiffTarget] }>();
 const { textOf } = useActions();
 const within = inject<Semaphore.Semaphore>("diffReads");
+const scroller = inject<Ref<HTMLElement | null>>("recordScroller", ref(null));
 const colorMode = useColorMode();
 const { drafts, add, edit, remove } = useReviewDrafts(() => props);
 
@@ -106,6 +110,7 @@ const options = (): FileDiffOptions<string, undefined> => ({
   theme: { light: "github-light", dark: "github-dark" },
   themeType: colorMode.value === "dark" ? "dark" : "light",
   diffStyle: props.split ? "split" : "unified",
+  overflow: props.wrap ? "wrap" : "scroll",
   disableFileHeader: true,
   enableLineSelection: true,
   enableGutterUtility: true,
@@ -130,7 +135,7 @@ watch(
   },
   { immediate: true, flush: "post" },
 );
-watch([() => props.split, () => colorMode.value], () => {
+watch([() => props.split, () => props.wrap, () => colorMode.value], () => {
   view?.setOptions(options());
   view?.render({ forceRender: true });
 });
@@ -161,27 +166,35 @@ watch(
 
 <template>
   <section :data-testid="`diff-${file.path}`" class="rounded border border-default">
-    <button
-      type="button"
-      class="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm"
-      data-testid="diff-file-header"
-      @click="open = !open"
-    >
-      <UIcon :name="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" />
-      <code class="flex-1 truncate">{{ file.path }}</code>
-      <small class="text-muted">{{ file.status }}</small>
-      <template v-if="file.added !== null">
-        <small class="text-success">+{{ file.added }}</small>
-        <small class="text-error">−{{ file.removed }}</small>
-      </template>
-      <small v-else class="text-muted">binary</small>
-    </button>
+    <div class="flex items-center gap-3 pe-3">
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-2 ps-3 text-left text-sm"
+        data-testid="diff-file-header"
+        @click="open = !open"
+      >
+        <UIcon :name="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" />
+        <code class="flex-1 truncate">{{ file.path }}</code>
+        <small class="text-muted">{{ file.status }}</small>
+        <template v-if="file.added !== null">
+          <small class="text-success">+{{ file.added }}</small>
+          <small class="text-error">−{{ file.removed }}</small>
+        </template>
+        <small v-else class="text-muted">binary</small>
+      </button>
+      <UCheckbox v-model="viewed" label="Viewed" size="sm" data-testid="diff-viewed" />
+    </div>
     <div v-if="open" class="border-t border-default">
       <p v-if="failed" class="p-3 text-sm text-muted">This file's diff could not be read.</p>
       <p v-else-if="unparsed" class="p-3 text-sm text-muted" data-testid="diff-unparsed">
         This file's diff could not be drawn.
       </p>
-      <p v-else-if="parsed === null" class="p-3 text-sm text-muted">Reading…</p>
+      <USkeleton
+        v-else-if="parsed === null"
+        data-testid="diff-reading"
+        class="m-3"
+        :style="{ height: `${readingHeight(file, scroller?.clientHeight ?? Infinity)}px` }"
+      />
       <p v-else-if="parsed.hunks.length === 0" class="p-3 text-sm text-muted">No text to show.</p>
       <div v-else ref="host" data-testid="diff-lines" />
     </div>

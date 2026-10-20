@@ -1,7 +1,21 @@
 <script setup lang="ts">
+import { inField, overlayOpen } from "../../../src/shared/board-clicks";
 import { offersTerminal, opensHerdrWithoutPane } from "../../../src/shared/record-terminal";
 import type { PlacedTask } from "../../../src/shared/flock";
 import { mrTab } from "../../../src/shared/links";
+import {
+  FOLLOWING_LOG,
+  keyAction,
+  landingOf,
+  recordTabs,
+  rememberScroll,
+  type ScrollMemory,
+  scrollToRestore,
+  tabBeside,
+  tabShown,
+  tabsKept,
+  typedIn,
+} from "../../../src/shared/record";
 import { runDetailAtom, runDetailKey } from "../flock";
 import type { DiffTarget } from "./DiffTab.vue";
 
@@ -16,34 +30,47 @@ const { value: read, trouble } = useHeld(() =>
 const detail = computed(() => read.value ?? null);
 const { notLive, protocolOf } = useFlock();
 const away = computed(() => notLive(props.placed.installation));
+const loading = computed(
+  () => trouble.value === null && away.value === null && read.value === undefined,
+);
 
 /** The location last followed: opened in the diff, or read-only in Review where there is none. */
 const target = ref<DiffTarget | null>(null);
+const landing = computed(() =>
+  target.value === null
+    ? null
+    : landingOf(target.value, detail.value?.diff?.files.map(({ path }) => path) ?? null),
+);
+/** Whether the tab shown was reached by a jump, which lands on its target rather than restoring. */
+const landed = ref(false);
+let jumping = false;
 const jump = (file: string, line: number | null) => {
   target.value = { file, line };
-  chosen.value = detail.value?.diff ? "diff" : "review";
+  const next = landing.value?.tab ?? "review";
+  jumping = next !== tab.value;
+  landed.value = true;
+  stopRestoring();
+  chosen.value = next;
 };
 provide("jumpTo", jump);
 
+const scroller = ref<HTMLElement | null>(null);
+provide("recordScroller", scroller);
+
 const tabs = computed(() => {
   const shown = detail.value;
-  return [
-    ...(shown?.plan ? [{ label: "Plan", value: "plan" }] : []),
-    ...(shown !== null &&
-    (shown.review._tag === "Text" || shown.findings.length > 0 || target.value !== null)
-      ? [{ label: "Review", value: "review" }]
-      : []),
-    ...(shown?.diff ? [{ label: "Diff", value: "diff" }] : []),
-    ...(shown !== null ? [{ label: "Evidence", value: "evidence" }] : []),
-    { label: "Log", value: "log" },
-    ...(offersTerminal(props.placed.asOf, chosen.value)
-      ? [{ label: "Terminal", value: "terminal" }]
-      : []),
-    ...(shown?.mr ? [{ label: mrTab(props.placed.task.mr), value: "mr" }] : []),
-    { label: "Facts", value: "facts" },
-  ];
+  return recordTabs({
+    loaded: shown !== null,
+    plan: Boolean(shown?.plan),
+    reviewText: shown?.review._tag === "Text",
+    findings: (shown?.findings.length ?? 0) > 0,
+    target: target.value !== null,
+    diff: Boolean(shown?.diff),
+    terminal: offersTerminal(props.placed.asOf, chosen.value),
+    mr: shown?.mr ? mrTab(props.placed.task.mr) : null,
+  });
 });
-/** The tab the human chose while it is there, else the first: Plan, where there is one. */
+/** The tab the human chose while it is there, else the first: Summary, where there is one. */
 const chosen = ref<string>();
 const { asked: tabAsked, taken } = usePage();
 const wentToPane = ref(false);
@@ -58,16 +85,87 @@ watch(
   { immediate: true },
 );
 const tab = computed({
-  get: () =>
-    tabs.value.some(({ value }) => value === chosen.value) ? chosen.value : tabs.value[0]!.value,
+  get: () => tabShown(tabs.value, chosen.value),
   set: (value) => (chosen.value = value),
 });
 
 watch(tab, (now) => now !== "terminal" && (wentToPane.value = false));
 
-/** Mounted from its first visit on and kept, so its toggles and open files stay as left. */
-const diffSeen = ref(false);
-watch(tab, (now) => now === "diff" && (diffSeen.value = true), { immediate: true });
+const body = ref<HTMLElement | null>(null);
+let memory: ScrollMemory = new Map();
+const logPlace = ref(FOLLOWING_LOG);
+const logSearch = ref("");
+let stopRestoring = () => {};
+const HUMAN_SCROLLS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+/** Shows the position, waiting while the tab is still too short for it until the human scrolls. */
+const restore = (position: number) => {
+  const box = scroller.value;
+  const content = body.value;
+  if (box === null) return;
+  const reached = () => {
+    box.scrollTop = position;
+    return box.scrollTop >= position - 1;
+  };
+  if (reached() || content === null) return;
+  const grown = new ResizeObserver(() => reached() && stopRestoring());
+  grown.observe(content);
+  const gaveUp = () => stopRestoring();
+  HUMAN_SCROLLS.forEach((event) => box.addEventListener(event, gaveUp, { passive: true }));
+  stopRestoring = () => {
+    grown.disconnect();
+    HUMAN_SCROLLS.forEach((event) => box.removeEventListener(event, gaveUp));
+    stopRestoring = () => {};
+  };
+};
+// Before the tab shown changes in the page, so the one left is measured as it was.
+watch(tab, (now, was) => {
+  const box = scroller.value;
+  if (box !== null && was !== undefined) memory = rememberScroll(memory, was, box.scrollTop);
+  stopRestoring();
+  if (jumping) {
+    jumping = false;
+    return;
+  }
+  landed.value = false;
+  const position = scrollToRestore(memory, now);
+  if (position !== null) void nextTick(() => restore(position));
+});
+onBeforeUnmount(() => stopRestoring());
+
+const record = ref<HTMLElement | null>(null);
+const diffTab = ref<{ step: (by: 1 | -1) => void } | null>(null);
+const key = (event: KeyboardEvent) => {
+  const focused = document.activeElement;
+  const action = keyAction({
+    key: event.key,
+    ctrlOrMeta: event.ctrlKey || event.metaKey,
+    inField: inField(
+      typedIn(event.composedPath().map((entry) => (entry instanceof Element ? entry : null))),
+    ),
+    overlay: overlayOpen(document),
+    tab: tab.value,
+    inRecord:
+      focused === null || focused === document.body || (record.value?.contains(focused) ?? false),
+  });
+  if (action === null) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (action === "next-file" || action === "previous-file") {
+    diffTab.value?.step(action === "next-file" ? 1 : -1);
+    return;
+  }
+  const next = tabBeside(tabs.value, tab.value, action === "next-tab" ? 1 : -1);
+  if (next !== null) chosen.value = next;
+};
+// Captured, so the tree's type-to-find does not also take j and k.
+onMounted(() => window.addEventListener("keydown", key, { capture: true }));
+onUnmounted(() => window.removeEventListener("keydown", key, { capture: true }));
+
+const kept = shallowRef<ReadonlySet<string>>(new Set());
+watch(tab, (now) => now !== undefined && (kept.value = tabsKept(kept.value, now)), {
+  immediate: true,
+});
+provide("recordTab", tab);
 
 const review = useWhole(
   () => ({ installation: props.placed.installation, runId: props.placed.task.run }),
@@ -80,13 +178,14 @@ const locationOf = (file: string, line: number | null) =>
 </script>
 
 <template>
-  <section data-testid="record" class="flex flex-col bg-default">
+  <section ref="record" data-testid="record" class="flex flex-col bg-default">
     <PageHeader :title="placed.task.name" @back="emit('close')">
       <p class="text-sm text-muted" data-testid="record-description">
         {{ detail?.title ?? placed.task.run }}
       </p>
     </PageHeader>
     <div
+      ref="scroller"
       class="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4"
       :class="{ '[scrollbar-gutter:stable]': tab !== 'terminal' }"
     >
@@ -105,13 +204,23 @@ const locationOf = (file: string, line: number | null) =>
           :title="`${away.title}; showing what it last said`"
           :description="away.reason"
         />
-        <p v-else-if="read === undefined" class="text-muted text-sm">Loading…</p>
         <p v-else-if="read === null" class="text-muted text-sm">
           This Run's details are not on its Machine.
         </p>
-        <UTabs v-model="tab" :items="tabs" :content="false" variant="link" />
+        <div v-if="loading" data-testid="record-loading" class="flex flex-col gap-4">
+          <div class="flex gap-4">
+            <USkeleton v-for="at in 5" :key="at" class="h-6 w-20" />
+          </div>
+          <USkeleton class="h-4 w-1/3" />
+          <USkeleton class="h-4 w-full" />
+          <USkeleton class="h-4 w-5/6" />
+          <USkeleton class="h-4 w-2/3" />
+        </div>
+        <UTabs v-else v-model="tab" :items="tabs" :content="false" variant="link" />
       </div>
       <div
+        v-if="!loading"
+        ref="body"
         class="flex flex-col gap-4"
         :class="[columnClass(tab ?? ''), { 'min-h-0 flex-1': tab === 'terminal' }]"
       >
@@ -124,17 +233,24 @@ const locationOf = (file: string, line: number | null) =>
             :live="placed.task.agents"
             :protocol="protocolOf(placed.installation)"
           />
+          <SummaryTab v-if="kept.has('summary')" v-show="tab === 'summary'" :detail="detail" />
           <PlanTab
-            v-if="tab === 'plan' && detail.plan"
+            v-if="kept.has('plan') && detail.plan"
+            v-show="tab === 'plan'"
             :plan="detail.plan"
             :installation="placed.installation"
             :run-id="detail.id"
           />
-          <div v-else-if="tab === 'review'" data-testid="review" class="flex flex-col gap-4">
+          <div
+            v-if="kept.has('review')"
+            v-show="tab === 'review'"
+            data-testid="review"
+            class="flex flex-col gap-4"
+          >
             <SourceFile
-              v-if="target !== null && !detail.diff"
-              :path="target.file"
-              :line="target.line"
+              v-if="target !== null && landing?.tab === 'review'"
+              :target="target"
+              :reveal="landed"
               :installation="placed.installation"
               :run-id="detail.id"
               @close="target = null"
@@ -173,23 +289,32 @@ const locationOf = (file: string, line: number | null) =>
             </ul>
           </div>
           <EvidenceTab
-            v-else-if="tab === 'evidence'"
+            v-if="kept.has('evidence')"
+            v-show="tab === 'evidence'"
             :detail="detail"
             :installation="placed.installation"
           />
-          <LogTab v-else-if="tab === 'log'" :tail="detail.tail" />
-          <MrPanel v-else-if="tab === 'mr' && detail.mr" :mr="detail.mr" />
+          <LogTab
+            v-if="tab === 'log'"
+            v-model:place="logPlace"
+            v-model:search="logSearch"
+            :tail="detail.tail"
+          />
+          <MrPanel v-if="kept.has('mr') && detail.mr" v-show="tab === 'mr'" :mr="detail.mr" />
           <DiffTab
-            v-if="detail.diff && diffSeen"
+            v-if="detail.diff && kept.has('diff')"
+            ref="diffTab"
             v-show="tab === 'diff'"
             :diff="detail.diff"
             :installation="placed.installation"
             :run-id="detail.id"
             :target="target"
+            :shown="tab === 'diff'"
           />
         </template>
         <FactsTab
-          v-if="tab === 'facts'"
+          v-if="kept.has('facts')"
+          v-show="tab === 'facts'"
           :task="placed.task"
           :detail="detail"
           :installation="placed.installation"
