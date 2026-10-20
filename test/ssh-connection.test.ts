@@ -101,10 +101,11 @@ test(
         const fs = yield* FileSystem.FileSystem;
         const { dir, state, ssh, fake } = yield* rig;
         const opener = `${dir}/opener.ts`;
+        // Outside the repository, a bare import would be auto-installed at another version.
         yield* fs.writeFileString(
           opener,
-          `import * as BunServices from "@effect/platform-bun/BunServices";
-import { Effect } from "effect";
+          `import * as BunServices from "${Bun.resolveSync("@effect/platform-bun/BunServices", root)}";
+import { Effect } from "${Bun.resolveSync("effect", root)}";
 import { openConnection } from "${root}src/ssh-connection.ts";
 const [state, ssh, out] = process.argv.slice(2);
 const { opened } = await Effect.runPromise(
@@ -121,10 +122,13 @@ await Bun.write(out!, String(opened));
           [0, 1].map((one) =>
             Effect.promise(
               () =>
-                Bun.spawn([process.execPath, opener, state, ssh, `${dir}/opened-${one}`], {
-                  stdio: ["ignore", "ignore", "inherit"],
-                  env: { ...process.env, TMPDIR: dir },
-                }).exited,
+                Bun.spawn(
+                  [process.execPath, "--no-install", opener, state, ssh, `${dir}/opened-${one}`],
+                  {
+                    stdio: ["ignore", "ignore", "inherit"],
+                    env: { ...process.env, TMPDIR: dir },
+                  },
+                ).exited,
             ),
           ),
           { concurrency: "unbounded" },
