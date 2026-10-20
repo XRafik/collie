@@ -94,13 +94,36 @@ export const focusPane = Effect.fn("Herds.focusPane")(function* (
   return null;
 });
 
-/** The live agents of every session together; a session that does not answer has none. */
-export const aliveIn = (sessions: ReadonlyArray<LiveHerd>) =>
+/**
+ * The agents herdr names in every session, and the terminal and status of each pane it
+ * restored on a harness session without the name; a session that does not answer has none.
+ */
+export const agentsIn = (sessions: ReadonlyArray<LiveHerd>) =>
   Effect.forEach(
     sessions,
-    (session) => session.herdr.agentList().pipe(Effect.orElseSucceed((): AgentInfo[] => [])),
+    (session) =>
+      session.herdr.agentList().pipe(
+        Effect.flatMap((alive) =>
+          restoredPanes(session, alive).pipe(
+            Effect.map((panes) =>
+              panes.map((pane) => ({
+                terminalId: pane.terminalId,
+                status: pane.agentStatus ?? null,
+              })),
+            ),
+            Effect.orElseSucceed(() => []),
+            Effect.map((restored) => ({ alive, restored })),
+          ),
+        ),
+        Effect.orElseSucceed(() => ({ alive: [], restored: [] })),
+      ),
     { concurrency: "unbounded" },
-  ).pipe(Effect.map((each) => each.flat()));
+  ).pipe(
+    Effect.map((each) => ({
+      alive: each.flatMap((one) => one.alive),
+      restored: each.flatMap((one) => one.restored),
+    })),
+  );
 
 /** Panes herdr restored on a harness session without the agent's name, which `agentList` omits. */
 const restoredPanes = (session: LiveHerd, agents: ReadonlyArray<AgentInfo>) =>
@@ -114,21 +137,6 @@ const restoredPanes = (session: LiveHerd, agents: ReadonlyArray<AgentInfo>) =>
         ),
       ),
     );
-
-/** The terminal and status of every restored pane `aliveIn` cannot name; a session that does not answer has none. */
-export const restoredIn = (sessions: ReadonlyArray<LiveHerd>) =>
-  Effect.forEach(
-    sessions,
-    (session) =>
-      session.herdr.agentList().pipe(
-        Effect.flatMap((agents) => restoredPanes(session, agents)),
-        Effect.map((panes) =>
-          panes.map((pane) => ({ terminalId: pane.terminalId, status: pane.agentStatus ?? null })),
-        ),
-        Effect.orElseSucceed(() => []),
-      ),
-    { concurrency: "unbounded" },
-  ).pipe(Effect.map((each) => each.flat()));
 
 /**
  * One element each time herdr reports a change in this session. Subscribed again after
