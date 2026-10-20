@@ -83,12 +83,24 @@ herdr's label for it. A peer this one can open a connection to listens and is di
 it cannot, such as a laptop, keeps a link open to it and is reached back over that link.
 Each host keeps a relay socket for each peer, `peers/<name>.sock`, that speaks what
 `host.sock` speaks ([ADR-0057](docs/adr/0057-a-machine-reaches-another-over-a-paired-link.md)).
+A link's **transport** is `direct`, to the peer's port, or `ssh`, through the Machine's
+**SSH connection** where the network refuses the port. Either way it carries the same
+pinned TLS and secret, so SSH only carries the bytes. Each connect tries direct first, and
+no setting chooses (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection).
 
 **Pairing** — The record each side of two **Peers** keeps in `peers.json`: who the other
 is, which side dials, and the secret and certificate the link is authenticated with. Made
 by itself the first time Collie reaches a herdr machine it has none for, over that
 machine's SSH login, and removed when herdr no longer lists the Machine. There is no
 command to pair or to forget.
+
+**SSH connection** — The one SSH login a computer keeps open to a Machine. Its control
+path is named by this computer's host, and ssh keeps it open after whatever opened it
+exits. The link's `ssh` transport, Desktop's SSH route, Go to pane and pairing all ride
+it, so a connection that is lost costs one approval. Only a front door that can show a
+login opens one: Desktop, or a `collie` command that reaches the Machine. A host only uses
+an open one, through ssh's control commands, and never logs in
+(ADR-draft-a-blocked-link-rides-the-machines-ssh-connection).
 
 **Local** — The Machine Desktop runs on, reached through a bridge it starts without SSH and
 named by its hostname. Otherwise no different from any other Machine.

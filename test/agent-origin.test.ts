@@ -351,7 +351,13 @@ test(
             expect(away.envelope.data).toMatchObject({
               machines: [expect.objectContaining({ machine: "second", state: "away" })],
             });
-            expect(yield* fs.readFileString(first.sshLog)).toBe(beforeSsh);
+            // The host only asks whether an SSH connection is open; it never logs in.
+            expect(
+              (yield* fs.readFileString(first.sshLog))
+                .slice(beforeSsh.length)
+                .split("\n")
+                .filter((line) => line.startsWith("login") || line.startsWith("master")),
+            ).toEqual([]);
           }),
         ["attended.workflow.ts"],
       ),

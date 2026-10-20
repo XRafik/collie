@@ -8,14 +8,13 @@ import {
   Clock,
   Crypto,
   Deferred,
+  Duration,
   Effect,
   Exit,
-  Fiber,
   Layer,
   Option,
   Queue,
   Ref,
-  Schedule,
   Semaphore,
   Schema,
   Scope,
@@ -44,6 +43,7 @@ import {
   type PeerView,
   PeerView as PeerSchema,
 } from "../../../src/peers-model";
+import { MUX_BOUND, muxArgv, quoted, remoteCollie, riderArgv } from "../../../src/ssh-argv";
 import {
   ActionFailed,
   type Credential,
@@ -95,18 +95,21 @@ export const bridgeCommand = (
   as: Bridged = "desktop",
 ) => [...collie, "bridge", "--as", as, "--client", client];
 
-/** The last of what a process has said on a stream so far, each chunk passed on as it comes. */
+/**
+ * The last of what a process has said on a stream so far, each chunk passed on as it comes
+ * with what had been said by then.
+ */
 export const stderrTail = Effect.fnUntraced(function* (
   from: ReadableStream<Uint8Array>,
-  echo: (chunk: Uint8Array) => void = () => {},
+  echo: (chunk: Uint8Array, said: string) => Effect.Effect<void> = () => Effect.void,
 ) {
   let text = "";
   const decoder = new TextDecoder();
   yield* Stream.fromReadableStream({ evaluate: () => from, onError: () => undefined }).pipe(
     Stream.runForEach((chunk: Uint8Array) =>
-      Effect.sync(() => {
-        echo(chunk);
+      Effect.suspend(() => {
         text = (text + decoder.decode(chunk, { stream: true })).slice(-4000);
+        return echo(chunk, text.trim());
       }),
     ),
     Effect.ignore,
@@ -116,8 +119,11 @@ export const stderrTail = Effect.fnUntraced(function* (
   return () => text.trim();
 });
 
-/** Told what an SSO login a master waits on asks for. */
+/** Told what an SSO login a connection waits on asks for. */
 export type WaitingOnSso = (said: string) => Effect.Effect<void>;
+
+/** What an SSO login that ssh is waiting on prints before it, as vm-mk's sshd does. */
+const SSO = /\bSSO\b/;
 
 /**
  * Why a route shows no live board, short of waiting on SSO, which it reports as it waits;
@@ -157,21 +163,30 @@ const afterReady = (from: ReadableStream<Uint8Array>, onReady: () => void) => {
 
 /**
  * Starts the bridge and speaks `FrontDoorRpcs` over its stdio until the scope closes, once
- * it says it is ready. One that ends first was never a host: where its shell could not find
- * `collie`, the Machine has none.
+ * it says it is ready, saying what an SSO login it waits on first asks for. One that ends
+ * first was never a host: where its shell could not find `collie`, the Machine has none.
  */
 export const openBridge = Effect.fn("Desktop.openBridge")(function* (
   command: ReadonlyArray<string>,
   env: Readonly<Record<string, string | undefined>> = childEnv(),
+  waitingOnSso: WaitingOnSso = () => Effect.void,
 ) {
   const child = yield* spawned(() =>
     Bun.spawn([...command], { env, cwd: CHILD_CWD, stdin: "pipe", stdout: "pipe", stderr: "pipe" }),
   );
-  const said = yield* stderrTail(child.stderr, (chunk) => process.stderr.write(chunk));
+  let isReady = false;
+  const said = yield* stderrTail(child.stderr, (chunk, said) =>
+    Effect.sync(() => process.stderr.write(chunk)).pipe(
+      Effect.andThen(!isReady && SSO.test(said) ? waitingOnSso(said) : Effect.void),
+    ),
+  );
   const ready = Promise.withResolvers<void>();
   const socket = yield* Socket.fromTransformStream(
     Effect.succeed({
-      readable: afterReady(child.stdout, ready.resolve),
+      readable: afterReady(child.stdout, () => {
+        isReady = true;
+        ready.resolve();
+      }),
       writable: new WritableStream<Uint8Array>({
         write: (chunk) => {
           void child.stdin.write(chunk);
@@ -222,10 +237,15 @@ export const openDoors = (
   machine: KnownMachine,
   command: (as: Bridged) => ReadonlyArray<string>,
   env = childEnv(),
+  waitingOnSso?: WaitingOnSso,
 ) =>
-  Effect.all([openBridge(command("desktop"), env), openBridge(command("chat"), env)], {
-    concurrency: "unbounded",
-  }).pipe(
+  Effect.all(
+    [
+      openBridge(command("desktop"), env, waitingOnSso),
+      openBridge(command("chat"), env, waitingOnSso),
+    ],
+    { concurrency: "unbounded" },
+  ).pipe(
     Effect.map(([desktop, chat]): Doors => ({
       machine,
       desktop,
@@ -278,7 +298,7 @@ const ran = (command: ReadonlyArray<string>, stdin?: Uint8Array) =>
         new Response(child.stderr).text(),
         child.exited,
       ]),
-    );
+    ).pipe(Effect.onInterrupt(() => Effect.sync(() => child.kill())));
     return { out, err, code };
   });
 
@@ -342,12 +362,6 @@ export interface Route<D extends BoardSource = Doors> {
   readonly collie: (args: ReadonlyArray<string>) => Effect.Effect<Ran, string>;
 }
 
-export const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
-
-/** `collie` as the Machine's login shell runs it, as Local's is. */
-const remoteCollie = (args: ReadonlyArray<string>) =>
-  [`exec "\${SHELL:-/bin/sh}" -lc 'exec collie "$@"' collie`, ...args.map(quoted)].join(" ");
-
 /** A route that can also run a shell script on its Machine, as onboarding does. */
 export interface ShellRoute extends Route {
   /** The command that runs `script` in the Machine's login shell. */
@@ -358,87 +372,98 @@ export interface ShellRoute extends Route {
   readonly pair?: Effect.Effect<string | null>;
 }
 
-/** What an SSO login that ssh is waiting on prints before it, as vm-mk's sshd does. */
-const SSO = /\bSSO\b/;
+const Connected = Schema.fromJsonString(
+  Schema.Union([
+    Schema.Struct({ ok: Schema.Literal(true), data: Schema.Struct({ path: Schema.String }) }),
+    Schema.Struct({ ok: Schema.Literal(false), error: Schema.Struct({ message: Schema.String }) }),
+  ]),
+);
 
 /**
- * Starts a master to the machine, held until the scope closes, and waits until it is open,
- * saying what an SSO login asks for each time it finds the master still waiting on one.
- * The user's SSH config applies, and SSO is asked once, here, rather than for every channel.
+ * Opens the Machine's shared SSH connection with the local `collie machine connect`, saying
+ * what an SSO login asks for as it waits, and answers its control path.
  */
-const openMaster = Effect.fn("Desktop.openMaster")(function* (
-  ssh: string,
-  control: string,
-  target: string,
+const machineConnect = Effect.fn("Desktop.machineConnect")(function* (
+  collie: ReadonlyArray<string>,
+  label: string,
   waitingOnSso: WaitingOnSso,
 ) {
-  const master = yield* spawned(() =>
-    Bun.spawn([ssh, "-M", "-N", "-S", control, "-o", "ControlPersist=no", target], {
+  const command = [...collie, "--json", "machine", "connect", label];
+  const child = yield* spawned(() =>
+    Bun.spawn(command, {
       env: childEnv(),
       cwd: CHILD_CWD,
       stdin: "ignore",
-      stdout: "ignore",
+      stdout: "pipe",
       stderr: "pipe",
     }),
   );
-  const said = yield* stderrTail(master.stderr);
-  const ended = Effect.promise(() => master.exited).pipe(
-    Effect.map((code) => said() || `ssh to ${target} exited ${code}`),
+  const said = yield* stderrTail(child.stderr, (_, said) =>
+    SSO.test(said) ? waitingOnSso(said) : Effect.void,
   );
-  yield* output([ssh, "-S", control, "-O", "check", target]).pipe(
-    Effect.tapError(() => (SSO.test(said()) ? waitingOnSso(said()) : Effect.void)),
-    Effect.retry({
-      while: () => master.exitCode === null,
-      schedule: Schedule.spaced("200 millis"),
-    }),
-    // Only a master that has ended stops the checks, and what it said is why.
-    Effect.catch(() => ended.pipe(Effect.flatMap((reason) => Effect.fail(unreachable(reason))))),
+  const [out, code] = yield* Effect.promise(() =>
+    Promise.all([new Response(child.stdout).text(), child.exited]),
   );
-  return master;
-});
+  const answer = Schema.decodeUnknownOption(Connected)(out.trim());
+  if (Option.isSome(answer))
+    return answer.value.ok
+      ? answer.value.data.path
+      : yield* Effect.fail(unreachable(answer.value.error.message));
+  return yield* Effect.fail(unreachable(said() || `${command.join(" ")} exited ${code}`));
+}, Effect.scoped);
 
 /**
- * A herdr Machine over SSH; a link fallback opens its master on first use.
+ * A herdr Machine over its shared SSH connection, opened through `collie machine connect`
+ * when a use finds none open, and never closed here; a lazy one waits for its first use.
+ * With `pairs`, it pairs its Machine.
  */
 export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
   ssh: string,
-  control: string,
+  collie: ReadonlyArray<string>,
   machine: HerdrMachine,
   client: string,
   lazy = false,
-  localCollie?: ReadonlyArray<string>,
+  pairs = false,
+  answerWithin: Duration.Input = MUX_BOUND,
 ) {
-  const scope = yield* Effect.scope;
-  // Whoever is waiting on the master now, which the one started at launch has none of yet.
-  let waiting: WaitingOnSso = () => Effect.void;
-  const start = openMaster(ssh, control, machine.target, (said) => waiting(said)).pipe(
-    Scope.provide(scope),
-    Effect.forkIn(scope),
-  );
-  let master = lazy ? undefined : yield* start;
-  const starting = yield* Semaphore.make(1);
-  const joined = starting.withPermits(1)(
+  // Whoever is waiting on the connection now, which the one opened at launch has none of yet:
+  // what its login said is kept until it ends, for whoever opens the route while it waits.
+  let waiting: WaitingOnSso | undefined;
+  let unheard: string | undefined;
+  const heard: WaitingOnSso = (said) =>
+    waiting === undefined ? Effect.sync(() => void (unheard = said)) : waiting(said);
+  let path: string | undefined;
+  const asked = (argv: ReadonlyArray<string>) =>
+    output(argv).pipe(
+      Effect.timeoutOrElse({
+        duration: answerWithin,
+        orElse: () =>
+          Effect.fail(
+            `the SSH connection did not answer within ${Duration.format(Duration.fromInputUnsafe(answerWithin))}`,
+          ),
+      }),
+    );
+  const connecting = yield* Semaphore.make(1);
+  const connected = connecting.withPermits(1)(
     Effect.gen(function* () {
-      const done = master?.pollUnsafe();
-      if (
-        master === undefined ||
-        (done !== undefined && (Exit.isFailure(done) || done.value.exitCode !== null))
-      )
-        master = yield* start;
-      return yield* Fiber.join(master);
+      if (path !== undefined) {
+        const checked = yield* asked(muxArgv(ssh, path, "check", machine.target)).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+        if (checked) return path;
+      }
+      path = yield* machineConnect(collie, machine.label, heard).pipe(
+        Effect.ensuring(Effect.sync(() => void (unheard = undefined))),
+      );
+      return path;
     }),
   );
-  // Never a login of its own: SSO is asked once, by the master.
-  const channel = (remote: string) => [
-    ssh,
-    "-S",
-    control,
-    "-o",
-    "ControlMaster=no",
-    "-T",
-    machine.target,
-    remote,
-  ];
+  if (!lazy) yield* connected.pipe(Effect.ignore, Effect.forkScoped);
+  const riding = (remote: string) =>
+    connected.pipe(Effect.map((at) => riderArgv(at, machine.target, remote, ssh)));
+  const used = <A>(effect: Effect.Effect<A, RouteFailure>) =>
+    effect.pipe(Effect.mapError(({ reason }) => reason));
   const route: ShellRoute = {
     machine: { profile: machine.id, name: machine.label, target: machine.target, route: "ssh" },
     open: (waitingOnSso) =>
@@ -446,81 +471,52 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
         let told = false;
         waiting = (said) =>
           told ? Effect.void : Effect.suspend(() => ((told = true), waitingOnSso(said)));
-        yield* joined;
+        if (unheard !== undefined) yield* waiting(unheard);
+        const at = yield* connected;
         return yield* openDoors(route.machine, (as) =>
-          channel(remoteCollie(bridgeCommand([], client, as))),
+          riderArgv(at, machine.target, remoteCollie(bridgeCommand([], client, as)), ssh),
         );
       }),
-    collie: (args) =>
-      joined.pipe(
-        Effect.mapError(({ reason }) => reason),
-        Effect.andThen(ran(channel(remoteCollie(args)))),
-      ),
-    sh: (script) =>
-      joined.pipe(
-        Effect.mapError(({ reason }) => reason),
-        Effect.as(channel(`exec "\${SHELL:-/bin/sh}" -lc ${quoted(script)}`)),
-      ),
+    collie: (args) => used(riding(remoteCollie(args))).pipe(Effect.flatMap((argv) => ran(argv))),
+    sh: (script) => used(riding(`exec "\${SHELL:-/bin/sh}" -lc ${quoted(script)}`)),
     forward: (port) => {
-      const spec = `${port}:127.0.0.1:${port}`;
-      const asMaster = (verb: string) => [
-        ssh,
-        "-S",
-        control,
-        "-O",
-        verb,
-        "-L",
-        spec,
-        machine.target,
-      ];
-      return Effect.acquireRelease(
-        joined.pipe(
-          Effect.mapError(({ reason }) => reason),
-          Effect.andThen(output(asMaster("forward"))),
+      const spec = ["-L", `${port}:127.0.0.1:${port}`];
+      return used(connected).pipe(
+        Effect.flatMap((at) =>
+          Effect.acquireRelease(asked(muxArgv(ssh, at, "forward", machine.target, ...spec)), () =>
+            asked(muxArgv(ssh, at, "cancel", machine.target, ...spec)).pipe(Effect.ignore),
+          ),
         ),
-        () => output(asMaster("cancel")).pipe(Effect.ignore),
-      ).pipe(Effect.asVoid);
+        Effect.asVoid,
+      );
     },
   };
-  if (localCollie !== undefined) {
-    let paired = false;
-    const pairing = yield* Semaphore.make(1);
-    return {
-      ...route,
-      pair: pairing.withPermits(1)(
-        Effect.suspend(() =>
-          paired
-            ? Effect.succeed(null)
-            : joined.pipe(
-                Effect.mapError(({ reason }) => reason),
-                Effect.andThen(
-                  ran([
-                    "env",
-                    `COLLIE_SSH_CONTROL=${control}`,
-                    ...localCollie,
-                    "--json",
-                    "--machine",
-                    machine.label,
-                    "board",
-                  ]),
-                ),
-                Effect.flatMap(({ code, out, err }) =>
-                  code === 0
-                    ? Effect.sync(() => {
-                        paired = true;
-                        return null;
-                      })
-                    : Effect.fail((err || out).trim()),
-                ),
-                Effect.catch((reason) =>
-                  Effect.succeed(`Could not pair ${machine.label}: ${reason}`),
-                ),
+  if (!pairs) return route;
+  let paired = false;
+  const pairing = yield* Semaphore.make(1);
+  return {
+    ...route,
+    pair: pairing.withPermits(1)(
+      Effect.suspend(() =>
+        paired
+          ? Effect.succeed(null)
+          : used(connected).pipe(
+              Effect.andThen(ran([...collie, "--json", "--machine", machine.label, "board"])),
+              Effect.flatMap(({ code, out, err }) =>
+                code === 0
+                  ? Effect.sync(() => {
+                      paired = true;
+                      return null;
+                    })
+                  : Effect.fail((err || out).trim()),
               ),
-        ),
+              Effect.catch((reason) =>
+                Effect.succeed(`Could not pair ${machine.label}: ${reason}`),
+              ),
+            ),
       ),
-    };
-  }
-  return route;
+    ),
+  } satisfies ShellRoute;
 });
 
 /** Local, reached through a bridge it starts without SSH. */
@@ -598,6 +594,7 @@ export const linkRoute = (
             machine,
             (as) => bridgeCommand([...collie, "--machine", peer.name], client, as),
             env,
+            waiting,
           )
         : Effect.fail<RouteFailure>({ state: "unreachable", reason: "not paired yet" })
       ).pipe(

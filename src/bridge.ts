@@ -8,7 +8,7 @@ import { channelInto } from "./channel";
 import { currentEnv } from "./env";
 import { Herdr } from "./herdr";
 import { HostUnavailable, connect, peerChannel, socketOf } from "./host";
-import { ensurePaired } from "./lifecycle";
+import { ensurePaired, riding } from "./lifecycle";
 import { machineName } from "./peers";
 /** Where this channel came from: the computer the front door names, and the SSH client sshd saw. */
 const whereFrom = Effect.fn("Bridge.whereFrom")(function* (client: string | null) {
@@ -52,7 +52,11 @@ export const bridge = Effect.fn("Bridge")(function* (
       ? socketOf(env.stateDir)
       : yield* ensurePaired({ ...env, pairs: true }, machine).pipe(
           Effect.andThen(
-            peerChannel(env.stateDir, machine, { as, client: client ?? machineName() }),
+            riding(
+              { ...env, pairs: true },
+              machine,
+              peerChannel(env.stateDir, machine, { as, client: client ?? machineName() }),
+            ),
           ),
         );
   return yield* channelInto(socket, declaration, {

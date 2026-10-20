@@ -1137,20 +1137,29 @@ Desktop then upgrades your released Machines to its version as they connect.
 Desktop keeps only what it uses. When it starts it removes every staged update but the one
 it is running, which is the base the next update is patched from, and one staged and not yet
 installed; every runner copy but its own version's and the newest; usage lines over 30
-days old; and the SSH control directories, with their masters, of a Desktop that is no
-longer running. [`collie cleanup`](cli.md#cleaning-up) lists the same files of Desktop's, as
+days old; and the SSH control directories, with their masters, that an older Desktop
+left behind. [`collie cleanup`](cli.md#cleaning-up) lists the same files of Desktop's, as
 the kind `desktop`, on a computer that has Desktop
 ([ADR-0045](adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md)).
 
 The Machines are this computer and every machine enabled in `herdr machine list`; Collie
 keeps no list of its own. A paired Machine is reached through Local's host and its paired
 link, without an SSH login. Commands, upgrades, doctor and credentials use that host's
-shell operation. Desktop opens SSH for Go to pane, a login's port forward, and onboarding
-an unpaired Machine. Its master opens on first use, with your SSH config, and is kept
-until Desktop quits. When a link is away, Desktop falls back to SSH, which can start the
-far host. The Machines page says Paired link or SSH for the live route.
+shell operation. Desktop uses SSH for Go to pane, a login's port forward, onboarding, an
+unpaired Machine's board, and a paired link's fallback while the link is away, which can
+start the far host. Each rides the Machine's one shared SSH connection, the one the CLI
+and Local's host use too. Desktop opens it, with your SSH config, only when none is open
+and it needs one, by running [`collie machine connect`](cli.md#collie-machine); Desktop's
+bridge to a paired Machine whose link waits on that connection opens it the same way.
+Either way, a login waiting on SSO shows **Waiting for SSO login on _name_** below, and
+that one approval brings back the link, the SSH route, Go to pane and port forwards
+together. The connection stays open after Desktop quits, so the Flock stays connected. A
+Machine whose link goes direct asks for no approval at all. The Machines page says Paired
+link or SSH for the live route; a paired link says which way it goes, "Paired link ·
+direct" or "Paired link · over SSH" with why direct failed, and a link waiting on an SSH
+connection says so, and that Desktop opens one when it next connects.
 
-Desktop pairs an unpaired Machine on the SSH master it already holds. An older Collie
+Desktop pairs an unpaired Machine on the shared SSH connection its route opened. An older Collie
 without `machine invite` is paired after upgrading; a failure is a notice and is retried
 on the next connection. A successful pairing uses the link on the next connection.
 A Machine reached two ways is shown once, preferring a paired
@@ -1162,10 +1171,11 @@ A Machine Desktop cannot show live says why above the board, by name:
 - **Out of reach** — SSH or its bridge failed, or the connection dropped, with what it said.
   Its cards stay on the board, dimmed and marked "as of HH:MM" (when it was last live),
   with every action on them off. Desktop tries again by itself, waiting 1 s after the first
-  failure and twice as long after each one after it, up to a minute, and opens a new master
-  if the old one has gone.
-- **Waiting for SSO login on _name_** — the master is waiting on an SSO login (the sshd
-  printed a line naming SSO). Its board appears once the login clears; nothing has to be
+  failure and twice as long after each one after it, up to a minute, and opens the SSH
+  connection again if it has gone.
+- **Waiting for SSO login on _name_** — the SSH connection is waiting on an SSO login (the
+  sshd printed a line naming SSO, to `collie machine connect` or to a paired Machine's
+  bridge). Its board appears once the login clears; nothing has to be
   pressed.
 - **Collie isn't installed on _name_** — the machine answered, but its login shell has no
   `collie`. **Onboard** onboards it, as below. Until it has a host, it is known by its
@@ -1224,8 +1234,8 @@ Machine to focus the Task's agent that is blocked waiting for you, else one that
 working — the card's own Run's first, then the one registered last — else the Run's newest
 live agent, or its workspace where it has none, on that Machine's own herdr. The tab shows
 that agent's pane, and opening the tab by clicking it does the same. It is herdr's own controller for the
-pane, run over the connection Desktop already holds to the Machine: one more channel on
-its SSH master, so going to a pane never asks for another login or SSO approval, or a
+pane, run over the Machine's shared SSH connection, which outlives Desktop: one more
+channel on it, so going to a pane never asks for another login or SSO approval, or a
 local process for this computer. Nothing beyond Desktop is needed on this computer. Type
 into it as into herdr — Esc and Ctrl+C go to the agent, not to the record, and Ctrl+C
 copies instead while text is selected; a multi-line paste arrives as one paste; the wheel
@@ -1514,7 +1524,7 @@ this Machine** stays there for a Machine that goes without Helle.
 The Claude login is each Machine's own. **Log in** on that step runs `claude auth login`
 on the Machine with `$BROWSER` set to a shim Desktop reads, because Claude Code hands its
 browser the URL with its callback port and prints only a paste-code URL. Desktop forwards
-that port over the Machine's master and opens the URL in your browser, so approving there
+that port over the Machine's shared SSH connection and opens the URL in your browser, so approving there
 finishes the login on the Machine; the printed URL and a code field are the fallback, for
 a browser that cannot reach the callback. Linear's login, which `collie onboard` streams
 with its port, is forwarded and opened the same way. Desktop then onboards the Machine
@@ -1693,8 +1703,8 @@ any other browser, Firefox included, opens it as an ordinary tab.
 Every Machine's host is reached the same way: by running
 `collie bridge --as desktop --client <this computer>` in your shell's environment, here
 with the one Desktop took at start and elsewhere in a login shell, as a channel on that
-machine's master, so the host is started with the environment `collie` itself would use, and every operation Desktop makes is recorded as
-`desktop`. A second bridge on the same master, started `--as chat`, is the Flock chat's,
+machine's shared SSH connection, so the host is started with the environment `collie` itself would use, and every operation Desktop makes is recorded as
+`desktop`. A second bridge on the same connection, started `--as chat`, is the Flock chat's,
 so nothing its model does is ever recorded as yours. For a herdr machine on a session other than `default`, the host is handed that
 session's socket. Desktop never starts, signals or connects to a host by any other route.
 `COLLIE_DESKTOP_COLLIE` replaces how `collie` is run here, as a JSON array.

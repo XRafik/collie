@@ -23,6 +23,7 @@ import {
   TaskView,
 } from "../../../src/board-model";
 import { HostDefinitions } from "../../../src/definitions-model";
+import { PeerView } from "../../../src/peers-model";
 
 /**
  * A Machine as Desktop knows it: its installation id, the herdr profile it is reached
@@ -171,6 +172,13 @@ export const MachineSynced = Schema.TaggedStruct("Synced", {
 });
 export type MachineSynced = typeof MachineSynced.Type;
 
+/** A Machine's paired link, as Local's `collie machine list` says it now. */
+export const MachineLinked = Schema.TaggedStruct("Linked", {
+  machine: KnownMachine,
+  link: PeerView,
+});
+export type MachineLinked = typeof MachineLinked.Type;
+
 /** A credential Desktop gives every Machine. */
 export const Credential = Schema.Literals(["gitlab", "helle"]);
 export type Credential = typeof Credential.Type;
@@ -217,6 +225,7 @@ export const FlockItem = Schema.Union([
   MachineDoctored,
   MachineSynced,
   MachineGiven,
+  MachineLinked,
 ]);
 export type FlockItem = typeof FlockItem.Type;
 
@@ -671,6 +680,8 @@ export interface Flock {
   readonly definitions: ReadonlyMap<string, string | null>;
   /** Each route's credentials, by herdr profile. */
   readonly given: ReadonlyMap<string, CredentialsGiven>;
+  /** Each route's paired link, by herdr profile. */
+  readonly links: ReadonlyMap<string, PeerView>;
 }
 
 export type CredentialsGiven = Partial<
@@ -688,6 +699,7 @@ export const EMPTY_FLOCK: Flock = {
   synced: new Map(),
   definitions: new Map(),
   given: new Map(),
+  links: new Map(),
 };
 
 /**
@@ -710,6 +722,7 @@ const removed = (flock: Flock, profile: string): Flock => {
     synced: without(flock.synced),
     definitions: without(flock.definitions),
     given: without(flock.given),
+    links: without(flock.links),
     machines: new Map([...flock.machines].filter(([, { machine }]) => machine.profile !== profile)),
   };
 };
@@ -734,6 +747,8 @@ export const applyItem = (flock: Flock, item: FlockItem): Flock => {
           ...flock,
           definitions: new Map(flock.definitions).set(item.machine.profile, item.failed),
         };
+  if ("_tag" in item && item._tag === "Linked")
+    return { ...flock, links: new Map(flock.links).set(item.machine.profile, item.link) };
   if ("_tag" in item && item._tag === "Given") {
     const { machine, credential, given, failed } = item;
     const { profile } = machine;
@@ -999,9 +1014,22 @@ export interface MachineRow {
   /** How its latest definitions sync ended; null until one has. */
   readonly definitions: { readonly failed: string | null } | null;
   readonly credentials: CredentialsGiven;
-  /** Why it isn't live; null while it is, or is connecting. */
+  /** Why it isn't live, or that its link waits on an SSH connection; else null. */
   readonly reason: string | null;
+  /** The way its live paired link goes; null with no live link. */
+  readonly transport: "direct" | "ssh" | null;
+  /** Why a link over SSH did not go direct. */
+  readonly transportReason: string | null;
 }
+
+/** How the Machines page names a row's route: a paired link says which way it goes. */
+export const routeSaid = ({ route, transport }: Pick<MachineRow, "route" | "transport">) =>
+  route === "ssh"
+    ? "SSH"
+    : `Paired link${transport === null ? "" : transport === "ssh" ? " · over SSH" : " · direct"}`;
+
+const WAITS_SAID =
+  "Its link waits on an SSH connection, which Desktop opens when it next connects.";
 
 /**
  * How onboarded a route is: doctor's reading, less a step its latest onboarding skipped and
@@ -1048,6 +1076,9 @@ export const machineRows = (flock: Flock): ReadonlyArray<MachineRow> =>
       seen.find(({ asOf }) => asOf === null) ?? seen.sort((a, b) => b.asOf! - a.asOf!)[0];
     const live = shown?.asOf === null;
     const lost = flock.lost.get(profile);
+    const link = flock.links.get(profile);
+    const transport = link?.state === "live" ? link.transport : null;
+    const waits = link?.waits === "ssh_connection" ? WAITS_SAID : null;
     return {
       profile,
       name,
@@ -1062,7 +1093,9 @@ export const machineRows = (flock: Flock): ReadonlyArray<MachineRow> =>
         ? { failed: flock.definitions.get(profile)! }
         : null,
       credentials: flock.given.get(profile) ?? {},
-      reason: live ? null : (lost?.reason ?? null),
+      reason: (live ? null : lost?.reason) ?? waits,
+      transport,
+      transportReason: transport === "ssh" ? (link?.direct ?? null) : null,
     };
   });
 

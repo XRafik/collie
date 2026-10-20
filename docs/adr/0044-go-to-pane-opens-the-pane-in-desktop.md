@@ -1,6 +1,8 @@
 # Go to pane opens the pane in Desktop, over the Machine's own connection
 
-**Status: accepted, built.** It replaces the sentence in
+**Status: accepted, built.** Amended by
+[ADR-draft-a-blocked-link-rides-the-machines-ssh-connection](draft-a-blocked-link-rides-the-machines-ssh-connection.md):
+Go to pane rides the Machine's shared SSH connection, which outlives Desktop. It replaces the sentence in
 [`docs/internals.md`](../internals.md#the-herdr-boundary) that said Desktop "asks it
 nothing and reads nothing from it", and the exception in invariant 3 of
 [`AGENTS.md`](../../AGENTS.md) for "the herdr client Go to pane opens in a terminal for

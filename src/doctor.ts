@@ -451,21 +451,35 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
   checks.push({ name: "projects root", ...(yield* projects(env)) });
   if ((yield* peersOf(env.stateDir)).length > 0) {
     const links = yield* machineList(env);
+    const views = links.ok ? links.value : [];
     const failures = links.ok
-      ? links.value
+      ? views
           .filter(
             (one) => one.dials === "in" && one.failure?.startsWith("could not listen on port "),
           )
           .map((one) => one.failure)
       : [links.error.message];
+    const waiting = views.filter((one) => one.waits === "ssh_connection");
+    const overSsh = views.filter((one) => one.state === "live" && one.transport === "ssh");
     checks.push({
       name: "paired links",
-      ...(failures.length === 0
-        ? passed("The paired listener has no recorded failure.")
-        : failed(
+      ...(failures.length > 0
+        ? failed(
             [...new Set(failures)].join("; "),
             "Free the listening port, then run collie machine list again.",
-          )),
+          )
+        : waiting.length > 0
+          ? warned(
+              waiting.map((one) => `${one.name}'s link waits on an SSH connection`).join("; "),
+              waiting.map((one) => `collie machine connect ${one.name}`).join("; "),
+            )
+          : overSsh.length > 0
+            ? passed(
+                overSsh
+                  .map((one) => `${one.name}'s link goes over SSH: direct ${one.direct}.`)
+                  .join(" "),
+              )
+            : passed("The paired listener has no recorded failure.")),
     });
   }
   checks.push({ name: "disk", ...(yield* diskSpace(env, run)) });

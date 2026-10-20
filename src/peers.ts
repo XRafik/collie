@@ -38,6 +38,16 @@ import {
   type ShellRequest,
 } from "./board-model";
 import { channelInto } from "./channel";
+import { openPeer, REACH_BOUND, type Way } from "./peer-transport";
+import {
+  closeConnections,
+  resolvedHost,
+  ride,
+  SOCKET_PATH_MAX,
+  sshConnection,
+  type SshMachine,
+} from "./ssh-connection";
+import { quoted, remoteCollie } from "./ssh-argv";
 import { shell } from "./mr";
 import {
   backoff,
@@ -46,6 +56,7 @@ import {
   PEER_PORT,
   PeersFile,
   RelayHeaderJson,
+  Waits,
   AgentAddress,
   AgentAddressJson,
   type HerdrMachine,
@@ -67,9 +78,6 @@ const fileOf = (stateDir: string) => `${stateDir}/peers.json`;
 export const certOf = (stateDir: string) => `${stateDir}/peer-cert.pem`;
 export const keyOf = (stateDir: string) => `${stateDir}/peer-key.pem`;
 const listenerCertOf = (stateDir: string) => `${stateDir}/peer-listener-cert.pem`;
-
-/** The longest unix socket path macOS binds. */
-const SOCKET_PATH_MAX = 104;
 
 /** This Machine as a peer names it, where nothing better is known. */
 export const machineName = () => hostname();
@@ -317,7 +325,7 @@ export interface Link {
   /** Tells a peer this Machine has forgotten it, over its relay. */
   readonly tell: (peer: Peer) => Effect.Effect<void>;
   /** herdr's machines, or null where herdr could not say. */
-  readonly machines: Effect.Effect<ReadonlyArray<{ readonly label: string }> | null>;
+  readonly machines: Effect.Effect<ReadonlyArray<SshMachine> | null>;
 }
 
 export const levelPeer = Effect.fn("Peers.level")(function* (link: Link, peer: Peer) {
@@ -377,6 +385,8 @@ export interface Peers {
   readonly add: (peer: Peer) => Effect.Effect<void, HostRefused>;
   readonly forget: (installation: string) => Effect.Effect<void>;
   readonly list: Effect.Effect<ReadonlyArray<PeerView>>;
+  /** Ends the backoff of the link to the peer this Machine dials by that name. */
+  readonly wake: (name: string) => Effect.Effect<void>;
 }
 
 /** One line answering a relay connection's header: open, or why not. */
@@ -384,6 +394,7 @@ export const RelayAnswer = Schema.Struct({
   ok: Schema.Boolean,
   refused: Schema.optionalKey(Schema.String),
   unreachable: Schema.optionalKey(Schema.String),
+  waits: Schema.optionalKey(Waits),
 });
 export type RelayAnswer = typeof RelayAnswer.Type;
 const encodeAnswer = Schema.encodeSync(Schema.fromJsonString(RelayAnswer));
@@ -406,33 +417,12 @@ const firstLine = (conn: Socket, then: (line: string, rest: Buffer) => void) => 
   conn.on("data", take);
 };
 
-/** How long a relay waits for its peer to answer before it says the Machine is away. */
-const REACH_BOUND = "5 seconds";
 /** How long a dial-back ticket can be used for. */
 const TICKET_LIFE_MS = 10_000;
 /** How often a listener says it is still there over each control link. */
 const BEAT = "15 seconds";
 /** A control link heard nothing from for this long is down. */
 const SILENCE_MS = 15_000;
-
-// SAFETY: Bun's WebSocket takes these options; where DOM's declaration of the global wins, its type does not say so.
-const BunWebSocket = WebSocket as new (
-  url: string,
-  options?:
-    | string
-    | Array<string>
-    | {
-        readonly headers: Record<string, string>;
-        readonly tls: { readonly ca?: string };
-      },
-) => WebSocket;
-
-/** A WebSocket to a peer this Machine dials, trusting only its certificate. */
-const pinnedSocket = (peer: Peer, url: string) =>
-  new BunWebSocket(url, {
-    headers: { Authorization: `Bearer ${peer.secret}` },
-    tls: { ca: peer.certificate },
-  });
 
 /** What a listener sends over a control link: a dial-back asked for, or that it is there. */
 const ControlMessage = Schema.Union([
@@ -492,7 +482,11 @@ interface Ticket {
 }
 
 /** Where a peer stands now, as `collie machine list` says it. */
-type Standing = Pick<PeerView, "state" | "since" | "failure">;
+type Standing = Pick<
+  PeerView,
+  "state" | "since" | "failure" | "transport" | "direct" | "ssh" | "waits"
+>;
+const NO_WAY = { transport: null, direct: null, ssh: null, waits: null } as const;
 
 /**
  * The peers module, for as long as the host's scope: the records, a relay socket for each
@@ -517,6 +511,8 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   const controls = new Map<string, ServerWebSocket<Accepted>>();
   const tickets = new Map<string, Ticket>();
   const standings = new Map<string, Standing>();
+  /** What ends the wait before each dialler's next attempt. */
+  const wakers = new Map<string, Deferred.Deferred<void>>();
   const builds = new Map<string, string>();
   const syncing = yield* Semaphore.make(1);
   const pairing = yield* Semaphore.make(1);
@@ -663,6 +659,10 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         yield* forget(peer.installation);
         yield* Effect.logInfo(`forgot ${peer.name}: herdr no longer lists it`);
       }
+      for (const path of yield* closeConnections(link.dir, listed).pipe(
+        Effect.provideContext(services),
+      ))
+        yield* Effect.logInfo(`closed the SSH connection at ${path}: herdr no longer names it`);
     }
   });
 
@@ -677,46 +677,31 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         return yield* new HostRefused({ reason: `"${name}" cannot name a relay socket` });
     });
 
-  /** A WebSocket to a peer this Machine dials, as the far end of a channel once it is open. */
-  const opened = (peer: Peer, url: string) =>
+  /** The SSH connection herdr's machine by this peer's name has, or none where it lists none. */
+  const connectionOf = (peer: Peer) =>
     Effect.gen(function* () {
-      const ws = yield* Effect.acquireRelease(
-        Effect.sync(() => pinnedSocket(peer, url)),
-        (ws) => Effect.sync(() => ws.close()),
+      const machine = (yield* link.machines)?.find((one) => one.label === peer.name);
+      if (machine === undefined) return null;
+      return yield* sshConnection(link.dir, machine).pipe(
+        Effect.tapError((refused) => Effect.logWarning(refused.reason)),
+        Effect.orElseSucceed(() => null),
       );
-      ws.binaryType = "arraybuffer";
-      const inbox = held();
-      const answer = yield* Deferred.make<boolean>();
-      ws.onopen = () => Deferred.doneUnsafe(answer, Exit.succeed(true));
-      ws.onerror = () => Deferred.doneUnsafe(answer, Exit.succeed(false));
-      ws.onmessage = (event) => inbox.arrived(new Uint8Array(event.data));
-      ws.onclose = () => {
-        Deferred.doneUnsafe(answer, Exit.succeed(false));
-        inbox.hungUp();
-      };
-      const open = yield* Deferred.await(answer).pipe(Effect.timeoutOption(REACH_BOUND));
-      if (Option.isSome(open) && open.value) {
-        const far: Far = {
-          send: (chunk) => ws.send(new Uint8Array(chunk)),
-          close: () => ws.close(),
-          listen: inbox.listen,
-        };
-        return far;
-      }
-      ws.close();
-      return yield* new MachineUnreachable({
-        machine: peer.name,
-        seen: Option.isNone(open)
-          ? `no answer from ${peer.url} within ${REACH_BOUND}`
-          : `${peer.url} refused the connection`,
-      });
-    });
+    }).pipe(Effect.provideContext(services));
+
+  /** The way a peer's live link went, which its channels take too; none while it is down. */
+  const wayOf = (peer: Peer) => {
+    const standing = standings.get(peer.installation);
+    return standing?.state === "live" ? (standing.transport ?? undefined) : undefined;
+  };
 
   /** A fresh `/channel` to a peer this Machine dials. */
   const dialOut = (peer: Peer, as: FrontDoor, client: string, sender?: AgentAddress) =>
-    opened(
+    openPeer(
       peer,
-      `${peer.url}/channel?as=${encodeURIComponent(as)}&client=${encodeURIComponent(client)}${sender === undefined ? "" : `&sender=${encodeURIComponent(Schema.encodeSync(AgentAddressJson)(sender))}`}`,
+      () =>
+        `/channel?as=${encodeURIComponent(as)}&client=${encodeURIComponent(client)}${sender === undefined ? "" : `&sender=${encodeURIComponent(Schema.encodeSync(AgentAddressJson)(sender))}`}`,
+      connectionOf(peer),
+      wayOf(peer),
     );
 
   /** A peer that dials in, asked over its control link to dial back for this channel. */
@@ -764,8 +749,16 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         return conn.end(answer({ ok: false, refused: "only this Machine's host speaks as host" }));
       const reach = peer.dials === "out" ? dialOut : dialBack;
       const far = yield* reach(peer, as, client, header.value.sender).pipe(Effect.result);
-      if (far._tag === "Failure")
-        return conn.end(answer({ ok: false, unreachable: far.failure.seen }));
+      if (far._tag === "Failure") {
+        const { seen, waits } = far.failure;
+        return conn.end(
+          answer(
+            waits === undefined
+              ? { ok: false, unreachable: seen }
+              : { ok: false, unreachable: seen, waits },
+          ),
+        );
+      }
       const ws = far.success;
       conn.write(answer({ ok: true }));
       if (rest.length > 0) ws.send(rest);
@@ -810,7 +803,12 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     client: string,
     sender?: AgentAddress,
   ) =>
-    opened(peer, `${peer.url}/reverse?ticket=${encodeURIComponent(dial)}`).pipe(
+    openPeer(
+      peer,
+      () => `/reverse?ticket=${encodeURIComponent(dial)}`,
+      connectionOf(peer),
+      wayOf(peer),
+    ).pipe(
       Effect.flatMap((far) =>
         intoHost(peer, as, client, far, sender).pipe(Effect.catch(() => Effect.sync(far.close))),
       ),
@@ -821,68 +819,78 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
   /** One control link to a peer this Machine dials, until it ends: whether it was up, and why it ended. */
   const controlLink = (peer: Peer) =>
     Effect.gen(function* () {
+      const opened = yield* openPeer(
+        peer,
+        (way, direct) =>
+          `/control?transport=${way}${direct === null ? "" : `&direct=${encodeURIComponent(direct)}`}`,
+        connectionOf(peer),
+      ).pipe(Effect.result);
+      if (opened._tag === "Failure") {
+        const { seen, direct, ssh, waits } = opened.failure;
+        return {
+          up: false,
+          ended: {
+            failure: seen,
+            transport: null,
+            direct: direct ?? null,
+            ssh: ssh ?? null,
+            waits: waits ?? null,
+          },
+        };
+      }
+      const ws = opened.success;
       const ended = yield* Deferred.make<string>();
-      let up = false;
       let heard = clock.currentTimeMillisUnsafe();
-      const ws = yield* Effect.acquireRelease(
-        Effect.sync(() => pinnedSocket(peer, `${peer.url}/control`)),
-        (ws) => Effect.sync(() => ws.close()),
-      );
-      ws.onopen = () => {
-        up = true;
-        heard = clock.currentTimeMillisUnsafe();
-        stand(peer.installation, { state: "live", since: null, failure: null });
-        onLink(peer);
-      };
-      ws.onmessage = (event) => {
-        heard = clock.currentTimeMillisUnsafe();
-        const said = decodeControl(event.data);
-        if (Option.isSome(said) && "dial" in said.value)
-          void Effect.runFork(
-            Effect.forkIn(
-              dialledBack(
-                peer,
-                said.value.dial,
-                said.value.as,
-                said.value.client,
-                said.value.sender,
+      stand(peer.installation, {
+        state: "live",
+        since: null,
+        failure: null,
+        ...NO_WAY,
+        transport: ws.way,
+        direct: ws.direct,
+      });
+      onLink(peer);
+      ws.listen(
+        (data) => {
+          heard = clock.currentTimeMillisUnsafe();
+          const said = decodeControl(new TextDecoder().decode(data));
+          if (Option.isSome(said) && "dial" in said.value)
+            void Effect.runFork(
+              Effect.forkIn(
+                dialledBack(
+                  peer,
+                  said.value.dial,
+                  said.value.as,
+                  said.value.client,
+                  said.value.sender,
+                ),
+                scope,
               ),
-              scope,
-            ),
-          );
-      };
-      ws.onclose = (event) =>
-        Deferred.doneUnsafe(
-          ended,
-          Exit.succeed(
-            event.reason
-              ? event.reason
-              : up
-                ? "the control link closed"
-                : `${peer.url} did not take the control link`,
-          ),
-        );
-      ws.onerror = () =>
-        Deferred.doneUnsafe(ended, Exit.succeed(`${peer.url} refused the control link`));
+            );
+        },
+        (reason) => Deferred.doneUnsafe(ended, Exit.succeed(reason || "the control link closed")),
+      );
       const silent = Effect.sleep("5 seconds").pipe(
         Effect.andThen(Effect.sync(() => clock.currentTimeMillisUnsafe() - heard > SILENCE_MS)),
         Effect.repeat({ until: (quiet) => quiet }),
         Effect.as(`heard nothing for ${SILENCE_MS / 1000} seconds`),
       );
-      const said = yield* Effect.raceFirst(Deferred.await(ended), silent);
-      return { up, said };
+      const failure = yield* Effect.raceFirst(Deferred.await(ended), silent);
+      return { up: true, ended: { failure, ...NO_WAY } };
     }).pipe(Effect.scoped);
 
   /** The control link to `peer`, kept open for as long as this host runs. */
   const dialling = (peer: Peer) =>
     Effect.gen(function* () {
       let failures = 0;
-      stand(peer.installation, { state: "connecting", since: null, failure: null });
+      stand(peer.installation, { state: "connecting", since: null, failure: null, ...NO_WAY });
       while (true) {
-        const { up, said } = yield* controlLink(peer);
+        const woken = yield* Deferred.make<void>();
+        wakers.set(peer.installation, woken);
+        const { up, ended } = yield* controlLink(peer);
         if (up) failures = 0;
-        stand(peer.installation, { state: "connecting", since: null, failure: said });
-        yield* Effect.sleep(backoff(failures));
+        stand(peer.installation, { state: "connecting", since: null, ...ended });
+        yield* Effect.raceFirst(Effect.sleep(backoff(failures)), Deferred.await(woken));
         failures++;
       }
     });
@@ -968,14 +976,24 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     };
   };
 
-  /** A peer's control link: the newest one an installation opens is the one kept. */
-  const controlFrom = (peer: Peer): Accepted => ({
+  /**
+   * A peer's control link: the newest one an installation opens is the one kept, over the
+   * transport its dialler declared.
+   */
+  const controlFrom = (peer: Peer, transport: Way, direct: string | null): Accepted => ({
     peer,
     opened: (ws) => {
       const older = controls.get(peer.installation);
       controls.set(peer.installation, ws);
       older?.close();
-      stand(peer.installation, { state: "live", since: null, failure: null });
+      stand(peer.installation, {
+        state: "live",
+        since: null,
+        failure: null,
+        ...NO_WAY,
+        transport,
+        direct: transport === "ssh" ? direct : null,
+      });
       onLink(peer);
     },
     arrived: () => {},
@@ -986,6 +1004,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         state: "away",
         since: DateTime.formatIso(DateTime.makeUnsafe(clock.currentTimeMillisUnsafe())),
         failure: "its control link closed",
+        ...NO_WAY,
       });
     },
   });
@@ -1029,7 +1048,11 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
         );
       }
       case "/control":
-        return controlFrom(peer);
+        return controlFrom(
+          peer,
+          url.searchParams.get("transport") === "ssh" ? "ssh" : "direct",
+          url.searchParams.get("direct"),
+        );
       case "/reverse": {
         const id = url.searchParams.get("ticket") ?? "";
         const ticket = tickets.get(id);
@@ -1091,6 +1114,7 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
           state: "away",
           since: startedAt,
           failure: "no control link from it yet",
+          ...NO_WAY,
         });
     }
     const wanted = peers.some((peer) => peer.dials === "in");
@@ -1259,14 +1283,16 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
     forget,
     list: reconcileMachines.pipe(
       Effect.andThen(pairing.withPermits(1)(settle)),
-      Effect.andThen(
-        Effect.sync(() =>
-          peers.map((peer): PeerView => {
+      Effect.andThen(() =>
+        Effect.forEach(peers, (peer) =>
+          Effect.gen(function* () {
             const standing = standings.get(peer.installation) ?? {
               state: "connecting",
               since: null,
               failure: null,
+              ...NO_WAY,
             };
+            const connection = peer.dials === "out" ? yield* connectionOf(peer) : undefined;
             return {
               installation: peer.installation,
               name: peer.name,
@@ -1275,11 +1301,22 @@ export const startPeers = Effect.fn("Peers.start")(function* (link: Link) {
               build: builds.get(peer.installation) ?? null,
               ...standing,
               failure: peer.dials === "in" && listening !== null ? listening : standing.failure,
-            };
+              connection:
+                connection === undefined ? null : connection !== null && (yield* connection.check),
+            } satisfies PeerView;
           }),
         ),
       ),
     ),
+    wake: (name) =>
+      Effect.sync(() => {
+        const peer = peers.find((one) => one.name === name && one.dials === "out");
+        const waker =
+          peer === undefined || standings.get(peer.installation)?.state === "live"
+            ? undefined
+            : wakers.get(peer.installation);
+        if (waker !== undefined) Deferred.doneUnsafe(waker, Exit.void);
+      }),
   };
   return peersModule;
 });
@@ -1291,17 +1328,10 @@ const decodeRefusal = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })),
 );
 
-export const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
-
-/** `collie` as a Machine's login shell runs it over SSH. */
-const remoteCollie = (args: ReadonlyArray<string>) =>
-  [`exec "\${SHELL:-/bin/sh}" -lc 'exec collie "$@"' collie`, ...args.map(quoted)].join(" ");
-
 /**
- * Pairs with a herdr machine over its SSH login, the one approval its first reach asks
- * for, and answers the pairing for this Machine to keep. Whatever the login prints goes to
- * this process's stderr, where the human who has to approve it is. Only a front door that
- * can show that login calls this; a host's own jobs never do.
+ * Pairs with a herdr machine through this computer's open SSH connection to it, and
+ * answers the pairing for this Machine to keep. Only a front door that can show the login
+ * opening that connection calls this; a connection that went is a failure, never a login.
  */
 export const pairWith = Effect.fn("Peers.pairWith")(
   function* (
@@ -1309,58 +1339,37 @@ export const pairWith = Effect.fn("Peers.pairWith")(
     asker: {
       readonly installation: string;
       readonly name: string;
-      /** An SSH master already open to the machine, whose login is reused. */
-      readonly control?: string;
+      /** The control path of the open connection the invite rides. */
+      readonly control: string;
     },
   ) {
-    const ssh = "ssh";
-    const resolved = yield* shell(ssh, ["-G", machine.target], ".");
-    const address =
-      /^hostname (.+)$/m.exec(resolved.stdout)?.[1]?.trim() ?? machine.target.replace(/^.*@/, "");
-    const through =
-      asker.control === undefined ? [] : ["-S", asker.control, "-o", "ControlMaster=no"];
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const said = yield* Effect.scoped(
-      Effect.gen(function* () {
-        const handle = yield* spawner.spawn(
-          ChildProcess.make(
-            ssh,
-            [
-              ...through,
-              "-o",
-              "ConnectTimeout=10",
-              "-T",
-              machine.target,
-              remoteCollie([
-                "--json",
-                "machine",
-                "invite",
-                "--for",
-                asker.installation,
-                "--name",
-                asker.name,
-                "--address",
-                address,
-              ]),
-            ],
-            { stdin: "ignore", stdout: "pipe", stderr: "inherit", extendEnv: true },
-          ),
-        );
-        return yield* handle.stdout.pipe(
-          Stream.decodeText(),
-          Stream.runFold(
-            () => "",
-            (all, chunk) => all + chunk,
-          ),
-        );
-      }),
-    ).pipe(Effect.orElseSucceed(() => ""));
+    const address = (yield* resolvedHost(machine.target)) ?? machine.target.replace(/^.*@/, "");
+    const { stdout: said, said: ssh } = yield* ride(
+      asker.control,
+      machine.target,
+      remoteCollie([
+        "--json",
+        "machine",
+        "invite",
+        "--for",
+        asker.installation,
+        "--name",
+        asker.name,
+        "--address",
+        address,
+      ]),
+    );
     const last = said.trim().split("\n").at(-1) ?? "";
     const invited = decodeInvited(last);
     if (Option.isNone(invited))
       return yield* new HostRefused({
         reason: `${machine.label} did not pair: ${Option.match(decodeRefusal(last), {
-          onNone: () => (last === "" ? "its collie answered nothing over ssh" : last),
+          onNone: () =>
+            last !== ""
+              ? last
+              : ssh === ""
+                ? "its collie answered nothing over ssh"
+                : `ssh said: ${ssh}`,
           onSome: (refused) => refused.error.message,
         })}`,
       });

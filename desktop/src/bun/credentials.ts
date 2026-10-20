@@ -11,7 +11,8 @@ import { GITLAB_HOST, SCOPES, TokenSelf } from "../../../src/gitlab-token";
 import { inTerminal } from "../../../src/in-terminal";
 import { scriptLine } from "../../../src/script";
 import type { OnboardRun } from "../shared/flock";
-import { quoted, type ShellRoute, spawned } from "./machine";
+import { type ShellRoute, spawned } from "./machine";
+import { quoted } from "../../../src/ssh-argv";
 import { CHILD_CWD, childEnv, which } from "./login-env";
 import { ranWith, shOn, tracked } from "./onboarding";
 

@@ -6,7 +6,8 @@
 import { Effect, Option, Schema, Stream } from "effect";
 import type { PaneAt } from "../../../src/board-model";
 import { ActionFailed, TerminalCommand, type TerminalEvent } from "../shared/flock";
-import { quoted, type ShellRoute, spawned, stderrTail } from "./machine";
+import { type ShellRoute, spawned, stderrTail } from "./machine";
+import { quoted } from "../../../src/ssh-argv";
 import { CHILD_CWD, childEnv } from "./login-env";
 
 /** herdr's controller for one pane, taking it over from any other direct attach. */

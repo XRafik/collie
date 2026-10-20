@@ -1,4 +1,15 @@
-import { Data, Schema, FileSystem, Clock, Effect, Option, Path, Random, Schedule } from "effect";
+import {
+  Data,
+  Duration,
+  Schema,
+  FileSystem,
+  Clock,
+  Effect,
+  Option,
+  Path,
+  Random,
+  Schedule,
+} from "effect";
 import { startedOf } from "./processes";
 
 // Cooperative pid-lock files: `wx` creation is the claim; holder liveness, not age, decides
@@ -61,19 +72,28 @@ const claimLock = Effect.fn("claimLock")(function* (lock: string) {
 });
 
 /** The one acquisition policy: recover stale claims and wait out brief live contention. */
-const acquireLock = Effect.fn("acquireLock")((lock: string, claims: number) =>
-  claimLock(lock).pipe(
+const acquireLock = Effect.fn("acquireLock")(function* (
+  lock: string,
+  claims: number | Duration.Duration,
+) {
+  const until = Duration.isDuration(claims)
+    ? (yield* Clock.currentTimeMillis) + Duration.toMillis(claims)
+    : Infinity;
+  const nextClaimInTime = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => now + LOCK_CLAIM_SPACING_MS < until),
+  );
+  return yield* claimLock(lock).pipe(
     Effect.flatMap((claimed) =>
       claimed ? Effect.succeed(true) : Effect.fail(new LockContended()),
     ),
     Effect.retry({
-      times: claims,
+      times: Duration.isDuration(claims) ? undefined : claims,
       schedule: Schedule.spaced(LOCK_CLAIM_SPACING_MS),
-      while: (error) => error instanceof LockContended,
+      while: (error) => (error instanceof LockContended ? nextClaimInTime : false),
     }),
     Effect.catchTag("LockContended", () => Effect.succeed(false)),
-  ),
-);
+  );
+});
 
 /**
  * Runs `effect` while this process holds `lock`, and hands the lock back whichever way it
@@ -85,8 +105,8 @@ export const withLock = <A, E, R, A2, E2, R2>(
   lock: string,
   contended: Effect.Effect<A2, E2, R2>,
   effect: Effect.Effect<A, E, R>,
-  /** How many claims to make first, for a caller that can wait longer than a second. */
-  claims: number = LOCK_CLAIM_RETRIES,
+  /** How many claims to make, or for how long, for a caller that can wait longer than a second. */
+  claims: number | Duration.Duration = LOCK_CLAIM_RETRIES,
 ) =>
   Effect.gen(function* () {
     if (!(yield* acquireLock(lock, claims))) return yield* contended;
