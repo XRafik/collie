@@ -57,7 +57,7 @@ import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
 import type { MergeOutcome, Takeover } from "./landing";
 import type { ReviewHead, ReviewStanding } from "./review-wait";
-import type { FastForward, ProductionRead, RollbackRead, TagRead } from "./releasing";
+import type { FastForward, ProductionRead, RollbackRead, StageRead, TagRead } from "./releasing";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -92,18 +92,20 @@ export {
 } from "./review-wait";
 /**
  * A checkout brought to a head, and a tag, production and stage read back
- * (`HostApi.fastForward`, `readTag`, `readProduction`, `readRollback`).
+ * (`HostApi.fastForward`, `readTag`, `readProduction`, `readStage`, `readRollback`).
  */
 export {
   FastForwardSchema,
   JobLinkSchema,
   ProductionReadSchema,
   RollbackReadSchema,
+  StageReadSchema,
   TagReadSchema,
   type FastForward,
   type JobLink,
   type ProductionRead,
   type RollbackRead,
+  type StageRead,
   type TagRead,
 } from "./releasing";
 
@@ -886,13 +888,25 @@ export interface HostApi {
     readonly jobs: ReadonlyArray<string>;
   }) => Effect.Effect<ProductionRead>;
   /**
+   * Reads the recorded merge request's head on stage from the forge, rather than from an
+   * Output: `Staged` where each of `jobs`, one at least, passed on its head's pipeline and
+   * stage's newest successful deployment carries `head`, with each job's address; `Moved`
+   * where its head is no longer `head`; else `Failed` with why. Take it inside an Activity.
+   */
+  readonly readStage: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly head: string;
+    readonly jobs: ReadonlyArray<string>;
+  }) => Effect.Effect<StageRead>;
+  /**
    * Whether the forge shows stage rolled back: its newest successful deployment no longer
-   * carries `merged` and carries what production's has. Take it inside an Activity.
+   * carries `off` and carries what production's has. Take it inside an Activity.
    */
   readonly readRollback: (options: {
     readonly runId: string;
     readonly cwd: string;
-    readonly merged: string;
+    readonly off: string;
   }) => Effect.Effect<RollbackRead>;
   /**
    * For a merged merge request this Run recorded: takes over the landing of the newest Run

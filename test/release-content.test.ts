@@ -18,7 +18,10 @@ test("both forges' release content has the steps the module asks for, and every 
       "assess",
       "answer",
       "fix",
+      "stage-merge-request",
+      "unstage",
       "tag",
+      "tag-tested",
       "stage",
       "rollback",
       "production",
@@ -89,5 +92,31 @@ test("an application's tag step stages the tag, rolls a failed stage back and le
     const production = flat(one.sections.get("production") ?? "");
     expect(production).toContain("{{jobs}}");
     expect(production).toContain("no other job");
+  }
+});
+
+test("staging a merge request deploys its own pipeline's head, checks stage and rolls it back, unmerged and never to production", () => {
+  for (const one of Object.values(content)) {
+    const staging = flat(one.sections.get("stage-merge-request") ?? "");
+    for (const said of [
+      "{{head}}",
+      "{{stage_jobs}}",
+      "Nothing is merged",
+      "Roll stage back",
+      "Never play, retry or ask about a production job",
+    ])
+      expect(staging).toContain(said);
+    const unstage = flat(one.sections.get("unstage") ?? "");
+    expect(unstage).toContain("{{failure}}");
+    expect(unstage).toContain("{{head}}");
+    const tagging = flat(one.sections.get("tag-tested") ?? "");
+    for (const said of [
+      "{{recovery}}",
+      "{{merged}}",
+      "the repository's own tag and notes conventions",
+      "--cleanup=verbatim",
+      "Never play, retry or ask about a production job",
+    ])
+      expect(tagging).toContain(said);
   }
 });

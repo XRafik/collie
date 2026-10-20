@@ -2291,15 +2291,28 @@ leaves the merge request open. Answer it from the card, Desktop, chat or
 `collie run answer <run> Release --decision go-1`. A merge request that is set to merge
 itself once green is refused at the start with why.
 
-For an application the go is **Merge, tag and stage**: Collie merges, the agent tags and
-the tag's pipeline deploys to stage, and Collie reads from the forge that stage carries
-the merge and that the production jobs wait for somebody to start them. Then it asks a
-second go, **`production`**: verify stage, then answer **Send to production**, and the
-agent plays exactly the production jobs it named, or **Leave production to me** and play
-them yourself. Either way the Run holds the claim until the forge shows production carries
-the merge. A stage that fails after the merge is rolled back to what production carries,
-and the Run fails with the merge standing: the fix is a new merge request. An application
-whose tag pipeline deploys nothing to stage is refused at the start. If a Run fails after
+An application has two ways to stage, each offered where its pipelines deploy to stage:
+
+- **Stage the merge request** deploys the merge request's own head to stage, unmerged, for
+  you to test. Collie reads from the forge that its stage jobs passed and stage carries
+  that head, and asks **`production`** while the Run holds the claim: **Send to
+  production** merges at that head, tags and plays production with no further question;
+  **Leave production to me** merges and tags, and you play production; **Finish** merges
+  nothing and rolls stage back. A stage that fails, or a comment that arrives while you
+  test, rolls stage back, gives the claim back and goes back to the wait, through a fix
+  round or the comment's round, and go 1 is asked again. Choose it to test a change on
+  stage before it reaches the default branch.
+- **Merge, tag and stage**: Collie merges, the agent tags and the tag's pipeline deploys
+  to stage, and Collie reads from the forge that stage carries the merge and that the
+  production jobs wait for somebody to start them. Then it asks a second go,
+  **`production`**: verify stage, then answer **Send to production**, and the agent plays
+  exactly the production jobs it named, or **Leave production to me** and play them
+  yourself. A stage that fails after the merge is rolled back to what production carries,
+  and the Run fails with the merge standing: the fix is a new merge request. Choose it
+  where the review was enough and stage only has to check the release.
+
+Either way the Run holds the claim until the forge shows production carries the merge. An
+application whose pipelines deploy nothing to stage is refused at the start. If a Run fails after
 it merged, **Release again** tags what it merged rather than merging anything again, and
 asks the second go afresh ([`release`](workflows.md#release)).
 

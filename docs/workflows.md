@@ -412,8 +412,8 @@ GitHub one.
 
 **For:** one merge request taken the rest of the way, on your go: merged at the head its
 review approved and its checks proved, tagged, and the tag read back on origin. A
-**package** ends there. An **application**'s tag goes to stage, and to production on a
-second go.
+**package** ends there. An **application** goes to stage, from its merge request before the
+merge or from its tag after it, and to production on your go.
 
 **Inputs:** `mr`, the merge request or pull request, picked from the same target menu
 `review` offers ([Reviewing someone else's merge request](using.md#reviewing-someone-elses-merge-request)).
@@ -426,9 +426,9 @@ with why: nothing is reset or discarded.
 
 **What happens:** one agent assesses, read only, whether the repository is a package or an
 application, by renovate's own rule, and for an application names the stage deploy jobs of
-its merge request pipelines and of its tag pipelines. An application whose tag pipelines
-deploy nothing to stage fails here, before any wait, saying it has no stage deploy Collie
-can prove. Collie then proves the head with the Run's checks, and
+its merge request pipelines and of its tag pipelines. An application whose pipelines of
+neither kind deploy to stage fails here, before any wait, saying it has no stage deploy
+Collie can prove. Collie then proves the head with the Run's checks, and
 waits, at no token cost, reading the review every five minutes until the merge request is
 approved, has no unanswered external comment, is green and mergeable at the proved head.
 The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); the
@@ -455,11 +455,12 @@ round, `fix-<n>`, which fixes and pushes as implement's gate fixes do. Four roun
 row that leave a check failing, or one that changes nothing, park the Run with why;
 resuming it runs the checks again.
 
-Once ready, it asks **`go-<n>`**: **Release** or **Finish** for a package, **Merge, tag and
-stage** or **Finish** for an application, naming the head and who approved it, and for an
-application that stage gets the tag and production waits for a second go. Anyone may answer, from any door, and the answer is recorded with who gave it.
-**Finish** ends the Run with the merge request left open. **Release**, or **Merge, tag and stage**, reads the review
-again: where it no longer holds, the Run says why on its log and waits for a fresh go.
+Once ready, it asks **`go-<n>`**, naming the head and who approved it: **Release** or
+**Finish** for a package. For an application it offers **Stage the merge request** where
+the assessment named a stage deploy of its merge request pipelines, **Merge, tag and stage**
+where it named one of its tag pipelines, and **Finish**, and says what each does. Anyone
+may answer, from any door, and the answer is recorded with who gave it. **Finish** ends the
+Run with the merge request left open. Any other answer reads the review again: where it no longer holds, the Run says why on its log and waits for a fresh go.
 Where it holds, the Run claims the repository in Helle (a repository with no Helle project
 goes on without one), and Collie merges at exactly the head the go named — never an admin
 merge, never auto-merge. A head that moved before the merge gives the claim back and goes
@@ -484,7 +485,34 @@ after the merge, nothing went to production, and the merge stands, so the fix is
 merge request. A rollback the forge cannot show, or any other failed proof, fails the Run
 and keeps the claim.
 
-Then it asks **`production`**: **Send to production** or **Leave production to me**,
+**Staging the merge request** tests it before anything is merged. The Run claims the
+repository and its `stage` step deploys the merge request's own pipeline at the go's head
+to stage, then runs the repository's stage checks there. Collie reads each stage job back
+on the merge request's head pipeline: every one passed, the head is still the go's, and
+stage's newest successful deployment carries that head. Where any of that does not hold,
+the `unstage` step rolls stage back to the newest release production carries; once the
+forge shows it there, the claim is given back, the failure is the finding of a fix round,
+and the Run goes back to the wait, so go 1 is asked again on the fixed head. A head that
+moved instead goes back to the wait with no fix round.
+
+Then, with the claim held while you test, it asks **`production`**: **Send to production**,
+**Leave production to me** or **Finish**, naming the merge request, its head and the stage
+jobs at their addresses. Nothing is merged yet, so **Send to production** and **Leave
+production to me** read again that go 1 still holds at that head and that stage still
+carries it. Where either does not, nothing is merged, stage is rolled back and the claim
+given back, and the Run says why and goes back to the wait: a comment that arrived while
+you tested is answered in its round there. Where both hold, Collie merges at that head, the
+agent tags (where the tag's pipeline deploys stage too, it plays and checks those jobs as
+**Merge, tag and stage** does) and Collie proves the tag ready for production. **Send to
+production** then plays production with no further question, and **Leave production to
+me** plays nothing; either waits until the forge shows production carries the merge.
+**Finish** merges nothing, rolls stage back and ends with the merge request left open.
+
+Choose **Stage the merge request** where you want to test the change on stage before it is
+on the default branch; choose **Merge, tag and stage** where reviewing it was enough and
+stage only has to check the release.
+
+After **Merge, tag and stage**, it asks **`production`**: **Send to production** or **Leave production to me**,
 naming the tag, saying stage carries it, and naming each production job with its address.
 You verify stage before you answer. It holds for that tag and those jobs: the head go 1
 was given for is merged, so it never goes back to the review wait. **Send to production**
@@ -496,7 +524,9 @@ waits, at no token cost, until the forge shows production carries the merge, who
 played it; the card names the production jobs meanwhile, and a Hold or Stop suspends it.
 
 **Ends:** with `<mr> merged at <sha>, released as <tag>` and the claim given back, for an
-application `… released as <tag>, in production`, or with what stopped it. A failed Run offers **Release again**: before the merge it is a fresh
+application `… released as <tag>, in production`, with `<mr> was left open, and stage rolled
+back` after staging the merge request, or with what stopped it. A rollback the forge cannot
+show fails the Run and keeps the claim. A failed Run offers **Release again**: before the merge it is a fresh
 release; after it, the new Run takes over the failed Run's landing — never a merge someone
 made outside a Release Run — and only tags, asking to adopt the claim the failed Run kept. For an application it
 finishes the tag that already carries the merge, stage included, and asks `production`
@@ -588,9 +618,14 @@ Each names only what that step's content tells the agent to do:
   forge, playing, retrying and watching the stage deploy and stage check jobs of the tag's
   pipeline, rolling stage back to the newest release production carries, and watching the
   pipeline until only production jobs waiting to be started are left — never a production
-  job.
-- **`release`'s `rollback`**: rolling stage back to the newest release production
-  carries, never a production job.
+  job. After the merge request was staged, and where the tag's pipeline deploys no stage,
+  it is cleared for the release commit, pushing the annotated tag with no release on the
+  forge, and watching the tag's pipeline — never a production job.
+- **`release`'s `stage`**: playing, retrying and watching the stage deploy job and stage
+  check jobs (e2e-stage, smoke or the like) of the merge request's pipeline, and rolling
+  stage back to the newest release production carries — never a production job.
+- **`release`'s `rollback`** and **`unstage`**: rolling stage back to the newest release
+  production carries, never a production job.
 - **`release`'s `production`**: playing exactly the production jobs the go named, at their
   addresses, and no other job.
 

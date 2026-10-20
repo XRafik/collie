@@ -78,6 +78,44 @@ the whole suite. Collie runs the checks again on the head you push.
 Then write your Output. `file` and `title` in `fixed` and `disputed` are exactly as the
 finding above gives them; `checks` names every test and lint command you ran.
 
+## stage-merge-request
+
+This Run holds the repository in Helle, or the repository has no Helle project: either way
+staging is yours until the Run ends. Deploy {{inputs.mr}} to staging from its own workflow
+runs, at its head `{{head}}`, for the human to test there. Nothing is merged: merge, tag
+and push nothing here.
+
+- The pull request's workflow run at `{{head}}` deploys to staging with {{stage_jobs}}.
+  Start and watch those jobs to success — `gh run list --commit {{head}}`, then
+  `gh run watch` — rerunning one that failed with `gh run rerun <id> --job <job id>`, and
+  then the jobs the repository itself checks staging with: an e2e or smoke job of the same
+  run.
+- Where a staging deploy or a staging check fails, **Roll stage back** to the newest
+  release production carries, so staging is never left broken: the ref of the newest
+  production deployment whose latest status is `success` —
+  `gh api repos/{owner}/{repo}/deployments?environment=<production>` and each one's
+  `statuses` — deployed to staging by the repository's own deploy workflow. Watch the
+  rollback to success, say in your log what staging is running now, and write your
+  Output: Collie hands the failure to a fix round.
+- Never play, retry or ask about a production job: never approve its environment either.
+
+Then write your Output, naming in `stage_jobs` the staging deploy and staging check jobs of
+the pull request's workflow runs you started or checked. Collie reads each of them, and
+staging, back from GitHub, not from your Output.
+
+## unstage
+
+Staging carries {{inputs.mr}} at `{{head}}`, unmerged, and it comes off: {{failure}}.
+
+**Roll stage back** to the newest release production carries, unless it is already there:
+the ref of the newest production deployment whose latest status is `success` —
+`gh api repos/{owner}/{repo}/deployments?environment=<production>` and each one's
+`statuses` — deployed to staging by the repository's own deploy workflow. Watch it to
+success. Never approve or run a production job, and merge, tag or push nothing.
+
+Then write your Output, naming in `stage` the release staging runs now. Collie reads
+staging back from GitHub, not from your Output.
+
 ## tag
 
 {{recovery}}
@@ -106,6 +144,37 @@ Collie merged {{inputs.mr}}, and the merged commit is `{{merged}}`. Release it:
 
 Then write your Output, naming the tag, the version and the URL of the tag's workflow run.
 Collie reads the tag back on origin and the run from GitHub, not from your Output.
+
+## tag-tested
+
+{{recovery}}
+
+Collie merged {{inputs.mr}} at the head the human tested on staging, and
+the merged commit is `{{merged}}`. This Run holds the repository in Helle, or the repository has no Helle
+project: either way the default branch and the tag are yours until the Run ends. Release
+it:
+
+- Work in a worktree of your own at the merged commit — `git fetch origin`, then
+  `git worktree add {{run.dir}}/release {{merged}}` — and leave this checkout as it is.
+- Diff the merged commit against the previous version tag and choose the next version
+  from that and from the repository's own versioning conventions.
+- Where the repository makes a release commit — a version file or a changelog bumped on
+  release — commit it on the default branch on top of the merged commit, and push it.
+- Tag annotated, following the repository's own tag and notes conventions. Where it has
+  none, the tag notes are a changelog entry in the shape of changelog-gen: a heading
+  `## <version> - <YYYY-MM-DD>`, then only the sections that have entries, in this order
+  and under these names — `### Features and Improvements`, `### Bug fixes`,
+  `### Miscellaneous` — with one line per change, `- <what changed> [#<n>]`, where the
+  pull request reference is the only link. Write the notes to a file and tag from it with
+  `--cleanup=verbatim`, or git strips the `#` headers as comments. Push the tag to origin.
+  An application makes no GitHub release.
+- Watch the tag's workflow run until the only jobs left are production jobs waiting on
+  their environment's approval. Never play, retry or ask about a production job: never
+  approve its environment either. Collie sends it to production on the human's go.
+
+Then write your Output: the tag, the version, the URL of the tag's workflow run, and in
+`production_jobs` each production job left waiting, with its URL. Collie reads the tag back
+on origin and the run from GitHub, not from your Output.
 
 ## stage
 

@@ -105,9 +105,11 @@ import {
   fastForward,
   readProduction,
   readRollback,
+  readStage,
   readTag,
   type ProductionRead,
   type RollbackRead,
+  type StageRead,
 } from "./releasing";
 import { standingOf, waitingLine, type ReviewHead, type ReviewStanding } from "./review-wait";
 import {
@@ -467,6 +469,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   /** Stage shown back on what production carries, or why not. */
   export type RollbackRead = { readonly _tag: "Shown" } | { readonly _tag: "Unshown"; readonly why: string };
   export const RollbackReadSchema: Schema.Codec<RollbackRead, unknown, never, never>;
+  /** A merge request's head proved on stage, with its stage jobs; its head moved; or why not. */
+  export type StageRead =
+    | { readonly _tag: "Staged"; readonly jobs: ReadonlyArray<JobLink> }
+    | { readonly _tag: "Moved"; readonly head: string }
+    | { readonly _tag: "Failed"; readonly why: string };
+  export const StageReadSchema: Schema.Codec<StageRead, unknown, never, never>;
 
   /** A landing taken over from the Run that made it, or why there was none to take. */
   export type Takeover =
@@ -739,11 +747,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly pipeline: string;
       readonly jobs: ReadonlyArray<string>;
     }) => Effect.Effect<ProductionRead>;
-    /** Whether stage is shown back on what production carries. Take it inside an Activity. */
+    /** The merge request's head on stage: its \`jobs\` passed there, and stage carries it. Take it inside an Activity. */
+    readonly readStage: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly head: string;
+      readonly jobs: ReadonlyArray<string>;
+    }) => Effect.Effect<StageRead>;
+    /** Whether stage is shown back on what production carries, and off \`off\`. Take it inside an Activity. */
     readonly readRollback: (options: {
       readonly runId: string;
       readonly cwd: string;
-      readonly merged: string;
+      readonly off: string;
     }) => Effect.Effect<RollbackRead>;
     /** Takes over the landing of a merged merge request from the failed Run that made it. Take it inside an Activity. */
     readonly takeOverLanding: (options: {
@@ -3526,6 +3541,12 @@ export const hostLayer = (options: {
             const ref = yield* recordedRef(asked.runId);
             if (ref === null) return { _tag: "Unproved", why: unrecorded } satisfies ProductionRead;
             return yield* under(readProduction({ ...asked, ref, run: runShell }));
+          }),
+        readStage: (asked) =>
+          Effect.gen(function* () {
+            const ref = yield* recordedRef(asked.runId);
+            if (ref === null) return { _tag: "Failed", why: unrecorded } satisfies StageRead;
+            return yield* under(readStage({ ...asked, ref, run: runShell }));
           }),
         readRollback: (asked) =>
           Effect.gen(function* () {
