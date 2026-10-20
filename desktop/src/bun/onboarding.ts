@@ -7,7 +7,7 @@ import { inTerminal } from "../../../src/in-terminal";
 import { verifiedRunner as sharedVerifiedRunner } from "../../../src/releases";
 import { type OnboardRun, type OnboardStep, SETTLED, type Skippable } from "../shared/flock";
 import { type Route, type ShellRoute, spawned } from "./machine";
-import { quoted } from "../../../src/ssh-connection";
+import { quoted } from "../../../src/ssh-argv";
 import { CHILD_CWD, childEnv } from "./login-env";
 
 export const RELEASES = "https://github.com/cego/collie/releases/download";

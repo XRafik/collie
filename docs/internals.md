@@ -361,7 +361,7 @@ own `machine list`; one that declares nothing is recorded as `direct`. The liste
 guesses from the address, which is loopback over SSH and for a peer on the same computer
 alike.
 
-**The SSH connection.** `src/ssh-connection.ts` holds every ssh argv Collie runs against a
+**The SSH connection.** `src/ssh-connection.ts` runs every ssh command Collie sends to a
 Machine. Its control path is `<state dir>/ssh/<16 hex of sha256(label, target)>`, in a 0700
 directory, so a changed target is another path and the length depends only on the state
 directory; one too long for ssh to bind with its 17-byte temporary suffix is refused,
@@ -489,7 +489,7 @@ that command runs locally with `--machine <name>` and pipes the Local host's rel
 SSH it runs on the far Machine. Bounded shell calls carry commands and credentials over
 the door. After an upgrade, `refresh` asks the far Machine to run its new CLI and replace
 its host. Interactive terminal commands and login forwarding retain SSH, riding the
-Machine's shared connection with argv from `src/ssh-connection.ts`. Desktop opens that
+Machine's shared connection with argv from `src/ssh-argv.ts`, which keeps the host's lock out of Desktop. Desktop opens that
 connection only through `collie --json machine connect <label>`, reading SSO lines from
 its stderr, and finds one gone with `-O check` before its next use; it never closes it.
 

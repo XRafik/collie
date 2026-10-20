@@ -9,11 +9,9 @@ import {
   controlPath,
   controlPathOf,
   openConnection,
-  quoted,
-  remoteCollie,
-  riderArgv,
   sshConnection,
 } from "../src/ssh-connection";
+import { quoted, remoteCollie, riderArgv } from "../src/ssh-argv";
 import { withLock } from "../src/lock";
 import { runEffect } from "./support/effect";
 import { freePort, portOf, silentMaster, writeFakeSsh, socketDir } from "./support/fake-ssh";

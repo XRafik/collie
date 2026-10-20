@@ -1,12 +1,12 @@
-// Every ssh argv Collie runs against a Machine's shared SSH connection, and the one way it
-// is opened (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection). Effect alone, so
-// Desktop builds the same argv.
+// How a Machine's shared SSH connection is opened, asked and ridden
+// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection).
 
 import { Clock, Duration, Effect, FileSystem, Option, Schema, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HostRefused } from "./board-model";
 import { withLock } from "./lock";
 import { MachineUnreachable } from "./peers-model";
+import { MUX_BOUND, muxArgv, riderArgv, type Verb } from "./ssh-argv";
 
 /** A herdr machine as its SSH connection is named: its label and its target. */
 export interface SshMachine {
@@ -19,14 +19,6 @@ export const SOCKET_PATH_MAX = 104;
 /** What ssh appends to a control path while it binds it: a dot and 16 characters. */
 const BIND_SUFFIX = 17;
 const OPEN_BOUND = "2 minutes";
-/** How long a master has to answer one control command, which it does at once when it is well. */
-export const MUX_BOUND = "5 seconds";
-
-export const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
-
-/** `collie` as a Machine's login shell runs it over SSH. */
-export const remoteCollie = (args: ReadonlyArray<string>) =>
-  [`exec "\${SHELL:-/bin/sh}" -lc 'exec collie "$@"' collie`, ...args.map(quoted)].join(" ");
 
 /** Where this computer's connection to `machine` is held: a changed target is another. */
 export const controlPathOf = (stateDir: string, machine: SshMachine) =>
@@ -55,23 +47,6 @@ export const controlPath = Effect.fn("SshConnection.controlPath")(
     cause._tag === "HostRefused" ? cause : new HostRefused({ reason: cause.message }),
   ),
 );
-
-/**
- * A session that rides the connection and fails where it has gone: without
- * `ProxyCommand=false`, ssh would fall back to a login of its own.
- */
-export const riderArgv = (path: string, target: string, remote: string, ssh = "ssh") => [
-  ssh,
-  "-S",
-  path,
-  "-o",
-  "ControlMaster=no",
-  "-o",
-  "ProxyCommand=false",
-  "-T",
-  target,
-  remote,
-];
 
 /** What ssh said on stderr, and how it ended. */
 const ran = (argv: ReadonlyArray<string>) =>
@@ -102,17 +77,6 @@ export interface SshConnection {
   /** Ends the master, and removes its path where it had already gone. */
   readonly exit: Effect.Effect<void>;
 }
-
-type Verb = "check" | "forward" | "cancel" | "exit";
-
-/** `ssh -S <path> -O <verb> … <destination>`: answered by an open master, or failed. */
-export const muxArgv = (
-  ssh: string,
-  path: string,
-  verb: Verb,
-  destination: string,
-  ...forward: ReadonlyArray<string>
-) => [ssh, "-S", path, "-O", verb, ...forward, destination];
 
 const mux = (
   ssh: string,

@@ -4,7 +4,7 @@
 import { expect, test } from "bun:test";
 import { Effect, FileSystem, Scope, Exit } from "effect";
 import { BRIDGE_READY } from "../src/board-model";
-import { riderArgv } from "../src/ssh-connection";
+import { riderArgv } from "../src/ssh-argv";
 import { bridgeCommand, linkRoute, remoteRoute, type ShellRoute } from "../desktop/src/bun/machine";
 import { runEffect } from "./support/effect";
 import { freePort, silentMaster, writeFakeSsh, socketDir } from "./support/fake-ssh";

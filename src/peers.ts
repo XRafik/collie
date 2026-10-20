@@ -41,14 +41,13 @@ import { channelInto } from "./channel";
 import { openPeer, REACH_BOUND, type Way } from "./peer-transport";
 import {
   closeConnections,
-  quoted,
-  remoteCollie,
   resolvedHost,
   ride,
   SOCKET_PATH_MAX,
   sshConnection,
   type SshMachine,
 } from "./ssh-connection";
+import { quoted, remoteCollie } from "./ssh-argv";
 import { shell } from "./mr";
 import {
   backoff,

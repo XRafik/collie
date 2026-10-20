@@ -12,7 +12,7 @@ import { inTerminal } from "../../../src/in-terminal";
 import { scriptLine } from "../../../src/script";
 import type { OnboardRun } from "../shared/flock";
 import { type ShellRoute, spawned } from "./machine";
-import { quoted } from "../../../src/ssh-connection";
+import { quoted } from "../../../src/ssh-argv";
 import { CHILD_CWD, childEnv, which } from "./login-env";
 import { ranWith, shOn, tracked } from "./onboarding";
 

@@ -43,7 +43,7 @@ import {
   type PeerView,
   PeerView as PeerSchema,
 } from "../../../src/peers-model";
-import { MUX_BOUND, muxArgv, quoted, remoteCollie, riderArgv } from "../../../src/ssh-connection";
+import { MUX_BOUND, muxArgv, quoted, remoteCollie, riderArgv } from "../../../src/ssh-argv";
 import {
   ActionFailed,
   type Credential,
