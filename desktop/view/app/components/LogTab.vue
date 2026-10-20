@@ -4,7 +4,7 @@ import { FOLLOWING_LOG, type LogPlace, logPlaceOf, logScrollTop } from "../../..
 
 const props = defineProps<{ tail: Panel | null }>();
 
-const search = ref("");
+const search = defineModel<string>("search", { default: "" });
 const all = computed(() =>
   props.tail?._tag === "Text" && props.tail.text !== "" ? props.tail.text.split("\n") : [],
 );

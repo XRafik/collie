@@ -15,6 +15,7 @@ import {
   type TabFacts,
   tabBeside,
   tabShown,
+  tabsKept,
   typedIn,
 } from "../desktop/src/shared/record";
 
@@ -212,6 +213,19 @@ describe("scroll memory", () => {
     const memory = rememberScroll(none, "terminal", 300);
     expect(memory.has("terminal")).toBe(false);
     expect(scrollToRestore(memory, "terminal")).toBeNull();
+  });
+});
+
+describe("the tabs kept mounted", () => {
+  const none = new Set<string>();
+
+  test("are every tab visited, so what was opened in one is there on return", () => {
+    const kept = tabsKept(tabsKept(tabsKept(none, "plan"), "evidence"), "plan");
+    expect([...kept]).toEqual(["plan", "evidence"]);
+  });
+
+  test("never include Terminal or Log, which keep their own place", () => {
+    expect([...tabsKept(tabsKept(none, "terminal"), "log")]).toEqual([]);
   });
 });
 

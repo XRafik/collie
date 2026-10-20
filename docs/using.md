@@ -1588,8 +1588,9 @@ outcome — what kind it is, what it still has to prove, what is in its way, wha
 and what it delivered; its steps, each with its status, note, how long it took and its
 agents; and the Inputs it was given, each with whether it was given or inferred. A section
 with nothing to say is left out. Each tab keeps its place while the record is open: switching
-back to one brings it back scrolled where you left it, waiting for it to grow if it is still
-filling in, and a tab's first visit starts at the top. A jump to a finding lands on its
+back to one brings it back as you left it, with what you had opened or searched for, and
+scrolled where you left it, waiting for it to grow if it is still filling in; a tab's first
+visit starts at the top. A video playing on Evidence pauses when you leave the tab. A jump to a finding lands on its
 target instead. Closing the record, or opening another Run's, forgets every place.
 
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the

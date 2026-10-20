@@ -13,6 +13,7 @@ import {
   scrollToRestore,
   tabBeside,
   tabShown,
+  tabsKept,
   typedIn,
 } from "../../../src/shared/record";
 import { runDetailAtom, runDetailKey } from "../flock";
@@ -93,6 +94,7 @@ watch(tab, (now) => now !== "terminal" && (wentToPane.value = false));
 const body = ref<HTMLElement | null>(null);
 let memory: ScrollMemory = new Map();
 const logPlace = ref(FOLLOWING_LOG);
+const logSearch = ref("");
 let stopRestoring = () => {};
 const HUMAN_SCROLLS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
 /** Shows the position, waiting while the tab is still too short for it until the human scrolls. */
@@ -159,9 +161,11 @@ const key = (event: KeyboardEvent) => {
 onMounted(() => window.addEventListener("keydown", key, { capture: true }));
 onUnmounted(() => window.removeEventListener("keydown", key, { capture: true }));
 
-/** Mounted from its first visit on and kept, so its toggles and open files stay as left. */
-const diffSeen = ref(false);
-watch(tab, (now) => now === "diff" && (diffSeen.value = true), { immediate: true });
+const kept = shallowRef<ReadonlySet<string>>(new Set());
+watch(tab, (now) => now !== undefined && (kept.value = tabsKept(kept.value, now)), {
+  immediate: true,
+});
+provide("recordTab", tab);
 
 const review = useWhole(
   () => ({ installation: props.placed.installation, runId: props.placed.task.run }),
@@ -229,14 +233,20 @@ const locationOf = (file: string, line: number | null) =>
             :live="placed.task.agents"
             :protocol="protocolOf(placed.installation)"
           />
-          <SummaryTab v-if="tab === 'summary'" :detail="detail" />
+          <SummaryTab v-if="kept.has('summary')" v-show="tab === 'summary'" :detail="detail" />
           <PlanTab
-            v-else-if="tab === 'plan' && detail.plan"
+            v-if="kept.has('plan') && detail.plan"
+            v-show="tab === 'plan'"
             :plan="detail.plan"
             :installation="placed.installation"
             :run-id="detail.id"
           />
-          <div v-else-if="tab === 'review'" data-testid="review" class="flex flex-col gap-4">
+          <div
+            v-if="kept.has('review')"
+            v-show="tab === 'review'"
+            data-testid="review"
+            class="flex flex-col gap-4"
+          >
             <SourceFile
               v-if="target !== null && landing?.tab === 'review'"
               :target="target"
@@ -279,14 +289,20 @@ const locationOf = (file: string, line: number | null) =>
             </ul>
           </div>
           <EvidenceTab
-            v-else-if="tab === 'evidence'"
+            v-if="kept.has('evidence')"
+            v-show="tab === 'evidence'"
             :detail="detail"
             :installation="placed.installation"
           />
-          <LogTab v-else-if="tab === 'log'" v-model:place="logPlace" :tail="detail.tail" />
-          <MrPanel v-else-if="tab === 'mr' && detail.mr" :mr="detail.mr" />
+          <LogTab
+            v-if="tab === 'log'"
+            v-model:place="logPlace"
+            v-model:search="logSearch"
+            :tail="detail.tail"
+          />
+          <MrPanel v-if="kept.has('mr') && detail.mr" v-show="tab === 'mr'" :mr="detail.mr" />
           <DiffTab
-            v-if="detail.diff && diffSeen"
+            v-if="detail.diff && kept.has('diff')"
             ref="diffTab"
             v-show="tab === 'diff'"
             :diff="detail.diff"
@@ -297,7 +313,8 @@ const locationOf = (file: string, line: number | null) =>
           />
         </template>
         <FactsTab
-          v-if="tab === 'facts'"
+          v-if="kept.has('facts')"
+          v-show="tab === 'facts'"
           :task="placed.task"
           :detail="detail"
           :installation="placed.installation"

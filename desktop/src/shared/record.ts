@@ -62,6 +62,10 @@ export const rememberScroll = (
 export const scrollToRestore = (memory: ScrollMemory, tab: string): number | null =>
   tab === UNSCROLLED ? null : (memory.get(tab) ?? 0);
 
+/** Every tab visited, kept mounted so what was opened in it is there on return. */
+export const tabsKept = (kept: ReadonlySet<string>, shown: string): ReadonlySet<string> =>
+  shown === UNSCROLLED || shown === "log" || kept.has(shown) ? kept : new Set(kept).add(shown);
+
 /** Where the Log's own lines are scrolled, kept while the record is open. */
 export interface LogPlace {
   readonly top: number;
