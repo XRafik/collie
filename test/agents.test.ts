@@ -5086,7 +5086,7 @@ test(
             expect(yield* parked("r1")).toBe(false);
 
             yield* rig.memory(50);
-            expect(yield* Fiber.join(verify)).toBe(true);
+            expect(yield* Fiber.join(verify)).toBe("waited");
             yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"verified"}`);
             return yield* Fiber.join(fiber);
           }),

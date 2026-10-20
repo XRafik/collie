@@ -1623,12 +1623,6 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       Effect.orElseSucceed(() => false),
     );
 
-  const untilRunStopped = (runId: string) =>
-    Effect.gen(function* () {
-      while (!(yield* stoppedRun(runId)))
-        yield* Effect.sleep(Duration.millis(host.pollMs ?? DEFAULT_POLL_MS));
-    });
-
   const turnEnded = (launched: Launched) =>
     Effect.gen(function* () {
       const stopped = stoppedRun(launched.runId);
@@ -1966,15 +1960,13 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
         const alive = live !== undefined && !fresh;
         const memory = alive
           ? "free"
-          : yield* Effect.raceFirst(
-              waitForMemory({
-                env: host.env,
-                stateDir: host.dir,
-                runId: ask.runId,
-                what: `${agent}'s launch`,
-              }).pipe(Effect.map((waited) => (waited ? "waited" : "free"))),
-              untilRunStopped(ask.runId).pipe(Effect.as("stopped")),
-            );
+          : yield* waitForMemory({
+              env: host.env,
+              stateDir: host.dir,
+              runId: ask.runId,
+              what: `${agent}'s launch`,
+              stopped: stoppedRun(ask.runId),
+            });
         // Listed again: what herdr had before the wait may have changed during it.
         if (memory === "waited") return yield* launch(ask, fresh, note);
         const fs = yield* FileSystem.FileSystem;

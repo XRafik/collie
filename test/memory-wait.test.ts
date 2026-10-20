@@ -2,7 +2,7 @@
 // (ADR-draft-new-work-waits-while-its-machine-is-short-of-memory, D2–D5).
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, Exit, FileSystem, Fiber } from "effect";
+import { Effect, Exit, FileSystem, Fiber, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { hostname } from "node:os";
 import { runEffect } from "./support/effect";
@@ -131,6 +131,80 @@ test("a stop ends the wait, and the Run's log says it was stopped", () =>
         yield* Fiber.interrupt(fiber);
         expect(yield* memoryWaitOf(runDir())).toBeNull();
         expect(yield* log).toContain("build's agent: stopped after waiting 30s for memory");
+      }),
+    ),
+  ));
+
+test("a stop that lands as memory frees still stops the start", () =>
+  runEffect(
+    onTestClock(
+      Effect.gen(function* () {
+        yield* rig.memory(2);
+        let stop = false;
+        const fiber = yield* Effect.forkChild(
+          waitForMemory({
+            env: rig.pluginEnv(),
+            stateDir: rig.stateDir,
+            runId: "r1",
+            what: "build's agent",
+            // The stop lands while it is read, so memory is seen free before the stop is.
+            stopped: Effect.suspend(() =>
+              stop
+                ? TestClock.withLive(Effect.sleep("100 millis")).pipe(Effect.as(true))
+                : Effect.succeed(false),
+            ),
+          }),
+        );
+        yield* settle;
+        yield* TestClock.adjust("14500 millis");
+        yield* settle;
+        yield* rig.memory(40);
+        stop = true;
+        yield* TestClock.adjust("500 millis");
+        expect(yield* Fiber.join(fiber)).toBe("stopped");
+        expect(yield* log).toContain("build's agent: stopped after waiting 15s for memory");
+      }),
+    ),
+  ));
+
+test("a wait whose host died, reading nothing for three of its periods, is no longer shown or held", () =>
+  runEffect(
+    onTestClock(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${runDir()}/memory-waits`, { recursive: true });
+        yield* fs.writeFileString(
+          `${runDir()}/memory-waits/0-1.json`,
+          Schema.encodeSync(Schema.UnknownFromJsonString)({
+            what: "build's agent",
+            sentence: "waiting for memory on vm-mk: 2.0 of 100.0 GB available",
+            since: 0,
+            read: 0,
+            every: 15_000,
+            asker: "r1-build",
+          }),
+        );
+        expect(yield* memoryWaitOf(runDir())).not.toBeNull();
+        yield* TestClock.adjust("46 seconds");
+        expect(yield* memoryWaitOf(runDir())).toBeNull();
+        expect(yield* holdsBudgetOf(rig.stateDir, "r1", "r1-build")).toBe(false);
+      }),
+    ),
+  ));
+
+test("a live wait reads again within its period, so it stays shown however long it waits", () =>
+  runEffect(
+    onTestClock(
+      Effect.gen(function* () {
+        yield* rig.memory(2);
+        const fiber = yield* Effect.forkChild(waiting());
+        yield* settle;
+        for (let period = 0; period < 4; period++) {
+          yield* TestClock.adjust("15 seconds");
+          yield* settle;
+        }
+        expect(yield* memoryWaitOf(runDir())).not.toBeNull();
+        yield* Fiber.interrupt(fiber);
       }),
     ),
   ));

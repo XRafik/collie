@@ -24,6 +24,9 @@ const MemoryWaitJson = Schema.fromJsonString(
     what: Schema.String,
     sentence: Schema.String,
     since: Schema.Number,
+    /** When the wait last read its Machine, and how often it reads: an older read is a dead host's. */
+    read: Schema.Number,
+    every: Schema.Number,
     /** The agent whose Output budget this wait pauses: the one that asked for it. */
     asker: Schema.NullOr(Schema.String),
   }),
@@ -37,13 +40,15 @@ export const memorySentence = (memory: Memory & { known: true }) =>
 const waitsOf = (runDir: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
+    const now = yield* Clock.currentTimeMillis;
     const dir = `${runDir}/${WAITS_DIR}`;
     const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
     const waits: MemoryWait[] = [];
     for (const name of names) {
       const text = yield* fs.readFileString(`${dir}/${name}`).pipe(Effect.orElseSucceed(() => ""));
       const decoded = Schema.decodeUnknownOption(MemoryWaitJson)(text);
-      if (Option.isSome(decoded)) waits.push(decoded.value);
+      if (Option.isSome(decoded) && now - decoded.value.read <= 3 * decoded.value.every)
+        waits.push(decoded.value);
     }
     return waits.sort((a, b) => a.since - b.since);
   });
@@ -66,7 +71,9 @@ export const holdsBudgetOf = (stateDir: string, runId: string, agent: string) =>
 
 /**
  * Returns once this Machine is not short of memory, reading it and `memory_hold` again every
- * 15 seconds, and whether it waited. Never fails and reserves nothing; a stop interrupts it.
+ * 15 seconds: `free` where it never was, `waited` where it was, and `stopped` where `stopped`
+ * came true during the wait or as it ended, so nothing starts for a stopped Run. Never fails
+ * and reserves nothing.
  */
 export const waitForMemory = (opts: {
   readonly env: PluginEnv;
@@ -74,10 +81,11 @@ export const waitForMemory = (opts: {
   readonly runId: string;
   readonly what: string;
   readonly asker?: string | null;
+  readonly stopped?: Effect.Effect<boolean, never, FileSystem.FileSystem>;
   /** Told the sentence once, as the wait begins. */
   readonly say?: (sentence: string) => Effect.Effect<void>;
 }): Effect.Effect<
-  boolean,
+  "free" | "waited" | "stopped",
   never,
   FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
 > =>
@@ -86,8 +94,9 @@ export const waitForMemory = (opts: {
       Effect.orElseSucceed(() => ({ memory: null, short: false })),
     );
     const first = yield* read;
-    if (!first.short || first.memory === null || !first.memory.known) return false;
+    if (!first.short || first.memory === null || !first.memory.known) return "free";
     const reading = first.memory;
+    const stopped = opts.stopped ?? Effect.succeed(false);
     const fs = yield* FileSystem.FileSystem;
     const dir = waitsDir(opts.stateDir, opts.runId);
     const since = yield* Clock.currentTimeMillis;
@@ -100,43 +109,54 @@ export const waitForMemory = (opts: {
           Effect.andThen(fs.writeFileString(`${runLog}/agents.log`, `${line}\n`, { flag: "a" })),
           Effect.ignore,
         );
+    const period = yield* every;
     const mark = (memory: Memory & { known: true }) =>
-      fs
-        .writeFileString(
+      Effect.gen(function* () {
+        yield* fs.writeFileString(
           file,
           Schema.encodeSync(MemoryWaitJson)({
             what: opts.what,
             sentence: memorySentence(memory),
             since,
+            read: yield* Clock.currentTimeMillis,
+            every: Duration.toMillis(period),
             asker: opts.asker ?? null,
           }),
-        )
-        .pipe(Effect.ignore);
-    const period = yield* every;
-    yield* Effect.gen(function* () {
-      const sentence = memorySentence(reading);
-      yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.ignore);
-      yield* mark(reading);
-      yield* log(`${opts.what}: ${sentence}`);
-      if (opts.say !== undefined) yield* opts.say(sentence);
+        );
+      }).pipe(Effect.ignore);
+    const freed = Effect.gen(function* () {
       for (;;) {
         yield* Effect.sleep(period);
         const now = yield* read;
         if (!now.short || now.memory === null || !now.memory.known) return;
         yield* mark(now.memory);
       }
+    });
+    const untilStopped = Effect.gen(function* () {
+      while (!(yield* stopped)) yield* Effect.sleep(Duration.min(period, Duration.seconds(1)));
+    });
+    return yield* Effect.gen(function* () {
+      const sentence = memorySentence(reading);
+      yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.ignore);
+      yield* mark(reading);
+      yield* log(`${opts.what}: ${sentence}`);
+      if (opts.say !== undefined) yield* opts.say(sentence);
+      const ended = yield* Effect.raceFirst(
+        freed.pipe(Effect.as("waited" as const)),
+        untilStopped.pipe(Effect.as("stopped" as const)),
+      );
+      return ended === "waited" && (yield* stopped) ? "stopped" : ended;
     }).pipe(
       Effect.onExit((exit) =>
         Effect.gen(function* () {
           yield* fs.remove(file).pipe(Effect.ignore);
           const waited = took((yield* Clock.currentTimeMillis) - since);
           yield* log(
-            exit._tag === "Success"
+            exit._tag === "Success" && exit.value === "waited"
               ? `${opts.what}: waited ${waited} for memory`
               : `${opts.what}: stopped after waiting ${waited} for memory`,
           );
         }),
       ),
     );
-    return true;
   });

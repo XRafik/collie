@@ -159,10 +159,13 @@ relied on and before the checkout moves; and `collie verify`, in the host's `ver
 handler, so the CLI and the agent's tool wait alike. The reading is `src/memory.ts`'s,
 taken with `memory_hold` fresh at the start and every 15 seconds after. While it waits, a
 start keeps a file in its run directory's `memory-waits/` naming what waits, its sentence,
-when it began and, for an agent's verify, that agent. The board, the drawer,
-`collie run show` and `collie_run` read the oldest one through `memoryWaitOf`, and an
-agent's Output budget does not run while one names it (`holdsBudgetOf`). A launch or a
-Check pass also watches its Run's stop file, and a stop ends the wait with nothing started.
+when it began, when it last read the Machine and, for an agent's verify, that agent. The
+board, the drawer, `collie run show` and `collie_run` read the oldest one through
+`memoryWaitOf`, a card reading those of every Run it shows, and an agent's Output budget
+does not run while one names it (`holdsBudgetOf`). A file not read again for three periods
+was left by a host that died, and is not read. Each start passes its Run's stop file to
+the wait, which reads it again as memory frees: a stop during the wait, or as it ends,
+ends it with nothing started.
 The chats' agents start elsewhere, and never wait.
 
 ## A workflow made of workflows

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { ConfigProvider, Effect, FileSystem, Path, Schema } from "effect";
+import { ConfigProvider, Effect, Exit, FileSystem, Path, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { Host } from "../src/sdk";
-import { evidenceDir, foundationLayer, runDir } from "../src/engine";
+import { controlPath, evidenceDir, foundationLayer, runDir, STOP } from "../src/engine";
 import { Store } from "../src/store";
 import { appendVerification, collect, readVerifications } from "../src/verify";
 import { VerifySpecSchema } from "../src/verify-spec";
@@ -211,6 +211,27 @@ test("a Check pass waits while its Machine is short of memory, runs nothing mean
       );
       expect(log).toContain("gate: unit: waiting for memory on ");
       expect(log).toMatch(/gate: unit: waited \S+ for memory/);
+    }),
+  ));
+
+test("a stop of a Run whose Check pass waits for memory runs nothing, however soon memory frees", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stopOnceWaiting = Effect.gen(function* () {
+        while ((yield* waitingFor()) === null) yield* Effect.sleep("20 millis");
+        yield* fs.writeFileString(controlPath(dir, STOP, runId), "").pipe(Effect.orDie);
+        yield* rig.memory(50).pipe(Effect.orDie);
+      });
+      const got = yield* gateOnRig(
+        Effect.gen(function* () {
+          yield* rig.memory(2).pipe(Effect.orDie);
+          yield* Effect.forkChild(stopOnceWaiting);
+        }),
+      ).pipe(Effect.exit);
+      expect(Exit.isFailure(got)).toBe(true);
+      expect(yield* journal()).toHaveLength(0);
+      expect(yield* waitingFor()).toBeNull();
     }),
   ));
 

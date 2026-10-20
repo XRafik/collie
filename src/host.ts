@@ -1926,26 +1926,21 @@ const frontDoorHandlers = (
                     const echo = (stream: "stdout" | "stderr") => (text: string) =>
                       Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
                     const from = whoOf(client).from;
-                    const stopped = Effect.gen(function* () {
-                      const fs = yield* FileSystem.FileSystem;
-                      const stop = controlPath(env.stateDir, STOP, runId);
-                      while (!(yield* fs.exists(stop).pipe(Effect.orElseSucceed(() => false))))
-                        yield* Effect.sleep("1 second");
+                    const fs = yield* FileSystem.FileSystem;
+                    const memory = yield* waitForMemory({
+                      env,
+                      stateDir: env.stateDir,
+                      runId,
+                      what: `collie verify "${name}"`,
+                      asker:
+                        whoOf(client).origin === "agent" && from?.run === runId
+                          ? (from.agent ?? null)
+                          : null,
+                      stopped: fs
+                        .exists(controlPath(env.stateDir, STOP, runId))
+                        .pipe(Effect.orElseSucceed(() => false)),
+                      say: (sentence) => echo("stderr")(`${sentence}\n`),
                     });
-                    const memory = yield* Effect.raceFirst(
-                      waitForMemory({
-                        env,
-                        stateDir: env.stateDir,
-                        runId,
-                        what: `collie verify "${name}"`,
-                        asker:
-                          whoOf(client).origin === "agent" && from?.run === runId
-                            ? (from.agent ?? null)
-                            : null,
-                        say: (sentence) => echo("stderr")(`${sentence}\n`),
-                      }).pipe(Effect.as("free" as const)),
-                      stopped.pipe(Effect.as("stopped" as const)),
-                    );
                     if (memory === "stopped") {
                       yield* Queue.fail(
                         queue,

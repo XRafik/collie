@@ -2572,19 +2572,13 @@ export const hostLayer = (options: {
             }
             const env = yield* currentEnv.pipe(Effect.option);
             if (Option.isSome(env)) {
-              const stopped = set(STOP, asked.runId).pipe(
-                Effect.repeat({ until: (stop) => stop, schedule: Schedule.spaced("1 second") }),
-                Effect.as("stopped" as const),
-              );
-              const memory = yield* Effect.raceFirst(
-                waitForMemory({
-                  env: { ...env.value, userDir: options.userDir ?? env.value.userDir },
-                  stateDir: dir,
-                  runId: asked.runId,
-                  what: `${recorded.pass}: ${spec.name}`,
-                }),
-                stopped,
-              );
+              const memory = yield* waitForMemory({
+                env: { ...env.value, userDir: options.userDir ?? env.value.userDir },
+                stateDir: dir,
+                runId: asked.runId,
+                what: `${recorded.pass}: ${spec.name}`,
+                stopped: set(STOP, asked.runId),
+              });
               if (memory === "stopped")
                 return yield* new WorkflowError({
                   reason: `${spec.name} did not run: the Run was stopped while it waited for memory`,
