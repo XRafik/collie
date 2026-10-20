@@ -2048,6 +2048,13 @@ worktrees and the temporary directory, once each. One with less than 10% or 5 Gi
 `!` warning naming it, with what [`collie cleanup`](#cleaning-up) would free where a host has
 served this state directory, and `collie cleanup --apply` as the fix. It never fails the run.
 
+**Memory** gives this Machine's reading, as `8.1 of 62.0 GB available (13%)`, with
+`, pressure 0.0` on Linux. While the Machine is
+[Short of memory](using.md#short-of-memory) it is a `!` warning naming the agents
+[`collie cleanup`](#cleaning-up) would close, or saying there are none, with
+`collie cleanup --apply` as the fix. Memory that cannot be read is a `!` warning saying where
+it was read from. It never fails the run.
+
 **Checks**, where a host has served this state directory: a `!` warning while
 [`collie cleanup`](#cleaning-up) lists a `check` no host is collecting, saying how many and
 naming the first's Run and pid, with `collie cleanup --apply` as the fix. It never fails the run.

@@ -29,6 +29,7 @@ describe("Collie's settings", () => {
         "handoff_timeout_ms",
         "quiet_ms",
         "idle_close_ms",
+        "memory_hold",
         "board_quiet_ms",
         "compact_at_tokens",
         "claude_auto_compact_window",
@@ -123,7 +124,7 @@ describe("Each setting explains itself", () => {
       "idle_close_ms",
       "agent_profile",
     ],
-    Runs: ["max_iterations", "handoff_timeout_ms"],
+    Runs: ["max_iterations", "handoff_timeout_ms", "memory_hold"],
     Board: ["scope", "density", "board_quiet_ms"],
     Chat: ["proactive"],
     Notifications: ["questions", ...NOTIFICATION_KINDS.map((kind) => `notifications.${kind}`)],
@@ -182,6 +183,20 @@ describe("Each setting explains itself", () => {
     expect(settingShown("idle_close_ms", idle.fallback)).toBe("60");
     expect(settingStored("idle_close_ms", "0")).toEqual({ stored: "0" });
     expect(parseSetting("idle_close_ms", "0")).toEqual({ value: 0 });
+  });
+
+  test("new work is held below a tenth free by default, and 0 never holds it", () => {
+    const hold = settingOf("memory_hold")!;
+    expect(hold).toMatchObject({
+      group: "Runs",
+      label: "Hold new work below free memory",
+      unit: "percent",
+    });
+    expect(settingShown("memory_hold", hold.fallback)).toBe("10");
+    expect(hold.description).toContain("waits");
+    expect(hold.description).toContain("0 never holds, and turns the pressure rule off too");
+    expect(settingStored("memory_hold", "0")).toEqual({ stored: "0" });
+    expect(parseSetting("memory_hold", "0")).toEqual({ value: 0 });
   });
 
   test("a unit that is only a label changes nothing", () => {

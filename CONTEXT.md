@@ -64,6 +64,15 @@ host there reports an installation id. Not the plugin installation a host serves
 `identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
 Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
 
+**Short of memory** — A Machine whose available memory is under `memory_hold` percent of
+its total (10 by default; 0 never), or, on Linux, whose memory pressure (`full avg10` in
+`/proc/pressure/memory`) is 10 or more. While it is, its host starts no agent, no **Check
+pass** and no `collie verify` command. Each waits, says so on its card and in its Run's
+log, and starts once the Machine is no longer short. Nothing running is stopped, and a
+Run's start, a steer, a stop, the chats and **Cleanup** never wait. It binds a human's
+start as it does an agent's, and no count of Runs, agents or checks is capped
+(ADR-draft-new-work-waits-while-its-machine-is-short-of-memory).
+
 **Installation** — What a Machine runs Collie from, which `identity` calls `root`. A
 **release** is placed in the Collie directory's `release/` by the runner that carries it,
 and an upgrade replaces it whole without git. A **development checkout** is a clone of

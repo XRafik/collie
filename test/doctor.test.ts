@@ -9,7 +9,7 @@ import { FakeHerdr, Rig } from "./support/recorder";
 import { installBaseline } from "./support/engine";
 import { installFakeSkills } from "./support/defs";
 import { FakeBin } from "./support/bin";
-import { doctor } from "../src/doctor";
+import { doctor, memoryOutcome } from "../src/doctor";
 import { withLock } from "../src/lock";
 import { claudeSettingsPath, installStatusLine } from "../src/statusline";
 import { hostname } from "node:os";
@@ -28,7 +28,7 @@ let bin: FakeBin;
  * own `claude` or `glab` would otherwise answer for one a test has removed.
  */
 function env(overrides: Record<string, string> = {}) {
-  return rig.pluginEnv({ PATH: `${rig.root}/bin`, ...overrides });
+  return rig.pluginEnv({ PATH: `${rig.root}/bin`, COLLIE_PROC: `${rig.root}/proc`, ...overrides });
 }
 
 /** doctor against this rig: the fake herdr in-process, everything else on PATH. */
@@ -39,6 +39,28 @@ function report(overrides: Record<string, string> = {}) {
   });
   return doctor(pluginEnv, undefined, new FakeHerdr(pluginEnv));
 }
+
+/** This Machine's memory as doctor reads it, `availableGiB` of 100 GiB, on Linux and macOS alike. */
+const freeMemory = (availableGiB: number, pressure = "0.00") =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(`${rig.root}/proc/pressure`, { recursive: true });
+    yield* fs.writeFileString(
+      `${rig.root}/proc/meminfo`,
+      `MemTotal:       ${100 * 1048576} kB\nMemAvailable:   ${availableGiB * 1048576} kB\n`,
+    );
+    yield* fs.writeFileString(
+      `${rig.root}/proc/pressure/memory`,
+      `some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=${pressure} avg60=0.00 avg300=0.00 total=0\n`,
+    );
+    yield* bin.add(
+      "sysctl",
+      `case "$*" in "-n kern.memorystatus_level") echo ${availableGiB} ;; "-n hw.memsize") echo ${100 * 1024 ** 3} ;; *) exit 1 ;; esac`,
+    );
+  });
+
+/** What doctor says of pressure where the Machine has it. */
+const pressureSaid = (said: string) => (process.platform === "darwin" ? "" : `, pressure ${said}`);
 
 const healthy = Effect.fn("doctorTest.healthy")(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -61,6 +83,7 @@ const healthy = Effect.fn("doctorTest.healthy")(function* () {
   );
   yield* installFakeSkills(rig.root);
   yield* freeSpace(50);
+  yield* freeMemory(50);
 });
 
 /** A `df` that says the one filesystem it is asked about is `percent` free, of 100 GiB. */
@@ -159,6 +182,7 @@ test("a healthy machine passes every check and says so", () =>
         "personas",
         "projects root",
         "disk",
+        "memory",
         "checks",
         "glab",
         "gitlab token",
@@ -193,6 +217,63 @@ test("a filesystem with room to spare passes the disk check", () =>
       expect(disk.detail).toBe("/ has 50.0 GiB free (50%)");
     }),
   ));
+
+test("a Machine with memory to spare passes the memory check, with its reading", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+
+      const memory = check(yield* report(), "memory");
+      expect(memory).toMatchObject({ ok: true, fix: "" });
+      expect(memory.warn).toBeUndefined();
+      expect(memory.detail).toBe(`50.0 of 100.0 GB available (50%)${pressureSaid("0.0")}`);
+    }),
+  ));
+
+test("a Machine short of memory warns, with what cleanup would close and its fix", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      yield* freeMemory(8);
+
+      const memory = check(yield* report(), "memory");
+      expect(memory).toMatchObject({ ok: true, warn: true, fix: "collie cleanup --apply" });
+      expect(memory.detail).toBe(
+        `short of memory: 8.0 of 100.0 GB available (8%)${pressureSaid("0.0")}; \`collie cleanup\` would close no agent`,
+      );
+    }),
+  ));
+
+test("memory that cannot be read is a warning naming where it was read from", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      yield* remove(`${rig.root}/proc/meminfo`);
+      yield* bin.add("sysctl", "exit 1");
+
+      const memory = check(yield* report(), "memory");
+      expect(memory).toMatchObject({ ok: true, warn: true });
+      expect(memory.detail).toBe(
+        `memory could not be read from ${process.platform === "darwin" ? "sysctl" : `${rig.root}/proc/meminfo`}`,
+      );
+    }),
+  ));
+
+test("a short Machine's warning names each agent cleanup would close", () => {
+  const short = {
+    known: true as const,
+    available: 2 * 1024 ** 3,
+    total: 62 * 1024 ** 3,
+    pressure: 90.75,
+  };
+  expect(memoryOutcome(short, true, ["impl of r1", "review of r2"])).toMatchObject({
+    ok: true,
+    warn: true,
+    detail:
+      "short of memory: 2.0 of 62.0 GB available (3%), pressure 90.8; `collie cleanup` would close impl of r1, review of r2",
+    fix: "collie cleanup --apply",
+  });
+});
 
 test("the Projects root is named with where it came from, and the home fallback is a warning", () =>
   runEffect(

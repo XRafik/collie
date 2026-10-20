@@ -87,6 +87,8 @@ export interface Defaults {
   boardQuietMs: number;
   /** How long a finished Run's agent may be idle before Cleanup closes it. `0` never closes one. */
   idleCloseMs: number;
+  /** The percent of total memory under which this Machine is Short of memory. `0` never is. */
+  memoryHold: number;
   /**
    * Current-context tokens at or above which a reused agent is asked to compact before
    * it is given its next piece of work. `0` turns the feature off. As written rather
@@ -142,6 +144,7 @@ export const FALLBACK_DEFAULTS: Defaults = {
   quietMs: 10 * 60 * 1000,
   boardQuietMs: 5 * 60 * 1000,
   idleCloseMs: 60 * 60 * 1000,
+  memoryHold: 10,
   compactAtTokens: COMPACT_AT_TOKENS,
   claudeAutoCompactWindow: AUTO_COMPACT_WINDOW,
   models: {},
@@ -175,7 +178,7 @@ export const SETTING_GROUPS = [
 export type SettingGroup = (typeof SETTING_GROUPS)[number];
 
 /** What a number is shown and typed in: `minutes` of a value stored in milliseconds, or a label. */
-export type SettingUnit = "minutes" | "tokens";
+export type SettingUnit = "minutes" | "tokens" | "percent";
 
 export interface Setting {
   /** As config.json holds it, dotted where it is nested. */
@@ -330,6 +333,13 @@ export const SETTINGS: ReadonlyArray<Setting> = [
     label: "Wait for you",
     description: "How long a step waits for you after its agent hands off, before it gives up.",
     unit: "minutes",
+  }),
+  of("memory_hold", "number", String(D.memoryHold), {
+    group: "Runs",
+    label: "Hold new work below free memory",
+    description:
+      "While available memory is under this percent of the Machine's total, or memory pressure is high, a new agent, Check pass or collie verify waits. 0 never holds, and turns the pressure rule off too.",
+    unit: "percent",
   }),
   choice("scope", SCOPES, D.scope, {
     group: "Board",

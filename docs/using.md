@@ -259,6 +259,7 @@ Run ended, `bodil remote down <name>` takes the instance down once you are done 
 | `COLLIE_MODE`         | Internal picker mode passed from a herdr action to its picker pane.                                                                          |
 | `COLLIE_CWD`          | Working directory passed to picker and agent processes; also re-roots a CLI run.                                                             |
 | `COLLIE_HOST`         | Host executable for development and tests: one executable path, or a JSON array containing the executable and arguments.                     |
+| `COLLIE_PROC`         | Where the host reads `meminfo` and `pressure/memory` instead of `/proc`, for tests.                                                          |
 | `GITLAB_USER_LOGIN`   | Who a generated branch is namespaced under on GitLab. Unset, Collie asks `glab` who you are for this checkout's host.                        |
 | `GITHUB_ACTOR`        | Who a generated branch is namespaced under on GitHub. Unset, Collie asks `gh` who you are on github.com.                                     |
 | `HELLE_ENV_FILE`      | Where Helle credentials are read from; defaults to `~/.config/helle/env`. See [Optional integrations](#optional-integrations).               |
@@ -2264,6 +2265,7 @@ working tree to review, so the target menu is one entry — **Type it…**.
   "handoff_timeout_ms": 7200000,
   "quiet_ms": 600000,
   "idle_close_ms": 3600000,
+  "memory_hold": 10,
   "board_quiet_ms": 300000,
   "compact_at_tokens": 150000,
   "claude_auto_compact_window": 400000,
@@ -2352,6 +2354,10 @@ quiet agent is nudged.
 `idle_close_ms` is how long a finished Run's agent may be idle, counted from the Run's
 finish where it went idle before it, before [Cleanup](#cleanup) closes it. An hour by
 default; 0 never closes one.
+
+`memory_hold` ("Hold new work below free memory") is the percent of this Machine's total
+memory under which it is [Short of memory](#short-of-memory). 10 by default; 0 means never,
+and turns the pressure rule off too.
 
 `board_quiet_ms` is how long a running run's directories — its own, its agents' and its
 evidence — may go unchanged, with no agent of it working and no check running, before its card
@@ -2933,6 +2939,25 @@ that names none while several Machines are reachable; Native chat sweeps its own
 Every removal is judged again at the moment it is made, never forced, and recorded in the
 state directory's `cleanup.jsonl` with when, what, how big, why and who asked, for 30 days.
 Anything a sweep cannot judge is kept, with the reason.
+
+## Short of memory
+
+A Machine is **Short of memory** while its available memory is under `memory_hold` percent
+of its total, or, on Linux, while its memory pressure (`full avg10` in
+`/proc/pressure/memory`) is 10 or more
+([ADR-draft-new-work-waits-while-its-machine-is-short-of-memory](adr/draft-new-work-waits-while-its-machine-is-short-of-memory.md)).
+`memory_hold` is **Hold new work below free memory** under Settings, in Runs: 10 percent by
+default, shared across the Flock like every setting. At 0 a Machine is never short, and the
+pressure rule is off too. Each host reads its own Machine: Linux `MemAvailable` and
+`MemTotal` from `/proc/meminfo`, and the pressure where the kernel has it; macOS
+`kern.memorystatus_level`, the percent available, and `hw.memsize`, with no pressure. A
+Machine whose memory cannot be read is not short.
+
+`collie doctor`'s `memory` check gives the reading, as `8.1 of 62.0 GB available (13%)`,
+with `, pressure 0.0` on Linux. While the Machine is short it is a `!` warning that names
+the agents [`collie cleanup`](#cleanup) would close, or says there are none, with
+`collie cleanup --apply` as the fix. Memory that cannot be read is a `!` warning saying
+where it was read from. It never fails the run.
 
 ## Usage
 
