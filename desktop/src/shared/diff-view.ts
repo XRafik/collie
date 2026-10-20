@@ -120,6 +120,71 @@ export const rowFacts = (file: DiffFile, drafts: ReadonlyArray<string>): RowFact
   drafts: drafts.filter((path) => path === file.path).length,
 });
 
+/** The tree's row geometry in px; the view draws from these. */
+export const TREE = {
+  paneStart: 320,
+  paneMin: 192,
+  indent: 12,
+  /** Where the guide line sits inside an indent. */
+  guide: 8,
+  padding: 6,
+  icon: 16,
+  gap: 6,
+  chevron: 16,
+  scrollbar: 12,
+  nameMin: 120,
+} as const;
+
+/** The row facts' own sizes, at their `text-xs`, on the generous side. */
+const FACTS = { gap: 4, mark: 16, tick: 14, draftIcon: 14, char: 7 } as const;
+
+const digits = (n: number) => String(n).length;
+
+const countsWidth = (lines: RowFacts["lines"]) =>
+  lines === "binary"
+    ? "binary".length * FACTS.char
+    : (1 + digits(lines.added) + 1 + digits(lines.removed)) * FACTS.char + FACTS.gap;
+
+const factsWidth = ({ facts, viewed }: FileRow, counts: boolean) =>
+  [
+    FACTS.mark,
+    viewed ? FACTS.tick : 0,
+    facts.drafts > 0 ? FACTS.draftIcon + digits(facts.drafts) * FACTS.char : 0,
+    counts ? countsWidth(facts.lines) : 0,
+  ]
+    .filter((width) => width > 0)
+    .reduce((sum, width, at) => sum + width + (at === 0 ? 0 : FACTS.gap), 0);
+
+export interface FileRow {
+  readonly facts: RowFacts;
+  readonly viewed: boolean;
+}
+
+export interface RowRoom {
+  readonly counts: boolean;
+  /** Negative when the row's fixed parts overflow the pane. */
+  readonly name: number;
+}
+
+/** A row's name room at a depth from 0, and whether a file row's line counts show. */
+export const rowRoom = ({
+  depth,
+  pane,
+  file,
+}: {
+  readonly depth: number;
+  readonly pane: number;
+  readonly file?: FileRow;
+}): RowRoom => {
+  const left =
+    pane - TREE.scrollbar - depth * TREE.indent - (2 * TREE.padding + TREE.icon + 2 * TREE.gap);
+  if (file === undefined) return { counts: false, name: left - TREE.chevron };
+  const withCounts = left - factsWidth(file, true);
+  return withCounts >= TREE.nameMin
+    ? { counts: true, name: withCounts }
+    : { counts: false, name: left - factsWidth(file, false) };
+};
+
 /** The rows whose file's path contains the text, ignoring case, and the folders above them. */
 export const filterTree = (
   tree: ReadonlyArray<DiffTreeNode>,

@@ -17,6 +17,8 @@ import {
   readingHeight,
   rowFacts,
   rowHover,
+  rowRoom,
+  TREE,
   ticksStillTrue,
   tickViewed,
   untickViewed,
@@ -513,5 +515,145 @@ describe("viewed ticks", () => {
     const ticks = untickViewed(tickViewed(tickViewed(none, a, base), b, base), "a.ts");
     expect(viewed(ticks, [a, b])).toEqual(["b.ts"]);
     expect(viewedCount(ticks, [a, b], base)).toBe("1 of 2 viewed");
+  });
+});
+
+describe("a row's room", () => {
+  const facts = (added: number, removed: number, drafts = 0) => ({
+    status: "modified" as const,
+    lines: { added, removed },
+    drafts,
+  });
+
+  test("shows a file's counts while its name keeps its least room", () => {
+    const row = rowRoom({
+      depth: 3,
+      pane: TREE.paneStart,
+      file: { facts: facts(136, 40), viewed: false },
+    });
+    expect(row.counts).toBe(true);
+    expect(row.name).toBeGreaterThanOrEqual(TREE.nameMin);
+  });
+
+  test("drops the counts whole on a row too narrow for them, giving their room to the name", () => {
+    const file = { facts: facts(136, 40), viewed: false };
+    const narrow = rowRoom({ depth: 3, pane: TREE.paneMin, file });
+    expect(narrow.counts).toBe(false);
+    const wider = rowRoom({ depth: 3, pane: TREE.paneMin + 40, file });
+    expect(wider.name - narrow.name).toBe(40);
+  });
+
+  test("keeps room for the mark, the viewed tick and the drafts whatever the width", () => {
+    const plain = rowRoom({
+      depth: 3,
+      pane: TREE.paneMin,
+      file: { facts: facts(1, 0), viewed: false },
+    });
+    const ticked = rowRoom({
+      depth: 3,
+      pane: TREE.paneMin,
+      file: { facts: facts(1, 0), viewed: true },
+    });
+    const drafted = rowRoom({
+      depth: 3,
+      pane: TREE.paneMin,
+      file: { facts: facts(1, 0, 12), viewed: true },
+    });
+    expect(plain.counts).toBe(false);
+    expect(ticked.name).toBeLessThan(plain.name);
+    expect(drafted.name).toBeLessThan(ticked.name);
+  });
+
+  test("counts binary as the counts it shows", () => {
+    const binary = { status: "added" as const, lines: "binary" as const, drafts: 0 };
+    expect(
+      rowRoom({ depth: 0, pane: TREE.paneStart, file: { facts: binary, viewed: false } }).counts,
+    ).toBe(true);
+  });
+
+  test("gives a folder row less room than its pane, indent and chrome leave, by its chevron", () => {
+    for (const depth of [0, 2]) {
+      const folder = rowRoom({ depth, pane: TREE.paneStart });
+      expect(folder.counts).toBe(false);
+      const unclaimed =
+        TREE.paneStart -
+        TREE.scrollbar -
+        depth * TREE.indent -
+        (2 * TREE.padding + TREE.icon + 2 * TREE.gap);
+      expect(unclaimed - folder.name).toBeGreaterThanOrEqual(16);
+    }
+  });
+
+  test("loses one indent of room per level", () => {
+    const at = (depth: number) => rowRoom({ depth, pane: TREE.paneStart }).name;
+    expect(at(0) - at(1)).toBeLessThanOrEqual(12);
+    expect(at(1) - at(4)).toBe(3 * (at(0) - at(1)));
+  });
+});
+
+describe("the tree's layout over a monorepo change", () => {
+  const changed = (path: string, added: number, removed: number): DiffFile => ({
+    path,
+    status: "modified",
+    added,
+    removed,
+  });
+  const nimbus = "packages/core/modules/nimbus/runtime";
+  const { tree } = diffTree([
+    changed("packages/core/configs/clients/kycDocumentInquiry.ts", 90, 12),
+    changed("packages/core/configs/clients/supportedDocumentTypes.ts", 1, 1),
+    changed(`${nimbus}/composables/documents/inquiry/useKycDocumentInquiry.ts`, 99, 51),
+    changed(`${nimbus}/i18n/locales/da-DK.json`, 3, 0),
+    changed(`${nimbus}/i18n/locales/en-GB.json`, 3, 0),
+    changed("packages/core/src/runtime/components/documents/DocumentUploadInquiry.vue", 7, 6),
+    changed("packages/core/src/runtime/types/clients/kycDocumentInquiryClient.ts", 35, 10),
+    changed("packages/core/test/nuxt/components/DocumentUploadInquiry.nuxt.spec.ts", 136, 40),
+    changed("packages/core/test/nuxt/composables/useKycDocumentInquiry.nuxt.spec.ts", 24, 20),
+  ]);
+
+  interface Drawn {
+    readonly depth: number;
+    readonly node: DiffTreeNode;
+  }
+  const rows = (nodes: ReadonlyArray<DiffTreeNode>, depth = 0): ReadonlyArray<Drawn> =>
+    nodes.flatMap((node) => [
+      { depth, node },
+      ...(node.kind === "folder" ? rows(node.children, depth + 1) : []),
+    ]);
+  const room = ({ depth, node }: Drawn, pane: number, viewed: boolean, drafts: number) =>
+    node.kind === "file"
+      ? rowRoom({ depth, pane, file: { facts: { ...rowFacts(node.file, []), drafts }, viewed } })
+      : rowRoom({ depth, pane });
+
+  test("is three folder rows deep once its chains are merged", () => {
+    expect(Math.max(...rows(tree).map(({ depth }) => depth))).toBe(3);
+  });
+
+  test("gives every row's name its least room, and every file its counts, at the starting width", () => {
+    for (const row of rows(tree)) {
+      const drawn = room(row, TREE.paneStart, false, 0);
+      expect({ row: row.node.key, name: drawn.name >= TREE.nameMin }).toEqual({
+        row: row.node.key,
+        name: true,
+      });
+      if (row.node.kind === "file")
+        expect({ row: row.node.key, counts: drawn.counts }).toEqual({
+          row: row.node.key,
+          counts: true,
+        });
+    }
+  });
+
+  test("fits every row's fixed parts in the pane at every width down to the least", () => {
+    for (let pane = TREE.paneMin; pane <= TREE.paneStart; pane += 8) {
+      for (const row of rows(tree)) {
+        const drawn = room(row, pane, true, 3);
+        expect({ pane, row: row.node.key, fits: drawn.name >= 0 }).toEqual({
+          pane,
+          row: row.node.key,
+          fits: true,
+        });
+      }
+    }
   });
 });

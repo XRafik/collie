@@ -1628,7 +1628,10 @@ is open. Each file's row in the tree says whether it was added (A), deleted (D) 
 its `+N −M` lines or "binary", and how many Review comment drafts you have on it. A chain
 of folders that each hold only one folder is one row, such as `modules/nimbus/runtime`, and
 splits again where the diff gains a file part-way along it. Hovering a row shows its full
-path, and a file's also its status and counts. A filter
+path, and a file's also its status and counts. The tree starts 320px wide and never scrolls
+sideways: a name too long for its row ends in an ellipsis, and a row too narrow for both its
+name and its `+N −M` counts keeps the name's room and leaves the counts out. The status mark,
+the viewed tick and the draft count always show. A filter
 above the tree keeps only the files whose path contains what you type, ignoring case, with
 their folders shown open, and says "No file matches" when none does; it narrows the tree
 only, so every diff stays drawn, and merges what it leaves the same way; clearing it brings

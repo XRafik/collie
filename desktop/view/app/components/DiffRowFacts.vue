@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { RowFacts } from "../../../src/shared/diff-view";
 
-defineProps<{ facts: RowFacts | undefined; viewed: boolean }>();
+defineProps<{ facts: RowFacts | undefined; viewed: boolean; counts: boolean }>();
 
 const MARK = { added: "A", deleted: "D", modified: "M" } as const;
 </script>
@@ -27,10 +27,12 @@ const MARK = { added: "A", deleted: "D", modified: "M" } as const;
     >
       <UIcon name="i-lucide-message-square" aria-hidden="true" />{{ facts.drafts }}
     </span>
-    <span v-if="facts.lines === 'binary'" class="text-muted">binary</span>
-    <template v-else>
-      <span class="text-success">+{{ facts.lines.added }}</span>
-      <span class="text-error">−{{ facts.lines.removed }}</span>
+    <template v-if="counts">
+      <span v-if="facts.lines === 'binary'" class="text-muted">binary</span>
+      <template v-else>
+        <span class="text-success">+{{ facts.lines.added }}</span>
+        <span class="text-error">−{{ facts.lines.removed }}</span>
+      </template>
     </template>
     <span
       class="w-4 rounded border border-default text-center font-mono"

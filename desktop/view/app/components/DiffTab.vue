@@ -21,6 +21,8 @@ import {
   reachBy,
   rowFacts,
   rowHover,
+  rowRoom,
+  TREE,
 } from "../../../src/shared/diff-view";
 
 /** Where a finding points: a file, and a line in it as it is now. */
@@ -130,6 +132,32 @@ type Row = TreeItem & { path: string; hover: string };
 const chevron = useAppConfig().ui.icons.chevronDown;
 const factsOf = (row: Row) => facts.value.get(row.path);
 const viewedOf = (row: Row) => viewed.value.has(row.path);
+const pane = TREE.paneStart;
+/** Tree's `level` counts from 1. */
+const countsShow = (row: Row, level: number) => {
+  const shown = factsOf(row);
+  return (
+    shown !== undefined &&
+    rowRoom({ depth: level - 1, pane, file: { facts: shown, viewed: viewedOf(row) } }).counts
+  );
+};
+const geometry = {
+  "--tree-guide": `${TREE.guide}px`,
+  "--tree-step": `${TREE.indent - TREE.guide}px`,
+  "--tree-padding": `${TREE.padding}px`,
+  "--tree-icon": `${TREE.icon}px`,
+  "--tree-gap": `${TREE.gap}px`,
+  "--tree-chevron": `${TREE.chevron}px`,
+};
+/** The slot's own `ui` leaves these out, so the row's template applies them too. */
+const treeUi = {
+  listWithChildren: "ms-(--tree-guide)",
+  itemWithChildren: "ps-(--tree-step)",
+  link: "px-(--tree-padding) gap-(--tree-gap)",
+  linkLeadingIcon: "size-(--tree-icon)",
+  linkTrailing: "shrink-0",
+  linkTrailingIcon: "size-(--tree-chevron)",
+};
 
 const items = computed(() => {
   const byKey = new Map<string, Row>();
@@ -307,8 +335,11 @@ watch(
     <p v-if="diff.files.length === 0" class="text-sm text-muted">Nothing has changed yet.</p>
     <div v-else class="flex items-start gap-3">
       <div
-        class="sticky top-0 flex w-56 shrink-0 flex-col gap-2"
-        :style="visibleHeight === null ? undefined : { maxHeight: `${visibleHeight}px` }"
+        class="sticky top-0 flex shrink-0 flex-col gap-2"
+        :style="{
+          width: `${pane}px`,
+          maxHeight: visibleHeight === null ? undefined : `${visibleHeight}px`,
+        }"
       >
         <UInput
           v-model="filter"
@@ -318,7 +349,11 @@ watch(
           class="w-full"
           data-testid="diff-filter"
         />
-        <div ref="treeBox" class="min-h-0 overflow-y-auto">
+        <div
+          ref="treeBox"
+          class="min-h-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
+          :style="geometry"
+        >
           <p v-if="items.tree.length === 0" class="text-sm text-muted" data-testid="diff-no-match">
             No file matches
           </p>
@@ -328,21 +363,30 @@ watch(
             :get-key="(item: Row) => item.path"
             :model-value="selected"
             :expanded="expanded"
+            :ui="treeUi"
             data-testid="diff-tree"
             @select="selectRow"
             @update:expanded="setExpanded"
           >
-            <template #item="{ item, ui }">
+            <template #item="{ item, ui, level }">
               <span :title="item.hover" class="flex min-w-0 flex-1 items-center gap-[inherit]">
-                <UIcon :name="item.icon!" :class="ui.linkLeadingIcon()" />
+                <UIcon
+                  :name="item.icon!"
+                  :class="ui.linkLeadingIcon({ class: treeUi.linkLeadingIcon })"
+                />
                 <span :class="ui.linkLabel()">{{ item.label }}</span>
-                <span :class="ui.linkTrailing()">
+                <span :class="ui.linkTrailing({ class: treeUi.linkTrailing })">
                   <UIcon
                     v-if="item.children?.length"
                     :name="chevron"
-                    :class="ui.linkTrailingIcon()"
+                    :class="ui.linkTrailingIcon({ class: treeUi.linkTrailingIcon })"
                   />
-                  <DiffRowFacts v-else :facts="factsOf(item)" :viewed="viewedOf(item)" />
+                  <DiffRowFacts
+                    v-else
+                    :facts="factsOf(item)"
+                    :viewed="viewedOf(item)"
+                    :counts="countsShow(item, level)"
+                  />
                 </span>
               </span>
             </template>
