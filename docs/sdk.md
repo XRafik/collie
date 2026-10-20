@@ -310,7 +310,9 @@ const verdict =
   plain text, which is what you are handed; a schema is how you opt into a structured,
   validated answer.
 - **One unusable Output buys one repair**, sent back to the agent that wrote it, with the
-  schema's own issues. A second one fails the run with `output-unusable`. A stop while the
+  schema's own issues. A rewrite the schema still refuses is judged once the agent's turn
+  has ended, so a file caught half rewritten is not the answer; one still unusable then fails
+  the run with `output-unusable`. A stop while the
   rewrite is awaited parks the wait, as it does the first; the resume starts an agent that
   went with the stop again on the work.
 - **A busy pane is waited out, then parked.** Where herdr answers that the agent's pane

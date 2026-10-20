@@ -1163,6 +1163,42 @@ for (const busy of ["working", "blocked"] as const)
     60_000,
   );
 
+/** An agent herdr reports working from when it is asked to rewrite until it is done. */
+class RewritingAfterRepair extends FakeHerdr {
+  rewriting = false;
+  done = false;
+  constructor() {
+    super(rig.pluginEnv());
+  }
+  override agentStatus() {
+    return Effect.succeed(this.rewriting && !this.done ? ("working" as const) : ("idle" as const));
+  }
+}
+
+test("a repaired Output caught half rewritten is judged when the agent's turn ends", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* rig.queueOutputs([{ verdict: "maybe" }, null]);
+      const herdr = new RewritingAfterRepair();
+      const rewrites = Effect.gen(function* () {
+        while (!(yield* prompted("not usable")))
+          yield* TestClock.withLive(Effect.sleep("10 millis"));
+        herdr.rewriting = true;
+        yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean"}`);
+        yield* TestClock.withLive(Effect.sleep("300 millis"));
+        yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"in the turn"}`);
+        herdr.done = true;
+      });
+      const result = yield* session(
+        Effect.forkChild(rewrites).pipe(Effect.andThen(started("r1"))),
+        { herdr },
+      );
+      expect(result._tag === "Success" && result.success.note).toBe("in the turn");
+      expect(sent(yield* rig.calls(), "not usable")).toBe(1);
+    }),
+  ));
+
 for (const [what, herdr] of [
   ["idle", () => new FakeHerdr(rig.pluginEnv())],
   ["unreadable", () => new Unreadable(rig.pluginEnv())],

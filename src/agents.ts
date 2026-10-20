@@ -365,6 +365,8 @@ export interface AgentsApi {
     questions?: Questions,
     /** The idle time it may take; the host's budget where left out. */
     budgetMs?: number,
+    /** Where given, an Output it refuses is read again until the agent's turn has ended. */
+    usable?: (text: string) => boolean,
   ) => Effect.Effect<string | null, AgentUncertain | AgentParked>;
   /**
    * Hands one unusable Output back to the agent that wrote it. True where it was asked, or
@@ -927,7 +929,17 @@ export const agentWork = <
             // has had its one chance at, so it ends the work rather than parking it.
             parkedWhenStuck(
               reviving(currentAsk, first).pipe(
-                Effect.andThen(watching(agents.collect(current, first, questions))),
+                Effect.andThen(
+                  watching(
+                    agents.collect(
+                      current,
+                      first,
+                      questions,
+                      undefined,
+                      (text) => decodeOutput(work.output, text, plain).ok,
+                    ),
+                  ),
+                ),
               ),
               host,
               work.runId,
@@ -2311,6 +2323,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     unless?: string | null,
     questions?: Questions,
     budgetMs?: number,
+    usable?: (text: string) => boolean,
   ) =>
     under(
       collecting.during(
@@ -2318,17 +2331,20 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
         launched.agent,
         Effect.gen(function* () {
           const asking = questions === undefined ? null : yield* questionsOf(launched, questions);
+          const turnOver = Effect.suspend(() => host.herdr.agentStatus(launched.agent)).pipe(
+            Effect.orElseSucceed(() => null),
+            Effect.map((status) => status !== "working" && status !== "blocked"),
+          );
           const text = yield* Effect.raceFirst(
             waitForOutput(launched.output, unless ?? null, {
               pollMs: host.pollMs ?? DEFAULT_POLL_MS,
               budgetMs: budgetMs ?? host.collectMs ?? DEFAULT_COLLECT_MS,
               counts: Effect.gen(function* () {
                 if (asking !== null && (yield* asking(null))) return false;
-                const status = yield* host.herdr
-                  .agentStatus(launched.agent)
-                  .pipe(Effect.orElseSucceed(() => null));
-                return status !== "working" && status !== "blocked";
+                return yield* turnOver;
               }),
+              final: (written) =>
+                usable === undefined || usable(written) ? Effect.succeed(true) : turnOver,
             }),
             confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
           );
@@ -2895,7 +2911,8 @@ const undeliverable = (cause: unknown) => ({
  * `unless` is the same again: an Output already known to be unusable is the file not
  * having been rewritten. Null where nothing arrived in the time allowed, which says the
  * work is uncertain and never that it did not happen. Only polls `counts` answers true for use
- * up that time, so a caller pauses the budget by answering false.
+ * up that time, so a caller pauses the budget by answering false. A text `final` refuses is
+ * read again on the next poll.
  */
 const waitForOutput = <R>(
   path: string,
@@ -2904,6 +2921,7 @@ const waitForOutput = <R>(
     readonly pollMs: number;
     readonly budgetMs: number;
     readonly counts: Effect.Effect<boolean, never, R>;
+    readonly final: (text: string) => Effect.Effect<boolean, never, R>;
   },
 ) =>
   Effect.gen(function* () {
@@ -2912,7 +2930,7 @@ const waitForOutput = <R>(
     let spent = 0;
     for (;;) {
       const text = yield* read;
-      if (text.trim() !== "" && text !== unless) return text;
+      if (text.trim() !== "" && text !== unless && (yield* every.final(text))) return text;
       if (spent >= every.budgetMs) return null;
       const before = yield* Clock.currentTimeMillis;
       yield* Effect.sleep(Duration.millis(every.pollMs));
