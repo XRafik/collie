@@ -7,7 +7,7 @@ import { BRIDGE_READY } from "../src/board-model";
 import { riderArgv } from "../src/ssh-connection";
 import { bridgeCommand, linkRoute, remoteRoute, type ShellRoute } from "../desktop/src/bun/machine";
 import { runEffect } from "./support/effect";
-import { freePort, writeFakeSsh, socketDir } from "./support/fake-ssh";
+import { freePort, silentMaster, writeFakeSsh, socketDir } from "./support/fake-ssh";
 
 const vm = { id: "vm", label: "vm-mk", target: "mk@vm-mk", session: "default", enabled: true };
 
@@ -31,6 +31,7 @@ echo "far $*"
     collie: `#!/bin/sh
 echo "control=\${COLLIE_SSH_CONTROL-} $*" >> '${dir}/collie.log'
 if [ "$1 $2 $3" = "--json machine connect" ]; then
+  [ -e '${dir}/refuses' ] && { echo '{"ok":false,"error":{"message":"refused"}}'; exit 1; }
   [ -e '${dir}/sso' ] && { echo 'Waiting for SSO login for mk@vm-mk' >&2; sleep 0.3; }
   '${ssh}' -M -N -S '${path}' -o ControlPersist=yes mk@vm-mk 2>/dev/null
   echo '{"ok":true,"data":{"machine":"vm-mk","path":"${path}","opened":true}}'
@@ -52,7 +53,8 @@ exit 1
     (on ? fs.writeFileString(`${dir}/sso`, "") : fs.remove(`${dir}/sso`, { force: true })).pipe(
       Effect.orDie,
     );
-  return { dir, ssh, fake, path, collie: [`${dir}/collie`], collieLog, connects, sso };
+  const refuses = fs.writeFileString(`${dir}/refuses`, "").pipe(Effect.orDie);
+  return { dir, ssh, fake, path, collie: [`${dir}/collie`], collieLog, connects, sso, refuses };
 });
 
 const run = (argv: ReadonlyArray<string>) =>
@@ -160,6 +162,20 @@ test("a connection found gone is opened again, once for uses that come together"
       expect(answers[1].out).toBe("far three\n");
       expect(yield* connects).toHaveLength(2);
       expect(kinds(yield* fake.calls, "login")).toEqual([]);
+    }),
+  ));
+
+test("a connection whose master stops answering is not waited on: the next use connects again", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { ssh, fake, path, collie, connects, refuses } = yield* rig;
+      const route = yield* remoteRoute(ssh, collie, vm, "mk-pc", true, false, "200 millis");
+      yield* route.collie(["one"]);
+      yield* fake.drop;
+      yield* silentMaster(path);
+      yield* refuses;
+      expect(yield* route.collie(["two"]).pipe(Effect.flip)).toContain("refused");
+      expect(yield* connects).toHaveLength(2);
     }),
   ));
 

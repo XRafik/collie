@@ -8,6 +8,7 @@ import {
   Clock,
   Crypto,
   Deferred,
+  Duration,
   Effect,
   Exit,
   Layer,
@@ -42,7 +43,7 @@ import {
   type PeerView,
   PeerView as PeerSchema,
 } from "../../../src/peers-model";
-import { muxArgv, quoted, remoteCollie, riderArgv } from "../../../src/ssh-connection";
+import { MUX_BOUND, muxArgv, quoted, remoteCollie, riderArgv } from "../../../src/ssh-connection";
 import {
   ActionFailed,
   type Credential,
@@ -297,7 +298,7 @@ const ran = (command: ReadonlyArray<string>, stdin?: Uint8Array) =>
         new Response(child.stderr).text(),
         child.exited,
       ]),
-    );
+    ).pipe(Effect.onInterrupt(() => Effect.sync(() => child.kill())));
     return { out, err, code };
   });
 
@@ -423,26 +424,30 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
   client: string,
   lazy = false,
   pairs = false,
+  answerWithin: Duration.Input = MUX_BOUND,
 ) {
   // Whoever is waiting on the connection now, which the one opened at launch has none of yet.
   let waiting: WaitingOnSso = () => Effect.void;
   let path: string | undefined;
+  const asked = (argv: ReadonlyArray<string>) =>
+    output(argv).pipe(
+      Effect.timeoutOrElse({
+        duration: answerWithin,
+        orElse: () =>
+          Effect.fail(
+            `the SSH connection did not answer within ${Duration.format(Duration.fromInputUnsafe(answerWithin))}`,
+          ),
+      }),
+    );
   const connecting = yield* Semaphore.make(1);
   const connected = connecting.withPermits(1)(
     Effect.gen(function* () {
       if (path !== undefined) {
-        const [command, ...args] = muxArgv(ssh, path, "check", machine.target);
-        const checked = yield* Effect.promise(
-          () =>
-            Bun.spawn([command!, ...args], {
-              env: childEnv(),
-              cwd: CHILD_CWD,
-              stdin: "ignore",
-              stdout: "ignore",
-              stderr: "ignore",
-            }).exited,
+        const checked = yield* asked(muxArgv(ssh, path, "check", machine.target)).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
         );
-        if (checked === 0) return path;
+        if (checked) return path;
       }
       path = yield* machineConnect(collie, machine.label, (said) => waiting(said));
       return path;
@@ -471,8 +476,8 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
       const spec = ["-L", `${port}:127.0.0.1:${port}`];
       return used(connected).pipe(
         Effect.flatMap((at) =>
-          Effect.acquireRelease(output(muxArgv(ssh, at, "forward", machine.target, ...spec)), () =>
-            output(muxArgv(ssh, at, "cancel", machine.target, ...spec)).pipe(Effect.ignore),
+          Effect.acquireRelease(asked(muxArgv(ssh, at, "forward", machine.target, ...spec)), () =>
+            asked(muxArgv(ssh, at, "cancel", machine.target, ...spec)).pipe(Effect.ignore),
           ),
         ),
         Effect.asVoid,
