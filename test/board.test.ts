@@ -4,7 +4,7 @@
 // human reads on a card — a form nobody has a case for is a form nobody can trust.
 
 import { expect, test } from "bun:test";
-import { DateTime, Effect, Fiber, FileSystem, Schema } from "effect";
+import { Clock, DateTime, Effect, Fiber, FileSystem, Schema } from "effect";
 import {
   boardLines,
   buildBoard,
@@ -1438,6 +1438,58 @@ test("a fan-out's card lists its Repo runs and every repository still to come, b
         { repo: "cli", run: null, state: "todo", mr: null },
       ]);
       expect(views[0]!.sentence).toBe("Wave 2 of 3. api landed, web is building, cli is next.");
+    }),
+  ));
+
+const waitingForMemory = (runDir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const now = yield* Clock.currentTimeMillis;
+    yield* fs.makeDirectory(`${runDir}/memory-waits`, { recursive: true });
+    yield* fs.writeFileString(
+      `${runDir}/memory-waits/1-1.json`,
+      Schema.encodeSync(Schema.UnknownFromJsonString)({
+        what: 'collie verify "unit"',
+        sentence: "waiting for memory on vm-mk: 2.1 of 62.0 GB available",
+        since: now,
+        read: now,
+        every: 15_000,
+        asker: null,
+      }),
+    );
+  }).pipe(Effect.orDie);
+
+test("a fan-out's card says a Repo run waits for memory", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const root = `${dir}/root`;
+      const parent = yield* madeRun(dir, { id: "r-fan", task: "task-1", cwd: root });
+      yield* threeRepoPlan(parent.dir, root);
+      const web = yield* madeRun(dir, {
+        id: "r-web",
+        task: "task-1",
+        parent: "r-fan",
+        repo: "web",
+      });
+      yield* waitingForMemory(web.dir);
+
+      const [view] = yield* board(env, [web, parent]);
+
+      expect(view!.sentence).toBe("Waiting for memory on vm-mk: 2.1 of 62.0 GB available.");
+    }),
+  ));
+
+test("a finished Run's card says a verify of it waits for memory", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const run = yield* madeRun(dir, { id: "r-done", task: "task-1", state: "succeeded" });
+      yield* waitingForMemory(run.dir);
+
+      const [view] = yield* board(env, [run]);
+
+      expect(view!.sentence).toBe("Waiting for memory on vm-mk: 2.1 of 62.0 GB available.");
     }),
   ));
 

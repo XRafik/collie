@@ -190,7 +190,7 @@ export interface Sentence {
   verb: string | null;
   /** What a check Collie is running says about itself, which outranks the step. */
   checking: string | null;
-  /** What of the Run waits for memory, which outranks a running check. */
+  /** What of its Runs waits for memory, which outranks all but a decision. */
   memory?: string | null;
   /** A Reopened Run's agent at work on what it was told after the Run ended. */
   reopened: Pick<Reopened, "agent" | "told"> | null;
@@ -438,7 +438,6 @@ function stalledSentence(facts: Sentence): string {
 }
 
 function workingSentence(facts: Sentence): string {
-  if (facts.memory != null) return facts.memory;
   if (facts.checking !== null) return facts.checking;
   if (facts.reopened !== null)
     return facts.reopened.told === null
@@ -460,6 +459,7 @@ function workingSentence(facts: Sentence): string {
  */
 export function sentenceFor(facts: Sentence): string {
   if (facts.decision !== null) return decisionSentence(facts.decision);
+  if (facts.memory != null) return facts.memory;
   switch (facts.state) {
     case "done":
       return doneSentence(
@@ -977,7 +977,10 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         const at = Math.max(...working.map((run) => touched.get(run.id) ?? 0));
         const agents = agentsOf(everyRun, registered, live);
         const check = yield* runningCheck(leader, all, markers, now);
-        const memory = yield* memoryWaitOf(leader.dir);
+        const memory =
+          (yield* Effect.forEach(everyRun, (run) => memoryWaitOf(run.dir)))
+            .filter((wait) => wait !== null)
+            .sort((a, b) => a.since - b.since)[0] ?? null;
         // An agent mid-turn, a check Collie is running or a wait for memory is work, however
         // little it writes.
         const busy =
