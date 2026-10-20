@@ -654,3 +654,22 @@ test("the last fix's check is proved by the latest record of the check's command
     false,
   );
 });
+
+test("a last fix naming one of the Run's Checks with no record on the tree is told the gate runs it", () => {
+  const settled = settleFinalFix(
+    [],
+    { verdict: "clean", findings: [], fixed: [], disputed: [], checks: [{ name: "check" }] },
+    {
+      verifications: [],
+      final: FINAL,
+      commands: [
+        { name: "check", executable: "/usr/bin/bun", argv: ["run", "check"], cwd: "/repo" },
+      ],
+    },
+  );
+  const reasons = settled.ok ? [] : settled.reasons;
+  expect(reasons).toEqual([
+    'check "check" has no verification record on this tree — Collie\'s gate runs it itself, on the final tree',
+  ]);
+  expect(reasons.join("\n")).not.toContain("run it through collie verify");
+});

@@ -309,6 +309,22 @@ unified diff of the files the constraint names, capped at 200 lines per file and
 with the truncation recorded on the report. A summary of a change would be a second thing
 to be wrong about. Files whose _names_ look like credentials — `.env`, `*.pem`, anything
 with `token` or `secret` in it — are listed by name with `<redacted>` rather than quoted.
+The judgement is told that a constraint read from the plan narrows the goal it was cut
+from: the goal is what was asked, never evidence of drift. A report is filed only when it
+cites a file whose diff the judgement was shown, and it keeps that file as the diff named
+it; one citing only the goal, plan text, a commit or a file it was not shown is dropped
+([ADR-0036](adr/0036-a-runs-own-plan-bounds-it.md), amended 2026-10-19).
+
+The evidence is the change since the Run left the default branch, committed or not:
+`git diff <base>..HEAD` and `git diff HEAD`, and for the rules the untracked files too. An
+[Integration](../CONTEXT.md) left with its conflicts for the builder changes that. Until its
+merge commit is made, the worktree has a `MERGE_HEAD`, and `git diff HEAD` would hold every
+change the default branch is bringing in. So both the judgement and the rules then read the
+Run's side only, `git diff MERGE_HEAD`, which compares the incoming tip with the working
+tree; the untracked files are still listed. A work boundary reached in that state is not
+judged at all: the Run log says `drift not judged at <where>: an integration's conflicts are
+open`, nothing is recorded as skipped, and the rules still run. The finish is judged as
+always.
 
 The rule that keeps this honest: **nothing passes on an absence**. A verification nobody
 ran is a breach, not a pass. A judgement Collie could not make — no evaluator, a call that
@@ -450,8 +466,23 @@ Run with relatives stands for the check at every boundary and at its finish; one
 asks the model about all of them, and a loser writes down that it moved, which is what
 tells the winner its snapshot is behind — it judges again, a bounded number of times.
 
-A report is filed on the Run it is about: its drift journal while it is working, and the
-board's pending reports once it has ended, since a finished Run's record does not change.
+The judge is told, as a Run's own judgement is, that plan constraints narrow the goal, and
+is given each Run's work beside its constraints, as data to judge: the diff from where
+the commit of its newest card left the default branch, read in the judging Run's
+checkout, and its Outputs (`<operation>.json` in its agents directory, never the
+`.launch.json`, `.mcp.json` or `.settings.json` beside them), under the caps and redaction
+above — an Output whose name looks like a credential is named with `<redacted>` — and marked `TRUNCATED` where any of it was cut. Where a Run's work cannot be read
+the pack says why and the judgement goes on with what it can read: `work: none yet (no
+card)`, `diff: could not be read: <git's first line>` for a commit this checkout does not
+have, or `diff: no committed change yet`; its Outputs are shown either way, and the log line
+of the judgement names each Run whose diff it could not show.
+
+A report is kept only when it names a Run in the pack, one of that Run's own constraints,
+and cites that Run's work as the pack showed it: a file of its diff or one of its Outputs.
+Goal or plan text, a commit alone, or another Run's file is never enough. Collie sets its
+kind, id and `evidence_truncated`, never the model. It is filed on the Run it is about: its
+drift journal while it is working, and the board's pending reports once it has ended,
+since a finished Run's record does not change.
 A host with no Herd holds no election, and says so in the log of a Run with relatives.
 A check nobody could make is written down as owed by the Run leaving without an answer,
 and while one is owed every Run in the Herd stands for it — otherwise an owed check waits

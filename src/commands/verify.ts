@@ -1,8 +1,7 @@
 import { Effect, Option, Schema, Stdio, Stream } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { err } from "../operations";
-import { verifyRun } from "../lifecycle";
-import { REFUSED_INPUT } from "../engine";
+import { refusal, verifyRun } from "../lifecycle";
 import { FrontDoor, HostRefused } from "../board-model";
 import { type Echo } from "../verify";
 import { checkNameOf } from "../verify-spec";
@@ -108,8 +107,8 @@ export const verify = Command.make(
           ).pipe(
             Effect.catch((cause) =>
               Effect.succeed(
-                Schema.is(HostRefused)(cause) && cause.reason.startsWith(`${REFUSED_INPUT}:`)
-                  ? err("invalid_input", cause.reason.slice(REFUSED_INPUT.length + 1).trim())
+                Schema.is(HostRefused)(cause)
+                  ? refusal(cause)
                   : err("operation_failed", String(cause)),
               ),
             ),
@@ -124,7 +123,7 @@ export const verify = Command.make(
             data: { verification: record, ran },
             human: ran
               ? `${record.name}: ${record.result} (exit ${record.exit})`
-              : `${record.name}: ${record.result}, not run again: verification ${record.id} already passed on this tree`,
+              : `${record.name}: ${record.result} (exit ${record.exit}), not run again: verification ${record.id} on this tree${record.log === undefined ? "" : `; its log is ${record.log}`}`,
           };
         }),
       ),

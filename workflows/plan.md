@@ -47,6 +47,11 @@ You were started with {{skill:to-tickets}}. Cut the spec into tickets: one file 
 `{{run.dir}}/plan/issues/NN-<slug>.md`, numbered in the order they can land. Each says
 what to build, what blocks it, and criteria someone else can check.
 
+A criterion is something the implement Run can show before its merge request: a test, a
+file, or a command's result on the branch. An outcome that only CI, a merge or a deploy can
+show is not a criterion: put it under the ticket's `## After merge` heading as a plain list,
+not as checkboxes, and the merge request names it.
+
 Every ticket also carries a fifth header line, `**Repo:** <path>`, between "Blocked by"
 and "Status" — always, one repository per ticket. The path is the checkout the ticket
 changes, relative to the project root above and as it is on disk; write `.` when the root

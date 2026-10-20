@@ -322,8 +322,10 @@ const verdict =
   only while herdr reports it `idle`, `done` or `unknown`, or cannot say. While it is
   `working` or `blocked` the clock stops, so a long suite is never parked for being slow.
   It stops too while a question the agent asked is open on the Run
-  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and `collie run resume`
-  collects what it writes late.
+  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and Collie
+  keeps collecting: an Output written later clears the park and the step goes on, with no
+  resume. An agent that has gone by the end of another idle budget is started again. A stop
+  still ends the wait.
 - **`cwd` is where the host placed the Run** unless you name another checkout.
 - **`role`** defaults to the operation's name. The role is injected as a persona, and where
   `personas/<role>.md` exists in the project, on this machine or in the installation, that
@@ -1097,8 +1099,9 @@ A `rerun` runs `bun test ./<file> -t <its whole name>` in the check's directory,
 sources (a bare path is a filter bun matches against every file), and records it under the
 check's name. It passes only where exactly one test ran and passed, and it is never the
 check's own pass. `rerunsOwed` says which tests are still to be rerun, `wholeRunsOwed` which
-checks only a whole recheck can tell, and `flakesOf` which failures were Flakes (ADR-0034,
-amended 2026-10-15).
+checks only a whole recheck can tell, `recheckOwed` which of those have had no `recheck` on
+this tree yet (ADR-0034, amended 2026-10-19), and `flakesOf` which failures were Flakes
+(ADR-0034, amended 2026-10-15).
 
 A test still failing after its rerun is run alone at the base with `at: "default-base"` and
 that `test`, once per base revision and check directory. Its `baseline` record fails only
@@ -1350,11 +1353,14 @@ pieces they are built from.
 
 `CriterionSchema` is how a builder answers one of its ticket's acceptance criteria:
 `criterion`, copied from the ticket, and `met`, the test or file that shows it, or
-`not met: <reason>`. Implement's `Built` carries them as an optional `criteria` list.
+`not met: <reason>`, or `after merge: <reason>` where only CI, a merge or a deploy can show
+it. Implement's `Built` carries them as an optional `criteria` list.
 `unmetCriteria(ticket, criteria, answers)` turns each criterion left unanswered or not met
-into a blocking finding against the ticket. `answerFor(criterion, answers, among)` is the
-answer a criterion has; a copy that dropped the criterion's formatting still counts, and so
-does its bold lead alone where no other criterion `among` the ticket's shares it. Shipped
+into a blocking finding against the ticket; an `after merge` answer is neither.
+`afterMergeAnswers(criteria, answers)` is each criterion answered `after merge`, which
+shipped `implement` names in its merge request as not settled by the Run. `answerFor(criterion, answers)` is the
+answer a criterion has: one to its whole wording, where a copy that dropped the criterion's
+formatting still counts, so an answer to earlier wording does not answer an amended criterion. Shipped
 `implement` hands what is unmet back to the builder before any reviewer is launched, twice at
 most, and stops the work if any is still unmet, so no reviewer starts on it. A text work
 source's criteria are its own checkboxes; a Linear issue's are read from `plan/SPEC.md`, the

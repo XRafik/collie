@@ -354,10 +354,17 @@ export interface AgentsApi {
    * `unless` is an Output already known to be unusable: the same text again is the agent
    * not having rewritten the file, which is not an answer to having been asked to.
    */
+  /** Runs `waiting` with this agent on the list of those collected from, as `collect` does. */
+  readonly collectedDuring: <A, E, R>(
+    launched: Launched,
+    waiting: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E, R>;
   readonly collect: (
     launched: Launched,
     unless?: string | null,
     questions?: Questions,
+    /** The idle time it may take; the host's budget where left out. */
+    budgetMs?: number,
   ) => Effect.Effect<string | null, AgentUncertain | AgentParked>;
   /**
    * Hands one unusable Output back to the agent that wrote it. True where it was asked, or
@@ -710,20 +717,9 @@ export const agentWork = <
             ),
           }).pipe(Effect.as(value));
 
-    // An agent past its budget may still be working: park for a resume, never record null.
-    const written =
-      (on: Launched, why = "") =>
-      (text: string | null) =>
-        text !== null
-          ? Effect.succeed(text)
-          : Effect.fail(
-              new AgentParked({
-                operation: work.operation,
-                reason:
-                  why ||
-                  `${on.agent} has written nothing to ${output} after ${Math.round(agents.collectMs / 60_000)} minutes idle. If it is still working, resume once it has written it; if it has stopped, ask it to write it and resume.`,
-              }),
-            );
+    // An agent past its budget may still be working: park, and go on collecting.
+    const pastBudget = (on: Launched) =>
+      `${on.agent} has written nothing to ${output} after ${Math.round(agents.collectMs / 60_000)} minutes idle. Collie keeps collecting it; if it has stopped, ask it to write it.`;
     const questions: Questions = {
       ask: (question, asker) => host.asking(runId, question, asker),
       asked: host.asked(runId),
@@ -748,8 +744,24 @@ export const agentWork = <
       );
     /** Its Output, or that it ran out; with `waiting`, only its Output, parking with that. */
     const collecting = (on: Launched, from: AgentAsk, waiting?: string) => {
-      const output = watching(agents.collect(on, null, questions)).pipe(
-        Effect.flatMap(written(on, waiting)),
+      // Each budget spent idle, one that has gone is started again, as a resume once did.
+      const late = Effect.gen(function* () {
+        for (;;) {
+          yield* reviving(from);
+          const text = yield* watching(agents.collect(on, null, questions));
+          if (text !== null) return text;
+        }
+      });
+      // Collected throughout, so a verify ending between attempts is still told to it.
+      const output = agents.collectedDuring(
+        on,
+        watching(agents.collect(on, null, questions)).pipe(
+          Effect.flatMap((text) =>
+            text !== null
+              ? Effect.succeed(text)
+              : host.parked(runId, waiting ?? pastBudget(on)).pipe(Effect.andThen(late)),
+          ),
+        ),
       );
       return stoppable(
         parkedWhenStuck(
@@ -826,7 +838,7 @@ export const agentWork = <
                   collecting(
                     current,
                     currentAsk,
-                    `${current.agent} ran out (${out.why}) before writing ${output}; ${next.why}. Resume once it has written it.`,
+                    `${current.agent} ran out (${out.why}) before writing ${output}; ${next.why}. Collie keeps collecting it.`,
                   ),
                   room,
                 ),
@@ -2294,7 +2306,12 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       }),
     ).pipe(Effect.orElseSucceed(() => undefined));
 
-  const collect = (launched: Launched, unless?: string | null, questions?: Questions) =>
+  const collect = (
+    launched: Launched,
+    unless?: string | null,
+    questions?: Questions,
+    budgetMs?: number,
+  ) =>
     under(
       collecting.during(
         launched.runId,
@@ -2304,7 +2321,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           const text = yield* Effect.raceFirst(
             waitForOutput(launched.output, unless ?? null, {
               pollMs: host.pollMs ?? DEFAULT_POLL_MS,
-              budgetMs: host.collectMs ?? DEFAULT_COLLECT_MS,
+              budgetMs: budgetMs ?? host.collectMs ?? DEFAULT_COLLECT_MS,
               counts: Effect.gen(function* () {
                 if (asking !== null && (yield* asking(null))) return false;
                 const status = yield* host.herdr
@@ -2721,6 +2738,8 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
     handOff,
     halt,
     collect,
+    collectedDuring: (launched, waiting) =>
+      collecting.during(launched.runId, launched.agent, waiting),
     repair,
     steer,
     tendQuestions,
