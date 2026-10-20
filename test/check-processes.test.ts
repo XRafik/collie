@@ -4,6 +4,7 @@
 import { expect, test } from "bun:test";
 import { Clock, Deferred, Duration, Effect, Fiber, FileSystem, Option, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { TestClock } from "effect/testing";
 import {
   CHECK_ID,
   CHECK_INSTALLATION,
@@ -86,7 +87,7 @@ test.skipIf(process.platform !== "linux")(
         );
         const ones = yield* startedIn(notes);
 
-        yield* Fiber.interrupt(running).pipe(Effect.timeout("5 seconds"));
+        yield* Fiber.interrupt(running);
         expect(yield* noneRunning(ones)).toBe(true);
         expect(yield* records(state)).toEqual([]);
       }),
@@ -992,9 +993,12 @@ test.skipIf(process.platform !== "linux")(
 
         refusing = true;
         expect(yield* checks.endAll).toHaveLength(3);
-        const began = yield* Clock.currentTimeMillis;
-        yield* checks.killEnded;
-        expect((yield* Clock.currentTimeMillis) - began).toBeLessThan(2_000);
+        // Time passes only by its sleeps, so a slow look at /proc under load counts for nothing.
+        const clock = yield* TestClock.make();
+        const slept: Clock.Clock = { ...clock, sleep: (duration) => clock.adjust(duration) };
+        const began = clock.currentTimeMillisUnsafe();
+        yield* checks.killEnded.pipe(Effect.provideService(Clock.Clock, slept));
+        expect(clock.currentTimeMillisUnsafe() - began).toBeLessThan(2_000);
       }),
     ),
   30_000,
