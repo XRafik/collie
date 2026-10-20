@@ -93,3 +93,6 @@ and the check runs again, so nothing of it needs vouching for.
   and that is unchanged here.
 - Checks left behind by a build before this one carry no marker and have no record. A
   human ends them once.
+- Where `/proc` cannot be read, as on macOS, no marker is read: `ps -E` runs a process's
+  environment into its arguments, so nothing there tells a marker from text that quotes one.
+  Only a check's recorded leader proves it, and a child that left its group is a human's to end.

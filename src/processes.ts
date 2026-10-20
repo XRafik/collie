@@ -142,75 +142,38 @@ export const groupOf = Effect.fn("Processes.groupOf")(function* (pid: number) {
   return group === "" ? null : Number(group);
 });
 
-/** Which of `names` these `NAME=value` entries bind; the last wins, as `ps -E` follows the command with the environment. */
-const bindingsIn = (entries: ReadonlyArray<string>, names: ReadonlyArray<string>) => {
-  const found: Record<string, string> = {};
-  for (const entry of entries) {
-    const at = entry.indexOf("=");
-    const name = entry.slice(0, at);
-    if (at > 0 && names.includes(name)) found[name] = entry.slice(at + 1);
-  }
-  return found;
-};
-
-/** `pid command` rows by pid. */
-const psCommands = (text: string) =>
-  new Map(
-    text.split("\n").flatMap((line) => {
-      const row = /^\s*(\d+) (.*)$/.exec(line);
-      return row === null ? [] : [[Number(row[1]), row[2]!] as const];
-    }),
-  );
-
-/**
- * What `ps -E` shows after each process's command, which is its environment and never its
- * arguments; a process whose command differs between the two looks proves nothing.
- */
-const psBindings = (select: ReadonlyArray<string>, names: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    const commands = psCommands(yield* ps(["-ww", "-o", "pid=,command=", ...select]));
-    const shown = psCommands(yield* ps(["-E", "-ww", "-o", "pid=,command=", ...select]));
-    const found: Array<{ readonly pid: number; readonly bound: Record<string, string> }> = [];
-    for (const [pid, line] of shown) {
-      const command = commands.get(pid);
-      if (command === undefined || !line.startsWith(command)) continue;
-      const environment = line.slice(command.length);
-      if (environment !== "" && !environment.startsWith(" ")) continue;
-      found.push({ pid, bound: bindingsIn(environment.trim().split(/\s+/), names) });
-    }
-    return found;
-  });
-
 /**
  * Which of `names` its environment binds, and to what; null where that cannot be read,
- * which proves nothing.
+ * which proves nothing. Without `/proc` it is never read: `ps -E` runs the environment into
+ * the arguments.
  */
 export const bindingsOf = Effect.fn("Processes.bindingsOf")(function* (
   pid: number,
   names: ReadonlyArray<string>,
 ) {
-  if (!(yield* readsSessions)) {
-    const [row] = yield* psBindings(["-p", String(pid)], names);
-    return row?.bound ?? null;
-  }
   const fs = yield* FileSystem.FileSystem;
   const environ = yield* fs
     .readFileString(`${PROC}/${pid}/environ`)
     .pipe(Effect.orElseSucceed(() => null));
-  return environ === null ? null : bindingsIn(environ.split("\0"), names);
+  if (environ === null) return null;
+  const found: Record<string, string> = {};
+  for (const entry of environ.split("\0")) {
+    const at = entry.indexOf("=");
+    const name = entry.slice(0, at);
+    if (at > 0 && names.includes(name)) found[name] = entry.slice(at + 1);
+  }
+  return found;
 });
 
 /** Every running process whose environment binds one of `names`, with what it binds. */
 export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
   names: ReadonlyArray<string>,
 ) {
-  const found: Array<{ readonly pid: number; readonly bound: Record<string, string> }> = [];
-  if (!(yield* readsSessions)) {
-    for (const row of yield* psBindings(["-A"], names))
-      if (Object.keys(row.bound).length > 0) found.push(row);
-    return found;
-  }
   const fs = yield* FileSystem.FileSystem;
+  const found: Array<{
+    readonly pid: number;
+    readonly bound: Record<string, string>;
+  }> = [];
   for (const name of yield* fs.readDirectory(PROC).pipe(Effect.orElseSucceed(() => []))) {
     const pid = Number(name);
     if (!Number.isInteger(pid)) continue;

@@ -14,7 +14,7 @@ import {
   runningChecksDir,
   type LeftoverEnd,
 } from "../src/check-processes";
-import { bindingsOf, readsSessions, startedOf, stillRunning } from "../src/processes";
+import { bindingsOf, commandOf, readsSessions, startedOf, stillRunning } from "../src/processes";
 import { collect, readVerifications } from "../src/verify";
 import { runEffect } from "./support/effect";
 import { startDetached } from "./support/command";
@@ -324,7 +324,7 @@ const withoutProc = Effect.gen(function* () {
 });
 
 test.skipIf(process.platform !== "linux")(
-  "without /proc, a marked check another host left is found and ended",
+  "without /proc, a marked check another host left proves nothing and is left running",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -344,7 +344,7 @@ test.skipIf(process.platform !== "linux")(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, macPs),
         );
 
-        expect(yield* noneRunning(left)).toBe(true);
+        expect(yield* noneRunning(left)).toBe(false);
         expect(yield* checks.left).toEqual([]);
       }),
     ),
@@ -384,8 +384,48 @@ test.skipIf(process.platform !== "linux")(
             Effect.provideService(FileSystem.FileSystem, noProc),
             Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, macPs),
           ),
-        ).toEqual({});
+        ).toBeNull();
         expect(yield* posing.isRunning).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "without /proc, a process whose environment only quotes a check's markers is never ended",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "collie-check-processes-" });
+        const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const quoting = yield* spawner.spawn(
+          ChildProcess.make("sleep", ["30"], {
+            env: { QUOTED: `x ${CHECK_INSTALLATION}=${installation} ${CHECK_ID}=run-1@1-quoted` },
+            extendEnv: true,
+            detached: true,
+            stdout: "ignore",
+            stderr: "ignore",
+          }),
+        );
+        yield* until(
+          () => commandOf(quoting.pid),
+          (command) => command.startsWith("sleep"),
+        );
+        const { noProc, macPs } = yield* withoutProc;
+        const signalled: Array<number> = [];
+
+        const checks = yield* hostCheckProcesses({
+          dir: `${root}/state`,
+          installation,
+          kill: (target) => void signalled.push(Math.abs(target)),
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, noProc),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, macPs),
+        );
+
+        expect(signalled).not.toContain(quoting.pid);
+        expect(yield* checks.left).toEqual([]);
       }),
     ),
   30_000,

@@ -1631,8 +1631,8 @@ The `check` kind is a check's processes that no host is collecting, such as a ch
 its group, or one a starting host could not end. Its target is the check's id, and its
 reason names the Run, the check, its pid and how long it has run; it frees 0 bytes. It is
 proved by the check's record under `running-checks/`, or by the marker in its environment
-naming this installation and the check. A process proved by neither, or marked for another
-state directory, is never listed. A sweep ends it with SIGTERM, then SIGKILL if that leaves
+naming this installation and the check, which is read only from `/proc`. A process proved by
+neither, or marked for another state directory, is never listed. A sweep ends it with SIGTERM, then SIGKILL if that leaves
 it running, because a check's result is thrown away
 ([ADR-draft-a-check-ends-with-the-host-that-runs-it](adr/draft-a-check-ends-with-the-host-that-runs-it.md)).
 A check this host is collecting is kept, with "this host is collecting it".
