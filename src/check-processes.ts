@@ -3,6 +3,7 @@
 // token, or a process carrying both of its bindings.
 
 import {
+  Clock,
   Context,
   Deferred,
   Duration,
@@ -149,15 +150,22 @@ export const CheckProcesses = Context.Reference<CheckProcessesApi>("collie/Check
   defaultValue: () => unrecorded,
 });
 
+/** A process seen carrying a check's markers, by pid and start token. */
+interface Marked {
+  readonly pid: number;
+  readonly started: string;
+}
+
 /** Every running process carrying this installation's binding, by the check id it carries. */
 const markedBy = (installation: string) =>
   Effect.gen(function* () {
-    const found = new Map<string, number[]>();
-    for (const { pid, bound } of yield* boundProcesses([CHECK_INSTALLATION, CHECK_ID])) {
+    const found = new Map<string, Marked[]>();
+    for (const { pid, started, bound } of yield* boundProcesses([CHECK_INSTALLATION, CHECK_ID])) {
       const id = bound[CHECK_ID];
       if (pid === process.pid || bound[CHECK_INSTALLATION] !== installation || id === undefined)
         continue;
-      if ((yield* groupOf(pid)) !== null) found.set(id, [...(found.get(id) ?? []), pid]);
+      if ((yield* groupOf(pid)) !== null)
+        found.set(id, [...(found.get(id) ?? []), { pid, started }]);
     }
     return found;
   });
@@ -165,7 +173,7 @@ const markedBy = (installation: string) =>
 /** What of a check is proved still running: its group, while its leader is the recorded one, and each marked process. */
 const provedIn = (
   record: Pick<CheckRecord, "id" | "leader">,
-  marked: ReadonlyMap<string, ReadonlyArray<number>>,
+  marked: ReadonlyMap<string, ReadonlyArray<Marked>>,
 ) =>
   Effect.gen(function* () {
     const { leader } = record;
@@ -188,8 +196,13 @@ const isGone = (proved: Proved) => proved.group === null && proved.marked.length
 export type Kill = (target: number, name: NodeJS.Signals) => void;
 const processKill: Kill = (target, name) => process.kill(target, name);
 
-const signal = (proved: Proved, name: NodeJS.Signals, kill: Kill) =>
-  Effect.sync(() => {
+/** A marked process only while it is still the one seen marked. */
+const signal = (
+  proved: { readonly group: number | null; readonly marked: ReadonlyArray<Marked> },
+  name: NodeJS.Signals,
+  kill: Kill,
+) =>
+  Effect.gen(function* () {
     const send = (target: number) => {
       try {
         kill(target, name);
@@ -198,7 +211,7 @@ const signal = (proved: Proved, name: NodeJS.Signals, kill: Kill) =>
       }
     };
     if (proved.group !== null) send(-proved.group);
-    for (const pid of proved.marked) send(pid);
+    for (const one of proved.marked) if (yield* stillRunning(one)) send(one.pid);
   });
 
 /** Polls until nothing of it is proved running, or `within` is up; true where it is gone. */
@@ -208,9 +221,10 @@ const goneWithin = (
   within: number,
 ) =>
   Effect.gen(function* () {
-    for (let waited = 0; ; waited += 100) {
+    const until = (yield* Clock.currentTimeMillis) + within;
+    for (;;) {
       if (isGone(yield* provedOf(record, installation))) return true;
-      if (waited >= within) return false;
+      if ((yield* Clock.currentTimeMillis) >= until) return false;
       yield* Effect.sleep("100 millis");
     }
   });
@@ -292,10 +306,11 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   const ours = new Set<string>();
   const host = { pid: process.pid, started: (yield* startedOf(process.pid)) ?? "" };
 
+  const untrack = (id: string) => Effect.sync(() => collecting.delete(id));
   const forget = (id: string) =>
     fs
       .remove(recordPath(dir, id), { force: true })
-      .pipe(Effect.ignore, Effect.andThen(Effect.sync(() => collecting.delete(id))));
+      .pipe(Effect.ignore, Effect.andThen(untrack(id)));
 
   const left = Effect.gen(function* () {
     const found = new Map<string, Leftover>();
@@ -319,18 +334,18 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
         started: epochMs(record.started),
       });
     }
-    for (const [id, pids] of yield* markedBy(installation)) {
+    for (const [id, ones] of yield* markedBy(installation)) {
       if (found.has(id) || ours.has(id)) continue;
-      const pid = Math.min(...pids);
+      const first = ones.reduce((least, one) => (one.pid < least.pid ? one : least));
       found.set(id, {
         id,
         run: runOfId(id),
         name: null,
         pass: null,
         leader: {
-          pid,
-          started: (yield* startedOf(pid)) ?? "",
-          group: (yield* groupOf(pid)) ?? pid,
+          pid: first.pid,
+          started: first.started,
+          group: (yield* groupOf(first.pid)) ?? first.pid,
         },
         recorded: false,
         host: null,
@@ -368,15 +383,12 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     }).pipe(Effect.provideContext(services));
 
   // What the last look at /proc found of each check, so the next signal needs no look first.
-  const found = new Map<
-    string,
-    ReadonlyArray<{ readonly pid: number; readonly started: string }>
-  >();
-  type Marked = Effect.Success<ReturnType<typeof markedBy>>;
+  const found = new Map<string, ReadonlyArray<Marked>>();
+  type Look = Effect.Success<ReturnType<typeof markedBy>>;
   // The look at /proc under way, whose answer a later signal takes too, without waiting on it alone.
-  let looking: Deferred.Deferred<Marked> | undefined;
+  let looking: Deferred.Deferred<Look> | undefined;
   const freshLook = Effect.suspend(() => {
-    const deferred = Deferred.makeUnsafe<Marked>();
+    const deferred = Deferred.makeUnsafe<Look>();
     looking ??= deferred;
     return markedBy(installation).pipe(
       Effect.onExit((exit) =>
@@ -387,16 +399,13 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       ),
     );
   });
-  const signalMarked = (ids: ReadonlyArray<string>, name: NodeJS.Signals) => (marked: Marked) =>
+  const signalMarked = (ids: ReadonlyArray<string>, name: NodeJS.Signals) => (look: Look) =>
     Effect.forEach(ids, (id) =>
       Effect.gen(function* () {
-        const pids = marked.get(id) ?? [];
-        yield* signal({ group: null, marked: pids }, name, kill);
-        const started = yield* Effect.forEach(pids, startedOf);
+        const ones = look.get(id) ?? [];
+        yield* signal({ group: null, marked: ones }, name, kill);
         const known = new Map((found.get(id) ?? []).map((one) => [one.pid, one]));
-        pids.forEach((pid, at) => {
-          if (started[at]) known.set(pid, { pid, started: started[at] });
-        });
+        for (const one of ones) known.set(one.pid, one);
         found.set(id, [...known.values()]);
       }),
     );
@@ -412,10 +421,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
         if (entry !== undefined)
           yield* signal(yield* provedIn(entry.record, new Map()), name, kill);
       }
-      for (const id of ids)
-        for (const one of found.get(id) ?? [])
-          if (yield* stillRunning(one))
-            yield* signal({ group: null, marked: [one.pid] }, name, kill);
+      for (const id of ids) yield* signal({ group: null, marked: found.get(id) ?? [] }, name, kill);
       const earlier = looking;
       yield* Effect.all(
         [
@@ -481,7 +487,11 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
             return { handle, record, entry };
           }).pipe(Effect.ensuring(Effect.sync(() => spawning.delete(id))));
           yield* Effect.addFinalizer(() =>
-            endCheck(record, installation, kill).pipe(Effect.andThen(forget(id)), Effect.ignore),
+            endCheck(record, installation, kill).pipe(
+              // Its record is its only proof where /proc cannot be read, so it stays until it is gone.
+              Effect.flatMap((gone) => (gone ? forget(id) : untrack(id))),
+              Effect.ignore,
+            ),
           );
           if (entry.ended) yield* signalAll([id], killing ? "SIGKILL" : "SIGTERM");
           yield* fs.makeDirectory(runningChecksDir(dir), { recursive: true }).pipe(Effect.ignore);
@@ -524,7 +534,8 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     killing = true;
     for (const entry of collecting.values()) entry.ended = true;
     yield* signalAll(unended(), "SIGKILL");
-    for (let waited = 0; ; waited += 100) {
+    const until = (yield* Clock.currentTimeMillis) + KILL_WAIT;
+    for (;;) {
       const marked = yield* markedBy(installation);
       for (const entry of collecting.values()) {
         const proved = yield* provedIn(entry.record, marked);
@@ -533,7 +544,8 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       }
       for (const id of spawning.keys())
         yield* signal({ group: null, marked: marked.get(id) ?? [] }, "SIGKILL", kill);
-      if ((collecting.size === 0 && spawning.size === 0) || waited >= KILL_WAIT) return;
+      if (collecting.size === 0 && spawning.size === 0) return;
+      if ((yield* Clock.currentTimeMillis) >= until) return;
       yield* Effect.sleep("100 millis");
     }
   }).pipe(Effect.provideContext(services));

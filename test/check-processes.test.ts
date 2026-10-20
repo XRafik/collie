@@ -2,7 +2,7 @@
 // by pid and start token, and what is recorded.
 
 import { expect, test } from "bun:test";
-import { Clock, Deferred, Duration, Effect, Fiber, FileSystem, Option } from "effect";
+import { Clock, Deferred, Duration, Effect, Fiber, FileSystem, Option, Sink, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   CHECK_ID,
@@ -438,7 +438,7 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
-/** A FileSystem whose first read of a process's `stat` once `armed` waits for `release`. */
+/** A FileSystem whose first read of a check's process's `stat` once `armed` waits for `release`. */
 const gatedStat = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const gate = {
@@ -451,10 +451,17 @@ const gatedStat = Effect.gen(function* () {
     readFileString: (path, encoding) => {
       if (!gate.armed || !/^\/proc\/\d+\/stat$/.test(path))
         return fs.readFileString(path, encoding);
-      gate.armed = false;
-      return Deferred.succeed(gate.reached, undefined).pipe(
-        Effect.andThen(Deferred.await(gate.release)),
-        Effect.andThen(fs.readFileString(path, encoding)),
+      return fs.readFileString(path.replace(/stat$/, "environ")).pipe(
+        Effect.orElseSucceed(() => ""),
+        Effect.flatMap((environ) => {
+          if (!gate.armed || !environ.includes(`${CHECK_INSTALLATION}=${installation}\0`))
+            return fs.readFileString(path, encoding);
+          gate.armed = false;
+          return Deferred.succeed(gate.reached, undefined).pipe(
+            Effect.andThen(Deferred.await(gate.release)),
+            Effect.andThen(fs.readFileString(path, encoding)),
+          );
+        }),
       );
     },
   };
@@ -739,6 +746,180 @@ test.skipIf(process.platform !== "linux")(
 );
 
 const refusal = () => Object.assign(new Error("kill EPERM"), { code: "EPERM" });
+
+/** `/proc` as it shows one marked process `pid`, through `fs`, with its stat and environment as given. */
+const fakeProc = (
+  fs: FileSystem.FileSystem,
+  pid: number,
+  show: {
+    readonly stat: () => string;
+    readonly environ: () => string;
+    readonly list?: Effect.Effect<void>;
+  },
+): FileSystem.FileSystem => ({
+  ...fs,
+  exists: (path) => (path === "/proc/self/stat" ? Effect.succeed(true) : fs.exists(path)),
+  readDirectory: (path, options) =>
+    path === "/proc"
+      ? (show.list ?? Effect.void).pipe(
+          Effect.map(() => (show.environ() === "" ? [] : [String(pid)])),
+        )
+      : fs.readDirectory(path, options),
+  readFileString: (path, encoding) =>
+    path === `/proc/${pid}/environ`
+      ? Effect.sync(show.environ)
+      : path === `/proc/${pid}/stat`
+        ? Effect.sync(show.stat)
+        : path === `/proc/${pid}/cmdline`
+          ? Effect.succeed("worker\0")
+          : fs.readFileString(path, encoding),
+});
+
+const statLine = (pid: number, started: string) => {
+  const fields = Array<string>(20).fill("0");
+  fields[0] = "S";
+  fields[2] = String(pid);
+  fields[19] = started;
+  return `${pid} (worker) ${fields.join(" ")}`;
+};
+
+const markers = (id: string) => `${CHECK_INSTALLATION}=${installation}\0${CHECK_ID}=${id}\0`;
+
+test("a marked process whose pid is taken by another while it is looked at is never signalled", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const pid = 987_654;
+      let replaced = false;
+      const sent: Array<boolean> = [];
+      // Reading its start is where the marked process exits and an unmarked one takes its pid.
+      const proc = fakeProc(fs, pid, {
+        stat: () => {
+          const line = statLine(pid, replaced ? "new-start" : "old-start");
+          replaced = true;
+          return line;
+        },
+        environ: () => (replaced ? "" : markers("run-1@1-check")),
+      });
+
+      yield* endCheck(
+        { id: "run-1@1-check", leader: { pid, started: "", group: pid } },
+        installation,
+        () => sent.push(replaced),
+      ).pipe(Effect.provideService(FileSystem.FileSystem, proc));
+      expect(sent).not.toContain(true);
+    }),
+  ));
+
+test(
+  "ending a marked check waits two seconds for its SIGTERM by the clock, however slow each look",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const pid = 987_654;
+        let alive = true;
+        const sent: Array<NodeJS.Signals> = [];
+        const proc = fakeProc(fs, pid, {
+          stat: () => statLine(pid, "start"),
+          environ: () => (alive ? markers("run-1@1-check") : ""),
+          list: Effect.sleep("200 millis"),
+        });
+
+        const began = yield* Clock.currentTimeMillis;
+        const gone = yield* endCheck(
+          { id: "run-1@1-check", leader: { pid, started: "", group: pid } },
+          installation,
+          (_target, name) => {
+            sent.push(name);
+            if (name === "SIGKILL") alive = false;
+          },
+        ).pipe(Effect.provideService(FileSystem.FileSystem, proc));
+        expect(gone).toBe(true);
+        expect(sent).toEqual(["SIGTERM", "SIGKILL"]);
+        // Two seconds after the SIGTERM, with a look before it and one after the SIGKILL.
+        expect((yield* Clock.currentTimeMillis) - began).toBeLessThan(3_200);
+      }),
+    ),
+  10_000,
+);
+
+test(
+  "a check whose end is refused keeps its record, so it is still found as left",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const stored = new Map<string, string>();
+        const pid = 987_654;
+        const started = "Mon Oct 19 00:00:00 2026";
+        let refused = 0;
+        const noProc: FileSystem.FileSystem = {
+          ...fs,
+          exists: (path) => Effect.succeed(!path.startsWith("/proc") && stored.has(path)),
+          readDirectory: (path) =>
+            Effect.succeed(
+              [...stored.keys()]
+                .filter((one) => one.startsWith(`${path}/`))
+                .map((one) => one.slice(path.length + 1)),
+            ),
+          makeDirectory: () => Effect.void,
+          writeFileString: (path, text) => Effect.sync(() => void stored.set(path, text)),
+          rename: (from, to) =>
+            Effect.sync(() => {
+              stored.set(to, stored.get(from) ?? "");
+              stored.delete(from);
+            }),
+          remove: (path) => Effect.sync(() => void stored.delete(path)),
+          readFileString: (path, encoding) =>
+            stored.has(path)
+              ? Effect.succeed(stored.get(path) ?? "")
+              : fs.readFileString(path, encoding),
+        };
+        // `ps` answers for one check that runs on, whatever it is sent.
+        const spawner = ChildProcessSpawner.make((command) => {
+          const ps = command._tag === "StandardCommand" && command.command === "ps";
+          const args = command._tag === "StandardCommand" ? command.args : [];
+          const text = args.includes("pgid=")
+            ? String(pid)
+            : args.includes("lstart=")
+              ? started
+              : `${pid} 1 ${started} check`;
+          return Effect.succeed(
+            ChildProcessSpawner.makeHandle({
+              pid: ChildProcessSpawner.ProcessId(pid),
+              stdout: ps ? Stream.make(new TextEncoder().encode(text)) : Stream.empty,
+              stderr: Stream.empty,
+              all: Stream.empty,
+              exitCode: ps ? Effect.succeed(ChildProcessSpawner.ExitCode(0)) : Effect.never,
+              isRunning: Effect.succeed(true),
+              kill: () => Effect.void,
+              stdin: Sink.drain,
+              getInputFd: () => Sink.drain,
+              getOutputFd: () => Stream.empty,
+              unref: Effect.never,
+            }),
+          );
+        });
+        const checks = yield* hostCheckProcesses({
+          dir: "/state",
+          installation,
+          kill: () => {
+            refused++;
+            throw refusal();
+          },
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, noProc),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+
+        yield* Effect.scoped(checks.run(check, { executable: "check", argv: [], cwd: "/" }));
+        expect(refused).toBeGreaterThan(0);
+        expect((yield* checks.left).map((one) => one.run)).toEqual([check.run]);
+      }),
+    ),
+  10_000,
+);
 
 test.skipIf(process.platform !== "linux")(
   "a check of a Run does not start while a leftover of that Run survives being ended",

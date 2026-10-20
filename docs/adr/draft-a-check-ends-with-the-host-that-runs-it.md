@@ -35,7 +35,8 @@ verification is written or its processes are gone.
 
 **D2. What proves a process is a check's.** A group is signalled only when its leader is
 the recorded one, by pid and start time. Without that leader, each process that carries
-the check's marker is signalled on its own. A process proven by neither is never
+the check's marker is signalled on its own, and only while it is still the process seen
+carrying it, by pid and start time. A process proven by neither is never
 signalled, and a reused pid proves nothing. The marker names the installation, so a host
 never touches another state directory's checks. That matters because Collie's own suite
 runs inside a check and starts hosts of its own.

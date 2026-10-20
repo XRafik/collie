@@ -165,20 +165,26 @@ export const bindingsOf = Effect.fn("Processes.bindingsOf")(function* (
   return found;
 });
 
-/** Every running process whose environment binds one of `names`, with what it binds. */
+/**
+ * Every running process whose environment binds one of `names`, with what it binds and its
+ * start, read first so a pid taken over while it is read never passes for the bound one.
+ */
 export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
   names: ReadonlyArray<string>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const found: Array<{
     readonly pid: number;
+    readonly started: string;
     readonly bound: Record<string, string>;
   }> = [];
   for (const name of yield* fs.readDirectory(PROC).pipe(Effect.orElseSucceed(() => []))) {
     const pid = Number(name);
     if (!Number.isInteger(pid)) continue;
+    const started = yield* startedOf(pid);
+    if (started === null) continue;
     const bound = yield* bindingsOf(pid, names);
-    if (bound !== null && Object.keys(bound).length > 0) found.push({ pid, bound });
+    if (bound !== null && Object.keys(bound).length > 0) found.push({ pid, started, bound });
   }
   return found;
 });
