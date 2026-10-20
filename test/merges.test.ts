@@ -1169,25 +1169,31 @@ test("a fan-out's Repo run's merge request is watched: its facts recorded, its m
     }),
   ));
 
+/** A finished fan-out whose plan has one repository, api, whose Repo run opened 65. */
+const singleRepo = Effect.fn("merges.singleRepo")(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const { stateDir, env, runs: made } = yield* fannedOut([{ repo: "api", iid: "65" }]);
+  const root = `${stateDir}/root`;
+  yield* fs.makeDirectory(`${root}/api/.git`, { recursive: true });
+  yield* fs.makeDirectory(`${made[0]!.dir}/plan/issues`, {
+    recursive: true,
+  });
+  yield* fs.writeFileString(
+    `${made[0]!.dir}/plan/issues/01-api.md`,
+    "# api\n\n**Blocked by:** None\n\n**Repo:** api\n",
+  );
+  const runs = made.map((run) => ({
+    ...run,
+    state: "succeeded" as const,
+    cwd: run.repo === null ? root : run.cwd,
+  }));
+  return { stateDir, env, runs };
+});
+
 test("a single-repository fan-out's card is its one merge request's, watched, and no plan left to implement", () =>
   runEffect(
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const { stateDir, env, runs: made } = yield* fannedOut([{ repo: "api", iid: "65" }]);
-      const root = `${stateDir}/root`;
-      yield* fs.makeDirectory(`${root}/api/.git`, { recursive: true });
-      yield* fs.makeDirectory(`${made[0]!.dir}/plan/issues`, {
-        recursive: true,
-      });
-      yield* fs.writeFileString(
-        `${made[0]!.dir}/plan/issues/01-api.md`,
-        "# api\n\n**Blocked by:** None\n\n**Repo:** api\n",
-      );
-      const runs = made.map((run) => ({
-        ...run,
-        state: "succeeded" as const,
-        cwd: run.repo === null ? root : run.cwd,
-      }));
+      const { stateDir, env, runs } = yield* singleRepo();
       const states = new Map();
       yield* settleMerges({
         stateDir,
@@ -1217,5 +1223,51 @@ test("a single-repository fan-out's card is its one merge request's, watched, an
       expect(card!.sentence).toBe("mk/collie!65 is open; nothing has checked it.");
       // Only Collie's own checks are missing: nothing has checked the Repo run's head.
       expect(card!.readiness?.missing.map((one) => one.fact)).toEqual(["checks"]);
+    }),
+  ));
+
+test("a single-repository fan-out's card says what became of its Repo run's work", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { stateDir, env, runs } = yield* singleRepo();
+      yield* recordDisposition(runDir(stateDir, "r-fan.api"), {
+        at: "2026-10-15T10:00:00Z",
+        by: "gitlab",
+        kind: "merged",
+        ref: "mk/collie!65",
+        note: null,
+      });
+      const [card] = yield* buildBoard({ env, runs, now: TEN, quietMs: Infinity });
+      expect(card!.sentence).toBe("Merged as mk/collie!65.");
+      expect(card!.disposition).toBe("merged mk/collie!65");
+    }),
+  ));
+
+test("a single-repository fan-out's merge request is not watched once its Repo run's work is abandoned", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { stateDir, env, runs } = yield* singleRepo();
+      yield* recordDisposition(runDir(stateDir, "r-fan.api"), {
+        at: "2026-10-15T10:00:00Z",
+        by: "mk",
+        kind: "abandoned",
+        ref: "",
+        note: null,
+      });
+      const log: string[] = [];
+      yield* settleMerges({
+        stateDir,
+        cwd: "/project",
+        run: forge("gitlab", { mrs: [mr65({})] }, log),
+        views: yield* buildBoard({ env, runs, now: TEN, quietMs: Infinity }),
+        runs,
+        record: () => Effect.die("nothing is recorded"),
+        stop: () => Effect.die("nothing here is stopped"),
+        now: TEN,
+        checked: new Map(),
+        states: new Map(),
+        panels: new Map(),
+      });
+      expect(log).toEqual([]);
     }),
   ));

@@ -941,9 +941,16 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             ? touched.get(run.id) || epochMs(run.created)
             : epochMs(run.finished);
         const last = Math.max(0, ...runs.map(endedAt).filter(Number.isFinite));
+        const fanned = runs.find((run) => repoRunsOf.has(run.id));
+        const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
+        const own = runs.map(mrOf).find((one) => one !== null) ?? null;
+        const only = fan?.children.length === 1 ? fan.children[0]!.run : null;
+        // A single-repository fan-out's card is its one Repo run's merge request.
+        const repoRun =
+          own === null ? children.find((run) => run.id === only && mrOf(run) !== null) : undefined;
         // Read whatever the state: a merge GitLab reported lands the work even while the Run
         // is still going, and the card must say so.
-        const disposition = yield* dispositionOf(runs);
+        const disposition = yield* dispositionOf(repoRun === undefined ? runs : [...runs, repoRun]);
         // Finished work older than a day is History's, behind `older…` — landed work only:
         // an unmerged branch from last week is still waiting on you, however old.
         if (
@@ -954,8 +961,6 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         )
           return null;
         const leader = leaderOf(runs);
-        const fanned = runs.find((run) => repoRunsOf.has(run.id));
-        const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
         const proposed = pending[0];
         const questions = questionsOf(everyRun);
         const decision: Decision | null = proposed ? asProposal(proposed) : (questions[0] ?? null);
@@ -1021,11 +1026,6 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         // A Task is as old as its first Run; a Run with no readable stamp has no age.
         const first = started.length === 0 ? 0 : Math.min(...started);
 
-        const own = runs.map(mrOf).find((one) => one !== null) ?? null;
-        const only = fan?.children.length === 1 ? fan.children[0]!.run : null;
-        // A single-repository fan-out's card is its one Repo run's merge request.
-        const repoRun =
-          own === null ? children.find((run) => run.id === only && mrOf(run) !== null) : undefined;
         const mr = repoRun === undefined ? own : mrOf(repoRun);
         const merging = repoRun ?? leader;
         const mrState = mr === null ? null : (mrStates.get(mrLabel(mr)) ?? null);
