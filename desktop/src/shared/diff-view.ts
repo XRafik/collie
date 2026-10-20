@@ -137,21 +137,32 @@ export const untickViewed = (ticks: ViewedTicks, path: string): ViewedTicks => {
   return kept;
 };
 
+const stillTrue = (seen: ViewedTick | undefined, file: DiffFile, base: string) =>
+  seen !== undefined &&
+  seen.status === file.status &&
+  seen.added === file.added &&
+  seen.removed === file.removed &&
+  seen.base === base;
+
 export const viewedFiles = (
   ticks: ViewedTicks,
   files: ReadonlyArray<DiffFile>,
   base: string,
 ): ReadonlySet<string> =>
   new Set(
+    files.flatMap((file) => (stillTrue(ticks.get(file.path), file, base) ? [file.path] : [])),
+  );
+
+/** The ticks the diff now shown still bears out; the rest are gone even if it changes back. */
+export const ticksStillTrue = (
+  ticks: ViewedTicks,
+  files: ReadonlyArray<DiffFile>,
+  base: string,
+): ViewedTicks =>
+  new Map(
     files.flatMap((file) => {
       const seen = ticks.get(file.path);
-      const same =
-        seen !== undefined &&
-        seen.status === file.status &&
-        seen.added === file.added &&
-        seen.removed === file.removed &&
-        seen.base === base;
-      return same ? [file.path] : [];
+      return seen !== undefined && stillTrue(seen, file, base) ? [[file.path, seen] as const] : [];
     }),
   );
 

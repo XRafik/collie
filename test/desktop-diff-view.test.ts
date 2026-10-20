@@ -16,6 +16,7 @@ import {
   reachBy,
   readingHeight,
   rowFacts,
+  ticksStillTrue,
   tickViewed,
   untickViewed,
   viewedCount,
@@ -369,6 +370,18 @@ describe("viewed ticks", () => {
     const ticks = tickViewed(none, logo, base);
     expect(viewed(ticks, [logo])).toEqual(["logo.png"]);
     expect(viewed(ticks, [{ ...logo, added: 2, removed: 0 }])).toEqual([]);
+  });
+
+  test("lost for good once seen changed, so changing back does not tick it again", () => {
+    const ticks = tickViewed(tickViewed(none, a, base), b, base);
+    const kept = ticksStillTrue(ticks, [{ ...a, added: 4 }, b], base);
+    expect(viewed(kept, [a, b])).toEqual(["b.ts"]);
+  });
+
+  test("lost for good once its file left the diff, so coming back does not tick it again", () => {
+    const ticks = tickViewed(tickViewed(none, a, base), b, base);
+    const kept = ticksStillTrue(ticks, [b], base);
+    expect(viewed(kept, [a, b])).toEqual(["b.ts"]);
   });
 
   test("untick a file", () => {
