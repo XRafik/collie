@@ -144,6 +144,7 @@ import {
 } from "./profile";
 import { isString } from "./schema";
 import { Collecting, collectingLayer, type CollectingApi } from "./collecting";
+import { holdsBudgetOf, waitForMemory } from "./memory-wait";
 import { causalKey, deliveriesOf, SENT_STATES, toldLine } from "./steering";
 import { readTask, withTaskLock, writeTask } from "./task";
 import { malformedIn, renderTemplate, skillMention, skillsIn } from "./template";
@@ -1622,6 +1623,12 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
       Effect.orElseSucceed(() => false),
     );
 
+  const untilRunStopped = (runId: string) =>
+    Effect.gen(function* () {
+      while (!(yield* stoppedRun(runId)))
+        yield* Effect.sleep(Duration.millis(host.pollMs ?? DEFAULT_POLL_MS));
+    });
+
   const turnEnded = (launched: Launched) =>
     Effect.gen(function* () {
       const stopped = stoppedRun(launched.runId);
@@ -1957,6 +1964,19 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
         }
         const live = listing.success.find((one) => one.name === agent);
         const alive = live !== undefined && !fresh;
+        const memory = alive
+          ? "free"
+          : yield* Effect.raceFirst(
+              waitForMemory({
+                env: host.env,
+                stateDir: host.dir,
+                runId: ask.runId,
+                what: `${agent}'s launch`,
+              }).pipe(Effect.map((waited) => (waited ? "waited" : "free"))),
+              untilRunStopped(ask.runId).pipe(Effect.as("stopped")),
+            );
+        // Listed again: what herdr had before the wait may have changed during it.
+        if (memory === "waited") return yield* launch(ask, fresh, note);
         const fs = yield* FileSystem.FileSystem;
         // Work in the launch order already is this same work replayed, not new work for the agent.
         const replayed = (yield* fs
@@ -1964,7 +1984,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           .pipe(Effect.orElseSucceed(() => "")))
           .split("\n")
           .includes(stemOf(ask));
-        const recorded = (incarnation: Incarnation | undefined) =>
+        const landedOn = (incarnation: Incarnation | undefined) =>
           Effect.gen(function* () {
             const landed: Types.Mutable<Launched> = {
               agent,
@@ -1985,6 +2005,13 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               landed.terminalId = incarnation.terminalId;
               if (incarnation.agentSession !== null) landed.agentSession = incarnation.agentSession;
             }
+            return landed;
+          });
+        // Stopped while it waited for memory: nothing started, and the caller sees the stop.
+        if (memory === "stopped") return yield* landedOn(undefined);
+        const recorded = (incarnation: Incarnation | undefined) =>
+          Effect.gen(function* () {
+            const landed = yield* landedOn(incarnation);
             // Beside it, the agent this work landed on, so a stop and a human steering this
             // run later reach the agent that has it rather than one derived from a name again.
             yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(landed));
@@ -2349,6 +2376,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               budgetMs: budgetMs ?? host.collectMs ?? DEFAULT_COLLECT_MS,
               counts: Effect.gen(function* () {
                 if (asking !== null && (yield* asking(null))) return false;
+                if (yield* holdsBudgetOf(host.dir, launched.runId, launched.agent)) return false;
                 return yield* turnOver;
               }),
               usable: usable ?? (() => true),

@@ -66,6 +66,7 @@ import {
   runDir,
   evidenceDir,
   STOP,
+  controlPath,
   type HostServices,
   type Locate,
 } from "./engine";
@@ -106,6 +107,7 @@ import { donePasses, markersOf, runningCheck, followLog } from "./checks";
 import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
 import { Collecting } from "./collecting";
+import { memoryWaitOf, waitForMemory, waitLine } from "./memory-wait";
 import { runLog } from "./agent-end";
 import { hostLogger, rotateInPlace } from "./host-log";
 import { handoffsDir, handoffsIn } from "./handoffs";
@@ -334,6 +336,8 @@ const RunShown = Schema.Struct({
   handoffs: Schema.optionalKey(
     Schema.Array(Schema.Struct({ path: Schema.String, bytes: Schema.Int })),
   ),
+  /** What of it waits for memory, as the card says it. Absent from an older host. */
+  memory: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 
 const Loaded = Schema.Struct({
@@ -686,6 +690,9 @@ const handlers = (
                 path: `${handoffsDir(runDir(dir, runId))}/${file.name}`,
                 bytes: file.bytes,
               })),
+              memory: yield* Effect.map(memoryWaitOf(runDir(dir, runId)), (wait) =>
+                wait === null ? null : waitLine(wait),
+              ),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>
@@ -1918,6 +1925,36 @@ const frontDoorHandlers = (
                   Effect.gen(function* () {
                     const echo = (stream: "stdout" | "stderr") => (text: string) =>
                       Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
+                    const from = whoOf(client).from;
+                    const stopped = Effect.gen(function* () {
+                      const fs = yield* FileSystem.FileSystem;
+                      const stop = controlPath(env.stateDir, STOP, runId);
+                      while (!(yield* fs.exists(stop).pipe(Effect.orElseSucceed(() => false))))
+                        yield* Effect.sleep("1 second");
+                    });
+                    const memory = yield* Effect.raceFirst(
+                      waitForMemory({
+                        env,
+                        stateDir: env.stateDir,
+                        runId,
+                        what: `collie verify "${name}"`,
+                        asker:
+                          whoOf(client).origin === "agent" && from?.run === runId
+                            ? (from.agent ?? null)
+                            : null,
+                        say: (sentence) => echo("stderr")(`${sentence}\n`),
+                      }).pipe(Effect.as("free" as const)),
+                      stopped.pipe(Effect.as("stopped" as const)),
+                    );
+                    if (memory === "stopped") {
+                      yield* Queue.fail(
+                        queue,
+                        new HostRefused({
+                          reason: `invalid_state: run ${runId} was stopped while "${name}" waited for memory, so it did not run.`,
+                        }),
+                      );
+                      return;
+                    }
                     const started = (yield* nowIso()).replace(/[:.]/g, "-");
                     const log = `${evidenceDir(env.stateDir, runId)}/verify/${started}-${name.replace(/[^\w.-]/g, "_")}.log`;
                     const collected = yield* collect(

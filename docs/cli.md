@@ -1407,6 +1407,14 @@ tree. `--expect fail` makes no exception, and a human's `collie verify --run` is
 an agent's is. Any command that is not one of the Run's checks runs, and its envelope has
 `"ran": true`; no script name is special.
 
+While the Machine is [Short of memory](using.md#short-of-memory), the host holds the
+command before it runs, reading again every 15 seconds: `collie verify` first prints
+`waiting for memory on <Machine>: <a> of <t> GB available`, then runs it once the Machine
+is no longer short. Its result is the command's, unchanged. There is no flag to run anyway,
+and a human's `collie verify` waits as an agent's does. A stop of the Run ends the wait
+with `invalid_state`, and the command never runs. While a verify an agent asked for waits,
+that agent's Output budget does not run.
+
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command
 succeeding is the reproduction failing, not the bug being fixed. Stability comes first

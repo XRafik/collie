@@ -53,6 +53,7 @@ import { readMetrics } from "../src/metrics";
 import { Launched, runAgents } from "../src/launches";
 import { Collected } from "../src/agents";
 import { Collecting } from "../src/collecting";
+import { memoryWaitOf, waitForMemory } from "../src/memory-wait";
 import type { UsageReading } from "../src/usage-model";
 import { readCards } from "../src/cards";
 import { readDrift } from "../src/drift";
@@ -4987,3 +4988,112 @@ test("a Codex launch writes no autoMode", () =>
         expect(yield* read(`${dir}/agents/r1/${path}`)).not.toContain("autoMode");
     }),
   ));
+
+/** Something of `runId` waits for memory now. */
+const waitsForMemory = (runId: string): Reached =>
+  Effect.map(memoryWaitOf(runDir(dir, runId)), (wait) => wait !== null);
+
+const runLogOf = (runId: string) => read(`${dir}/agents/${runId}/agents.log`);
+
+test(
+  "a launch waits while its Machine is short of memory, with no tab or agent made, and its budget starts once it is launched",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.memory(2);
+        yield* rig.queueOutputs([null]);
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* until(waitsForMemory("r1"));
+            yield* spend(60_000);
+            const cmds = yield* rig.cmds();
+            expect(cmds.filter((cmd) => cmd === "tab create" || cmd === "agent start")).toEqual([]);
+            expect(yield* runLogOf("r1")).toContain(
+              `${agentFor("r1")}'s launch: waiting for memory on `,
+            );
+
+            yield* rig.memory(50);
+            yield* until(prompted("Your task for this step"));
+            // A minute's wait spent none of a 400 ms budget.
+            expect(yield* parked("r1")).toBe(false);
+            expect(yield* runLogOf("r1")).toMatch(
+              new RegExp(`${agentFor("r1")}'s launch: waited \\S+ for memory`),
+            );
+            yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"after"}`);
+            return yield* Fiber.join(fiber);
+          }),
+          { collectMs: 400 },
+        );
+        expect(result._tag === "Success" && result.success.note).toBe("after");
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toHaveLength(1);
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a stop ends a launch's wait for memory, and nothing is launched for the Run after it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.memory(2);
+        yield* session(
+          Effect.gen(function* () {
+            yield* work.execute({ runId: "r1", input: { skip: false } }, { discard: true });
+            yield* until(waitsForMemory("r1"));
+            yield* fs.writeFileString(controlPath(dir, STOP, "r1"), "").pipe(Effect.orDie);
+            yield* until(suspended("r1"));
+            expect(yield* memoryWaitOf(runDir(dir, "r1"))).toBeNull();
+            yield* rig.memory(50);
+            yield* spend(60_000);
+          }),
+        );
+        expect((yield* rig.cmds()).filter((cmd) => cmd === "agent start")).toEqual([]);
+        expect(yield* runLogOf("r1")).toContain("stopped after waiting");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a verify an idle agent asked for, held for memory past its budget, keeps its Run from parking, and one with none parks",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* rig.queueOutputs([null, null]);
+        const result = yield* session(
+          Effect.gen(function* () {
+            const fiber = yield* Effect.forkChild(started("r1"));
+            yield* work.execute({ runId: "r2", input: { skip: false } }, { discard: true });
+            yield* until(prompted("Your task for this step", 2));
+            yield* rig.memory(2);
+            // What the host's verify handler does for an agent's `collie verify`.
+            const verify = yield* Effect.forkChild(
+              waitForMemory({
+                env: rig.pluginEnv(),
+                stateDir: dir,
+                runId: "r1",
+                what: 'collie verify "unit"',
+                asker: agentFor("r1"),
+              }),
+            );
+            yield* until(parked("r2"));
+            yield* spend(5_000);
+            expect(yield* parked("r1")).toBe(false);
+
+            yield* rig.memory(50);
+            expect(yield* Fiber.join(verify)).toBe(true);
+            yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"verified"}`);
+            return yield* Fiber.join(fiber);
+          }),
+          { collectMs: 400 },
+        );
+        expect(result._tag === "Success" && result.success.note).toBe("verified");
+      }),
+    ),
+  120_000,
+);

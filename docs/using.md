@@ -260,6 +260,7 @@ Run ended, `bodil remote down <name>` takes the instance down once you are done 
 | `COLLIE_CWD`          | Working directory passed to picker and agent processes; also re-roots a CLI run.                                                             |
 | `COLLIE_HOST`         | Host executable for development and tests: one executable path, or a JSON array containing the executable and arguments.                     |
 | `COLLIE_PROC`         | Where the host reads `meminfo` and `pressure/memory` instead of `/proc`, for tests.                                                          |
+| `COLLIE_MEMORY_EVERY` | How often a start held for memory reads the Machine again, for tests; 15 seconds unset.                                                      |
 | `GITLAB_USER_LOGIN`   | Who a generated branch is namespaced under on GitLab. Unset, Collie asks `glab` who you are for this checkout's host.                        |
 | `GITHUB_ACTOR`        | Who a generated branch is namespaced under on GitHub. Unset, Collie asks `gh` who you are on github.com.                                     |
 | `HELLE_ENV_FILE`      | Where Helle credentials are read from; defaults to `~/.config/helle/env`. See [Optional integrations](#optional-integrations).               |
@@ -2952,6 +2953,36 @@ pressure rule is off too. Each host reads its own Machine: Linux `MemAvailable` 
 `MemTotal` from `/proc/meminfo`, and the pressure where the kernel has it; macOS
 `kern.memorystatus_level`, the percent available, and `hw.memsize`, with no pressure. A
 Machine whose memory cannot be read is not short.
+
+While its Machine is short, a host starts three things only once it no longer is:
+
+- an agent's launch, whether a Run's agent, a Fallback's successor or an agent started
+  again, before any tab or pane is made for it;
+- a Check pass the gate runs (a gate answered from an agent's pass on the same tree runs
+  nothing, and does not wait);
+- a `collie verify` command, from the CLI or an agent's tool alike.
+
+Each reads the Machine and `memory_hold` again every 15 seconds, so lowering the setting, or
+setting it to 0, lets it go at the next read. Nothing is refused, nothing fails or times out
+because of the wait, and there is no option to start anyway: a human's `collie verify` and a
+Schedule's start wait just as an agent's do. Nothing already running is stopped. A Run's
+start never waits — its row and card appear, and its first agent waits instead — nor do a
+steer, an answer, a hold, a stop, the Home's and the Flock chat, or Cleanup. A steer that
+needs an agent launched waits like any other launch.
+
+A Run that waits says so: its card reads
+`Waiting for memory on vm-mk: 2.1 of 62.0 GB available.`, naming the pressure too where
+that is high, and so do the drawer, `collie run show`, `collie_run` and `collie_herd`. The
+Run's log gets a line when each wait begins, naming what waits and the reading, and another
+when it ends, saying how long it waited. `collie verify` prints the same line before it
+runs the command, and its result is the command's. A `collie verify` an agent asked for
+that waits for memory does not spend that agent's Output budget, as an open question of
+its does not; once the command starts, the budget runs again.
+
+To free memory: stop a Run you can spare, whose waits end with it and which then launches
+and runs nothing; run `collie cleanup --apply`, which closes finished Runs' idle agents;
+or take down whatever else holds it, such as a stack an agent left running in a local
+cluster. Collie does not name what else holds the memory.
 
 `collie doctor`'s `memory` check gives the reading, as `8.1 of 62.0 GB available (13%)`,
 with `, pressure 0.0` on Linux. While the Machine is short it is a `!` warning that names

@@ -83,6 +83,7 @@ import { unlistedServers } from "./compaction";
 import { foldPreferences, preferencesIn, resolveChoice } from "./harness";
 import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
+import { waitForMemory } from "./memory-wait";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
 import { publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
 import {
@@ -2568,6 +2569,26 @@ export const hostLayer = (options: {
             if (asked.at === undefined && asked.expect !== "fail" && rerun === undefined) {
               const kept = yield* relyOn(asked.runId, { ...own, cwd: asked.cwd }, spec, recorded);
               if (kept !== null) return kept;
+            }
+            const env = yield* currentEnv.pipe(Effect.option);
+            if (Option.isSome(env)) {
+              const stopped = set(STOP, asked.runId).pipe(
+                Effect.repeat({ until: (stop) => stop, schedule: Schedule.spaced("1 second") }),
+                Effect.as("stopped" as const),
+              );
+              const memory = yield* Effect.raceFirst(
+                waitForMemory({
+                  env: { ...env.value, userDir: options.userDir ?? env.value.userDir },
+                  stateDir: dir,
+                  runId: asked.runId,
+                  what: `${recorded.pass}: ${spec.name}`,
+                }),
+                stopped,
+              );
+              if (memory === "stopped")
+                return yield* new WorkflowError({
+                  reason: `${spec.name} did not run: the Run was stopped while it waited for memory`,
+                });
             }
             // Written once the checkout is where the check runs, so it names that revision.
             const verified = (base: string | null) =>

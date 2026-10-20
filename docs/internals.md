@@ -148,6 +148,23 @@ time it reaches its list, so a ticket edited since is built as it reads now and 
 one is not built again
 ([ADR-0024](adr/0024-a-list-of-work-is-known-by-its-names.md)).
 
+### Waiting for memory
+
+Three starts wait while their Machine is Short of memory, all through `waitForMemory` in
+`src/memory-wait.ts`
+([ADR-draft-new-work-waits-while-its-machine-is-short-of-memory](adr/draft-new-work-waits-while-its-machine-is-short-of-memory.md)):
+an agent's launch, in `launch` in `src/agents.ts` before it lists, opens a tab or asks
+herdr to start anything; a Check pass, in the engine's `check` once no earlier pass is
+relied on and before the checkout moves; and `collie verify`, in the host's `verify`
+handler, so the CLI and the agent's tool wait alike. The reading is `src/memory.ts`'s,
+taken with `memory_hold` fresh at the start and every 15 seconds after. While it waits, a
+start keeps a file in its run directory's `memory-waits/` naming what waits, its sentence,
+when it began and, for an agent's verify, that agent. The board, the drawer,
+`collie run show` and `collie_run` read the oldest one through `memoryWaitOf`, and an
+agent's Output budget does not run while one names it (`holdsBudgetOf`). A launch or a
+Check pass also watches its Run's stop file, and a stop ends the wait with nothing started.
+The chats' agents start elsewhere, and never wait.
+
 ## A workflow made of workflows
 
 `child({ runId, invocation, workflow, input })` starts another workflow as part of a Run

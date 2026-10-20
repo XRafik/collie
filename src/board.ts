@@ -34,6 +34,7 @@ import { approvedFor, approvedIn } from "./verify-spec";
 import { readIntent } from "./intent";
 import { findingsIn, isBlocking } from "./output";
 import { markersOf, runningCheck } from "./checks";
+import { memoryWaitOf, waitLine } from "./memory-wait";
 import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
@@ -189,6 +190,8 @@ export interface Sentence {
   verb: string | null;
   /** What a check Collie is running says about itself, which outranks the step. */
   checking: string | null;
+  /** What of the Run waits for memory, which outranks a running check. */
+  memory?: string | null;
   /** A Reopened Run's agent at work on what it was told after the Run ended. */
   reopened: Pick<Reopened, "agent" | "told"> | null;
   /** How long it has written nothing, where it has gone quiet. */
@@ -435,6 +438,7 @@ function stalledSentence(facts: Sentence): string {
 }
 
 function workingSentence(facts: Sentence): string {
+  if (facts.memory != null) return facts.memory;
   if (facts.checking !== null) return facts.checking;
   if (facts.reopened !== null)
     return facts.reopened.told === null
@@ -973,9 +977,13 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         const at = Math.max(...working.map((run) => touched.get(run.id) ?? 0));
         const agents = agentsOf(everyRun, registered, live);
         const check = yield* runningCheck(leader, all, markers, now);
-        // An agent mid-turn or a check Collie is running is work, however little it writes.
+        const memory = yield* memoryWaitOf(leader.dir);
+        // An agent mid-turn, a check Collie is running or a wait for memory is work, however
+        // little it writes.
         const busy =
-          check !== null || agents.some((agent) => ownsAgent(agent) && agent.status === "working");
+          check !== null ||
+          memory !== null ||
+          agents.some((agent) => ownsAgent(agent) && agent.status === "working");
         const going = !ended(leader);
         const silentFor = going && !busy && at > 0 ? now - at : 0;
         // Under a minute has no span to name, and is not silence worth a card saying.
@@ -1118,6 +1126,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             // Never the pane's title: a terminal names its harness or file, not the work.
             verb: doing?.verb ?? null,
             checking: check?.sentence ?? null,
+            memory: memory === null ? null : waitLine(memory),
             reopened: state === "active" ? reopened : null,
             silent,
             wave: fan !== null && fanned === leader ? fan.wave : null,

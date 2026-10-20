@@ -18,10 +18,10 @@ export type Memory =
     }
   | { readonly known: false; readonly from: string };
 
-/** Where a test points the Linux reader instead of `/proc`. */
+/** A proc directory read instead of this Machine's own, on any platform: a test's. */
 export const PROC_ENV = "COLLIE_PROC";
 
-const PRESSURE_SHORT = 10;
+export const PRESSURE_SHORT = 10;
 
 /** `hold` is `memory_hold`, a percent of total; 0 is never short, pressure included. */
 export const shortOfMemory = (memory: Memory, hold: number): boolean =>
@@ -68,16 +68,19 @@ export const macMemory = Effect.fn("Memory.mac")(function* <R>(run: Runner<R>) {
   return { known: true, available: (total * level) / 100, total, pressure: null } satisfies Memory;
 });
 
-/** This Machine's reading, from `/proc` on Linux (or where `COLLIE_PROC` says) and `sysctl` on macOS. */
+/** This Machine's reading: from where `COLLIE_PROC` names, else `/proc` on Linux and `sysctl` on macOS. */
 export const readMemory = (
   env: PluginEnv,
   run: Runner<ChildProcessSpawner.ChildProcessSpawner> = shell,
-) =>
-  process.platform === "darwin"
+) => {
+  const proc = env.raw[PROC_ENV];
+  if (proc) return linuxMemory(proc);
+  return process.platform === "darwin"
     ? macMemory(run)
     : process.platform === "linux"
-      ? linuxMemory(env.raw[PROC_ENV] || "/proc")
+      ? linuxMemory("/proc")
       : Effect.succeed(unknown(process.platform));
+};
 
 /** The reading, and whether the Machine is short of memory under this Machine's `memory_hold`. */
 export const machineMemory = Effect.fn("Memory.machine")(function* (

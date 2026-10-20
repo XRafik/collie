@@ -179,6 +179,14 @@ const FORMS: Array<[string, Sentence, string]> = [
     "Abandoned.",
   ],
   [
+    "a Run waiting for memory, which outranks a running check",
+    facts({
+      memory: "Waiting for memory on vm-mk: 2.1 of 62.0 GB available.",
+      checking: "Running unit on the branch, 2 min.",
+    }),
+    "Waiting for memory on vm-mk: 2.1 of 62.0 GB available.",
+  ],
+  [
     "a wave of a plan that spans repositories",
     facts({
       wave: {
