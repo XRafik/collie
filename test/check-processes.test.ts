@@ -22,6 +22,7 @@ import { until } from "./support/host";
 
 const held = new URL("./fixtures/checks/held.sh", import.meta.url).pathname;
 const leaves = new URL("./fixtures/checks/leaves.sh", import.meta.url).pathname;
+const refuses = new URL("./fixtures/checks/refuses.sh", import.meta.url).pathname;
 const installation = "installation-under-test";
 
 /** A state directory, a directory the check notes its pids in, and the host's adapter. */
@@ -631,6 +632,39 @@ test.skipIf(process.platform !== "linux")(
 
         listing.armed = true;
         yield* endAllWithin(checks, Duration.millis(2_000), () => Effect.void);
+        expect(yield* noneRunning(ones)).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
+test.skipIf(process.platform !== "linux")(
+  "a check's child that refuses SIGTERM is killed within the grace, however slow each look at /proc",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const listing = { slow: false };
+        const slow: FileSystem.FileSystem = {
+          ...fs,
+          readDirectory: (path, options) =>
+            listing.slow && path === "/proc"
+              ? Effect.sleep("200 millis").pipe(Effect.andThen(fs.readDirectory(path, options)))
+              : fs.readDirectory(path, options),
+        };
+        const { notes, checks } = yield* worldWith({}, slow);
+        yield* Effect.forkScoped(
+          Effect.scoped(
+            checks
+              .run(check, { executable: refuses, argv: [notes], cwd: notes })
+              .pipe(Effect.flatMap((one) => one.collected(one.exit))),
+          ),
+        );
+        const ones = yield* startedIn(notes);
+
+        listing.slow = true;
+        yield* endAllWithin(checks, Duration.millis(500), () => Effect.void);
+        yield* Effect.sleep("100 millis");
         expect(yield* noneRunning(ones)).toBe(true);
       }),
     ),

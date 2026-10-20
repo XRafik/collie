@@ -355,7 +355,12 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       return outcome;
     }).pipe(Effect.provideContext(services));
 
-  /** Each group before the look at /proc for marked processes, so a slow look holds back no group. */
+  // What the last look at /proc found of each check, so the next signal needs no look first.
+  const found = new Map<
+    string,
+    ReadonlyArray<{ readonly pid: number; readonly started: string }>
+  >();
+  /** Each group, then each process found before, before the look at /proc, so a slow look holds back none of them. */
   const signalAll = (ids: ReadonlyArray<string>, name: NodeJS.Signals) =>
     Effect.gen(function* () {
       for (const id of ids) {
@@ -363,9 +368,20 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
         if (entry !== undefined)
           yield* signal(yield* provedIn(entry.record, new Map()), name, kill);
       }
-      const marked = yield* markedBy(installation);
       for (const id of ids)
-        yield* signal({ group: null, marked: marked.get(id) ?? [] }, name, kill);
+        for (const one of found.get(id) ?? [])
+          if (yield* stillRunning(one))
+            yield* signal({ group: null, marked: [one.pid] }, name, kill);
+      const marked = yield* markedBy(installation);
+      for (const id of ids) {
+        const pids = marked.get(id) ?? [];
+        yield* signal({ group: null, marked: pids }, name, kill);
+        const started = yield* Effect.forEach(pids, startedOf);
+        found.set(
+          id,
+          pids.flatMap((pid, at) => (started[at] ? [{ pid, started: started[at] }] : [])),
+        );
+      }
     });
   const unended = () => [...collecting.keys(), ...spawning.keys()];
 
