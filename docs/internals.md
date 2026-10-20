@@ -766,6 +766,34 @@ patterns through GraphQL. A Claude agent's launch reads it for the branch its Ru
 and only `false` gives the agent the history allowance
 ([What a Claude agent's auto mode is told](using.md#what-a-claude-agents-auto-mode-is-told)).
 
+Three operations carry a merge request through its review and merge. Collie decides on
+what the review read says, never on an agent's Output
+([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D4):
+
+- **`readReview(ref)`** reads the state and head, the merged commit with who merged it and
+  when, approval, whether an external reviewer asks for changes, mergeability, the
+  pipeline at the head, and every comment. GitLab reads the merge request, its approvals
+  and every page of its discussions; GitHub reads the pull request and every page of its
+  issue comments, review comments, reviews with a body, and review threads. A comment is
+  `person`, `bot` or `system`, and one rule in `src/forge/review.ts` decides for both
+  forges which are **external** (a person's, not by Collie's login) and **answered** (a
+  later comment by Collie's login in its thread, any comment by Collie's login linking it,
+  or a resolved thread). **Approved** means the forge's rules are met without Collie's
+  own approval: GitLab counts each approval rule again without Collie's login (the
+  approvals read is one rule where the tier has no approval state); GitHub's `APPROVED`
+  stands where Collie's login has no approving review, else only where others reach the
+  base branch's required count, from its protection and rulesets. A count that cannot be
+  read, or code owners' review, is not approved, and the read says why.
+- **`reply(ref, comment, body)`** posts `body` as it is: in the comment's thread where it
+  has one (a GitLab discussion, a GitHub review comment's replies), else as a new comment.
+  It never resolves a thread.
+- **`merge(ref, head)`** merges through the forge's REST merge endpoint at `head`, never
+  `glab mr merge`, whose `--auto-merge` defaults to on. GitLab passes no squash, so the
+  project's setting stands; GitHub uses the repository's `viewerDefaultMergeMethod`. It is
+  never an admin merge or auto-merge. It answers merged (with the merged commit, read
+  back), already merged (with the commit, head, who and when), head moved, or refused with
+  the forge's reason.
+
 The interface also lists open issues, files issues, and comments on them. The adapters
 decode their own CLI answers into the shared issue shape. GitLab reads consecutive
 pages; GitHub requests all open issues through its list command. These flags follow the

@@ -25,10 +25,18 @@ import type {
   Readiness,
 } from "./forge";
 import { Issue, filedIssueOf } from "./issues";
+import {
+  judgeComments,
+  type CommentKind,
+  type ForgeComment,
+  type MergeAnswer,
+  type ReviewRead,
+} from "./review";
 
 const HOST = "github.com";
 
 const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
+const optionalFlag = Schema.optionalKey(Schema.NullOr(Schema.Boolean));
 const Login = Schema.Struct({ login: optionalText });
 
 const PullJson = Schema.fromJsonString(
@@ -44,6 +52,7 @@ const PullJson = Schema.fromJsonString(
     headRefOid: optionalText,
     mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
     mergedAt: optionalText,
+    mergedBy: Schema.optionalKey(Schema.NullOr(Login)),
     statusCheckRollup: Schema.optionalKey(
       Schema.NullOr(
         Schema.Array(
@@ -527,6 +536,418 @@ function baseJob<R>(
   });
 }
 
+const REVIEW_FIELDS =
+  "state,headRefOid,baseRefName,mergeCommit,mergedAt,mergedBy,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
+const User = Schema.Struct({ login: Schema.String, type: optionalText });
+/** `gh api --paginate --slurp`'s pages. */
+const pagesOf = <S extends Schema.Top>(item: S) =>
+  Schema.fromJsonString(Schema.Array(Schema.Array(item)));
+const IssueCommentsJson = pagesOf(
+  Schema.Struct({
+    id: Schema.Number,
+    html_url: Schema.String,
+    user: Schema.NullOr(User),
+    created_at: Schema.String,
+    body: optionalText,
+  }),
+);
+const ReviewCommentsJson = pagesOf(
+  Schema.Struct({
+    id: Schema.Number,
+    html_url: Schema.String,
+    user: Schema.NullOr(User),
+    created_at: Schema.String,
+    body: optionalText,
+    path: optionalText,
+    line: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    original_line: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+    in_reply_to_id: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  }),
+);
+const ReviewsJson = pagesOf(
+  Schema.Struct({
+    id: Schema.Number,
+    html_url: Schema.String,
+    user: Schema.NullOr(User),
+    state: Schema.String,
+    body: optionalText,
+    submitted_at: optionalText,
+  }),
+);
+const ThreadsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      data: Schema.Struct({
+        repository: Schema.Struct({
+          pullRequest: Schema.Struct({
+            reviewThreads: Schema.Struct({
+              nodes: Schema.Array(
+                Schema.Struct({
+                  isResolved: Schema.Boolean,
+                  comments: Schema.Struct({
+                    nodes: Schema.Array(
+                      Schema.Struct({ databaseId: Schema.NullOr(Schema.Number) }),
+                    ),
+                  }),
+                }),
+              ),
+            }),
+          }),
+        }),
+      }),
+    }),
+  ),
+);
+const REVIEW_THREADS = `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: ${PAGE}, after: $endCursor) { nodes { isResolved comments(first: 1) { nodes { databaseId } } } pageInfo { hasNextPage endCursor } } } } }`;
+const ProtectionJson = Schema.fromJsonString(
+  Schema.Struct({
+    data: Schema.Struct({
+      repository: Schema.Struct({
+        ref: Schema.NullOr(
+          Schema.Struct({
+            refUpdateRule: Schema.NullOr(
+              Schema.Struct({
+                requiredApprovingReviewCount: Schema.NullOr(Schema.Number),
+                requiresCodeOwnerReviews: Schema.Boolean,
+              }),
+            ),
+          }),
+        ),
+      }),
+    }),
+  }),
+);
+const PROTECTION = `query($owner: String!, $name: String!, $ref: String!) { repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { refUpdateRule { requiredApprovingReviewCount requiresCodeOwnerReviews } } } }`;
+const BranchRulesJson = pagesOf(
+  Schema.Struct({
+    type: Schema.String,
+    parameters: Schema.optionalKey(
+      Schema.NullOr(
+        Schema.Struct({
+          required_approving_review_count: Schema.optionalKey(Schema.Number),
+          require_code_owner_review: optionalFlag,
+        }),
+      ),
+    ),
+  }),
+);
+
+/** The approving reviews `base` requires, or why that cannot be counted. */
+const requiredReviews = <R>(repo: string, base: string, cwd: string, run: Runner<R>) =>
+  Effect.gen(function* () {
+    const [owner = "", name = ""] = repo.split("/");
+    const classic = yield* run(
+      "gh",
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=${PROTECTION}`,
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `ref=refs/heads/${base}`,
+      ],
+      cwd,
+    );
+    const protection = Schema.decodeUnknownOption(ProtectionJson)(classic.stdout);
+    const rules = yield* run(
+      "gh",
+      ["api", `repos/${repo}/rules/branches/${encodeURIComponent(base)}`, "--paginate", "--slurp"],
+      cwd,
+    );
+    const rulesets = Schema.decodeUnknownOption(BranchRulesJson)(rules.stdout);
+    if (
+      classic.code !== 0 ||
+      Option.isNone(protection) ||
+      rules.code !== 0 ||
+      Option.isNone(rulesets)
+    )
+      return {
+        ok: false,
+        reason: `GitHub would not say how many approvals ${base} requires`,
+      } as const;
+    const rule = protection.value.data.repository.ref?.refUpdateRule ?? null;
+    const pullRules = rulesets.value.flat().filter((one) => one.type === "pull_request");
+    if (
+      rule?.requiresCodeOwnerReviews === true ||
+      pullRules.some((one) => one.parameters?.require_code_owner_review === true)
+    )
+      return { ok: false, reason: `${base} requires code owners' review` } as const;
+    return {
+      ok: true,
+      count: Math.max(
+        rule?.requiredApprovingReviewCount ?? 0,
+        ...pullRules.map((one) => one.parameters?.required_approving_review_count ?? 0),
+      ),
+    } as const;
+  });
+
+/**
+ * The pull request's view, every page of its issue comments, review comments and reviews,
+ * and which review threads are resolved.
+ */
+function readReview<R>(
+  ref: MrRef,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<ReviewRead, never, R> {
+  return Effect.gen(function* () {
+    const where = mrWords(ref).label;
+    const reached = yield* ready(ref.project, cwd, run);
+    if (!reached.ok) return { ok: false, reason: reached.reason };
+    const me = yield* login(cwd, run);
+    if (me === null) return { ok: false, reason: "gh will not say who it is logged in as" };
+    const repo = mrPath(ref);
+    const view = yield* run(
+      "gh",
+      ["pr", "view", ref.iid, "--repo", repo, "--json", REVIEW_FIELDS],
+      cwd,
+    );
+    const pull = Schema.decodeUnknownOption(PullJson)(view.stdout);
+    if (view.code !== 0 || Option.isNone(pull))
+      return { ok: false, reason: `gh could not read ${where}` };
+    const list = <A>(schema: Schema.Codec<A, string>, route: string) =>
+      Effect.map(
+        run("gh", ["api", `repos/${repo}/${route}?per_page=${PAGE}`, "--paginate", "--slurp"], cwd),
+        (ran) =>
+          ran.code === 0 ? Option.getOrNull(Schema.decodeUnknownOption(schema)(ran.stdout)) : null,
+      );
+    const issueComments = yield* list(IssueCommentsJson, `issues/${ref.iid}/comments`);
+    const reviewComments = yield* list(ReviewCommentsJson, `pulls/${ref.iid}/comments`);
+    const reviews = yield* list(ReviewsJson, `pulls/${ref.iid}/reviews`);
+    const [owner = "", name = ""] = repo.split("/");
+    const threads = yield* run(
+      "gh",
+      [
+        "api",
+        "graphql",
+        "--paginate",
+        "--slurp",
+        "-f",
+        `query=${REVIEW_THREADS}`,
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "-F",
+        `number=${ref.iid}`,
+      ],
+      cwd,
+    );
+    const resolvedThreads = Schema.decodeUnknownOption(ThreadsJson)(threads.stdout);
+    if (
+      issueComments === null ||
+      reviewComments === null ||
+      reviews === null ||
+      threads.code !== 0 ||
+      Option.isNone(resolvedThreads)
+    )
+      return { ok: false, reason: `gh could not read ${where}'s comments and reviews` };
+    const resolved = new Set(
+      resolvedThreads.value.flatMap((page) =>
+        page.data.repository.pullRequest.reviewThreads.nodes.flatMap((thread) => {
+          const first = thread.comments.nodes[0]?.databaseId;
+          return thread.isResolved && first != null ? [String(first)] : [];
+        }),
+      ),
+    );
+    const kindOf = (user: typeof User.Type | null): CommentKind =>
+      user?.type === "Bot" ? "bot" : "person";
+    const comments: ForgeComment[] = [
+      ...issueComments.flat().map((one) => ({
+        id: String(one.id),
+        url: one.html_url,
+        thread: null,
+        author: one.user?.login ?? "",
+        kind: kindOf(one.user),
+        at: one.created_at,
+        body: one.body ?? "",
+        file: null,
+        line: null,
+      })),
+      ...reviewComments.flat().map((one) => ({
+        id: String(one.id),
+        url: one.html_url,
+        thread: String(one.in_reply_to_id ?? one.id),
+        author: one.user?.login ?? "",
+        kind: kindOf(one.user),
+        at: one.created_at,
+        body: one.body ?? "",
+        file: one.path ?? null,
+        line: one.line ?? one.original_line ?? null,
+      })),
+      ...reviews.flat().flatMap((one) =>
+        (one.body ?? "") === ""
+          ? []
+          : [
+              {
+                id: String(one.id),
+                url: one.html_url,
+                thread: null,
+                author: one.user?.login ?? "",
+                kind: kindOf(one.user),
+                at: one.submitted_at ?? "",
+                body: one.body ?? "",
+                file: null,
+                line: null,
+              },
+            ],
+      ),
+    ];
+    // Each reviewer's latest review that is more than a comment is the one that stands.
+    const standing = new Map<string, { readonly state: string; readonly bot: boolean }>();
+    for (const one of reviews.flat())
+      if (one.user !== null && one.state !== "COMMENTED" && one.state !== "PENDING")
+        standing.set(one.user.login, { state: one.state, bot: one.user.type === "Bot" });
+    const approvers = [...standing]
+      .filter(([, review]) => review.state === "APPROVED")
+      .map(([who]) => who);
+    const others = approvers.filter((who) => who !== me);
+    const changesRequested = [...standing].some(
+      ([who, review]) => review.state === "CHANGES_REQUESTED" && !review.bot && who !== me,
+    );
+    const said = pull.value;
+    const decision = said.reviewDecision ?? "";
+    const unapproved = yield* Effect.gen(function* () {
+      if (decision === "CHANGES_REQUESTED") return "changes were requested";
+      if (decision === "REVIEW_REQUIRED") return "a review is still required";
+      if (decision !== "APPROVED") return changesRequested ? "changes were requested" : "";
+      if (!approvers.includes(me)) return "";
+      const required = yield* requiredReviews(repo, said.baseRefName ?? "", cwd, run);
+      if (!required.ok) return `${required.reason}, and ${me}'s own approval stands`;
+      return others.length >= required.count
+        ? ""
+        : `${said.baseRefName} requires ${required.count} approval(s) and has ${others.length} besides ${me}'s own`;
+    });
+    const head = said.headRefOid ?? "";
+    const state = said.state === "MERGED" ? "merged" : said.state === "OPEN" ? "open" : "closed";
+    return {
+      ok: true,
+      state,
+      head,
+      merged:
+        state === "merged"
+          ? {
+              sha: said.mergeCommit?.oid ?? "",
+              by: said.mergedBy?.login ?? "",
+              at: said.mergedAt ?? "",
+            }
+          : null,
+      approved: unapproved === "",
+      unapproved,
+      approvers: others,
+      changesRequested,
+      mergeable: mergeabilityOf(said) ?? null,
+      pipeline: rollupChecks(said.statusCheckRollup),
+      comments: judgeComments(comments, me, resolved),
+    };
+  });
+}
+
+/** A reply in a review comment's thread, else a new comment on the pull request. */
+function reply<R>(
+  ref: MrRef,
+  to: Pick<ForgeComment, "thread">,
+  body: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<Readiness, never, R> {
+  const repo = mrPath(ref);
+  const route =
+    to.thread === null
+      ? `repos/${repo}/issues/${ref.iid}/comments`
+      : `repos/${repo}/pulls/${ref.iid}/comments/${to.thread}/replies`;
+  return Effect.map(run("gh", ["api", route, "-X", "POST", "-f", `body=${body}`], cwd), (posted) =>
+    posted.code === 0
+      ? { ok: true, reason: "" }
+      : {
+          ok: false,
+          reason: `gh could not reply on ${mrWords(ref).label}: ${whatItSaid(posted) || `exit ${posted.code}`}`,
+        },
+  );
+}
+
+const MergeMethodJson = Schema.fromJsonString(
+  Schema.Struct({ viewerDefaultMergeMethod: Schema.Literals(["MERGE", "SQUASH", "REBASE"]) }),
+);
+const MergedJson = Schema.fromJsonString(
+  Schema.Struct({
+    state: Schema.String,
+    headRefOid: optionalText,
+    mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
+    mergedAt: optionalText,
+    mergedBy: Schema.optionalKey(Schema.NullOr(Login)),
+  }),
+);
+
+/** GitHub's merge endpoint at `head`, by the repository's default merge method for the viewer. */
+function merge<R>(
+  ref: MrRef,
+  head: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<MergeAnswer, never, R> {
+  return Effect.gen(function* () {
+    const where = mrWords(ref).label;
+    const repo = mrPath(ref);
+    const viewed = yield* run(
+      "gh",
+      ["repo", "view", repo, "--json", "viewerDefaultMergeMethod"],
+      cwd,
+    );
+    const method = Schema.decodeUnknownOption(MergeMethodJson)(viewed.stdout);
+    if (viewed.code !== 0 || Option.isNone(method))
+      return { _tag: "Refused", reason: `gh would not say how ${repo} merges` };
+    const merging = yield* run(
+      "gh",
+      [
+        "api",
+        `repos/${repo}/pulls/${ref.iid}/merge`,
+        "-X",
+        "PUT",
+        "-f",
+        `sha=${head}`,
+        "-f",
+        `merge_method=${method.value.viewerDefaultMergeMethod.toLowerCase()}`,
+      ],
+      cwd,
+    );
+    const after = yield* run(
+      "gh",
+      [
+        "pr",
+        "view",
+        ref.iid,
+        "--repo",
+        repo,
+        "--json",
+        "state,headRefOid,mergeCommit,mergedAt,mergedBy",
+      ],
+      cwd,
+    );
+    const pull =
+      after.code === 0
+        ? Option.getOrNull(Schema.decodeUnknownOption(MergedJson)(after.stdout))
+        : null;
+    if (merging.code === 0) return { _tag: "Merged", merged: pull?.mergeCommit?.oid ?? "" };
+    const refusal = `GitHub refused to merge ${where}: ${whatItSaid(merging) || `exit ${merging.code}`}`;
+    if (pull === null) return { _tag: "Refused", reason: refusal };
+    if (pull.state === "MERGED")
+      return {
+        _tag: "AlreadyMerged",
+        merged: pull.mergeCommit?.oid ?? "",
+        head: pull.headRefOid ?? "",
+        by: pull.mergedBy?.login ?? "",
+        at: pull.mergedAt ?? "",
+      };
+    if ((pull.headRefOid ?? "") !== head) return { _tag: "HeadMoved", head: pull.headRefOid ?? "" };
+    return { _tag: "Refused", reason: refusal };
+  });
+}
+
 function retryJob<R>(
   ref: MrRef,
   id: string,
@@ -787,6 +1208,9 @@ export const github: Forge = {
   details,
   liveTier,
   runStatus,
+  readReview,
+  reply,
+  merge,
   post: (ref, body, approve, cwd, run) =>
     Effect.gen(function* () {
       const where = mrWords(ref).label;

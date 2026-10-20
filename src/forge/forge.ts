@@ -11,6 +11,7 @@ import type { Posted } from "../sdk";
 import { github } from "./github";
 import { gitlab } from "./gitlab";
 import type { FiledIssue, IssueList } from "./issues";
+import type { ForgeComment, MergeAnswer, ReviewRead } from "./review";
 
 export interface Readiness {
   readonly ok: boolean;
@@ -244,6 +245,27 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<Posted, never, R>;
+  /** The merge request's review: its state, approval, mergeability, pipeline and comments. */
+  readonly readReview: <R>(
+    ref: MrRef,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<ReviewRead, never, R>;
+  /** Posts `body` as it is, in the comment's thread where it has one; never resolves it. */
+  readonly reply: <R>(
+    ref: MrRef,
+    to: Pick<ForgeComment, "thread">,
+    body: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
+  /** Merges through the forge's REST merge at `head`: never admin, never auto-merge. */
+  readonly merge: <R>(
+    ref: MrRef,
+    head: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<MergeAnswer, never, R>;
   /** My open merge requests in `project`, as assignee or author, for a menu. */
   readonly mine: <R>(
     project: string | null,

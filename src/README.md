@@ -113,6 +113,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `mr.ts`                | What a merge request step needs: assignee, template, the Linear tickets a branch answers                  |
 | `forge/forge.ts`       | The forge interface, and which adapter a merge request is on (ADR-0050)                                   |
 | `forge/issues.ts`      | Shared issue values and the created issue URL decoded from an adapter's answer                            |
+| `forge/review.ts`      | A merge request's review read and merge answer, and the one rule for external and answered comments       |
 | `forge/gitlab.ts`      | The GitLab adapter: everything Collie asks GitLab, through `glab`                                         |
 | `forge/github.ts`      | The GitHub adapter: everything Collie asks GitHub, through `gh`                                           |
 | `forge/*-checks.ts`    | Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                     |

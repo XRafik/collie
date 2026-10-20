@@ -4,6 +4,7 @@ import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
 import { gitlab, pipelineChecks } from "../src/forge/gitlab";
+import type { ReviewRead } from "../src/forge/review";
 import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
 import { epochMs } from "../src/time";
@@ -1090,5 +1091,485 @@ test("a GitLab merged-results pipeline counts for the head it was built from, an
       const unshown = yield* read({ pipelineAt: MERGE }, {});
       expect(unshown.ok).toBe(false);
       if (!unshown.ok) expect(unshown.reason).toContain(MERGE);
+    }),
+  ));
+
+const WEB = {
+  gitlab: "https://gitlab.example.com/group/app/-/merge_requests/30",
+  github: "https://github.com/owner/repo/pull/30",
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  const forge = FORGES[name];
+  /** A thread, by the id of its first comment: GitLab's discussion, GitHub's first review comment. */
+  const thread = (first: number) => (name === "gitlab" ? `d${first}` : String(first));
+  /** A comment's address: GitLab's note, GitHub's review comment or issue comment. */
+  const urlOf = (id: number, threaded: boolean) =>
+    name === "gitlab"
+      ? `${WEB.gitlab}#note_${id}`
+      : `${WEB.github}#${threaded ? "discussion_r" : "issuecomment-"}${id}`;
+  const at = (minute: number) => `2026-10-20T10:${String(minute).padStart(2, "0")}:00Z`;
+  const read = (over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
+    forge.readReview(
+      ref(name),
+      "/w",
+      fakeForge(name, model(name, { mrs: [mr(name, over)], ...rest })).run,
+    );
+
+  describe(`the ${name} forge's review read`, () => {
+    test("reads the state, head, pipeline, mergeability and every comment with its kind and place", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const review = yield* read({
+            checks: [{ name: "test", state: "passed" }],
+            comments: [
+              {
+                id: 11,
+                author: "alice",
+                at: at(0),
+                body: "Rename this",
+                thread: thread(11),
+                file: "src/a.ts",
+                line: 4,
+              },
+              { id: 12, author: "bob", at: at(5), body: "Agreed", thread: thread(11) },
+              { id: 13, author: "renovate", kind: "bot", at: at(10), body: "Bumped" },
+              { id: 15, author: "me", at: at(20), body: "Pushed a fix" },
+            ],
+          });
+          if (!review.ok) throw new Error(review.reason);
+          expect(review).toMatchObject({
+            state: "open",
+            head: HEAD,
+            merged: null,
+            pipeline: { state: "passed" },
+            mergeable: { state: "mergeable" },
+            approved: true,
+            changesRequested: false,
+          });
+          expect(review.comments).toEqual([
+            {
+              id: "11",
+              url: urlOf(11, true),
+              thread: thread(11),
+              author: "alice",
+              kind: "person",
+              at: at(0),
+              body: "Rename this",
+              file: "src/a.ts",
+              line: 4,
+              external: true,
+              answered: false,
+            },
+            {
+              id: "12",
+              url: urlOf(12, true),
+              thread: thread(11),
+              author: "bob",
+              kind: "person",
+              at: at(5),
+              body: "Agreed",
+              file: null,
+              line: null,
+              external: true,
+              answered: false,
+            },
+            expect.objectContaining({ id: "13", kind: "bot", thread: null, external: false }),
+            expect.objectContaining({ id: "15", author: "me", kind: "person", external: false }),
+          ]);
+        }),
+      ));
+
+    test("counts a comment answered by Collie's later reply in its thread, a reply that links it, or a resolved thread", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const review = yield* read({
+            comments: [
+              { id: 11, author: "alice", at: at(0), body: "One", thread: thread(11) },
+              { id: 12, author: "me", at: at(5), body: "Fixed in abc1234", thread: thread(11) },
+              { id: 21, author: "carol", at: at(10), body: "Two" },
+              { id: 22, author: "me", at: at(15), body: `Fixed: ${urlOf(21, false)}` },
+              { id: 31, author: "dave", at: at(20), body: "Three", thread: thread(31) },
+              { id: 41, author: "erin", at: at(25), body: "Four" },
+              { id: 2, author: "gus", at: at(27), body: "Five" },
+              { id: 51, author: "me", at: at(30), body: "Note", thread: thread(51) },
+              { id: 52, author: "frank", at: at(35), body: "Six", thread: thread(51) },
+            ],
+            resolved: [thread(31)],
+          });
+          if (!review.ok) throw new Error(review.reason);
+          const answered = Object.fromEntries(
+            review.comments.filter((one) => one.external).map((one) => [one.id, one.answered]),
+          );
+          expect(answered).toEqual({
+            "11": true,
+            "21": true,
+            "31": true,
+            "41": false,
+            // Linked by 22 only as part of comment 21's address.
+            "2": false,
+            "52": false,
+          });
+        }),
+      ));
+
+    test("answers a reply where it belongs, with its body as given, and never resolves the thread", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(
+            name,
+            model(name, {
+              now: at(50),
+              mrs: [
+                mr(name, {
+                  comments: [
+                    { id: 11, author: "alice", at: at(0), body: "Inline", thread: thread(11) },
+                    { id: 21, author: "carol", at: at(10), body: "On the whole" },
+                  ],
+                }),
+              ],
+            }),
+          );
+          const body = "@file stays as written";
+          expect(
+            yield* forge.reply(ref(name), { thread: thread(11) }, body, "/w", fake.run),
+          ).toEqual({
+            ok: true,
+            reason: "",
+          });
+          const linked = `Not changed: ${urlOf(21, false)}`;
+          expect(yield* forge.reply(ref(name), { thread: null }, linked, "/w", fake.run)).toEqual({
+            ok: true,
+            reason: "",
+          });
+          expect(fake.model().replies).toEqual({
+            [`${PROJECT[name]}${name === "gitlab" ? "!" : "#"}30`]: [
+              { thread: thread(11), body },
+              { thread: null, body: linked },
+            ],
+          });
+          expect(fake.model().mrs[0]?.resolved).toBeUndefined();
+          const review = yield* forge.readReview(ref(name), "/w", fake.run);
+          if (!review.ok) throw new Error(review.reason);
+          expect(
+            review.comments.filter((one) => one.external).map((one) => [one.id, one.answered]),
+          ).toEqual([
+            ["11", true],
+            ["21", true],
+          ]);
+          const missing = yield* forge.reply(
+            ref(name),
+            { thread: thread(99) },
+            "x",
+            "/w",
+            fake.run,
+          );
+          expect(missing.ok).toBe(false);
+        }),
+      ));
+
+    test("merges at the head through the REST merge, never `mr merge`, admin or auto-merge", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(
+            name,
+            model(name, {
+              now: at(55),
+              mergeMethod: "SQUASH",
+              mrs: [mr(name, { mergedSha: MERGED })],
+            }),
+          );
+          expect(yield* forge.merge(ref(name), HEAD, "/w", fake.run)).toEqual({
+            _tag: "Merged",
+            merged: MERGED,
+          });
+          expect(fake.model().merges).toEqual([
+            {
+              key: `${PROJECT[name]}${name === "gitlab" ? "!" : "#"}30`,
+              sha: HEAD,
+              method: name === "github" ? "squash" : null,
+              fields: name === "gitlab" ? [`sha=${HEAD}`] : [`sha=${HEAD}`, "merge_method=squash"],
+              by: "me",
+              at: at(55),
+            },
+          ]);
+          const said = fake.calls.join("\n");
+          expect(said).not.toMatch(/mr merge|pr merge|--admin|auto/);
+        }),
+      ));
+
+    test("answers a moved head, an unmergeable one and one already merged without merging", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const ask = (over: Partial<FakeMr>, head = HEAD) => {
+            const fake = fakeForge(name, model(name, { mrs: [mr(name, over)] }));
+            return Effect.map(forge.merge(ref(name), head, "/w", fake.run), (answer) => ({
+              answer,
+              merges: fake.model().merges,
+            }));
+          };
+          expect(yield* ask({}, "0ld")).toEqual({
+            answer: { _tag: "HeadMoved", head: HEAD },
+            merges: undefined,
+          });
+          const conflicted = yield* ask({ mergeable: "conflict" });
+          expect(conflicted.answer._tag).toBe("Refused");
+          expect(conflicted.merges).toBeUndefined();
+          expect(
+            (yield* ask({
+              state: "merged",
+              mergedSha: MERGED,
+              mergedBy: "alice",
+              mergedAt: at(40),
+            })).answer,
+          ).toEqual({ _tag: "AlreadyMerged", merged: MERGED, head: HEAD, by: "alice", at: at(40) });
+        }),
+      ));
+
+    test("reads a merged merge request's commit, who merged it and when", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const review = yield* read({
+            state: "merged",
+            mergedSha: MERGED,
+            mergedBy: "alice",
+            mergedAt: at(40),
+          });
+          expect(review).toMatchObject({
+            ok: true,
+            state: "merged",
+            merged: { sha: MERGED, by: "alice", at: at(40) },
+          });
+        }),
+      ));
+
+    test("says why where the forge cannot be asked", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(name, model(name, { installed: false }));
+          const review = yield* forge.readReview(ref(name), "/w", fake.run);
+          expect(review.ok).toBe(false);
+          if (!review.ok) expect(review.reason).toContain(CLI[name]);
+          expect((yield* forge.reply(ref(name), { thread: null }, "x", "/w", fake.run)).ok).toBe(
+            false,
+          );
+          expect((yield* forge.merge(ref(name), HEAD, "/w", fake.run))._tag).toBe("Refused");
+          const unread = yield* forge.readReview(
+            { project: PROJECT[name], iid: "99" },
+            "/w",
+            fakeForge(name, model(name)).run,
+          );
+          expect(unread.ok).toBe(false);
+        }),
+      ));
+
+    test("leaves Collie's own approval out of the approvers", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const review =
+            name === "gitlab"
+              ? yield* read({ required: 1, approvers: ["me"] })
+              : yield* read(
+                  { reviews: [{ id: 901, author: "me", state: "APPROVED", at: at(1) }] },
+                  { reviewsRequired: { classic: 1 } },
+                );
+          expect(review).toMatchObject({ ok: true, approved: false, approvers: [] });
+          if (review.ok) expect(review.unapproved).toContain("me's own");
+        }),
+      ));
+  });
+}
+
+const reviewOn = (name: MrForge, over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
+  FORGES[name].readReview(
+    ref(name),
+    "/w",
+    fakeForge(name, model(name, { mrs: [mr(name, { targetBranch: "main", ...over })], ...rest }))
+      .run,
+  );
+
+const approval = (review: ReviewRead) => {
+  if (!review.ok) throw new Error(review.reason);
+  return { approved: review.approved, approvers: review.approvers };
+};
+
+test("GitLab counts each approval rule again without Collie's approval, on every tier", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const gitlabOn = (over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
+        Effect.map(reviewOn("gitlab", over, rest), approval);
+      expect(yield* gitlabOn({ required: 2, approvers: ["alice", "me"] })).toEqual({
+        approved: false,
+        approvers: ["alice"],
+      });
+      expect(yield* gitlabOn({ required: 2, approvers: ["alice", "bob", "me"] })).toEqual({
+        approved: true,
+        approvers: ["alice", "bob"],
+      });
+      // Collie's approval is the only one on the second rule.
+      const rules = [
+        { name: "Maintainers", required: 1, approvers: ["alice"] },
+        { name: "Security", required: 1, approvers: ["me"] },
+      ];
+      expect(yield* gitlabOn({ rules, approvers: ["alice", "me"] })).toEqual({
+        approved: false,
+        approvers: ["alice"],
+      });
+      const free = { free: true } as const;
+      expect(yield* gitlabOn({ required: 2, approvers: ["alice", "me"] }, free)).toEqual({
+        approved: false,
+        approvers: ["alice"],
+      });
+      expect(yield* gitlabOn({ required: 2, approvers: ["alice", "bob", "me"] }, free)).toEqual({
+        approved: true,
+        approvers: ["alice", "bob"],
+      });
+      // No rule requires an approval.
+      expect(yield* gitlabOn({})).toEqual({ approved: true, approvers: [] });
+      const asked = yield* reviewOn("gitlab", { changesRequested: true });
+      expect(asked).toMatchObject({ ok: true, approved: false, changesRequested: true });
+    }),
+  ));
+
+test("GitLab's system notes and access-token bots are not external", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const review = yield* reviewOn("gitlab", {
+        comments: [
+          {
+            id: 1,
+            author: "alice",
+            kind: "system",
+            at: "2026-10-20T10:00:00Z",
+            body: "added 1 commit",
+          },
+          { id: 2, author: "project_7_bot_5f2e", at: "2026-10-20T10:01:00Z", body: "Deployed" },
+          { id: 3, author: "dependabot", kind: "bot", at: "2026-10-20T10:02:00Z", body: "Bump" },
+        ],
+      });
+      if (!review.ok) throw new Error(review.reason);
+      expect(review.comments.map((one) => [one.kind, one.external])).toEqual([
+        ["system", false],
+        ["bot", false],
+        ["bot", false],
+      ]);
+    }),
+  ));
+
+test("GitHub's approval stands without Collie's only where the base branch's required count is met by others", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const review = (id: number, author: string, state: "APPROVED" | "CHANGES_REQUESTED") => ({
+        id,
+        author,
+        state,
+        at: `2026-10-20T10:0${id % 10}:00Z`,
+      });
+      const githubOn = (
+        reviews: ReadonlyArray<ReturnType<typeof review>>,
+        rest: Partial<ForgeModel> = {},
+      ) => Effect.map(reviewOn("github", { reviews }, rest), approval);
+      const two = { reviewsRequired: { classic: 2 } };
+      expect(
+        yield* githubOn([review(1, "alice", "APPROVED"), review(2, "me", "APPROVED")], two),
+      ).toEqual({
+        approved: false,
+        approvers: ["alice"],
+      });
+      expect(
+        yield* githubOn(
+          [
+            review(1, "alice", "APPROVED"),
+            review(2, "me", "APPROVED"),
+            review(3, "bob", "APPROVED"),
+          ],
+          two,
+        ),
+      ).toEqual({
+        approved: true,
+        approvers: ["alice", "bob"],
+      });
+      // A ruleset requiring more than branch protection decides.
+      const ruleset = { reviewsRequired: { classic: 1, rulesets: [2] } };
+      expect(
+        yield* githubOn([review(1, "alice", "APPROVED"), review(2, "me", "APPROVED")], ruleset),
+      ).toEqual({
+        approved: false,
+        approvers: ["alice"],
+      });
+      // Approved by others alone needs no count.
+      expect(
+        yield* githubOn([review(1, "alice", "APPROVED")], { reviewsRequired: { classic: 1 } }),
+      ).toEqual({
+        approved: true,
+        approvers: ["alice"],
+      });
+      const unread = yield* reviewOn(
+        "github",
+        { reviews: [review(1, "alice", "APPROVED"), review(2, "me", "APPROVED")] },
+        { reviewsRequired: { classic: 1 }, protectionDown: true },
+      );
+      expect(unread).toMatchObject({ ok: true, approved: false });
+      if (unread.ok) expect(unread.unapproved).toContain("me's own approval stands");
+      const owners = yield* reviewOn(
+        "github",
+        { reviews: [review(1, "alice", "APPROVED"), review(2, "me", "APPROVED")] },
+        { reviewsRequired: { classic: 1, codeOwners: true } },
+      );
+      expect(owners).toMatchObject({ ok: true, approved: false });
+      if (owners.ok) expect(owners.unapproved).toContain("code owners");
+    }),
+  ));
+
+test("GitHub with no review required is approved unless an external reviewer asks for changes", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(yield* reviewOn("github", {})).toMatchObject({
+        ok: true,
+        approved: true,
+        changesRequested: false,
+      });
+      const asked = yield* reviewOn("github", {
+        reviews: [
+          {
+            id: 1,
+            author: "alice",
+            state: "CHANGES_REQUESTED",
+            body: "Please split this",
+            at: "2026-10-20T10:00:00Z",
+          },
+        ],
+      });
+      expect(asked).toMatchObject({ ok: true, approved: false, changesRequested: true });
+      // The review's body is a comment of its own.
+      if (asked.ok)
+        expect(asked.comments).toEqual([
+          expect.objectContaining({
+            id: "1",
+            url: "https://github.com/owner/repo/pull/30#pullrequestreview-1",
+            body: "Please split this",
+            thread: null,
+            external: true,
+          }),
+        ]);
+      const byBot = yield* reviewOn("github", {
+        reviews: [
+          {
+            id: 2,
+            author: "linter",
+            bot: true,
+            state: "CHANGES_REQUESTED",
+            at: "2026-10-20T10:00:00Z",
+          },
+        ],
+      });
+      expect(byBot).toMatchObject({ ok: true, approved: true, changesRequested: false });
+      const withdrawn = yield* reviewOn("github", {
+        reviews: [
+          { id: 3, author: "alice", state: "CHANGES_REQUESTED", at: "2026-10-20T10:00:00Z" },
+          { id: 4, author: "alice", state: "APPROVED", at: "2026-10-20T10:05:00Z" },
+        ],
+      });
+      expect(withdrawn).toMatchObject({ ok: true, approved: true, changesRequested: false });
     }),
   ));
