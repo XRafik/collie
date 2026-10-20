@@ -23,6 +23,8 @@ export const SOCKET_PATH_MAX = 104;
 /** What ssh appends to a control path while it binds it: a dot and 16 characters. */
 const BIND_SUFFIX = 17;
 const OPEN_BOUND = "2 minutes";
+/** How long a master has to answer one control command, which it does at once when it is well. */
+export const MUX_BOUND = "5 seconds";
 
 export const quoted = (word: string) => `'${word.replaceAll("'", `'\\''`)}'`;
 
@@ -119,19 +121,27 @@ export const muxArgv = (
 const mux = (
   ssh: string,
   path: string,
+  answerWithin: Duration.Input,
   verb: Verb,
   destination: string,
   ...forward: ReadonlyArray<string>
 ) =>
   ran(muxArgv(ssh, path, verb, destination, ...forward)).pipe(
+    Effect.timeoutOption(answerWithin),
+    Effect.map(
+      Option.getOrElse(() => ({
+        code: -1,
+        stderr: `the SSH connection at ${path} did not answer ${verb} within ${Duration.format(Duration.fromInputUnsafe(answerWithin))}`,
+      })),
+    ),
     Effect.orElseSucceed(() => ({
       code: -1,
       stderr: `${ssh} could not be run`,
     })),
   );
 
-const exitAt = (ssh: string, path: string, destination: string) =>
-  mux(ssh, path, "exit", destination).pipe(
+const exitAt = (ssh: string, path: string, answerWithin: Duration.Input, destination: string) =>
+  mux(ssh, path, answerWithin, "exit", destination).pipe(
     Effect.andThen(
       FileSystem.FileSystem.pipe(Effect.flatMap((fs) => fs.remove(path, { force: true }))),
     ),
@@ -142,17 +152,20 @@ export const sshConnection = Effect.fn("SshConnection.handle")(function* (
   stateDir: string,
   machine: SshMachine,
   ssh = "ssh",
+  answerWithin: Duration.Input = MUX_BOUND,
 ) {
   const path = yield* controlPath(stateDir, machine);
   const services = yield* Effect.context<
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
   >();
   const asked = (verb: "check" | "forward" | "cancel", ...forward: ReadonlyArray<string>) =>
-    mux(ssh, path, verb, machine.target, ...forward).pipe(Effect.provideContext(services));
+    mux(ssh, path, answerWithin, verb, machine.target, ...forward).pipe(
+      Effect.provideContext(services),
+    );
   const connection: SshConnection = {
     path,
     check: asked("check").pipe(Effect.map(({ code }) => code === 0)),
-    exit: exitAt(ssh, path, machine.label).pipe(Effect.provideContext(services)),
+    exit: exitAt(ssh, path, answerWithin, machine.label).pipe(Effect.provideContext(services)),
     forward: (local, peer) => {
       const spec = ["-L", `127.0.0.1:${local}:127.0.0.1:${peer}`];
       return Effect.acquireRelease(
@@ -189,11 +202,29 @@ export const openConnection = Effect.fn("SshConnection.open")(function* (
   },
 ) {
   const ssh = options.ssh ?? "ssh";
-  const connection = yield* sshConnection(stateDir, machine, ssh);
-  const { path } = connection;
-  if (yield* connection.check) return { path, opened: false };
   const bound = Duration.fromInputUnsafe(options.bound ?? OPEN_BOUND);
   const deadline = (yield* Clock.currentTimeMillis) + Duration.toMillis(bound);
+  const left = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => Duration.millis(Math.max(0, deadline - now))),
+  );
+  const connection = yield* sshConnection(stateDir, machine, ssh);
+  const { path } = connection;
+  const checked = left.pipe(
+    Effect.flatMap((within) => connection.check.pipe(Effect.timeoutOption(within))),
+    Effect.flatMap(
+      Option.match({
+        onSome: Effect.succeed,
+        onNone: () =>
+          Effect.fail(
+            new MachineUnreachable({
+              machine: machine.label,
+              seen: `its SSH connection at ${path} did not answer within ${Duration.format(bound)}`,
+            }),
+          ),
+      }),
+    ),
+  );
+  if (yield* checked) return { path, opened: false };
   const contended = new MachineUnreachable({
     machine: machine.label,
     seen: `another opener held its SSH connection for longer than ${Duration.format(bound)}`,
@@ -203,12 +234,12 @@ export const openConnection = Effect.fn("SshConnection.open")(function* (
     `${path}.lock`,
     contended,
     Effect.gen(function* () {
-      if (yield* connection.check) return { path, opened: false };
-      const left = deadline - (yield* Clock.currentTimeMillis);
-      if (left <= 0) return yield* contended;
-      return yield* opened(connection, machine, ssh, Duration.millis(left), options.said);
+      if (yield* checked) return { path, opened: false };
+      const within = yield* left;
+      if (Duration.isZero(within)) return yield* contended;
+      return yield* opened(connection, machine, ssh, within, options.said);
     }),
-    bound,
+    yield* left,
   ).pipe(
     Effect.catchTag(["PlatformError", "SchemaError"], (cause) =>
       Effect.fail(new HostRefused({ reason: cause.message })),
@@ -295,7 +326,7 @@ export const closeConnections = Effect.fn("SshConnection.closeOthers")(function*
     .filter((name) => /^[0-9a-f]{16}$/.test(name))
     .map((name) => `${stateDir}/ssh/${name}`)
     .filter((path) => !keep.has(path));
-  yield* Effect.forEach(held, (path) => exitAt(ssh, path, "collie"), {
+  yield* Effect.forEach(held, (path) => exitAt(ssh, path, MUX_BOUND, "collie"), {
     discard: true,
   });
   return held;

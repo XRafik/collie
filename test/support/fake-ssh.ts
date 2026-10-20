@@ -118,10 +118,16 @@ export const writeFakeSsh = Effect.fn("FakeSsh.write")(function* (
 /** A TCP server on `port` of 127.0.0.1 that destroys each connection at its first bytes. */
 export const resetter = (port: number) => blocker(port, true);
 
+/** A master's control socket at `path` that takes each request and never answers it. */
+export const silentMaster = (path: string) => blocker(path, false);
+
 /** A TCP server on `port` of 127.0.0.1 that takes each connection and never answers. */
 export const blackhole = (port: number) => blocker(port, false);
 
-const blocker = (port: number, resets: boolean): Effect.Effect<Server, never, Scope.Scope> => {
+const blocker = (
+  at: number | string,
+  resets: boolean,
+): Effect.Effect<Server, never, Scope.Scope> => {
   const held = new Set<Socket>();
   return Effect.acquireRelease(
     Effect.callback<Server>((resume) => {
@@ -131,7 +137,9 @@ const blocker = (port: number, resets: boolean): Effect.Effect<Server, never, Sc
         if (resets) conn.once("data", () => conn.destroy());
         conn.once("error", () => {});
       });
-      server.listen(port, "127.0.0.1", () => resume(Effect.succeed(server)));
+      const listening = () => resume(Effect.succeed(server));
+      if (typeof at === "string") server.listen(at, listening);
+      else server.listen(at, "127.0.0.1", listening);
     }),
     (server) =>
       Effect.callback<void>((resume) => {

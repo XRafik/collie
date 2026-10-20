@@ -16,7 +16,7 @@ import {
 } from "../src/ssh-connection";
 import { withLock } from "../src/lock";
 import { runEffect } from "./support/effect";
-import { freePort, portOf, writeFakeSsh, socketDir } from "./support/fake-ssh";
+import { freePort, portOf, silentMaster, writeFakeSsh, socketDir } from "./support/fake-ssh";
 import { root } from "./support/host";
 
 const vm = { label: "vm-mk", target: "mk@vm-mk" };
@@ -201,6 +201,36 @@ test("a lock held past the opener's bound fails the open at the bound, however s
       );
       expect(failed._tag).toBe("MachineUnreachable");
       expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(450);
+    }),
+  ));
+
+test("an opener whose master never answers its check fails within its bound", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { state, ssh } = yield* rig;
+      yield* silentMaster(yield* controlPath(state, vm));
+      const started = yield* Clock.currentTimeMillis;
+      const failed = yield* opens(state, ssh, "300 millis").pipe(Effect.flip);
+      expect(failed._tag).toBe("MachineUnreachable");
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(1_000);
+    }),
+  ));
+
+test("the host's handle gives up on a master that never answers", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { state, ssh } = yield* rig;
+      const path = yield* controlPath(state, vm);
+      yield* silentMaster(path);
+      const handle = yield* sshConnection(state, vm, ssh, "200 millis");
+      const started = yield* Clock.currentTimeMillis;
+      expect(yield* handle.check).toBe(false);
+      const refused = yield* Effect.scoped(handle.forward(1, 2)).pipe(Effect.flip);
+      expect(refused._tag).toBe("HostRefused");
+      yield* handle.exit;
+      expect(yield* fs.exists(path)).toBe(false);
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(2_000);
     }),
   ));
 

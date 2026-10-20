@@ -373,11 +373,13 @@ ServerAliveCountMax=3 -o ConnectTimeout=15 <target>`, not in a process group of 
 so the master ssh puts in the background outlives the command; its stderr goes to the
 command's, and it answers once `-O check` does, within two minutes. Openers that come
 together, in any process, take turns on `<path>.lock` and check again once they hold it,
-so one master and one SSO approval serve them all; the two minutes count the wait too. The host is given only
+so one master and one SSO approval serve them all; the two minutes count the wait and
+every check too. The host is given only
 `sshConnection`'s handle, whose `check` and scoped `forward` are `ssh -S <path> -O
 check|forward|cancel <target>`, and whose `exit` is `ssh -S <path> -O exit <label>`,
 removing a path a master left behind: each talks to an open master or fails, so the host
-never logs in. `-G` and the invite's session are the module's too (`resolvedHost`,
+never logs in, and a master that has not answered one within five seconds (`MUX_BOUND`,
+Desktop's too) counts as gone. `-G` and the invite's session are the module's too (`resolvedHost`,
 `ride`); `src/peers.ts` builds no ssh argv. A session that rides the connection is built by `riderArgv`, `ssh -S <path> -o
 ControlMaster=no -o ProxyCommand=false -T <target> <remote>`: where the socket has gone,
 ssh would otherwise fall back to a login of its own, and `ProxyCommand=false` fails that
