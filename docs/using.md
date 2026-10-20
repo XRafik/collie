@@ -1571,22 +1571,66 @@ board.
 open page, and with no page open Escape lets the selected card go, wherever the focus is in
 the window. Escape typed in a field, such as the Log search, stays with the field.
 
+In an open record, `[` and `]` move to the previous and next tab, passing over Terminal and
+stopping at the first and last, and on **Diff** `j` and `k` move to the next and previous file:
+its header scrolls to the top and the tree highlights it, as a click on its row does, without
+opening or closing it. The keys go by the character typed, so `[` and `]` typed with Alt or
+AltGr, as on Nordic layouts, work too, while Ctrl or Meta with them, or an uppercase `J` or
+`K`, does nothing. They also do nothing while focus is in a field, a Review comment box
+included; while a dialog, menu or popover is open; on Terminal, whose pane takes the keys;
+and while focus is elsewhere in the window, such as the Flock chat.
+
+Until its details arrive, a record shows a row of placeholder tabs and a placeholder body;
+a Run whose details are not on its Machine says so, and a Machine out of reach shows its
+banner. A record opens on **Summary**, unless the board asked for a tab or a jump chose one: the
+Run's status; why it needs attention, in the board's words, unless nothing needs it; its
+outcome — what kind it is, what it still has to prove, what is in its way, what to do next
+and what it delivered; its steps, each with its status, note, how long it took and its
+agents; and the Inputs it was given, each with whether it was given or inferred. A section
+with nothing to say is left out. Each tab keeps its place while the record is open: switching
+back to one brings it back as you left it, with what you had opened or searched for, and
+scrolled where you left it, waiting for it to grow if it is still filling in; a tab's first
+visit starts at the top. A video on Evidence plays only while the tab is shown: it pauses when
+you leave, and one still being read then waits for Play. A jump to a finding lands on its
+target instead. Closing the record, or opening another Run's, forgets every place.
+
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the
 details carry, and lists the tickets, each expanding
-in place, read from the host when first opened. A ticket is ticked when every checkbox in
+in place, read from the host when first opened. Where the spec has two headings or more, a
+contents list above it names those of levels 1 to 3, and pressing one scrolls its heading to
+the top; it follows the spec as the agent rewrites it. Above the tickets, "N of M tickets
+done" says how far the plan is, beside **Expand all**, which opens every ticket, and
+**Collapse all**, which closes them. A ticket is ticked when every checkbox in
 it is checked, or when a succeeded Run built from that plan finished it: its slice landed, a
 step was named after it, or a whole-plan build of its repository finished after it was written. A failed or stopped
 Run ticks nothing. A link from one plan file to another opens
-that file at the top of the tab. **Review** renders the review, read whole the same way, and lists its findings; a
+that file at the top of the tab and scrolls it into view. **Review** renders the review, read whole the same way, and lists its findings; a
 `file:line` in a finding or anywhere in rendered markdown opens
 **Diff** at that line, or a read-only view of the file from the Run's checkout where no
-hunk shows it. **Diff** is the Run's branch against its merge base — live while the Run
-works, final after — as a file tree beside each file's diff, unified or side by side, kept
-as you left it while the record is open, drawn with `@pierre/diffs` in the github-light
+hunk shows it, scrolled into view; a finding with a file and no line scrolls that file's diff
+to the top and holds it highlighted in the tree, as a click on its row does. **Diff** is the Run's branch against its merge base — live while the Run
+works, final after — as a file tree beside each file's diff, unified or side by side. **Wrap long lines** wraps
+each open diff's long lines instead of scrolling them sideways, and **Expand all** and
+**Collapse all** open or close every file in the diff, big and binary ones included; a file
+that arrives in a live diff afterwards opens or not by the usual rule. Side by side, Wrap
+long lines and each file's open or closed state are kept as you left them while the record
+is open. Each file's row in the tree says whether it was added (A), deleted (D) or modified (M),
+its `+N −M` lines or "binary", and how many Review comment drafts you have on it. A filter
+above the tree keeps only the files whose path contains what you type, ignoring case, with
+their folders shown open, and says "No file matches" when none does; it narrows the tree
+only, so every diff stays drawn, and clearing it brings back the folders as you had them.
+The tree stays beside the diffs as you scroll,
+highlights the file being read, scrolls itself to keep that file's row in view, and opens
+the folder it is in; a click in the tree, or a finding's jump, highlights its file at once,
+until you next scroll. The diffs are drawn in the tree's order with `@pierre/diffs` in the github-light
 and github-dark colours as Desktop's theme follows. A file is read from the host when
-it is opened, and again when the Run changes how many lines it adds or removes, with no
+it is opened, holding a placeholder about as tall as its changed lines until it is drawn, and again when the Run changes how many lines it adds or removes, with no
 line cap; a file with more than
-500 changed lines, or a binary one, starts collapsed. **Evidence** shows the Run's
+500 changed lines, or a binary one, starts collapsed. Each file's header has a **Viewed**
+checkbox: ticking it collapses the file, unticking leaves it as it is, and the tree shows a
+tick on its row and "N of M viewed" beside the file count. A file the Run changes again — its
+added or removed lines, its status, or the base the diff is against — loses its tick, and
+stays as it was rather than opening by itself. **Evidence** shows the Run's
 verifications as a checklist, every one collapsed, those that did not do what they were
 expected to first; opening one reads its output in its terminal colours; then every web
 link the Run's Outputs, handoffs, review and findings name, as a card: a Claude artifact
@@ -1597,15 +1641,17 @@ gallery, a `before` beside its `after` where their names pair them, twelve to a 
 videos, read and played when asked; its HTML reports, such as Lighthouse, in a sandboxed
 frame that runs their scripts in an origin of their own, which may neither load anything
 from the network nor navigate away; the logs and files it kept, each read when opened and
-searchable; and its metrics as a table. A report that keeps its attachments in files beside
+searchable; and its metrics as a table, under "This Run has kept no evidence yet." where it
+has none of the rest. A report that keeps its attachments in files beside
 it shows without them. **Log**
 follows the end of the Run's log as it is written, with a search that keeps only the lines
-that match. **Merge request** (**Pull request** for one on GitHub) shows what the host's
+that match; it says "The log is empty so far." before the Run has logged anything, and "No
+line matches <search>." when the search keeps none. **Merge request** (**Pull request** for one on GitHub) shows what the host's
 merge watch last read — title, state, pipeline or checks, approvals and comments — with
 Open in browser. **Facts** shows the files the Run was
 given, when it was given any (an image as a thumbnail, any other file by its name, type and
 size), its **Agents** — one row per agent the Run started, in launch order, with the
-harness, model and effort it ran on — its intent, its steering cards and the card's TaskView as the host sent it. Markdown is rendered with
+harness, model and effort it ran on — its intent, its steering cards and, folded until you open it, the card's TaskView as the host sent it. Markdown is rendered with
 Comark: tables, Shiki-highlighted code and mermaid diagrams, with anything that could run
 and every inline style removed, because agents write it. The view's own policy lets nothing
 on a page load from the network, and nothing may move Desktop's window off its own page;
@@ -1619,7 +1665,8 @@ the **Diff** tab, select a line or a range of lines on either side, unified or s
 side, or press the gutter's button beside a line, and the comment opens under those lines;
 once added it stays drawn there, where you can edit or remove it too. Each
 comment is a draft that Desktop keeps for that Run while it runs, through tab switches and
-closing the record, and sends to no host until you send it. While a Run has drafts, the
+closing the record, and sends to no host until you send it. The Diff tab's viewed ticks are
+kept the same way, until Desktop quits, and no host is told of them. While a Run has drafts, the
 Plan and Diff tabs show them in one list, where you can edit or remove each, choose who
 gets them — **The agent at work** by default (the agent whose step is active, else the
 builder), a role the Run has a live agent in, or one of its live agents, labelled as the

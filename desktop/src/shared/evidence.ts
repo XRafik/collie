@@ -1,6 +1,7 @@
 // A Run's evidence files as the record shows them. No Bun-only import: the view bundles this.
 
-import type { EvidenceFile } from "../../../src/board-model";
+import type { EvidenceFile, RunDetail } from "../../../src/board-model";
+import type { LinkCard } from "./links";
 
 const MEDIA = new Map([
   ["png", "image/png"],
@@ -60,3 +61,13 @@ export const sortEvidence = (files: ReadonlyArray<EvidenceFile>) => {
     files: rest.filter((file) => kind(file) !== "video" && !REPORT.test(file.name)).sort(byName),
   };
 };
+
+/** Whether the Evidence tab has anything above its Metrics, which do not count. */
+export const hasEvidence = ({
+  verifications,
+  evidence,
+  handoffFiles,
+  links,
+}: Pick<RunDetail, "verifications" | "evidence" | "handoffFiles"> & {
+  readonly links: ReadonlyArray<LinkCard>;
+}) => [verifications, evidence, handoffFiles ?? [], links].some((kind) => kind.length > 0);
