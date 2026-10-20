@@ -70,6 +70,16 @@ export const RelayHeaderJson = Schema.fromJsonString(RelayHeader);
 export const PeerState = Schema.Literals(["live", "connecting", "away"]);
 export type PeerState = typeof PeerState.Type;
 
+/** What a link not up waits on before it can be: an SSH connection a front door opens. */
+export const Waits = Schema.Literal("ssh_connection");
+
+/** A link's way to its peer: to the peer's port, or through the Machine's SSH connection. */
+export const Transport = Schema.Literals(["direct", "ssh"]);
+
+/** A field an older Machine's list does not have. */
+const orNull = <S extends Schema.Top>(schema: S) =>
+  Schema.NullOr(schema).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null)));
+
 /** A pairing as `collie machine list` shows it: never its secret. */
 export const PeerView = Schema.Struct({
   installation: Schema.String,
@@ -81,14 +91,30 @@ export const PeerView = Schema.Struct({
   /** Since when it has been away, or what the last try saw. */
   since: Schema.NullOr(Schema.String),
   failure: Schema.NullOr(Schema.String),
+  /** The way a live link went. */
+  transport: orNull(Transport),
+  /** What the direct way saw when it last failed; a live `ssh` link keeps it. */
+  direct: orNull(Schema.String),
+  /** What the SSH way saw when it was last tried and failed. */
+  ssh: orNull(Schema.String),
+  /** For a peer this Machine dials, whether this computer holds an SSH connection to it. */
+  connection: orNull(Schema.Boolean),
+  waits: orNull(Waits),
 });
 export type PeerView = typeof PeerView.Type;
 
 /**
  * A call to a Machine that did not answer within its bound, naming it and what was seen:
- * no control link, a refused connection, or no dial-back.
+ * no control link, a refused connection, or no dial-back. A peer this Machine dials also
+ * says what each way to it saw.
  */
 export class MachineUnreachable extends Schema.TaggedError<MachineUnreachable>()(
   "MachineUnreachable",
-  { machine: Schema.String, seen: Schema.String },
+  {
+    machine: Schema.String,
+    seen: Schema.String,
+    direct: Schema.optionalKey(Schema.String),
+    ssh: Schema.optionalKey(Schema.String),
+    waits: Schema.optionalKey(Waits),
+  },
 ) {}

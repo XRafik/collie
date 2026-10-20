@@ -18,6 +18,7 @@ import {
   PubSub,
   Queue,
   Result,
+  Schedule,
   Schema,
   Scope,
   Semaphore,
@@ -46,6 +47,7 @@ import {
   type FlockItem,
   type KnownMachine,
   machineRows,
+  type MachineLinked,
   type MachineSynced,
   type OnboardRun,
   type OnboardStep,
@@ -53,7 +55,8 @@ import {
   type TerminalCommand,
 } from "../shared/flock";
 import { RELEASE_PUBLIC_KEY } from "../../../src/signing";
-import { pruneDesktop, sshControlsPrefix, sweepSshControls } from "../../../src/desktop";
+import { pruneDesktop, sweepSshControls } from "../../../src/desktop";
+import { PeerView } from "../../../src/peers-model";
 import { appWindowFor } from "./browser";
 import { applicationMenu } from "./menu";
 import { clipboardPaths } from "../shared/attachments";
@@ -297,11 +300,8 @@ const main = Effect.gen(function* () {
     Effect.ignore,
     Effect.forkScoped,
   );
-  const fs = yield* FileSystem.FileSystem;
-  // Short, because a control socket's path is capped at about 100 bytes.
-  // A Desktop that was killed left its own, and the masters in them, behind.
+  // An older Desktop that was killed left its own masters behind.
   yield* sweepSshControls(tmpdir(), childEnv()).pipe(Effect.ignore);
-  const controls = yield* fs.makeTempDirectoryScoped({ prefix: sshControlsPrefix(process.pid) });
   // herdr's list is the only list of Machines there is.
   const listed = yield* herdrMachines("herdr", manifest.min_herdr_version).pipe(Effect.result);
   const now = yield* Clock.currentTimeMillis;
@@ -320,21 +320,20 @@ const main = Effect.gen(function* () {
       ],
     ],
   });
-  // Every route by herdr profile, each herdr machine's with the scope its master lives in.
+  // Every route by herdr profile, each herdr machine's with the scope it lives in.
   const routes = new Map<string, { route: ShellRoute; scope?: Scope.Closeable }>();
   routes.set("local", { route: localRoute(collie, local, shell) });
-  let opened = 0;
   const open = (machine: HerdrMachine) =>
     Effect.gen(function* () {
       const scope = yield* Scope.make();
       const peer = (yield* pairedMachines(collie)).find((one) => one.name === machine.label);
       const ssh = yield* remoteRoute(
         "ssh",
-        `${controls}/${opened++}`,
+        collie,
         machine,
         local,
         peer !== undefined,
-        peer === undefined ? collie : undefined,
+        peer === undefined,
       ).pipe(Scope.provide(scope));
       const route = linkRoute(
         collie,
@@ -359,6 +358,28 @@ const main = Effect.gen(function* () {
   );
   const changes = yield* PubSub.unbounded<RouteChange>();
   const news = yield* PubSub.unbounded<FlockItem>();
+  /** Each route's paired link as Local last listed it, told again to a view that subscribes. */
+  const links = new Map<string, MachineLinked>();
+  const asListed = Schema.encodeSync(Schema.fromJsonString(PeerView));
+  yield* pairedMachines(collie).pipe(
+    Effect.flatMap((listed) =>
+      Effect.forEach(
+        routes.values(),
+        ({ route: { machine } }) => {
+          const link = listed.find((one) => one.name === machine.name);
+          const was = links.get(machine.profile)?.link;
+          if (link === undefined || (was !== undefined && asListed(was) === asListed(link)))
+            return Effect.void;
+          const item = { _tag: "Linked", machine, link } as const;
+          links.set(machine.profile, item);
+          return PubSub.publish(news, item);
+        },
+        { discard: true },
+      ),
+    ),
+    Effect.repeat(Schedule.spaced("15 seconds")),
+    Effect.forkScoped,
+  );
   const doors = new DoorMap<Doors>();
   /** Keeps an edit made here, then gives it to every connected Machine. */
   const editFlock = (key: string, typed: string) =>
@@ -806,6 +827,7 @@ const main = Effect.gen(function* () {
             ...(yield* savedOnboardings(onboardings)).filter(listed),
             ...(yield* given.states(reachable.map(({ machine }) => machine))),
             ...[...synced.values()].filter(listed),
+            ...[...links.values()].filter(listed),
           ];
           return Stream.fromIterable(before).pipe(
             Stream.concat(

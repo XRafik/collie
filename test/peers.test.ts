@@ -120,12 +120,13 @@ test(
               (yield* prompts(second)).some((text) => text.includes("hello from the laptop")),
             ).toBe(true);
 
-            // The one login was the pairing's.
-            const logins = (yield* read(first.sshLog))
-              .split("\n")
-              .filter((line) => line.startsWith("login"));
-            expect(logins).toHaveLength(1);
-            expect(logins[0]).toContain("machine");
+            // The one connection was the pairing's, and its invite rode it.
+            const calls = (yield* read(first.sshLog)).split("\n");
+            expect(calls.filter((line) => line.startsWith("master"))).toHaveLength(1);
+            expect(calls.filter((line) => line.startsWith("login"))).toEqual([]);
+            expect(calls.some((line) => line.startsWith("ride") && line.includes("'invite'"))).toBe(
+              true,
+            );
 
             const fs = yield* FileSystem.FileSystem;
             const firstPeers = yield* peersOf(first.world.state);
@@ -148,7 +149,7 @@ test(
               name: secondPeers[0]!.name,
             });
 
-            // A second command needs no login at all.
+            // A second command needs no connection of its own.
             const shown = yield* first.cli(["run", "show", runId]);
             expect(shown.envelope.error).toBeUndefined();
             const local = yield* second.cli(["run", "show", runId]);
@@ -157,8 +158,10 @@ test(
               machine: "second",
             });
             expect(
-              (yield* read(first.sshLog)).split("\n").filter((line) => line.startsWith("login")),
-            ).toHaveLength(1);
+              (yield* read(first.sshLog))
+                .split("\n")
+                .filter((line) => line.startsWith("login") || line.startsWith("master")),
+            ).toEqual(["master mk@second"]);
           }),
         ["attended.workflow.ts"],
       ),
@@ -449,8 +452,10 @@ test(
               true,
             );
             expect(
-              (yield* read(first.sshLog)).split("\n").filter((line) => line.startsWith("login")),
-            ).toHaveLength(1);
+              (yield* read(first.sshLog))
+                .split("\n")
+                .filter((line) => line.startsWith("login") || line.startsWith("master")),
+            ).toEqual(["master mk@second"]);
           }),
         ["attended.workflow.ts"],
       ),

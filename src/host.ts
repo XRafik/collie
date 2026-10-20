@@ -223,6 +223,8 @@ import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-f
 import { receive, uploadsDir } from "./uploads";
 import { loadDefaults, SettingRefused, sharedSettings, takeShared } from "./config";
 import { decodeAnswer, machineName, relayOf, runShell, startPeers, type Peers } from "./peers";
+import type { SshMachine } from "./ssh-connection";
+import { LADDER_BOUND } from "./peer-transport";
 import {
   Invited,
   MachineUnreachable,
@@ -466,6 +468,8 @@ export const HostRpcs = RpcGroup.make(
   /** The peer asking has forgotten this Machine, so this one forgets it too. */
   Rpc.make("forget", { success: Schema.Void, error: HostRefused }),
   Rpc.make("peers", { success: Schema.Array(PeerView) }),
+  /** Ends the backoff of this Machine's link to the one it dials by that name. */
+  Rpc.make("wake", { payload: { machine: Schema.String } }),
   Rpc.make("agentRun", {
     payload: { agent: Schema.String },
     success: Schema.NullOr(Schema.String),
@@ -680,6 +684,7 @@ const handlers = (
             : peers.forget(machine.installation);
         },
         peers: () => peers.list,
+        wake: ({ machine }) => peers.wake(machine),
         agentRun: ({ agent }) =>
           everyRegistered(dir).pipe(
             Effect.map(
@@ -2621,7 +2626,7 @@ const own = (dir: string) =>
       stamp,
       socket: socketOf(dir),
       machines: herdr.machineList().pipe(
-        Effect.map((machines): ReadonlyArray<{ readonly label: string }> => machines),
+        Effect.map((machines): ReadonlyArray<SshMachine> => machines),
         Effect.orElseSucceed(() => null),
         Effect.provideContext(bun),
       ),
@@ -2850,8 +2855,13 @@ export const peerChannel = (stateDir: string, name: string, header: RelayHeader)
         }
         if (!answer.value.ok) {
           conn.destroy();
+          const { unreachable, waits } = answer.value;
           return resume(
-            Effect.fail(new MachineUnreachable({ machine: name, seen: answer.value.unreachable! })),
+            Effect.fail(
+              waits === undefined
+                ? new MachineUnreachable({ machine: name, seen: unreachable! })
+                : new MachineUnreachable({ machine: name, seen: unreachable!, waits }),
+            ),
           );
         }
         const rest = seen.subarray(end + 1);
@@ -2942,11 +2952,14 @@ export const connectPeer = (
       schedule: Schedule.spaced("200 millis"),
     }),
     Effect.timeoutOrElse({
-      duration: ASK_TIMEOUT,
+      duration: REACH_TIMEOUT,
       orElse: () =>
         Effect.fail(
           mismatch ??
-            new MachineUnreachable({ machine: name, seen: `no answer within ${ASK_TIMEOUT}` }),
+            new MachineUnreachable({
+              machine: name,
+              seen: `no answer within ${Duration.format(REACH_TIMEOUT)}`,
+            }),
         ),
     }),
   );
@@ -2990,6 +3003,11 @@ const liveOwner = (dir: string) =>
 const HOST_START_TIMEOUT = "30 seconds";
 /** A host that takes longer than this to say who it is cannot serve anything anyway. */
 const ASK_TIMEOUT = "5 seconds";
+/** A peer is asked once its relay has tried each way to it. */
+const REACH_TIMEOUT = Duration.sum(
+  Duration.fromInputUnsafe(LADDER_BOUND),
+  Duration.fromInputUnsafe(ASK_TIMEOUT),
+);
 
 /**
  * The owner of `dir` when it does not answer and recorded itself as an older build of this

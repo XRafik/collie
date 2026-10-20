@@ -231,7 +231,8 @@ test("what is sent reaches the controller, and closing the terminal releases the
 /**
  * A computer with herdr's controller on PATH, as a Machine's login shell finds it: it logs
  * how it was started and each command it reads, led by its Machine, and prints one frame.
- * And an ssh whose master logs that it opened, and whose channels refuse to log in alone.
+ * And a local collie whose `machine connect` logs that it opened the shared connection, and
+ * an ssh whose channels refuse to log in alone.
  */
 const rig = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -246,16 +247,14 @@ while IFS= read -r line; do echo "\${FAKE_TARGET:-local} $line" >> '${dir}/contr
 [ "$1" = -lc ] && shift
 PATH='${dir}/bin':"$PATH" exec /bin/sh -c "$@"
 `,
+    collie: `#!/bin/sh
+echo "open mk@vm-mk" >> '${dir}/ssh.log'
+touch '${dir}/control'
+echo '{"ok":true,"data":{"machine":"vm-mk","path":"${dir}/control","opened":true}}'
+`,
     ssh: `#!/bin/bash
 args=("$@")
-target="\${args[-1]}"
 for ((i = 0; i < \${#args[@]}; i++)); do [ "\${args[i]}" = -S ] && control="\${args[i+1]}"; done
-if [ "$1" = -M ]; then
-  echo "open $target" >> '${dir}/ssh.log'
-  trap 'rm -f "$control"; exit 0' TERM
-  touch "$control"
-  while :; do sleep 0.1; done
-fi
 [ "\${args[2]}" = -O ] && { [ -e "$control" ]; exit; }
 [ -e "$control" ] || { echo "no master" >&2; exit 255; }
 [[ " $* " == *" ControlMaster=no "* ]] || { echo "a channel could log in by itself" >&2; exit 255; }
@@ -294,7 +293,7 @@ const settledLog = (log: Effect.Effect<ReadonlyArray<string>>, last: string) =>
   );
 
 test(
-  "Go to pane on a Machine runs its controller as one more channel on the master Desktop holds, and gives the pane back",
+  "Go to pane on a Machine runs its controller as one more channel on its shared SSH connection, and gives the pane back",
   () =>
     runEffect(
       Effect.scoped(
@@ -302,7 +301,7 @@ test(
           const { dir, log } = yield* rig;
           const route = yield* remoteRoute(
             `${dir}/ssh`,
-            `${dir}/control`,
+            [`${dir}/collie`],
             { id: "vm", label: "vm-mk", target: "mk@vm-mk", session: "default", enabled: true },
             "mk-pc",
             true,
@@ -331,7 +330,7 @@ test(
           ]);
           // Each visit, a Reattach among them, asks where the pane is afresh.
           expect(focused).toBe(2);
-          // The SSO a master asks for is asked once, at connect.
+          // The SSO a connection asks for is asked once, at connect.
           expect(yield* log("ssh.log")).toEqual(["open mk@vm-mk"]);
         }),
       ).pipe(Effect.provide(BunServices.layer)),

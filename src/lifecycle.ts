@@ -44,7 +44,8 @@ import {
 } from "./host";
 import { Herdr } from "./herdr";
 import { machineName, pairWith, peersOf } from "./peers";
-import type { HerdrMachine, MachineUnreachable, RelayHeader } from "./peers-model";
+import { openConnection } from "./ssh-connection";
+import { type HerdrMachine, MachineUnreachable, type RelayHeader } from "./peers-model";
 import {
   sortBoard,
   type BoardMessage,
@@ -179,10 +180,16 @@ export const refusal = (cause: HostFailure): Failure => {
     case "HostUnavailable":
       return err("operation_failed", `No workflow host for ${cause.dir}: ${cause.reason}.`);
     case "MachineUnreachable":
-      return err("machine_unreachable", `${cause.machine} did not answer: ${cause.seen}.`, {
-        machine: cause.machine,
-        seen: cause.seen,
-      });
+      return cause.waits === undefined
+        ? err("machine_unreachable", `${cause.machine} did not answer: ${cause.seen}.`, {
+            machine: cause.machine,
+            seen: cause.seen,
+          })
+        : err(
+            "machine_unreachable",
+            `${cause.machine} did not answer: its link waits on an SSH connection, and none is open; collie machine connect ${cause.machine} opens one.`,
+            { machine: cause.machine, seen: cause.seen, waits: cause.waits },
+          );
     default:
       return err("operation_failed", `The workflow host did not answer: ${String(cause)}.`);
   }
@@ -201,9 +208,12 @@ const declaring = (door: Door, session: string | null, stamp?: string): typeof D
   return declared;
 };
 
+/** What ssh says while a front door opens a connection: to the person who answers its login. */
+const toStderr = (text: string) => Effect.sync(() => void process.stderr.write(text));
+
 /**
- * A paired Machine by herdr's name for it: kept as it is, or paired now over its SSH login
- * by a front door that can show one. A host's own jobs never pair.
+ * A paired Machine by herdr's name for it: kept as it is, or paired now through its SSH
+ * connection, opened by a front door that can show its login. A host's own jobs never pair.
  */
 export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
   env: PluginEnv,
@@ -211,10 +221,7 @@ export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
 ) {
   if ((yield* peersOf(env.stateDir)).some((peer) => peer.name === name)) return;
   const machine = (yield* herdrMachines(env)).find((one) => one.label === name);
-  if (machine === undefined)
-    return yield* new HostRefused({
-      reason: `${REFUSED_INPUT}: no Machine "${name}": herdr lists no machine by that name`,
-    });
+  if (machine === undefined) return yield* notListed(name);
   if (env.pairs !== true)
     return yield* new HostRefused({
       reason: `invalid_state: ${name} is not paired yet; a command in a terminal pairs it`,
@@ -223,21 +230,59 @@ export const ensurePaired = Effect.fn("Lifecycle.ensurePaired")(function* (
     Effect.gen(function* () {
       const local = yield* connect(env.stateDir);
       const { installation } = yield* local.identity();
+      const { path } = yield* openConnection(env.stateDir, machine, { said: toStderr });
       const peer = yield* pairWith(machine, {
         installation: installation ?? "",
         name: machineName(),
-        control: env.raw.COLLIE_SSH_CONTROL,
+        control: path,
       });
       yield* local.pair({ peer });
     }),
   );
 });
 
+const notListed = (name: string) =>
+  new HostRefused({
+    reason: `${REFUSED_INPUT}: no Machine "${name}": herdr lists no machine by that name`,
+  });
+
 /** herdr's saved machines, or none where herdr could not say. */
 const herdrMachines = (env: PluginEnv) =>
   new Herdr(env).machineList().pipe(
     Effect.orElseSucceed((): ReadonlyArray<HerdrMachine> => []),
     Effect.provide(Path.layer),
+  );
+
+/**
+ * Opens this computer's SSH connection to herdr's machine `name`, where none is open, and
+ * wakes this host's link to it.
+ */
+const openAndWake = (env: PluginEnv, name: string, said: (text: string) => Effect.Effect<void>) =>
+  Effect.gen(function* () {
+    const machine = (yield* herdrMachines(env)).find((one) => one.label === name);
+    if (machine === undefined) return yield* notListed(name);
+    const opened = yield* openConnection(env.stateDir, machine, { said });
+    yield* asks({ ...env, machine: undefined }, (client) => client.wake({ machine: name }));
+    return opened;
+  });
+
+/**
+ * `reaching` the Machine `name`, and where its link waits on an SSH connection, the same
+ * once more after opening one: only for a front door that can show its login.
+ */
+export const riding = <A, E, R>(
+  env: PluginEnv,
+  name: string,
+  reaching: Effect.Effect<A, E | MachineUnreachable, R>,
+): Effect.Effect<A, E | MachineUnreachable | HostRefused, R | Client> =>
+  reaching.pipe(
+    Effect.catchIf(
+      (cause): cause is MachineUnreachable =>
+        env.pairs === true &&
+        Schema.is(MachineUnreachable)(cause) &&
+        cause.waits === "ssh_connection",
+      () => openAndWake(env, name, toStderr).pipe(Effect.andThen(reaching)),
+    ),
   );
 
 /** The front door a relay header names, for a door a channel would declare. */
@@ -275,7 +320,13 @@ const reach = (
         ),
       )
     : ensurePaired(env, machine).pipe(
-        Effect.andThen(connectPeer(env.stateDir, machine, relayHeader(door, env.hostStamp))),
+        Effect.andThen(
+          riding(
+            env,
+            machine,
+            connectPeer(env.stateDir, machine, relayHeader(door, env.hostStamp)),
+          ),
+        ),
       );
 
 /** An answer, and the Machine it came from: null for this one. */
@@ -1648,6 +1699,26 @@ export const restartHostAt = (dir: string): Effect.Effect<OpResult, never, Clien
 
 /** This Machine's peers, with the standings its host keeps. */
 export const machineList = (env: PluginEnv) => asks(env, (client) => client.peers());
+
+/**
+ * Opens this computer's SSH connection to herdr's machine `name`, where none is open, and
+ * wakes this host's link to it. What ssh says goes to `said`, where the person who has to
+ * answer a login is.
+ */
+export const machineConnect = (
+  env: PluginEnv,
+  name: string,
+  said: (text: string) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const opened = yield* openAndWake(env, name, said).pipe(Effect.result);
+    if (opened._tag === "Failure") return refusal(opened.failure);
+    return {
+      ok: true as const,
+      value: { machine: name, ...opened.success },
+      machine: null,
+    } satisfies Answered<unknown>;
+  });
 
 /** Pairs this Machine with the installation asking, which `pairWith` runs over SSH. */
 export const inviteFrom = (
