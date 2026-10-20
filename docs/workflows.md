@@ -34,7 +34,8 @@ written rather than before it exists.
 `then` is `implement` or empty. The Launch flow leaves it empty; an agent's start gives it,
 `--input then=` where unused. With `then=implement` nobody is asked anything: each prompt
 tells the planner that nobody is watching, so it decides what is open and records it under
-`decided`, and the end menu is skipped for **Implement now** at once. A plan whose tickets
+`decided`, and the end menu is skipped for **Implement now** at once. The `implement` it
+starts is given `then=finish`, so nobody is asked at its end either. A plan whose tickets
 cannot be built then fails with why, rather than asking again.
 
 **What happens:** a planner reads the goal and repository, asks only when a missing
@@ -66,7 +67,7 @@ Module: [`workflows/plan.workflow.ts`](../workflows/plan.workflow.ts), with its 
 **For:** building a change end to end on a branch, reviewing it, fixing what the review
 found, and opening the merge request.
 
-**Inputs:** `plan`, a work source, and `repo`, optional. It does not need a plan run: inference gathers the three
+**Inputs:** `plan`, a work source, and `repo` and `then`, optional. It does not need a plan run: inference gathers the three
 newest finished `plan` runs for this repo and a Linear issue id in the branch name. One
 candidate is taken as the answer; none or several bring up a menu of them plus **Type it…**,
 which accepts a Linear id or URL, a path to a plan directory, or a plain description of the
@@ -81,6 +82,10 @@ line names it: given one, the build step builds only the tickets naming it and l
 rest to their own run. It is empty for every single-repository run, which builds the whole
 plan, and for the parent of a fan-out, which sets it on each repository's run; see
 [Plans that span repositories](#plans-that-span-repositories).
+
+`then` says what follows the merge request: `finish` ends there, `release` releases it, and
+empty, the default, asks (see **Ends:**). A start nobody attends passes `finish`: plan's
+`then=implement`, and so a Self-improve Run's Improvements, and each Repo run of a fan-out.
 
 **Branch:** named after the work, not the path to it — an explicit `--input branch=`, else
 the reviewed branch, else the `<name>` of a `branch:<base>...<name>` target you gave, else
@@ -118,7 +123,24 @@ before it changes anything, from its `package.json` scripts, a Makefile or its C
 each with `collie run intent verification`. Nobody approves them, and the merge request
 lists each with its command ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 
-**Ends:** with the merge request, or fails with the reason there is none — a ticket stopped
+**Ends:** with the merge request, then a question where `then` is empty. Once the merge
+request is open and its checks left to CI are settled, the Run asks **What next?**, named
+`next`, naming the merge request, with two answers:
+
+- **Release** starts a [`release`](#release) Run of the merge request as this Run's child,
+  in this Run's own checkout and held to its Checks, and waits for it. The Run ends with
+  `<merge request URL>; <the release's result>`, and a release that fails fails this Run
+  with its reason. While the release waits on the review and the go, which can take days,
+  this Run and its implementer stay live and idle.
+- **Finish** ends the Run with the merge request URL.
+
+`then=finish` ends at the merge request and `then=release` starts the release, without
+asking. A merge request set to merge itself once green is not asked about: the Run ends at
+it. A succeeded Run with a merge request also offers **Release** on its card, through
+`collie run action` and in chat, so it can be released later; once its merge request has
+merged, or anybody recorded what became of the work, it is not offered.
+
+It fails with the reason there is no merge request — a ticket stopped
 on a blocking finding, acceptance criteria still unmet or unreadable, a review that halted — and says to
 continue with a follow-up Run, which **Keep going on this** starts. Nobody is asked along
 the way: the human verifies the work in the merge request, before it lands. Where a failed check's
@@ -203,8 +225,8 @@ Every other plan fans out, whether **Implement now** hands it to `implement` or 
 it yourself from the plan's root with `collie run start implement --input plan=<the plan
 directory>`. That `implement` cuts no checkout of its own and builds nothing itself: it
 starts one Run of itself per repository, each from that repository's checkout under the
-root, each with the shared plan directory, its own `repo` and every other option it was
-started with — `risks`, `outcome` — and all on one branch name: the `branch` you gave,
+root, each with the shared plan directory, `then=finish`, its own `repo` and every other
+option it was started with — `risks`, `outcome` — and all on one branch name: the `branch` you gave,
 else `<login>/<task>`, else one named after the Run that fanned out, so the sibling merge
 requests are findable by it. Each is held to its own checkout's `.collie/verify.json`, else
 the checks remembered for its remote, else the ones its builder names. See [Repo run](../CONTEXT.md) for the term.
@@ -397,7 +419,8 @@ second go.
 `review` offers ([Reviewing someone else's merge request](using.md#reviewing-someone-elses-merge-request)).
 
 **Checkout:** its own, of the merge request's source branch (the pull request's head
-branch on GitHub), which Collie only ever fast-forwards. A checkout with uncommitted
+branch on GitHub): the one git already has for it, which is the implement Run's worktree
+for a release that Run started, or one cut from the branch. Collie only ever fast-forwards it. A checkout with uncommitted
 changes, or a head that does not fast-forward it, as after a force push, parks the Run
 with why: nothing is reset or discarded.
 
@@ -575,7 +598,8 @@ Every other shipped step clears nothing.
 
 ## How they chain
 
-- `plan` → `implement`, with the plan directory forwarded as the work source.
+- `plan` → `implement`, with the plan directory forwarded as the work source, and
+  `then=finish` where the plan was started with `then=implement`.
 - `architecture` → `implement`, the same way.
 - `implement` imports the pass `review` runs (`workflows/reviewing.ts`), so the review a
   build gets is the review you would run standalone. It is an import, not a lookup:
@@ -589,6 +613,8 @@ Every other shipped step clears nothing.
 - `release` chains into nothing; a failed one offers **Release again** of the same merge
   request.
 - `self-improve` → `plan` with `then=implement`, once per Improvement, each its own card.
+- `implement` → `release`, on its merge request, from **Release** at its end, `then=release`,
+  or the **Release** offer on a succeeded Run's card.
 
 A chained run is a child of the one that started it, its input decoded against the child's
 own schema before it is admitted. It has a card of its own, the parent waits for it and

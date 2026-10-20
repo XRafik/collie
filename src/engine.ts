@@ -5468,13 +5468,15 @@ const makeRegistry: (
       parent: ask.runId,
     }).pipe(Effect.mapError((failure) => refused(failure.reason)));
     // A child is a Run, so what it may verify is frozen with it rather than read when
-    // it asks: the same list, and the same moment, as the start of any other. One that
-    // works in a checkout of its own is held to what that checkout approves.
+    // it asks. It is held to what its parent was, grants included, as an offer's start
+    // is; one that works in a checkout of its own is held to what that checkout approves.
+    const parentChecks = request.kind === "existing" ? [] : yield* approvedOf(dir, parent.run);
     yield* freezeApproved({
       dir,
       runId: claimed.row.run,
       project: request.kind === "existing" ? request.path : parent.project,
       userDir,
+      approved: parentChecks.length > 0 ? parentChecks : undefined,
     }).pipe(Effect.provideContext(bun), Effect.ignore);
     yield* seedIntentOf({ dir, row: claimed.row, generation, seed: undefined, parent }).pipe(
       Effect.provideContext(bun),

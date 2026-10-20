@@ -530,6 +530,9 @@ const GRILLED = {
 const SPEC = { verdict: "clean", findings: [], spec: "plan/SPEC.md" };
 const TICKETS = { verdict: "clean", findings: [], issues_dir: "plan/issues", tickets: 3 };
 const GOAL = { goal: "make the registries one" };
+/** What a start passes for implement to end at its merge request without asking. */
+// oxlint-disable-next-line unicorn/no-thenable -- implement's Input is named `then`
+const FINISH = { then: "finish" } as const;
 
 scenario("a plan at the Projects root is told the root is not a repository", () =>
   runEffect(
@@ -793,7 +796,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-fan",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { task: "one-registry", outcome: "feature" },
         });
 
@@ -811,8 +814,12 @@ scenario(
             },
           ]),
         );
-        expect(new Set(started.map((one) => one.input.plan))).toEqual(new Set([plan]));
-        // The parent builds nothing itself.
+        // Nobody attends a repository's share, so each ends at its merge request.
+        expect(started.map((one) => one.input)).toEqual(
+          ["api", "docs", "web"].map(() => ({ plan, ...FINISH })),
+        );
+        // The parent builds nothing itself, and asks nothing.
+        expect(yield* questions("r-impl-fan")).toEqual([]);
         expect(yield* prompts()).toEqual([]);
       }),
     ),
@@ -901,7 +908,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-share",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { repo: "api" },
         });
 
@@ -948,7 +955,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-blocked",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
 
         expect(result._tag).toBe("Failure");
@@ -996,7 +1003,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-unverified",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
 
         expect(result._tag).toBe("Failure");
@@ -1095,7 +1102,7 @@ scenario(
         expect(started.map((one) => [one.workflow, one.input, one.options])).toEqual([
           [
             "implement",
-            { plan: `${runDir(dir, "r-plan-alone")}/plan` },
+            { plan: `${runDir(dir, "r-plan-alone")}/plan`, ...FINISH },
             { task: "one-registry", outcome: "feature" },
           ],
         ]);
@@ -1922,6 +1929,24 @@ scenario("what a finished Run of each shipped module offers is the module's own 
       expect(
         offersFrom(implement, facts({ succeeded: false, branch: "feature" })).map((o) => o.id),
       ).toEqual(["follow-up"]);
+      // A merge request still open is released later; a merged one, or none, is not.
+      const mrUrl = "https://gitlab.example.com/group/project/-/merge_requests/7";
+      const delivered = facts({ outcome: "feature", branch: "feature", mrUrl });
+      const offered = offersFrom(implement, delivered, { self: idOf("implement") });
+      expect(offered.map((o) => [o.id, o.title, o.workflow])).toEqual([
+        ["release", "Release", "release"],
+        ["follow-up", "Keep going on this", idOf("implement")],
+      ]);
+      expect(inputsFor(offered[0]!, { runDir: "/r", facts: delivered, input: {} })).toEqual({
+        mr: mrUrl,
+      });
+      expect(offersFrom(implement, { ...delivered, disposed: true })).toEqual([]);
+      expect(
+        offersFrom(implement, facts({ outcome: "feature", branch: "feature" })).map((o) => o.id),
+      ).toEqual(["follow-up"]);
+      expect(offersFrom(implement, { ...delivered, succeeded: false }).map((o) => o.id)).toEqual([
+        "follow-up",
+      ]);
 
       // A plan offers what it wrote, and only once it has written something.
       const plan = yield* declaredIn(shipped("plan"));
@@ -2193,7 +2218,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2258,7 +2283,7 @@ scenario(
         // The first ticket's Output is written by hand, once the plan has moved under it.
         yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-live", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-live", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-live`;
         yield* until(
@@ -2298,7 +2323,7 @@ scenario(
         yield* approve("r-grow", ["unit"]);
         yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-grow", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-grow", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-grow`;
         yield* until(
@@ -2363,7 +2388,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-criteria",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2417,7 +2442,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-unmet",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2460,7 +2485,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-amended", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-amended", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-amended`;
         yield* until(
@@ -2524,7 +2549,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-lead", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-lead", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-lead`;
         yield* until(
@@ -2587,7 +2612,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-lead-back", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-lead-back", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-lead-back`;
         yield* until(
@@ -2650,7 +2675,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-shared-lead", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-shared-lead", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-shared-lead`;
         yield* until(
@@ -2710,7 +2735,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-old-words", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-old-words", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-old-words`;
         yield* until(
@@ -2774,7 +2799,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-after-merge",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2822,7 +2847,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-answered-later",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2875,7 +2900,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-not-met",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2921,6 +2946,7 @@ scenario(
           runId: "r-words",
           input: {
             plan: "Count the registries.\n\n- [ ] **Counted.** Every registry is counted once.",
+            ...FINISH,
           },
         });
         yield* bin.restore();
@@ -2966,7 +2992,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: copied,
-          input: { plan: "ABC-123" },
+          input: { plan: "ABC-123", ...FINISH },
         });
         expect(said(result)).toBe(OPENED.mr_url);
         expect(yield* asked(copied, "build.criteria-1")).toContain(
@@ -2989,7 +3015,7 @@ scenario(
         const stopped = yield* ran({
           entry: shipped("implement"),
           runId: "r-linear-uncopied",
-          input: { plan: "ABC-124" },
+          input: { plan: "ABC-124", ...FINISH },
         });
         expect(stopped._tag).toBe("Failure");
         expect(reasonOf(stopped)).toContain("plan/SPEC.md cannot be read");
@@ -3034,7 +3060,7 @@ scenario(
         yield* approve("r-planned", ["unit"]);
         yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-planned", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-planned", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-planned`;
         yield* until(
@@ -3135,7 +3161,7 @@ const builtUntilParked = (
     yield* approve(runId, ["unit"]);
     yield* rig.queueOutputs(outputs);
     const running = yield* Effect.forkChild(
-      ran({ entry: shipped("implement"), runId, input: { plan } }),
+      ran({ entry: shipped("implement"), runId, input: { plan, ...FINISH } }),
     );
     const agents = `${dir}/agents/${runId}`;
     for (const { operation, step } of hands) {
@@ -3403,7 +3429,7 @@ scenario(
         yield* approve("r-impl-mr", ["unit"]);
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
 
-        yield* ran({ entry: shipped("implement"), runId: "r-impl-mr", input: { plan } });
+        yield* ran({ entry: shipped("implement"), runId: "r-impl-mr", input: { plan, ...FINISH } });
         yield* bin.restore();
 
         const opening = yield* asked("r-impl-mr", "mr");
@@ -3418,6 +3444,160 @@ scenario(
         // What was collected, by whom — Collie ran it, so it is not the agent's claim.
         expect(opening).toContain("unit");
         expect(opening).toContain("by collie");
+      }),
+    ),
+  120_000,
+);
+
+/** One ticket built, reviewed clean and delivered on a forge where nothing merges itself. */
+const delivering = (runId: string) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* repository();
+    const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+    yield* approve(runId, ["unit"]);
+    yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+    return { bin, plan };
+  });
+
+/** implement parked on what next, once its merge request is open. */
+const deliveredAsking = (runId: string) =>
+  Effect.gen(function* () {
+    const { bin, plan } = yield* delivering(runId);
+    const rows = yield* parked({
+      entry: shipped("implement"),
+      runId,
+      input: { plan },
+      decision: "next",
+    });
+    return { bin, plan, rows };
+  });
+
+const RELEASE_STARTED = {
+  invocation: "release",
+  workflow: "release",
+  input: { mr: OPENED.mr_url },
+};
+
+scenario(
+  "implement asks what next once its merge request is open, and Finish ends with its URL",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-next";
+        const { bin, plan, rows } = yield* deliveredAsking(runId);
+        expect(optionsOf(rows, "next")).toEqual(["Release", "Finish"]);
+        expect(rows.find((row) => row.decision === "next")?.prompt).toContain(OPENED.mr_url);
+
+        const result = yield* answered({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          decision: "next",
+          value: "Finish",
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "Release starts the release on the merge request where implement works, and ends with its result",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-release";
+        const { bin, plan } = yield* deliveredAsking(runId);
+
+        const result = yield* answered({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          decision: "next",
+          value: "Release",
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(`${OPENED.mr_url}; done`);
+        // No placement of its own: it works in implement's checkout, on the branch.
+        expect(started).toEqual([RELEASE_STARTED]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a release that fails fails implement with the release's reason",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        failing = new Set(["release"]);
+        const runId = "r-impl-release-fails";
+        const { bin, plan } = yield* deliveredAsking(runId);
+
+        const result = yield* answered({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          decision: "next",
+          value: "Release",
+        });
+        yield* bin.restore();
+
+        expect(reasonOf(result)).toBe("release failed");
+        expect(started).toEqual([RELEASE_STARTED]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "implement started with then=finish ends at its merge request and asks nothing",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-finish";
+        const { bin, plan } = yield* delivering(runId);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan, ...FINISH },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* questions(runId)).toEqual([]);
+        expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "implement started with then=release releases its merge request without asking",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-then-release";
+        const { bin, plan } = yield* delivering(runId);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          // oxlint-disable-next-line unicorn/no-thenable -- implement's Input is named `then`
+          input: { plan, then: "release" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(`${OPENED.mr_url}; done`);
+        expect(yield* questions(runId)).toEqual([]);
+        expect(started).toEqual([RELEASE_STARTED]);
       }),
     ),
   120_000,
@@ -3440,7 +3620,11 @@ scenario(
           OPENED,
         ]);
 
-        yield* ran({ entry: shipped("implement"), runId: "r-impl-minor", input: { plan } });
+        yield* ran({
+          entry: shipped("implement"),
+          runId: "r-impl-minor",
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
 
         // No fix round for a minor finding, by design; but not silently either.
@@ -3491,7 +3675,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-build-findings",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -3543,7 +3727,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-build-cleared",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
         expect(said(result)).toBe(OPENED.mr_url);
@@ -3584,7 +3768,11 @@ once(
           CLEAN_SYNTHESIS,
           OPENED,
         ]);
-        const result = yield* ran({ entry, runId: "r-impl-build-panel", input: { plan } });
+        const result = yield* ran({
+          entry,
+          runId: "r-impl-build-panel",
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
@@ -3675,7 +3863,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-fix",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -3757,7 +3945,7 @@ scenario(
         yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-review",
-          input: { plan: reviewed },
+          input: { plan: reviewed, ...FINISH },
         });
         yield* bin.restore();
 
@@ -3807,7 +3995,7 @@ scenario(
         const options = {
           entry,
           runId: "r-impl-gate",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         };
         const result = yield* running(options, (status) =>
@@ -3860,7 +4048,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-gate-judged",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -3889,7 +4077,7 @@ scenario(
           {
             entry: shipped("implement"),
             runId: "r-gate-unproved",
-            input: { plan },
+            input: { plan, ...FINISH },
             options: { outcome: "feature" },
           },
           (status) =>
@@ -3946,7 +4134,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-gate-fix",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4001,7 +4189,7 @@ scenario(
         yield* ran({
           entry: shipped("implement"),
           runId: "r-passes",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4090,7 +4278,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4159,7 +4347,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4188,7 +4376,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         expect(why).toContain("Cannot open the merge request");
@@ -4233,7 +4421,7 @@ scenario(
         const options = {
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         };
         expect(yield* parkedOn(options)).toContain(
@@ -4321,7 +4509,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4368,7 +4556,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4404,7 +4592,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4446,7 +4634,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4483,7 +4671,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4516,7 +4704,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4591,7 +4779,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4649,7 +4837,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4755,7 +4943,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4790,7 +4978,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4823,7 +5011,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4868,7 +5056,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4916,7 +5104,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4954,7 +5142,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5009,7 +5197,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5040,7 +5228,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5090,7 +5278,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5160,7 +5348,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5201,7 +5389,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5235,7 +5423,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5273,7 +5461,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5314,7 +5502,7 @@ const heldUnproved = (runId: string) =>
     const options = {
       entry: shipped("implement"),
       runId,
-      input: { plan },
+      input: { plan, ...FINISH },
       options: { outcome: "feature" },
     };
     const result = yield* running(options, (status) =>
@@ -5404,7 +5592,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5441,7 +5629,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5497,7 +5685,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-red-base",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5550,7 +5738,7 @@ scenario(
           {
             entry: shipped("implement"),
             runId: "r-impl-own-red",
-            input: { plan },
+            input: { plan, ...FINISH },
             options: { outcome: "feature" },
           },
           (status) =>
@@ -5609,7 +5797,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-dispute",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5663,7 +5851,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-weakened",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5736,7 +5924,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-final-dispute",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5810,7 +5998,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-final-stands",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5860,7 +6048,11 @@ scenario(
           ]),
         );
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-        yield* ran({ entry: shipped("implement"), runId: "r-late-grant", input: { plan } });
+        yield* ran({
+          entry: shipped("implement"),
+          runId: "r-late-grant",
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
 
         const opening = yield* asked("r-late-grant", "mr");
@@ -5925,7 +6117,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-early-dispute",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5964,7 +6156,7 @@ scenario(
         yield* approve(runId, ["unit"]);
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
         const entry = shipped("implement");
-        yield* stalled({ entry, runId, input: { plan } });
+        yield* stalled({ entry, runId, input: { plan, ...FINISH } });
         expect(yield* parkedWhy(runId)).toContain("gh is not installed");
         const fs = yield* FileSystem.FileSystem;
         yield* fs.writeFileString(
@@ -5983,7 +6175,7 @@ scenario(
           Effect.gen(function* () {
             const made = yield* loaded(entry, runId);
             const engine = yield* WorkflowEngine.WorkflowEngine;
-            const payload = { runId, input: { plan } };
+            const payload = { runId, input: { plan, ...FINISH } };
             return yield* Effect.gen(function* () {
               const id = yield* made.workflow.executionId(payload);
               yield* engine.resume(made.workflow, id);
@@ -6058,7 +6250,11 @@ for (const name of ["gitlab", "github"] as const) {
           const runId = `r-impl-${name}-open`;
           yield* approve(runId, ["unit"]);
           yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-          const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+          const result = yield* ran({
+            entry: shipped("implement"),
+            runId,
+            input: { plan, ...FINISH },
+          });
           yield* bin.restore();
           expect(said(result)).toBe(OPENED.mr_url);
           const prompt = yield* asked(runId, "mr");
@@ -6090,7 +6286,7 @@ for (const name of ["gitlab", "github"] as const) {
           yield* ran({
             entry: shipped("implement"),
             runId,
-            input: { plan },
+            input: { plan, ...FINISH },
           });
           yield* bin.restore();
           const prompt = yield* asked(runId, "mr");
@@ -6131,7 +6327,7 @@ for (const name of ["gitlab", "github"] as const) {
           const options = {
             entry: shipped("implement"),
             runId: `r-impl-${name}-auto-merge`,
-            input: { plan },
+            input: { plan, ...FINISH },
           };
           yield* approve(options.runId, ["unit"]);
           yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
@@ -6152,6 +6348,32 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* prompts()).toHaveLength(3);
           expect(yield* parkedWhy(options.runId)).toBe("");
           yield* bin.restore();
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement asks nothing once its ${name} ${noun} merges itself once green`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* deliveringOn(name, autoMerging(false));
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-merges-itself`;
+          yield* approve(runId, ["unit"]);
+          // Set to merge itself as it is opened.
+          const on = forge.holding({ ...(yield* forge.model()), mrs: autoMerging(true) });
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, { writes: [on], output: OPENED }]);
+
+          const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+          yield* bin.restore();
+
+          expect(said(result)).toBe(OPENED.mr_url);
+          expect(yield* questions(runId)).toEqual([]);
+          expect(started).toEqual([]);
         }),
       ),
     120_000,
@@ -6179,9 +6401,9 @@ for (const name of ["gitlab", "github"] as const) {
             { writes: [on], output: BUILT },
             { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [finding] },
           ]);
-          expect(yield* stalled({ entry: shipped("implement"), runId, input: { plan } })).toBe(
-            "suspended",
-          );
+          expect(
+            yield* stalled({ entry: shipped("implement"), runId, input: { plan, ...FINISH } }),
+          ).toBe("suspended");
           yield* bin.restore();
           // The build and the review, and no fix.
           expect(yield* prompts()).toHaveLength(2);
@@ -6288,7 +6510,11 @@ scenario(
             findings: [{ severity: "major", title: "push denied" }],
           },
         ]);
-        const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
         expect(reasonOf(result)).toContain("Merge request delivery did not finish");
         expect(reasonOf(result)).toContain("push denied");
@@ -6314,7 +6540,11 @@ scenario(
           CLEAN_SYNTHESIS,
           { ...OPENED, findings: [{ severity: "major", title: "delivery blocked" }] },
         ]);
-        const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
         expect(reasonOf(result)).toContain("Merge request delivery did not finish");
         expect(reasonOf(result)).toContain("delivery blocked");
@@ -6343,7 +6573,7 @@ scenario(
         const options = {
           entry: shipped("implement"),
           runId: "r-impl-no-forge",
-          input: { plan },
+          input: { plan, ...FINISH },
         };
         const status = yield* running(options, (reading) =>
           until(
@@ -6482,7 +6712,7 @@ scenario(
         const options = {
           entry: shipped("implement"),
           runId: "r-impl-none",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         };
 
@@ -6539,7 +6769,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-named",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -6580,7 +6810,7 @@ scenario(
         const status = yield* stalled({
           entry: shipped("implement"),
           runId: "r-impl-emptied",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -6616,7 +6846,7 @@ scenario(
           const why = yield* parkedOn({
             entry: shipped("implement"),
             runId: "r-impl-inv",
-            input: { plan: "why is the board slow?" },
+            input: { plan: "why is the board slow?", ...FINISH },
             options: { outcome: "investigation" },
           });
           expect(why).toContain("has written nothing to");

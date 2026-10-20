@@ -261,7 +261,12 @@ export default defineWorkflow({
           const child = yield* children.start({
             invocation: building ? "implement" : "architecture",
             workflow: building ? "implement" : "architecture",
-            input: building ? { plan: planDir } : { goal: asked.goal },
+            input: !building
+              ? { goal: asked.goal }
+              : nobodyAsked
+                ? // oxlint-disable-next-line unicorn/no-thenable -- implement's Input is named `then`
+                  { plan: planDir, then: "finish" }
+                : { plan: planDir },
             // What kind of result this is, and what it is called: settled during the
             // interview rather than asked for again at the start of the build.
             options: launch({

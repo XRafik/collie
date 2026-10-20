@@ -28,6 +28,7 @@ import {
   afterMergeIn,
   agentWork,
   answerFor,
+  ask,
   checkGapsOf,
   checkProof,
   classifyWorkSource,
@@ -207,6 +208,9 @@ const MERGE_TRIES = 2;
 /** One agent for the whole Run, so its model is named once and the fixes know the build. */
 const BUILDER = "build";
 
+const RELEASE = "Release";
+const FINISH = "Finish";
+
 const Tree = Schema.Struct({ head: Schema.String, fingerprint: Schema.String });
 
 /** A fix round that changed nothing and disputed every finding: another would read the same tree. */
@@ -245,6 +249,12 @@ export default defineWorkflow({
       description:
         "Where the work is written down: a plan, a review, an issue, a follow-up, or words",
     }),
+    then: Schema.optionalKey(
+      Schema.Literals(["", "finish", "release"]).annotate({
+        description:
+          "What follows the merge request: finish to end there, release to release it on a human's go, empty to be asked",
+      }),
+    ),
   }),
   output: Schema.String,
   agents: { roles: { implementer: IMPLEMENTER, reviewer: REVIEWER } },
@@ -259,6 +269,14 @@ export default defineWorkflow({
   // A follow-up builds on the same branch, so it is this workflow again rather than
   // another one — and there is nothing to carry on from without a branch to carry it on.
   followUps: [
+    {
+      id: "release",
+      title: "Release",
+      workflow: "release",
+      when: "succeeded",
+      inputs: { mr: "merge-request" },
+      eligible: (facts) => facts.mrUrl !== null,
+    },
     {
       id: "follow-up",
       title: "Keep going on this",
@@ -1112,9 +1130,56 @@ export default defineWorkflow({
               ? { why: `Outcome unproved after ${ROUNDS} CI fixes`, unmoved: false }
               : null;
       }
-      return opened.mr_url;
+      return yield* releasing({ mr: opened.mr_url, cwd, then: asked.then ?? "" });
     }),
 });
+
+/**
+ * What follows an open merge request: `then`, or the human's answer where nobody gave one.
+ * One set to merge itself is left to do that, so nobody is asked about it.
+ */
+const releasing = (delivered: {
+  readonly mr: string;
+  readonly cwd: string;
+  readonly then: string;
+}) =>
+  Effect.gen(function* () {
+    const host = yield* Host;
+    const runId = (yield* Run).id;
+    const { mr } = delivered;
+    if (delivered.then === "finish") return mr;
+    if (delivered.then === "") {
+      const merging = yield* Activity.make({
+        name: "auto-merging",
+        success: Schema.NullOr(Schema.String),
+        // Unknown is asked about: a release refuses a merge request that merges itself.
+        execute: host
+          .autoMerging(delivered.cwd)
+          .pipe(
+            Effect.catch((failure) =>
+              Effect.as(
+                host.record(runId, `whether ${mr} merges itself is unknown: ${failure.reason}`),
+                null,
+              ),
+            ),
+          ),
+      });
+      if (merging !== null) return mr;
+      const chosen = yield* ask({
+        name: "next",
+        prompt: `${mr} is open. What next?`,
+        options: [RELEASE, FINISH],
+      });
+      if (chosen !== RELEASE) return mr;
+    }
+    const children = yield* Children;
+    const child = yield* children.start({
+      invocation: "release",
+      workflow: "release",
+      input: { mr },
+    });
+    return `${mr}; ${String(yield* children.result(child))}`;
+  });
 
 /**
  * One Run of this workflow per repository the plan names, a wave at a time: a repository
@@ -1142,7 +1207,9 @@ const buildEach = (fan: {
           .start({
             invocation: invocation(repo),
             workflow: "self",
-            input: { plan: fan.plan },
+            // Nobody attends a repository's share, so it ends at its merge request.
+            // oxlint-disable-next-line unicorn/no-thenable -- implement's Input is named `then`
+            input: { plan: fan.plan, then: "finish" },
             options: { ...fan.options, repo, workspace: `${fan.root}/${repo}` },
           })
           .pipe(

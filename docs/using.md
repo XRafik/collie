@@ -306,8 +306,8 @@ runs from a shell inside herdr: `herdr plugin action invoke cego.collie.pick`.
    `cd`-ed into the checkout the run works in. An operation that reuses an agent opens
    nothing. The label carries no state: the run's card on the board says what it is doing,
    and herdr's own agent-status column says what each agent is.
-7. `plan`, `architecture` and `review` end in a question — **What next?** — answered on the
-   run's card, with `collie run answer`, or in chat. Launching asks nothing about it: a
+7. `plan`, `architecture`, `review` and `implement` end in a question — **What next?** —
+   answered from the run's card's answer menu, with `collie run answer`, or in chat. Launching asks nothing about it: a
    question is asked when the run reaches it, so you decide with the work in front of you.
    `prefix+u` asks the host to pick a run that is still going back up.
 
@@ -2268,6 +2268,13 @@ the merge request is open: the Run proves the head with its checks, then waits a
 cost until the merge request is approved, every external comment is answered, and it is
 green and mergeable at that head. Its card says what it is still waiting for, and a push
 to the branch is proved again before anything is asked.
+
+An `implement` Run starts one for you. Once its merge request is open, it asks **What
+next?**: answer **Release** from the card's answer menu, Desktop, chat or `collie run answer
+<run> Release --decision next`, and the release runs as its child, in its checkout and held
+to its Checks, or **Finish** to end there. To release it later, a succeeded implement Run
+whose merge request is still open offers **Release** in the card's Actions, and through
+`collie run action`.
 
 A reviewer's comment is taken up as it comes: the Run's agent fixes what holds and
 pushes, or disputes it, and Collie replies on the forge with the commit or the reason. An
