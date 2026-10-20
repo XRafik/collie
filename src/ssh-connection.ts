@@ -9,7 +9,7 @@
 import { Clock, Duration, Effect, FileSystem, Option, Schema, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HostRefused } from "./board-model";
-import { LOCK_CLAIM_SPACING_MS, withLock } from "./lock";
+import { withLock } from "./lock";
 import { MachineUnreachable } from "./peers-model";
 
 /** A herdr machine as its SSH connection is named: its label and its target. */
@@ -208,7 +208,7 @@ export const openConnection = Effect.fn("SshConnection.open")(function* (
       if (left <= 0) return yield* contended;
       return yield* opened(connection, machine, ssh, Duration.millis(left), options.said);
     }),
-    Math.ceil(Duration.toMillis(bound) / LOCK_CLAIM_SPACING_MS),
+    bound,
   ).pipe(
     Effect.catchTag(["PlatformError", "SchemaError"], (cause) =>
       Effect.fail(new HostRefused({ reason: cause.message })),

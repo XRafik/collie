@@ -178,6 +178,32 @@ test("waiting on another opener counts against the opener's bound", () =>
     }),
   ));
 
+test("a lock held past the opener's bound fails the open at the bound, however slow each claim", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { state, ssh } = yield* rig;
+      const path = yield* controlPath(state, vm);
+      const held = yield* Deferred.make<void>();
+      yield* withLock(
+        `${path}.lock`,
+        Effect.die("the lock was taken"),
+        Deferred.succeed(held, undefined).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(held);
+      const started = yield* Clock.currentTimeMillis;
+      const failed = yield* opens(state, ssh, "300 millis").pipe(
+        Effect.updateService(FileSystem.FileSystem, (fs) => ({
+          ...fs,
+          writeFileString: (file, data, options) =>
+            Effect.sleep("20 millis").pipe(Effect.andThen(fs.writeFileString(file, data, options))),
+        })),
+        Effect.flip,
+      );
+      expect(failed._tag).toBe("MachineUnreachable");
+      expect((yield* Clock.currentTimeMillis) - started).toBeLessThan(450);
+    }),
+  ));
+
 test("the host's handle only asks an open master, and cancels its forward when its scope closes", () =>
   runEffect(
     Effect.gen(function* () {

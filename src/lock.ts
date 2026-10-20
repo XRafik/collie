@@ -1,4 +1,15 @@
-import { Data, Schema, FileSystem, Clock, Effect, Option, Path, Random, Schedule } from "effect";
+import {
+  Data,
+  Duration,
+  Schema,
+  FileSystem,
+  Clock,
+  Effect,
+  Option,
+  Path,
+  Random,
+  Schedule,
+} from "effect";
 import { startedOf } from "./processes";
 
 // Cooperative pid-lock files: `wx` creation is the claim; holder liveness, not age, decides
@@ -61,14 +72,15 @@ const claimLock = Effect.fn("claimLock")(function* (lock: string) {
 });
 
 /** The one acquisition policy: recover stale claims and wait out brief live contention. */
-const acquireLock = Effect.fn("acquireLock")((lock: string, claims: number) =>
+const acquireLock = Effect.fn("acquireLock")((lock: string, claims: number | Duration.Duration) =>
   claimLock(lock).pipe(
     Effect.flatMap((claimed) =>
       claimed ? Effect.succeed(true) : Effect.fail(new LockContended()),
     ),
     Effect.retry({
-      times: claims,
-      schedule: Schedule.spaced(LOCK_CLAIM_SPACING_MS),
+      schedule: Schedule.spaced(LOCK_CLAIM_SPACING_MS).pipe(
+        Schedule.upTo(Duration.isDuration(claims) ? { duration: claims } : { times: claims }),
+      ),
       while: (error) => error instanceof LockContended,
     }),
     Effect.catchTag("LockContended", () => Effect.succeed(false)),
@@ -85,8 +97,8 @@ export const withLock = <A, E, R, A2, E2, R2>(
   lock: string,
   contended: Effect.Effect<A2, E2, R2>,
   effect: Effect.Effect<A, E, R>,
-  /** How many claims to make first, for a caller that can wait longer than a second. */
-  claims: number = LOCK_CLAIM_RETRIES,
+  /** How many claims to make, or for how long, for a caller that can wait longer than a second. */
+  claims: number | Duration.Duration = LOCK_CLAIM_RETRIES,
 ) =>
   Effect.gen(function* () {
     if (!(yield* acquireLock(lock, claims))) return yield* contended;
