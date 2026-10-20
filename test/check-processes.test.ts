@@ -643,38 +643,45 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
-test.skipIf(process.platform !== "linux")(
-  "a check's child that refuses SIGTERM is killed within the grace, however slow each look at /proc",
-  () =>
-    runEffect(
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const listing = { slow: false };
-        const slow: FileSystem.FileSystem = {
-          ...fs,
-          readDirectory: (path, options) =>
-            listing.slow && path === "/proc"
-              ? Effect.sleep("200 millis").pipe(Effect.andThen(fs.readDirectory(path, options)))
-              : fs.readDirectory(path, options),
-        };
-        const { notes, checks } = yield* worldWith({}, slow);
-        yield* Effect.forkScoped(
-          Effect.scoped(
-            checks
-              .run(check, { executable: refuses, argv: [notes], cwd: notes })
-              .pipe(Effect.flatMap((one) => one.collected(one.exit))),
-          ),
-        );
-        const ones = yield* startedIn(notes);
+// Each look at /proc answering before the SIGKILL starts, and after it but before the grace ends.
+for (const { delay, grace } of [
+  { delay: 200, grace: 500 },
+  { delay: 1_700, grace: 2_000 },
+])
+  test.skipIf(process.platform !== "linux")(
+    `a check's child that refuses SIGTERM is killed within a ${grace} ms grace, with each look at /proc ${delay} ms slow`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const listing = { slow: false };
+          const slow: FileSystem.FileSystem = {
+            ...fs,
+            readDirectory: (path, options) =>
+              listing.slow && path === "/proc"
+                ? Effect.sleep(Duration.millis(delay)).pipe(
+                    Effect.andThen(fs.readDirectory(path, options)),
+                  )
+                : fs.readDirectory(path, options),
+          };
+          const { notes, checks } = yield* worldWith({}, slow);
+          yield* Effect.forkScoped(
+            Effect.scoped(
+              checks
+                .run(check, { executable: refuses, argv: [notes], cwd: notes })
+                .pipe(Effect.flatMap((one) => one.collected(one.exit))),
+            ),
+          );
+          const ones = yield* startedIn(notes);
 
-        listing.slow = true;
-        yield* endAllWithin(checks, Duration.millis(500), () => Effect.void);
-        yield* Effect.sleep("100 millis");
-        expect(yield* noneRunning(ones)).toBe(true);
-      }),
-    ),
-  30_000,
-);
+          listing.slow = true;
+          yield* endAllWithin(checks, Duration.millis(grace), () => Effect.void);
+          yield* Effect.sleep("100 millis");
+          expect(yield* noneRunning(ones)).toBe(true);
+        }),
+      ),
+    30_000,
+  );
 
 const refusal = () => Object.assign(new Error("kill EPERM"), { code: "EPERM" });
 

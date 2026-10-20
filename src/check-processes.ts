@@ -2,7 +2,18 @@
 // Nothing is signalled that is not proved the check's: its recorded leader by pid and start
 // token, or a process carrying both of its bindings.
 
-import { Context, Duration, Effect, FileSystem, Option, Random, Schema, Stream } from "effect";
+import {
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  FileSystem,
+  Option,
+  Random,
+  Schema,
+  Stream,
+} from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Scope } from "effect";
@@ -360,6 +371,24 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     string,
     ReadonlyArray<{ readonly pid: number; readonly started: string }>
   >();
+  // A look at /proc takes whatever look already under way answers first, so a SIGKILL waits on no second slow look.
+  type Marked = Effect.Success<ReturnType<typeof markedBy>>;
+  let looking: Deferred.Deferred<Marked> | undefined;
+  const freshLook = Effect.suspend(() => {
+    const deferred = Deferred.makeUnsafe<Marked>();
+    looking ??= deferred;
+    return markedBy(installation).pipe(
+      Effect.onExit((exit) =>
+        Effect.sync(() => {
+          if (looking === deferred) looking = undefined;
+          if (Exit.isSuccess(exit)) Deferred.doneUnsafe(deferred, exit);
+        }),
+      ),
+    );
+  });
+  const look = Effect.suspend(() =>
+    looking === undefined ? freshLook : Effect.raceFirst(Deferred.await(looking), freshLook),
+  );
   /** Each group, then each process found before, before the look at /proc, so a slow look holds back none of them. */
   const signalAll = (ids: ReadonlyArray<string>, name: NodeJS.Signals) =>
     Effect.gen(function* () {
@@ -372,7 +401,7 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
         for (const one of found.get(id) ?? [])
           if (yield* stillRunning(one))
             yield* signal({ group: null, marked: [one.pid] }, name, kill);
-      const marked = yield* markedBy(installation);
+      const marked = yield* look;
       for (const id of ids) {
         const pids = marked.get(id) ?? [];
         yield* signal({ group: null, marked: pids }, name, kill);
