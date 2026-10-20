@@ -81,11 +81,9 @@ const ago = (ms: number) => Effect.map(Clock.currentTimeMillis, (now) => now - m
 const isoAgo = (ms: number) =>
   Effect.map(ago(ms), (at) => DateTime.formatIso(DateTime.makeUnsafe(at)));
 
-/** r1, finished `ms` ago. */
 const finished = (ms: number, over: Partial<RunFacts> = {}) =>
   Effect.map(isoAgo(ms), (at) => runFacts({ id: "r1", state: "succeeded", finished: at, ...over }));
 
-/** Idle since `ms` ago, as the host saw it. */
 const idleFor = (ms: number) => Effect.map(ago(ms), (at): IdleSince => new Map([[TERMINAL, at]]));
 
 const sweeper = (

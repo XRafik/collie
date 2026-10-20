@@ -4989,7 +4989,6 @@ test("a Codex launch writes no autoMode", () =>
     }),
   ));
 
-/** Something of `runId` waits for memory now. */
 const waitsForMemory = (runId: string): Reached =>
   Effect.map(memoryWaitOf(runDir(dir, runId)), (wait) => wait !== null);
 
