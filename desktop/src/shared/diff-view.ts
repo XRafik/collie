@@ -62,7 +62,6 @@ export const diffTree = (changed: ReadonlyArray<DiffFile>): DiffTree => {
   return { tree, files: filesOf(tree), folders: foldersOf(tree) };
 };
 
-/** Each folder whose only child is a folder, merged with it down the chain. */
 const merged = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<DiffTreeNode> =>
   nodes.map((node) => {
     if (node.kind === "file") return node;
@@ -125,7 +124,6 @@ export const TREE = {
   paneStart: 320,
   paneMin: 192,
   paneStep: 16,
-  /** The most of the Diff tab the pane may take. */
   paneShare: 0.4,
   indent: 12,
   /** Where the guide line sits inside an indent. */

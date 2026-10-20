@@ -1,5 +1,4 @@
-// The Diff tree's chosen width, held by Desktop for as long as it runs and shared by every
-// record.
+// The Diff tree's chosen width, shared by every record until Desktop quits.
 
 import { ref } from "vue";
 import { TREE } from "../../../src/shared/diff-view";
