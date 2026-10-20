@@ -116,6 +116,7 @@ import {
   scopeFor,
   verifyIncarnation,
   type AgentEntry,
+  type Incarnation,
 } from "./registry";
 import { steerTarget } from "./steer-target";
 import {
@@ -1928,7 +1929,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           found.entry,
           alive,
         );
-        return found.entry.incarnation?.terminalId;
+        return found.entry.incarnation;
       }),
     );
   });
@@ -1963,7 +1964,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           .pipe(Effect.orElseSucceed(() => "")))
           .split("\n")
           .includes(stemOf(ask));
-        const recorded = (terminalId: string | undefined) =>
+        const recorded = (incarnation: Incarnation | undefined) =>
           Effect.gen(function* () {
             const landed: Types.Mutable<Launched> = {
               agent,
@@ -1980,15 +1981,22 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             if ((ask.sequence ?? 1) > 1) landed.sequence = ask.sequence;
             landed.at = yield* Clock.currentTimeMillis;
             fellBack(landed, ask.from, ask.why);
-            const launched = terminalId === undefined ? landed : { ...landed, terminalId };
+            if (incarnation !== undefined) {
+              landed.terminalId = incarnation.terminalId;
+              if (incarnation.agentSession !== null) landed.agentSession = incarnation.agentSession;
+            }
             // Beside it, the agent this work landed on, so a stop and a human steering this
             // run later reach the agent that has it rather than one derived from a name again.
-            yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(launched));
-            return launched;
+            yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(landed));
+            return landed;
           });
         // Started and recorded as one step, so a stop never misses an agent this started.
         const launched = alive
-          ? yield* recorded(live.terminalId ?? undefined)
+          ? yield* recorded(
+              live.terminalId === null
+                ? undefined
+                : { terminalId: live.terminalId, agentSession: live.agentSession },
+            )
           : yield* Effect.uninterruptible(
               start(ask, agent, { agents: listing.success, listedAt }).pipe(
                 Effect.flatMap(recorded),

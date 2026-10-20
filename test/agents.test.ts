@@ -1956,6 +1956,28 @@ const launchOf = (runId: string) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Launched))),
     Effect.orDie,
   );
+test("an agent's launch record keeps the harness session herdr reports for it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      class Sessioned extends FakeHerdr {
+        override agentList() {
+          return super
+            .agentList()
+            .pipe(
+              Effect.map((agents) =>
+                agents.map((one) => ({ ...one, agentSession: { kind: "claude", value: "s-1" } })),
+              ),
+            );
+        }
+      }
+      yield* session(started("r1"), { herdr: new Sessioned(rig.pluginEnv()) });
+      const launched = yield* launchOf("r1");
+      expect(launched.terminalId).toBeDefined();
+      expect(launched.agentSession).toEqual({ kind: "claude", value: "s-1" });
+    }),
+  ));
+
 const harnessesStarted = (calls: ReadonlyArray<Call>) =>
   calls
     .filter((call) => (call.argv ?? [])[1] === "start")

@@ -47,6 +47,15 @@ interface FakePane {
   terminal_id?: string | null;
   /** The socket of the one session that lists it; unset, every session does. */
   session?: string;
+  agent_session?: FakeAgentSession | null;
+}
+
+/** The harness session herdr says a pane's agent is driving. */
+interface FakeAgentSession {
+  source: string;
+  agent: string;
+  kind: string;
+  value: string;
 }
 
 interface FakeAgent {
@@ -54,6 +63,8 @@ interface FakeAgent {
   pane_id: string;
   /** herdr's identity for the process; one per start, or defaulted per name. */
   terminal_id?: string;
+  workspace_id?: string;
+  agent_session?: FakeAgentSession | null;
 }
 
 /** A workspace herdr has. Empty by default: a test that cares adds its own. */
@@ -110,6 +121,12 @@ export interface FakeResult {
 }
 
 const FakeTabSchema = Schema.Struct({ tab_id: Schema.String, label: Schema.String });
+const FakeAgentSessionSchema = Schema.Struct({
+  source: Schema.String,
+  agent: Schema.String,
+  kind: Schema.String,
+  value: Schema.String,
+});
 const FakePaneSchema = Schema.Struct({
   pane_id: Schema.String,
   tab_id: Schema.String,
@@ -124,11 +141,14 @@ const FakePaneSchema = Schema.Struct({
   foreground_cwd: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /** The socket of the one session that lists it; unset, every session does. */
   session: Schema.optionalKey(Schema.String),
+  agent_session: Schema.optionalKey(Schema.NullOr(FakeAgentSessionSchema)),
 });
 const FakeAgentSchema = Schema.Struct({
   name: Schema.String,
   pane_id: Schema.String,
   terminal_id: Schema.optionalKey(Schema.String),
+  workspace_id: Schema.optionalKey(Schema.String),
+  agent_session: Schema.optionalKey(Schema.NullOr(FakeAgentSessionSchema)),
 });
 const FakeWorkspaceSchema = Schema.Struct({
   workspace_id: Schema.String,
@@ -231,6 +251,8 @@ function mutableState(state: State | Schema.Schema.Type<typeof StateJson>): Stat
       agent_status: pane.agent_status ?? null,
       workspace_id: pane.workspace_id ?? null,
       foreground_cwd: pane.foreground_cwd ?? null,
+      terminal_id: pane.terminal_id,
+      agent_session: pane.agent_session,
     })),
     agents: (state.agents ?? []).map((agent) => ({ ...agent })),
     workspaces: (state.workspaces ?? []).map((workspace) => ({ ...workspace })),

@@ -4,7 +4,15 @@
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
-import { idleAgentsSweeper, JOURNAL, noteIdle, sweep, type IdleSince } from "../src/cleanup";
+import {
+  forgetGone,
+  idleAgentsSweeper,
+  JOURNAL,
+  noteIdle,
+  sweep,
+  type IdleSince,
+} from "../src/cleanup";
+import { Launched } from "../src/launches";
 import { Herdr, type AgentInfo } from "../src/herdr";
 import type { CompactionPorts, Stopped } from "../src/compaction";
 import { appendLine, ledgerPath } from "../src/steering";
@@ -40,7 +48,13 @@ const arranged = (opts: { focused?: boolean; harness?: string; runId?: string } 
     yield* launched("impl", opts.runId ?? "r1", TERMINAL, opts.harness);
   });
 
-const launched = (agent: string, runId: string, terminalId: string, harness = "claude") =>
+const launched = (
+  agent: string,
+  runId: string,
+  terminalId: string,
+  harness = "claude",
+  agentSession?: { kind: string; value: string },
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     yield* fs.makeDirectory(`${rig.stateDir}/agents/${runId}`, { recursive: true });
@@ -56,6 +70,7 @@ const launched = (agent: string, runId: string, terminalId: string, harness = "c
         workflow: "implement",
         harness,
         terminalId,
+        agentSession,
       }),
     );
   });
@@ -525,6 +540,142 @@ test("the host keeps when it first saw each agent idle or done, and anything els
     expect(idle.has("t-a")).toBe(false);
     idle.set("t-a", 100);
   }
-  noteIdle(idle, [agent("b", "idle")], 400);
+  forgetGone(idle, new Set(["t-b"]));
   expect([...idle]).toEqual([["t-b", 100]]);
 });
+
+const SESSION = { kind: "pi", value: "/home/mk/.pi/sessions/impl.jsonl" };
+const RESTORED = "t-restored";
+
+/** The Task's workspace after a herdr restart: its shell, and a pane resuming `session` on a new terminal. */
+const restored = (opts: { session: typeof SESSION | null; name?: string }) =>
+  Effect.gen(function* () {
+    yield* rig.addWorkspace("wT", "Project | Picker", "/project");
+    yield* rig.addPane("wT-p1", "wT-t1", "/project", null, "wT");
+    yield* rig.addRestored({
+      paneId: "wT-p9",
+      workspaceId: "wT",
+      terminalId: RESTORED,
+      session: opts.session,
+      agent: opts.name,
+    });
+    yield* launched("impl", "r1", TERMINAL, "pi", SESSION);
+  });
+
+const restoredIdleFor = (ms: number) =>
+  Effect.map(ago(ms), (at): IdleSince => new Map([[RESTORED, at]]));
+
+test("a pane herdr restored without its name is the agent whose session it resumes, and closes idle", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* restored({ session: SESSION });
+      const judged = yield* sweep(
+        [sweeper([yield* finished(2 * HOUR_MS)], yield* restoredIdleFor(61 * MIN_MS))],
+        rig.stateDir,
+        "host",
+      );
+      expect(judged.remove).toEqual([
+        { kind: "idle-agent", target: TARGET, bytes: 0, reason: "idle for 61 min" },
+      ]);
+      const calls = yield* rig.calls();
+      expect(calls.filter((call) => call.cmd === "pane close").map((c) => c.argv?.at(2))).toEqual([
+        "wT-p9",
+      ]);
+      expect(yield* runLog).toContain(
+        "impl ended: idle for 61 min; its harness reported no transcript",
+      );
+    }),
+  ));
+
+test("a restored pane that kept its name, on a new terminal, closes as the agent its session proves", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* restored({ session: SESSION, name: "impl" });
+      const judged = yield* sweep(
+        [sweeper([yield* finished(2 * HOUR_MS)], yield* restoredIdleFor(61 * MIN_MS))],
+        rig.stateDir,
+        "host",
+      );
+      expect(judged.remove.map((item) => item.target)).toEqual([TARGET]);
+      expect(yield* closes).toBe(1);
+    }),
+  ));
+
+test("a restored pane on another session, or on none, is neither listed nor closed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const session of [{ kind: "pi", value: "/elsewhere.jsonl" }, null]) {
+        yield* rig.close();
+        rig = yield* Rig.make();
+        yield* rig.startSocket();
+        yield* restored({ session, name: session === null ? undefined : "impl" });
+        const judged = yield* sweep(
+          [sweeper([yield* finished(2 * HOUR_MS)], yield* restoredIdleFor(2 * HOUR_MS))],
+          rig.stateDir,
+          "host",
+        );
+        expect(judged).toEqual({ remove: [], keep: [], bytes: 0 });
+        expect(yield* closes).toBe(0);
+      }
+    }),
+  ));
+
+test("a restored pane is proved after the registry dropped its agent and the host restarted", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* restored({ session: SESSION });
+      const fs = yield* FileSystem.FileSystem;
+      const registry = `${rig.stateDir}/agents/wT-dropped.json`;
+      yield* fs.writeFileString(registry, "[]");
+      const idle: IdleSince = new Map();
+      const first = yield* sweep(
+        [sweeper([yield* finished(30 * HOUR_MS)], idle)],
+        rig.stateDir,
+        "host",
+      );
+      expect(first.keep).toEqual(kept("idle 0 of 60 min"));
+      expect(idle.has(RESTORED)).toBe(true);
+
+      idle.set(RESTORED, yield* ago(61 * MIN_MS));
+      const later = yield* sweep(
+        [sweeper([yield* finished(30 * HOUR_MS)], idle)],
+        rig.stateDir,
+        "host",
+      );
+      expect(later.remove.map((item) => item.target)).toEqual([TARGET]);
+    }),
+  ));
+
+test("a restored agent idle since before its Run finished counts from the finish", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* restored({ session: SESSION });
+      const judged = yield* sweep(
+        [sweeper([yield* finished(30 * MIN_MS)], yield* restoredIdleFor(2 * HOUR_MS))],
+        rig.stateDir,
+        "host",
+      );
+      expect(judged.keep).toEqual(kept("idle 30 of 60 min"));
+    }),
+  ));
+
+test("the sweep records the session of an agent still on its launch's terminal", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addWorkspace("wT", "Project | Picker", "/project");
+      yield* rig.addRestored({
+        paneId: "wT-p2",
+        workspaceId: "wT",
+        terminalId: TERMINAL,
+        session: SESSION,
+        agent: "impl",
+      });
+      yield* launched("impl", "r1", TERMINAL, "pi");
+      yield* sweep([sweeper([yield* finished(0)], new Map())], rig.stateDir, "host");
+      const fs = yield* FileSystem.FileSystem;
+      const record = yield* fs.readFileString(`${rig.stateDir}/agents/r1/build.launch.json`);
+      expect(
+        Schema.decodeUnknownSync(Schema.fromJsonString(Launched))(record).agentSession,
+      ).toEqual(SESSION);
+    }),
+  ));

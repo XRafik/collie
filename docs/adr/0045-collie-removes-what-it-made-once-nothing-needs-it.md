@@ -49,7 +49,10 @@ Collie knows, proved the way that kind is proved:
   it.
 - **A workspace:** proved by a Task's record. Never the Home, and never a workspace that
   is no Task's.
-- **A pane:** proved by a launch record.
+- **A pane:** proved by a launch record. Amended by
+  [ADR-draft-a-finished-runs-idle-agent-is-closed](draft-a-finished-runs-idle-agent-is-closed.md):
+  a pane herdr restored after a restart is proved by the harness session Collie recorded
+  for the agent it restores.
 - **A process:** proved by its lock or its control record. Amended by
   [ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md):
   a check's process is proved by its record or by the marker it runs with, and is ended

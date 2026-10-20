@@ -1002,6 +1002,15 @@ taken back with their new terminals, any that are gone are reopened, and the tok
 written again. The record keeps when and why, and `collie home show` prints it as `healed`.
 This rests on herdr never handing a workspace id to a different workspace.
 
+A Run's agents come back the same way, each resumed in its harness session on a new
+terminal, and sometimes without its name. A launch record keeps the terminal and the
+harness session herdr reported for its agent, and the Cleanup sweep fills the session in
+while the agent is still on that terminal. A restored pane is proved to be that agent by
+its session alone, in kind and value, whatever its terminal, name or pane id: the idle
+close ends it as that agent, and the Task workspace sweep counts it as Collie's pane. A
+pane with no session, or one no launch recorded, proves nothing
+([ADR-draft-a-finished-runs-idle-agent-is-closed](adr/draft-a-finished-runs-idle-agent-is-closed.md), D4).
+
 A **label is never proof**. Two workspaces can be called the same thing, and a home test
 reads `home.ts` to keep it that way. A live token with no record is not proof either — it
 is a previous Collie's Home or another state directory's, and adopting it silently would

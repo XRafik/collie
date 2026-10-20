@@ -47,7 +47,15 @@ import {
   readControl,
   type CompactionPorts,
 } from "./compaction";
-import { readLaunches, stemOf, type Launched } from "./launches";
+import {
+  AgentSession,
+  launchDir,
+  LAUNCH_SUFFIX,
+  readLaunches,
+  sameSession,
+  stemOf,
+  Launched,
+} from "./launches";
 import { endAgent, endedLine, runLog } from "./agent-end";
 import { COMPACTION_PORTS, transcriptOf } from "./compactors";
 import { uploadsDir } from "./uploads";
@@ -684,15 +692,25 @@ const SECTION_SAID: Record<Section, string> = {
   finished: "Finished",
 };
 
-const LaunchedTerminal = Schema.fromJsonString(
-  Schema.Struct({ terminalId: Schema.optionalKey(Schema.String) }),
+const LaunchedPane = Schema.fromJsonString(
+  Schema.Struct({
+    terminalId: Schema.optionalKey(Schema.String),
+    agentSession: Schema.optionalKey(AgentSession),
+  }),
 );
 
-/** The terminals of every agent `runs` launched, from their launch records. */
-export const launchedTerminals = (stateDir: string, runs: ReadonlyArray<string>) =>
+/** What proves a pane is one of some Runs' agents, from their launch records. */
+export interface LaunchedPanes {
+  readonly terminals: ReadonlySet<string>;
+  readonly sessions: ReadonlyArray<AgentSession>;
+}
+
+/** The terminal and the harness session of every agent `runs` launched. */
+export const launchedPanes = (stateDir: string, runs: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const terminals = new Set<string>();
+    const sessions: AgentSession[] = [];
     for (const run of runs) {
       const dir = `${stateDir}/agents/${run}`;
       const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
@@ -700,24 +718,33 @@ export const launchedTerminals = (stateDir: string, runs: ReadonlyArray<string>)
         const text = yield* fs
           .readFileString(`${dir}/${name}`)
           .pipe(Effect.orElseSucceed(() => ""));
-        const launched = Schema.decodeUnknownOption(LaunchedTerminal)(text);
-        if (Option.isSome(launched) && launched.value.terminalId !== undefined)
-          terminals.add(launched.value.terminalId);
+        const launched = Schema.decodeUnknownOption(LaunchedPane)(text);
+        if (Option.isNone(launched)) continue;
+        if (launched.value.terminalId !== undefined) terminals.add(launched.value.terminalId);
+        if (launched.value.agentSession !== undefined) sessions.push(launched.value.agentSession);
       }
     }
-    return terminals;
+    return { terminals, sessions } satisfies LaunchedPanes;
   });
+
+/** A pane is a launched agent by its terminal, or by the harness session herdr restored in it. */
+export const isLaunched = (
+  launched: LaunchedPanes,
+  pane: Pick<PaneInfo, "terminalId" | "agentSession">,
+) =>
+  (pane.terminalId !== null && launched.terminals.has(pane.terminalId)) ||
+  launched.sessions.some((session) => sameSession(session, pane.agentSession));
 
 export const paneNotOwned = (
   task: Pick<TaskRecord, "workspace" | "root_pane">,
   panes: ReadonlyArray<PaneInfo>,
-  terminals: ReadonlySet<string>,
+  launched: LaunchedPanes,
 ) =>
   panes.find(
     (pane) =>
       pane.workspaceId === task.workspace &&
       pane.paneId !== task.root_pane &&
-      (pane.terminalId === null || !terminals.has(pane.terminalId)),
+      !isLaunched(launched, pane),
   );
 
 /**
@@ -772,7 +799,7 @@ export const taskWorkspacesSweeper = (opts: {
     | { keep: string }
     | {
         remove: string;
-        terminals: ReadonlySet<string>;
+        launched: LaunchedPanes;
         panes: ReadonlyArray<PaneInfo>;
         writing: string | null;
       }
@@ -804,16 +831,16 @@ export const taskWorkspacesSweeper = (opts: {
       const minutes = Math.floor((now - since) / 60_000);
       if (now - since < FINISHED_GRACE_MS) return { keep: `Finished ${minutes} min ago` };
       if (open.focused) return { keep: "in focus" };
-      const terminals = yield* launchedTerminals(
+      const launched = yield* launchedPanes(
         opts.stateDir,
         opts.runs.filter((run) => run.task === task.id).map((run) => run.id),
       );
-      const foreign = paneNotOwned(task, panes.value, terminals);
+      const foreign = paneNotOwned(task, panes.value, launched);
       if (foreign !== undefined)
         return { keep: `holds a pane Collie did not open (${foreign.paneId})` };
       // Kept in a listing, while a sweep stops it again.
       const writing = yield* stillWriting(task);
-      return { remove: `Finished ${minutes} min ago`, terminals, panes: panes.value, writing };
+      return { remove: `Finished ${minutes} min ago`, launched, panes: panes.value, writing };
     });
 
   const taskAt = (target: string) => opts.tasks.find((task) => task.workspace === target);
@@ -856,7 +883,9 @@ export const taskWorkspacesSweeper = (opts: {
           (agent) =>
             inside.has(agent.paneId) &&
             !launches.some(
-              (one) => one.agent === agent.name && one.terminalId === agent.terminalId,
+              (one) =>
+                (one.agent === agent.name && one.terminalId === agent.terminalId) ||
+                sameSession(one.agentSession, agent.agentSession),
             ),
         );
         if (stranger !== undefined)
@@ -891,12 +920,12 @@ export const taskWorkspacesSweeper = (opts: {
         }
         const closed = yield* session.herdr.workspaceClose(task.workspace).pipe(Effect.result);
         if (closed._tag === "Failure") return { kept: herdrFailureReason(closed.failure) };
-        // Its agents left in another workspace go with it, matched by terminal as a stop does.
+        // Its agents left in another workspace go with it, matched as a stop does.
         const gone = new Set<string>();
         for (const other of opts.sessions) {
           const panes = yield* other.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
           for (const pane of panes)
-            if (pane.terminalId !== null && judged.terminals.has(pane.terminalId)) {
+            if (pane.terminalId !== null && isLaunched(judged.launched, pane)) {
               const shut = yield* other.herdr.paneClose(pane.paneId).pipe(Effect.result);
               if (shut._tag === "Success") gone.add(pane.terminalId);
             }
@@ -914,16 +943,39 @@ export const taskWorkspacesSweeper = (opts: {
 /** When this host first saw each agent `idle` or `done` without a break since, by terminal. */
 export type IdleSince = Map<string, number>;
 
-const IDLE: ReadonlySet<AgentStatus> = new Set(["idle", "done"]);
+const IDLE: ReadonlySet<string | null> = new Set<AgentStatus>(["idle", "done"]);
 
-/** Notes `agents`, herdr's whole listing: any other status, or an agent gone, clears its time. */
-export const noteIdle = (idle: IdleSince, agents: ReadonlyArray<AgentInfo>, now: number) => {
-  const listed = new Map(agents.map((agent) => [agent.terminalId ?? agent.name, agent.status]));
-  for (const key of idle.keys()) if (!IDLE.has(listed.get(key) ?? "unknown")) idle.delete(key);
-  for (const [key, status] of listed) if (IDLE.has(status) && !idle.has(key)) idle.set(key, now);
+/** Notes what herdr says of `agents`: any status but idle or done clears its time. */
+export const noteIdle = (
+  idle: IdleSince,
+  agents: ReadonlyArray<{ terminalId: string | null; status: string | null }>,
+  now: number,
+) => {
+  for (const { terminalId, status } of agents) {
+    if (terminalId === null) continue;
+    if (!IDLE.has(status)) idle.delete(terminalId);
+    else if (!idle.has(terminalId)) idle.set(terminalId, now);
+  }
+};
+
+/** Clears the time of every terminal herdr no longer has. */
+export const forgetGone = (idle: IdleSince, terminals: ReadonlySet<string>) => {
+  for (const key of idle.keys()) if (!terminals.has(key)) idle.delete(key);
 };
 
 const FINISHED: ReadonlySet<RunFacts["state"]> = new Set(["succeeded", "failed", "stopped"]);
+
+/** An agent herdr has now: a named one, or a pane it restored without the name. */
+interface Live {
+  readonly name: string | null;
+  readonly paneId: string;
+  readonly workspaceId: string | null;
+  readonly terminalId: string | null;
+  readonly agentSession: AgentSession | null;
+  readonly status: string | null;
+}
+
+const LaunchedJson = Schema.fromJsonString(Launched);
 const QUEUED: ReadonlySet<string> = new Set(["reserved", "deferred"]);
 
 /**
@@ -945,45 +997,95 @@ export const idleAgentsSweeper = (opts: {
   const targetOf = (agent: string, runId: string) => `${agent} of ${runId}`;
   const minutes = (ms: number) => Math.floor(ms / 60_000);
 
-  /** Each agent a finished Run launched that herdr lists on its recorded terminal, and nothing a live Run names. */
+  /**
+   * Each agent a finished Run launched that herdr has on its recorded terminal, or in a
+   * pane resuming its recorded harness session, and nothing a live Run names.
+   */
   const candidates = Effect.gen(function* () {
-    const live = new Set<string>();
+    const sessions: AgentSession[] = [];
+    const live = { terminals: new Set<string>(), sessions };
     const named: Array<{ run: RunFacts; launched: Launched }> = [];
     for (const run of opts.runs)
       for (const launched of yield* readLaunches(opts.stateDir, run.id)) {
-        if (launched.terminalId === undefined) continue;
         if (FINISHED.has(run.state)) named.push({ run, launched });
-        else live.add(launched.terminalId);
+        else {
+          if (launched.terminalId !== undefined) live.terminals.add(launched.terminalId);
+          if (launched.agentSession !== undefined) sessions.push(launched.agentSession);
+        }
       }
+    const listings = yield* Effect.forEach(opts.sessions, (session) =>
+      Effect.all({
+        agents: Effect.option(session.herdr.agentList()),
+        panes: Effect.option(session.herdr.paneList()),
+      }).pipe(
+        Effect.map(({ agents, panes }) => {
+          const named = Option.getOrElse(agents, (): ReadonlyArray<AgentInfo> => []);
+          // A pane no named agent stands for: a restored one that lost its name.
+          const unnamed = Option.getOrElse(panes, (): ReadonlyArray<PaneInfo> => []).filter(
+            (pane) => !named.some((agent) => agent.paneId === pane.paneId),
+          );
+          return {
+            session,
+            live: [
+              ...named.map((agent): Live => ({ ...agent, status: agent.status })),
+              ...unnamed.map((pane): Live => ({
+                ...pane,
+                name: null,
+                status: pane.agentStatus ?? null,
+              })),
+            ],
+            listed: Option.isSome(agents) && Option.isSome(panes),
+          };
+        }),
+      ),
+    );
+    const seen = listings.flatMap((one) => one.live);
+    noteIdle(opts.idle, seen, yield* Clock.currentTimeMillis);
+    if (listings.every((one) => one.listed))
+      forgetGone(opts.idle, new Set(seen.flatMap((one) => one.terminalId ?? [])));
+
     const found: Array<{
       run: RunFacts;
       launched: Launched;
-      agent: AgentInfo;
+      at: Live & { terminalId: string };
       session: (typeof opts.sessions)[number];
     }> = [];
-    const listings = yield* Effect.forEach(opts.sessions, (session) =>
-      session.herdr.agentList().pipe(
-        Effect.orElseSucceed((): ReadonlyArray<AgentInfo> => []),
-        Effect.map((agents) => ({ session, agents })),
-      ),
-    );
-    noteIdle(
-      opts.idle,
-      listings.flatMap((one) => one.agents),
-      yield* Clock.currentTimeMillis,
-    );
-    for (const { run, launched } of named) {
-      if (live.has(launched.terminalId!)) continue;
-      if (found.some((one) => one.launched.terminalId === launched.terminalId)) continue;
-      for (const { session, agents } of listings) {
-        const agent = agents.find(
-          (one) => one.name === launched.agent && one.terminalId === launched.terminalId,
+    for (const { run, launched } of named)
+      for (const { session, live: here } of listings) {
+        const own = here.find(
+          (one) =>
+            one.name === launched.agent &&
+            one.terminalId !== null &&
+            one.terminalId === launched.terminalId,
         );
-        if (agent !== undefined) found.push({ run, launched, agent, session });
+        if (own !== undefined && !sameSession(own.agentSession, launched.agentSession))
+          yield* recordSession(launched, own.agentSession);
+        const at = own ?? here.find((one) => sameSession(one.agentSession, launched.agentSession));
+        if (at === undefined || at.terminalId === null) continue;
+        const terminalId = at.terminalId;
+        if (isLaunched(live, { terminalId, agentSession: launched.agentSession ?? null })) continue;
+        if (found.some((one) => one.at.terminalId === terminalId)) continue;
+        found.push({ run, launched, at: { ...at, terminalId }, session });
       }
-    }
     return found;
   });
+
+  /**
+   * Records the session herdr reports for an agent still on its launch's terminal, so a
+   * pane herdr restores later is proved by it.
+   */
+  const recordSession = (launched: Launched, agentSession: AgentSession | null) =>
+    Effect.gen(function* () {
+      if (agentSession === null) return;
+      const fs = yield* FileSystem.FileSystem;
+      const file = `${launchDir(opts.stateDir, launched.runId)}/${stemOf(launched)}${LAUNCH_SUFFIX}`;
+      const now = yield* Schema.decodeUnknownEffect(LaunchedJson)(yield* fs.readFileString(file));
+      if (now.terminalId !== launched.terminalId) return;
+      yield* fs.writeFileString(
+        file,
+        yield* Schema.encodeEffect(LaunchedJson)({ ...now, agentSession }),
+      );
+    }).pipe(Effect.ignore);
 
   type Candidate = Effect.Success<typeof candidates>[number];
 
@@ -992,16 +1094,16 @@ export const idleAgentsSweeper = (opts: {
     one: Candidate,
   ): Effect.Effect<{ keep: string } | { idleFor: number }, never, BunServices> =>
     Effect.gen(function* () {
-      if (!IDLE.has(one.agent.status)) return { keep: one.agent.status };
+      if (!IDLE.has(one.at.status)) return { keep: one.at.status ?? "unknown" };
       const now = yield* Clock.currentTimeMillis;
-      const since = opts.idle.get(one.launched.terminalId!) ?? now;
+      const since = opts.idle.get(one.at.terminalId) ?? now;
       const finished = one.run.finished === null ? since : epochMs(one.run.finished);
       const idleFor = now - Math.max(since, finished);
       if (idleFor < opts.idleCloseMs)
         return { keep: `idle ${minutes(idleFor)} of ${minutes(opts.idleCloseMs)} min` };
-      const ledger = yield* readLedger(
-        yield* ledgerPath(opts.stateDir, one.launched.terminalId!),
-      ).pipe(Effect.orElseSucceed(() => []));
+      const ledger = yield* readLedger(yield* ledgerPath(opts.stateDir, one.at.terminalId)).pipe(
+        Effect.orElseSucceed(() => []),
+      );
       if ([...newestById(ledger).values()].some((delivery) => QUEUED.has(delivery.state)))
         return { keep: "a Delivery to it is queued" };
       const stems = (yield* readLaunches(opts.stateDir, one.run.id))
@@ -1014,8 +1116,8 @@ export const idleAgentsSweeper = (opts: {
       if (Option.isNone(workspaces) || Option.isNone(panes))
         return { keep: "could not ask herdr what is open" };
       const workspace =
-        one.agent.workspaceId ??
-        panes.value.find((pane) => pane.paneId === one.agent.paneId)?.workspaceId;
+        one.at.workspaceId ??
+        panes.value.find((pane) => pane.paneId === one.at.paneId)?.workspaceId;
       if (workspaces.value.some((at) => at.workspaceId === workspace && at.focused))
         return { keep: "in focus" };
       if (
@@ -1202,21 +1304,20 @@ export const retentionSweeper = (opts: {
       const section = sectionOf(view);
       if (section !== "finished") return { keep: SECTION_SAID[section] };
       const workspaces: string[] = [];
-      const terminals: string[] = [];
+      const open: PaneInfo[] = [];
       for (const session of opts.sessions) {
         const listed = yield* session.workspaceList().pipe(Effect.option);
         const panes = yield* session.paneList().pipe(Effect.option);
         if (Option.isNone(listed) || Option.isNone(panes))
           return { keep: "could not ask herdr what is open" };
         workspaces.push(...listed.value.map((one) => one.workspaceId));
-        for (const pane of panes.value)
-          if (pane.terminalId !== null) terminals.push(pane.terminalId);
+        open.push(...panes.value);
       }
       if (workspaces.includes(task.workspace)) return { keep: "its workspace is open" };
       const mine = facts.runs.filter((run) => run.task === task.id);
       const ids = mine.map((run) => run.id);
-      const launched = yield* launchedTerminals(opts.stateDir, ids);
-      if (terminals.some((terminal) => launched.has(terminal)))
+      const launched = yield* launchedPanes(opts.stateDir, ids);
+      if (open.some((pane) => isLaunched(launched, pane)))
         return { keep: "an agent of it is alive" };
       for (const run of mine)
         if (

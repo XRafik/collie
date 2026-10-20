@@ -12,10 +12,11 @@
 // every agent has answered, then logs each end with `endedLine`. Ticket 07's unit stop goes
 // after step 5, or after the caller's own close; ticket 08's Closure is written with step 6.
 
-import { Data, Effect, FileSystem } from "effect";
+import { Data, Effect, FileSystem, Result } from "effect";
+import type { BunServices } from "@effect/platform-bun/BunServices";
 import { STOP_WAIT_MS, notStopped, stopAgent, type CompactionDeps } from "./compaction";
 import type { AgentInfo, Herdr, HerdrError, PaneInfo } from "./herdr";
-import { launchDir, type Launched } from "./launches";
+import { launchDir, sameSession, type Launched } from "./launches";
 import { reason } from "./naming";
 import { readTask, taskOfWorkspace, withTaskLock, writeTask } from "./task";
 
@@ -58,7 +59,7 @@ export class PaneOpen extends Data.TaggedError("PaneOpen")<{
  */
 export const endAgent = Effect.fn("AgentEnd.end")(function* (
   deps: EndDeps,
-  launched: Pick<Launched, "agent" | "terminalId">,
+  launched: Pick<Launched, "agent" | "terminalId" | "agentSession">,
   why: string,
   closes: Closes,
   listed?: ReadonlyArray<AgentInfo>,
@@ -67,19 +68,28 @@ export const endAgent = Effect.fn("AgentEnd.end")(function* (
     listed ??
     (yield* deps.herdr.agentList().pipe(Effect.mapError((cause) => new AgentsUnlisted({ cause }))));
   const one = agents.find((agent) => agent.name === launched.agent);
-  if (one !== undefined && (launched.terminalId === undefined || one.terminalId === null))
-    return { _tag: "Unprovable", reason: `${launched.agent} ${UNPROVABLE}` } satisfies Ended;
-  if (one !== undefined && one.terminalId !== launched.terminalId)
-    return closes === "caller"
-      ? ({
-          _tag: "Replaced",
-          reason: `${launched.agent} was started again since, and is not this Run's to end`,
-        } satisfies Ended)
-      : ({ _tag: "Closed", ended: false } satisfies Ended);
+  const restored =
+    one !== undefined && one.terminalId !== null && one.terminalId === launched.terminalId
+      ? undefined
+      : yield* restoredPane(deps, launched);
+  if (restored === undefined) {
+    if (one !== undefined && (launched.terminalId === undefined || one.terminalId === null))
+      return { _tag: "Unprovable", reason: `${launched.agent} ${UNPROVABLE}` } satisfies Ended;
+    if (one !== undefined && one.terminalId !== launched.terminalId)
+      return closes === "caller"
+        ? ({
+            _tag: "Replaced",
+            reason: `${launched.agent} was started again since, and is not this Run's to end`,
+          } satisfies Ended)
+        : ({ _tag: "Closed", ended: false } satisfies Ended);
+  }
+  const paneId = restored?.paneId ?? one?.paneId;
+  // Another agent started on the name since has the controls kept under it.
+  const theirs = restored !== undefined && one !== undefined && one.paneId !== restored.paneId;
 
-  const reached = yield* stopAgent(deps, launched.agent, deps.stopMs ?? STOP_WAIT_MS).pipe(
-    Effect.result,
-  );
+  const reached = theirs
+    ? Result.succeed(null)
+    : yield* stopAgent(deps, launched.agent, deps.stopMs ?? STOP_WAIT_MS).pipe(Effect.result);
   if (reached._tag === "Failure") {
     const locked = reason(reached.failure);
     return {
@@ -94,18 +104,32 @@ export const endAgent = Effect.fn("AgentEnd.end")(function* (
       reason: notStopped(launched.agent, reached.success, reached.success.target),
     } satisfies Ended;
 
-  if (one !== undefined && closes === "close") {
+  if (paneId !== undefined && closes === "close") {
     const panes = yield* deps.herdr.paneList().pipe(Effect.orElseSucceed(() => []));
-    yield* keepWorkspace(deps, one.paneId, panes);
+    yield* keepWorkspace(deps, paneId, panes);
     yield* deps.herdr
-      .paneClose(one.paneId)
-      .pipe(Effect.mapError((cause) => new PaneOpen({ paneId: one.paneId, cause })));
+      .paneClose(paneId)
+      .pipe(Effect.mapError((cause) => new PaneOpen({ paneId, cause })));
   }
-  const ended = one !== undefined || reached.success !== null;
+  const ended = paneId !== undefined || reached.success !== null;
   if (ended && closes === "close")
     yield* deps.log(endedLine(launched.agent, why)).pipe(Effect.ignore);
   return { _tag: "Closed", ended } satisfies Ended;
 });
+
+/** A pane herdr restored resuming the harness session recorded for this agent, if any. */
+const restoredPane = (
+  deps: EndDeps,
+  launched: Pick<Launched, "agentSession">,
+): Effect.Effect<PaneInfo | undefined, never, BunServices> =>
+  launched.agentSession === undefined
+    ? Effect.succeed(undefined)
+    : deps.herdr.paneList().pipe(
+        Effect.map((panes) =>
+          panes.find((pane) => sameSession(pane.agentSession, launched.agentSession)),
+        ),
+        Effect.orElseSucceed(() => undefined),
+      );
 
 /**
  * herdr drops a workspace with its last pane, and an end never takes a Task's workspace:

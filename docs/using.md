@@ -2884,7 +2884,12 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   its Task's workspace kept with a shell. One that does not reach **Quiet** is kept, and
   tried again by the next sweep. The Run's log says `<agent> ended: idle for <N> min; its
   transcript is at <path>`, or that its harness reported none. A host counts from when it
-  first sees an agent idle, so a restart only delays a close. A finished Run can be
+  first sees an agent idle, so a restart only delays a close. After a herdr restart, the
+  agents herdr resumed for finished Runs close within the hour too: a pane on a new
+  terminal, even one that lost its name, is the agent whose harness session Collie recorded
+  at its launch or at a sweep, and one resuming any other session, or none, is left alone.
+  The same proof makes it Collie's pane, not yours, when its Task's workspace closes. A
+  finished Run can be
   **Reopened** only until its agents close: a steer after that is refused, naming its
   Follow-up, and Collie never launches the agent again for that Run.
 - **Worktrees** Collie made, once they are **Settled** (see

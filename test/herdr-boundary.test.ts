@@ -264,6 +264,35 @@ test("workspace replies may omit a working directory", () =>
     }),
   ));
 
+test("a pane carries the harness session herdr reports for it, and none where it reports none", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const session = { source: "herdr", agent: "pi", kind: "pi", value: "/s/impl.jsonl" };
+      class CurrentHerdr extends Herdr {
+        protected override exec() {
+          return Effect.succeed({
+            code: 0,
+            stdout: JSON.stringify({
+              result: {
+                panes: [
+                  { pane_id: "p1", tab_id: "t1", terminal_id: "t-1", agent_session: session },
+                  { pane_id: "p2", tab_id: "t1", terminal_id: "t-2" },
+                ],
+              },
+            }),
+            stderr: "",
+          });
+        }
+      }
+
+      const panes = yield* new CurrentHerdr(rig.pluginEnv()).paneList();
+      expect(panes.map((pane) => pane.agentSession)).toEqual([
+        { kind: "pi", value: "/s/impl.jsonl" },
+        null,
+      ]);
+    }),
+  ));
+
 test("a pane tail comes back as text even when the pane is showing JSON", () =>
   runEffect(
     Effect.gen(function* () {

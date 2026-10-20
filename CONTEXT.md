@@ -507,8 +507,9 @@ Apart from that order, an agent Collie launched for a Run that has finished is c
 herdr has reported it idle for `idle_close_ms` (an hour by default; 0 never), counted
 from the Run's finish if it went idle before then. It is kept while a Delivery to it is
 queued, a question it asked is open, its pane is focused or a human has typed into it
-since it went idle. A closed agent stays closed: a steer to it is refused, and the Run's
-Follow-up is offered. A live Run's agents are not closed idle
+since it went idle. A pane herdr restored after a restart is the agent whose recorded
+harness session it resumes. A closed agent stays closed: a steer to it is refused, and the
+Run's Follow-up is offered. A live Run's agents are not closed idle
 (ADR-draft-a-finished-runs-idle-agent-is-closed).
 
 **Renovate Run** — One execution of the `renovate` Workflow: one repository, from claiming

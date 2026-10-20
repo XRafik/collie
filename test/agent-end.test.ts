@@ -203,6 +203,61 @@ test("another process under the agent's name is left alone, without a word", () 
     }),
   ));
 
+const SESSION = { kind: "claude", value: "s-impl" };
+
+test("a pane herdr restored on the agent's recorded session ends as that agent, though another has its name", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged("impl", "p1");
+      yield* rig.reincarnate("impl");
+      yield* serverFor("impl");
+      yield* rig.addRestored({
+        paneId: "p9",
+        workspaceId: "w1",
+        terminalId: "t-new",
+        session: SESSION,
+      });
+      const stops: string[] = [];
+      const { deps, lines } = depsOf({ ports: served("quiet", stops) });
+      const ended = yield* endAgent(
+        deps,
+        { agent: "impl", terminalId: "term-impl", agentSession: SESSION },
+        "idle for 61 min",
+        "close",
+      );
+      expect(ended).toEqual({ _tag: "Closed", ended: true });
+      expect(stops).toEqual([]);
+      expect(yield* paneCloses).toEqual(["p9"]);
+      expect(lines).toEqual(["impl ended: idle for 61 min"]);
+    }),
+  ));
+
+test("without a matching session, an agent started again on the name is still left alone", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged("impl", "p1");
+      yield* rig.reincarnate("impl");
+      yield* rig.addRestored({
+        paneId: "p9",
+        workspaceId: "w1",
+        terminalId: "t-new",
+        session: { kind: "claude", value: "s-other" },
+      });
+      const { deps, lines } = depsOf();
+      const launched = { agent: "impl", terminalId: "term-impl", agentSession: SESSION };
+      expect(yield* endAgent(deps, launched, "idle", "close")).toEqual({
+        _tag: "Closed",
+        ended: false,
+      });
+      expect(yield* endAgent(deps, launched, "idle", "caller")).toEqual({
+        _tag: "Replaced",
+        reason: "impl was started again since, and is not this Run's to end",
+      });
+      expect(yield* paneCloses).toEqual([]);
+      expect(lines).toEqual([]);
+    }),
+  ));
+
 test("the workspace is kept when the agent's pane is its last", () =>
   runEffect(
     Effect.gen(function* () {

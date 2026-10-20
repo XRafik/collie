@@ -340,6 +340,43 @@ export class Rig {
     );
   }
 
+  /**
+   * A pane herdr restored after a restart: a new terminal resuming `session`, under
+   * `agent`'s name where it kept one.
+   */
+  addRestored(opts: {
+    paneId: string;
+    workspaceId: string;
+    terminalId: string;
+    session: { kind: string; value: string } | null;
+    agent?: string;
+    status?: string;
+  }) {
+    const agentSession =
+      opts.session === null ? null : { source: "herdr", agent: opts.session.kind, ...opts.session };
+    const pane = this.appendState("paneList", {
+      pane_id: opts.paneId,
+      tab_id: `${opts.workspaceId}-t9`,
+      label: null,
+      cwd: "/project",
+      agent: opts.agent ?? null,
+      agent_status: opts.status ?? "idle",
+      workspace_id: opts.workspaceId,
+      foreground_cwd: null,
+      terminal_id: opts.terminalId,
+      agent_session: agentSession,
+    });
+    if (opts.agent === undefined) return pane;
+    const agent = this.appendState("agents", {
+      name: opts.agent,
+      pane_id: opts.paneId,
+      workspace_id: opts.workspaceId,
+      terminal_id: opts.terminalId,
+      agent_session: agentSession,
+    });
+    return Effect.andThen(pane, agent);
+  }
+
   /** Another process under this agent's name, in the same pane. */
   reincarnate(name: string): Effect.Effect<void, RigError, FileSystem.FileSystem> {
     const statePath = `${this.logPath}.state.json`;
