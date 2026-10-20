@@ -54,6 +54,7 @@ const view = (runId: string, parent: string | null = null): RunView => ({
   diagnostic: null,
   parked: null,
   mr: null,
+  landing: null,
 });
 
 /** A host in `dir` answering as `build`, holding `views`, with each call it is asked counted. */

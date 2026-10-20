@@ -726,6 +726,22 @@ its work should.
 
 `host.defaultHead(cwd)` is the commit origin's default branch is at now, and fails where
 origin cannot be read; take it inside an Activity, so a replay reads the same commit.
+
+`host.merge({ runId, cwd, head })` merges the merge request the Run recorded with
+`host.mergeRequest`, at `head`, through the forge's REST merge: never an admin merge, never
+auto-merge. It fails with `WorkflowError` for a Run that recorded none. Before the forge is
+asked it writes the Run's landing record, which the Run's view shows as `landing`, and
+after, what came of it. It answers a `MergeOutcome` (`MergeOutcomeSchema` journals it):
+
+- `Merged`: this call merged it, at `sha`, and the landing is recorded landed.
+- `HeadMoved`: the merge request's `head` is no longer the one asked for; nothing merged.
+- `MergedOutside`: someone else merged it first, at `sha`, `by` whom and `at` when.
+- `Refused`: the forge's `reason`, such as a conflict or a merge request already closed.
+
+The landing is what keeps the merge watch from stopping this Run, and the Runs it was
+started from, when the merge lands ([The merge watch](internals.md#the-forge-boundary)).
+Take it inside an `Activity`, as `integrate` and `defaultHead` are: a replay after a host
+restart settles the attempt it left on the forge's word rather than merging again.
 `host.awaitProduction({ runId, cwd, sha, jobs, slug, url })` blocks, at no token cost, until
 the forge shows production carries `sha`, polling every five minutes. Meanwhile the card
 says what it waits for: `jobs` are the production jobs left for a human to play, which word

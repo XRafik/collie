@@ -1139,6 +1139,7 @@ for (const name of ["gitlab", "github"] as const) {
           });
           if (!review.ok) throw new Error(review.reason);
           expect(review).toMatchObject({
+            login: "me",
             state: "open",
             head: HEAD,
             merged: null,

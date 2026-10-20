@@ -51,6 +51,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `verify-spec.ts`       | Which commands Collie may run itself for a Run, and where that permission came from                       |
 | `check-proof.ts`       | A Check's proof on a tree, and which of a Run's Checks it runs itself                                     |
 | `ci-job.ts`            | A check left to CI: its job read through the forge, a failure settled, waited on, its pass recorded       |
+| `landing.ts`           | A Run's merge at a head: its landing record, and the one rule settling an attempt a restart interrupted   |
 | `checks.ts`            | The one reading of a Run's running and finished checks that every door uses                               |
 | `outcome.ts`           | What a Run must prove to close, per kind, and what is still missing                                       |
 | `metrics.ts`           | What a Run produced and when: evidence, slices, rework, context — never pane activity                     |

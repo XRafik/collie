@@ -55,6 +55,7 @@ import type { Source } from "./offers";
 import type { Asker } from "./proposals";
 import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
+import type { MergeOutcome } from "./landing";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -73,6 +74,7 @@ export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 export { parseMrTarget, type MrRef } from "./board-model";
 /** What merging the default branch into a Run's branch did (`HostApi.integrate`). */
 export { IntegrationSchema, type Integration } from "./integrate";
+export { MergeOutcomeSchema, type MergeOutcome } from "./landing";
 
 export {
   CheckSchema,
@@ -740,6 +742,21 @@ export interface HostApi {
    * inside an Activity, so a replay reads the same commit. Fails where origin cannot be read.
    */
   readonly defaultHead: (cwd: string) => Effect.Effect<string, WorkflowError>;
+  /**
+   * Merges the merge request this Run recorded at `head`, through the forge's REST merge,
+   * never as an admin and never by auto-merge. The Run's landing record is written before
+   * the forge is asked and says after what came of it; the merge watch reads it to leave this
+   * Run, and the Runs it was started from, running when the merge lands. Answers `Merged`
+   * with the merged commit, `HeadMoved` where the merge request's head is no longer `head`,
+   * `MergedOutside` where someone else merged it first, or `Refused` with the forge's why.
+   * Fails for a Run that recorded no merge request. Take it inside an Activity: a replay
+   * settles an attempt an earlier host left on the forge's word rather than merging again.
+   */
+  readonly merge: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly head: string;
+  }) => Effect.Effect<MergeOutcome, WorkflowError>;
   /**
    * Blocks until the forge shows production carries `sha`, costing wall clock and no model
    * tokens, and says on the card meanwhile what it waits for: `jobs` are the production

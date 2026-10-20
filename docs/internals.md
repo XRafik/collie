@@ -794,6 +794,35 @@ what the review read says, never on an agent's Output
   back), already merged (with the commit, head, who and when), head moved, or refused with
   the forge's reason.
 
+A Run merges through `host.merge`, never through `merge` itself, so that it lands with a
+**landing record** (`src/landing.ts`), kept as `landing.json` and log lines in the Run's
+own directory. The attempt, naming the merge request, the head and when, is written before
+the forge is asked; it becomes landed with the merged commit when the forge answers that
+this call merged it, and withdrawn on a refusal, a moved head, or a merge someone else made
+first.
+
+**The merge watch** (`settleMerges` in `src/merges.ts`) stops every running or waiting Run
+of a Task that began before its merge request merged: the work landed, so what is still
+building it is done. It leaves running the Run that landed it, and every Run up that Run's
+parent chain, since a Release Run under an implement Run has more to do after the merge
+(tag, stage, production), and its parents wait on it. It decides this from the recorded
+landing and the parent chain, never from a workflow's id
+([ADR-0029](adr/0029-one-host-acts-for-a-run-and-a-workflows-name-decides-nothing.md)): a
+landed record for that merge request spares, and so does an attempt this host process is
+making now, since the watch can read the merge before the call records landed. A withdrawn
+record, or one for another merge request, spares nothing.
+
+An attempt with no outcome, left by an earlier host process, is settled on the forge's word
+before it spares anything, by one rule (`settleAttempt`) that a replayed `host.merge` uses
+too. A merge request still open has nothing to settle: the replay withdraws the attempt and
+merges. One merged by Collie's login at the attempt's head, no earlier than a minute before
+the attempt was written, is the merge whose answer the restart lost, and becomes landed.
+Any other merge is someone else's: the attempt is withdrawn, the replay answers merged
+outside this Run, and the watch stops the Run and its parents. Where the forge cannot be
+read, the watch stops nothing for that merge request until it can. Collie's login is the
+operator's own, so a hand merge by that login, at the very head that was approved, after
+the attempt, cannot be told from Collie's, and is taken as the merge the go asked for.
+
 The interface also lists open issues, files issues, and comments on them. The adapters
 decode their own CLI answers into the shared issue shape. GitLab reads consecutive
 pages; GitHub requests all open issues through its list command. These flags follow the

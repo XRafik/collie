@@ -826,6 +826,7 @@ function readReview<R>(
     const state = said.state === "MERGED" ? "merged" : said.state === "OPEN" ? "open" : "closed";
     return {
       ok: true,
+      login: me,
       state,
       head,
       merged:

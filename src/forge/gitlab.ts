@@ -833,6 +833,7 @@ function readReview<R>(
     const head = said.sha ?? "";
     return {
       ok: true,
+      login,
       state: said.state === "merged" ? "merged" : said.state === "opened" ? "open" : "closed",
       head,
       merged:

@@ -29,6 +29,8 @@ export interface ReviewComment extends ForgeComment {
 export type ReviewRead =
   | {
       readonly ok: true;
+      /** Collie's own login on this forge. */
+      readonly login: string;
       readonly state: "open" | "merged" | "closed";
       readonly head: string;
       readonly merged: { readonly sha: string; readonly by: string; readonly at: string } | null;

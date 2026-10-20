@@ -99,6 +99,7 @@ import { skillDirs, skillFile, type CheckoutKind, type InputStrategy } from "./d
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
 import { ciJob } from "./ci-job";
+import { land, LandingSchema, readLanding } from "./landing";
 import {
   autoMergingHere,
   forgeHere,
@@ -369,6 +370,14 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   }
   export const IntegrationSchema: Schema.Codec<Integration, unknown, never, never>;
 
+  /** What a merge at a head came to: \`MergedOutside\` is a merge this Run did not make. */
+  export type MergeOutcome =
+    | { readonly _tag: "Merged"; readonly sha: string }
+    | { readonly _tag: "HeadMoved"; readonly head: string }
+    | { readonly _tag: "MergedOutside"; readonly sha: string; readonly by: string; readonly at: string }
+    | { readonly _tag: "Refused"; readonly reason: string };
+  export const MergeOutcomeSchema: Schema.Codec<MergeOutcome, unknown, never, never>;
+
   /** What became of a note: whether it landed, and the sentence a human reads either way. */
   export interface Posted {
     readonly ok: boolean;
@@ -562,6 +571,15 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly integrate: (runId: string, cwd: string) => Effect.Effect<Integration>;
     /** The commit origin's default branch is at now. Take it inside an Activity. */
     readonly defaultHead: (cwd: string) => Effect.Effect<string, WorkflowError>;
+    /**
+     * Merges the merge request this Run recorded at \`head\`, recording the landing first and
+     * its outcome after; fails for a Run that recorded none. Take it inside an Activity.
+     */
+    readonly merge: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly head: string;
+    }) => Effect.Effect<MergeOutcome, WorkflowError>;
     /**
      * Blocks, with no agent turn, until the forge shows production carries \`sha\`, saying
      * on the card what it waits for: true then, false where the Run was stopped or held first.
@@ -3195,6 +3213,19 @@ export const hostLayer = (options: {
                 : Effect.succeed(sha);
             }),
           ),
+        merge: (asked) =>
+          Effect.gen(function* () {
+            return yield* land({
+              runDir: runDir(dir, asked.runId),
+              mr: yield* mergeRequestOf(fs, dir, asked.runId),
+              head: asked.head,
+              cwd: asked.cwd,
+              run: runShell,
+            });
+          }).pipe(
+            Effect.catchTag("PlatformError", (cause) => Effect.die(cause)),
+            Effect.provideContext(services),
+          ),
         awaitProduction: (asked) =>
           Effect.gen(function* () {
             const short = asked.sha.slice(0, 8);
@@ -4126,6 +4157,8 @@ export const RunView = Schema.Struct({
   parked: Schema.NullOr(Schema.String),
   /** The merge request the Run opened, as its workflow recorded it, or null. */
   mr: Schema.NullOr(Schema.String),
+  /** Its landing of that merge request through the host's merge, or null. */
+  landing: Schema.NullOr(LandingSchema),
 });
 export type RunView = typeof RunView.Type;
 
@@ -5356,6 +5389,9 @@ const makeRegistry: (
         .readFileString(controlPath(dir, PARKED, row.run))
         .pipe(Effect.orElseSucceed(() => null)),
       mr: yield* mergeRequestOf(fs, dir, row.run),
+      landing: yield* readLanding(runDir(dir, row.run)).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+      ),
     };
     // Not registered here is not a verdict on the work: the rows are all still there,
     // and what is missing is the module, named so somebody can put it back.
