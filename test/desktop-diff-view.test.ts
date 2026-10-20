@@ -622,12 +622,32 @@ describe("a row's room", () => {
     }
   });
 
+  test("stops indenting past its deepest indented level", () => {
+    const at = (depth: number) => rowRoom({ depth, pane: TREE.paneStart }).name;
+    expect(at(TREE.depthMax + 8)).toBe(at(TREE.depthMax));
+    expect(at(TREE.depthMax - 1) - at(TREE.depthMax)).toBe(TREE.indent);
+  });
+
   test("loses one indent of room per level", () => {
     const at = (depth: number) => rowRoom({ depth, pane: TREE.paneStart }).name;
     expect(at(0) - at(1)).toBeLessThanOrEqual(12);
     expect(at(1) - at(4)).toBe(3 * (at(0) - at(1)));
   });
 });
+
+interface Drawn {
+  readonly depth: number;
+  readonly node: DiffTreeNode;
+}
+const rows = (nodes: ReadonlyArray<DiffTreeNode>, depth = 0): ReadonlyArray<Drawn> =>
+  nodes.flatMap((node) => [
+    { depth, node },
+    ...(node.kind === "folder" ? rows(node.children, depth + 1) : []),
+  ]);
+const room = ({ depth, node }: Drawn, pane: number, viewed: boolean, drafts: number) =>
+  node.kind === "file"
+    ? rowRoom({ depth, pane, file: { facts: { ...rowFacts(node.file, []), drafts }, viewed } })
+    : rowRoom({ depth, pane });
 
 describe("the tree's layout over a monorepo change", () => {
   const changed = (path: string, added: number, removed: number): DiffFile => ({
@@ -648,20 +668,6 @@ describe("the tree's layout over a monorepo change", () => {
     changed("packages/core/test/nuxt/components/DocumentUploadInquiry.nuxt.spec.ts", 136, 40),
     changed("packages/core/test/nuxt/composables/useKycDocumentInquiry.nuxt.spec.ts", 24, 20),
   ]);
-
-  interface Drawn {
-    readonly depth: number;
-    readonly node: DiffTreeNode;
-  }
-  const rows = (nodes: ReadonlyArray<DiffTreeNode>, depth = 0): ReadonlyArray<Drawn> =>
-    nodes.flatMap((node) => [
-      { depth, node },
-      ...(node.kind === "folder" ? rows(node.children, depth + 1) : []),
-    ]);
-  const room = ({ depth, node }: Drawn, pane: number, viewed: boolean, drafts: number) =>
-    node.kind === "file"
-      ? rowRoom({ depth, pane, file: { facts: { ...rowFacts(node.file, []), drafts }, viewed } })
-      : rowRoom({ depth, pane });
 
   test("is three folder rows deep once its chains are merged", () => {
     expect(Math.max(...rows(tree).map(({ depth }) => depth))).toBe(3);
@@ -692,6 +698,27 @@ describe("the tree's layout over a monorepo change", () => {
           fits: true,
         });
       }
+    }
+  });
+});
+
+describe("the tree's layout over a change branching at every level", () => {
+  const levels = Array.from({ length: 12 }, (_, at) => `l${at}`);
+  const { tree } = diffTree(
+    levels.map((_, at) => file(`${levels.slice(0, at + 1).join("/")}/side.ts`)),
+  );
+
+  test("is twelve folder rows deep, as no chain merges", () => {
+    expect(Math.max(...rows(tree).map(({ depth }) => depth))).toBe(12);
+  });
+
+  test("fits every row's fixed parts at the least width, however deep", () => {
+    for (const row of rows(tree)) {
+      const drawn = room(row, TREE.paneMin, true, 99);
+      expect({ row: row.node.key, fits: drawn.name > 0 }).toEqual({
+        row: row.node.key,
+        fits: true,
+      });
     }
   });
 });

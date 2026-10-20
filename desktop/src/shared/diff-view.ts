@@ -126,6 +126,8 @@ export const TREE = {
   paneStep: 16,
   paneShare: 0.4,
   indent: 12,
+  /** Rows deeper than this are indented no further. */
+  depthMax: 4,
   /** Where the guide line sits inside an indent. */
   guide: 8,
   padding: 6,
@@ -175,6 +177,8 @@ export interface RowRoom {
   readonly name: number;
 }
 
+export const indentedDepth = (depth: number): number => Math.min(depth, TREE.depthMax);
+
 /** A row's name room at a depth from 0, and whether a file row's line counts show. */
 export const rowRoom = ({
   depth,
@@ -186,7 +190,10 @@ export const rowRoom = ({
   readonly file?: FileRow;
 }): RowRoom => {
   const left =
-    pane - TREE.scrollbar - depth * TREE.indent - (2 * TREE.padding + TREE.icon + 2 * TREE.gap);
+    pane -
+    TREE.scrollbar -
+    indentedDepth(depth) * TREE.indent -
+    (2 * TREE.padding + TREE.icon + 2 * TREE.gap);
   if (file === undefined) return { counts: false, name: left - TREE.chevron };
   const withCounts = left - factsWidth(file, true);
   return withCounts >= TREE.nameMin

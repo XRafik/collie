@@ -1631,8 +1631,8 @@ splits again where the diff gains a file part-way along it. Hovering a row shows
 path, and a file's also its status and counts. The tree starts 320px wide; drag the edge
 between it and the diffs, or focus that edge and press ← or →, to make it wider or narrower,
 from 192px up to 40% of the tab. Desktop keeps the width you chose for every record until it
-restarts, and a tab too narrow for it draws the tree narrower until it widens again. The tree
-never scrolls sideways: a name too long for its row ends in an ellipsis, and a row too narrow for both its
+restarts, and a tab too narrow for it draws the tree narrower until it widens again. Rows deeper than four folders are
+indented no further. The tree never scrolls sideways: a name too long for its row ends in an ellipsis, and a row too narrow for both its
 name and its `+N −M` counts keeps the name's room and leaves the counts out. The status mark,
 the viewed tick and the draft count always show. A filter
 above the tree keeps only the files whose path contains what you type, ignoring case, with

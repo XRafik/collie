@@ -16,6 +16,7 @@ import {
   fileSelected,
   filterTree,
   foldersOn,
+  indentedDepth,
   openFolders,
   paneStepped,
   paneWidth,
@@ -196,7 +197,11 @@ const treeUi = {
 
 const items = computed(() => {
   const byKey = new Map<string, Row>();
-  const toItem = (node: DiffTreeNode): Row => {
+  const toItem = (node: DiffTreeNode, depth: number): Row => {
+    const ui = {
+      itemWithChildren: indentedDepth(depth) < depth ? "ps-0" : undefined,
+      listWithChildren: indentedDepth(depth + 1) === depth + 1 ? undefined : "ms-0",
+    };
     const item: Row =
       node.kind === "folder"
         ? {
@@ -204,18 +209,20 @@ const items = computed(() => {
             icon: "i-lucide-folder",
             path: node.key,
             hover: rowHover(node),
-            children: node.children.map(toItem),
+            ui,
+            children: node.children.map((child) => toItem(child, depth + 1)),
           }
         : {
             label: node.label,
             icon: "i-lucide-file",
             path: node.key,
             hover: rowHover(node),
+            ui,
           };
     byKey.set(node.key, item);
     return item;
   };
-  return { tree: listed.value.map(toItem), byKey };
+  return { tree: listed.value.map((node) => toItem(node, 0)), byKey };
 });
 const selected = computed(() =>
   active.value === null ? undefined : items.value.byKey.get(active.value),
