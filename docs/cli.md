@@ -2306,8 +2306,11 @@ the executable and its arguments. Unset, it is this executable.
 `COLLIE_HOST_STOP_GRACE` is how long a stopped host waits for running steps before it exits
 anyway, as a duration (`5 seconds` unset). It bounds every end of a host: a stop signal, its
 lock or state directory gone, or the process it watches exited. A check the host is running
-is not waited for: it gets SIGTERM as the host starts to stop and SIGKILL before the grace is
-up, records nothing, and runs again on the next host. A check asked for once the host has
+is not waited for to finish: it gets SIGTERM as the host starts to stop and SIGKILL in the
+grace's last fifth, records nothing, and runs again on the next host. Where that SIGKILL and
+its last look for a check's processes are still under way when the grace is up, the host
+waits for them, at most three seconds more, so it exits within three seconds of its grace,
+well inside the five a client gives it before killing it. A check asked for once the host has
 begun to stop is not started.
 
 `COLLIE_HOST_CRASH_AT=admitted|executed` is for the recovery proof alone: the host kills

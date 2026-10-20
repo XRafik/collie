@@ -38,7 +38,11 @@ step, and one that never yields kept an old host past every client that tried to
 it. The grace bounds every end of a host: a stop signal, its lock or state directory gone,
 or the process named in `COLLIE_HOST_WATCH_PID` exited. `host.log` names which it was. A
 check the host is running is ended first, not waited for: its processes get SIGTERM at once
-and SIGKILL before the lock goes, and `host.log` names each one. Its step does not complete
+and SIGKILL in the grace's last fifth, and `host.log` names each one. A look at `/proc` for
+a check's marked processes can take seconds on a loaded machine, so the host waits past its
+grace for that SIGKILL and the last look after it, at most three seconds (`KILL_CEILING`),
+before the lock goes. Three seconds holds one slow look and keeps the exit, with its log
+flush, inside the five seconds a client gives a stopping host before it kills it. Its step does not complete
 and nothing is recorded for it, so the next host runs it once more. A newer client that
 asked a host to stop kills it five seconds after its grace. A host that does not say who it
 is within five seconds is replaced too when `host.build`, which it writes as it starts,

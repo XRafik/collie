@@ -8,6 +8,7 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   FileSystem,
   Option,
   Random,
@@ -371,8 +372,8 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
     string,
     ReadonlyArray<{ readonly pid: number; readonly started: string }>
   >();
-  // A look at /proc takes whatever look already under way answers first, so a SIGKILL waits on no second slow look.
   type Marked = Effect.Success<ReturnType<typeof markedBy>>;
+  // The look at /proc under way, whose answer a later signal takes too, without waiting on it alone.
   let looking: Deferred.Deferred<Marked> | undefined;
   const freshLook = Effect.suspend(() => {
     const deferred = Deferred.makeUnsafe<Marked>();
@@ -381,15 +382,29 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
       Effect.onExit((exit) =>
         Effect.sync(() => {
           if (looking === deferred) looking = undefined;
-          if (Exit.isSuccess(exit)) Deferred.doneUnsafe(deferred, exit);
+          Deferred.doneUnsafe(deferred, Exit.isSuccess(exit) ? exit : Exit.succeed(new Map()));
         }),
       ),
     );
   });
-  const look = Effect.suspend(() =>
-    looking === undefined ? freshLook : Effect.raceFirst(Deferred.await(looking), freshLook),
-  );
-  /** Each group, then each process found before, before the look at /proc, so a slow look holds back none of them. */
+  const signalMarked = (ids: ReadonlyArray<string>, name: NodeJS.Signals) => (marked: Marked) =>
+    Effect.forEach(ids, (id) =>
+      Effect.gen(function* () {
+        const pids = marked.get(id) ?? [];
+        yield* signal({ group: null, marked: pids }, name, kill);
+        const started = yield* Effect.forEach(pids, startedOf);
+        const known = new Map((found.get(id) ?? []).map((one) => [one.pid, one]));
+        pids.forEach((pid, at) => {
+          if (started[at]) known.set(pid, { pid, started: started[at] });
+        });
+        found.set(id, [...known.values()]);
+      }),
+    );
+  /**
+   * Each group, then each process found before, before the look at /proc, so a slow look holds
+   * back none of them. A look already under way is signalled from as it answers, beside a fresh
+   * one, which alone sees a process born since.
+   */
   const signalAll = (ids: ReadonlyArray<string>, name: NodeJS.Signals) =>
     Effect.gen(function* () {
       for (const id of ids) {
@@ -401,16 +416,16 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
         for (const one of found.get(id) ?? [])
           if (yield* stillRunning(one))
             yield* signal({ group: null, marked: [one.pid] }, name, kill);
-      const marked = yield* look;
-      for (const id of ids) {
-        const pids = marked.get(id) ?? [];
-        yield* signal({ group: null, marked: pids }, name, kill);
-        const started = yield* Effect.forEach(pids, startedOf);
-        found.set(
-          id,
-          pids.flatMap((pid, at) => (started[at] ? [{ pid, started: started[at] }] : [])),
-        );
-      }
+      const earlier = looking;
+      yield* Effect.all(
+        [
+          earlier === undefined
+            ? Effect.void
+            : Deferred.await(earlier).pipe(Effect.flatMap(signalMarked(ids, name))),
+          freshLook.pipe(Effect.flatMap(signalMarked(ids, name))),
+        ],
+        { concurrency: "unbounded", discard: true },
+      );
     });
   const unended = () => [...collecting.keys(), ...spawning.keys()];
 
@@ -535,21 +550,31 @@ export const hostCheckProcesses = Effect.fn("CheckProcesses.host")(function* (op
   } satisfies CheckProcessesApi;
 });
 
-/** SIGTERM to what `checks` is collecting at once, SIGKILL in the grace's last fifth, and done when the grace is. */
+/** How long past its grace a stop waits for its SIGKILL and the last look after it: under the host's stop slack. */
+export const KILL_CEILING = Duration.seconds(3);
+
+/**
+ * SIGTERM to what `checks` is collecting at once, SIGKILL in the grace's last fifth, and done
+ * when the grace is, or once that SIGKILL is done, up to `KILL_CEILING` later.
+ */
 export const endAllWithin = (
   checks: CheckProcessesApi,
   grace: Duration.Duration,
   onEnded: (ended: ReadonlyArray<CheckOf>) => Effect.Effect<void>,
 ) =>
-  Effect.race(
-    Effect.all(
-      [
-        checks.endAll.pipe(Effect.flatMap(onEnded)),
-        Effect.sleep(Duration.millis(Duration.toMillis(grace) * 0.8)).pipe(
-          Effect.andThen(checks.killEnded),
-        ),
-      ],
-      { concurrency: 2 },
-    ).pipe(Effect.andThen(Effect.never)),
-    Effect.sleep(grace),
-  );
+  Effect.gen(function* () {
+    const ending = yield* Effect.forkChild(
+      Effect.all(
+        [
+          checks.endAll.pipe(Effect.flatMap(onEnded)),
+          Effect.sleep(Duration.millis(Duration.toMillis(grace) * 0.8)).pipe(
+            Effect.andThen(checks.killEnded),
+          ),
+        ],
+        { concurrency: 2, discard: true },
+      ),
+    );
+    yield* Effect.sleep(grace);
+    yield* Fiber.await(ending).pipe(Effect.timeoutOption(KILL_CEILING));
+    yield* Fiber.interrupt(ending);
+  });

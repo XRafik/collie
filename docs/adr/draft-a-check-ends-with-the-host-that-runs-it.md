@@ -44,9 +44,16 @@ runs inside a check and starts hosts of its own.
 every check it is collecting first: a stop signal, its lock or directory gone, or the
 process it watches gone. Those are one end, bounded by one grace. Before this, only a stop
 signal was: a host whose lock went waited on its running steps for as long as they took.
-Each check gets SIGTERM at once. Whatever is left of them gets SIGKILL before the host lets
-go of its lock. A stop is not made to wait for a check, because a suite takes twenty minutes
-and more and the stop grace stays bounded (ADR-0014).
+Each check gets SIGTERM at once. Whatever is left of them gets SIGKILL in the grace's last
+fifth, before the host lets go of its lock. A stop is not made to wait for a check to
+finish, because a suite takes twenty minutes and more and the stop grace stays bounded
+(ADR-0014). It does wait for the SIGKILL to be done: the group's kill, then a last look for
+the check's marked processes and SIGKILL to any left, such as a child that left its group
+late in the grace. That wait is bounded too, by a ceiling of three seconds past the grace. A
+look at `/proc` took over a second on a loaded host, so three seconds holds one, and the
+exit with its log flush stays inside the five seconds a client gives a stopping host
+before it kills it. A newer look never waits on an older one: each look's answer is
+signalled as it comes, because only the newer can see a process born since the older began.
 
 **D4. A check Collie ended proves nothing.** It writes no verification, and the step that
 ran it does not complete, so the next host runs it again. A failure recorded for a check
@@ -88,7 +95,7 @@ and the check runs again, so nothing of it needs vouching for.
 - A host whose lock or directory goes, or whose watched process exits, exits within the
   stop grace, as a signalled host does. Before, it waited on its running steps.
 - A stop while a check runs takes the whole stop grace, because the check's step does not
-  complete.
+  complete, and up to three seconds more while the SIGKILL's last look is under way.
 - A Run's Stop still lets a check that is already running finish. Stop stops its agents,
   and that is unchanged here.
 - Checks left behind by a build before this one carry no marker and have no record. A

@@ -11,6 +11,7 @@ import {
   endAllWithin,
   endCheck,
   hostCheckProcesses,
+  KILL_CEILING,
   runningChecksDir,
   type LeftoverEnd,
 } from "../src/check-processes";
@@ -683,6 +684,60 @@ for (const { delay, grace } of [
     30_000,
   );
 
+test.skipIf(process.platform !== "linux")(
+  "a child that leaves its check's group after the SIGTERM's look is killed before the stop ends",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        let armed = false;
+        let looks = 0;
+        // The first look starts the child after its snapshot; the SIGKILL's look outlasts the first.
+        const slow: FileSystem.FileSystem = {
+          ...fs,
+          readDirectory: (path, options) => {
+            if (!armed || path !== "/proc") return fs.readDirectory(path, options);
+            const index = ++looks;
+            return Effect.gen(function* () {
+              const names = yield* fs.readDirectory(path, options);
+              if (index === 1) yield* fs.writeFileString(`${notes}/spawn`, "");
+              yield* Effect.sleep(Duration.millis(index === 1 ? 4_400 : index === 2 ? 700 : 1_300));
+              return names;
+            });
+          },
+        };
+        const { notes, checks } = yield* worldWith({}, slow);
+        yield* Effect.addFinalizer(() =>
+          fs.writeFileString(`${notes}/release`, "").pipe(Effect.ignore),
+        );
+        const child = `trap "" TERM; echo $$ > "$1/children"; while [ ! -f "$1/release" ]; do sleep 0.05; done`;
+        const parent = `trap "" TERM; echo $$ > "$1/starts"; while [ ! -f "$1/spawn" ]; do sleep 0.05; done; setsid sh -c "$2" sh "$1" >/dev/null 2>&1 & while [ ! -f "$1/release" ]; do sleep 0.05; done`;
+        yield* Effect.forkScoped(
+          Effect.scoped(
+            checks
+              .run(check, {
+                executable: "/bin/sh",
+                argv: ["-c", parent, "sh", notes, child],
+                cwd: notes,
+              })
+              .pipe(Effect.flatMap((one) => one.collected(one.exit))),
+          ),
+        );
+        yield* until(
+          () => checks.collecting,
+          (ids) => ids.length === 1,
+        );
+
+        armed = true;
+        yield* endAllWithin(checks, Duration.seconds(5), () => Effect.void).pipe(
+          Effect.ensuring(Effect.sync(() => (armed = false))),
+        );
+        expect(yield* noneRunning(yield* startedIn(notes))).toBe(true);
+      }),
+    ),
+  30_000,
+);
+
 const refusal = () => Object.assign(new Error("kill EPERM"), { code: "EPERM" });
 
 test.skipIf(process.platform !== "linux")(
@@ -764,22 +819,47 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
-test("ending a host's checks is done by its grace, however long their kill takes", () =>
+test(
+  "ending a host's checks is done by its kill ceiling past its grace, however long their kill takes",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const killing = yield* Deferred.make<void>();
+        const checks = {
+          ...(yield* CheckProcesses),
+          endAll: Effect.succeed([check]),
+          killEnded: Deferred.succeed(killing, undefined).pipe(Effect.andThen(Effect.never)),
+        };
+
+        const began = yield* Clock.currentTimeMillis;
+        const done = yield* endAllWithin(checks, Duration.millis(500), () => Effect.void).pipe(
+          Effect.timeoutOption("6 seconds"),
+        );
+        expect(Option.isSome(done)).toBe(true);
+        expect((yield* Clock.currentTimeMillis) - began).toBeLessThan(
+          500 + Duration.toMillis(KILL_CEILING) + 400,
+        );
+        expect(yield* Deferred.isDone(killing)).toBe(true);
+      }),
+    ),
+  10_000,
+);
+
+test("ending a host's checks waits past its grace for a kill still under way", () =>
   runEffect(
     Effect.gen(function* () {
-      const killing = yield* Deferred.make<void>();
+      let killed = false;
       const checks = {
         ...(yield* CheckProcesses),
         endAll: Effect.succeed([check]),
-        killEnded: Deferred.succeed(killing, undefined).pipe(Effect.andThen(Effect.never)),
+        killEnded: Effect.sleep("1 second").pipe(
+          Effect.andThen(Effect.sync(() => (killed = true))),
+        ),
       };
 
       const began = yield* Clock.currentTimeMillis;
-      const done = yield* endAllWithin(checks, Duration.millis(500), () => Effect.void).pipe(
-        Effect.timeoutOption("3 seconds"),
-      );
-      expect(Option.isSome(done)).toBe(true);
-      expect((yield* Clock.currentTimeMillis) - began).toBeLessThan(900);
-      expect(yield* Deferred.isDone(killing)).toBe(true);
+      yield* endAllWithin(checks, Duration.millis(500), () => Effect.void);
+      expect(killed).toBe(true);
+      expect((yield* Clock.currentTimeMillis) - began).toBeLessThan(1_400 + 400);
     }),
   ));
