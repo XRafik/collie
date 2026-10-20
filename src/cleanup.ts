@@ -59,6 +59,7 @@ import {
 import { endAgent, endedLine, runLog } from "./agent-end";
 import { COMPACTION_PORTS, transcriptOf } from "./compactors";
 import { uploadsDir } from "./uploads";
+import { finishedOnRecord } from "./cards";
 import type { CheckProcessesApi, Leftover } from "./check-processes";
 
 /** One kind of thing Collie cleans. */
@@ -1107,6 +1108,26 @@ export const idleAgentsSweeper = (opts: {
       );
     }).pipe(Effect.ignore);
 
+  /**
+   * The newest of the Run's final card, its stop, and when this host first saw it finished:
+   * a Run that resumed and ended again between sweeps counts from that end.
+   */
+  const lastFinished = (run: RunFacts, now: number) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const card = yield* finishedOnRecord(run.dir).pipe(Effect.orElseSucceed(() => null));
+      // engine.ts's `controlPath(dir, STOP, runId)`.
+      const stop = yield* fs.stat(`${opts.stateDir}/stop.${run.id}`).pipe(
+        Effect.map((info) => Option.getOrNull(info.mtime)?.getTime() ?? null),
+        Effect.orElseSucceed(() => null),
+      );
+      return Math.max(
+        opts.finishedSince.get(run.id) ?? now,
+        card === null ? 0 : epochMs(card),
+        stop ?? 0,
+      );
+    });
+
   type Candidate = Effect.Success<typeof candidates>[number];
 
   /** Why `one` stays, or how long it has been idle since its Run finished. */
@@ -1118,9 +1139,7 @@ export const idleAgentsSweeper = (opts: {
       const now = yield* Clock.currentTimeMillis;
       const since = opts.idle.get(one.at.terminalId) ?? now;
       const finished =
-        one.run.finished === null
-          ? (opts.finishedSince.get(one.run.id) ?? now)
-          : epochMs(one.run.finished);
+        one.run.finished === null ? yield* lastFinished(one.run, now) : epochMs(one.run.finished);
       const idleFor = now - Math.max(since, finished);
       if (idleFor < opts.idleCloseMs)
         return { keep: `idle ${minutes(idleFor)} of ${minutes(opts.idleCloseMs)} min` };

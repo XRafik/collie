@@ -13,6 +13,7 @@ import {
   type FinishedSince,
   type IdleSince,
 } from "../src/cleanup";
+import { appendCard } from "../src/cards";
 import { Launched } from "../src/launches";
 import { Herdr, type AgentInfo } from "../src/herdr";
 import { restoredIn } from "../src/herds";
@@ -21,7 +22,7 @@ import { appendLine, ledgerPath } from "../src/steering";
 import type { RunFacts } from "../src/runs";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
-import { runFacts } from "./support/records";
+import { madeRun, runFacts } from "./support/records";
 
 let rig: Rig;
 beforeEach(() =>
@@ -268,6 +269,62 @@ test("a stopped Run that resumes counts its next finish from when the sweep sees
       const again = yield* sweep([as("succeeded")], rig.stateDir, "host");
       expect(again.keep).toEqual(kept("idle 0 of 60 min"));
       expect(yield* closes).toBe(0);
+    }),
+  ));
+
+test("a Run that resumed and finished again between sweeps counts from its final card", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      const run = yield* madeRun(rig.stateDir, { state: "succeeded", finished: null });
+      yield* appendCard(run.dir, {
+        id: "final",
+        run: "r1",
+        kind: "final",
+        at: yield* isoAgo(7 * MIN_MS),
+        step: "finish",
+        iteration: 1,
+        intent_version: 1,
+        revision: { branch: "main", head_sha: "abc1234def", fingerprint: "f1", dirty: false },
+        changes: { files: [], commits: [] },
+        requested: { goal: null, constraints: [] },
+        readiness: "claimed",
+        verifications: [],
+        claims: [],
+        missing: [],
+        inspect: [],
+        links: {},
+        drift: [],
+        deliveries: [],
+        narrative: null,
+        aligned: "unverified",
+        cross_run: "none",
+        significance: "routine",
+      });
+      const finishedSince: FinishedSince = new Map([["r1", yield* ago(80 * MIN_MS)]]);
+      const judged = yield* sweep(
+        [sweeper([run], yield* idleFor(80 * MIN_MS), { finishedSince })],
+        rig.stateDir,
+        "host",
+      );
+      expect(judged.keep).toEqual(kept("idle 7 of 60 min"));
+    }),
+  ));
+
+test("a Run stopped again between sweeps counts from its newest stop", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.writeFileString(`${rig.stateDir}/stop.r1`, "");
+      const run = runFacts({ id: "r1", state: "stopped", finished: null });
+      const finishedSince: FinishedSince = new Map([["r1", yield* ago(80 * MIN_MS)]]);
+      const judged = yield* sweep(
+        [sweeper([run], yield* idleFor(80 * MIN_MS), { finishedSince })],
+        rig.stateDir,
+        "host",
+      );
+      expect(judged.keep).toEqual(kept("idle 0 of 60 min"));
     }),
   ));
 
