@@ -20,6 +20,7 @@ import {
   READING_LINE,
   reachBy,
   rowFacts,
+  rowHover,
 } from "../../../src/shared/diff-view";
 
 /** Where a finding points: a file, and a line in it as it is now. */
@@ -125,9 +126,8 @@ const facts = computed(() => {
   return new Map(drawn.value.files.map((file) => [file.path, rowFacts(file, onDiff)]));
 });
 
-type Row = TreeItem & { path: string };
-/** Nuxt UI draws a row's `<slot>-trailing`, which its slot types do not name. */
-const FILE_FACTS = "file-trailing";
+type Row = TreeItem & { path: string; hover: string };
+const chevron = useAppConfig().ui.icons.chevronDown;
 const factsOf = (row: Row) => facts.value.get(row.path);
 const viewedOf = (row: Row) => viewed.value.has(row.path);
 
@@ -140,13 +140,14 @@ const items = computed(() => {
             label: node.label,
             icon: "i-lucide-folder",
             path: node.key,
+            hover: rowHover(node),
             children: node.children.map(toItem),
           }
         : {
             label: node.label,
             icon: "i-lucide-file",
             path: node.key,
-            slot: "file",
+            hover: rowHover(node),
           };
     byKey.set(node.key, item);
     return item;
@@ -161,15 +162,12 @@ const selectRow = (event: Event, row: Row) => {
   if (path !== null) show(path);
 };
 
-const folders = computed(() => [
-  ...new Set(drawn.value.files.flatMap((file) => foldersOn(file.path))),
-]);
 const closed = ref(new Set<string>());
 const listedFolders = computed(() =>
   [...items.value.byKey.keys()].filter((key) => key.endsWith("/")),
 );
 const folderFacts = computed(() => ({
-  all: folders.value,
+  all: drawn.value.folders,
   listed: listedFolders.value,
   closed: closed.value,
   filtering: filtering.value,
@@ -334,8 +332,19 @@ watch(
             @select="selectRow"
             @update:expanded="setExpanded"
           >
-            <template #[FILE_FACTS]="{ item }">
-              <DiffRowFacts :facts="factsOf(item)" :viewed="viewedOf(item)" />
+            <template #item="{ item, ui }">
+              <span :title="item.hover" class="flex min-w-0 flex-1 items-center gap-[inherit]">
+                <UIcon :name="item.icon!" :class="ui.linkLeadingIcon()" />
+                <span :class="ui.linkLabel()">{{ item.label }}</span>
+                <span :class="ui.linkTrailing()">
+                  <UIcon
+                    v-if="item.children?.length"
+                    :name="chevron"
+                    :class="ui.linkTrailingIcon()"
+                  />
+                  <DiffRowFacts v-else :facts="factsOf(item)" :viewed="viewedOf(item)" />
+                </span>
+              </span>
             </template>
           </UTree>
         </div>

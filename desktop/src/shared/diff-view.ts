@@ -5,8 +5,9 @@ import type { DiffFile } from "../../../src/board-model";
 export type DiffTreeNode =
   | {
       readonly kind: "folder";
-      /** The folder's path ending in `/`. */
+      /** The deepest merged folder's path ending in `/`. */
       readonly key: string;
+      /** The merged folders' names joined with `/`. */
       readonly label: string;
       readonly children: ReadonlyArray<DiffTreeNode>;
     }
@@ -21,6 +22,8 @@ export interface DiffTree {
   readonly tree: ReadonlyArray<DiffTreeNode>;
   /** The files depth-first, the order the tree reads and the diffs are drawn. */
   readonly files: ReadonlyArray<DiffFile>;
+  /** Every folder row's key, the folders the open and closed state tracks. */
+  readonly folders: ReadonlyArray<string>;
 }
 
 interface Building {
@@ -51,9 +54,30 @@ export const diffTree = (changed: ReadonlyArray<DiffFile>): DiffTree => {
     });
     level.push({ kind: "file", key: file.path, label: parts.at(-1)!, file });
   }
+  const tree = merged(root);
   const filesOf = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<DiffFile> =>
     nodes.flatMap((node) => (node.kind === "file" ? [node.file] : filesOf(node.children)));
-  return { tree: root, files: filesOf(root) };
+  const foldersOf = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<string> =>
+    nodes.flatMap((node) => (node.kind === "file" ? [] : [node.key, ...foldersOf(node.children)]));
+  return { tree, files: filesOf(tree), folders: foldersOf(tree) };
+};
+
+/** Each folder whose only child is a folder, merged with it down the chain. */
+const merged = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<DiffTreeNode> =>
+  nodes.map((node) => {
+    if (node.kind === "file") return node;
+    const children = merged(node.children);
+    const [only] = children;
+    return children.length === 1 && only?.kind === "folder"
+      ? { ...only, label: `${node.label}/${only.label}` }
+      : { ...node, children };
+  });
+
+/** A folder's full path; a file's, then its status and counts. */
+export const rowHover = (node: DiffTreeNode): string => {
+  if (node.kind === "folder") return node.key;
+  const { path, status, added, removed } = node.file;
+  return `${path}\n${status}, ${added === null ? "binary" : `+${added} −${removed ?? 0}`}`;
 };
 
 export interface Folders {
@@ -109,7 +133,7 @@ export const filterTree = (
       const children = kept(node.children);
       return children.length === 0 ? [] : [{ ...node, children }];
     });
-  return kept(tree);
+  return merged(kept(tree));
 };
 
 /** What a viewed tick saw, so a file the Run changes again loses it. */

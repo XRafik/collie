@@ -1625,10 +1625,14 @@ each open diff's long lines instead of scrolling them sideways, and **Expand all
 that arrives in a live diff afterwards opens or not by the usual rule. Side by side, Wrap
 long lines and each file's open or closed state are kept as you left them while the record
 is open. Each file's row in the tree says whether it was added (A), deleted (D) or modified (M),
-its `+N −M` lines or "binary", and how many Review comment drafts you have on it. A filter
+its `+N −M` lines or "binary", and how many Review comment drafts you have on it. A chain
+of folders that each hold only one folder is one row, such as `modules/nimbus/runtime`, and
+splits again where the diff gains a file part-way along it. Hovering a row shows its full
+path, and a file's also its status and counts. A filter
 above the tree keeps only the files whose path contains what you type, ignoring case, with
 their folders shown open, and says "No file matches" when none does; it narrows the tree
-only, so every diff stays drawn, and clearing it brings back the folders as you had them.
+only, so every diff stays drawn, and merges what it leaves the same way; clearing it brings
+back the folders as you had them.
 The tree stays beside the diffs as you scroll,
 highlights the file being read, scrolls itself to keep that file's row in view, and opens
 the folder it is in; a click in the tree, or a finding's jump, highlights its file at once,

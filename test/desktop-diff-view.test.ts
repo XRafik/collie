@@ -16,6 +16,7 @@ import {
   reachBy,
   readingHeight,
   rowFacts,
+  rowHover,
   ticksStillTrue,
   tickViewed,
   untickViewed,
@@ -42,6 +43,115 @@ describe("the diff's tree", () => {
     ]);
     expect(depthFirst(tree)).toEqual(files.map(({ path }) => path));
     expect(tree.map(({ key }) => key)).toEqual(["a/"]);
+  });
+});
+
+describe("the diff's tree, merging folder chains", () => {
+  const labelled = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<unknown> =>
+    nodes.map((node) =>
+      node.kind === "file"
+        ? node.label
+        : { [`${node.label} (${node.key})`]: labelled(node.children) },
+    );
+
+  test("draws a chain of single-folder folders as one row, keyed by its deepest folder", () => {
+    const { tree, folders } = diffTree(
+      [
+        "packages/core/modules/nimbus/runtime/a.ts",
+        "packages/core/modules/nimbus/runtime/b.ts",
+      ].map(file),
+    );
+    expect(labelled(tree)).toEqual([
+      {
+        "packages/core/modules/nimbus/runtime (packages/core/modules/nimbus/runtime/)": [
+          "a.ts",
+          "b.ts",
+        ],
+      },
+    ]);
+    expect(folders).toEqual(["packages/core/modules/nimbus/runtime/"]);
+  });
+
+  test("ends a chain at a folder with two children, and splits it when a file arrives part-way", () => {
+    const before = diffTree(["a/b/c/x.ts", "a/b/c/y.ts"].map(file));
+    expect(labelled(before.tree)).toEqual([{ "a/b/c (a/b/c/)": ["x.ts", "y.ts"] }]);
+    const after = diffTree(["a/b/c/x.ts", "a/b/c/y.ts", "a/b/z.ts"].map(file));
+    expect(labelled(after.tree)).toEqual([
+      { "a/b (a/b/)": [{ "c (a/b/c/)": ["x.ts", "y.ts"] }, "z.ts"] },
+    ]);
+    expect(after.folders).toEqual(["a/b/", "a/b/c/"]);
+  });
+
+  test("leaves a folder holding only a file, and a file at the root, as they are", () => {
+    const { tree, folders } = diffTree(["src/only/one.ts", "README.md"].map(file));
+    expect(labelled(tree)).toEqual([{ "src/only (src/only/)": ["one.ts"] }, "README.md"]);
+    expect(folders).toEqual(["src/only/"]);
+  });
+
+  test("keeps the files' depth-first order", () => {
+    const paths = ["p/c/m/n/r/a.ts", "p/c/s/r/b.ts", "p/c/m/n/r/c.ts", "p/c/s/x.ts", "top.md"];
+    const { tree, files } = diffTree(paths.map(file));
+    expect(files.map(({ path }) => path)).toEqual([
+      "p/c/m/n/r/a.ts",
+      "p/c/m/n/r/c.ts",
+      "p/c/s/r/b.ts",
+      "p/c/s/x.ts",
+      "top.md",
+    ]);
+    expect(depthFirst(tree)).toEqual(files.map(({ path }) => path));
+    expect(labelled(tree)).toEqual([
+      {
+        "p/c (p/c/)": [
+          { "m/n/r (p/c/m/n/r/)": ["a.ts", "c.ts"] },
+          { "s (p/c/s/)": [{ "r (p/c/s/r/)": ["b.ts"] }, "x.ts"] },
+        ],
+      },
+      "top.md",
+    ]);
+  });
+
+  test("merges the chain a filter leaves the same way", () => {
+    const { tree } = diffTree(
+      [
+        "packages/core/configs/clients/a.ts",
+        "packages/core/configs/clients/b.ts",
+        "packages/core/src/runtime/c.ts",
+      ].map(file),
+    );
+    expect(labelled(filterTree(tree, "packages/core/configs/clients/"))).toEqual([
+      { "packages/core/configs/clients (packages/core/configs/clients/)": ["a.ts", "b.ts"] },
+    ]);
+  });
+});
+
+describe("a row's hover text", () => {
+  test("is a file's path, then its status and counts", () => {
+    expect(
+      rowHover({
+        kind: "file",
+        key: "src/host.ts",
+        label: "host.ts",
+        file: { path: "src/host.ts", status: "modified", added: 35, removed: 10 },
+      }),
+    ).toBe("src/host.ts\nmodified, +35 \u221210");
+  });
+
+  test("says binary for a file without counts", () => {
+    expect(
+      rowHover({
+        kind: "file",
+        key: "logo.png",
+        label: "logo.png",
+        file: { path: "logo.png", status: "added", added: null, removed: null },
+      }),
+    ).toBe("logo.png\nadded, binary");
+  });
+
+  test("is a folder's full path, merged or not", () => {
+    const [merged] = diffTree(["packages/core/modules/nimbus/runtime/a.ts"].map(file)).tree;
+    expect(rowHover(merged!)).toBe("packages/core/modules/nimbus/runtime/");
+    const [split] = diffTree(["src/a.ts", "src/b.ts"].map(file)).tree;
+    expect(rowHover(split!)).toBe("src/");
   });
 });
 
@@ -194,7 +304,7 @@ describe("the tree filtered by a path", () => {
   test("keeps every file under a matching folder, and their folders", () => {
     const narrowed = filterTree(tree, "ui/");
     expect(depthFirst(narrowed)).toEqual(["src/ui/Board.tsx", "src/ui/Drawer.tsx"]);
-    expect(narrowed.map(({ key }) => key)).toEqual(["src/"]);
+    expect(narrowed.map(({ key, label }) => [key, label])).toEqual([["src/ui/", "src/ui"]]);
   });
 
   test("keeps a matching file's folders", () => {
@@ -233,6 +343,21 @@ describe("the tree's open folders", () => {
   test("are all but those the human closed", () => {
     expect(openFolders(folders)).toEqual(["src/", "docs/"]);
     expect(closedFolders(folders, ["src/"])).toEqual(new Set(["src/ui/", "docs/"]));
+  });
+
+  test("never count a folder merged into a chain as closed", () => {
+    const { folders: all } = diffTree(
+      ["packages/core/modules/nimbus/runtime/a.ts", "packages/core/src/b.ts"].map(file),
+    );
+    const merged: Folders = { all, listed: all, closed: new Set(), filtering: false };
+    expect(openFolders(merged)).toEqual([
+      "packages/core/",
+      "packages/core/modules/nimbus/runtime/",
+      "packages/core/src/",
+    ]);
+    const closed = closedFolders(merged, ["packages/core/", "packages/core/src/"]);
+    expect(closed).toEqual(new Set(["packages/core/modules/nimbus/runtime/"]));
+    expect(openFolders({ ...merged, closed })).toEqual(["packages/core/", "packages/core/src/"]);
   });
 
   test("are every folder the filter leaves while it is in effect, which none closes", () => {

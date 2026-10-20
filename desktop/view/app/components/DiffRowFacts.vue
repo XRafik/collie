@@ -32,12 +32,11 @@ const MARK = { added: "A", deleted: "D", modified: "M" } as const;
       <span class="text-success">+{{ facts.lines.added }}</span>
       <span class="text-error">−{{ facts.lines.removed }}</span>
     </template>
-    <abbr
-      class="w-4 rounded border border-default text-center font-mono no-underline"
-      :title="facts.status"
+    <span
+      class="w-4 rounded border border-default text-center font-mono"
       :aria-label="facts.status"
       data-testid="row-status"
-      >{{ MARK[facts.status] }}</abbr
+      >{{ MARK[facts.status] }}</span
     >
   </span>
 </template>
