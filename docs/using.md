@@ -2436,6 +2436,12 @@ runbook find tools printing tokens — a second guard against the commands that 
   would switch Collie's hooks off, and any other key are refused with the reason. Codex, Pi
   and OpenCode take `env` only.
 
+The shipped `implementer`, `generalist` and `investigator` personas tell their agent that
+a stack it brings up to test — containers, compose projects, workloads in a local cluster
+— outlives it: to bring up only what the test needs, take it down once that testing is
+done unless you asked to keep it, and say what it left running. Collie cannot see a stack
+in a cluster, so it neither records nor tears one down.
+
 ### What a Claude agent's auto mode is told
 
 Claude Code's auto mode judges each action an agent takes. So that it knows which session
