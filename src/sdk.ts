@@ -1294,7 +1294,7 @@ export function jsonSchemaFor(schema: Schema.Constraint): Projection {
 
 /**
  * Effect draws a pattern only for a RegExp with the `u` flag, which a JSON Schema pattern
- * implies; any other whose source means the same under it is drawn too.
+ * implies; any other whose source is known to match the same strings under it is drawn too.
  */
 function withPatterns<T>(node: T): T {
   if (isList(node)) {
@@ -1328,13 +1328,23 @@ const isPatternCheck = Schema.is(PatternCheck);
 
 function drawn(check: typeof PatternCheck.Type) {
   const { source, flags } = check.representation.payload;
-  if (!/^[dg]*$/.test(flags)) return null;
+  if (!/^[dg]*$/.test(flags) || !sameUnderUnicode(source)) return null;
+  return { ...check.annotations, toJsonSchema: () => ({ pattern: source }) };
+}
+
+/**
+ * True for printable ASCII that compiles under `u` and has no atom matching a code unit
+ * without it and a code point with it, or an escape `u` gives another meaning.
+ */
+function sameUnderUnicode(source: string) {
+  if (!/^[ -~]*$/.test(source)) return false;
   try {
     new RegExp(source, "u");
   } catch {
-    return null;
+    return false;
   }
-  return { ...check.annotations, toJsonSchema: () => ({ pattern: source }) };
+  const atoms = source.match(/\\.|\[\^|./g) ?? [];
+  return atoms.every((atom) => !/^(?:\.|\[\^|\\[DPSWpu])$/.test(atom));
 }
 
 /** Where the drawn document says nothing at all, which the schema itself still does. */

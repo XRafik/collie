@@ -1391,8 +1391,9 @@ schema invalid. What is lost is the copy a model is held to at its own end; your
 is still held to the schema itself.
 
 A `Schema.isPattern` is drawn as a `pattern` with or without the `u` flag, as long as its
-source means the same with it; one whose flags change what it matches, such as `i` or `m`,
-is not drawn.
+source is known to match the same strings with it: printable ASCII with no `.`, no negated
+class and no `\S`, `\W`, `\D`, `\p`, `\P` or `\u` escape. One whose flags change what it
+matches, such as `i` or `m`, is not drawn either.
 
 ## Typechecking a module
 
