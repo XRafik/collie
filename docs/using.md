@@ -1590,7 +1590,8 @@ agents; and the Inputs it was given, each with whether it was given or inferred.
 with nothing to say is left out. Each tab keeps its place while the record is open: switching
 back to one brings it back as you left it, with what you had opened or searched for, and
 scrolled where you left it, waiting for it to grow if it is still filling in; a tab's first
-visit starts at the top. A video playing on Evidence pauses when you leave the tab. A jump to a finding lands on its
+visit starts at the top. A video on Evidence plays only while the tab is shown: it pauses when
+you leave, and one still being read then waits for Play. A jump to a finding lands on its
 target instead. Closing the record, or opening another Run's, forgets every place.
 
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the

@@ -17,6 +17,7 @@ import {
   tabShown,
   tabsKept,
   typedIn,
+  videoPlays,
 } from "../desktop/src/shared/record";
 
 const everything: TabFacts = {
@@ -226,6 +227,13 @@ describe("the tabs kept mounted", () => {
 
   test("never include Terminal or Log, which keep their own place", () => {
     expect([...tabsKept(tabsKept(none, "terminal"), "log")]).toEqual([]);
+  });
+});
+
+describe("an Evidence video", () => {
+  test("plays only while Evidence is shown, so one read after leaving it stays still", () => {
+    expect(videoPlays("evidence")).toBe(true);
+    expect(videoPlays("summary")).toBe(false);
   });
 });
 
