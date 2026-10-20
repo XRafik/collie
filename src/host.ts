@@ -130,6 +130,9 @@ import {
   stateSweeper,
   uploadsSweeper,
   taskWorkspacesSweeper,
+  idleAgentsSweeper,
+  noteIdle,
+  type IdleSince,
   generationsDir,
   generationsSweeper,
   judge,
@@ -861,6 +864,7 @@ const hostBoard = (dir: string) =>
     const runs = registry
       .views(null)
       .pipe(Effect.map((views) => views.map((view) => factsOfView(env.stateDir, view))));
+    const idle: IdleSince = new Map();
     const boardOf = (facts: ReadonlyArray<RunFacts>, alive: ReadonlyArray<AgentInfo>) =>
       Effect.gen(function* () {
         return yield* buildBoard({
@@ -879,6 +883,7 @@ const hostBoard = (dir: string) =>
     const listingOf = (herds: typeof herdsNow) =>
       Effect.gen(function* () {
         const alive = yield* Effect.flatMap(herds, aliveIn).pipe(Effect.provideContext(bun));
+        noteIdle(idle, alive, yield* Clock.currentTimeMillis);
         const facts = yield* runs;
         return { runs: facts, views: yield* boardOf(facts, alive) };
       });
@@ -904,6 +909,17 @@ const hostBoard = (dir: string) =>
           views: yield* build.pipe(Effect.orElseSucceed(() => [])),
           runs: all,
           seen,
+        }),
+        idleAgentsSweeper({
+          stateDir: env.stateDir,
+          sessions: herds,
+          runs: all,
+          idle,
+          // A config that cannot be read closes nothing.
+          idleCloseMs: yield* loadDefaults(env.userDir).pipe(
+            Effect.map((defaults) => defaults.idleCloseMs),
+            Effect.orElseSucceed(() => 0),
+          ),
         }),
         worktreesSweeper({
           herdr,

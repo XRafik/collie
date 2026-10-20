@@ -668,7 +668,9 @@ it”.`; while it is blocked, the card is in Needs you naming its pane; once it 
 card stands on its own facts again — Ready to release, Waiting on you or Finished — and
 chat is told once that it finished what it was told. Nothing records it: the delivery
 ledger says what was sent and when, herdr says what the agent is doing, the step glyphs
-still show the Workflow's steps as they ended, and `run show` still says `succeeded`. **Waiting on you** is work that ended without landing, and that nobody has
+still show the Workflow's steps as they ended, and `run show` still says `succeeded`. A
+Run can be Reopened only until its agents close, an hour after it finished by default
+([Cleanup](#cleanup)). **Waiting on you** is work that ended without landing, and that nobody has
 asked you about: an implement that succeeded and whose merge request is open, a plan that
 is ready to implement, a Run that failed, was stopped or was abandoned with a branch or a
 merge request behind it and has neither been resumed nor disposed of. An implement whose
@@ -1432,8 +1434,8 @@ Settings offers — each default a Run reads, `proactive`, the extra `models.<ha
 name with its config key in small print, a sentence or two on what it changes (what 0 or
 unset means where that matters, and that `scope`, `density` and `questions` change the TUI's
 board, not Desktop's), a control that fits it (a choice, a number, a switch, or text), its
-default, and the same refusals as the TUI. Durations — `quiet_ms`, `handoff_timeout_ms` and
-`board_quiet_ms` — are shown and typed in minutes, decimals where a value is not a whole
+default, and the same refusals as the TUI. Durations — `quiet_ms`, `idle_close_ms`,
+`handoff_timeout_ms` and `board_quiet_ms` — are shown and typed in minutes, decimals where a value is not a whole
 number of them, and still stored in milliseconds, so `config.json` and `collie settings` are
 unchanged. **Reset to default**, shown while a setting is set, unsets it. Each says whether
 **Every Machine** shares it or it is for **This computer only**. Under **Chat**, the Flock
@@ -2261,6 +2263,7 @@ working tree to review, so the target menu is one entry — **Type it…**.
   "max_iterations": 5,
   "handoff_timeout_ms": 7200000,
   "quiet_ms": 600000,
+  "idle_close_ms": 3600000,
   "board_quiet_ms": 300000,
   "compact_at_tokens": 150000,
   "claude_auto_compact_window": 400000,
@@ -2345,6 +2348,10 @@ its host restarts.
 Settings, but a run of a workflow module consults none of them: `implement` carries its own
 ceiling of four review and fix rounds, there is no hand-off between runs to time out, and no
 quiet agent is nudged.
+
+`idle_close_ms` is how long a finished Run's agent may be idle, counted from the Run's
+finish where it went idle before it, before [Cleanup](#cleanup) closes it. An hour by
+default; 0 never closes one.
 
 `board_quiet_ms` is how long a running run's directories — its own, its agents' and its
 evidence — may go unchanged, with no agent of it working and no check running, before its card
@@ -2857,6 +2864,23 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   closed workspace on the Task's checkout. A Codex agent of the Task is stopped where its
   work runs first, and a workspace whose agent does not reach **Quiet** is kept, with the
   reason.
+- **A finished Run's idle agents**, once herdr has reported one `idle` or `done`, without a
+  break, for **Close an idle agent after** (`idle_close_ms`, an hour by default; 0 never)
+  ([ADR-draft-a-finished-runs-idle-agent-is-closed](adr/draft-a-finished-runs-idle-agent-is-closed.md)).
+  An agent that went idle before its Run finished counts from the finish, so a builder that
+  sat idle through its Run's review and gate still has the whole hour for a steer. Only an
+  agent a launch record of a `succeeded`, `failed` or `stopped` Run names, on the terminal
+  that record names, is judged: a live Run's agents, the chats and your own agents never
+  are. A `blocked` agent is not idle, and any turn starts its hour again. One is kept while
+  a Delivery to it is queued, a question it asked is open, its workspace is in focus, or you
+  have typed into it since it went idle, and `collie cleanup` lists each one kept with why.
+  It ends as any agent does: stopped where its work runs, **Quiet**, its pane closed and
+  its Task's workspace kept with a shell. One that does not reach **Quiet** is kept, and
+  tried again by the next sweep. The Run's log says `<agent> ended: idle for <N> min; its
+  transcript is at <path>`, or that its harness reported none. A host counts from when it
+  first sees an agent idle, so a restart only delays a close. A finished Run can be
+  **Reopened** only until its agents close: a steer after that is refused, naming its
+  Follow-up, and Collie never launches the agent again for that Run.
 - **Worktrees** Collie made, once they are **Settled** (see
   [What a run does to your repository](#what-a-run-does-to-your-repository)).
 - **Staged module generations** under `~/.cache/collie/entries`, once unused for 7 days.

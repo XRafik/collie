@@ -403,6 +403,8 @@ that is how its steps ended. Derived from the delivery ledger and herdr's agent 
 nothing records it. Its card is in Working while that agent works and in Needs you while
 it is blocked, then stands on its own facts again. Steering reaches a finished Run's
 agents for as long as one is alive; a gone pane is the Follow-up Run's job (ADR-0041).
+A finished Run's agent is closed once it has been idle for an hour since the Run finished
+(**Cleanup**), so a Run can be Reopened only until then.
 
 **Landed** — What a Task's work has done once it needs nothing more from anyone: a
 **Disposition** was recorded — merged, abandoned or superseded — the Run succeeded at a
@@ -500,6 +502,14 @@ removal is recorded with who asked, and none is forced. A check's processes are 
 their record or by the marker they run with. Any that no host is collecting are ended,
 SIGKILL included, because a check's result is thrown away
 (ADR-draft-a-check-ends-with-the-host-that-runs-it).
+
+Apart from that order, an agent Collie launched for a Run that has finished is closed once
+herdr has reported it idle for `idle_close_ms` (an hour by default; 0 never), counted
+from the Run's finish if it went idle before then. It is kept while a Delivery to it is
+queued, a question it asked is open, its pane is focused or a human has typed into it
+since it went idle. A closed agent stays closed: a steer to it is refused, and the Run's
+Follow-up is offered. A live Run's agents are not closed idle
+(ADR-draft-a-finished-runs-idle-agent-is-closed).
 
 **Renovate Run** — One execution of the `renovate` Workflow: one repository, from claiming
 it in Helle to checking it off in Linear. Its Worktree is detached and roams — it holds no

@@ -1657,7 +1657,8 @@ with the one condition that keeps it, then the total a sweep would free. `--appl
 now, through the host, and prints what it removed and what it freed. There is no
 confirmation: the host sweeps the same way on its own every ten minutes. What each kind
 keeps, and why, is [ADR-0045](adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md);
-[Cleanup](using.md#cleanup) says what a sweep covers.
+[Cleanup](using.md#cleanup) says what a sweep covers. An `idle-agent` item is a finished
+Run's agent, named as `<agent> of <run>`; it frees no disk, so its size is 0.
 
 Under `--json`, both answer with the same `data`:
 

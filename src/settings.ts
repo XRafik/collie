@@ -85,6 +85,8 @@ export interface Defaults {
    * numbers.
    */
   boardQuietMs: number;
+  /** How long a finished Run's agent may be idle before Cleanup closes it. `0` never closes one. */
+  idleCloseMs: number;
   /**
    * Current-context tokens at or above which a reused agent is asked to compact before
    * it is given its next piece of work. `0` turns the feature off. As written rather
@@ -139,6 +141,7 @@ export const FALLBACK_DEFAULTS: Defaults = {
   handoffTimeoutMs: 2 * 60 * 60 * 1000,
   quietMs: 10 * 60 * 1000,
   boardQuietMs: 5 * 60 * 1000,
+  idleCloseMs: 60 * 60 * 1000,
   compactAtTokens: COMPACT_AT_TOKENS,
   claudeAutoCompactWindow: AUTO_COMPACT_WINDOW,
   models: {},
@@ -302,6 +305,13 @@ export const SETTINGS: ReadonlyArray<Setting> = [
     label: "Quiet before a nudge",
     description:
       "An agent that produces nothing this long is nudged, nudged again at double and given up on at triple. 0 waits as long as it takes.",
+    unit: "minutes",
+  }),
+  of("idle_close_ms", "number", String(D.idleCloseMs), {
+    group: "Agents",
+    label: "Close an idle agent after",
+    description:
+      "An agent of a finished Run that has been idle this long since the Run finished is closed, unless something still needs it. 0 never closes one.",
     unit: "minutes",
   }),
   of("agent_profile", "json", D.agentProfile, {

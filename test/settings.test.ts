@@ -28,6 +28,7 @@ describe("Collie's settings", () => {
         "max_iterations",
         "handoff_timeout_ms",
         "quiet_ms",
+        "idle_close_ms",
         "board_quiet_ms",
         "compact_at_tokens",
         "claude_auto_compact_window",
@@ -119,6 +120,7 @@ describe("Each setting explains itself", () => {
       "compact_at_tokens",
       "claude_auto_compact_window",
       "quiet_ms",
+      "idle_close_ms",
       "agent_profile",
     ],
     Runs: ["max_iterations", "handoff_timeout_ms"],
@@ -150,6 +152,7 @@ describe("Each setting explains itself", () => {
     expect(said("quiet_ms")).toContain("triple");
     expect(said("quiet_ms")).toContain("0 waits");
     expect(said("compact_at_tokens")).toContain("0 turns compaction off");
+    expect(said("idle_close_ms")).toContain("0 never closes one");
     expect(said("effort")).toContain("Unset");
     for (const key of ["scope", "density", "questions"]) expect(said(key)).toContain("TUI");
     expect(said("proactive")).toContain("Native chat");
@@ -170,6 +173,15 @@ describe("Each setting explains itself", () => {
       expect(settingStored("board_quiet_ms", typed)).toEqual({
         refused: `board_quiet_ms has to be a number of minutes, not "${typed}"`,
       });
+  });
+
+  test("an idle agent closes after an hour by default, and 0 is never", () => {
+    const idle = settingOf("idle_close_ms")!;
+    expect(idle).toMatchObject({ group: "Agents", label: "Close an idle agent after" });
+    expect(idle.unit).toBe("minutes");
+    expect(settingShown("idle_close_ms", idle.fallback)).toBe("60");
+    expect(settingStored("idle_close_ms", "0")).toEqual({ stored: "0" });
+    expect(parseSetting("idle_close_ms", "0")).toEqual({ value: 0 });
   });
 
   test("a unit that is only a label changes nothing", () => {
