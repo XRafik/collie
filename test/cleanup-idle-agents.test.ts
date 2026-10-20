@@ -10,6 +10,7 @@ import {
   JOURNAL,
   noteIdle,
   sweep,
+  type FinishedSince,
   type IdleSince,
 } from "../src/cleanup";
 import { Launched } from "../src/launches";
@@ -89,7 +90,12 @@ const idleFor = (ms: number) => Effect.map(ago(ms), (at): IdleSince => new Map([
 const sweeper = (
   runs: ReadonlyArray<RunFacts>,
   idle: IdleSince,
-  opts: { status?: string; idleCloseMs?: number; ports?: CompactionPorts } = {},
+  opts: {
+    status?: string;
+    idleCloseMs?: number;
+    ports?: CompactionPorts;
+    finishedSince?: FinishedSince;
+  } = {},
 ) =>
   idleAgentsSweeper({
     stateDir: rig.stateDir,
@@ -103,6 +109,7 @@ const sweeper = (
     ],
     runs,
     idle,
+    finishedSince: opts.finishedSince ?? new Map(),
     idleCloseMs: opts.idleCloseMs ?? HOUR_MS,
     ports: opts.ports,
   });
@@ -223,6 +230,30 @@ test("a builder idle while its Run's review and gate ran has the whole hour afte
       );
       expect(hour.remove.map((item) => item.reason)).toEqual(["idle for 61 min"]);
       expect(yield* runLog).toContain("impl ended: idle for 61 min;");
+    }),
+  ));
+
+test("a Run the host reads with no finish time counts from when the sweep first saw it finished", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      const run = runFacts({ id: "r1", state: "succeeded", finished: null });
+      const finishedSince: FinishedSince = new Map();
+      const just = yield* sweep(
+        [sweeper([run], yield* idleFor(75 * MIN_MS), { finishedSince })],
+        rig.stateDir,
+        "host",
+      );
+      expect(just.keep).toEqual(kept("idle 0 of 60 min"));
+      expect(yield* closes).toBe(0);
+
+      finishedSince.set("r1", yield* ago(61 * MIN_MS));
+      const hour = yield* sweep(
+        [sweeper([run], yield* idleFor(136 * MIN_MS), { finishedSince })],
+        rig.stateDir,
+        "host",
+      );
+      expect(hour.remove.map((item) => item.reason)).toEqual(["idle for 61 min"]);
     }),
   ));
 

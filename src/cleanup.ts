@@ -945,6 +945,9 @@ export type IdleSince = Map<string, number>;
 
 const IDLE: ReadonlySet<string | null> = new Set<AgentStatus>(["idle", "done"]);
 
+/** When this host first saw each Run finished, for a Run that records no finish of its own. */
+export type FinishedSince = Map<string, number>;
+
 /** Notes what herdr says of `agents`: any status but idle or done clears its time. */
 export const noteIdle = (
   idle: IdleSince,
@@ -988,6 +991,7 @@ export const idleAgentsSweeper = (opts: {
   sessions: ReadonlyArray<{ readonly herd: string | null; readonly herdr: Herdr }>;
   runs: ReadonlyArray<RunFacts>;
   idle: IdleSince;
+  finishedSince: FinishedSince;
   /** 0 closes nothing. */
   idleCloseMs: number;
   ports?: CompactionPorts;
@@ -1005,6 +1009,10 @@ export const idleAgentsSweeper = (opts: {
     const sessions: AgentSession[] = [];
     const live = { terminals: new Set<string>(), sessions };
     const named: Array<{ run: RunFacts; launched: Launched }> = [];
+    const now = yield* Clock.currentTimeMillis;
+    for (const run of opts.runs)
+      if (FINISHED.has(run.state) && !opts.finishedSince.has(run.id))
+        opts.finishedSince.set(run.id, now);
     for (const run of opts.runs)
       for (const launched of yield* readLaunches(opts.stateDir, run.id)) {
         if (FINISHED.has(run.state)) named.push({ run, launched });
@@ -1040,7 +1048,7 @@ export const idleAgentsSweeper = (opts: {
       ),
     );
     const seen = listings.flatMap((one) => one.live);
-    noteIdle(opts.idle, seen, yield* Clock.currentTimeMillis);
+    noteIdle(opts.idle, seen, now);
     if (listings.every((one) => one.listed))
       forgetGone(opts.idle, new Set(seen.flatMap((one) => one.terminalId ?? [])));
 
@@ -1097,7 +1105,10 @@ export const idleAgentsSweeper = (opts: {
       if (!IDLE.has(one.at.status)) return { keep: one.at.status ?? "unknown" };
       const now = yield* Clock.currentTimeMillis;
       const since = opts.idle.get(one.at.terminalId) ?? now;
-      const finished = one.run.finished === null ? since : epochMs(one.run.finished);
+      const finished =
+        one.run.finished === null
+          ? (opts.finishedSince.get(one.run.id) ?? now)
+          : epochMs(one.run.finished);
       const idleFor = now - Math.max(since, finished);
       if (idleFor < opts.idleCloseMs)
         return { keep: `idle ${minutes(idleFor)} of ${minutes(opts.idleCloseMs)} min` };

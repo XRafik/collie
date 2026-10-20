@@ -134,6 +134,7 @@ import {
   taskWorkspacesSweeper,
   idleAgentsSweeper,
   noteIdle,
+  type FinishedSince,
   type IdleSince,
   generationsDir,
   generationsSweeper,
@@ -872,6 +873,7 @@ const hostBoard = (dir: string) =>
       .views(null)
       .pipe(Effect.map((views) => views.map((view) => factsOfView(env.stateDir, view))));
     const idle: IdleSince = new Map();
+    const finishedSince: FinishedSince = new Map();
     const boardOf = (facts: ReadonlyArray<RunFacts>, alive: ReadonlyArray<AgentInfo>) =>
       Effect.gen(function* () {
         return yield* buildBoard({
@@ -922,6 +924,7 @@ const hostBoard = (dir: string) =>
           sessions: herds,
           runs: all,
           idle,
+          finishedSince,
           // A config that cannot be read closes nothing.
           idleCloseMs: yield* loadDefaults(env.userDir).pipe(
             Effect.map((defaults) => defaults.idleCloseMs),
