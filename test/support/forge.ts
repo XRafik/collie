@@ -164,11 +164,22 @@ export const ForgeModel = Schema.Struct({
       }),
     ),
   ),
-  /** Pipelines and Actions runs, by id. */
+  /** Pipelines and Actions runs, by id, with their jobs where a test names them. */
   runs: Schema.optionalKey(
     Schema.Record(
       Schema.String,
-      Schema.Struct({ status: Schema.String, conclusion: Schema.optionalKey(Schema.String) }),
+      Schema.Struct({
+        status: Schema.String,
+        conclusion: Schema.optionalKey(Schema.String),
+        jobs: Schema.optionalKey(
+          Schema.Array(
+            Schema.Struct({
+              name: Schema.String,
+              state: Schema.Literals([...JobStates.literals, "manual"]),
+            }),
+          ),
+        ),
+      }),
     ),
   ),
   /** The shas each sha descends from. */
@@ -451,6 +462,7 @@ function pipelineOf(checks: ReadonlyArray<Check> | undefined): string | null {
 }
 
 const GITLAB_JOB = {
+  manual: "manual",
   passed: "success",
   pending: "pending",
   running: "running",
@@ -460,6 +472,7 @@ const GITLAB_JOB = {
 } as const;
 
 const GITHUB_RUN = {
+  manual: { status: "waiting", conclusion: null },
   passed: { status: "completed", conclusion: "success" },
   pending: { status: "queued", conclusion: null },
   running: { status: "in_progress", conclusion: null },
@@ -636,6 +649,11 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(mr === undefined ? [] : [{ id: pipelineIdOf(mr) + 2, sha: mr.target!.at }]);
     }
     const jobs = /\/pipelines\/(\d+)\/jobs/.exec(route);
+    const named = jobs === null ? undefined : model.runs?.[jobs[1]!]?.jobs;
+    if (named !== undefined)
+      return json(
+        named.map((job, at) => ({ id: at + 1, name: job.name, status: GITLAB_JOB[job.state] })),
+      );
     if (jobs) {
       const id = Number(jobs[1]);
       const mr = model.mrs.find((one) => Math.floor(id / 100) === Number(one.iid));
@@ -977,6 +995,19 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
       Number(rerun[2]),
     );
     return found === undefined ? no() : { ...ok(), retried: found };
+  }
+  const runJobs = /\/actions\/runs\/(\d+)\/jobs/.exec(route);
+  if (runJobs) {
+    const said = model.runs?.[runJobs[1]!];
+    return said === undefined
+      ? no()
+      : json({
+          jobs: (said.jobs ?? []).map((job, at) => ({
+            id: at + 1,
+            name: job.name,
+            ...GITHUB_RUN[job.state],
+          })),
+        });
   }
   const runs = /\/actions\/runs\/(\d+)$/.exec(route);
   if (runs) {

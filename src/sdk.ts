@@ -55,7 +55,9 @@ import type { Source } from "./offers";
 import type { Asker } from "./proposals";
 import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
-import type { MergeOutcome } from "./landing";
+import type { MergeOutcome, Takeover } from "./landing";
+import type { ReviewStanding } from "./review-wait";
+import type { FastForward, TagRead } from "./releasing";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -71,10 +73,14 @@ export { repoArgs } from "./forge/gitlab";
 export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
-export { parseMrTarget, type MrRef } from "./board-model";
+export { forgeOfRef, mrUrlOf, parseMrTarget, readMrRef, type MrRef } from "./board-model";
 /** What merging the default branch into a Run's branch did (`HostApi.integrate`). */
 export { IntegrationSchema, type Integration } from "./integrate";
-export { MergeOutcomeSchema, type MergeOutcome } from "./landing";
+export { MergeOutcomeSchema, TakeoverSchema, type MergeOutcome, type Takeover } from "./landing";
+/** Where a merge request's review stands for a Release Run (`HostApi.awaitReview`). */
+export { ReviewStandingSchema, type OpenComment, type ReviewStanding } from "./review-wait";
+/** A checkout brought to a head, and a tag read back (`HostApi.fastForward`, `HostApi.readTag`). */
+export { FastForwardSchema, TagReadSchema, type FastForward, type TagRead } from "./releasing";
 
 export {
   CheckSchema,
@@ -757,6 +763,70 @@ export interface HostApi {
     readonly cwd: string;
     readonly head: string;
   }) => Effect.Effect<MergeOutcome, WorkflowError>;
+  /**
+   * One read of the review of the merge request this Run recorded, judged against `proved`,
+   * the head its Checks were proved on: `Ready`, `Waiting` with what is missing, or any of
+   * what `awaitReview` returns. `Unreadable` says why the forge could not be read. Take it
+   * inside an Activity, so a replay takes the same path.
+   */
+  readonly review: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly proved: string;
+    /** Unanswered comments already returned, which keep the review waiting rather than return. */
+    readonly seen: ReadonlyArray<string>;
+  }) => Effect.Effect<ReviewStanding, WorkflowError>;
+  /**
+   * Reads the review every 5 minutes, spending no model tokens, until it is `Ready` at
+   * `proved`, has `Unanswered` external comments not in `seen`, has `Moved` from `proved`, is
+   * `Merged` or `Closed`, or a Hold or Stop ends the wait (`Held`). A moved head is said
+   * before readiness. Meanwhile the card's parked line says what it waits for, cleared when
+   * it returns. Take it inside an Activity, and suspend the Run on `Held` there.
+   */
+  readonly awaitReview: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly proved: string;
+    readonly seen: ReadonlyArray<string>;
+  }) => Effect.Effect<ReviewStanding, WorkflowError>;
+  /**
+   * Fetches origin and fast-forwards the checkout at `cwd` to `head`, recording the move in
+   * the Run log. A checkout with uncommitted changes, or one `head` does not fast-forward
+   * (a force push), is `Refused` with why: nothing is reset or discarded. Take it inside an
+   * Activity.
+   */
+  readonly fastForward: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly head: string;
+  }) => Effect.Effect<FastForward>;
+  /**
+   * Reads `tag` back from origin and the forge, rather than from an Output, against what it
+   * must prove. `finished`, a package's: the tag is on origin, it carries `merged`, and where
+   * `pipeline` names one, the forge says it finished and succeeded. A pipeline with a job
+   * waiting to be started by hand has not finished, and the answer names the job. Take it
+   * inside an Activity.
+   */
+  readonly readTag: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly tag: string;
+    readonly merged: string;
+    /** The tag's pipeline, or null where it named none. */
+    readonly pipeline: string | null;
+    readonly proves: "finished";
+  }) => Effect.Effect<TagRead>;
+  /**
+   * For a merged merge request this Run recorded: takes over the landing of the newest Run
+   * on this host that landed it, where that Run ended without succeeding and the forge's
+   * merged commit is the one it recorded. The landing is recorded on this Run, naming the
+   * Run it came from. `Refused` says why not: merged outside a Release Run, already
+   * released, or still being released. Take it inside an Activity.
+   */
+  readonly takeOverLanding: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+  }) => Effect.Effect<Takeover, WorkflowError>;
   /**
    * Blocks until the forge shows production carries `sha`, costing wall clock and no model
    * tokens, and says on the card meanwhile what it waits for: `jobs` are the production

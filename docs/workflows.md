@@ -1,6 +1,6 @@
 # Workflows
 
-Collie ships eight workflows. This page is the "which one do I want" level: what each is
+Collie ships nine workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
@@ -10,8 +10,8 @@ For what a Workflow, an operation, a Choice or a Run _is_, see [`CONTEXT.md`](..
 
 ## Choosing one
 
-A task that is not planning, building a change to a merge request, reviewing, renovating
-or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
+A task that is not planning, building a change to a merge request, reviewing, releasing
+one, renovating or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
 
 ## How inputs reach a run
 
@@ -386,6 +386,53 @@ content in [`workflows/renovate.gitlab.md`](../workflows/renovate.gitlab.md) for
 repository and [`workflows/renovate.github.md`](../workflows/renovate.github.md) for a
 GitHub one.
 
+## `release`
+
+**For:** one merge request taken the rest of the way, on your go: merged at the head its
+review approved and its checks proved, tagged, and the tag read back on origin. Today it
+releases a **package**; a Run on an application fails at once and says why.
+
+**Inputs:** `mr`, the merge request or pull request, picked from the same target menu
+`review` offers ([Reviewing someone else's merge request](using.md#reviewing-someone-elses-merge-request)).
+
+**Checkout:** its own, of the merge request's source branch (the pull request's head
+branch on GitHub), which Collie only ever fast-forwards. A checkout with uncommitted
+changes, or a head that does not fast-forward it, as after a force push, parks the Run
+with why: nothing is reset or discarded.
+
+**What happens:** one agent assesses, read only, whether the repository is a package or an
+application, by renovate's own rule. Collie then proves the head with the Run's checks, and
+waits, at no token cost, reading the review every five minutes until the merge request is
+approved, has no unanswered external comment, is green and mergeable at the proved head.
+The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); 2
+unanswered comment(s); the pipeline at `<sha>`.". A head that moves is fast-forwarded to
+and proved before anything can be asked about it, and failed checks park the Run until
+you repair them and resume it. A merge request someone else merges, or closes, ends the
+Run with nothing tagged.
+
+Once ready, it asks **`go-<n>`**: **Release** or **Finish**, naming the head and who
+approved it. Anyone may answer, from any door, and the answer is recorded with who gave it.
+**Finish** ends the Run with the merge request left open. **Release** reads the review
+again: where it no longer holds, the Run says why on its log and waits for a fresh go.
+Where it holds, the Run claims the repository in Helle (a repository with no Helle project
+goes on without one), and Collie merges at exactly the head the go named — never an admin
+merge, never auto-merge. A head that moved before the merge gives the claim back and goes
+back to waiting. The agent then tags by the repository's own conventions, and Collie reads
+the tag back on origin, carrying the merged commit, with its pipeline finished and
+succeeded by the forge's word. A job waiting to be started by hand has not finished.
+A merge request set to merge itself once green is refused at the start: it is already on
+its way.
+
+**Ends:** with `<mr> merged at <sha>, released as <tag>` and the claim given back, or with
+what stopped it. A failed Run offers **Release again**: before the merge it is a fresh
+release; after it, the new Run takes over the failed Run's landing — never a merge someone
+made outside a Release Run — and only tags, asking to adopt the claim the failed Run kept.
+
+Module: [`workflows/release.workflow.ts`](../workflows/release.workflow.ts), with its
+content in [`workflows/release.gitlab.md`](../workflows/release.gitlab.md) and
+[`workflows/release.github.md`](../workflows/release.github.md). Why it is shaped this way:
+[ADR-draft-a-merge-request-is-released-on-a-humans-go](adr/draft-a-merge-request-is-released-on-a-humans-go.md).
+
 ## `architecture`
 
 **For:** looking at what a project already has and improving the parts whose cost you can
@@ -456,6 +503,10 @@ Each names only what that step's content tells the agent to do:
 - **`renovate`'s `release`**: pushing an annotated version tag of the default branch,
   creating its release where the repository is a package, and watching the tag's
   pipeline — never playing a production deploy job.
+- **`release`'s `tag`**: a release commit to the repository's default branch where it makes
+  one, pushing an annotated version tag, creating its release where the package publishes
+  from its tags, and watching the tag's pipeline — never playing a production job. The
+  merge is Collie's, on the human's go, and clears nothing.
 
 Every other shipped step clears nothing.
 
@@ -472,6 +523,8 @@ Every other shipped step clears nothing.
 - `review` → `implement`, from **Fix findings in a full implement run**. See
   [Hand-offs](using.md#hand-offs-between-runs).
 - `general` chains into nothing.
+- `release` chains into nothing; a failed one offers **Release again** of the same merge
+  request.
 - `self-improve` → `plan` with `then=implement`, once per Improvement, each its own card.
 
 A chained run is a child of the one that started it, its input decoded against the child's

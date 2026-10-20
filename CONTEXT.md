@@ -525,6 +525,30 @@ accounted for and the release succeeded, but one or more updates were deferred w
 operator's approval. The exceptions are named in the checklist entry. An unresolved
 blocker is not an exception: it leaves the entry unchecked and the Run open.
 
+**Release Run** — One execution of the `release` Workflow: one merge request taken from
+open to landed. It answers **External review comments** until the forge says the merge
+request is approved, then asks for a **Go**. On it, it claims the repository in Helle.
+An application is either staged from its merge request for testing, then merged and
+tagged, or merged, tagged and staged from its tag. Either way it goes to production on a
+second Go. A package is merged and tagged. Collie merges, and reads from the forge every fact it
+decides on. The Run's agent fixes, stages, tags and plays the jobs. It works in the
+checkout of the merge request's source branch and is held to the **Checks** of the Run it
+was started from. It starts as a child from an implement Run's end menu, from a succeeded
+implement Run's `Release` offer, or on its own
+(ADR-draft-a-merge-request-is-released-on-a-humans-go).
+
+**External review comment** — A comment on a merge request by anyone but the forge login
+Collie acts as, and not a bot's or the forge's own note. A reply in a thread is one of its
+own. A **Release Run** answers each one once: fixed, naming the commit, or disputed, saying
+why. It never resolves a thread, because that is the reviewer's call.
+
+**Go** — The answer that lets a Run do what cannot be taken back: start a release (claim,
+stage, merge, tag), and send one to production. It is asked on the Run once the work is
+ready, never at its start. The first holds for one head: a head that moves takes it back.
+The second holds for what it sends. Before a merge, that is the head on stage, so the same
+rule applies. After one, it is one tag and the production jobs that tag names. Who answered
+is recorded, never a reason to refuse.
+
 **Layer** — Where a definition is looked up, later wins by name. A Workflow is one `*.workflow.ts` entry, found project `.collie/workflows/` first, then the user's `~/.collie/user/workflows/`, then the installation's `workflows/`; a broken override is reported, never fallen through. A Persona is Markdown, found the same way: the project's `.collie/personas/`, then the user's `~/.collie/user/personas/`, then the installation's `personas/`. Forking takes a baseline definition into a later Layer. The user Layer's files are **shared definitions**: every Machine in a Flock holds the latest edit of each, its removal included, so the user Layer is the Flock's rather than one Machine's ([ADR-0061](docs/adr/0061-a-users-definitions-are-the-flocks.md)).
 
 **Override** — A Persona that declares `extends: <name>` and changes only what it names; everything else still follows the parent in the Layer below. A file without `extends:` replaces the whole Persona, and a full copy records `forked_from_hash` so a parent that has moved on can be marked stale. The merge rules are canonical in `src/definitions.ts` and `docs/authoring.md`. A Workflow is overridden by an entry with the same id, and customised by importing what it keeps.
@@ -540,7 +564,8 @@ blocker is not an exception: it leaves the entry unchecked and the Run open.
 What each is for, what it needs, and how they chain: `docs/workflows.md`.
 
 - `plan` — interviews the human, then writes `SPEC.md` and one ticket per slice into its Run's plan directory (ADR-0002).
-- `implement` — builds from a work source, reviews what it built with the same pass `review` runs, loops on the findings, and opens or updates the merge request last, only where the evidence is there. No architecture or simplification pass: those are work the change asks for, not work every Run does.
+- `implement` — builds from a work source, reviews what it built with the same pass `review` runs, loops on the findings, and opens or updates the merge request last, only where the evidence is there. Then it asks what next, unless started with `then=finish` or `then=release`: `Release` takes its merge request the rest of the way as a child **Release Run**. No architecture or simplification pass: those are work the change asks for, not work every Run does.
+- `release` — answers a merge request's External review comments until it is approved, then, on a Go, merges and tags it. An application is staged either from its merge request, for testing before the merge, or from its tag after it, and goes to production on a second Go.
 - `review` — standalone; you pick the target; one complete review, and a synthesis that reconciles the reviewers where more than one axis is asked for.
 - `architecture` — runs the architect over the project and reports into its Run's plan directory.
 - `renovate` — claims the repository in Helle, merges or accounts for every Renovate Bot merge request, tags and watches the release, and records the result on the team's Renovate issue.

@@ -1,0 +1,55 @@
+import { expect, test } from "bun:test";
+import { RELEASE_CLEARS, RELEASE_ON } from "../workflows/release.workflow";
+import { contentOf } from "../src/sdk";
+import onGitlab from "../workflows/release.gitlab.md" with { type: "text" };
+import onGithub from "../workflows/release.github.md" with { type: "text" };
+import renovateOnGitlab from "../workflows/renovate.gitlab.md" with { type: "text" };
+import renovateOnGithub from "../workflows/renovate.github.md" with { type: "text" };
+
+// release keeps a content file per forge, as renovate does (ADR-0050 D1): the procedure
+// differs, so each says it its forge's way.
+
+const content = { gitlab: contentOf(onGitlab), github: contentOf(onGithub) };
+const flat = (text: string) => text.replace(/\s+/g, " ").trim();
+
+test("both forges' release content has the steps the module asks for, and every step fills from what it gives", () => {
+  for (const one of Object.values(content))
+    expect([...one.sections.keys()]).toEqual(["assess", "tag"]);
+  // A template naming anything ReleaseInput does not give is refused as it is made.
+  expect(Object.keys(RELEASE_ON.github)).toEqual(Object.keys(RELEASE_ON.gitlab));
+});
+
+test("release decides package or application by renovate's own rule, word for word", () => {
+  const rule = (markdown: string) =>
+    /Decide first whether this repository is a package or an application:[\s\S]*?with the\s+evidence\./.exec(
+      markdown,
+    )?.[0] ?? "";
+  for (const [forge, renovate] of [
+    ["gitlab", renovateOnGitlab],
+    ["github", renovateOnGithub],
+  ] as const) {
+    expect(rule(renovate)).not.toBe("");
+    expect(flat(content[forge].sections.get("assess") ?? "")).toContain(flat(rule(renovate)));
+  }
+});
+
+test("each Clearance names the repository's URL", () => {
+  const url = "https://gitlab.example.com/group/app";
+  for (const [step, clears] of Object.entries(RELEASE_CLEARS)) {
+    const lines = clears(url);
+    expect([step, lines.length > 0]).toEqual([step, true]);
+    for (const line of lines) expect(line).toContain(url);
+  }
+});
+
+test("the tag step tags by the repository's conventions, watches its pipeline and plays no production job", () => {
+  for (const one of Object.values(content)) {
+    const tag = flat(one.sections.get("tag") ?? "");
+    expect(tag).toContain("the repository's own tag and notes conventions");
+    expect(tag).toContain("`## <version> - <YYYY-MM-DD>`");
+    expect(tag).toContain("--cleanup=verbatim");
+    expect(tag).toContain("Production deploy jobs are mine");
+    expect(tag).toContain("{{recovery}}");
+    expect(tag).toContain("{{merged}}");
+  }
+});

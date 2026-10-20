@@ -2259,6 +2259,25 @@ A step pointed at a merge request needs its forge's CLI logged in to its host: `
 github.com` on GitHub. In a directory that is not a checkout there is no branch and no
 working tree to review, so the target menu is one entry — **Type it…**.
 
+## Releasing a merge request
+
+`collie run start release --input mr=<target>` — or **release** from the board's start menu —
+takes one merge request the rest of the way once you have said go. The target is the
+same as a review's ([above](#reviewing-someone-elses-merge-request)). Start it as soon as
+the merge request is open: the Run proves the head with its checks, then waits at no token
+cost until the merge request is approved, every external comment is answered, and it is
+green and mergeable at that head. Its card says what it is still waiting for, and a push
+to the branch is proved again before anything is asked.
+
+Then it asks **Release** or **Finish**, naming the head and who approved it. **Release**
+claims the repository, merges at exactly that head and tags the package; the Run ends
+only once the tag is on origin and its pipeline has finished and succeeded. **Finish**
+leaves the merge request open. Answer it from the card, Desktop, chat or
+`collie run answer <run> Release --decision go-1`. A merge request that is set to merge
+itself once green, or that is an application's, is refused at the start with why. If a
+Run fails after it merged, **Release again** tags what it merged rather than merging
+anything again ([`release`](workflows.md#release)).
+
 ## Your defaults
 
 `~/.collie/user/config.json`, beside your own workflows and personas, all keys optional:

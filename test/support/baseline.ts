@@ -29,7 +29,18 @@ import { Rig, FakeHerdr } from "./recorder";
 import { exec } from "./command";
 import { fastForward, runEffect } from "./effect";
 import { FakeBin } from "./bin";
-import { CLI, FORGE_HOST, PROJECT, forgeOnPath, type FakeJob, type ForgeModel } from "./forge";
+import {
+  CLI,
+  FORGE_HOST,
+  PROJECT,
+  forgeOnPath,
+  type FakeJob,
+  type FakeMr,
+  type ForgeModel,
+} from "./forge";
+import * as BunServices from "@effect/platform-bun/BunServices";
+import { readLanding, takeOver, writeLanding } from "../../src/landing";
+import { shell } from "../../src/mr";
 import { readCheckpoints } from "../../src/cards";
 import { mrTarget, type MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
@@ -56,6 +67,7 @@ import {
 import {
   HOLD,
   PARKED,
+  RunStatus,
   answerDecision,
   controlPath,
   declaredByModule,
@@ -82,6 +94,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  release: "ship-it",
   investigate: "find-the-cause",
   general: "odd-job",
   "self-improve": "look-back",
@@ -153,7 +166,7 @@ const children = Layer.succeed(Children)(
 );
 
 /** A host layer a test may wrap, for the one capability it has no service to answer with. */
-type HostOverride = Layer.Layer<Host, never, Host>;
+type HostOverride = Layer.Layer<Host, never, Host | BunServices.BunServices>;
 
 /** The host's own layers, placing checkouts through the rig's herdr. */
 const foundation = () => ({
@@ -161,10 +174,12 @@ const foundation = () => ({
   userDir: rig.userDir,
   placing: { herdr: hostOf().herdr, env: hostOf().env },
   productionPoll,
+  reviewPoll,
 });
 
 /** How often production is read; a scenario that must not wait on it sets it long. */
 let productionPoll: Duration.Input = "20 millis";
+const reviewPoll: Duration.Input = "20 millis";
 
 const session = <A, E>(
   run: Effect.Effect<
@@ -7364,6 +7379,777 @@ scenario(
 
 /** A prompt with the Run it is about taken out, so two Runs' prompts can be compared. */
 const byRun = (prompt: string) => prompt.replaceAll(/r-(fork|shipped)/g, "<run>");
+
+/** Each forge's merge request a Release Run is started on, and its repository. */
+const RELEASING = {
+  gitlab: {
+    remote: "git@gitlab.example.com:group/app.git",
+    url: "https://gitlab.example.com/group/app",
+    mr: `https://${PROJECT.gitlab}/-/merge_requests/30`,
+    target: `mr:${PROJECT.gitlab}!30`,
+  },
+  github: {
+    remote: "git@github.com:owner/repo.git",
+    url: "https://github.com/owner/repo",
+    mr: `https://${PROJECT.github}/pull/30`,
+    target: `mr:${PROJECT.github}#30`,
+  },
+} as const;
+
+const PACKAGED = {
+  verdict: "clean",
+  is_package: true,
+  kind_evidence: "a publish job on tags, and no deploy",
+};
+const TAGGED = { verdict: "clean", tag: "v1.2.0", version: "1.2.0" };
+
+/** The merge request as a forge reads it approved by alice, green and mergeable at `head`. */
+const readyMr = (name: MrForge, head: string, merged: string, over: Partial<FakeMr> = {}) =>
+  ({
+    project: PROJECT[name],
+    iid: "30",
+    state: "open",
+    head,
+    mergedSha: merged,
+    sourceBranch: "feature",
+    targetBranch: "main",
+    checks: [{ name: "build", state: "passed" }],
+    ...(name === "gitlab"
+      ? { approvers: ["alice"], required: 1 }
+      : {
+          reviews: [{ id: 1, author: "alice", state: "APPROVED", at: "2026-10-20T10:00:00Z" }],
+        }),
+    ...over,
+  }) satisfies FakeMr;
+
+const revParse = (ref: string, cwd = rig.projectDir) =>
+  exec(["git", "rev-parse", ref], { cwd }).pipe(Effect.map((ran) => ran.stdout.trim()));
+
+/** A commit on `parent`'s tree, made without a checkout and pushed to origin's `feature`. */
+const pushedBySomebody = (parent: string, force = false) =>
+  Effect.gen(function* () {
+    const sha = (yield* exec(
+      ["git", "commit-tree", `${parent}^{tree}`, "-p", parent, "-m", "pushed by somebody"],
+      { cwd: rig.projectDir },
+    )).stdout.trim();
+    yield* exec(
+      ["git", "push", "-q", ...(force ? ["-f"] : []), "origin", `${sha}:refs/heads/feature`],
+      { cwd: rig.projectDir },
+    );
+    return sha;
+  });
+
+const tagOnOrigin = (sha: string) =>
+  Effect.gen(function* () {
+    yield* exec(["git", "tag", "-a", "v1.2.0", "-m", "1.2.0", sha], { cwd: rig.projectDir });
+    yield* exec(["git", "push", "-q", "origin", "v1.2.0"], { cwd: rig.projectDir });
+  });
+
+/**
+ * A merge request from `feature`, whose checkout git already has, ready on `name`'s forge.
+ * What its merge makes is already on origin's default branch, and tagged unless `tagged` is
+ * false: the agent that would push the tag is a stand-in.
+ */
+const releasable = (name: MrForge, over: Partial<FakeMr> = {}, tagged = true) =>
+  Effect.gen(function* () {
+    const reviewed = yield* reviewedBranch();
+    yield* exec(["git", "commit", "-qm", "the change", "--allow-empty"], { cwd: reviewed });
+    yield* exec(["git", "push", "-q", "origin", "feature"], { cwd: reviewed });
+    const head = yield* revParse("HEAD", reviewed);
+    const base = yield* revParse("HEAD");
+    const merged = (yield* exec(
+      ["git", "commit-tree", `${head}^{tree}`, "-p", base, "-p", head, "-m", "Merge feature"],
+      { cwd: rig.projectDir },
+    )).stdout.trim();
+    yield* exec(["git", "push", "-q", "origin", `${merged}:refs/heads/main`], {
+      cwd: rig.projectDir,
+    });
+    if (tagged) yield* tagOnOrigin(merged);
+    yield* exec(["git", "remote", "set-url", "upstream", RELEASING[name].remote], {
+      cwd: rig.projectDir,
+    });
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    const model: ForgeModel = {
+      installed: true,
+      loggedIn: [FORGE_HOST[name]],
+      login: "tester",
+      mrs: [readyMr(name, head, merged, over)],
+    };
+    const forge = yield* forgeOnPath(bin, name, model);
+    /** The merge request changed on the forge, as a reviewer or a push changes it. */
+    const changed = (over: Partial<FakeMr>) =>
+      Effect.gen(function* () {
+        const now = yield* forge.model();
+        yield* forge.set({ ...now, mrs: now.mrs.map((one) => ({ ...one, ...over })) });
+      });
+    return { bin, forge, head, merged, reviewed, changed };
+  });
+
+/** How each Run a takeover may weigh ended, as this test says; null still runs. */
+type Ends = Readonly<Record<string, { succeeded: boolean; failure: string } | null>>;
+
+/**
+ * Helle answered here, and the Runs' ends a landing takeover weighs given: what decides is
+ * `takeOver`'s, from the landing records on disk and the forge. `whileClaiming` is what
+ * happens elsewhere while the claim is taken.
+ */
+const releaseHost = (
+  ends: Ends = {},
+  whileClaiming: Effect.Effect<void, unknown, FileSystem.FileSystem> = Effect.void,
+) =>
+  Layer.effect(Host)(
+    Effect.gen(function* () {
+      const host = yield* Host;
+      const services = yield* Effect.context<BunServices.BunServices>();
+      return Host.of({
+        ...host,
+        claim: (options) =>
+          options.say("holding the claim").pipe(
+            Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
+            Effect.tap(() => whileClaiming.pipe(Effect.orDie, Effect.provideContext(services))),
+            Effect.as({ slug: "project" }),
+          ),
+        release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
+        takeOverLanding: (asked) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const runs = yield* Effect.forEach(Object.entries(ends), ([runId, ended]) =>
+              Effect.map(readLanding(runDir(dir, runId)), (landing) => ({
+                runId,
+                landing,
+                ended,
+              })),
+            );
+            const mr = yield* fs.readFileString(`${runDir(dir, asked.runId)}/merge-request`);
+            return yield* takeOver({
+              runDir: runDir(dir, asked.runId),
+              mr: mr.trim(),
+              runs,
+              cwd: asked.cwd,
+              run: shell,
+            });
+          }).pipe(Effect.orDie, Effect.provideContext(services)),
+      });
+    }),
+  );
+
+/**
+ * A Run of a shipped module, driven from outside while it runs: its status, what it asks,
+ * and an answer given as a door gives one. Answers with what `drive` does.
+ */
+const driven = <A, E>(
+  options: ShippedRun,
+  drive: (run: {
+    readonly status: Effect.Effect<typeof RunStatus.Type>;
+    readonly asked: Effect.Effect<
+      ReadonlyArray<{ decision: string; prompt: string; options: string; answer: string | null }>
+    >;
+    readonly answer: (decision: string, value: string) => Effect.Effect<void>;
+  }) => Effect.Effect<A, E, FileSystem.FileSystem>,
+) =>
+  session(
+    Effect.gen(function* () {
+      const made = yield* loaded(options.entry, options.runId);
+      const engine = yield* WorkflowEngine.WorkflowEngine;
+      const store = yield* Store;
+      yield* admit({ runId: options.runId, workflow: made.workflow.name, input: options.input });
+      const payload = { runId: options.runId, input: options.input };
+      return yield* Effect.gen(function* () {
+        yield* made.workflow.execute(payload, { discard: true });
+        const id = yield* made.workflow.executionId(payload);
+        return yield* drive({
+          status: engine.poll(made.workflow, id).pipe(Effect.map((got) => pollStatus(got, ""))),
+          asked: store.asked(options.runId),
+          answer: (decision, value) =>
+            answerDecision(made, { name: decision, executionId: id, value }).pipe(
+              Effect.orDie,
+              Effect.provideService(WorkflowEngine.WorkflowEngine, engine),
+            ),
+        });
+      }).pipe(Effect.provide(made.layer));
+    }),
+    options.host,
+  );
+
+/** The go asked under `name`, once it is open. */
+const goAsked = (
+  asked: Effect.Effect<
+    ReadonlyArray<{ decision: string; prompt: string; options: string; answer: string | null }>
+  >,
+  name: string,
+) =>
+  until(
+    () => asked,
+    (rows) => rows.some((row) => row.decision === name && row.answer === null),
+  ).pipe(Effect.map((rows) => rows.find((row) => row.decision === name)!));
+
+const PIPELINE_OF = {
+  gitlab: "https://gitlab.example.com/group/app/-/pipelines/7",
+  github: "https://github.com/owner/repo/actions/runs/7",
+} as const;
+
+const runLog = (runId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(`${runDir(dir, runId)}/log.txt`)),
+    Effect.orElseSucceed(() => ""),
+  );
+
+/** One check of this Run's that passes, run in the Run's own checkout. */
+const checkedBy = (runId: string, name: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      fs
+        .makeDirectory(evidenceDir(dir, runId), { recursive: true })
+        .pipe(
+          Effect.andThen(
+            fs.writeFileString(
+              `${evidenceDir(dir, runId)}/approved.json`,
+              asApproved([{ name, executable: "true", argv: [], cwd: "worktree" }]),
+            ),
+          ),
+        ),
+    ),
+    Effect.orDie,
+  );
+
+/** What a Run came to, once it has. */
+const ended = (status: Effect.Effect<typeof RunStatus.Type>) =>
+  until(
+    () => status,
+    (got) => got.status === "complete" || got.status === "failed",
+  );
+
+const outcomeText = (status: typeof RunStatus.Type) =>
+  status.status === "complete"
+    ? Schema.decodeUnknownSync(Schema.String)(status.value)
+    : status.status === "failed"
+      ? status.reason
+      : status.status;
+
+for (const name of ["gitlab", "github"] as const) {
+  const { mr, url, target } = RELEASING[name];
+
+  scenario(
+    `release on ${name}: an approved, green, mergeable package is asked go 1 once, merged at that head, tagged and read back under the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-release-${name}`;
+          yield* rig.queueOutputs([PACKAGED, TAGGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain(mr);
+                expect(go.prompt).toContain(head.slice(0, 8));
+                expect(go.prompt).toContain("alice");
+                expect(optionsOf([go], "go-1")).toEqual(["Release", "Finish"]);
+                // Nothing shared is touched before the go.
+                expect(claimed).toEqual([]);
+                yield* run.answer("go-1", "Release");
+                const end = yield* ended(run.status);
+                expect(
+                  (yield* run.asked).filter((row) => row.decision.startsWith("go-")),
+                ).toHaveLength(1);
+                return end;
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} merged at ${merged}, released as v1.2.0`);
+          expect(model.merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "tag")).toBe(
+            `Cleared for this step: a release commit to ${url}'s default branch, where the repository makes one; pushing an annotated version tag of ${url} to origin; creating its release on ${url}, where the package publishes from its tags; watching the tag's pipeline on ${url}, never playing a production job.`,
+          );
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["assess", "tag"])
+            expect(yield* asked(runId, step)).not.toMatch(other);
+          expect(yield* asked(runId, "tag")).toContain(`merged commit is \`${merged}\``);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Finish leaves the merge request open, with no claim and no merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-finish-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(model.mrs[0]?.state).toBe("open");
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a go answered after the head moved is asked again on the new head`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, changed } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-moved-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          let moved = "";
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                moved = yield* pushedBySomebody(head);
+                yield* changed({ head: moved });
+                yield* run.answer("go-1", "Release");
+                const again = yield* goAsked(run.asked, "go-2");
+                expect(again.prompt).toContain(moved.slice(0, 8));
+                yield* run.answer("go-2", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([]);
+          const log = yield* runLog(runId);
+          expect(log).toContain(`go 1 no longer holds for ${head.slice(0, 8)}`);
+          expect(log).toContain(`moved the checkout from ${head} to ${moved}`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a head somebody else pushed during the wait is fast-forwarded and proved by the checks before go 1`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const running = [{ name: "build", state: "running" }] as const;
+          const { bin, head, reviewed, changed } = yield* releasable(name, { checks: running });
+          const runId = `r-pushed-${name}`;
+          yield* checkedBy(runId, "unit");
+          yield* rig.queueOutputs([PACKAGED]);
+          let moved = "";
+          yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(runId),
+                    (why) => why !== "",
+                  ),
+                ).toBe(`Waiting for review of ${mr}: the pipeline at ${head.slice(0, 8)}.`);
+                moved = yield* pushedBySomebody(head);
+                yield* changed({ head: moved, checks: [{ name: "build", state: "passed" }] });
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain(moved.slice(0, 8));
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(yield* revParse("HEAD", reviewed)).toBe(moved);
+          const proved = (yield* readVerifications(evidenceDir(dir, runId))).map(
+            (one) => one.end.head_sha,
+          );
+          expect(proved).toEqual([head, moved]);
+          expect(yield* runLog(runId)).toContain(`moved the checkout from ${head} to ${moved}`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a force-pushed head parks the Run, naming why, with nothing reset`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const running = [{ name: "build", state: "running" }] as const;
+          const { bin, head, reviewed, changed } = yield* releasable(name, { checks: running });
+          const runId = `r-forced-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const why = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                );
+                const forced = yield* pushedBySomebody(`${head}~1`, true);
+                yield* changed({ head: forced, checks: [{ name: "build", state: "passed" }] });
+                yield* until(
+                  () => run.status,
+                  (got) => got.status === "suspended",
+                );
+                return yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("fast-forward"),
+                );
+              }),
+          );
+          yield* bin.restore();
+          expect(why).toContain(`does not fast-forward ${head.slice(0, 8)}`);
+          expect(why).toContain(`Repair it, then resume ${runId}.`);
+          expect(yield* revParse("HEAD", reviewed)).toBe(head);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: an auto-merging, closed or hand-merged merge request fails at the start`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, changed } = yield* releasable(name);
+          claimed.length = 0;
+          const started = (runId: string, over: Partial<FakeMr>) =>
+            Effect.gen(function* () {
+              yield* changed(over);
+              return reasonOf(
+                yield* ran({
+                  entry: shipped("release"),
+                  runId,
+                  input: { mr: target },
+                  host: releaseHost(),
+                }),
+              );
+            });
+          expect(yield* started(`r-auto-${name}`, { autoMerge: true })).toBe(
+            `${mr} is set to merge itself once green, so this Run leaves it to do that`,
+          );
+          expect(yield* started(`r-closed-${name}`, { autoMerge: false, state: "closed" })).toBe(
+            `${mr} is closed, so nothing was released`,
+          );
+          expect(
+            yield* started(`r-hand-${name}`, {
+              state: "merged",
+              mergedBy: "alice",
+              mergedAt: "2026-10-20T11:00:00Z",
+            }),
+          ).toBe(`${mr} was merged outside a Release Run: no Run on this host landed it`);
+          yield* bin.restore();
+          expect(yield* prompts()).toEqual([]);
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a merge by hand between the go and Collie's merge fails as merged outside this Run, and gives the claim back`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, changed } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-raced-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const byHand = changed({
+            state: "merged",
+            mergedBy: "alice",
+            mergedAt: "2026-10-20T12:30:00Z",
+          });
+          const status = yield* driven(
+            {
+              entry: shipped("release"),
+              runId,
+              input: { mr: target },
+              host: releaseHost({}, byHand),
+            },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} was merged outside this Run by alice, so nothing was tagged`,
+          );
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: an application fails at the assessment, before any wait or claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-app-${name}`;
+          yield* rig.queueOutputs([
+            { verdict: "clean", is_package: false, kind_evidence: "it deploys to production" },
+          ]);
+          const result = yield* ran({
+            entry: shipped("release"),
+            runId,
+            input: { mr: target },
+            host: releaseHost(),
+          });
+          yield* bin.restore();
+          expect(reasonOf(result)).toBe(
+            "releasing an application is not supported yet: it deploys to production",
+          );
+          expect(yield* prompts()).toHaveLength(1);
+          expect(claimed).toEqual([]);
+          expect(yield* parkedWhy(runId)).toBe("");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a tag missing on origin keeps the claim and offers Release again, which finishes the release without merging again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged } = yield* releasable(name, {}, false);
+          claimed.length = 0;
+          const first = `r-untagged-${name}`;
+          const again = `r-again-${name}`;
+          yield* rig.queueOutputs([PACKAGED, TAGGED, PACKAGED, TAGGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId: first, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                return yield* ended(run.status);
+              }),
+          );
+          const failure = outcomeText(status);
+          expect(failure).toBe(
+            `${mr} merged at ${merged}, but v1.2.0 is not released: v1.2.0 is not on origin`,
+          );
+          expect(claimed).toEqual([`claim ${first}`]);
+
+          const declared = yield* loadEntry(shipped("release")).pipe(
+            Effect.map((described) => declaredByModule(described.metadata)),
+            Effect.orDie,
+          );
+          const facts: ActionFacts = {
+            outcome: "unspecified",
+            succeeded: false,
+            branch: null,
+            mrUrl: mr,
+            planIssues: 0,
+            disposed: false,
+            openFindings: 0,
+            diffTarget: target,
+            claim: "project",
+          };
+          const offered = offersFrom(declared, facts, { self: idOf("release") });
+          expect(offered.map((offer) => [offer.id, offer.title, offer.workflow])).toEqual([
+            ["release-again", "Release again", idOf("release")],
+          ]);
+          expect(inputsFor(offered[0]!, { runDir: "/r", facts, input: { mr: target } })).toEqual({
+            mr: target,
+          });
+
+          yield* tagOnOrigin(merged);
+          const result = yield* ran({
+            entry: shipped("release"),
+            runId: again,
+            input: { mr: target },
+            host: releaseHost({ [first]: { succeeded: false, failure } }),
+          });
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(said(result)).toBe(`${mr} merged at ${merged}, released as v1.2.0`);
+          expect(model.merges ?? []).toHaveLength(1);
+          expect(claimed).toEqual([`claim ${first}`, `claim ${again}`, `release ${again}`]);
+          const tagging = yield* asked(again, "tag");
+          expect(tagging).toContain(`recovers the release of ${mr} that ${first} merged`);
+          expect(tagging).toContain(failure);
+          expect(yield* readLanding(runDir(dir, again))).toMatchObject({
+            state: "landed",
+            sha: merged,
+            from: first,
+          });
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a merge request whose landing Run succeeded fails at the start, naming that Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, merged } = yield* releasable(name, {
+            state: "merged",
+            mergedBy: "tester",
+            mergedAt: "2026-10-20T11:00:00Z",
+          });
+          yield* writeLanding(runDir(dir, "r-done"), {
+            state: "landed",
+            mr,
+            head,
+            at: "2026-10-20T10:59:00Z",
+            sha: merged,
+          });
+          const result = yield* ran({
+            entry: shipped("release"),
+            runId: `r-released-${name}`,
+            input: { mr: target },
+            host: releaseHost({ "r-done": { succeeded: true, failure: "" } }),
+          });
+          yield* bin.restore();
+          expect(reasonOf(result)).toBe(`${mr} was already released by r-done`);
+          expect(yield* prompts()).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a tag pipeline still waiting on a job somebody must start by hand fails the read-back, naming the job`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* releasable(name);
+          const now = yield* forge.model();
+          yield* forge.set({
+            ...now,
+            runs: {
+              "7": {
+                ...(name === "gitlab"
+                  ? { status: "success" }
+                  : { status: "completed", conclusion: "success" }),
+                jobs: [
+                  { name: "build", state: "passed" },
+                  { name: "publish", state: "manual" },
+                ],
+              },
+            },
+          });
+          claimed.length = 0;
+          const runId = `r-manual-${name}`;
+          const pipeline = PIPELINE_OF[name];
+          yield* rig.queueOutputs([PACKAGED, { ...TAGGED, pipeline_url: pipeline }]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain(
+            `v1.2.0's pipeline at ${pipeline} has not finished: \`publish\` waits for somebody to start it by hand`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a Hold during the review wait suspends the Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const running = [{ name: "build", state: "running" }] as const;
+          const { bin } = yield* releasable(name, { checks: running });
+          claimed.length = 0;
+          const runId = `r-held-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                );
+                const fs = yield* FileSystem.FileSystem;
+                yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
+                return yield* until(
+                  () => Effect.map(run.status, (got) => got.status),
+                  (got) => got === "suspended",
+                );
+              }),
+          );
+          yield* bin.restore();
+          expect(status).toBe("suspended");
+          expect(yield* parkedWhy(runId)).toBe("");
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: an unanswered external comment keeps it waiting, and the card says so`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comment = {
+            id: 41,
+            author: "bob",
+            at: "2026-10-20T11:00:00Z",
+            body: "please rename this",
+          };
+          const { bin, forge } = yield* releasable(name, { comments: [comment] });
+          const runId = `r-comment-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const rows = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(runId),
+                    (why) => why !== "",
+                  ),
+                ).toBe(`Waiting for review of ${mr}: 1 unanswered comment.`);
+                const before = (yield* forge.calls()).length;
+                yield* until(
+                  () => forge.calls(),
+                  (calls) => calls.length >= before + 4,
+                );
+                return yield* run.asked;
+              }),
+          );
+          yield* bin.restore();
+          expect(rows.filter((row) => row.decision.startsWith("go-"))).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+}
 
 const CHORE = "upgrade the VM's install to 0.45.1";
 const DONE = { summary: "Upgraded the VM's install to 0.45.1 and restarted the host." };

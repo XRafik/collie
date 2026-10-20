@@ -551,6 +551,39 @@ for (const name of ["gitlab", "github"] as const) {
         expect(yield* status(URLS[name].run, {})).toBe(null);
       }),
     ));
+
+  test(`the ${name} forge reads its own pipeline's jobs, a job waiting to be started by hand among them`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const read = (url: string, runs: ForgeModel["runs"]) =>
+          forge.pipeline(url, "/w", fakeForge(name, model(name, { runs })).run);
+        const done = { status: "completed", conclusion: "success" };
+        expect(
+          yield* read(URLS[name].run, {
+            "7": {
+              ...(name === "gitlab" ? { status: "success" } : done),
+              jobs: [
+                { name: "build", state: "passed" },
+                { name: "publish", state: "manual" },
+              ],
+            },
+          }),
+        ).toEqual({
+          ok: true,
+          succeeded: true,
+          jobs: [
+            { name: "build", state: "passed" },
+            { name: "publish", state: "manual" },
+          ],
+        });
+        const running = yield* read(URLS[name].run, {
+          "7": { status: name === "gitlab" ? "running" : "in_progress", jobs: [] },
+        });
+        expect(running).toEqual({ ok: true, succeeded: false, jobs: [] });
+        expect((yield* read(URLS[name].other, { "7": done })).ok).toBe(false);
+        expect((yield* read(URLS[name].run, {})).ok).toBe(false);
+      }),
+    ));
 }
 
 test("GitHub finds production beyond a full page of newer deployments", () =>

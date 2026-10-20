@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem, Result, Schema } from "effect";
 import { foundationLayer, Registry, registryLayer } from "../src/engine";
 import { agentsLayer } from "../src/agents";
-import { land, readLanding, writeLanding, type Landing } from "../src/landing";
+import { land, readLanding, takeOver, writeLanding, type Landing } from "../src/landing";
 import type { Runner } from "../src/mr";
 import { WorkflowError } from "../src/sdk";
 import { FakeBin } from "./support/bin";
@@ -192,6 +192,96 @@ test("a Run that recorded no merge request is refused, and the forge is not aske
       expect(yield* readLanding(runDir)).toBeNull();
     }),
   ));
+
+/** A Run on this host that landed `forge`'s merge request at MERGED, and how it ended. */
+const lander = (
+  forge: "gitlab" | "github",
+  runId: string,
+  ended: { readonly succeeded: boolean; readonly failure: string } | null,
+  over: Partial<Landing> = {},
+) => ({
+  runId,
+  landing: attempt(forge, { state: "landed", sha: MERGED, ...over }),
+  ended,
+});
+
+for (const forge of ["gitlab", "github"] as const) {
+  test(`${forge}: a release that failed after its merge is taken over by the Run recovering it`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { runDir, fake } = yield* landing(forge, {
+          state: "merged",
+          mergedBy: "me",
+          mergedAt: "2026-10-20T11:01:00Z",
+        });
+        const failed = { succeeded: false, failure: "v1.2.0 is not on origin" };
+        const runs = [
+          lander(
+            forge,
+            "r-old",
+            { succeeded: false, failure: "older" },
+            { at: "2026-10-19T00:00:00Z" },
+          ),
+          lander(forge, "r-failed", failed),
+          lander(forge, "r-other", null, { mr: `${URL_OF[forge]}0` }),
+        ];
+        const took = yield* takeOver({ runDir, mr: URL_OF[forge], runs, cwd: "/w", run: fake.run });
+        expect(took).toEqual({
+          _tag: "TakenOver",
+          from: "r-failed",
+          sha: MERGED,
+          head: HEAD,
+          failure: failed.failure,
+        });
+        expect(yield* readLanding(runDir)).toMatchObject({
+          state: "landed",
+          mr: URL_OF[forge],
+          head: HEAD,
+          sha: MERGED,
+          from: "r-failed",
+        });
+        expect(yield* fs.readFileString(`${runDir}/log.txt`)).toBe(
+          `landing: took over the merge of ${URL_OF[forge]} at ${HEAD} as ${MERGED} from r-failed\n`,
+        );
+        // Asked again, as a replay would: the same answer from what it recorded.
+        expect(
+          yield* takeOver({ runDir, mr: URL_OF[forge], runs, cwd: "/w", run: fake.run }),
+        ).toEqual(took);
+      }),
+    ));
+
+  test(`${forge}: nothing is taken over from a Run that succeeded, still runs, or merged another commit`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const why = (runs: ReadonlyArray<ReturnType<typeof lander>>, sha = MERGED) =>
+          Effect.gen(function* () {
+            const { runDir, fake } = yield* landing(forge, { state: "merged", mergedSha: sha });
+            const took = yield* takeOver({
+              runDir,
+              mr: URL_OF[forge],
+              runs,
+              cwd: "/w",
+              run: fake.run,
+            });
+            expect(yield* readLanding(runDir)).toBeNull();
+            return took._tag === "Refused" ? took.why : took._tag;
+          });
+        expect(yield* why([])).toBe(
+          `${URL_OF[forge]} was merged outside a Release Run: no Run on this host landed it`,
+        );
+        expect(yield* why([lander(forge, "r-done", { succeeded: true, failure: "" })])).toBe(
+          `${URL_OF[forge]} was already released by r-done`,
+        );
+        expect(yield* why([lander(forge, "r-busy", null)])).toBe(
+          `${URL_OF[forge]} is still being released by r-busy`,
+        );
+        expect(
+          yield* why([lander(forge, "r-failed", { succeeded: false, failure: "x" })], "c0ffee"),
+        ).toBe(`${URL_OF[forge]} was merged at c0ffee, not at the ${MERGED} r-failed landed`);
+      }),
+    ));
+}
 
 let rig: Rig;
 beforeEach(() =>

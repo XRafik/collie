@@ -99,7 +99,9 @@ import { skillDirs, skillFile, type CheckoutKind, type InputStrategy } from "./d
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
 import { ciJob } from "./ci-job";
-import { land, LandingSchema, readLanding } from "./landing";
+import { land, LandingSchema, readLanding, takeOver } from "./landing";
+import { fastForward, readTag } from "./releasing";
+import { standingOf, waitingLine, type ReviewStanding } from "./review-wait";
 import {
   autoMergingHere,
   forgeHere,
@@ -378,6 +380,51 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | { readonly _tag: "Refused"; readonly reason: string };
   export const MergeOutcomeSchema: Schema.Codec<MergeOutcome, unknown, never, never>;
 
+  /** An external comment nobody has answered yet. */
+  export interface OpenComment {
+    readonly id: string;
+    readonly url: string;
+    readonly author: string;
+    readonly at: string;
+    readonly body: string;
+    readonly thread: string | null;
+    readonly file: string | null;
+    readonly line: number | null;
+  }
+  /** Where a merge request's review stands, judged against the head the Run's Checks were proved on. */
+  export type ReviewStanding =
+    | { readonly _tag: "Ready"; readonly head: string; readonly approvers: ReadonlyArray<string> }
+    | { readonly _tag: "Unanswered"; readonly head: string; readonly comments: ReadonlyArray<OpenComment> }
+    | { readonly _tag: "Moved"; readonly head: string }
+    | { readonly _tag: "Merged"; readonly sha: string; readonly by: string; readonly at: string }
+    | { readonly _tag: "Closed" }
+    | { readonly _tag: "Held" }
+    | { readonly _tag: "Waiting"; readonly why: ReadonlyArray<string> }
+    | { readonly _tag: "Unreadable"; readonly reason: string };
+  export const ReviewStandingSchema: Schema.Codec<ReviewStanding, unknown, never, never>;
+
+  /** Where a fast-forward left the checkout, or why it left it alone. */
+  export type FastForward =
+    | { readonly _tag: "At"; readonly head: string; readonly from: string }
+    | { readonly _tag: "Refused"; readonly why: string };
+  export const FastForwardSchema: Schema.Codec<FastForward, unknown, never, never>;
+
+  /** A tag proved, or what it lacks. */
+  export type TagRead = { readonly _tag: "Proved" } | { readonly _tag: "Unproved"; readonly why: string };
+  export const TagReadSchema: Schema.Codec<TagRead, unknown, never, never>;
+
+  /** A landing taken over from the Run that made it, or why there was none to take. */
+  export type Takeover =
+    | {
+        readonly _tag: "TakenOver";
+        readonly from: string;
+        readonly sha: string;
+        readonly head: string;
+        readonly failure: string;
+      }
+    | { readonly _tag: "Refused"; readonly why: string };
+  export const TakeoverSchema: Schema.Codec<Takeover, unknown, never, never>;
+
   /** What became of a note: whether it landed, and the sentence a human reads either way. */
   export interface Posted {
     readonly ok: boolean;
@@ -580,6 +627,44 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly cwd: string;
       readonly head: string;
     }) => Effect.Effect<MergeOutcome, WorkflowError>;
+    /** One read of the review of the merge request this Run recorded, judged against \`proved\`. Take it inside an Activity. */
+    readonly review: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly proved: string;
+      readonly seen: ReadonlyArray<string>;
+    }) => Effect.Effect<ReviewStanding, WorkflowError>;
+    /**
+     * Reads the review every 5 minutes, with no agent turn, until it is ready at \`proved\`, has
+     * unanswered comments not in \`seen\`, has moved, merged or closed, or is held. Take it
+     * inside an Activity, and suspend on \`Held\` there.
+     */
+    readonly awaitReview: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly proved: string;
+      readonly seen: ReadonlyArray<string>;
+    }) => Effect.Effect<ReviewStanding, WorkflowError>;
+    /** Fast-forwards the checkout to \`head\`, or refuses, resetting nothing. Take it inside an Activity. */
+    readonly fastForward: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly head: string;
+    }) => Effect.Effect<FastForward>;
+    /** Reads \`tag\` back from origin and the forge against what it must prove. Take it inside an Activity. */
+    readonly readTag: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly tag: string;
+      readonly merged: string;
+      readonly pipeline: string | null;
+      readonly proves: "finished";
+    }) => Effect.Effect<TagRead>;
+    /** Takes over the landing of a merged merge request from the failed Run that made it. Take it inside an Activity. */
+    readonly takeOverLanding: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+    }) => Effect.Effect<Takeover, WorkflowError>;
     /**
      * Blocks, with no agent turn, until the forge shows production carries \`sha\`, saying
      * on the card what it waits for: true then, false where the Run was stopped or held first.
@@ -1330,6 +1415,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly iid: string;
   }
   export function parseMrTarget(target: string): MrRef | null;
+  /** Any way a merge request is named: an \`mr:\` target, its URL, or GitHub's \`owner/repo#30\`. */
+  export function readMrRef(text: string): MrRef | null;
+  /** Where a merge request is read in a browser, where its reference says which project. */
+  export function mrUrlOf(ref: MrRef): string | null;
+  /** The forge a merge request is on. */
+  export function forgeOfRef(ref: MrRef): "gitlab" | "github";
 
   /** Which of the three kinds of change a settled diff target names. */
   export function targetKind(target: string): "mr" | "branch" | "worktree" | "";
@@ -2495,6 +2586,8 @@ export const hostLayer = (options: {
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
   /** How often a wait for production asks the forge again. */
   readonly productionPoll?: Duration.Input;
+  /** How often a wait for review reads the merge request again. */
+  readonly reviewPoll?: Duration.Input;
 }): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices> =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -2816,6 +2909,32 @@ export const hostLayer = (options: {
             : new WorkflowError({ reason: `issue privacy check failed: ${String(cause)}` }),
         ),
       );
+      /** The card's parked line for a wait nobody is needed for: no notification, no halt. */
+      const parkWaiting = (runId: string, why: string | null) =>
+        Effect.gen(function* () {
+          const path = controlPath(dir, PARKED, runId);
+          const before = Option.getOrNull(yield* fs.readFileString(path).pipe(Effect.option));
+          if (before === why) return;
+          yield* why === null ? fs.remove(path, { force: true }) : fs.writeFileString(path, why);
+          yield* store.announce;
+        }).pipe(Effect.orDie);
+      /** One read of the review of the merge request a Run recorded, judged. */
+      const reviewRead = (asked: {
+        readonly runId: string;
+        readonly cwd: string;
+        readonly proved: string;
+        readonly seen: ReadonlyArray<string>;
+      }) =>
+        Effect.gen(function* () {
+          const mr = yield* mergeRequestOf(fs, dir, asked.runId);
+          const ref = mr === null ? null : mrRefOf(mr);
+          if (mr === null || ref === null)
+            return yield* new WorkflowError({
+              reason: "this Run has recorded no merge request to read the review of",
+            });
+          const read = yield* under(forgeOf(ref).readReview(ref, asked.cwd, runShell));
+          return { mr, standing: standingOf(read, asked) };
+        });
       const host = Host.of({
         dir,
         report: () =>
@@ -3225,6 +3344,56 @@ export const hostLayer = (options: {
           }).pipe(
             Effect.catchTag("PlatformError", (cause) => Effect.die(cause)),
             Effect.provideContext(services),
+          ),
+        review: (asked) => reviewRead(asked).pipe(Effect.map(({ standing }) => standing)),
+        awaitReview: (asked) =>
+          Effect.gen(function* () {
+            const controlled = Effect.gen(function* () {
+              while (!((yield* set(HOLD, asked.runId)) || (yield* set(STOP, asked.runId))))
+                yield* Effect.sleep("1 second");
+              return { _tag: "Held" } satisfies ReviewStanding;
+            });
+            const polled = Effect.gen(function* () {
+              for (;;) {
+                const { mr, standing } = yield* reviewRead(asked);
+                if (standing._tag !== "Waiting" && standing._tag !== "Unreadable") return standing;
+                const why =
+                  standing._tag === "Waiting"
+                    ? standing.why
+                    : [`the forge, which could not be read: ${standing.reason}`];
+                yield* parkWaiting(asked.runId, waitingLine(mr, why));
+                yield* Effect.sleep(options.reviewPoll ?? "5 minutes");
+              }
+            });
+            const standing = yield* Effect.raceFirst(controlled, polled);
+            yield* parkWaiting(asked.runId, null);
+            return standing;
+          }),
+        fastForward: (asked) =>
+          under(
+            fastForward({
+              runDir: runDir(dir, asked.runId),
+              cwd: asked.cwd,
+              head: asked.head,
+              run: runShell,
+            }),
+          ).pipe(Effect.orDie),
+        readTag: (asked) =>
+          under(
+            readTag({
+              cwd: asked.cwd,
+              tag: asked.tag,
+              merged: asked.merged,
+              pipeline: asked.pipeline,
+              proves: asked.proves,
+              run: runShell,
+            }),
+          ),
+        takeOverLanding: () =>
+          Effect.fail(
+            new WorkflowError({
+              reason: "Taking a landing over requires the host's workflow registry",
+            }),
           ),
         awaitProduction: (asked) =>
           Effect.gen(function* () {
@@ -4476,6 +4645,7 @@ export const foundationLayer = (options: {
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
   readonly productionPoll?: Duration.Input;
+  readonly reviewPoll?: Duration.Input;
 }): Layer.Layer<
   | Host
   | Notifier
@@ -4610,7 +4780,11 @@ const makeRegistry: (
             Layer.succeed(Children)(children),
             Layer.succeed(Executions)(executions),
             Layer.succeed(Host)(
-              Host.of({ ...Context.get(hostServices, Host), report: machineReport }),
+              Host.of({
+                ...Context.get(hostServices, Host),
+                report: machineReport,
+                takeOverLanding: landingTakeover,
+              }),
             ),
           ),
         ),
@@ -4662,6 +4836,33 @@ const makeRegistry: (
    */
   const hostServices = yield* Effect.context<HostServices>();
   const reportsReady = yield* Deferred.make<void>();
+  /** Every other Run's landing and how it ended, weighed by `takeOver`. */
+  const landingTakeover = Effect.fn("Host.takeOverLanding")(function* (asked: {
+    readonly runId: string;
+    readonly cwd: string;
+  }) {
+    const rows = (yield* store.runs).filter((row) => row.run !== asked.runId);
+    const runs = (yield* Effect.forEach(rows, viewOf)).map((view) => ({
+      runId: view.runId,
+      landing: view.landing,
+      ended:
+        view.status.status === "complete"
+          ? { succeeded: true, failure: "" }
+          : view.status.status === "failed"
+            ? { succeeded: false, failure: view.status.reason }
+            : null,
+    }));
+    return yield* takeOver({
+      runDir: runDir(dir, asked.runId),
+      mr: yield* mergeRequestOf(fs, dir, asked.runId),
+      runs,
+      cwd: asked.cwd,
+      run: runShell,
+    }).pipe(
+      Effect.catchTag("PlatformError", (cause) => Effect.die(cause)),
+      Effect.provideContext(bun),
+    );
+  });
   const machineReport = Effect.fn("Host.report")(function* (since: string) {
     yield* Deferred.await(reportsReady);
     const from = epochMs(since);

@@ -749,6 +749,40 @@ that line and decide nothing, `slug` is the claim held and `url` the repository.
 `true` once production carries the commit, and `false` where the Run was stopped or held
 first. A forge that cannot say keeps it waiting.
 
+`host.review({ runId, cwd, proved, seen })` reads the review of the merge request the Run
+recorded once, judged against `proved`, the head its Checks were proved on, and answers a
+`ReviewStanding` (`ReviewStandingSchema` journals it): `Merged` (at `sha`, `by` whom and
+`at` when), `Closed`, `Moved` (the head is no longer `proved`), `Unanswered` (external
+comments nobody answered, other than those named in `seen`), `Ready` (approved, green and
+mergeable at `proved`, with its `approvers`), `Waiting` with `why` it is not, or
+`Unreadable` with the forge's `reason`. A repository with no pipeline has none to wait for.
+`host.awaitReview` takes the same options and reads every five minutes, at no token cost,
+until the standing is anything but `Waiting` or `Unreadable`, or a Hold or Stop ends it as
+`Held`. Meanwhile the card says what it waits for — "Waiting for review of `<mr>`: …" — and
+the line is cleared when it returns. Take either inside an Activity, and suspend on `Held`
+there, so a resume waits again.
+
+`host.fastForward({ runId, cwd, head })` fetches origin and fast-forwards the checkout to
+`head`, writing the move to the Run's log. It answers `At` with the `head` and where it
+moved `from`, or `Refused` with `why`: a checkout with uncommitted changes, a head origin
+lacks, or one that does not fast-forward, as after a force push. Nothing is reset or
+discarded.
+
+`host.readTag({ runId, cwd, tag, merged, pipeline, proves })` reads a tag back from origin
+and the forge rather than from an Output, against what it must prove. `proves: "finished"`
+is a package's: the tag is on origin, it carries `merged`, and where `pipeline` names one,
+the forge says it finished and succeeded. A job waiting for somebody to start it by hand has
+not finished, and `Unproved`'s `why` names it.
+
+`host.takeOverLanding({ runId, cwd })`, for a merged merge request the Run recorded, takes
+over the landing of the newest Run on this host that landed it, where that Run ended
+without succeeding and the forge's merged commit is the one it recorded. It answers
+`TakenOver` with the Run it came `from`, the `sha`, the `head` and the `failure`, or
+`Refused` with `why`: merged outside a Release Run, already released, still being
+released, or merged at another commit. Each of these four takes its place inside an
+Activity. `readMrRef`, `mrUrlOf` and `forgeOfRef` turn a merge request input into its
+reference, its URL and its forge.
+
 ## Markdown as content
 
 A workflow's Markdown is what its agents are told, and nothing else: what it takes, what it

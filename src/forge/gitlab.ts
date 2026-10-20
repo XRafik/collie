@@ -23,6 +23,7 @@ import type {
   BaseJobRead,
   JobRead,
   JobState,
+  PipelineRead,
   Readiness,
 } from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
@@ -982,6 +983,45 @@ function pipelineStatus<R>(
   });
 }
 
+/** `https://host/group/project/-/pipelines/7` and its jobs, a manual one as waiting by hand. */
+function pipeline<R>(
+  url: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<PipelineRead, never, R> {
+  return Effect.gen(function* () {
+    const m = /^https?:\/\/([^/\s]+)\/(.+?)\/-\/pipelines\/(\d+)(?:[/?#]\S*)?$/.exec(url.trim());
+    if (!m) return { ok: false, reason: `${url} is not a GitLab pipeline` };
+    const [, host, project, id] = m;
+    // The address is agent text: only a host the human signed glab in to is called.
+    if ((yield* run("glab", ["auth", "status", "--hostname", host!], cwd)).code !== 0)
+      return { ok: false, reason: `glab is not logged in to ${host}` };
+    const route = `projects/${encodeURIComponent(project!)}/pipelines/${id}`;
+    const api = (path: string) => run("glab", ["api", "--hostname", host!, path], cwd);
+    const said = yield* api(route);
+    const status = Schema.decodeUnknownOption(PipelineJson)(said.stdout);
+    if (said.code !== 0 || Option.isNone(status))
+      return { ok: false, reason: `glab could not read ${url}` };
+    const jobs: Array<(typeof JobsJson.Type)[number]> = [];
+    for (let page = 1; ; page++) {
+      const listed = yield* api(`${route}/jobs?per_page=100&page=${page}`);
+      const some = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
+      if (listed.code !== 0 || Option.isNone(some))
+        return { ok: false, reason: `glab could not list the jobs of ${url}` };
+      jobs.push(...some.value);
+      if (some.value.length < 100) break;
+    }
+    return {
+      ok: true,
+      succeeded: status.value.status === "success",
+      jobs: jobs.map((one) => ({
+        name: one.name,
+        state: one.status === "manual" ? "manual" : (JOB_STATES.get(one.status) ?? "pending"),
+      })),
+    };
+  });
+}
+
 /** A clone with glab's token for the host as git's auth header, so no credential is stored. */
 function clone<R>(
   project: string,
@@ -1096,6 +1136,7 @@ export const gitlab: Forge = {
   display: "GitLab",
   cli: "glab",
   runStatus: pipelineStatus,
+  pipeline,
   noun: "merge request",
   webUrl: (project) => `https://${project}`,
   forBranch,

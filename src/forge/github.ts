@@ -22,6 +22,7 @@ import type {
   BaseJobRead,
   JobRead,
   JobState,
+  PipelineRead,
   Readiness,
 } from "./forge";
 import { Issue, filedIssueOf } from "./issues";
@@ -1091,6 +1092,55 @@ function runStatus<R>(
   });
 }
 
+const RunJobsJson = Schema.fromJsonString(
+  Schema.Struct({
+    jobs: Schema.Array(
+      Schema.Struct({ name: Schema.String, status: Schema.String, conclusion: optionalText }),
+    ),
+  }),
+);
+
+/** An Actions run and its jobs; one waiting on an environment's reviewers waits by hand. */
+function pipeline<R>(
+  url: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<PipelineRead, never, R> {
+  return Effect.gen(function* () {
+    const m =
+      /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/(\d+)(?:[/?#]\S*)?$/.exec(
+        url.trim(),
+      );
+    if (!m) return { ok: false, reason: `${url} is not a GitHub Actions run` };
+    if ((yield* run("gh", ["auth", "status", "--hostname", HOST], cwd)).code !== 0)
+      return { ok: false, reason: `gh is not logged in to ${HOST}` };
+    const route = `repos/${m[1]}/actions/runs/${m[2]}`;
+    const said = yield* run("gh", ["api", route], cwd);
+    const status = Schema.decodeUnknownOption(RunJson)(said.stdout);
+    if (said.code !== 0 || Option.isNone(status))
+      return { ok: false, reason: `gh could not read ${url}` };
+    const listed = yield* run("gh", ["api", `${route}/jobs?per_page=100`], cwd);
+    const jobs = Schema.decodeUnknownOption(RunJobsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(jobs))
+      return { ok: false, reason: `gh could not list the jobs of ${url}` };
+    return {
+      ok: true,
+      succeeded: status.value.conclusion === "success",
+      jobs: jobs.value.jobs.map((one) => ({
+        name: one.name,
+        state:
+          one.status === "waiting"
+            ? "manual"
+            : one.status === "completed"
+              ? (CONCLUSIONS.get(one.conclusion ?? "") ?? "failed")
+              : one.status === "in_progress"
+                ? "running"
+                : "pending",
+      })),
+    };
+  });
+}
+
 /** `gh repo clone`, with gh's own login; one nobody logged in to says how to log in. */
 function clone<R>(
   project: string,
@@ -1209,6 +1259,7 @@ export const github: Forge = {
   details,
   liveTier,
   runStatus,
+  pipeline,
   readReview,
   reply,
   merge,

@@ -793,6 +793,10 @@ what the review read says, never on an agent's Output
   never an admin merge or auto-merge. It answers merged (with the merged commit, read
   back), already merged (with the commit, head, who and when), head moved, or refused with
   the forge's reason.
+- **`pipeline(url)`** reads a pipeline (a GitHub workflow run) by its URL: whether it
+  succeeded, and each job's state. A job waiting for somebody to start it by hand — a
+  GitLab `manual` job, a GitHub job `waiting` for approval — reads as manual, and
+  `host.readTag` counts it as not finished.
 
 A Run merges through `host.merge`, never through `merge` itself, so that it lands with a
 **landing record** (`src/landing.ts`), kept as `landing.json` and log lines in the Run's

@@ -71,6 +71,19 @@ export type JobRead =
     }
   | { readonly ok: false; readonly reason: string };
 
+/** A job of a pipeline read whole; `manual` waits for somebody to start it by hand. */
+export type PipelineJobState = JobState | "manual";
+
+/** A pipeline or Actions run and its jobs, or why the forge could not say. */
+export type PipelineRead =
+  | {
+      readonly ok: true;
+      /** It finished, and the forge says it succeeded. */
+      readonly succeeded: boolean;
+      readonly jobs: ReadonlyArray<{ readonly name: string; readonly state: PipelineJobState }>;
+    }
+  | { readonly ok: false; readonly reason: string };
+
 /** The same job where the branch leaves its target, or on the target's latest pipeline. */
 export type BaseJobRead =
   | {
@@ -213,6 +226,12 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<string | null, never, R>;
+  /** The pipeline or Actions run at `url`, with its jobs; another forge's is refused. */
+  readonly pipeline: <R>(
+    url: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<PipelineRead, never, R>;
   /** Clones `project` (`host/path`) into `into`, or says why it could not. */
   readonly clone: <R>(
     project: string,
