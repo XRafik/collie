@@ -744,8 +744,9 @@ Take it inside an `Activity`, as `integrate` and `defaultHead` are: a replay aft
 restart settles the attempt it left on the forge's word rather than merging again.
 `host.awaitProduction({ runId, cwd, sha, jobs, slug, url })` blocks, at no token cost, until
 the forge shows production carries `sha`, polling every five minutes. Meanwhile the card
-says what it waits for: `jobs` are the production jobs left for a human to play, which word
-that line and decide nothing, `slug` is the claim held and `url` the repository. It answers
+says what it waits for: `jobs` are the production jobs left to play, which word that line
+and decide nothing, `slug`, where the Run holds a claim, is the claim held, and `url` the
+repository. It answers
 `true` once production carries the commit, and `false` where the Run was stopped or held
 first. A forge that cannot say keeps it waiting.
 
@@ -779,11 +780,25 @@ moved `from`, or `Refused` with `why`: a checkout with uncommitted changes, a he
 lacks, or one that does not fast-forward, as after a force push. Nothing is reset or
 discarded.
 
-`host.readTag({ runId, cwd, tag, merged, pipeline, proves })` reads a tag back from origin
-and the forge rather than from an Output, against what it must prove. `proves: "finished"`
-is a package's: the tag is on origin, it carries `merged`, and where `pipeline` names one,
-the forge says it finished and succeeded. A job waiting for somebody to start it by hand has
-not finished, and `Unproved`'s `why` names it.
+`host.readTag({ runId, cwd, tag, merged, pipeline, proves, stage, production })` reads a
+tag back from origin and the forge rather than from an Output, against what it must prove.
+Either way the tag is on origin and carries `merged`. `proves: "finished"` is a package's:
+where `pipeline` names one, the forge says it finished and succeeded. A job waiting for
+somebody to start it by hand has not finished, and `Unproved`'s `why` names it.
+`proves: "staged"` is an application's, read from the forge's deployments and the tag's
+pipeline, whose own state is not read: `InProduction` where production already carries
+`merged`; `StageFailed` with `why` where one of the `stage` jobs failed or stage's newest
+successful deployment does not carry `merged`; `Unproved` where any other finished job
+failed, a named job is missing or unfinished, or no `production` job waits to be started by
+hand; else `Proved`, with each `production` job and its address (`JobLink`).
+
+`host.readProduction({ runId, cwd, tag, merged, pipeline, jobs })` reads again before
+production jobs are played: `Carried` where production already carries `merged`,
+`Unproved` with `why` where the tag no longer carries it or one of `jobs` is gone or
+failed, else `Play` with those still waiting to be started by hand — none where somebody
+already started them. `host.readRollback({ runId, cwd, merged })` answers `Shown` where
+stage's newest successful deployment no longer carries `merged` and carries what
+production's has, else `Unshown` with `why`.
 
 `host.takeOverLanding({ runId, cwd })`, for a merged merge request the Run recorded, takes
 over the landing of the newest Run on this host that landed it, where that Run ended

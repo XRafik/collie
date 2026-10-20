@@ -389,8 +389,9 @@ GitHub one.
 ## `release`
 
 **For:** one merge request taken the rest of the way, on your go: merged at the head its
-review approved and its checks proved, tagged, and the tag read back on origin. Today it
-releases a **package**; a Run on an application fails at once and says why.
+review approved and its checks proved, tagged, and the tag read back on origin. A
+**package** ends there. An **application**'s tag goes to stage, and to production on a
+second go.
 
 **Inputs:** `mr`, the merge request or pull request, picked from the same target menu
 `review` offers ([Reviewing someone else's merge request](using.md#reviewing-someone-elses-merge-request)).
@@ -401,7 +402,10 @@ changes, or a head that does not fast-forward it, as after a force push, parks t
 with why: nothing is reset or discarded.
 
 **What happens:** one agent assesses, read only, whether the repository is a package or an
-application, by renovate's own rule. Collie then proves the head with the Run's checks, and
+application, by renovate's own rule, and for an application names the stage deploy jobs of
+its merge request pipelines and of its tag pipelines. An application whose tag pipelines
+deploy nothing to stage fails here, before any wait, saying it has no stage deploy Collie
+can prove. Collie then proves the head with the Run's checks, and
 waits, at no token cost, reading the review every five minutes until the merge request is
 approved, has no unanswered external comment, is green and mergeable at the proved head.
 The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); the
@@ -428,9 +432,10 @@ round, `fix-<n>`, which fixes and pushes as implement's gate fixes do. Four roun
 row that leave a check failing, or one that changes nothing, park the Run with why;
 resuming it runs the checks again.
 
-Once ready, it asks **`go-<n>`**: **Release** or **Finish**, naming the head and who
-approved it. Anyone may answer, from any door, and the answer is recorded with who gave it.
-**Finish** ends the Run with the merge request left open. **Release** reads the review
+Once ready, it asks **`go-<n>`**: **Release** or **Finish** for a package, **Merge, tag and
+stage** or **Finish** for an application, naming the head and who approved it, and for an
+application that stage gets the tag and production waits for a second go. Anyone may answer, from any door, and the answer is recorded with who gave it.
+**Finish** ends the Run with the merge request left open. **Release**, or **Merge, tag and stage**, reads the review
 again: where it no longer holds, the Run says why on its log and waits for a fresh go.
 Where it holds, the Run claims the repository in Helle (a repository with no Helle project
 goes on without one), and Collie merges at exactly the head the go named — never an admin
@@ -441,10 +446,38 @@ succeeded by the forge's word. A job waiting to be started by hand has not finis
 A merge request set to merge itself once green is refused at the start: it is already on
 its way.
 
-**Ends:** with `<mr> merged at <sha>, released as <tag>` and the claim given back, or with
-what stopped it. A failed Run offers **Release again**: before the merge it is a fresh
+**An application** is tagged without a release on the forge, and the agent plays and
+watches the tag pipeline's stage deploy and the repository's own stage checks
+(`e2e-stage`, smoke or the like), until the only jobs left are production jobs waiting
+for somebody to start them: a manual job on GitLab, which blocks the pipeline, or a job
+waiting on its environment's approval on GitHub. Collie then reads from the forge that
+the tag carries the merged commit, that stage's newest successful deployment carries it,
+that each named stage job passed and every other finished job passed, and that at least
+one production job waits to be started by hand. The pipeline's own state is not read: it
+cannot succeed before production runs. Where a stage job failed, or stage does not carry
+the merge, the agent rolls stage back to the newest release production carries; once the
+forge shows stage there, the claim is given back and the Run fails saying stage failed
+after the merge, nothing went to production, and the merge stands, so the fix is a new
+merge request. A rollback the forge cannot show, or any other failed proof, fails the Run
+and keeps the claim.
+
+Then it asks **`production`**: **Send to production** or **Leave production to me**,
+naming the tag, saying stage carries it, and naming each production job with its address.
+You verify stage before you answer. It holds for that tag and those jobs: the head go 1
+was given for is merged, so it never goes back to the review wait. **Send to production**
+reads the tag and its jobs again first: nothing is played where production already
+carries the merge or somebody already started the job, and nothing at all where the tag
+moved or a job is gone or failed, which fails the Run with the claim kept. The jobs still
+waiting go to the agent's `production` step, cleared for exactly those. Either answer then
+waits, at no token cost, until the forge shows production carries the merge, whoever
+played it; the card names the production jobs meanwhile, and a Hold or Stop suspends it.
+
+**Ends:** with `<mr> merged at <sha>, released as <tag>` and the claim given back, for an
+application `… released as <tag>, in production`, or with what stopped it. A failed Run offers **Release again**: before the merge it is a fresh
 release; after it, the new Run takes over the failed Run's landing — never a merge someone
-made outside a Release Run — and only tags, asking to adopt the claim the failed Run kept.
+made outside a Release Run — and only tags, asking to adopt the claim the failed Run kept. For an application it
+finishes the tag that already carries the merge, stage included, and asks `production`
+afresh; where production already carries the merge it asks nothing and ends.
 
 Module: [`workflows/release.workflow.ts`](../workflows/release.workflow.ts), with its
 content in [`workflows/release.gitlab.md`](../workflows/release.gitlab.md) and
@@ -527,7 +560,16 @@ Each names only what that step's content tells the agent to do:
 - **`release`'s `tag`**: a release commit to the repository's default branch where it makes
   one, pushing an annotated version tag, creating its release where the package publishes
   from its tags, and watching the tag's pipeline — never playing a production job. The
-  merge is Collie's, on the human's go, and clears nothing.
+  merge is Collie's, on the human's go, and clears nothing. For an application it is
+  cleared instead for the release commit, pushing the annotated tag with no release on the
+  forge, playing, retrying and watching the stage deploy and stage check jobs of the tag's
+  pipeline, rolling stage back to the newest release production carries, and watching the
+  pipeline until only production jobs waiting to be started are left — never a production
+  job.
+- **`release`'s `rollback`**: rolling stage back to the newest release production
+  carries, never a production job.
+- **`release`'s `production`**: playing exactly the production jobs the go named, at their
+  addresses, and no other job.
 
 Every other shipped step clears nothing.
 

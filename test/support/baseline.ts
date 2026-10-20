@@ -7397,6 +7397,13 @@ const RELEASING = {
   },
 } as const;
 
+const APP_ASSESSED = {
+  verdict: "clean",
+  is_package: false,
+  kind_evidence: "a stage and a production environment",
+  stage_jobs: { merge_request: [], tag: ["deploy-stage"] },
+};
+
 const PACKAGED = {
   verdict: "clean",
   is_package: true,
@@ -7484,7 +7491,7 @@ const releasable = (name: MrForge, over: Partial<FakeMr> = {}, tagged = true) =>
         const now = yield* forge.model();
         yield* forge.set({ ...now, mrs: now.mrs.map((one) => ({ ...one, ...over })) });
       });
-    return { bin, forge, head, merged, reviewed, changed };
+    return { bin, forge, head, base, merged, reviewed, changed };
   });
 
 /** How each Run a takeover may weigh ended, as this test says; null still runs. */
@@ -7513,12 +7520,16 @@ const releaseHost = (
           host
             .reply(asked)
             .pipe(Effect.tap(() => (++replies >= stallAfterReplies ? Effect.never : Effect.void))),
+        // As the host's own claim, one a replay takes again is the one the Run already holds.
         claim: (options) =>
-          options.say("holding the claim").pipe(
-            Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
-            Effect.tap(() => whileClaiming.pipe(Effect.orDie, Effect.provideContext(services))),
-            Effect.as({ slug: "project" }),
-          ),
+          claimed.lastIndexOf(`claim ${options.runId}`) >
+          claimed.lastIndexOf(`release ${options.runId}`)
+            ? Effect.succeed({ slug: "project" })
+            : options.say("holding the claim").pipe(
+                Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
+                Effect.tap(() => whileClaiming.pipe(Effect.orDie, Effect.provideContext(services))),
+                Effect.as({ slug: "project" }),
+              ),
         release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
         takeOverLanding: (asked) =>
           Effect.gen(function* () {
@@ -7947,7 +7958,7 @@ for (const name of ["gitlab", "github"] as const) {
   );
 
   scenario(
-    `release on ${name}: an application fails at the assessment, before any wait or claim`,
+    `release on ${name}: an application whose assessment named no stage deploy on its tags fails before any wait or claim`,
     () =>
       runEffect(
         Effect.gen(function* () {
@@ -7955,7 +7966,7 @@ for (const name of ["gitlab", "github"] as const) {
           claimed.length = 0;
           const runId = `r-app-${name}`;
           yield* rig.queueOutputs([
-            { verdict: "clean", is_package: false, kind_evidence: "it deploys to production" },
+            { ...APP_ASSESSED, stage_jobs: { merge_request: ["deploy-review"], tag: [] } },
           ]);
           const result = yield* ran({
             entry: shipped("release"),
@@ -7965,7 +7976,7 @@ for (const name of ["gitlab", "github"] as const) {
           });
           yield* bin.restore();
           expect(reasonOf(result)).toBe(
-            "releasing an application is not supported yet: it deploys to production",
+            `${mr} is an application with no stage deploy on its tags that Collie can prove, so nothing was released: a stage and a production environment`,
           );
           expect(yield* prompts()).toHaveLength(1);
           expect(claimed).toEqual([]);
@@ -8560,6 +8571,497 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* runLog(runId)).toContain(
             `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
           );
+        }),
+      ),
+    120_000,
+  );
+}
+
+/** Whether a failed Release Run on `target` offers Release again. */
+const releaseAgainOffered = (target: string) =>
+  Effect.gen(function* () {
+    const declared = yield* loadEntry(shipped("release")).pipe(
+      Effect.map((described) => declaredByModule(described.metadata)),
+      Effect.orDie,
+    );
+    const facts: ActionFacts = {
+      outcome: "unspecified",
+      succeeded: false,
+      branch: null,
+      mrUrl: null,
+      planIssues: 0,
+      disposed: false,
+      openFindings: 0,
+      diffTarget: target,
+      claim: "project",
+    };
+    return offersFrom(declared, facts, { self: idOf("release") }).some(
+      (offer) => offer.id === "release-again",
+    );
+  });
+
+/** The jobs of an application's tag pipeline, in the order each forge's job read numbers them. */
+const TAG_JOBS = ["build", "deploy-stage", "e2e-stage", "deploy-production"] as const;
+type TagJob = (typeof TAG_JOBS)[number];
+
+/** A job of the tag's pipeline or Actions run, as the forge links it. */
+const tagJob = (name: MrForge, job: TagJob) => {
+  const id = TAG_JOBS.indexOf(job) + 1;
+  return name === "gitlab"
+    ? `https://gitlab.example.com/group/app/-/jobs/${id}`
+    : `https://github.com/owner/repo/actions/runs/7/job/${id}`;
+};
+
+/** What the tag step of an application says it did, which nothing takes for proof. */
+const stagedTag = (name: MrForge) => ({
+  ...TAGGED,
+  pipeline_url: PIPELINE_OF[name],
+  stage_jobs: ["deploy-stage", "e2e-stage"],
+  production_jobs: [{ name: "deploy-production", url: `${RELEASING[name].url}/said-by-the-agent` }],
+});
+
+/** Where stage and production are, by the commit each one's newest successful deployment has. */
+const deploys = (stage: string, production: string) => [
+  { name: "stage", tier: "staging", deployed: stage },
+  { name: "production", tier: "production", deployed: production },
+];
+
+/**
+ * An application's merge request, ready, whose tag pipeline put the merge on stage and is
+ * held by a blocking production job nobody has started: GitLab's pipeline is `manual`, and
+ * GitHub's run waits on its environment's approval. Production carries the commit the merge
+ * is made on.
+ */
+const stageable = (
+  name: MrForge,
+  states: Partial<Record<TagJob, "passed" | "failed" | "manual" | "running">> = {},
+) =>
+  Effect.gen(function* () {
+    const made = yield* releasable(name);
+    const jobs = {
+      build: "passed",
+      "deploy-stage": "passed",
+      "e2e-stage": "passed",
+      "deploy-production": "manual",
+      ...states,
+    } as const;
+    const model: ForgeModel = {
+      ...(yield* made.forge.model()),
+      environments: deploys(made.merged, made.base),
+      runs: {
+        "7": {
+          status: name === "gitlab" ? "manual" : "waiting",
+          jobs: TAG_JOBS.map((job) => ({ name: job, state: jobs[job] })),
+        },
+      },
+    };
+    yield* made.forge.set(model);
+    /** The forge as it is now, with `over` changed: someone deployed or played a job. */
+    const now = (over: Partial<ForgeModel>) =>
+      Effect.map(made.forge.model(), (current) => ({ ...current, ...over }));
+    return { ...made, model, now };
+  });
+
+/** The production job left waiting on the tag's pipeline, as the forge links it. */
+const waiting = (name: MrForge) => `\`deploy-production\` at ${tagJob(name, "deploy-production")}`;
+
+for (const name of ["gitlab", "github"] as const) {
+  const { mr, url, target } = RELEASING[name];
+  const options = (runId: string, ends: Ends = {}) => ({
+    entry: shipped("release"),
+    runId,
+    input: { mr: target },
+    host: releaseHost(ends),
+  });
+  /** Go 1 answered, and the go to production once it is asked. */
+  const staged = (run: {
+    readonly asked: Parameters<typeof goAsked>[0];
+    readonly answer: (decision: string, value: string) => Effect.Effect<void>;
+  }) =>
+    Effect.gen(function* () {
+      yield* goAsked(run.asked, "go-1");
+      yield* run.answer("go-1", "Merge, tag and stage");
+      return yield* goAsked(run.asked, "production");
+    });
+
+  scenario(
+    `release on ${name}: an application is merged, tagged and staged, sent to production on go 2, and waited on until production carries it, under the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged, now } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-prod-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              const go = yield* goAsked(run.asked, "go-1");
+              expect(optionsOf([go], "go-1")).toEqual(["Merge, tag and stage", "Finish"]);
+              expect(go.prompt).toContain(head.slice(0, 8));
+              expect(go.prompt).toContain("stage gets the tag; production waits for a second go");
+              expect(claimed).toEqual([]);
+              yield* run.answer("go-1", "Merge, tag and stage");
+              const production = yield* goAsked(run.asked, "production");
+              expect(optionsOf([production], "production")).toEqual([
+                "Send to production",
+                "Leave production to me",
+              ]);
+              expect(production.prompt).toContain("v1.2.0");
+              expect(production.prompt).toContain(`stage carries \`${merged.slice(0, 8)}\``);
+              expect(production.prompt).toContain(waiting(name));
+              expect(claimed).toEqual([`claim ${runId}`]);
+              const played = yield* now({ environments: deploys(merged, merged) });
+              yield* rig.queueOutputs([
+                APP_ASSESSED,
+                stagedTag(name),
+                {
+                  writes: [forge.holding(played)],
+                  output: { verdict: "clean", played: ["deploy-production"] },
+                },
+              ]);
+              yield* run.answer("production", "Send to production");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(model.merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "tag")).toBe(
+            `Cleared for this step: a release commit to ${url}'s default branch, where it makes one; pushing an annotated version tag to origin, with no forge release; playing, retrying and watching the tag pipeline's stage deploy and check jobs until only production jobs waiting to be started are left; rolling stage back to the newest release production carries; never a production job.`,
+          );
+          expect(yield* clearance(runId, "production")).toBe(
+            `Cleared for this step: playing ${waiting(name)} on ${url}, and no other job.`,
+          );
+          expect(yield* asked(runId, "tag")).toContain("`deploy-stage`");
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["tag", "production"])
+            expect(yield* asked(runId, step)).not.toMatch(other);
+          expect(yield* parkedWhy(runId)).toBe("");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Leave production to me plays nothing and waits, naming the job, until production carries the merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-leave-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              yield* run.answer("production", "Leave production to me");
+              expect(
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                ),
+              ).toBe(
+                `Waiting for production: play ${waiting(name)}. The claim on \`project\` is held until the forge shows production carries \`${merged.slice(0, 8)}\`.`,
+              );
+              expect(claimed).toEqual([`claim ${runId}`]);
+              yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a stage check failing after the merge is rolled back, gives the claim back and fails, asking no go 2`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, base, merged, model } = yield* stageable(name, {
+            "e2e-stage": "failed",
+          });
+          claimed.length = 0;
+          const runId = `r-app-rollback-${name}`;
+          yield* rig.queueOutputs([
+            APP_ASSESSED,
+            stagedTag(name),
+            {
+              writes: [forge.holding({ ...model, environments: deploys(base, base) })],
+              output: { verdict: "clean", stage: "v1.1.0" },
+            },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Merge, tag and stage");
+              const end = yield* ended(run.status);
+              expect((yield* run.asked).map((row) => row.decision)).not.toContain("production");
+              return end;
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, but stage failed after the merge: \`e2e-stage\` failed on v1.2.0's pipeline at ${PIPELINE_OF[name]}. Stage is back on what production carries, nothing went to production, and the merge stands: the fix is a new merge request`,
+          );
+          expect(yield* asked(runId, "rollback")).toContain("`e2e-stage` failed");
+          expect(yield* clearance(runId, "rollback")).toBe(
+            `Cleared for this step: rolling ${url}'s stage back to the newest release production carries, never a production job.`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a rollback the forge cannot show fails the Run, keeps the claim and offers Release again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, merged } = yield* stageable(name, { "e2e-stage": "failed" });
+          claimed.length = 0;
+          const runId = `r-app-unshown-${name}`;
+          yield* rig.queueOutputs([
+            APP_ASSESSED,
+            stagedTag(name),
+            { verdict: "clean", stage: "v1.1.0" },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Merge, tag and stage");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, but stage failed after the merge: \`e2e-stage\` failed on v1.2.0's pipeline at ${PIPELINE_OF[name]}. Its rollback is not shown: stage still carries the merged commit ${merged.slice(0, 8)}`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`]);
+          expect(yield* releaseAgainOffered(target)).toBe(true);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a failed job of the tag's pipeline fails the read-back, keeps the claim and asks no go 2`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, merged } = yield* stageable(name, { build: "failed" });
+          claimed.length = 0;
+          const runId = `r-app-failed-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Merge, tag and stage");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, but v1.2.0 is not ready for production: \`build\` failed on v1.2.0's pipeline at ${PIPELINE_OF[name]}`,
+          );
+          expect(yield* clearance(runId, "rollback")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Send to production after somebody already played the job plays nothing twice, and waits`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now, model } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-played-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              const started = model.runs!["7"]!.jobs!.map((job) =>
+                job.name === "deploy-production" ? { ...job, state: "running" as const } : job,
+              );
+              yield* forge.set(yield* now({ runs: { "7": { status: "running", jobs: started } } }));
+              yield* run.answer("production", "Send to production");
+              yield* until(
+                () => parkedWhy(runId),
+                (why) => why !== "",
+              );
+              yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Send to production after the tag moved plays nothing, fails and keeps the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, base, merged } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-moved-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              yield* exec(["git", "tag", "-fa", "v1.2.0", "-m", "moved", base], {
+                cwd: rig.projectDir,
+              });
+              yield* exec(["git", "push", "-qf", "origin", "v1.2.0"], { cwd: rig.projectDir });
+              yield* run.answer("production", "Send to production");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged} and tagged v1.2.0, but nothing was sent to production: v1.2.0 on origin does not carry the merged commit ${merged.slice(0, 8)}`,
+          );
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Release again after a failure past the merge asks go 2 afresh, and succeeds once production carries the merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now } = yield* stageable(name, { build: "failed" });
+          claimed.length = 0;
+          const first = `r-app-first-${name}`;
+          const again = `r-app-again-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name), APP_ASSESSED, stagedTag(name)]);
+          const failure = outcomeText(
+            yield* driven(options(first), (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                return yield* ended(run.status);
+              }),
+            ),
+          );
+          expect(claimed).toEqual([`claim ${first}`]);
+          const fixed = TAG_JOBS.map((job) => ({
+            name: job,
+            state: job === "deploy-production" ? ("manual" as const) : ("passed" as const),
+          }));
+          yield* forge.set(yield* now({ runs: { "7": { status: "manual", jobs: fixed } } }));
+          const status = yield* driven(
+            options(again, { [first]: { succeeded: false, failure } }),
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "production");
+                expect((yield* run.asked).map((row) => row.decision)).not.toContain("go-1");
+                yield* run.answer("production", "Leave production to me");
+                yield* until(
+                  () => parkedWhy(again),
+                  (why) => why !== "",
+                );
+                yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(model.merges ?? []).toHaveLength(1);
+          expect(claimed).toEqual([`claim ${first}`, `claim ${again}`, `release ${again}`]);
+          expect(yield* asked(again, "tag")).toContain(
+            `recovers the release of ${mr} that ${first} merged`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Release again where production already carries the merge asks nothing and ends at once`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now } = yield* stageable(name, { build: "failed" });
+          claimed.length = 0;
+          const first = `r-app-live-first-${name}`;
+          const again = `r-app-live-again-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name), APP_ASSESSED, stagedTag(name)]);
+          const failure = outcomeText(
+            yield* driven(options(first), (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                return yield* ended(run.status);
+              }),
+            ),
+          );
+          yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+          const result = yield* ran(options(again, { [first]: { succeeded: false, failure } }));
+          yield* bin.restore();
+          expect(said(result)).toBe(`${mr} merged at ${merged}, released as v1.2.0, in production`);
+          expect(claimed).toEqual([`claim ${first}`, `claim ${again}`, `release ${again}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a Hold during the production wait suspends the Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-held-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              yield* run.answer("production", "Leave production to me");
+              yield* until(
+                () => parkedWhy(runId),
+                (why) => why !== "",
+              );
+              const fs = yield* FileSystem.FileSystem;
+              yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
+              return yield* until(
+                () => Effect.map(run.status, (got) => got.status),
+                (got) => got === "suspended",
+              );
+            }),
+          );
+          yield* bin.restore();
+          expect(status).toBe("suspended");
+          expect(yield* parkedWhy(runId)).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`]);
         }),
       ),
     120_000,

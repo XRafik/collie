@@ -15,6 +15,7 @@ import { shellQuote } from "../script";
 import { epochMs } from "../time";
 import type {
   DeployTier,
+  DeployedRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -1072,6 +1073,40 @@ function liveTier<R>(
   });
 }
 
+/** The commit the newest deployment of `tier` whose latest status is `success` has. */
+function deployed<R>(
+  ref: MrRef,
+  tier: DeployTier,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<DeployedRead, never, R> {
+  return Effect.gen(function* () {
+    if (ref.project === null) return { ok: false, reason: "no repository to read deployments of" };
+    const repo = `repos/${mrPath(ref)}`;
+    const unread = { ok: false, reason: `gh could not read ${ref.project}'s deployments` } as const;
+    const listed = yield* run(
+      "gh",
+      ["api", `${repo}/deployments?per_page=100`, "--paginate", "--slurp"],
+      cwd,
+    );
+    const pages = Schema.decodeUnknownOption(DeploymentsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(pages)) return unread;
+    for (const deployment of pages.value.flat()) {
+      if (tierOf(deployment.environment, deployment.production_environment === true) !== tier)
+        continue;
+      const statuses = yield* run(
+        "gh",
+        ["api", `${repo}/deployments/${deployment.id}/statuses?per_page=1`],
+        cwd,
+      );
+      const latest = Schema.decodeUnknownOption(StatusesJson)(statuses.stdout);
+      if (statuses.code !== 0 || Option.isNone(latest)) return unread;
+      if (latest.value[0]?.state === "success") return { ok: true, sha: deployment.sha };
+    }
+    return { ok: true, sha: null };
+  });
+}
+
 /** `https://github.com/<o>/<r>/actions/runs/<id>`'s conclusion, or its status while it runs. */
 function runStatus<R>(
   url: string,
@@ -1095,7 +1130,12 @@ function runStatus<R>(
 const RunJobsJson = Schema.fromJsonString(
   Schema.Struct({
     jobs: Schema.Array(
-      Schema.Struct({ name: Schema.String, status: Schema.String, conclusion: optionalText }),
+      Schema.Struct({
+        name: Schema.String,
+        status: Schema.String,
+        conclusion: optionalText,
+        html_url: optionalText,
+      }),
     ),
   }),
 );
@@ -1136,6 +1176,7 @@ function pipeline<R>(
               : one.status === "in_progress"
                 ? "running"
                 : "pending",
+        url: one.html_url ?? null,
       })),
     };
   });
@@ -1258,6 +1299,7 @@ export const github: Forge = {
   login,
   details,
   liveTier,
+  deployed,
   runStatus,
   pipeline,
   readReview,

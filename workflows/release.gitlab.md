@@ -103,3 +103,68 @@ Collie merged {{inputs.mr}}, and the merged commit is `{{merged}}`. Release it:
 
 Then write your Output, naming the tag, the version and the URL of the tag's pipeline.
 Collie reads the tag back on origin and the pipeline from GitLab, not from your Output.
+
+## stage
+
+{{recovery}}
+
+Collie merged {{inputs.mr}}, and the merged commit is `{{merged}}`. This Run holds the
+repository in Helle, or the repository has no Helle project: either way stage, the default
+branch and the tag are yours until the Run ends. Release it to stage:
+
+- Work in a worktree of your own at the merged commit — `git fetch origin`, then
+  `git worktree add {{run.dir}}/release {{merged}}` — and leave this checkout as it is.
+- Diff the merged commit against the previous version tag and choose the next version
+  from that and from the repository's own versioning conventions.
+- Where the repository makes a release commit — a version file or a changelog bumped on
+  release — commit it on the default branch on top of the merged commit, and push it.
+- Tag annotated, following the repository's own tag and notes conventions. Where it has
+  none, the tag notes are a changelog entry in the shape of changelog-gen: a heading
+  `## <version> - <YYYY-MM-DD>`, then only the sections that have entries, in this order
+  and under these names — `### Features and Improvements`, `### Bug fixes`,
+  `### Miscellaneous` — with one line per change, `- <what changed> [!<iid>]`, where the
+  merge request reference is the only link. Write the notes to a file and tag from it with
+  `--cleanup=verbatim`, or git strips the `#` headers as comments. Push the tag to origin.
+  An application makes no GitLab release.
+- The tag's pipeline deploys to stage with {{stage_jobs}}. Play, retry and watch those
+  jobs to success — a manual one is played with
+  `glab api -X POST projects/<id>/jobs/<job id>/play` — and then the jobs the repository
+  itself checks stage with: an `e2e-stage` or smoke job of the same pipeline.
+- Where a stage deploy or a stage check fails, **Roll stage back** to the newest release
+  production carries, so stage is never left broken: the ref of the newest successful
+  production deployment — `glab api
+  projects/<id>/deployments?environment=<production>&status=success&order_by=created_at&sort=desc&per_page=1`
+  — and its pipeline's stage deploy job, played or retried. Watch the rollback to success,
+  say in your log what stage is running now, and write your Output: the fix is a new merge
+  request, never a change here.
+- Watch the tag's pipeline until the only jobs left are production jobs waiting for
+  somebody to start them by hand. Never play, retry or ask about a production job: the
+  human sends it to production on a second go, and Collie asks it.
+
+Then write your Output: the tag, the version, the URL of the tag's pipeline, the stage
+jobs you played or checked in `stage_jobs`, and in `production_jobs` each production job
+left waiting, with its URL. Collie reads the tag back on origin, and stage and the
+pipeline from GitLab, not from your Output.
+
+## rollback
+
+Stage failed after Collie merged {{inputs.mr}} at `{{merged}}`: {{failure}}.
+
+**Roll stage back** to the newest release production carries, unless it is already there:
+the ref of the newest successful production deployment — `glab api
+projects/<id>/deployments?environment=<production>&status=success&order_by=created_at&sort=desc&per_page=1`
+— and its pipeline's stage deploy job, played or retried. Watch it to success. Never play a
+production job, and change nothing on the default branch: the fix is a new merge request.
+
+Then write your Output, naming in `stage` the release stage runs now. Collie reads stage
+back from GitLab, not from your Output.
+
+## production
+
+The human sent `{{merged}}` of {{inputs.mr}} to production. Play exactly these jobs of the
+tag's pipeline, and no other job: {{jobs}}. Play each with
+`glab api -X POST projects/<id>/jobs/<job id>/play` and watch it to success; retry one
+that fails once, then stop and say so.
+
+Then write your Output, naming the jobs you played. Collie waits until GitLab shows
+production carries the merge, whatever your Output says.

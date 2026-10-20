@@ -80,8 +80,17 @@ export type PipelineRead =
       readonly ok: true;
       /** It finished, and the forge says it succeeded. */
       readonly succeeded: boolean;
-      readonly jobs: ReadonlyArray<{ readonly name: string; readonly state: PipelineJobState }>;
+      readonly jobs: ReadonlyArray<{
+        readonly name: string;
+        readonly state: PipelineJobState;
+        readonly url: string | null;
+      }>;
     }
+  | { readonly ok: false; readonly reason: string };
+
+/** The commit a tier's newest successful deployment has, null where none, or why not. */
+export type DeployedRead =
+  | { readonly ok: true; readonly sha: string | null }
   | { readonly ok: false; readonly reason: string };
 
 /** The same job where the branch leaves its target, or on the target's latest pipeline. */
@@ -159,6 +168,13 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<DeployTier | null, never, R>;
+  /** The commit `tier`'s newest successful deployment has, in `ref`'s project (ADR-0050 D7). */
+  readonly deployed: <R>(
+    ref: MrRef,
+    tier: DeployTier,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<DeployedRead, never, R>;
   /** The open merge request whose source branch is `branch`, if any. */
   readonly forBranch: <R>(
     project: string,

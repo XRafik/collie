@@ -499,6 +499,12 @@ const URLS = {
   },
 } as const;
 
+/** A job of pipeline or Actions run 7, as each forge links it. */
+const JOB_URL = {
+  gitlab: (id: number) => `https://gitlab.example.com/group/app/-/jobs/${id}`,
+  github: (id: number) => `https://github.com/owner/repo/actions/runs/7/job/${id}`,
+} as const;
+
 for (const name of ["gitlab", "github"] as const) {
   const forge = FORGES[name];
 
@@ -536,6 +542,19 @@ for (const name of ["gitlab", "github"] as const) {
           ).toBe(null);
         }),
       ));
+
+    test("name the commit a tier's newest successful deployment has, none, and why not where the forge does not answer", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const deployed = (tier: "staging" | "production", over: Partial<ForgeModel>) =>
+            forge.deployed(ref(name), tier, "/w", fakeForge(name, model(name, over)).run);
+          const both = { environments: environments("child", "0ld", MERGED) };
+          expect(yield* deployed("staging", both)).toEqual({ ok: true, sha: "child" });
+          expect(yield* deployed("production", both)).toEqual({ ok: true, sha: "0ld" });
+          expect(yield* deployed("staging", { environments: [] })).toEqual({ ok: true, sha: null });
+          expect((yield* deployed("staging", { ...both, deploysDown: true })).ok).toBe(false);
+        }),
+      ));
   });
 
   test(`the ${name} forge says how its own pipeline or Actions run went, and nothing of the other's`, () =>
@@ -552,7 +571,7 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 
-  test(`the ${name} forge reads its own pipeline's jobs, a job waiting to be started by hand among them`, () =>
+  test(`the ${name} forge reads its own pipeline's jobs by name with their pages, a job waiting to be started by hand among them`, () =>
     runEffect(
       Effect.gen(function* () {
         const read = (url: string, runs: ForgeModel["runs"]) =>
@@ -572,8 +591,8 @@ for (const name of ["gitlab", "github"] as const) {
           ok: true,
           succeeded: true,
           jobs: [
-            { name: "build", state: "passed" },
-            { name: "publish", state: "manual" },
+            { name: "build", state: "passed", url: JOB_URL[name](1) },
+            { name: "publish", state: "manual", url: JOB_URL[name](2) },
           ],
         });
         const running = yield* read(URLS[name].run, {

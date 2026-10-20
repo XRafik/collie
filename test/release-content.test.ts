@@ -14,7 +14,15 @@ const flat = (text: string) => text.replace(/\s+/g, " ").trim();
 
 test("both forges' release content has the steps the module asks for, and every step fills from what it gives", () => {
   for (const one of Object.values(content))
-    expect([...one.sections.keys()]).toEqual(["assess", "answer", "fix", "tag"]);
+    expect([...one.sections.keys()]).toEqual([
+      "assess",
+      "answer",
+      "fix",
+      "tag",
+      "stage",
+      "rollback",
+      "production",
+    ]);
   // A template naming anything ReleaseInput does not give is refused as it is made.
   expect(Object.keys(RELEASE_ON.github)).toEqual(Object.keys(RELEASE_ON.gitlab));
 });
@@ -36,9 +44,8 @@ test("release decides package or application by renovate's own rule, word for wo
 test("each Clearance names the repository's URL", () => {
   const url = "https://gitlab.example.com/group/app";
   for (const [step, clears] of Object.entries(RELEASE_CLEARS)) {
-    const lines = clears(url);
-    expect([step, lines.length > 0]).toEqual([step, true]);
-    for (const line of lines) expect(line).toContain(url);
+    const lines = clears(url, [{ name: "deploy-production", url: `${url}/-/jobs/4` }]);
+    expect([step, lines.some((line) => line.includes(url))]).toEqual([step, true]);
   }
 });
 
@@ -62,5 +69,25 @@ test("a comment round fixes test first and pushes plainly, and leaves every repl
     expect(answer).toContain("never resolves a thread");
     expect(answer).toContain("a comment you leave out goes to the next round");
     expect(flat(one.sections.get("fix") ?? "")).toContain("never a force push");
+  }
+});
+
+test("an application's tag step stages the tag, rolls a failed stage back and leaves production waiting", () => {
+  for (const one of Object.values(content)) {
+    const stage = flat(one.sections.get("stage") ?? "");
+    for (const said of [
+      "{{recovery}}",
+      "{{merged}}",
+      "{{stage_jobs}}",
+      "the repository's own tag and notes conventions",
+      "--cleanup=verbatim",
+      "Roll stage back",
+      "Never play, retry or ask about a production job",
+    ])
+      expect(stage).toContain(said);
+    expect(flat(one.sections.get("rollback") ?? "")).toContain("{{failure}}");
+    const production = flat(one.sections.get("production") ?? "");
+    expect(production).toContain("{{jobs}}");
+    expect(production).toContain("no other job");
   }
 });

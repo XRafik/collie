@@ -648,14 +648,19 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       );
       return json(mr === undefined ? [] : [{ id: pipelineIdOf(mr) + 2, sha: mr.target!.at }]);
     }
-    const jobs = /\/pipelines\/(\d+)\/jobs/.exec(route);
-    const named = jobs === null ? undefined : model.runs?.[jobs[1]!]?.jobs;
+    const jobs = /^projects\/([^/]+)\/pipelines\/(\d+)\/jobs/.exec(route);
+    const named = jobs === null ? undefined : model.runs?.[jobs[2]!]?.jobs;
     if (named !== undefined)
       return json(
-        named.map((job, at) => ({ id: at + 1, name: job.name, status: GITLAB_JOB[job.state] })),
+        named.map((job, at) => ({
+          id: at + 1,
+          name: job.name,
+          status: GITLAB_JOB[job.state],
+          web_url: `https://${flag(args, "--hostname")}/${decodeURIComponent(jobs![1]!)}/-/jobs/${at + 1}`,
+        })),
       );
     if (jobs) {
-      const id = Number(jobs[1]);
+      const id = Number(jobs[2]);
       const mr = model.mrs.find((one) => Math.floor(id / 100) === Number(one.iid));
       const listed =
         mr === undefined
@@ -996,9 +1001,9 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
     );
     return found === undefined ? no() : { ...ok(), retried: found };
   }
-  const runJobs = /\/actions\/runs\/(\d+)\/jobs/.exec(route);
+  const runJobs = /^repos\/(.+)\/actions\/runs\/(\d+)\/jobs/.exec(route);
   if (runJobs) {
-    const said = model.runs?.[runJobs[1]!];
+    const said = model.runs?.[runJobs[2]!];
     return said === undefined
       ? no()
       : json({
@@ -1006,6 +1011,7 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
             id: at + 1,
             name: job.name,
             ...GITHUB_RUN[job.state],
+            html_url: `https://github.com/${runJobs[1]}/actions/runs/${runJobs[2]}/job/${at + 1}`,
           })),
         });
   }

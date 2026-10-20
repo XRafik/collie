@@ -2282,9 +2282,19 @@ claims the repository, merges at exactly that head and tags the package; the Run
 only once the tag is on origin and its pipeline has finished and succeeded. **Finish**
 leaves the merge request open. Answer it from the card, Desktop, chat or
 `collie run answer <run> Release --decision go-1`. A merge request that is set to merge
-itself once green, or that is an application's, is refused at the start with why. If a
-Run fails after it merged, **Release again** tags what it merged rather than merging
-anything again ([`release`](workflows.md#release)).
+itself once green is refused at the start with why.
+
+For an application the go is **Merge, tag and stage**: Collie merges, the agent tags and
+the tag's pipeline deploys to stage, and Collie reads from the forge that stage carries
+the merge and that the production jobs wait for somebody to start them. Then it asks a
+second go, **`production`**: verify stage, then answer **Send to production**, and the
+agent plays exactly the production jobs it named, or **Leave production to me** and play
+them yourself. Either way the Run holds the claim until the forge shows production carries
+the merge. A stage that fails after the merge is rolled back to what production carries,
+and the Run fails with the merge standing: the fix is a new merge request. An application
+whose tag pipeline deploys nothing to stage is refused at the start. If a Run fails after
+it merged, **Release again** tags what it merged rather than merging anything again, and
+asks the second go afresh ([`release`](workflows.md#release)).
 
 ## Your defaults
 

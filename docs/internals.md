@@ -748,7 +748,12 @@ checks sit beside its adapter, in `src/forge/gitlab-checks.ts` and
 (`<name>.gitlab.md`, `<name>.github.md`) may name that forge's CLI. A caller asks the
 forge of the merge request in front of it (`forgeOf(ref)`, from the reference's host), and
 gets answers rather than CLI calls: whether the CLI is ready for a host, who it is logged
-in as, one merge request as the panel, how far a merged commit is deployed, and a note.
+in as, one merge request as the panel, how far a merged commit is deployed, the commit a
+tier's newest successful deployment has (`deployed`, which a Release Run reads stage and
+production by, a rollback included, since the release rolled back to is older than the
+merge), and a note. A pipeline read whole by its address (`pipeline`) names each job with
+its state and address, a job waiting to be started by hand as `manual`: GitLab's manual
+job, or a GitHub job waiting on its environment's approval.
 An operation is added to the interface when its first caller moves onto it.
 
 A checkout Collie clones keeps a credential helper for its forge's host in its own git

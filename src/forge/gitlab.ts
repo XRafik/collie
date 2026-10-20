@@ -16,6 +16,7 @@ import { keepCredentialHelper, whatItSaid, type Ran, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type {
   DeployTier,
+  DeployedRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -341,6 +342,35 @@ export function liveTier<R>(
       }
     }
     return null;
+  });
+}
+
+/** The commit the newest successful deployment to an environment of `tier` has. */
+function deployed<R>(
+  ref: MrRef,
+  tier: DeployTier,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<DeployedRead, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(ref.project);
+    if (!host || !ref.project) return { ok: false, reason: `${ref.project} is not on GitLab` };
+    const path = encodeURIComponent(ref.project.slice(host.length + 1));
+    const api = (route: string) =>
+      run("glab", ["api", "--hostname", host, `projects/${path}/${route}`], cwd);
+    const unread = { ok: false, reason: `glab could not read ${ref.project}'s deployments` } as const;
+    const environments = yield* api("environments");
+    const listed = Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout);
+    if (environments.code !== 0 || Option.isNone(listed)) return unread;
+    const names = new Set(listed.value.filter((env) => env.tier === tier).map((env) => env.name));
+    if (names.size === 0) return { ok: true, sha: null };
+    const deployments = yield* api(
+      "deployments?status=success&order_by=created_at&sort=desc&per_page=50",
+    );
+    const newest = Schema.decodeUnknownOption(DeploymentsJson)(deployments.stdout);
+    if (deployments.code !== 0 || Option.isNone(newest)) return unread;
+    const found = newest.value.find((one) => names.has(one.environment.name));
+    return { ok: true, sha: found?.sha ?? null };
   });
 }
 
@@ -1017,6 +1047,7 @@ function pipeline<R>(
       jobs: jobs.map((one) => ({
         name: one.name,
         state: one.status === "manual" ? "manual" : (JOB_STATES.get(one.status) ?? "pending"),
+        url: one.web_url ?? null,
       })),
     };
   });
@@ -1167,6 +1198,7 @@ export const gitlab: Forge = {
   login: glabLogin,
   details: mrDetails,
   liveTier,
+  deployed,
   readReview,
   reply,
   merge,

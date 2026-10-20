@@ -57,7 +57,7 @@ import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
 import type { MergeOutcome, Takeover } from "./landing";
 import type { ReviewHead, ReviewStanding } from "./review-wait";
-import type { FastForward, TagRead } from "./releasing";
+import type { FastForward, ProductionRead, RollbackRead, TagRead } from "./releasing";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -90,8 +90,22 @@ export {
   type ReviewStanding,
   type SettledAnswers,
 } from "./review-wait";
-/** A checkout brought to a head, and a tag read back (`HostApi.fastForward`, `HostApi.readTag`). */
-export { FastForwardSchema, TagReadSchema, type FastForward, type TagRead } from "./releasing";
+/**
+ * A checkout brought to a head, and a tag, production and stage read back
+ * (`HostApi.fastForward`, `readTag`, `readProduction`, `readRollback`).
+ */
+export {
+  FastForwardSchema,
+  JobLinkSchema,
+  ProductionReadSchema,
+  RollbackReadSchema,
+  TagReadSchema,
+  type FastForward,
+  type JobLink,
+  type ProductionRead,
+  type RollbackRead,
+  type TagRead,
+} from "./releasing";
 
 export {
   CheckSchema,
@@ -835,10 +849,14 @@ export interface HostApi {
   }) => Effect.Effect<FastForward>;
   /**
    * Reads `tag` back from origin and the forge, rather than from an Output, against what it
-   * must prove. `finished`, a package's: the tag is on origin, it carries `merged`, and where
-   * `pipeline` names one, the forge says it finished and succeeded. A pipeline with a job
-   * waiting to be started by hand has not finished, and the answer names the job. Take it
-   * inside an Activity.
+   * must prove. Either way the tag is on origin and carries `merged`. `finished`, a
+   * package's: where `pipeline` names one, the forge says it finished and succeeded; a
+   * pipeline with a job waiting to be started by hand has not finished, and the answer names
+   * the job. `staged`, an application's: `InProduction` where production already carries
+   * `merged`; else each `stage` job passed and stage's newest successful deployment carries
+   * `merged`, or it is `StageFailed`; every other finished job passed; and each `production`
+   * job, one at least, waits to be started by hand, which `Proved` lists with its address.
+   * The pipeline's own state is not read. Take it inside an Activity.
    */
   readonly readTag: (options: {
     readonly runId: string;
@@ -847,8 +865,35 @@ export interface HostApi {
     readonly merged: string;
     /** The tag's pipeline, or null where it named none. */
     readonly pipeline: string | null;
-    readonly proves: "finished";
+    readonly proves: "finished" | "staged";
+    /** For `staged`: the stage deploy and stage check jobs of the pipeline. */
+    readonly stage?: ReadonlyArray<string>;
+    /** For `staged`: the production jobs of the pipeline. */
+    readonly production?: ReadonlyArray<string>;
   }) => Effect.Effect<TagRead>;
+  /**
+   * Reads again, before production jobs are played: `Carried` where production already
+   * carries `merged`; `Unproved` where the tag no longer carries it, or one of `jobs` is gone
+   * from the pipeline or failed; else `Play` with those of `jobs` still waiting to be
+   * started by hand, none where somebody started them. Take it inside an Activity.
+   */
+  readonly readProduction: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly tag: string;
+    readonly merged: string;
+    readonly pipeline: string;
+    readonly jobs: ReadonlyArray<string>;
+  }) => Effect.Effect<ProductionRead>;
+  /**
+   * Whether the forge shows stage rolled back: its newest successful deployment no longer
+   * carries `merged` and carries what production's has. Take it inside an Activity.
+   */
+  readonly readRollback: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly merged: string;
+  }) => Effect.Effect<RollbackRead>;
   /**
    * For a merged merge request this Run recorded: takes over the landing of the newest Run
    * on this host that landed it, where that Run ended without succeeding and the forge's
@@ -863,7 +908,7 @@ export interface HostApi {
   /**
    * Blocks until the forge shows production carries `sha`, costing wall clock and no model
    * tokens, and says on the card meanwhile what it waits for: `jobs` are the production
-   * jobs left for a human to play, and word the line only. A forge that cannot say is
+   * jobs left to play, and they and `slug` word the line only. A forge that cannot say is
    * waited on too. Answers true once production carries it, false where the Run was
    * stopped or held first.
    */
@@ -872,8 +917,8 @@ export interface HostApi {
     readonly cwd: string;
     readonly sha: string;
     readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
-    /** The claim held meanwhile. */
-    readonly slug: string;
+    /** The claim held meanwhile, where the Run holds one. */
+    readonly slug?: string;
     /** The repository's web address, which a job without its own is played at. */
     readonly url: string;
   }) => Effect.Effect<boolean>;

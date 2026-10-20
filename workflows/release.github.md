@@ -106,3 +106,71 @@ Collie merged {{inputs.mr}}, and the merged commit is `{{merged}}`. Release it:
 
 Then write your Output, naming the tag, the version and the URL of the tag's workflow run.
 Collie reads the tag back on origin and the run from GitHub, not from your Output.
+
+## stage
+
+{{recovery}}
+
+Collie merged {{inputs.mr}}, and the merged commit is `{{merged}}`. This Run holds the
+repository in Helle, or the repository has no Helle project: either way staging, the
+default branch and the tag are yours until the Run ends. Release it to staging:
+
+- Work in a worktree of your own at the merged commit — `git fetch origin`, then
+  `git worktree add {{run.dir}}/release {{merged}}` — and leave this checkout as it is.
+- Diff the merged commit against the previous version tag and choose the next version
+  from that and from the repository's own versioning conventions.
+- Where the repository makes a release commit — a version file or a changelog bumped on
+  release — commit it on the default branch on top of the merged commit, and push it.
+- Tag annotated, following the repository's own tag and notes conventions. Where it has
+  none, the tag notes are a changelog entry in the shape of changelog-gen: a heading
+  `## <version> - <YYYY-MM-DD>`, then only the sections that have entries, in this order
+  and under these names — `### Features and Improvements`, `### Bug fixes`,
+  `### Miscellaneous` — with one line per change, `- <what changed> [#<n>]`, where the
+  pull request reference is the only link. Write the notes to a file and tag from it with
+  `--cleanup=verbatim`, or git strips the `#` headers as comments. Push the tag to origin.
+  An application makes no GitHub release.
+- The workflow run the tag started deploys to staging with {{stage_jobs}}. Watch those
+  jobs to success — `gh run list --commit <sha>`, then `gh run watch` — rerunning one that
+  failed with `gh run rerun <id> --job <job id>`, and then the jobs the repository itself
+  checks staging with: an e2e or smoke job of the same run.
+- Where a staging deploy or a staging check fails, **Roll stage back** to the newest
+  release production carries, so staging is never left broken: the ref of the newest
+  production deployment whose latest status is `success` —
+  `gh api repos/{owner}/{repo}/deployments?environment=<production>` and each one's
+  `statuses` — deployed to staging by the repository's own deploy workflow. Watch the
+  rollback to success, say in your log what staging is running now, and write your Output:
+  the fix is a new pull request, never a change here.
+- Watch the tag's workflow run until the only jobs left are production jobs waiting on
+  their environment's approval. Never play, retry or ask about a production job: never
+  approve its environment either. The human sends it to production on a second go, and
+  Collie asks it.
+
+Then write your Output: the tag, the version, the URL of the tag's workflow run, the
+staging jobs you watched or checked in `stage_jobs`, and in `production_jobs` each
+production job left waiting, with its URL. Collie reads the tag back on origin, and
+staging and the run from GitHub, not from your Output.
+
+## rollback
+
+Staging failed after Collie merged {{inputs.mr}} at `{{merged}}`: {{failure}}.
+
+**Roll stage back** to the newest release production carries, unless it is already there:
+the ref of the newest production deployment whose latest status is `success` —
+`gh api repos/{owner}/{repo}/deployments?environment=<production>` and each one's
+`statuses` — deployed to staging by the repository's own deploy workflow. Watch it to
+success. Never approve or run a production job, and change nothing on the default branch:
+the fix is a new pull request.
+
+Then write your Output, naming in `stage` the release staging runs now. Collie reads
+staging back from GitHub, not from your Output.
+
+## production
+
+The human sent `{{merged}}` of {{inputs.mr}} to production. Start exactly these jobs of
+the tag's workflow run, and no other job: {{jobs}}. Each waits on its environment's
+approval: approve that pending deployment for that run alone —
+`gh api -X POST repos/{owner}/{repo}/actions/runs/<run id>/pending_deployments` with the
+environment's id, `state=approved` and a comment — and watch the job to success.
+
+Then write your Output, naming the jobs you started. Collie waits until GitHub shows
+production carries the merge, whatever your Output says.

@@ -100,7 +100,15 @@ import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
 import { ciJob } from "./ci-job";
 import { land, LandingSchema, readLanding, takeOver } from "./landing";
-import { carried, fastForward, readTag } from "./releasing";
+import {
+  carried,
+  fastForward,
+  readProduction,
+  readRollback,
+  readTag,
+  type ProductionRead,
+  type RollbackRead,
+} from "./releasing";
 import { standingOf, waitingLine, type ReviewHead, type ReviewStanding } from "./review-wait";
 import {
   autoMergingHere,
@@ -440,9 +448,25 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | { readonly _tag: "Refused"; readonly why: string };
   export const FastForwardSchema: Schema.Codec<FastForward, unknown, never, never>;
 
-  /** A tag proved, or what it lacks. */
-  export type TagRead = { readonly _tag: "Proved" } | { readonly _tag: "Unproved"; readonly why: string };
+  /** A job of a tag's pipeline, at the address the forge gives it. */
+  export interface JobLink { readonly name: string; readonly url: string; }
+  export const JobLinkSchema: Schema.Codec<JobLink, unknown, never, never>;
+  /** A tag proved, with the production jobs waiting on it; in production; failed on stage; or what it lacks. */
+  export type TagRead =
+    | { readonly _tag: "Proved"; readonly production: ReadonlyArray<JobLink> }
+    | { readonly _tag: "InProduction" }
+    | { readonly _tag: "StageFailed"; readonly why: string }
+    | { readonly _tag: "Unproved"; readonly why: string };
   export const TagReadSchema: Schema.Codec<TagRead, unknown, never, never>;
+  /** Production already carries the merge, the jobs still to play, or why none may be. */
+  export type ProductionRead =
+    | { readonly _tag: "Carried" }
+    | { readonly _tag: "Play"; readonly jobs: ReadonlyArray<JobLink> }
+    | { readonly _tag: "Unproved"; readonly why: string };
+  export const ProductionReadSchema: Schema.Codec<ProductionRead, unknown, never, never>;
+  /** Stage shown back on what production carries, or why not. */
+  export type RollbackRead = { readonly _tag: "Shown" } | { readonly _tag: "Unshown"; readonly why: string };
+  export const RollbackReadSchema: Schema.Codec<RollbackRead, unknown, never, never>;
 
   /** A landing taken over from the Run that made it, or why there was none to take. */
   export type Takeover =
@@ -702,8 +726,25 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly tag: string;
       readonly merged: string;
       readonly pipeline: string | null;
-      readonly proves: "finished";
+      readonly proves: "finished" | "staged";
+      readonly stage?: ReadonlyArray<string>;
+      readonly production?: ReadonlyArray<string>;
     }) => Effect.Effect<TagRead>;
+    /** What is left to play for production of \`tag\`, read again. Take it inside an Activity. */
+    readonly readProduction: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly tag: string;
+      readonly merged: string;
+      readonly pipeline: string;
+      readonly jobs: ReadonlyArray<string>;
+    }) => Effect.Effect<ProductionRead>;
+    /** Whether stage is shown back on what production carries. Take it inside an Activity. */
+    readonly readRollback: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly merged: string;
+    }) => Effect.Effect<RollbackRead>;
     /** Takes over the landing of a merged merge request from the failed Run that made it. Take it inside an Activity. */
     readonly takeOverLanding: (options: {
       readonly runId: string;
@@ -718,7 +759,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly cwd: string;
       readonly sha: string;
       readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
-      readonly slug: string;
+      readonly slug?: string;
       readonly url: string;
     }) => Effect.Effect<boolean>;
   }
@@ -2979,6 +3020,9 @@ export const hostLayer = (options: {
           const read = yield* under(forgeOf(ref).readReview(ref, asked.cwd, runShell));
           return { mr, ref, read, standing: standingOf(read, asked) };
         });
+      const unrecorded = "this Run recorded no merge request to read deployments of";
+      const recordedRef = (runId: string) =>
+        Effect.map(mergeRequestOf(fs, dir, runId), (mr) => (mr === null ? null : mrRefOf(mr)));
       const readable = (asked: { readonly runId: string; readonly cwd: string }) =>
         Effect.gen(function* () {
           const { mr, ref, read } = yield* reviewRead({ ...asked, proved: "", seen: [] });
@@ -3462,16 +3506,33 @@ export const hostLayer = (options: {
             }),
           ).pipe(Effect.orDie),
         readTag: (asked) =>
-          under(
-            readTag({
-              cwd: asked.cwd,
-              tag: asked.tag,
-              merged: asked.merged,
-              pipeline: asked.pipeline,
-              proves: asked.proves,
-              run: runShell,
-            }),
-          ),
+          Effect.gen(function* () {
+            return yield* under(
+              readTag({
+                cwd: asked.cwd,
+                tag: asked.tag,
+                merged: asked.merged,
+                pipeline: asked.pipeline,
+                proves: asked.proves,
+                ref: yield* recordedRef(asked.runId),
+                stage: asked.stage ?? [],
+                production: asked.production ?? [],
+                run: runShell,
+              }),
+            );
+          }),
+        readProduction: (asked) =>
+          Effect.gen(function* () {
+            const ref = yield* recordedRef(asked.runId);
+            if (ref === null) return { _tag: "Unproved", why: unrecorded } satisfies ProductionRead;
+            return yield* under(readProduction({ ...asked, ref, run: runShell }));
+          }),
+        readRollback: (asked) =>
+          Effect.gen(function* () {
+            const ref = yield* recordedRef(asked.runId);
+            if (ref === null) return { _tag: "Unshown", why: unrecorded } satisfies RollbackRead;
+            return yield* under(readRollback({ ...asked, ref, run: runShell }));
+          }),
         takeOverLanding: () =>
           Effect.fail(
             new WorkflowError({
@@ -3482,11 +3543,12 @@ export const hostLayer = (options: {
           Effect.gen(function* () {
             const short = asked.sha.slice(0, 8);
             const plays = asked.jobs.map((job) => `\`${job.name}\` at ${job.url ?? asked.url}`);
+            const held = asked.slug === undefined ? null : `The claim on \`${asked.slug}\` is held`;
             yield* host.parked(
               asked.runId,
               plays.length === 0
-                ? `Waiting for production to carry \`${short}\` of ${asked.url}. The claim on \`${asked.slug}\` is held until it does.`
-                : `Waiting for production: play ${plays.join(", ")}. The claim on \`${asked.slug}\` is held until the forge shows production carries \`${short}\`.`,
+                ? `Waiting for production to carry \`${short}\` of ${asked.url}.${held === null ? "" : ` ${held} until it does.`}`
+                : `Waiting for production: play ${plays.join(", ")}. ${held ?? "The Run waits"} until the forge shows production carries \`${short}\`.`,
             );
             const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
               Effect.orElseSucceed(() => ({ gitlabHost: undefined })),

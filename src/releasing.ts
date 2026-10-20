@@ -1,10 +1,11 @@
 // What a Release Run has the host do to its checkout and read of its tag: bring the
-// checkout to the merge request's head without discarding anything, and prove a tag
-// from origin and the forge rather than from an Output.
+// checkout to the merge request's head without discarding anything, and prove a tag, stage
+// and production from origin and the forge rather than from an Output.
 
 import { Effect, Schema } from "effect";
-import { forgeOfUrl } from "./forge/forge";
-import { whatItSaid, type Runner } from "./mr";
+import type { MrRef } from "./board-model";
+import { forgeOf, forgeOfUrl, type DeployTier } from "./forge/forge";
+import { whatItSaid, type Ran, type Runner } from "./mr";
 import { appendLog } from "./oversight";
 
 const short = (sha: string) => sha.slice(0, 8);
@@ -68,19 +69,104 @@ export const carried = Effect.fn("Releasing.carried")(function* <R>(opts: {
   return carries;
 });
 
-/** What a tag must be shown to be: `finished` is a package's, its pipeline succeeded. */
-export const TagProofSchema = Schema.Literal("finished");
+/**
+ * What a tag must be shown to be: `finished` is a package's, its pipeline succeeded;
+ * `staged` is an application's, on stage and ready for production.
+ */
+export const TagProofSchema = Schema.Literals(["finished", "staged"]);
 
-/** A tag proved, or what it lacks. */
+/** A job of a tag's pipeline, at the address the forge gives it. */
+export const JobLinkSchema = Schema.Struct({ name: Schema.String, url: Schema.String });
+export type JobLink = typeof JobLinkSchema.Type;
+
+/**
+ * A tag proved, with the production jobs waiting on it; already in production; failed on
+ * stage after the merge; or what it lacks.
+ */
 export const TagReadSchema = Schema.Union([
-  Schema.TaggedStruct("Proved", {}),
+  Schema.TaggedStruct("Proved", { production: Schema.Array(JobLinkSchema) }),
+  Schema.TaggedStruct("InProduction", {}),
+  Schema.TaggedStruct("StageFailed", { why: Schema.String }),
   Schema.TaggedStruct("Unproved", { why: Schema.String }),
 ]);
 export type TagRead = typeof TagReadSchema.Type;
 
+/** Production already carries the merge, the jobs still to play, or why none may be. */
+export const ProductionReadSchema = Schema.Union([
+  Schema.TaggedStruct("Carried", {}),
+  Schema.TaggedStruct("Play", { jobs: Schema.Array(JobLinkSchema) }),
+  Schema.TaggedStruct("Unproved", { why: Schema.String }),
+]);
+export type ProductionRead = typeof ProductionReadSchema.Type;
+
+/** Stage shown back on what production carries, or why not. */
+export const RollbackReadSchema = Schema.Union([
+  Schema.TaggedStruct("Shown", {}),
+  Schema.TaggedStruct("Unshown", { why: Schema.String }),
+]);
+export type RollbackRead = typeof RollbackReadSchema.Type;
+
+const failing = new Set(["failed", "cancelled"]);
+
+const gitOf =
+  <R>(opts: { readonly cwd: string; readonly run: Runner<R> }) =>
+  (args: string[]) =>
+    opts.run("git", args, opts.cwd);
+
+/** Whether `sha` carries `ancestor`, or null where git does not have one of them. */
+const carries = <R>(
+  git: (args: string[]) => Effect.Effect<Ran, never, R>,
+  sha: string,
+  ancestor: string,
+) =>
+  Effect.gen(function* () {
+    for (const one of [sha, ancestor])
+      if ((yield* git(["cat-file", "-e", `${one}^{commit}`])).code !== 0) return null;
+    return (yield* git(["merge-base", "--is-ancestor", ancestor, sha])).code === 0;
+  });
+
+/** Why `tag` on origin is not a tag of `merged`, or null where it is. */
+const tagLacks = <R>(
+  git: (args: string[]) => Effect.Effect<Ran, never, R>,
+  tag: string,
+  merged: string,
+) =>
+  Effect.gen(function* () {
+    const ref = `refs/tags/${tag}`;
+    const listed = yield* git(["ls-remote", "--tags", "origin", ref]);
+    if (listed.code !== 0) return `origin could not be read: ${whatItSaid(listed)}`;
+    if (listed.stdout.trim() === "") return `${tag} is not on origin`;
+    yield* git(["fetch", "--quiet", "--force", "origin", `${ref}:${ref}`]);
+    yield* git(["fetch", "--quiet", "origin"]);
+    if ((yield* git(["merge-base", "--is-ancestor", merged, ref])).code !== 0)
+      return `${tag} on origin does not carry the merged commit ${short(merged)}`;
+    return null;
+  });
+
+/** What `tier` runs, by the commit its newest successful deployment has, or why not. */
+const deployedOn = <R>(ref: MrRef, tier: DeployTier, cwd: string, run: Runner<R>) =>
+  forgeOf(ref).deployed(ref, tier, cwd, run);
+
+/** Whether production carries `merged`; null where the forge or git cannot say. */
+const inProduction = <R>(opts: {
+  readonly cwd: string;
+  readonly ref: MrRef;
+  readonly merged: string;
+  readonly run: Runner<R>;
+}) =>
+  Effect.gen(function* () {
+    const read = yield* deployedOn(opts.ref, "production", opts.cwd, opts.run);
+    if (!read.ok || read.sha === null) return false;
+    return (yield* carries(gitOf(opts), read.sha, opts.merged)) === true;
+  });
+
 /**
- * Reads `tag` back: on origin, carrying `merged`, and where `pipeline` names one, finished
- * and succeeded by the forge's word. A job waiting to be started by hand has not finished.
+ * Reads `tag` back: on origin and carrying `merged`, then against what it `proves`.
+ * `finished`: where `pipeline` names one, it finished and succeeded by the forge's word, and a
+ * job waiting to be started by hand has not finished. `staged`: production carrying `merged`
+ * already is `InProduction`; otherwise each `stage` job passed and stage carries `merged`, or
+ * else it is `StageFailed`; every other finished job passed; and each `production` job, at
+ * least one, waits on the pipeline to be started by hand. The pipeline's own state is not read.
  */
 export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
   readonly cwd: string;
@@ -88,27 +174,135 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
   readonly merged: string;
   readonly pipeline: string | null;
   readonly proves: typeof TagProofSchema.Type;
+  readonly ref: MrRef | null;
+  readonly stage: ReadonlyArray<string>;
+  readonly production: ReadonlyArray<string>;
   readonly run: Runner<R>;
 }) {
-  const git = (args: string[]) => opts.run("git", args, opts.cwd);
+  const git = gitOf(opts);
   const unproved = (why: string): TagRead => ({ _tag: "Unproved", why });
-  const ref = `refs/tags/${opts.tag}`;
-  const listed = yield* git(["ls-remote", "--tags", "origin", ref]);
-  if (listed.code !== 0) return unproved(`origin could not be read: ${whatItSaid(listed)}`);
-  if (listed.stdout.trim() === "") return unproved(`${opts.tag} is not on origin`);
-  yield* git(["fetch", "--quiet", "--force", "origin", `${ref}:${ref}`]);
-  yield* git(["fetch", "--quiet", "origin"]);
-  if ((yield* git(["merge-base", "--is-ancestor", opts.merged, ref])).code !== 0)
-    return unproved(`${opts.tag} on origin does not carry the merged commit ${short(opts.merged)}`);
-  if (opts.pipeline === null) return { _tag: "Proved" } satisfies TagRead;
+  const lacks = yield* tagLacks(git, opts.tag, opts.merged);
+  if (lacks !== null) return unproved(lacks);
+  if (opts.proves === "finished") {
+    if (opts.pipeline === null) return { _tag: "Proved", production: [] } satisfies TagRead;
+    const read = yield* forgeOfUrl(opts.pipeline).pipeline(opts.pipeline, opts.cwd, opts.run);
+    if (!read.ok) return unproved(`${opts.tag}'s pipeline could not be read: ${read.reason}`);
+    const manual = read.jobs
+      .filter((job) => job.state === "manual")
+      .map((job) => `\`${job.name}\``);
+    if (manual.length > 0)
+      return unproved(
+        `${opts.tag}'s pipeline at ${opts.pipeline} has not finished: ${manual.join(", ")} waits for somebody to start it by hand`,
+      );
+    if (!read.succeeded)
+      return unproved(`${opts.tag}'s pipeline at ${opts.pipeline} has not finished and succeeded`);
+    return { _tag: "Proved", production: [] } satisfies TagRead;
+  }
+
+  if (opts.ref === null)
+    return unproved("this Run recorded no merge request to read deployments of");
+  if (yield* inProduction({ ...opts, ref: opts.ref }))
+    return { _tag: "InProduction" } satisfies TagRead;
+  if (opts.pipeline === null)
+    return unproved(`no pipeline of ${opts.tag} was named to prove stage from`);
+  const pipeline = opts.pipeline;
+  const read = yield* forgeOfUrl(pipeline).pipeline(pipeline, opts.cwd, opts.run);
+  if (!read.ok) return unproved(`${opts.tag}'s pipeline could not be read: ${read.reason}`);
+  const on = `on ${opts.tag}'s pipeline at ${pipeline}`;
+  const jobNamed = (name: string) => read.jobs.find((job) => job.name === name);
+  for (const name of opts.stage) {
+    const job = jobNamed(name);
+    if (job !== undefined && failing.has(job.state))
+      return { _tag: "StageFailed", why: `\`${name}\` failed ${on}` } satisfies TagRead;
+  }
+  for (const name of opts.stage) {
+    const job = jobNamed(name);
+    if (job === undefined) return unproved(`\`${name}\` is not a job ${on}`);
+    if (job.state !== "passed")
+      return unproved(`\`${name}\` has not passed ${on}: it is ${job.state}`);
+  }
+  const staging = yield* deployedOn(opts.ref, "staging", opts.cwd, opts.run);
+  if (!staging.ok) return unproved(`stage could not be read: ${staging.reason}`);
+  const staged = staging.sha === null ? false : yield* carries(git, staging.sha, opts.merged);
+  if (staged === null)
+    return unproved(
+      `stage's ${short(staging.sha ?? "")} could not be compared with the merged commit`,
+    );
+  if (!staged)
+    return {
+      _tag: "StageFailed",
+      why: `stage does not carry the merged commit ${short(opts.merged)}`,
+    } satisfies TagRead;
+  const failed = read.jobs
+    .filter((job) => failing.has(job.state) && !opts.production.includes(job.name))
+    .map((job) => `\`${job.name}\``);
+  if (failed.length > 0) return unproved(`${failed.join(", ")} failed ${on}`);
+  if (opts.production.length === 0) return unproved(`no production job ${on} was named`);
+  const production: JobLink[] = [];
+  for (const name of opts.production) {
+    const job = jobNamed(name);
+    if (job === undefined) return unproved(`\`${name}\` is not a job ${on}`);
+    if (job.state !== "manual")
+      return unproved(
+        `\`${name}\` does not wait ${on} for somebody to start it: it is ${job.state}`,
+      );
+    production.push({ name, url: job.url ?? pipeline });
+  }
+  return { _tag: "Proved", production } satisfies TagRead;
+});
+
+/**
+ * Reads, before production jobs are played, what is left to play: nothing where production
+ * already carries `merged`, the `jobs` still waiting to be started by hand, and none at all
+ * where the tag no longer carries `merged` or a job is gone or failed.
+ */
+export const readProduction = Effect.fn("Releasing.readProduction")(function* <R>(opts: {
+  readonly cwd: string;
+  readonly ref: MrRef;
+  readonly tag: string;
+  readonly merged: string;
+  readonly pipeline: string;
+  readonly jobs: ReadonlyArray<string>;
+  readonly run: Runner<R>;
+}) {
+  const unproved = (why: string): ProductionRead => ({ _tag: "Unproved", why });
+  if (yield* inProduction(opts)) return { _tag: "Carried" } satisfies ProductionRead;
+  const lacks = yield* tagLacks(gitOf(opts), opts.tag, opts.merged);
+  if (lacks !== null) return unproved(lacks);
   const read = yield* forgeOfUrl(opts.pipeline).pipeline(opts.pipeline, opts.cwd, opts.run);
   if (!read.ok) return unproved(`${opts.tag}'s pipeline could not be read: ${read.reason}`);
-  const manual = read.jobs.filter((job) => job.state === "manual").map((job) => `\`${job.name}\``);
-  if (manual.length > 0)
-    return unproved(
-      `${opts.tag}'s pipeline at ${opts.pipeline} has not finished: ${manual.join(", ")} waits for somebody to start it by hand`,
+  const on = `on ${opts.tag}'s pipeline at ${opts.pipeline}`;
+  const jobs: JobLink[] = [];
+  for (const name of opts.jobs) {
+    const job = read.jobs.find((one) => one.name === name);
+    if (job === undefined) return unproved(`\`${name}\` is no longer a job ${on}`);
+    if (failing.has(job.state)) return unproved(`\`${name}\` failed ${on}`);
+    if (job.state === "manual") jobs.push({ name, url: job.url ?? opts.pipeline });
+  }
+  return { _tag: "Play", jobs } satisfies ProductionRead;
+});
+
+/** Whether stage is shown back on what production carries, and off `merged`. */
+export const readRollback = Effect.fn("Releasing.readRollback")(function* <R>(opts: {
+  readonly cwd: string;
+  readonly ref: MrRef;
+  readonly merged: string;
+  readonly run: Runner<R>;
+}) {
+  const unshown = (why: string): RollbackRead => ({ _tag: "Unshown", why });
+  const git = gitOf(opts);
+  const staging = yield* deployedOn(opts.ref, "staging", opts.cwd, opts.run);
+  if (!staging.ok) return unshown(`stage could not be read: ${staging.reason}`);
+  const production = yield* deployedOn(opts.ref, "production", opts.cwd, opts.run);
+  if (!production.ok) return unshown(`production could not be read: ${production.reason}`);
+  if (staging.sha === null) return unshown("stage has no successful deployment");
+  if (production.sha === null) return unshown("production has no successful deployment");
+  const merged = yield* carries(git, staging.sha, opts.merged);
+  if (merged === null) return unshown(`stage's ${short(staging.sha)} could not be compared`);
+  if (merged) return unshown(`stage still carries the merged commit ${short(opts.merged)}`);
+  if ((yield* carries(git, staging.sha, production.sha)) !== true)
+    return unshown(
+      `stage's ${short(staging.sha)} does not carry production's ${short(production.sha)}`,
     );
-  if (!read.succeeded)
-    return unproved(`${opts.tag}'s pipeline at ${opts.pipeline} has not finished and succeeded`);
-  return { _tag: "Proved" } satisfies TagRead;
+  return { _tag: "Shown" } satisfies RollbackRead;
 });

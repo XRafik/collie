@@ -1,9 +1,10 @@
 // One merge request taken the rest of the way, on a human's go.
 //
 // The host does everything that decides: it waits for the review at no model cost, proves
-// the head with the Run's checks, asks the go, merges at that head and reads the tag back.
-// The one agent assesses what kind of repository it is and tags; its Output is a claim,
-// and nothing here takes it for proof.
+// the head with the Run's checks, asks the go, merges at that head, reads the tag back and,
+// for an application, reads stage and production from the forge. The one agent assesses
+// what kind of repository it is, tags, and stages; its Output is a claim, and nothing here
+// takes it for proof.
 //
 // The Markdown beside this file is the content: what each step judges, and how.
 
@@ -13,7 +14,9 @@ import {
   FixOutputSchema,
   Host,
   MergeOutcomeSchema,
+  ProductionReadSchema,
   ReviewStandingSchema,
+  RollbackReadSchema,
   Run,
   SettledAnswersSchema,
   TagReadSchema,
@@ -29,6 +32,7 @@ import {
   readMrRef,
   renderApproved,
   settleAnswers,
+  type JobLink,
   type OpenComment,
   type ReviewStanding,
 } from "collie";
@@ -60,6 +64,12 @@ export const ReleaseInput = Schema.Struct({
   iteration: text,
   max_iterations: text,
   findings: text,
+  /** An application's stage deploy jobs of its tag pipeline, as the assessment named them. */
+  stage_jobs: text,
+  /** Why stage failed after the merge. */
+  failure: text,
+  /** The production jobs a step plays. */
+  jobs: text,
 });
 
 const stepsOf = (markdown: string) => {
@@ -69,6 +79,9 @@ const stepsOf = (markdown: string) => {
     answer: content.template("answer", ReleaseInput.fields),
     fix: content.template("fix", ReleaseInput.fields),
     tag: content.template("tag", ReleaseInput.fields),
+    stage: content.template("stage", ReleaseInput.fields),
+    rollback: content.template("rollback", ReleaseInput.fields),
+    production: content.template("production", ReleaseInput.fields),
   };
 };
 
@@ -78,6 +91,13 @@ export const RELEASE_ON = { gitlab: stepsOf(onGitlab), github: stepsOf(onGithub)
 /** What each step that touches anything shared is cleared for, on the repository at `url`. */
 const pushing = (url: string) =>
   `committing to the merge request's source branch on ${url} and pushing it with a plain push, never a force push`;
+
+const rollingBack = (url: string) =>
+  `rolling ${url}'s stage back to the newest release production carries`;
+
+/** Production jobs as a human plays them: by name, at the forge's address. */
+const plays = (jobs: ReadonlyArray<JobLink>) =>
+  jobs.map((job) => `\`${job.name}\` at ${job.url}`).join(", ");
 
 export const RELEASE_CLEARS = {
   answer: (url: string) => [
@@ -90,6 +110,18 @@ export const RELEASE_CLEARS = {
     `pushing an annotated version tag of ${url} to origin`,
     `creating its release on ${url}, where the package publishes from its tags`,
     `watching the tag's pipeline on ${url}, never playing a production job`,
+  ],
+  /** An application's tag step, which stages the tag too. */
+  stage: (url: string) => [
+    `a release commit to ${url}'s default branch, where it makes one`,
+    "pushing an annotated version tag to origin, with no forge release",
+    "playing, retrying and watching the tag pipeline's stage deploy and check jobs until only production jobs waiting to be started are left",
+    "rolling stage back to the newest release production carries",
+    "never a production job",
+  ],
+  rollback: (url: string) => [`${rollingBack(url)}, never a production job`],
+  production: (url: string, jobs: ReadonlyArray<JobLink>) => [
+    `playing ${plays(jobs)} on ${url}, and no other job`,
   ],
 };
 
@@ -132,10 +164,37 @@ export const Tagged = Schema.Struct({
   }),
 });
 
+export const Staged = Schema.Struct({
+  ...Tagged.fields,
+  stage_jobs: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+    description:
+      "the stage deploy and stage check jobs of the tag's pipeline you played or checked",
+  }),
+  production_jobs: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ name: Schema.String, url: Schema.String })),
+  ).annotate({
+    description:
+      "each production job of the tag's pipeline left waiting for somebody to start it, with its URL",
+  }),
+});
+
+export const RolledBack = Schema.Struct({
+  ...verdict,
+  stage: Schema.optionalKey(Schema.String).annotate({ description: "the release stage runs now" }),
+});
+
+export const Played = Schema.Struct({
+  ...verdict,
+  played: Schema.Array(Schema.String).annotate({
+    description: "the production jobs you played, by name",
+  }),
+});
+
 /** One agent for the whole Run, which each step continues. */
 export const RELEASER = "release";
 
-const GO = { release: "Release", finish: "Finish" } as const;
+const GO = { release: "Release", stage: "Merge, tag and stage", finish: "Finish" } as const;
+const PRODUCTION = { send: "Send to production", leave: "Leave production to me" } as const;
 
 /** Fix rounds in a row before a failing head parks the Run, as implement's gate fixes. */
 const ROUNDS = 4;
@@ -155,10 +214,10 @@ const commentLines = (comments: ReadonlyArray<OpenComment>) =>
 
 const short = (sha: string) => sha.slice(0, 8);
 
-/** The merged commit a Run tags, whether it holds the claim, and what a recovery is told. */
+/** The merged commit a Run tags, the claim it holds, and what a recovery is told. */
 interface Landed {
   readonly sha: string;
-  readonly claim: boolean;
+  readonly claim: { readonly slug: string } | null;
   readonly recovery: string;
 }
 
@@ -182,7 +241,7 @@ export default defineWorkflow({
   id: "release",
   title: "release — merge and tag a merge request on a human's go",
   description:
-    "Takes one merge request the rest of the way: it waits, at no model cost, until the merge request is approved, answered, green and mergeable at a head the Run's checks proved, asks the human for the go, then claims the repository, merges at that head, tags the release and reads the tag back on origin.",
+    "Takes one merge request the rest of the way: it waits, at no model cost, until the merge request is approved, answered, green and mergeable at a head the Run's checks proved, asks the human for the go, then claims the repository, merges at that head, tags the release and reads the tag back on origin. An application's tag is staged, and goes to production on a second go.",
   input: Schema.Struct({
     mr: Schema.String.annotate({ description: "The merge request or pull request to release" }),
   }),
@@ -245,6 +304,9 @@ export default defineWorkflow({
         iteration: "",
         max_iterations: "",
         findings: "",
+        stage_jobs: "",
+        failure: "",
+        jobs: "",
       };
       const as = (operation: string) => ({
         operation,
@@ -292,10 +354,12 @@ export default defineWorkflow({
         instructions: steps.assess,
         output: Assessed,
       });
-      if (!assessed.is_package)
+      const stageJobs = assessed.is_package ? [] : (assessed.stage_jobs?.tag ?? []);
+      if (!assessed.is_package && stageJobs.length === 0)
         return yield* fail(
-          `releasing an application is not supported yet${assessed.kind_evidence ? `: ${assessed.kind_evidence}` : ""}`,
+          `${mr} is an application with no stage deploy on its tags that Collie can prove, so nothing was released${assessed.kind_evidence ? `: ${assessed.kind_evidence}` : ""}`,
         );
+      const going = assessed.is_package ? GO.release : GO.stage;
 
       const claimed = () =>
         host.claim({
@@ -312,11 +376,10 @@ export default defineWorkflow({
       let landed: Landed;
       if (recovering !== null) {
         // That go was given and spent: no wait, no go and no merge, only what is left.
-        const claim = yield* claimed();
         landed = {
           sha: recovering.sha,
-          claim: claim !== null,
-          recovery: `This Run recovers the release of ${mr} that ${recovering.from} merged at \`${recovering.sha}\` and then failed: ${recovering.failure} Where a tag on origin already carries \`${recovering.sha}\`, finish that tag's release and pipeline instead of making another.`,
+          claim: yield* claimed(),
+          recovery: `This Run recovers the release of ${mr} that ${recovering.from} merged at \`${recovering.sha}\` and then failed: ${recovering.failure} Where a tag on origin already carries \`${recovering.sha}\`, finish that tag's release and its pipeline, stage included, instead of making another.`,
         };
       } else {
         const moveTo = (at: number, head: string) =>
@@ -447,7 +510,7 @@ export default defineWorkflow({
         let waits = 0;
         let rounds = 0;
         let gos = 0;
-        let merged: { readonly sha: string; readonly claim: boolean } | null = null;
+        let merged: Omit<Landed, "recovery"> | null = null;
         while (merged === null) {
           waits += 1;
           const standing = yield* awaited(waits, proved);
@@ -522,10 +585,12 @@ export default defineWorkflow({
           const approvers = standing.approvers.join(", ") || "nobody the forge names";
           const answer = yield* ask({
             name: `go-${gos}`,
-            prompt: `Release ${mr} at ${short(head)}, approved by ${approvers}? Release merges it at that head and tags it; Finish leaves it open.`,
-            options: [GO.release, GO.finish],
+            prompt: assessed.is_package
+              ? `Release ${mr} at ${short(head)}, approved by ${approvers}? Release merges it at that head and tags it; Finish leaves it open.`
+              : `Release ${mr} at ${short(head)}, approved by ${approvers}? ${GO.stage} merges it at that head and tags it, and stage gets the tag; production waits for a second go. Finish leaves it open.`,
+            options: [going, GO.finish],
           });
-          if (answer !== GO.release) {
+          if (answer !== going) {
             yield* host.record(runId, `go ${gos}: finished with ${mr} left open`);
             return `${mr} was left open`;
           }
@@ -551,7 +616,7 @@ export default defineWorkflow({
             execute: host.merge({ runId, cwd, head }),
           });
           if (outcome._tag === "Merged") {
-            merged = { sha: outcome.sha, claim: claim !== null };
+            merged = { sha: outcome.sha, claim };
             continue;
           }
           yield* giveBack;
@@ -571,32 +636,143 @@ export default defineWorkflow({
         landed = { ...merged, recovery: "" };
       }
 
-      const tagged = yield* agentWork({
+      const released = `${mr} merged at ${landed.sha}`;
+      const giveBack = landed.claim === null ? Effect.void : host.release(runId);
+      if (assessed.is_package) {
+        const tagged = yield* agentWork({
+          ...as("tag"),
+          input: { ...input, merged: landed.sha, recovery: landed.recovery },
+          clears: RELEASE_CLEARS.tag(url),
+          instructions: steps.tag,
+          output: Tagged,
+        });
+        // A tag that is not proved leaves shared work half-done, so the claim stays with this
+        // Run for `Release again` to take over.
+        const read = yield* Activity.make({
+          name: "read-tag",
+          success: TagReadSchema,
+          execute: host.readTag({
+            runId,
+            cwd,
+            tag: tagged.tag,
+            merged: landed.sha,
+            pipeline: tagged.pipeline_url || null,
+            proves: "finished",
+          }),
+        });
+        if (read._tag === "Unproved")
+          return yield* fail(`${released}, but ${tagged.tag} is not released: ${read.why}`);
+        yield* giveBack;
+        return `${released}, released as ${tagged.tag}`;
+      }
+
+      const staged = yield* agentWork({
         ...as("tag"),
-        input: { ...input, merged: landed.sha, recovery: landed.recovery },
-        clears: RELEASE_CLEARS.tag(url),
-        instructions: steps.tag,
-        output: Tagged,
+        input: {
+          ...input,
+          merged: landed.sha,
+          recovery: landed.recovery,
+          stage_jobs: stageJobs.map((job) => `\`${job}\``).join(", "),
+        },
+        clears: RELEASE_CLEARS.stage(url),
+        instructions: steps.stage,
+        output: Staged,
       });
-      // A tag that is not proved leaves shared work half-done, so the claim stays with this
-      // Run for `Release again` to take over.
+      const pipeline = staged.pipeline_url || null;
       const read = yield* Activity.make({
         name: "read-tag",
         success: TagReadSchema,
         execute: host.readTag({
           runId,
           cwd,
-          tag: tagged.tag,
+          tag: staged.tag,
           merged: landed.sha,
-          pipeline: tagged.pipeline_url || null,
-          proves: "finished",
+          pipeline,
+          proves: "staged",
+          stage: [...new Set([...stageJobs, ...(staged.stage_jobs ?? [])])],
+          production: (staged.production_jobs ?? []).map((job) => job.name),
         }),
       });
+      if (read._tag === "StageFailed") {
+        const stageFailed = `${released}, but stage failed after the merge: ${read.why}`;
+        yield* agentWork({
+          ...as("rollback"),
+          input: { ...input, merged: landed.sha, failure: read.why },
+          clears: RELEASE_CLEARS.rollback(url),
+          instructions: steps.rollback,
+          output: RolledBack,
+        });
+        const back = yield* Activity.make({
+          name: "read-rollback",
+          success: RollbackReadSchema,
+          execute: host.readRollback({ runId, cwd, merged: landed.sha }),
+        });
+        // Only a stage the forge shows back on production's release is safe to give back.
+        if (back._tag === "Unshown")
+          return yield* fail(`${stageFailed}. Its rollback is not shown: ${back.why}`);
+        yield* giveBack;
+        return yield* fail(
+          `${stageFailed}. Stage is back on what production carries, nothing went to production, and the merge stands: the fix is a new merge request`,
+        );
+      }
       if (read._tag === "Unproved")
         return yield* fail(
-          `${mr} merged at ${landed.sha}, but ${tagged.tag} is not released: ${read.why}`,
+          `${released}, but ${staged.tag} is not ready for production: ${read.why}`,
         );
-      if (landed.claim) yield* host.release(runId);
-      return `${mr} merged at ${landed.sha}, released as ${tagged.tag}`;
+
+      // Go 2 holds for this tag and these jobs: the head go 1 was given for is merged.
+      const jobs = read._tag === "Proved" ? read.production : [];
+      if (read._tag === "Proved") {
+        const answer = yield* ask({
+          name: "production",
+          prompt: `${staged.tag} of ${mr} is on stage: stage carries \`${short(landed.sha)}\`. Verify stage, then: ${PRODUCTION.send} plays ${plays(jobs)}; ${PRODUCTION.leave} waits until production carries it, whoever plays it.`,
+          options: [PRODUCTION.send, PRODUCTION.leave],
+        });
+        if (answer === PRODUCTION.send) {
+          const now = yield* Activity.make({
+            name: "production.read",
+            success: ProductionReadSchema,
+            execute: host.readProduction({
+              runId,
+              cwd,
+              tag: staged.tag,
+              merged: landed.sha,
+              pipeline: pipeline ?? "",
+              jobs: jobs.map((job) => job.name),
+            }),
+          });
+          if (now._tag === "Unproved")
+            return yield* fail(
+              `${released} and tagged ${staged.tag}, but nothing was sent to production: ${now.why}`,
+            );
+          if (now._tag === "Play" && now.jobs.length > 0)
+            yield* agentWork({
+              ...as("production"),
+              input: { ...input, merged: landed.sha, jobs: plays(now.jobs) },
+              clears: RELEASE_CLEARS.production(url, now.jobs),
+              instructions: steps.production,
+              output: Played,
+            });
+          else
+            yield* host.record(
+              runId,
+              now._tag === "Carried"
+                ? "production already carries the merge, so nothing was played"
+                : "somebody already started the production jobs, so nothing was played",
+            );
+        }
+      }
+      // The forge decides when production carries the merge, never an Output.
+      const carried = yield* host.awaitProduction({
+        runId,
+        cwd,
+        sha: landed.sha,
+        jobs,
+        url,
+        slug: landed.claim?.slug,
+      });
+      if (!carried) return yield* Workflow.suspend(yield* WorkflowInstance);
+      yield* giveBack;
+      return `${released}, released as ${staged.tag}, in production`;
     }),
 });
