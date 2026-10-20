@@ -1,9 +1,5 @@
-// The way to a peer this Machine dials
-// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection): a pinned WebSocket to a
-// path on it, direct to its own URL first, then, only where direct failed, through a
-// tunnel the Machine's open SSH connection forwards. Either way it carries the same
-// pinned certificate and secret. The ladder, its bounds and the words each way's failure
-// is said in live here, and nowhere else.
+// How this Machine dials a peer: direct, or through its SSH connection's tunnel
+// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection).
 
 import { createServer } from "node:net";
 import { Deferred, Effect, Exit, Option, Schema, Scope } from "effect";

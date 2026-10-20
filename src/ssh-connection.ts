@@ -1,10 +1,6 @@
-// A Machine's SSH connection
-// (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection): the one SSH login this
-// computer keeps open to it, and every ssh argv Collie runs against it. The opener is the
-// one way a connection is opened, for a front door that can show its login. A host is
-// given only `sshConnection`'s handle, whose every call is `ssh -S <path> -O <verb>`:
-// such a call talks to an open master or fails, so a host can never log in. Effect alone,
-// so Desktop builds the same argv.
+// Every ssh argv Collie runs against a Machine's shared SSH connection, and the one way it
+// is opened (ADR-draft-a-blocked-link-rides-the-machines-ssh-connection). Effect alone, so
+// Desktop builds the same argv.
 
 import { Clock, Duration, Effect, FileSystem, Option, Schema, type Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
