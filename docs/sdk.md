@@ -310,7 +310,9 @@ const verdict =
   plain text, which is what you are handed; a schema is how you opt into a structured,
   validated answer.
 - **One unusable Output buys one repair**, sent back to the agent that wrote it, with the
-  schema's own issues. A second one fails the run with `output-unusable`. A stop while the
+  schema's own issues. A rewrite the schema still refuses is judged once the agent's turn
+  has ended, so a file caught half rewritten is not the answer; one still unusable then fails
+  the run with `output-unusable`. A stop while the
   rewrite is awaited parks the wait, as it does the first; the resume starts an agent that
   went with the stop again on the work.
 - **A busy pane is waited out, then parked.** Where herdr answers that the agent's pane
@@ -1387,6 +1389,11 @@ const { document, limits } = jsonSchemaFor(Schema.Struct({ text: Schema.String }
 constrains nothing — a `Schema.declare`, for instance, becomes `{}`. Neither makes the
 schema invalid. What is lost is the copy a model is held to at its own end; your workflow
 is still held to the schema itself.
+
+A `Schema.isPattern` is drawn as a `pattern` with or without the `u` flag, as long as its
+source is known to match the same strings with it: printable ASCII with no `.`, no negated
+class and no `\S`, `\W`, `\D`, `\p`, `\P` or `\u` escape. One whose flags change what it
+matches, such as `i` or `m`, is not drawn either.
 
 ## Typechecking a module
 

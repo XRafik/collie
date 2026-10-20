@@ -15,7 +15,16 @@
 // `docs/sdk.md` is the guidance; `docs/adr/0014-native-workflows-run-on-effects-own-engine.md`
 // is why the engine underneath is Effect's.
 
-import { Context, Effect, FileSystem, Layer, Path, Predicate, Schema } from "effect";
+import {
+  Context,
+  Effect,
+  FileSystem,
+  Layer,
+  Path,
+  Predicate,
+  Schema,
+  SchemaRepresentation,
+} from "effect";
 import type { CheckEvidence } from "./output";
 import type { FailedTest, Verification } from "./verify";
 import type { Issue, IssueRef } from "./forge/issues";
@@ -1271,7 +1280,9 @@ export interface Projection {
 
 export function jsonSchemaFor(schema: Schema.Constraint): Projection {
   try {
-    const drawn = Schema.toJsonSchemaDocument(schema);
+    const drawn = SchemaRepresentation.toJsonSchemaDocument(
+      withPatterns(SchemaRepresentation.toRepresentation(Schema.toCodecJson(schema).ast)),
+    );
     const document = asJson({ ...drawn.schema, $defs: drawn.definitions });
     // Scanned without `$defs`, which is a container of schemas rather than one: empty
     // there means the document needed no definitions, not that it says nothing.
@@ -1279,6 +1290,61 @@ export function jsonSchemaFor(schema: Schema.Constraint): Projection {
   } catch (cause) {
     return { document: null, limits: [String(cause)] };
   }
+}
+
+/**
+ * Effect draws a pattern only for a RegExp with the `u` flag, which a JSON Schema pattern
+ * implies; any other whose source is known to match the same strings under it is drawn too.
+ */
+function withPatterns<T>(node: T): T {
+  if (isList(node)) {
+    // SAFETY: the same list, each element copied with its own type.
+    return node.map(withPatterns) as T;
+  }
+  if (!isNode(node)) return node;
+  const copied = Object.fromEntries(
+    Object.entries(node).map(([key, value]) => [
+      key,
+      key === "annotations" ? value : withPatterns(value),
+    ]),
+  );
+  const annotations = isPatternCheck(node) ? drawn(node) : null;
+  // SAFETY: the same node, with at most a pattern check's annotations replaced.
+  return (annotations === null ? copied : { ...copied, annotations }) as T;
+}
+
+const isList = Schema.is(Schema.Array(Schema.Unknown));
+const isNode = Schema.is(Schema.Record(Schema.String, Schema.Unknown));
+
+const PatternCheck = Schema.Struct({
+  _tag: Schema.Literal("Filter"),
+  annotations: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+  representation: Schema.Struct({
+    id: Schema.Literal("effect/schema/isPattern"),
+    payload: Schema.Struct({ source: Schema.String, flags: Schema.String }),
+  }),
+});
+const isPatternCheck = Schema.is(PatternCheck);
+
+function drawn(check: typeof PatternCheck.Type) {
+  const { source, flags } = check.representation.payload;
+  if (!/^[dg]*$/.test(flags) || !sameUnderUnicode(source)) return null;
+  return { ...check.annotations, toJsonSchema: () => ({ pattern: source }) };
+}
+
+/**
+ * True for printable ASCII that compiles under `u` and has no atom matching a code unit
+ * without it and a code point with it, or an escape `u` gives another meaning.
+ */
+function sameUnderUnicode(source: string) {
+  if (!/^[ -~]*$/.test(source)) return false;
+  try {
+    new RegExp(source, "u");
+  } catch {
+    return false;
+  }
+  const atoms = source.match(/\\.|\[\^|./g) ?? [];
+  return atoms.every((atom) => !/^(?:\.|\[\^|\\[DPSWpu])$/.test(atom));
 }
 
 /** Where the drawn document says nothing at all, which the schema itself still does. */

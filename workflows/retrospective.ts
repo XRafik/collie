@@ -37,7 +37,7 @@ export const Finding = Schema.Struct({
 export type Finding = typeof Finding.Type;
 
 export const Improvement = Schema.Struct({
-  name: Key,
+  name: Key.annotate({ description: "kebab-case; names the plan it starts" }),
   keys: Schema.Array(Key).annotate({ description: "the new findings it fixes together" }),
   why: Schema.String.annotate({ description: "why one change should fix them together" }),
 });
