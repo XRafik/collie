@@ -426,8 +426,12 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
   pairs = false,
   answerWithin: Duration.Input = MUX_BOUND,
 ) {
-  // Whoever is waiting on the connection now, which the one opened at launch has none of yet.
-  let waiting: WaitingOnSso = () => Effect.void;
+  // Whoever is waiting on the connection now, which the one opened at launch has none of yet:
+  // what its login said is kept until it ends, for whoever opens the route while it waits.
+  let waiting: WaitingOnSso | undefined;
+  let unheard: string | undefined;
+  const heard: WaitingOnSso = (said) =>
+    waiting === undefined ? Effect.sync(() => void (unheard = said)) : waiting(said);
   let path: string | undefined;
   const asked = (argv: ReadonlyArray<string>) =>
     output(argv).pipe(
@@ -449,7 +453,9 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
         );
         if (checked) return path;
       }
-      path = yield* machineConnect(collie, machine.label, (said) => waiting(said));
+      path = yield* machineConnect(collie, machine.label, heard).pipe(
+        Effect.ensuring(Effect.sync(() => void (unheard = undefined))),
+      );
       return path;
     }),
   );
@@ -465,6 +471,7 @@ export const remoteRoute = Effect.fn("Desktop.remoteRoute")(function* (
         let told = false;
         waiting = (said) =>
           told ? Effect.void : Effect.suspend(() => ((told = true), waitingOnSso(said)));
+        if (unheard !== undefined) yield* waiting(unheard);
         const at = yield* connected;
         return yield* openDoors(route.machine, (as) =>
           riderArgv(at, machine.target, remoteCollie(bridgeCommand([], client, as)), ssh),

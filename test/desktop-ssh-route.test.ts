@@ -112,6 +112,20 @@ test("a machine connect that names SSO shows the banner once, and the route open
     }),
   ));
 
+test("an SSO login a route starts before it is opened still shows its banner when it is", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { ssh, collie, sso } = yield* rig;
+      yield* sso(true);
+      const route = yield* remoteRoute(ssh, collie, vm, "mk-pc");
+      yield* Effect.sleep("150 millis");
+      const told: Array<string> = [];
+      yield* Effect.scoped(route.open((said) => Effect.sync(() => void told.push(said))));
+      expect(told).toHaveLength(1);
+      expect(told[0]).toContain("SSO");
+    }),
+  ));
+
 test("a link whose bridge names SSO before it is ready shows the banner", () =>
   runEffect(
     Effect.gen(function* () {
