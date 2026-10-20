@@ -238,9 +238,8 @@ const locationOf = (file: string, line: number | null) =>
           />
           <div v-else-if="tab === 'review'" data-testid="review" class="flex flex-col gap-4">
             <SourceFile
-              v-if="landing?.tab === 'review'"
-              :path="landing.file"
-              :line="landing.line"
+              v-if="target !== null && landing?.tab === 'review'"
+              :target="target"
               :reveal="landed"
               :installation="placed.installation"
               :run-id="detail.id"

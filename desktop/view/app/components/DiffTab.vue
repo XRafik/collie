@@ -301,8 +301,7 @@ watch(
     </div>
     <SourceFile
       v-if="source !== null"
-      :path="source.file"
-      :line="source.line"
+      :target="source"
       :installation="installation"
       :run-id="runId"
       @close="source = null"

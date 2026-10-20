@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import type { Token } from "../composables/useHighlight";
+import type { DiffTarget } from "./DiffTab.vue";
 
 /** A file of the Run's checkout, read-only, at the line a finding points at. */
 const props = withDefaults(
   defineProps<{
-    path: string;
-    line: number | null;
+    /** A new object for every jump, each of which is revealed, even to the same place. */
+    target: DiffTarget;
     installation: string;
     runId: string;
     /** Whether to scroll it into view, as for a jump; false where the record restores its place. */
@@ -22,31 +23,33 @@ const shown = ref<HTMLElement | null>(null);
 const whole = ref<HTMLElement | null>(null);
 
 watch(
-  [whole, () => props.path, () => props.line],
+  [whole, () => props.target, () => props.reveal],
   ([section]) => {
     if (props.reveal) section?.scrollIntoView({ block: "start" });
   },
   { flush: "post" },
 );
 
+const path = computed(() => props.target.file);
+const line = computed(() => props.target.line);
 watch(
-  () => props.path,
-  async (path, _, onCleanup) => {
+  path,
+  async (file, _, onCleanup) => {
     let stale = false;
     onCleanup(() => (stale = true));
     lines.value = null;
-    const text = await textOf(props.installation, props.runId, `file:${path}`);
+    const text = await textOf(props.installation, props.runId, `file:${file}`);
     if (stale) return;
     failed.value = text === null;
     if (text === null) return;
-    const coloured = await highlightLines(text.split("\n"), path);
+    const coloured = await highlightLines(text.split("\n"), file);
     if (!stale) lines.value = coloured;
   },
   { immediate: true },
 );
 watch(
-  () => [lines.value, props.line] as const,
-  async ([, line]) => {
+  () => [lines.value, props.target, props.reveal] as const,
+  async ([, { line }]) => {
     if (line === null || lines.value === null || !props.reveal) return;
     await nextTick();
     shown.value?.querySelector(`[data-line="${line}"]`)?.scrollIntoView({ block: "center" });
