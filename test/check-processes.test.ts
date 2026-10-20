@@ -338,6 +338,11 @@ test.skipIf(process.platform !== "linux")(
         );
         yield* leftBehind(notes, { installation, id: "run-1@1-left" });
         const left = yield* startedIn(notes);
+        yield* Effect.addFinalizer(() =>
+          fs
+            .writeFileString(`${notes}/release`, "")
+            .pipe(Effect.andThen(until(() => noneRunning(left), Boolean)), Effect.ignore),
+        );
         const { noProc, macPs } = yield* withoutProc;
 
         const checks = yield* hostCheckProcesses({ dir: `${root}/state`, installation }).pipe(
