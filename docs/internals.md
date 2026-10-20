@@ -1027,8 +1027,11 @@ terminal, and sometimes without its name. A launch record keeps the terminal and
 harness session herdr reported for its agent, and the Cleanup sweep fills the session in
 while the agent is still on that terminal. A restored pane is proved to be that agent by
 its session alone, in kind and value, whatever its terminal, name or pane id: the idle
-close ends it as that agent, and the Task workspace sweep counts it as Collie's pane. A
-pane with no session, or one no launch recorded, proves nothing
+close ends it as that agent, and the Task workspace sweep counts it as Collie's pane. The
+sweep records the session for a live Run's agent too. Where another agent has since been
+started on its name, its stop controls are that agent's: a restored pane whose harness works
+outside the pane cannot be made Quiet, and is left open. A pane with no session, or one no
+launch recorded, proves nothing
 ([ADR-draft-a-finished-runs-idle-agent-is-closed](adr/draft-a-finished-runs-idle-agent-is-closed.md), D4).
 
 A **label is never proof**. Two workspaces can be called the same thing, and a home test

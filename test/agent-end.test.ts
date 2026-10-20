@@ -205,23 +205,28 @@ test("another process under the agent's name is left alone, without a word", () 
 
 const SESSION = { kind: "claude", value: "s-impl" };
 
-test("a pane herdr restored on the agent's recorded session ends as that agent, though another has its name", () =>
+/** A pane herdr restored on the session `impl` recorded, after `impl` was started again elsewhere. */
+const restoredUnderReusedName = Effect.gen(function* () {
+  yield* arranged("impl", "p1");
+  yield* rig.reincarnate("impl");
+  yield* serverFor("impl");
+  yield* rig.addRestored({
+    paneId: "p9",
+    workspaceId: "w1",
+    terminalId: "t-new",
+    session: SESSION,
+  });
+});
+
+test("a restored pane whose work is in it ends as the agent its session proves, though another has its name", () =>
   runEffect(
     Effect.gen(function* () {
-      yield* arranged("impl", "p1");
-      yield* rig.reincarnate("impl");
-      yield* serverFor("impl");
-      yield* rig.addRestored({
-        paneId: "p9",
-        workspaceId: "w1",
-        terminalId: "t-new",
-        session: SESSION,
-      });
+      yield* restoredUnderReusedName;
       const stops: string[] = [];
       const { deps, lines } = depsOf({ ports: served("quiet", stops) });
       const ended = yield* endAgent(
         deps,
-        { agent: "impl", terminalId: "term-impl", agentSession: SESSION },
+        { agent: "impl", terminalId: "term-impl", agentSession: SESSION, harness: "claude" },
         "idle for 61 min",
         "close",
       );
@@ -229,6 +234,31 @@ test("a pane herdr restored on the agent's recorded session ends as that agent, 
       expect(stops).toEqual([]);
       expect(yield* paneCloses).toEqual(["p9"]);
       expect(lines).toEqual(["impl ended: idle for 61 min"]);
+    }),
+  ));
+
+test("a restored pane whose work runs in a server it cannot reach, its name's controls being another's, is not Quiet and stays", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* restoredUnderReusedName;
+      const stops: string[] = [];
+      const { deps, lines } = depsOf({ ports: served("quiet", stops) });
+      for (const harness of ["served", undefined]) {
+        const ended = yield* endAgent(
+          deps,
+          { agent: "impl", terminalId: "term-impl", agentSession: SESSION, harness },
+          "idle for 61 min",
+          "close",
+        );
+        expect(ended).toEqual({
+          _tag: "NotQuiet",
+          reason:
+            "impl could not be stopped (its controls are those of the agent started on its name since)",
+        });
+      }
+      expect(stops).toEqual([]);
+      expect(yield* paneCloses).toEqual([]);
+      expect(lines).toEqual([]);
     }),
   ));
 

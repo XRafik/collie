@@ -59,7 +59,7 @@ export class PaneOpen extends Data.TaggedError("PaneOpen")<{
  */
 export const endAgent = Effect.fn("AgentEnd.end")(function* (
   deps: EndDeps,
-  launched: Pick<Launched, "agent" | "terminalId" | "agentSession">,
+  launched: Pick<Launched, "agent" | "terminalId" | "agentSession"> & { readonly harness?: string },
   why: string,
   closes: Closes,
   listed?: ReadonlyArray<AgentInfo>,
@@ -86,6 +86,15 @@ export const endAgent = Effect.fn("AgentEnd.end")(function* (
   const paneId = restored?.paneId ?? one?.paneId;
   // Another agent started on the name since has the controls kept under it.
   const theirs = restored !== undefined && one !== undefined && one.paneId !== restored.paneId;
+  // Closing the pane stops only a harness whose work is in it.
+  if (
+    theirs &&
+    (launched.harness === undefined || deps.ports[launched.harness]?.stop !== undefined)
+  )
+    return {
+      _tag: "NotQuiet",
+      reason: `${launched.agent} could not be stopped (its controls are those of the agent started on its name since)`,
+    } satisfies Ended;
 
   const reached = theirs
     ? Result.succeed(null)
