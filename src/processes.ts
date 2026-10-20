@@ -131,6 +131,64 @@ export const sessionOf = Effect.fn("Processes.sessionOf")(function* (root: numbe
   return all.filter((one) => one.pid !== root && tree.has(one.pid));
 });
 
+/** Its process group, from `proc` or else `ps`; null where it is not running. */
+export const groupOf = Effect.fn("Processes.groupOf")(function* (pid: number) {
+  const group = (yield* readsSessions)
+    ? yield* statFields(pid).pipe(
+        Effect.map((fields) => (fields[0] === "Z" ? "" : (fields[2] ?? ""))),
+        Effect.orElseSucceed(() => ""),
+      )
+    : (yield* ps(["-o", "pgid=", "-p", String(pid)])).trim();
+  return group === "" ? null : Number(group);
+});
+
+/**
+ * Which of `names` its environment binds, and to what; null where that cannot be read,
+ * which proves nothing. Without `/proc` it is never read: `ps -E` runs the environment into
+ * the arguments.
+ */
+export const bindingsOf = Effect.fn("Processes.bindingsOf")(function* (
+  pid: number,
+  names: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const environ = yield* fs
+    .readFileString(`${PROC}/${pid}/environ`)
+    .pipe(Effect.orElseSucceed(() => null));
+  if (environ === null) return null;
+  const found: Record<string, string> = {};
+  for (const entry of environ.split("\0")) {
+    const at = entry.indexOf("=");
+    const name = entry.slice(0, at);
+    if (at > 0 && names.includes(name)) found[name] = entry.slice(at + 1);
+  }
+  return found;
+});
+
+/**
+ * Every running process whose environment binds one of `names`, with what it binds and its
+ * start, read first so a pid taken over while it is read never passes for the bound one.
+ */
+export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
+  names: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const found: Array<{
+    readonly pid: number;
+    readonly started: string;
+    readonly bound: Record<string, string>;
+  }> = [];
+  for (const name of yield* fs.readDirectory(PROC).pipe(Effect.orElseSucceed(() => []))) {
+    const pid = Number(name);
+    if (!Number.isInteger(pid)) continue;
+    const started = yield* startedOf(pid);
+    if (started === null) continue;
+    const bound = yield* bindingsOf(pid, names);
+    if (bound !== null && Object.keys(bound).length > 0) found.push({ pid, started, bound });
+  }
+  return found;
+});
+
 /** Whether this process is still the one that was looked at. */
 export const stillRunning = (one: Pick<ProcessInfo, "pid" | "started">) =>
   processOf(one.pid).pipe(Effect.map((now) => now !== null && now.started === one.started));

@@ -483,6 +483,7 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
     });
   }
   checks.push({ name: "disk", ...(yield* diskSpace(env, run)) });
+  checks.push({ name: "checks", ...(yield* leftoverChecks(env)) });
 
   const herd = yield* herdOfHost(env.stateDir);
   if (herd !== undefined)
@@ -549,6 +550,22 @@ const diskSpace = Effect.fn("Doctor.diskSpace")(function* (
       ? `; \`collie cleanup\` would free ${humanBytes(listing.value.bytes)}`
       : "";
   return warned(`${low.map(said).join("; ")}${frees}`, "collie cleanup --apply");
+});
+
+/** Check processes no host is collecting, as `collie cleanup` lists them. */
+const leftoverChecks = Effect.fn("Doctor.leftoverChecks")(function* (env: PluginEnv) {
+  const listing = (yield* anyRuns(env)) ? yield* cleanupListing(env, "cli") : null;
+  const left =
+    listing !== null && listing.ok
+      ? listing.value.remove.filter((item) => item.kind === "check")
+      : [];
+  const [first] = left;
+  return first === undefined
+    ? passed("no check is running that no host is collecting")
+    : warned(
+        `${left.length} check process(es) no host is collecting: ${first.reason}`,
+        "collie cleanup --apply",
+      );
 });
 
 /** One line per check, and under it the command to run where there is one. */

@@ -35,10 +35,19 @@ where one is, has exited.
 A stopped host gives its running steps a grace (`COLLIE_HOST_STOP_GRACE`, five seconds) and
 then exits whatever is left, letting go of its lock: upstream's shutdown waits on each
 step, and one that never yields kept an old host past every client that tried to replace
-it. A newer client that asked a host to stop kills it five seconds after its grace. A host
-that does not say who it is within five seconds is replaced too when `host.build`, which it
-writes as it starts, names an older build of the same installation; otherwise the client
-reports it as `HostUnavailable` with its pid.
+it. The grace bounds every end of a host: a stop signal, its lock or state directory gone,
+or the process named in `COLLIE_HOST_WATCH_PID` exited. `host.log` names which it was. A
+check the host is running is ended first, not waited for: its processes get SIGTERM at once
+and SIGKILL in the grace's last fifth, and `host.log` names each one. A look at `/proc` for
+a check's marked processes can take seconds on a loaded machine, so the host waits past its
+grace for that SIGKILL and the last look after it, at most three seconds (`KILL_CEILING`),
+before the lock goes. Three seconds holds one slow look and keeps the exit, with its log
+flush, inside the five seconds a client gives a stopping host before it kills it. Its step does not complete
+and nothing is recorded for it, so the next host runs it once more. A newer client that
+asked a host to stop kills it five seconds after its grace. A host that does not say who it
+is within five seconds is replaced too when `host.build`, which it writes as it starts,
+names an older build of the same installation; otherwise the client reports it as
+`HostUnavailable` with its pid.
 
 Desktop starts a host the way any client does: it runs `collie bridge --as desktop` (or
 `--as chat`), and the bridge starts `collie host --dir <state>` where none answers. Desktop
@@ -76,6 +85,14 @@ SQLite file. The registry in `engine.ts` loads a module into a generation of its
 value came from, its options, its decisions and its receipts. The request id is the claim:
 the same request twice is one Run, and a Run recorded and not yet handed to the engine is
 handed over when the host starts again ([ADR-0017](adr/0017-one-request-is-one-run.md)).
+
+Before it hands any Run back, a starting host ends every check a previous host left
+running in its state directory: one recorded under `running-checks/`, or a process marked
+with this installation's id. It gets SIGTERM, then SIGKILL two seconds later, and is never
+adopted. The Run's log and `host.log` name the check and the host that left it, and the
+step that ran it runs it once more. No check of a Run starts while one a previous host left
+of that Run is still running: one that survives SIGKILL is ended again a second later, and
+named again, until it is gone.
 
 Recovery re-enters the module as it is now. Completed Activities are reused, a question
 already asked is still asked, and an agent already launched is reattached to. There is no

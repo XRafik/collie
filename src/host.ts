@@ -85,6 +85,14 @@ import { OutcomeRecords, outcomeRecordsOf } from "./outcomes";
 import { removedNotice, scrub, scrubJson } from "./redact";
 import { readMetrics } from "./metrics";
 import { readCards } from "./cards";
+import {
+  CheckProcesses,
+  endAllWithin,
+  hostCheckProcesses,
+  type CheckProcessesApi,
+  type Leftover,
+  type LeftoverEnd,
+} from "./check-processes";
 import { readDrift } from "./drift";
 import {
   readIntent,
@@ -112,6 +120,7 @@ import { dataHomeOf, desktopRootOf } from "./desktop";
 import type * as MessageStorage from "effect/cluster/MessageStorage";
 import {
   collieCache,
+  checksSweeper,
   compactionSweeper,
   desktopSweeper,
   renovateClonesSweeper,
@@ -217,7 +226,9 @@ import { carryOut, carryOutAsked, followUpField } from "./run-actions";
 import { VerifySpecSchema } from "./verify-spec";
 import { everyRegistered } from "./registry";
 import { listTasks, readTask } from "./task";
-import { nowIso } from "./time";
+import { epochMs, nowIso } from "./time";
+import { appendLog } from "./oversight";
+import { VERIFYING_FILE, verifyingIn } from "./verify";
 import { reason } from "./naming";
 import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-files";
 import { receive, uploadsDir } from "./uploads";
@@ -839,6 +850,7 @@ const servingEnv = (dir: string) =>
 const hostBoard = (dir: string) =>
   Effect.gen(function* () {
     const registry = yield* Registry;
+    const checks = yield* CheckProcesses;
     const bun = yield* Effect.context<BunServices>();
     const hosted = yield* Effect.context<HostServices>();
     const env = yield* servingEnv(dir);
@@ -913,6 +925,7 @@ const hostBoard = (dir: string) =>
         uploadsSweeper(env.stateDir),
         compactionSweeper(env.stateDir, sessions),
         runnersSweeper(`${collieCache()}/runners`, BUILD),
+        checksSweeper(checks),
         renovateClonesSweeper(env.stateDir, all),
         desktopSweeper(
           desktopRootOf(dataHomeOf(env.home, env.raw["XDG_DATA_HOME"])),
@@ -2434,6 +2447,25 @@ const installationOf = Effect.fn("Host.installationOf")(function* (dir: string) 
   return made;
 });
 
+/** On the Run of a check a host left: its marker gone where that names it, and a line in its log. */
+const onLeftoversRun = (dir: string) => (leftover: Leftover, outcome: LeftoverEnd, line: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const at = runDir(dir, leftover.run);
+    if (!(yield* fs.exists(at).pipe(Effect.orElseSucceed(() => false)))) return;
+    const marker = yield* verifyingIn(at);
+    // A marker started after the check is a later check's.
+    if (
+      outcome !== "still running" &&
+      marker !== null &&
+      marker.name === leftover.name &&
+      marker.pass === leftover.pass &&
+      epochMs(marker.started) <= leftover.started
+    )
+      yield* fs.remove(`${at}/${VERIFYING_FILE}`, { force: true }).pipe(Effect.ignore);
+    yield* appendLog(at, line).pipe(Effect.ignore);
+  });
+
 /**
  * One host, for as long as it owns this directory. It runs until it is interrupted:
  * every resource it holds — the socket, the registrations, the SQLite client and the
@@ -2460,16 +2492,20 @@ export const serve = (named: string): Effect.Effect<void, never, BunServices | S
     return yield* withLock(
       lock,
       Effect.void,
-      boundedStop(lock).pipe(
-        Effect.andThen(Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`)),
-        Effect.andThen(
-          Effect.forkScoped(
-            rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
-          ),
-        ),
-        Effect.andThen(Effect.race(own(dir), orphaned(dir))),
-        Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true })),
-      ),
+      Effect.gen(function* () {
+        const installation = yield* installationOf(dir);
+        const checks = yield* hostCheckProcesses({
+          dir,
+          installation,
+          onRun: onLeftoversRun(dir),
+        });
+        const stop = yield* boundedStop(lock, checks);
+        yield* Effect.logInfo(`collie ${BUILD} host started, pid ${process.pid}`);
+        yield* Effect.forkScoped(
+          rotateInPlace(outputOf(dir)).pipe(Effect.repeat(Schedule.spaced("1 minute"))),
+        );
+        yield* Effect.race(own(dir, checks), orphaned(dir).pipe(Effect.flatMap(stop)));
+      }).pipe(Effect.provide(Logger.layer([hostLogger(logOf(dir))], { mergeWithExisting: true }))),
       0,
     );
   }).pipe(Effect.orDie);
@@ -2483,15 +2519,23 @@ const STOP_SIGNALS = ["SIGTERM", "SIGINT"] as const;
 /** Long enough for the log's next flush, which an exit does not wait for. */
 const LOG_FLUSH = "200 millis";
 
-/** A stop signal gives the shutdown the grace, then exits however far it got (ADR-0014). */
-const boundedStop = (lock: string) =>
+/** Any end of a host gives the shutdown the grace, then exits however far it got (ADR-0014). */
+const boundedStop = (lock: string, checks: CheckProcessesApi) =>
   Effect.gen(function* () {
     const grace = yield* stopGrace;
-    const stopping = yield* Deferred.make<void>();
+    const stopping = yield* Deferred.make<string>();
     // In the outer scope, which closes only once the shutdown it bounds has finished.
     yield* Deferred.await(stopping).pipe(
-      Effect.andThen(Effect.logInfo("asked to stop")),
-      Effect.andThen(Effect.sleep(grace)),
+      Effect.flatMap(Effect.logInfo),
+      Effect.andThen(
+        endAllWithin(checks, grace, (ended) =>
+          Effect.forEach(
+            ended,
+            (check) => Effect.logInfo(`ended check ${check.name} of ${check.run}`),
+            { discard: true },
+          ),
+        ),
+      ),
       Effect.andThen(Effect.logWarning(`still stopping after ${Duration.format(grace)}; exiting`)),
       Effect.andThen(Effect.sleep(LOG_FLUSH)),
       // Let go of here rather than left for the next host to judge stale.
@@ -2500,7 +2544,7 @@ const boundedStop = (lock: string) =>
       Effect.andThen(Effect.sync(() => process.exit(1))),
       Effect.forkScoped,
     );
-    const signalled = () => Deferred.doneUnsafe(stopping, Effect.void);
+    const signalled = () => Deferred.doneUnsafe(stopping, Effect.succeed("asked to stop"));
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         for (const signal of STOP_SIGNALS) process.once(signal, signalled);
@@ -2510,12 +2554,13 @@ const boundedStop = (lock: string) =>
           for (const signal of STOP_SIGNALS) process.off(signal, signalled);
         }),
     );
+    return (why: string) => Deferred.succeed(stopping, why).pipe(Effect.asVoid);
   });
 
 /**
- * Resolves once nothing is left for this host to serve: its lock is gone with the state
- * directory it was in, or the process named in `COLLIE_HOST_WATCH_PID` — whatever it was
- * started to live no longer than, a test's own process — has gone. A host is otherwise
+ * Resolves, with why, once nothing is left for this host to serve: its lock is gone with the
+ * state directory it was in, or the process named in `COLLIE_HOST_WATCH_PID` — whatever it
+ * was started to live no longer than, a test's own process — has gone. A host is otherwise
  * meant to outlive the client that started it, so nothing else ends it but a stop.
  *
  * The lock rather than the directory: a host still starting binds its socket in the
@@ -2537,8 +2582,12 @@ const orphaned = (dir: string) =>
     };
     for (;;) {
       yield* Effect.sleep("1 second");
-      if (!(yield* fs.exists(lockOf(dir)).pipe(Effect.orElseSucceed(() => true)))) return;
-      if (Option.isSome(watched) && !alive(watched.value)) return;
+      if (!(yield* fs.exists(lockOf(dir)).pipe(Effect.orElseSucceed(() => true)))) {
+        return "its lock is gone; stopping";
+      }
+      if (Option.isSome(watched) && !alive(watched.value)) {
+        return "the process it watches has exited; stopping";
+      }
     }
   });
 
@@ -2585,7 +2634,7 @@ const scheduleSeconds = Config.option(Config.String("COLLIE_HOST_SCHEDULE_SECOND
   Effect.orDie,
 );
 
-const own = (dir: string) =>
+const own = (dir: string, checks: CheckProcessesApi) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const env = yield* currentEnv.pipe(Effect.orDie);
@@ -2689,7 +2738,7 @@ const own = (dir: string) =>
             herd: { socketPath: herdSocket, pluginRoot: env.pluginRoot, locate },
             readings: usage.readings,
             messagePoll: seconds ? "1 second" : undefined,
-          }),
+          }).pipe(Layer.provideMerge(Layer.succeed(CheckProcesses, checks))),
         ),
         Layer.provide(yield* configuredAgents(dir, usage.readings)),
       ),

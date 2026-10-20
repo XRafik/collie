@@ -50,7 +50,10 @@ Collie knows, proved the way that kind is proved:
 - **A workspace:** proved by a Task's record. Never the Home, and never a workspace that
   is no Task's.
 - **A pane:** proved by a launch record.
-- **A process:** proved by its lock or its control record.
+- **A process:** proved by its lock or its control record. Amended by
+  [ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md):
+  a check's process is proved by its record or by the marker it runs with, and is ended
+  with SIGKILL if SIGTERM leaves it running.
 
 Nothing outside these is globbed. Removal never forces: git's refusal to drop a dirty or
 unmerged checkout stays the last guard, so a wrong judgement can fail to clean but never
@@ -143,6 +146,9 @@ back as Waiting on you.
   has exited. This was already true. What changes is that every temporary state directory a
   test or a tool makes is now removed, so its host goes too.
 - A bridge or `collie mcp` ends when either side hangs up.
+- A check's processes end with the host that collects them. A host that starts ends any
+  check a previous host left running. Added by
+  [ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md).
 
 **D7. Low disk is something `collie doctor` reports.** It warns when the filesystem
 holding the state directory, the cache, the worktrees or the temporary directory has less

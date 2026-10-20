@@ -69,3 +69,16 @@ export const exec = Effect.fn("test.exec")(
   Effect.scoped,
   Effect.orDie,
 );
+
+/**
+ * Starts `argv` as nobody's child, in a session of its own, and gives back its pid once it
+ * leads that session: `exec` ends the whole group its command leaves behind.
+ */
+export const startDetached = (argv: ReadonlyArray<string>) =>
+  exec([
+    "sh",
+    "-c",
+    'setsid "$@" >/dev/null 2>&1 </dev/null & while [ "$(ps -o sid= -p $!)" -ne $! ] 2>/dev/null; do :; done; echo $!',
+    "sh",
+    ...argv,
+  ]).pipe(Effect.map((ran) => Number(ran.stdout.trim())));

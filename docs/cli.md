@@ -1682,6 +1682,16 @@ Under `--json`, both answer with the same `data`:
 bytes it freed; `bytes` is their total. A thing a sweep could not judge — herdr not
 answering, say — is in `keep` with that reason, never removed.
 
+The `check` kind is a check's processes that no host is collecting, such as a child that left
+its group, or one a starting host could not end. Its target is the check's id, and its
+reason names the Run, the check, its pid and how long it has run; it frees 0 bytes. It is
+proved by the check's record under `running-checks/`, or by the marker in its environment
+naming this installation and the check, which is read only from `/proc`. A process proved by
+neither, or marked for another state directory, is never listed. A sweep ends it with SIGTERM, then SIGKILL if that leaves
+it running, because a check's result is thrown away
+([ADR-draft-a-check-ends-with-the-host-that-runs-it](adr/draft-a-check-ends-with-the-host-that-runs-it.md)).
+A check this host is collecting is kept, with "this host is collecting it".
+
 ## Usage
 
 ```sh
@@ -2037,6 +2047,10 @@ worktrees and the temporary directory, once each. One with less than 10% or 5 Gi
 `!` warning naming it, with what [`collie cleanup`](#cleaning-up) would free where a host has
 served this state directory, and `collie cleanup --apply` as the fix. It never fails the run.
 
+**Checks**, where a host has served this state directory: a `!` warning while
+[`collie cleanup`](#cleaning-up) lists a `check` no host is collecting, saying how many and
+naming the first's Run and pid, with `collie cleanup --apply` as the fix. It never fails the run.
+
 **Paired links**, where this Machine is paired: a failure where the listener could not
 take its port. A link live over SSH passes, its detail naming why direct failed. A link
 that waits on an SSH connection is a `!` warning with `collie machine connect <name>` as
@@ -2091,7 +2105,10 @@ old and new pid and build, `data.before` and `data.after` under `--json`; with n
 running, `before` is null and it says it started one. A stopped host never answered is named
 with its pid and `build unknown`. Nothing about a Run is touched: the new host recovers
 what the old one was doing, exactly as on any start, so a parked Run is still parked and a
-step that was cut short runs again. The herdr action "Restart the Collie host" does the
+step that was cut short runs again. A check the old host was running is ended with it and
+runs again on the new one. One a host left without ending it, because it was killed or
+crashed, is ended by the next host to start, named in the Run's log, and runs once more.
+The herdr action "Restart the Collie host" does the
 same and says what it did as a notification.
 
 A host works for one Herd: the herdr session a judgement is charged to and its cross-run
@@ -2338,7 +2355,14 @@ those is the way it is.
 the executable and its arguments. Unset, it is this executable.
 
 `COLLIE_HOST_STOP_GRACE` is how long a stopped host waits for running steps before it exits
-anyway, as a duration (`5 seconds` unset).
+anyway, as a duration (`5 seconds` unset). It bounds every end of a host: a stop signal, its
+lock or state directory gone, or the process it watches exited. A check the host is running
+is not waited for to finish: it gets SIGTERM as the host starts to stop and SIGKILL in the
+grace's last fifth, records nothing, and runs again on the next host. Where that SIGKILL and
+its last look for a check's processes are still under way when the grace is up, the host
+waits for them, at most three seconds more, so it exits within three seconds of its grace,
+well inside the five a client gives it before killing it. A check asked for once the host has
+begun to stop is not started.
 
 `COLLIE_HOST_CRASH_AT=admitted|executed` is for the recovery proof alone: the host kills
 itself in one of the two windows a start has — with the run recorded and the engine not yet

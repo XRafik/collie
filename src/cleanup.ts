@@ -20,7 +20,7 @@ import { appendJournal, readJournal } from "./journal";
 import { shell } from "./mr";
 import type { AgentEntry } from "./registry";
 import type { RunFacts } from "./runs";
-import { epochMs, nowIso } from "./time";
+import { epochMs, nowIso, took } from "./time";
 import {
   isDestinationLock,
   judgeWorktrees,
@@ -45,6 +45,7 @@ import { readLaunches } from "./launches";
 import { endAgent, endedLine, runLog } from "./agent-end";
 import { COMPACTION_PORTS } from "./compactors";
 import { uploadsDir } from "./uploads";
+import type { CheckProcessesApi, Leftover } from "./check-processes";
 
 /** One kind of thing Collie cleans. */
 export interface Sweeper {
@@ -403,6 +404,7 @@ const KEPT_KINDS = new Set([
   "uploads",
   "files",
   "claude.json.bak",
+  "running-checks",
 ]);
 const MARKER_KINDS = ["stop", "hold", "parked", "notified"];
 const MARKER = new RegExp(`^(?:${MARKER_KINDS.join("|")})\\.(.+)$`);
@@ -1181,6 +1183,46 @@ export const desktopSweeper = (root: string, state: string, installedPath: strin
         const now = found.remove.find((one) => one.target === item.target);
         if (now === undefined) return { kept: "Desktop keeps it now" };
         return yield* removeIf(item.target, Effect.succeed({ remove: now.reason }));
+      }),
+  };
+};
+
+/** Check processes no host is collecting (ADR-draft-a-check-ends-with-the-host-that-runs-it D7). */
+export const checksSweeper = (checks: CheckProcessesApi): Sweeper => {
+  const kind = "check";
+  const collecting = "this host is collecting it";
+  const reasonOf = (leftover: Leftover) =>
+    Effect.gen(function* () {
+      const named = `${leftover.run}'s check ${leftover.name === null ? leftover.id : `"${leftover.name}"`}${leftover.pass === null ? "" : ` (${leftover.pass})`}, pid ${leftover.leader.pid}`;
+      if (!(yield* checks.stillRuns(leftover))) return `${named}; already gone`;
+      const ran = (yield* Clock.currentTimeMillis) - leftover.started;
+      return `${named}, running ${took(ran)}; no host is collecting it`;
+    });
+  return {
+    judge: Effect.gen(function* () {
+      const remove = yield* Effect.forEach(yield* checks.left, (leftover) =>
+        Effect.map(reasonOf(leftover), (reason) => ({
+          kind,
+          target: leftover.id,
+          bytes: 0,
+          reason,
+        })),
+      );
+      const keep = (yield* checks.collecting).map((target) => ({
+        kind,
+        target,
+        reason: collecting,
+      }));
+      return { remove, keep };
+    }),
+    remove: (item) =>
+      Effect.gen(function* () {
+        if ((yield* checks.collecting).includes(item.target)) return { kept: collecting };
+        const leftover = (yield* checks.left).find((one) => one.id === item.target);
+        if (leftover === undefined) return { freed: 0 };
+        return (yield* checks.endLeftover(leftover)) === "still running"
+          ? { kept: "still running after SIGKILL" }
+          : { freed: 0 };
       }),
   };
 };

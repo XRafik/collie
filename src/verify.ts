@@ -9,8 +9,9 @@
 // resolved once and recorded as an absolute path, so the check named is what ran.
 
 import { Data, Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { Stream } from "effect";
+import { CheckProcesses } from "./check-processes";
 import type { VerifySpec } from "./intent";
 import { failedAlone, failedTests, ranAlone, rerunArgv } from "./bun-tests";
 import { appendJournal, readJournal } from "./journal";
@@ -329,14 +330,10 @@ export const collect = Effect.fn("Verify.collect")(function* (
   // No shell, and the argument list whole: a verification's value is that what ran is
   // what was written down, and a shell string is a second language in between.
   const [stdout, stderr, exit] = yield* Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const handle = yield* spawner.spawn(
-      ChildProcess.make(absolute, [...what.argv], {
-        cwd: what.cwd,
-        stdout: "pipe",
-        stderr: "pipe",
-        extendEnv: true,
-      }),
+    const checks = yield* CheckProcesses;
+    const handle = yield* checks.run(
+      { run: what.run, name: what.name, by: what.by, ...(what.pass && { pass: what.pass }) },
+      { executable: absolute, argv: what.argv, cwd: what.cwd },
     );
     // Tailed as it arrives, never folded whole: only the last 4 KiB is recorded, and a
     // verification that prints for an hour must not allocate for an hour to say so.
@@ -350,11 +347,13 @@ export const collect = Effect.fn("Verify.collect")(function* (
           (kept: string, chunk: string) => tail(kept + chunk),
         ),
       );
-    return yield* Effect.all(
-      [drain(handle.stdout, echo?.stdout), drain(handle.stderr, echo?.stderr), handle.exitCode],
-      {
-        concurrency: "unbounded",
-      },
+    return yield* handle.collected(
+      Effect.all(
+        [drain(handle.stdout, echo?.stdout), drain(handle.stderr, echo?.stderr), handle.exit],
+        {
+          concurrency: "unbounded",
+        },
+      ),
     );
   }).pipe(Effect.scoped, Effect.orDie);
   const end = yield* fingerprint(what.cwd);

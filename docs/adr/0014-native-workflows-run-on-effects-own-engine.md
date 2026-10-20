@@ -40,6 +40,10 @@ Amended 2026-10-07: the finishing is bounded. A host gives running steps five se
 a stop signal and then exits, because upstream waits on each step and one that never yields
 kept an old host — and its lock — alive past every client that tried to replace it.
 
+Extended by
+[ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md):
+a host whose lock goes, or whose watched process exits, is bounded by the same grace.
+
 **D3. The binary serves the SDK to the module it loads.** An external file's `effect`
 resolves from its own directory — a second copy, whose `Effect.succeed` builds values this
 process's runtime does not recognise and whose service keys are not the host's. A Bun

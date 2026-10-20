@@ -2882,6 +2882,9 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   Desktop also removes itself as it starts (see [Collie Desktop](#collie-desktop)).
 - **Renovate clones** under the state directory's `renovate-repositories/`, once no Run uses
   one and no checkout of it is left.
+- **Check processes** no host is collecting, proved by their record or by the marker they run
+  with: ended with SIGTERM, then SIGKILL if that leaves them running. A check the host is
+  collecting is kept, and `collie doctor` warns while one is left.
 - **Tasks**, 30 days after their last Run ended, with every one of their Runs, once nothing
   — a workspace, an agent, a checkout, another Run — needs them.
 
