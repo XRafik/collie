@@ -5,8 +5,9 @@ import type { DiffFile } from "../../../src/board-model";
 export type DiffTreeNode =
   | {
       readonly kind: "folder";
-      /** The folder's path ending in `/`. */
+      /** The deepest merged folder's path ending in `/`. */
       readonly key: string;
+      /** The merged folders' names joined with `/`. */
       readonly label: string;
       readonly children: ReadonlyArray<DiffTreeNode>;
     }
@@ -21,6 +22,8 @@ export interface DiffTree {
   readonly tree: ReadonlyArray<DiffTreeNode>;
   /** The files depth-first, the order the tree reads and the diffs are drawn. */
   readonly files: ReadonlyArray<DiffFile>;
+  /** Every folder row's key, the folders the open and closed state tracks. */
+  readonly folders: ReadonlyArray<string>;
 }
 
 interface Building {
@@ -51,9 +54,29 @@ export const diffTree = (changed: ReadonlyArray<DiffFile>): DiffTree => {
     });
     level.push({ kind: "file", key: file.path, label: parts.at(-1)!, file });
   }
+  const tree = merged(root);
   const filesOf = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<DiffFile> =>
     nodes.flatMap((node) => (node.kind === "file" ? [node.file] : filesOf(node.children)));
-  return { tree: root, files: filesOf(root) };
+  const foldersOf = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<string> =>
+    nodes.flatMap((node) => (node.kind === "file" ? [] : [node.key, ...foldersOf(node.children)]));
+  return { tree, files: filesOf(tree), folders: foldersOf(tree) };
+};
+
+const merged = (nodes: ReadonlyArray<DiffTreeNode>): ReadonlyArray<DiffTreeNode> =>
+  nodes.map((node) => {
+    if (node.kind === "file") return node;
+    const children = merged(node.children);
+    const [only] = children;
+    return children.length === 1 && only?.kind === "folder"
+      ? { ...only, label: `${node.label}/${only.label}` }
+      : { ...node, children };
+  });
+
+/** A folder's full path; a file's, then its status and counts. */
+export const rowHover = (node: DiffTreeNode): string => {
+  if (node.kind === "folder") return node.key;
+  const { path, status, added, removed } = node.file;
+  return `${path}\n${status}, ${added === null ? "binary" : `+${added} −${removed ?? 0}`}`;
 };
 
 export interface Folders {
@@ -96,6 +119,88 @@ export const rowFacts = (file: DiffFile, drafts: ReadonlyArray<string>): RowFact
   drafts: drafts.filter((path) => path === file.path).length,
 });
 
+/** The tree's row geometry in px; the view draws from these. */
+export const TREE = {
+  paneStart: 320,
+  paneMin: 192,
+  paneStep: 16,
+  paneShare: 0.4,
+  indent: 12,
+  /** Rows deeper than this are indented no further. */
+  depthMax: 4,
+  /** Where the guide line sits inside an indent. */
+  guide: 8,
+  padding: 6,
+  icon: 16,
+  gap: 6,
+  chevron: 16,
+  scrollbar: 12,
+  nameMin: 120,
+} as const;
+
+/** The pane's drawn width: the chosen one within the least width and the tab's share. */
+export const paneWidth = (chosen: number, tab: number): number =>
+  Math.max(TREE.paneMin, Math.min(chosen, tab * TREE.paneShare));
+
+/** The width ← or → chooses, stepped from the drawn width. */
+export const paneStepped = (chosen: number, tab: number, by: 1 | -1): number =>
+  paneWidth(paneWidth(chosen, tab) + by * TREE.paneStep, tab);
+
+/** The row facts' own sizes, at their `text-xs`, on the generous side. */
+const FACTS = { gap: 4, mark: 16, tick: 14, draftIcon: 14, char: 7 } as const;
+
+const digits = (n: number) => String(n).length;
+
+const countsWidth = (lines: RowFacts["lines"]) =>
+  lines === "binary"
+    ? "binary".length * FACTS.char
+    : (1 + digits(lines.added) + 1 + digits(lines.removed)) * FACTS.char + FACTS.gap;
+
+const factsWidth = ({ facts, viewed }: FileRow, counts: boolean) =>
+  [
+    FACTS.mark,
+    viewed ? FACTS.tick : 0,
+    facts.drafts > 0 ? FACTS.draftIcon + digits(facts.drafts) * FACTS.char : 0,
+    counts ? countsWidth(facts.lines) : 0,
+  ]
+    .filter((width) => width > 0)
+    .reduce((sum, width, at) => sum + width + (at === 0 ? 0 : FACTS.gap), 0);
+
+export interface FileRow {
+  readonly facts: RowFacts;
+  readonly viewed: boolean;
+}
+
+export interface RowRoom {
+  readonly counts: boolean;
+  /** Negative when the row's fixed parts overflow the pane. */
+  readonly name: number;
+}
+
+export const indentedDepth = (depth: number): number => Math.min(depth, TREE.depthMax);
+
+/** A row's name room at a depth from 0, and whether a file row's line counts show. */
+export const rowRoom = ({
+  depth,
+  pane,
+  file,
+}: {
+  readonly depth: number;
+  readonly pane: number;
+  readonly file?: FileRow;
+}): RowRoom => {
+  const left =
+    pane -
+    TREE.scrollbar -
+    indentedDepth(depth) * TREE.indent -
+    (2 * TREE.padding + TREE.icon + 2 * TREE.gap);
+  if (file === undefined) return { counts: false, name: left - TREE.chevron };
+  const withCounts = left - factsWidth(file, true);
+  return withCounts >= TREE.nameMin
+    ? { counts: true, name: withCounts }
+    : { counts: false, name: left - factsWidth(file, false) };
+};
+
 /** The rows whose file's path contains the text, ignoring case, and the folders above them. */
 export const filterTree = (
   tree: ReadonlyArray<DiffTreeNode>,
@@ -109,7 +214,7 @@ export const filterTree = (
       const children = kept(node.children);
       return children.length === 0 ? [] : [{ ...node, children }];
     });
-  return kept(tree);
+  return merged(kept(tree));
 };
 
 /** What a viewed tick saw, so a file the Run changes again loses it. */
