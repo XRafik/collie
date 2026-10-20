@@ -1160,8 +1160,12 @@ started. Every pass but a `rerun`, which always runs — gate, recheck, fix, fin
 nothing already answers for it: it relies on the latest record of exactly that check's
 command on the same tree, where it is a pass collected in the same environment by this
 host, whoever asked for it, and logs `<pass>: <check> relies on verification <id>`. So a
-check that passed on a tree, an agent's `collie verify` of it included, is not run again
-on that tree, and nor is one whose every failed test there was a Flake or fails at the base too. A changed tree or set of checks also gets fresh proof while
+check that passed on a tree is not run again
+on that tree, and nor is one whose every failed test there was a Flake or fails at the base too.
+Nor is a check that failed on a tree run again on it after a gate fix that left the tree as
+it was: the round is read from the records already there, and the proof's whole `recheck`
+is only for a check whose failures named no tests and that has had none on that tree
+(ADR-0034, amended 2026-10-19). A changed tree or set of checks also gets fresh proof while
 completed build Activities are retained. Missing reviewer evidence gets a fresh review;
 if it still cannot prove the outcome, the Run fails with the gaps named and a follow-up
 can repair the work; implement offers one after success or failure on a branch. Apart from
@@ -1345,12 +1349,17 @@ matches, so an upgraded toolchain is a fresh run. A record from before environme
 recorded has none, and is never relied on.
 
 A command that is exactly one of the Run's checks — the executable as resolved, its
-arguments and its directory — is not run again where the latest record of it on this tree
-is a pass this host collected in the same environment, whoever asked for it. `collie verify`
-then says `not run again: verification <id> already passed on this tree`, exits 0, and its
-`--json` envelope is `{ "verification": <that record>, "ran": false }`; a command it did run
-has `"ran": true`. `--expect fail`, and any command that is not one of the Run's checks,
-always runs.
+arguments and its directory — is never run by `collie verify`: only the gate runs a Run's
+checks ([ADR-draft-a-runs-checks-are-run-by-its-gate](adr/draft-a-runs-checks-are-run-by-its-gate.md)).
+Where this tree has a record of it — the latest one, collected by this host in the same
+environment, whoever asked for it, passed or failed — `collie verify` answers with that
+record: it says `not run again: verification <id> of "<check>" passed on this tree` (or
+`failed`) and names the record's log, exits with the record's exit code, and its `--json`
+envelope is `{ "verification": <that record>, "ran": false }`. Where the tree has none, it
+refuses with `invalid_state`, naming the gate: Collie runs that check itself, on the final
+tree. `--expect fail` makes no exception, and a human's `collie verify --run` is answered as
+an agent's is. Any command that is not one of the Run's checks runs, and its envelope has
+`"ran": true`; no script name is special.
 
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command
@@ -1370,8 +1379,8 @@ So an agent may end its turn waiting on a verify, and on nothing else in the bac
 
 ### What Collie may run itself
 
-An agent may `collie verify` anything; Collie runs only this run's
-[checks](../CONTEXT.md), matched argument for argument, and nobody approves them
+An agent may `collie verify` anything but this run's own
+[checks](../CONTEXT.md), which only the gate runs; Collie runs only those, matched argument for argument, and nobody approves them
 ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)). They are settled when the run starts — the `--verify`
 entries given with it, else `.collie/verify.json` in the project, else the checks remembered
 for the checkout's remote (`~/.collie/user/verify/<host>/<path>.json`, by `origin`, then

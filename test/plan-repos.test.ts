@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import {
+  afterMergeIn,
   checksIn,
   criteriaIn,
   isSingleRepo,
@@ -443,4 +444,24 @@ test("a ticket's acceptance criteria are its checkboxes, each one whole", () => 
   expect(criteriaIn("# 01\n\nNo boxes here.\n")).toEqual([]);
   const [slice] = orderedTickets([{ file: "01-a.md", text }]);
   expect(slice!.criteria).toHaveLength(3);
+});
+
+test("what only a merge can show is not a criterion, and is read as the ticket's after-merge list", () => {
+  const afterMerge = [
+    "## After merge",
+    "",
+    "- [ ] The nightly deploy counts each registry once.",
+    "- The dashboard shows it,",
+    "  a day later.",
+  ].join("\n");
+  const unheaded = ["# 01: a", "", "- [ ] One.", "", afterMerge, "", "## Notes", "", "- [ ] Two."];
+  expect(criteriaIn(unheaded.join("\n"))).toEqual(["One.", "Two."]);
+  expect(afterMergeIn(unheaded.join("\n"))).toEqual([
+    "The nightly deploy counts each registry once.",
+    "The dashboard shows it, a day later.",
+  ]);
+
+  const headed = ["# 01: a", "", "## Acceptance criteria", "", "- [ ] One.", "", afterMerge];
+  expect(criteriaIn(headed.join("\n"))).toEqual(["One."]);
+  expect(afterMergeIn("# 01: a\n\n- [ ] One.\n")).toEqual([]);
 });

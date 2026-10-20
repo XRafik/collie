@@ -348,13 +348,14 @@ const fakeEvaluator = Effect.fn("test.fakeEvaluator")(function* (dir: string) {
   const replyFile = path.join(dir, "reply.json");
   yield* fs.writeFileString(
     path.join(bin, "claude"),
-    `#!/bin/sh\ncat > /dev/null\ncat ${replyFile}\n`,
+    `#!/bin/sh\ncat > ${path.join(dir, "pack.txt")}\ncat ${replyFile}\n`,
   );
   yield* fs.chmod(path.join(bin, "claude"), 0o755);
   const before = Bun.env.PATH ?? "";
   Bun.env.PATH = `${bin}:${before}`;
   return {
     reply: (text: string) => fs.writeFileString(replyFile, text),
+    pack: fs.readFileString(path.join(dir, "pack.txt")),
     restore: () => {
       Bun.env.PATH = before;
     },
@@ -397,6 +398,22 @@ const checkout = Effect.fn("DriftTest.checkout")(function* (prefix: string) {
   ])
     yield* exec(["git", ...args], { cwd: dir });
   return dir;
+});
+
+/** Commits `files` on top of the checkout's first commit, and returns that first commit. */
+const committed = Effect.fn("DriftTest.committed")(function* (
+  dir: string,
+  files: Readonly<Record<string, string>>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const git = (args: string[]) =>
+    exec(["git", "-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: dir });
+  const base = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
+  for (const [name, text] of Object.entries(files))
+    yield* fs.writeFileString(`${dir}/${name}`, text);
+  yield* git(["add", ...Object.keys(files)]);
+  yield* git(["commit", "-qm", "work"]);
+  return base;
 });
 
 const judgementDeps = (dir: string, help = FLAGS) => ({
@@ -508,6 +525,7 @@ test("what the model returns is filed against this Run, at this version, and now
   runEffect(
     Effect.gen(function* () {
       const dir = yield* checkout("hw-judge-");
+      const base = yield* committed(dir, { "a.ts": "export const a = 1;\n" });
       const evaluator = yield* fakeEvaluator(dir);
       // The model is asked which constraint and how bad. It does not get to say which
       // Run, which Intent version, when, or whether the thing is still open — a report
@@ -524,7 +542,10 @@ test("what the model returns is filed against this Run, at this version, and now
                 constraint: "no-new-deps",
                 kind: "rule",
                 severity: "warn",
-                evidence: [{ kind: "diff", path: "/etc/passwd" }],
+                evidence: [
+                  { kind: "diff", path: "a.ts" },
+                  { kind: "diff", path: "/etc/passwd" },
+                ],
                 evidence_truncated: false,
                 resolution: "verified",
               },
@@ -549,7 +570,7 @@ test("what the model returns is filed against this Run, at this version, and now
       const out = yield* judge(judgementDeps(dir), semanticIntent(), {
         runDir: dir,
         worktree: dir,
-        base: "HEAD",
+        base,
         at: "2026-09-10T12:00:00Z",
       });
       evaluator.restore();
@@ -563,7 +584,72 @@ test("what the model returns is filed against this Run, at this version, and now
       expect(report.kind).toBe("semantic");
       expect(report.resolution).toBe("open");
       // A ref outside the Run is dropped rather than rendered for a human to chase.
-      expect(report.evidence).toEqual([]);
+      expect(report.evidence).toEqual([{ kind: "diff", path: "a.ts" }]);
+    }),
+  ));
+
+const PLAN_NARROWS_GOAL =
+  "A constraint read from the plan narrows the goal it was cut from: the goal is what was asked, not work done, and it is never evidence of drift.";
+
+test("a Run's own judgement is told its plan's constraints narrow the goal, which is never evidence", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const dir = yield* checkout("hw-judge-");
+      const evaluator = yield* fakeEvaluator(dir);
+      yield* evaluator.reply(envelope({ result: { reports: [] } }));
+      yield* judge(judgementDeps(dir), semanticIntent(), {
+        runDir: dir,
+        worktree: dir,
+        base: "HEAD",
+        at: "t0",
+      });
+      evaluator.restore();
+      const pack = yield* evaluator.pack;
+      expect(pack).toContain(PLAN_NARROWS_GOAL);
+      expect(pack).toContain("A report must cite the work it was shown.");
+    }),
+  ));
+
+test("a Run's own report is filed only when it cites a file whose diff the pack showed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const dir = yield* checkout("hw-judge-");
+      const base = yield* committed(dir, { "a.ts": "export const a = 1;\n" });
+      const evaluator = yield* fakeEvaluator(dir);
+      const reported = (evidence: ReadonlyArray<object>) => ({
+        id: "x",
+        at: "t",
+        run: "r1",
+        intent_version: 1,
+        constraint: "no-new-deps",
+        kind: "semantic",
+        severity: "warn",
+        evidence,
+        evidence_truncated: false,
+        resolution: "open",
+      });
+      yield* evaluator.reply(
+        envelope({
+          result: {
+            reports: [
+              reported([{ kind: "plan", path: `${dir}/plan/SPEC.md`, excerpt: "add a picker" }]),
+              reported([{ kind: "diff", path: "b.ts" }]),
+              reported([{ kind: "diff", path: `${dir}/a.ts`, line: 1 }]),
+            ],
+          },
+        }),
+      );
+      const out = yield* judge(judgementDeps(dir), semanticIntent(), {
+        runDir: dir,
+        worktree: dir,
+        base,
+        at: "t0",
+      });
+      evaluator.restore();
+      // Only the one citing the change, and its file as the pack named it.
+      expect(out.reports.map((report) => report.evidence)).toEqual([
+        [{ kind: "diff", path: "a.ts", line: 1 }],
+      ]);
     }),
   ));
 

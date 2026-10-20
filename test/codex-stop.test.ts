@@ -323,24 +323,29 @@ test("a process the first stop noted is still the server's after the server has 
     }),
   ));
 
-test("a process of the session that ignores SIGTERM fails the stop by its pid, and gets no second signal", () =>
-  runEffect(
-    Effect.gen(function* () {
-      yield* working({ child: "ignores" });
-      const child = (yield* events()).find((one) => one.child !== undefined)!.child!;
-      // Live: the server's exit and its survivors' grace are real time, not the fast clock's.
-      const halt = yield* TestClock.withLive(halted({ stopMs: 5_000 }));
-      expect(halt.stopped).toEqual([]);
-      expect(halt.left.join("\n")).toContain(`pid ${child}`);
-      expect(alive(child)).toBe(true);
-      const fs = yield* FileSystem.FileSystem;
-      expect((yield* fs.readFileString(`${eventsFile()}.child`)).trim().split("\n")).toEqual([
-        "TERM",
-      ]);
-      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
-      expect(yield* panesClosed()).toBe(0);
-    }),
-  ));
+test(
+  "a process of the session that ignores SIGTERM fails the stop by its pid, and gets no second signal",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* working({ child: "ignores" });
+        const child = (yield* events()).find((one) => one.child !== undefined)!.child!;
+        // Live: the server's exit and its survivors' grace are real time, not the fast clock's.
+        const halt = yield* TestClock.withLive(halted({ stopMs: 5_000 }));
+        expect(halt.stopped).toEqual([]);
+        expect(halt.left.join("\n")).toContain(`pid ${child}`);
+        expect(alive(child)).toBe(true);
+        const fs = yield* FileSystem.FileSystem;
+        expect((yield* fs.readFileString(`${eventsFile()}.child`)).trim().split("\n")).toEqual([
+          "TERM",
+        ]);
+        expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+        expect(yield* panesClosed()).toBe(0);
+      }),
+    ),
+  // The stop waits out its 5s budget on the survivor, which a bare `bun test` times out at.
+  30_000,
+);
 
 test("an agent whose pane herdr no longer lists still has its server stopped", () =>
   runEffect(

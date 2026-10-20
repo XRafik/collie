@@ -83,6 +83,7 @@ export {
  * workflow says it the same way.
  */
 export {
+  afterMergeAnswers,
   answerFor,
   blockingKeys,
   findingKey,
@@ -144,6 +145,7 @@ export {
   baselinesOwed,
   flakesOf,
   isOutcome,
+  recheckOwed,
   renderEvidence,
   renderRecordedChecks,
   rerunsOwed,
@@ -174,6 +176,7 @@ export { identityProblem, renderProgress, type Handed } from "./slices";
  * reads the plan it was given rather than being handed a reading of it.
  */
 export {
+  afterMergeIn,
   checksIn,
   criteriaIn,
   isSingleRepo,
