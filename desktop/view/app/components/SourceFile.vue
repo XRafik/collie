@@ -1,39 +1,56 @@
 <script setup lang="ts">
 import type { Token } from "../composables/useHighlight";
+import type { DiffTarget } from "./DiffTab.vue";
 
 /** A file of the Run's checkout, read-only, at the line a finding points at. */
-const props = defineProps<{
-  path: string;
-  line: number | null;
-  installation: string;
-  runId: string;
-}>();
+const props = withDefaults(
+  defineProps<{
+    /** A new object for every jump, each of which is revealed, even to the same place. */
+    target: DiffTarget;
+    installation: string;
+    runId: string;
+    /** Whether to scroll it into view, as for a jump; false where the record restores its place. */
+    reveal?: boolean;
+  }>(),
+  { reveal: true },
+);
 const emit = defineEmits<{ close: [] }>();
 const { textOf } = useActions();
 
 const lines = shallowRef<ReadonlyArray<ReadonlyArray<Token>> | null>(null);
 const failed = ref(false);
 const shown = ref<HTMLElement | null>(null);
+const whole = ref<HTMLElement | null>(null);
 
 watch(
-  () => props.path,
-  async (path, _, onCleanup) => {
+  [whole, () => props.target, () => props.reveal],
+  ([section]) => {
+    if (props.reveal) section?.scrollIntoView({ block: "start" });
+  },
+  { flush: "post" },
+);
+
+const path = computed(() => props.target.file);
+const line = computed(() => props.target.line);
+watch(
+  path,
+  async (file, _, onCleanup) => {
     let stale = false;
     onCleanup(() => (stale = true));
     lines.value = null;
-    const text = await textOf(props.installation, props.runId, `file:${path}`);
+    const text = await textOf(props.installation, props.runId, `file:${file}`);
     if (stale) return;
     failed.value = text === null;
     if (text === null) return;
-    const coloured = await highlightLines(text.split("\n"), path);
+    const coloured = await highlightLines(text.split("\n"), file);
     if (!stale) lines.value = coloured;
   },
   { immediate: true },
 );
 watch(
-  () => [lines.value, props.line] as const,
-  async ([, line]) => {
-    if (line === null || lines.value === null) return;
+  () => [lines.value, props.target, props.reveal] as const,
+  async ([, { line }]) => {
+    if (line === null || lines.value === null || !props.reveal) return;
     await nextTick();
     shown.value?.querySelector(`[data-line="${line}"]`)?.scrollIntoView({ block: "center" });
   },
@@ -42,7 +59,7 @@ watch(
 </script>
 
 <template>
-  <section data-testid="source-file" class="rounded border border-default">
+  <section ref="whole" data-testid="source-file" class="rounded border border-default">
     <div class="flex items-center gap-2 px-3 py-2 text-sm">
       <UIcon name="i-lucide-file" />
       <code class="flex-1 truncate" data-testid="source-file-name">{{ path }}</code>

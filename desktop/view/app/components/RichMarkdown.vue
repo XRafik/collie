@@ -2,9 +2,8 @@
 // Agent-written markdown, which is untrusted. A link never navigates the window.
 import { Markdown } from "@comark/vue";
 import mermaid, { Mermaid } from "@comark/vue/plugins/mermaid";
-import security from "@comark/vue/plugins/security";
 import shiki from "@comark/vue/plugins/shiki";
-import { confined } from "../../../src/shared/markdown";
+import { SAFE_PLUGINS } from "../../../src/shared/markdown";
 import FileRef from "./FileRef.vue";
 import MarkdownLink from "./MarkdownLink.vue";
 
@@ -19,20 +18,7 @@ provide(
   computed(() => props.from),
 );
 
-const PLUGINS = [
-  security({
-    blockedTags: [
-      ...["script", "style", "iframe", "object", "embed", "form", "base", "link", "meta"],
-      // Modal, so it would make the whole window inert.
-      "dialog",
-    ],
-    // Nothing is fetched from the network: an image a Run kept is evidence, read from its host.
-    allowedImagePrefixes: ["data:image/"],
-  }),
-  confined(),
-  shiki(),
-  mermaid(),
-];
+const PLUGINS = [...SAFE_PLUGINS, shiki(), mermaid()];
 const COMPONENTS = { a: MarkdownLink, mermaid: Mermaid, "file-ref": FileRef };
 </script>
 

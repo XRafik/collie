@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PlanPanel } from "../../../../src/board-model";
+import { planProgress, type SpecHeading, specHeadings } from "../../../src/shared/plan-view";
 import { locationOf, type PlanAnchor, planAnchor } from "../../../src/shared/review-comments";
 import type { PlanText } from "./PlanFile.vue";
 
@@ -31,8 +32,11 @@ const load = (file: string) => {
 
 /** The plan file a link opened, shown above the plan until it is closed. */
 const opened = ref<string | null>(null);
-provide("openPlanFile", (file: string) => {
+const openedBox = ref<HTMLElement | null>(null);
+provide("openPlanFile", async (file: string) => {
   opened.value = file;
+  await nextTick();
+  openedBox.value?.scrollIntoView({ block: "start" });
 });
 const wholeSpec = useWhole(
   () => props,
@@ -47,6 +51,30 @@ const spec = computed<PlanText>(() =>
     : { failed: props.plan.spec.reason },
 );
 
+const headings = shallowRef<ReadonlyArray<SpecHeading>>([]);
+watch(
+  () => ("text" in spec.value ? spec.value.text : ""),
+  async (text, _, onCleanup) => {
+    let stale = false;
+    onCleanup(() => (stale = true));
+    const found = await specHeadings(text);
+    if (!stale) headings.value = found;
+  },
+  { immediate: true },
+);
+const contents = computed(() =>
+  headings.value.length < 2 ? [] : headings.value.filter(({ level }) => level <= 3),
+);
+const scroller = inject<Ref<HTMLElement | null>>("recordScroller", ref(null));
+const specBox = ref<HTMLElement | null>(null);
+const jump = (position: number) => {
+  const box = scroller.value;
+  const heading = specBox.value?.querySelectorAll("h1, h2, h3, h4, h5, h6")[position];
+  if (box === null || heading === undefined) return;
+  box.scrollTop += heading.getBoundingClientRect().top - box.getBoundingClientRect().top;
+};
+
+const progress = computed(() => planProgress(props.plan.tickets));
 const tickets = computed(() =>
   props.plan.tickets.map((ticket) => ({
     label: ticket.title,
@@ -92,6 +120,7 @@ const comment = (text: string) => {
     />
     <section
       v-if="opened !== null"
+      ref="openedBox"
       data-testid="plan-file"
       class="rounded border border-default p-3"
     >
@@ -110,8 +139,38 @@ const comment = (text: string) => {
         <PlanFile :file="opened === SPEC ? spec : read.get(opened)" :from="opened" />
       </div>
     </section>
-    <div @mouseup="select(SPEC, $event)">
+    <nav v-if="contents.length > 0" data-testid="plan-contents" class="flex flex-col items-start">
+      <UButton
+        v-for="heading in contents"
+        :key="heading.position"
+        size="xs"
+        variant="link"
+        color="neutral"
+        :label="heading.text"
+        :class="['text-left', { 'pl-4': heading.level === 2, 'pl-8': heading.level === 3 }]"
+        @click="jump(heading.position)"
+      />
+    </nav>
+    <div ref="specBox" @mouseup="select(SPEC, $event)">
       <PlanFile :file="spec" :from="SPEC" />
+    </div>
+    <div v-if="progress !== null" class="flex items-center gap-2 text-sm">
+      <span data-testid="plan-progress">{{ progress }}</span>
+      <UButton
+        class="ml-auto"
+        size="xs"
+        variant="ghost"
+        label="Expand all"
+        data-testid="expand-tickets"
+        @click="expanded = tickets.map(({ value }) => value)"
+      />
+      <UButton
+        size="xs"
+        variant="ghost"
+        label="Collapse all"
+        data-testid="collapse-tickets"
+        @click="expanded = []"
+      />
     </div>
     <UAccordion
       v-if="tickets.length > 0"

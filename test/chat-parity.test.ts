@@ -343,7 +343,9 @@ test(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "hw-parity-" });
-        const env = readEnv({ ...process.env, HERDR_PLUGIN_STATE_DIR: stateDir });
+        // An empty PATH: the installation checks would otherwise run the operator's own
+        // claude, glab and gh, each allowed twenty seconds to answer, on every call below.
+        const env = readEnv({ ...process.env, HERDR_PLUGIN_STATE_DIR: stateDir, PATH: "" });
         // The registry is filled by the module that owns each operation, so it has to be
         // asked rather than listed: a kind with no executor is refused at confirmation as
         // `executor_missing`, and a route to one would be control reduced to advice.

@@ -1,28 +1,37 @@
 <script setup lang="ts">
 import type { Panel } from "../../../../src/board-model";
+import { FOLLOWING_LOG, type LogPlace, logPlaceOf, logScrollTop } from "../../../src/shared/record";
 
 const props = defineProps<{ tail: Panel | null }>();
 
-const search = ref("");
-const lines = computed(() => {
-  const all = props.tail?._tag === "Text" ? props.tail.text.split("\n") : [];
-  const wanted = search.value.trim().toLowerCase();
-  return wanted === "" ? all : all.filter((line) => line.toLowerCase().includes(wanted));
-});
+const search = defineModel<string>("search", { default: "" });
+const all = computed(() =>
+  props.tail?._tag === "Text" && props.tail.text !== "" ? props.tail.text.split("\n") : [],
+);
+const wanted = computed(() => search.value.trim());
+const lines = computed(() =>
+  wanted.value === ""
+    ? all.value
+    : all.value.filter((line) => line.toLowerCase().includes(wanted.value.toLowerCase())),
+);
 
+/** The record's, so the human's place outlasts the tab; written back only as the tab is left. */
+const place = defineModel<LogPlace>("place", { default: () => FOLLOWING_LOG });
+let at = place.value;
+onBeforeUnmount(() => (place.value = at));
 const shown = ref<HTMLElement | null>(null);
-/** Followed to its end unless the human scrolled up to read. */
-let following = true;
 const scrolled = () => {
-  const box = shown.value;
-  if (box !== null) following = box.scrollTop + box.clientHeight >= box.scrollHeight - 2;
+  if (shown.value !== null) at = logPlaceOf(shown.value);
 };
+const showPlace = (box: HTMLElement | null) =>
+  box?.scrollTo({ top: logScrollTop(at, box.scrollHeight) });
+watch(shown, showPlace, { flush: "post" });
 watch(
   lines,
   async () => {
-    if (!following) return;
+    if (!at.following) return;
     await nextTick();
-    shown.value?.scrollTo({ top: shown.value.scrollHeight });
+    showPlace(shown.value);
   },
   { immediate: true },
 );
@@ -38,6 +47,12 @@ watch(
       data-testid="log-search"
     />
     <p v-if="tail?._tag === 'None'" class="text-muted text-sm">{{ tail.reason }}</p>
+    <p v-else-if="all.length === 0" class="text-muted text-sm" data-testid="log-empty">
+      The log is empty so far.
+    </p>
+    <p v-else-if="lines.length === 0" class="text-muted text-sm" data-testid="log-unmatched">
+      No line matches {{ wanted }}.
+    </p>
     <pre
       v-else
       ref="shown"
