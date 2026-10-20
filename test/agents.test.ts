@@ -1199,6 +1199,47 @@ test("a repaired Output caught half rewritten is judged when the agent's turn en
     }),
   ));
 
+const HALF = `{"verdict":"clean"}`;
+
+/** Once asked to repair, starts its rewrite as one status reply goes out and ends it as the next does. */
+class FinishingWhileAsked extends FakeHerdr {
+  repairing = false;
+  constructor(private readonly fs: FileSystem.FileSystem) {
+    super(rig.pluginEnv());
+  }
+  override agentStatus() {
+    const { fs, repairing } = this;
+    return Effect.gen(function* () {
+      const now = yield* fs.readFileString(outputPath("r1")).pipe(Effect.orElseSucceed(() => ""));
+      if (repairing && now === `{"verdict":"maybe"}`) {
+        yield* fs.writeFileString(outputPath("r1"), HALF);
+        return "working" as const;
+      }
+      if (now === HALF)
+        yield* fs.writeFileString(outputPath("r1"), `{"verdict":"clean","note":"as it ended"}`);
+      return "idle" as const;
+    }).pipe(Effect.orDie);
+  }
+}
+
+test("a repaired Output finished between its read and the turn ending is read again", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.queueOutputs([{ verdict: "maybe" }, null]);
+      const herdr = new FinishingWhileAsked(yield* FileSystem.FileSystem);
+      const repairing = Effect.gen(function* () {
+        while (!(yield* prompted("not usable")))
+          yield* TestClock.withLive(Effect.sleep("10 millis"));
+        herdr.repairing = true;
+      });
+      const result = yield* session(
+        Effect.forkChild(repairing).pipe(Effect.andThen(started("r1"))),
+        { herdr },
+      );
+      expect(result._tag === "Success" && result.success.note).toBe("as it ended");
+    }),
+  ));
+
 for (const [what, herdr] of [
   ["idle", () => new FakeHerdr(rig.pluginEnv())],
   ["unreadable", () => new Unreadable(rig.pluginEnv())],

@@ -2343,8 +2343,8 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
                 if (asking !== null && (yield* asking(null))) return false;
                 return yield* turnOver;
               }),
-              final: (written) =>
-                usable === undefined || usable(written) ? Effect.succeed(true) : turnOver,
+              usable: usable ?? (() => true),
+              settled: turnOver,
             }),
             confirmed(launched, unless ?? null).pipe(Effect.andThen(Effect.never)),
           );
@@ -2911,8 +2911,8 @@ const undeliverable = (cause: unknown) => ({
  * `unless` is the same again: an Output already known to be unusable is the file not
  * having been rewritten. Null where nothing arrived in the time allowed, which says the
  * work is uncertain and never that it did not happen. Only polls `counts` answers true for use
- * up that time, so a caller pauses the budget by answering false. A text `final` refuses is
- * read again on the next poll.
+ * up that time, so a caller pauses the budget by answering false. A text that is not `usable`
+ * is taken only once `settled`, as the file stands after it is.
  */
 const waitForOutput = <R>(
   path: string,
@@ -2921,16 +2921,24 @@ const waitForOutput = <R>(
     readonly pollMs: number;
     readonly budgetMs: number;
     readonly counts: Effect.Effect<boolean, never, R>;
-    readonly final: (text: string) => Effect.Effect<boolean, never, R>;
+    readonly usable: (text: string) => boolean;
+    readonly settled: Effect.Effect<boolean, never, R>;
   },
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const read = fs.readFileString(path).pipe(Effect.orElseSucceed(() => ""));
+    const fresh = (text: string) => text.trim() !== "" && text !== unless;
     let spent = 0;
     for (;;) {
       const text = yield* read;
-      if (text.trim() !== "" && text !== unless && (yield* every.final(text))) return text;
+      if (fresh(text)) {
+        if (every.usable(text)) return text;
+        if (yield* every.settled) {
+          const after = yield* read;
+          if (fresh(after)) return after;
+        }
+      }
       if (spent >= every.budgetMs) return null;
       const before = yield* Clock.currentTimeMillis;
       yield* Effect.sleep(Duration.millis(every.pollMs));
