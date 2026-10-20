@@ -56,7 +56,7 @@ import type { Asker } from "./proposals";
 import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
 import type { MergeOutcome, Takeover } from "./landing";
-import type { ReviewStanding } from "./review-wait";
+import type { ReviewHead, ReviewStanding } from "./review-wait";
 import type { FastForward, TagRead } from "./releasing";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
@@ -78,7 +78,18 @@ export { forgeOfRef, mrUrlOf, parseMrTarget, readMrRef, type MrRef } from "./boa
 export { IntegrationSchema, type Integration } from "./integrate";
 export { MergeOutcomeSchema, TakeoverSchema, type MergeOutcome, type Takeover } from "./landing";
 /** Where a merge request's review stands for a Release Run (`HostApi.awaitReview`). */
-export { ReviewStandingSchema, type OpenComment, type ReviewStanding } from "./review-wait";
+export {
+  AnswerSchema,
+  ReviewHeadSchema,
+  ReviewStandingSchema,
+  SettledAnswersSchema,
+  settleAnswers,
+  type Answer,
+  type OpenComment,
+  type ReviewHead,
+  type ReviewStanding,
+  type SettledAnswers,
+} from "./review-wait";
 /** A checkout brought to a head, and a tag read back (`HostApi.fastForward`, `HostApi.readTag`). */
 export { FastForwardSchema, TagReadSchema, type FastForward, type TagRead } from "./releasing";
 
@@ -789,6 +800,28 @@ export interface HostApi {
     readonly proved: string;
     readonly seen: ReadonlyArray<string>;
   }) => Effect.Effect<ReviewStanding, WorkflowError>;
+  /**
+   * Replies to the comment with id `comment` on the merge request this Run recorded, posting
+   * `body` as it is, in the comment's thread where it has one. Never resolves a thread. A
+   * comment already answered, as after a restart that posted the reply before it was
+   * journaled, is `already` and gets no second reply. Take each inside its own Activity.
+   */
+  readonly reply: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly comment: string;
+    readonly body: string;
+  }) => Effect.Effect<"posted" | "already", WorkflowError>;
+  /**
+   * The recorded merge request's head as the forge reports it, which of `commits` that head
+   * carries (fetched from origin), and the ids of its external comments still unanswered.
+   * Take it inside an Activity.
+   */
+  readonly reviewHead: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly commits: ReadonlyArray<string>;
+  }) => Effect.Effect<ReviewHead, WorkflowError>;
   /**
    * Fetches origin and fast-forwards the checkout at `cwd` to `head`, recording the move in
    * the Run log. A checkout with uncommitted changes, or one `head` does not fast-forward

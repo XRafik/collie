@@ -14,7 +14,7 @@ const flat = (text: string) => text.replace(/\s+/g, " ").trim();
 
 test("both forges' release content has the steps the module asks for, and every step fills from what it gives", () => {
   for (const one of Object.values(content))
-    expect([...one.sections.keys()]).toEqual(["assess", "tag"]);
+    expect([...one.sections.keys()]).toEqual(["assess", "answer", "fix", "tag"]);
   // A template naming anything ReleaseInput does not give is refused as it is made.
   expect(Object.keys(RELEASE_ON.github)).toEqual(Object.keys(RELEASE_ON.gitlab));
 });
@@ -51,5 +51,16 @@ test("the tag step tags by the repository's conventions, watches its pipeline an
     expect(tag).toContain("Production deploy jobs are mine");
     expect(tag).toContain("{{recovery}}");
     expect(tag).toContain("{{merged}}");
+  }
+});
+
+test("a comment round fixes test first and pushes plainly, and leaves every reply to Collie", () => {
+  for (const one of Object.values(content)) {
+    const answer = flat(one.sections.get("answer") ?? "");
+    expect(answer).toContain("{{comments}}");
+    expect(answer).toContain("never a force push");
+    expect(answer).toContain("never resolves a thread");
+    expect(answer).toContain("a comment you leave out goes to the next round");
+    expect(flat(one.sections.get("fix") ?? "")).toContain("never a force push");
   }
 });

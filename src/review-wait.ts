@@ -92,6 +92,61 @@ export function standingOf(
     : { _tag: "Waiting", why };
 }
 
+/** The merge request's head, which of a round's commits it carries, and its open external comments. */
+export const ReviewHeadSchema = Schema.Struct({
+  head: Schema.String,
+  carries: Schema.Array(Schema.String),
+  open: Schema.Array(Schema.String),
+});
+export type ReviewHead = typeof ReviewHeadSchema.Type;
+
+/** One comment a comment round answered: `fixed` in `commit`, or `disputed`. */
+export const AnswerSchema = Schema.Struct({
+  id: Schema.String.annotate({ description: "the comment's id, as given" }),
+  answer: Schema.Literals(["fixed", "disputed"]),
+  commit: Schema.optionalKey(Schema.String).annotate({
+    description: "the pushed commit that fixes it, where fixed",
+  }),
+  note: Schema.String.annotate({
+    description: "what the fix changed, or why nothing changed",
+  }),
+});
+export type Answer = typeof AnswerSchema.Type;
+
+/** The replies a round's answers earn, and the comments handed to the next round. */
+export const SettledAnswersSchema = Schema.Struct({
+  replies: Schema.Array(Schema.Struct({ id: Schema.String, body: Schema.String })),
+  carried: Schema.Array(OpenCommentSchema),
+});
+export type SettledAnswers = typeof SettledAnswersSchema.Type;
+
+/**
+ * A `fixed` answer counts only where its commit is in `onHead`, the commits the merge
+ * request's head carries by the forge's word; a comment no longer in `open` was answered on
+ * the forge meanwhile. Everything else given is carried.
+ */
+export function settleAnswers(round: {
+  readonly given: ReadonlyArray<OpenComment>;
+  readonly answers: ReadonlyArray<Answer>;
+  readonly onHead: ReadonlyArray<string>;
+  readonly open: ReadonlyArray<string>;
+}): SettledAnswers {
+  const replies: Array<{ id: string; body: string }> = [];
+  const carried: OpenComment[] = [];
+  for (const comment of round.given.filter((one) => round.open.includes(one.id))) {
+    const answer = round.answers.find((one) => one.id === comment.id);
+    const says =
+      answer?.answer === "disputed"
+        ? `Not changed: ${answer.note}`
+        : answer?.commit !== undefined && round.onHead.includes(answer.commit)
+          ? `Fixed in \`${answer.commit.slice(0, 8)}\`: ${answer.note}`
+          : null;
+    if (says === null) carried.push(comment);
+    else replies.push({ id: comment.id, body: `${comment.url}\n\n${says}` });
+  }
+  return { replies, carried };
+}
+
 /** The card's parked line while the wait waits. */
 export const waitingLine = (mr: string, why: ReadonlyArray<string>) =>
   `Waiting for review of ${mr}: ${why.join("; ")}.`;

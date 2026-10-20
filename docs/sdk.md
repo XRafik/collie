@@ -762,6 +762,17 @@ until the standing is anything but `Waiting` or `Unreadable`, or a Hold or Stop 
 the line is cleared when it returns. Take either inside an Activity, and suspend on `Held`
 there, so a resume waits again.
 
+`host.reply({ runId, cwd, comment, body })` replies to the comment with id `comment` on
+the merge request the Run recorded, posting `body` as it is, in the comment's thread where
+it has one. It never resolves a thread. It answers `posted`, or `already` where the forge
+reads the comment as answered — as after a restart that posted the reply before its
+Activity was journaled — and fails with `WorkflowError` when the forge refuses. Take each
+reply inside an Activity of its own. `host.reviewHead({ runId, cwd, commits })` reads the
+merge request's `head` as the forge reports it, which of `commits` it `carries` once
+origin is fetched, and the ids of its external comments still `open`. `settleAnswers`
+turns a comment round's answers into the replies they earn and the comments `carried` to
+the next round: a `fixed` answer counts only where the head carries its commit.
+
 `host.fastForward({ runId, cwd, head })` fetches origin and fast-forwards the checkout to
 `head`, writing the move to the Run's log. It answers `At` with the `head` and where it
 moved `from`, or `Refused` with `why`: a checkout with uncommitted changes, a head origin
@@ -779,7 +790,7 @@ over the landing of the newest Run on this host that landed it, where that Run e
 without succeeding and the forge's merged commit is the one it recorded. It answers
 `TakenOver` with the Run it came `from`, the `sha`, the `head` and the `failure`, or
 `Refused` with `why`: merged outside a Release Run, already released, still being
-released, or merged at another commit. Each of these four takes its place inside an
+released, or merged at another commit. Each of these calls takes its place inside an
 Activity. `readMrRef`, `mrUrlOf` and `forgeOfRef` turn a merge request input into its
 reference, its URL and its forge.
 

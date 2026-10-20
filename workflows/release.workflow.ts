@@ -8,11 +8,14 @@
 // The Markdown beside this file is the content: what each step judges, and how.
 
 import {
+  AnswerSchema,
   FindingSchema,
+  FixOutputSchema,
   Host,
   MergeOutcomeSchema,
   ReviewStandingSchema,
   Run,
+  SettledAnswersSchema,
   TagReadSchema,
   TakeoverSchema,
   WorkflowError,
@@ -21,8 +24,12 @@ import {
   contentOf,
   defineWorkflow,
   forgeOfRef,
+  formatFindings,
   mrUrlOf,
   readMrRef,
+  renderApproved,
+  settleAnswers,
+  type OpenComment,
   type ReviewStanding,
 } from "collie";
 import { Effect, Schema } from "effect";
@@ -44,12 +51,23 @@ export const ReleaseInput = Schema.Struct({
   merged: text,
   /** What a Run recovering a release that merged is told of the Run it recovers. */
   recovery: text,
+  /** A comment round's comments, and its number. */
+  comments: text,
+  round: text,
+  /** This Run's checks, as a step that commits is held to them. */
+  verify: text,
+  /** A fix round's number, its bound, and what failed. */
+  iteration: text,
+  max_iterations: text,
+  findings: text,
 });
 
 const stepsOf = (markdown: string) => {
   const content = contentOf(markdown);
   return {
     assess: content.template("assess", ReleaseInput.fields),
+    answer: content.template("answer", ReleaseInput.fields),
+    fix: content.template("fix", ReleaseInput.fields),
     tag: content.template("tag", ReleaseInput.fields),
   };
 };
@@ -58,7 +76,15 @@ const stepsOf = (markdown: string) => {
 export const RELEASE_ON = { gitlab: stepsOf(onGitlab), github: stepsOf(onGithub) };
 
 /** What each step that touches anything shared is cleared for, on the repository at `url`. */
+const pushing = (url: string) =>
+  `committing to the merge request's source branch on ${url} and pushing it with a plain push, never a force push`;
+
 export const RELEASE_CLEARS = {
+  answer: (url: string) => [
+    pushing(url),
+    `never posting on ${url} or resolving a thread there: Collie replies`,
+  ],
+  fix: (url: string) => [pushing(url)],
   tag: (url: string) => [
     `a release commit to ${url}'s default branch, where the repository makes one`,
     `pushing an annotated version tag of ${url} to origin`,
@@ -90,6 +116,13 @@ export const Assessed = Schema.Struct({
   }),
 });
 
+export const Answered = Schema.Struct({
+  ...verdict,
+  answers: Schema.Array(AnswerSchema).annotate({
+    description: "one entry per comment you answered, by its id",
+  }),
+});
+
 export const Tagged = Schema.Struct({
   ...verdict,
   tag: Schema.String.annotate({ description: "the tag pushed to origin" }),
@@ -103,6 +136,22 @@ export const Tagged = Schema.Struct({
 export const RELEASER = "release";
 
 const GO = { release: "Release", finish: "Finish" } as const;
+
+/** Fix rounds in a row before a failing head parks the Run, as implement's gate fixes. */
+const ROUNDS = 4;
+
+const commentLines = (comments: ReadonlyArray<OpenComment>) =>
+  comments
+    .map((one) => {
+      const where =
+        one.file === null ? "" : ` on ${one.file}${one.line === null ? "" : `:${one.line}`}`;
+      const quoted = one.body
+        .split("\n")
+        .map((line) => `  > ${line}`)
+        .join("\n");
+      return `- \`${one.id}\` by ${one.author}, ${one.url}${where}:\n${quoted}`;
+    })
+    .join("\n");
 
 const short = (sha: string) => sha.slice(0, 8);
 
@@ -190,6 +239,12 @@ export default defineWorkflow({
         repository: url,
         merged: "",
         recovery: "",
+        comments: "",
+        round: "",
+        verify: "",
+        iteration: "",
+        max_iterations: "",
+        findings: "",
       };
       const as = (operation: string) => ({
         operation,
@@ -274,15 +329,24 @@ export default defineWorkflow({
               return moved.head;
             }),
           });
-        const prove = (at: number) =>
+        const checksNow = Effect.map(host.approved(runId), renderApproved);
+        // `parkWith` says why another fix round would not help, so a failure parks the Run
+        // here, where a resume runs the checks again.
+        const checksAt = (
+          name: string,
+          pass: { readonly pass: "fix"; readonly round: number } | null,
+          parkWith: string | null,
+        ) =>
           Activity.make({
-            name: `checks.${at}`,
-            success: Schema.String,
+            name,
+            success: Schema.Struct({ head: Schema.String, failed: Schema.Array(Schema.String) }),
             execute: Effect.gen(function* () {
               const checks = yield* host.approved(runId);
               const failed: string[] = [];
               for (const spec of checks.filter((one) => one.ci === undefined)) {
-                const ran = yield* host.verify({ runId, name: spec.name, cwd }).pipe(Effect.result);
+                const ran = yield* host
+                  .verify({ runId, name: spec.name, cwd, ...pass })
+                  .pipe(Effect.result);
                 if (ran._tag === "Failure") failed.push(`${spec.name}: ${ran.failure.reason}`);
                 else if (ran.success.result !== "pass") failed.push(`${spec.name} failed`);
               }
@@ -297,32 +361,96 @@ export default defineWorkflow({
                 if (!("proved" in read) && read.before === undefined) failed.push(read.unproved);
               }
               const head = (yield* host.evidence(runId, cwd)).final.head_sha;
-              if (failed.length > 0)
-                return yield* park(`The checks failed at ${short(head)}: ${failed.join("; ")}`);
-              return head;
+              if (failed.length > 0 && parkWith !== null)
+                return yield* park(
+                  `The checks failed at ${short(head)} ${parkWith}: ${failed.join("; ")}`,
+                );
+              return { head, failed };
             }),
           });
-        const awaited = (at: number, proved: string, seen: ReadonlyArray<string>) =>
+        const treeNow = Effect.map(host.evidence(runId, cwd), ({ final }) => ({
+          head: final.head_sha,
+          fingerprint: final.fingerprint,
+        }));
+        const Tree = Schema.Struct({ head: Schema.String, fingerprint: Schema.String });
+        let fixes = 0;
+        /** The head proved by the checks, after as many fix rounds as it takes, up to ROUNDS. */
+        const prove = (
+          name: string,
+          pass: { readonly pass: "fix"; readonly round: number } | null,
+        ) =>
+          Effect.gen(function* () {
+            let at = yield* checksAt(name, pass, null);
+            for (let rounds = 1; at.failed.length > 0; rounds++) {
+              fixes += 1;
+              const n = fixes;
+              const before = yield* Activity.make({
+                name: `fix-${n}.before`,
+                success: Tree,
+                execute: treeNow,
+              });
+              const findings = at.failed.map((title) => ({
+                severity: "blocker",
+                title,
+                detail: `Collie ran this Run's checks on ${short(at.head)}, the merge request's head, and this is what failed.`,
+              }));
+              const fixed = yield* agentWork({
+                ...as(`fix-${n}`),
+                pushes: true,
+                clears: RELEASE_CLEARS.fix(url),
+                instructions: steps.fix,
+                input: {
+                  ...input,
+                  verify: yield* checksNow,
+                  iteration: String(rounds),
+                  max_iterations: String(ROUNDS),
+                  findings: formatFindings(findings),
+                },
+                output: FixOutputSchema,
+              });
+              const after = yield* Activity.make({
+                name: `fix-${n}.after`,
+                success: Tree,
+                execute: treeNow,
+              });
+              const disputed = fixed.disputed ?? [];
+              const stalled =
+                after.head === before.head &&
+                after.fingerprint === before.fingerprint &&
+                (fixed.fixed ?? []).length === 0;
+              at = yield* checksAt(
+                `fix-${n}.checks`,
+                { pass: "fix", round: n },
+                stalled
+                  ? `after fix-${n} changed nothing${disputed.length === 0 ? "" : `, disputing ${disputed.map((one) => `${one.title}: ${one.reason ?? "no reason given"}`).join("; ")}`}`
+                  : rounds >= ROUNDS
+                    ? `after ${ROUNDS} fix rounds`
+                    : null,
+              );
+            }
+            return at.head;
+          });
+        const awaited = (at: number, proved: string) =>
           Activity.make({
             name: `review.${at}`,
             success: ReviewStandingSchema,
             error: WorkflowError,
             execute: Effect.gen(function* () {
-              const standing = yield* host.awaitReview({ runId, cwd, proved, seen });
+              const standing = yield* host.awaitReview({ runId, cwd, proved, seen: [] });
               if (standing._tag === "Held") return yield* Workflow.suspend(yield* WorkflowInstance);
               return standing;
             }),
           });
 
         yield* moveTo(0, start._tag === "Moved" ? start.head : "");
-        let proved = yield* prove(0);
-        let seen: ReadonlyArray<string> = [];
+        let proved = yield* prove("checks.0", null);
         let waits = 0;
+        let rounds = 0;
         let gos = 0;
         let merged: { readonly sha: string; readonly claim: boolean } | null = null;
         while (merged === null) {
           waits += 1;
-          const standing = yield* awaited(waits, proved, seen);
+          const standing = yield* awaited(waits, proved);
           if (standing._tag === "Merged")
             return yield* fail(
               `${mr} was merged outside this Run by ${standing.by || "someone"}, so nothing was tagged`,
@@ -331,11 +459,60 @@ export default defineWorkflow({
             return yield* fail(`${mr} was closed, so nothing was released`);
           if (standing._tag === "Moved") {
             yield* moveTo(waits, standing.head);
-            proved = yield* prove(waits);
+            proved = yield* prove(`checks.${waits}`, null);
             continue;
           }
           if (standing._tag === "Unanswered") {
-            seen = [...seen, ...standing.comments.map((one) => one.id)];
+            rounds += 1;
+            const n = rounds;
+            const given = standing.comments;
+            const answered = yield* agentWork({
+              ...as(`answer-${n}`),
+              pushes: true,
+              clears: RELEASE_CLEARS.answer(url),
+              instructions: steps.answer,
+              input: {
+                ...input,
+                comments: commentLines(given),
+                round: String(n),
+                verify: yield* checksNow,
+              },
+              output: Answered,
+            });
+            const settled = yield* Activity.make({
+              name: `answer-${n}.settle`,
+              success: Schema.Struct({ head: Schema.String, answers: SettledAnswersSchema }),
+              error: WorkflowError,
+              execute: Effect.gen(function* () {
+                const read = yield* host.reviewHead({
+                  runId,
+                  cwd,
+                  commits: answered.answers.flatMap((one) =>
+                    one.commit === undefined ? [] : [one.commit],
+                  ),
+                });
+                const answers = settleAnswers({
+                  given,
+                  answers: answered.answers,
+                  onHead: read.carries,
+                  open: read.open,
+                });
+                if (answers.replies.length === 0 && answers.carried.length > 0)
+                  return yield* park(
+                    `answer-${n} answered none of the comments it was given: ${answers.carried.map((one) => one.url).join(", ")}`,
+                  );
+                return { head: read.head, answers };
+              }),
+            });
+            for (const reply of settled.answers.replies)
+              yield* Activity.make({
+                name: `answer-${n}.reply.${reply.id}`,
+                success: Schema.Literals(["posted", "already"]),
+                error: WorkflowError,
+                execute: host.reply({ runId, cwd, comment: reply.id, body: reply.body }),
+              });
+            if (settled.head !== proved)
+              proved = yield* prove(`answer-${n}.checks`, { pass: "fix", round: n });
             continue;
           }
           if (standing._tag !== "Ready") continue;

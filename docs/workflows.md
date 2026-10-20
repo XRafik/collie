@@ -404,11 +404,29 @@ with why: nothing is reset or discarded.
 application, by renovate's own rule. Collie then proves the head with the Run's checks, and
 waits, at no token cost, reading the review every five minutes until the merge request is
 approved, has no unanswered external comment, is green and mergeable at the proved head.
-The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); 2
-unanswered comment(s); the pipeline at `<sha>`.". A head that moves is fast-forwarded to
-and proved before anything can be asked about it, and failed checks park the Run until
-you repair them and resume it. A merge request someone else merges, or closes, ends the
-Run with nothing tagged.
+The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); the
+pipeline at `<sha>`.". A head that moves is fast-forwarded to and proved before anything
+can be asked about it. A merge request someone else merges, or closes, ends the Run with
+nothing tagged.
+
+**Review comments** are answered as they come. An **external** comment is a person's,
+by anyone but the forge login Collie works as: a bot's comment, a system note and your
+own comments start nothing, so to direct the Run you steer it rather than comment. Each
+new external comment, or a reply in a thread after Collie's, starts a comment round,
+`answer-<n>`: the agent checks each against the code, fixes what holds test first and
+pushes with a plain push, and disputes what it judges wrong, with a reason. Collie then
+replies to each comment on the forge, linking it: "Fixed in `<sha>`: …" once the merge
+request's head carries that commit, or "Not changed: …" with the reason. It never
+resolves a thread, and a restart never posts a reply twice. A comment a round left out,
+or whose commit the head does not carry, goes to the next round, and a round that
+answers none of its comments parks the Run, naming them. Comment rounds are not bounded:
+they follow the reviewers.
+
+**Checks** run on every head before it can be asked about, the one a round pushed
+included, and a check Collie leaves to CI is waited on there. A failure goes to a fix
+round, `fix-<n>`, which fixes and pushes as implement's gate fixes do. Four rounds in a
+row that leave a check failing, or one that changes nothing, park the Run with why;
+resuming it runs the checks again.
 
 Once ready, it asks **`go-<n>`**: **Release** or **Finish**, naming the head and who
 approved it. Anyone may answer, from any door, and the answer is recorded with who gave it.
@@ -503,6 +521,9 @@ Each names only what that step's content tells the agent to do:
 - **`renovate`'s `release`**: pushing an annotated version tag of the default branch,
   creating its release where the repository is a package, and watching the tag's
   pipeline — never playing a production deploy job.
+- **`release`'s `answer`** and **`fix`**: committing to the merge request's source branch
+  and pushing it with a plain push, never a force push. `answer` is told too that it
+  never posts on the forge or resolves a thread: Collie replies.
 - **`release`'s `tag`**: a release commit to the repository's default branch where it makes
   one, pushing an annotated version tag, creating its release where the package publishes
   from its tags, and watching the tag's pipeline — never playing a production job. The

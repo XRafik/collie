@@ -35,6 +35,7 @@ import {
   PROJECT,
   forgeOnPath,
   type FakeJob,
+  type FakeComment,
   type FakeMr,
   type ForgeModel,
 } from "./forge";
@@ -7474,6 +7475,7 @@ const releasable = (name: MrForge, over: Partial<FakeMr> = {}, tagged = true) =>
       loggedIn: [FORGE_HOST[name]],
       login: "tester",
       mrs: [readyMr(name, head, merged, over)],
+      reviewsRequired: { classic: name === "github" ? 1 : 0 },
     };
     const forge = yield* forgeOnPath(bin, name, model);
     /** The merge request changed on the forge, as a reviewer or a push changes it. */
@@ -7491,18 +7493,26 @@ type Ends = Readonly<Record<string, { succeeded: boolean; failure: string } | nu
 /**
  * Helle answered here, and the Runs' ends a landing takeover weighs given: what decides is
  * `takeOver`'s, from the landing records on disk and the forge. `whileClaiming` is what
- * happens elsewhere while the claim is taken.
+ * happens elsewhere while the claim is taken, and the host stops for good once it has
+ * posted `stallAfterReplies` replies.
  */
 const releaseHost = (
   ends: Ends = {},
   whileClaiming: Effect.Effect<void, unknown, FileSystem.FileSystem> = Effect.void,
+  stallAfterReplies = Infinity,
 ) =>
   Layer.effect(Host)(
     Effect.gen(function* () {
       const host = yield* Host;
       const services = yield* Effect.context<BunServices.BunServices>();
+      let replies = 0;
       return Host.of({
         ...host,
+        // A host that stops after posting a reply, before its Activity is journaled.
+        reply: (asked) =>
+          host
+            .reply(asked)
+            .pipe(Effect.tap(() => (++replies >= stallAfterReplies ? Effect.never : Effect.void))),
         claim: (options) =>
           options.say("holding the claim").pipe(
             Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
@@ -7535,10 +7545,11 @@ const releaseHost = (
 
 /**
  * A Run of a shipped module, driven from outside while it runs: its status, what it asks,
- * and an answer given as a door gives one. Answers with what `drive` does.
+ * and an answer given as a door gives one. Answers with what `drive` does. A `restarted` Run
+ * was admitted by an earlier host, which this one takes over from.
  */
 const driven = <A, E>(
-  options: ShippedRun,
+  options: ShippedRun & { readonly restarted?: boolean },
   drive: (run: {
     readonly status: Effect.Effect<typeof RunStatus.Type>;
     readonly asked: Effect.Effect<
@@ -7552,7 +7563,8 @@ const driven = <A, E>(
       const made = yield* loaded(options.entry, options.runId);
       const engine = yield* WorkflowEngine.WorkflowEngine;
       const store = yield* Store;
-      yield* admit({ runId: options.runId, workflow: made.workflow.name, input: options.input });
+      if (options.restarted !== true)
+        yield* admit({ runId: options.runId, workflow: made.workflow.name, input: options.input });
       const payload = { runId: options.runId, input: options.input };
       return yield* Effect.gen(function* () {
         yield* made.workflow.execute(payload, { discard: true });
@@ -7594,8 +7606,8 @@ const runLog = (runId: string) =>
     Effect.orElseSucceed(() => ""),
   );
 
-/** One check of this Run's that passes, run in the Run's own checkout. */
-const checkedBy = (runId: string, name: string) =>
+/** One check of this Run's, `true` unless said, run in the Run's own checkout. */
+const checkedBy = (runId: string, name: string, executable = "true", argv: string[] = []) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) =>
       fs
@@ -7604,7 +7616,7 @@ const checkedBy = (runId: string, name: string) =>
           Effect.andThen(
             fs.writeFileString(
               `${evidenceDir(dir, runId)}/approved.json`,
-              asApproved([{ name, executable: "true", argv: [], cwd: "worktree" }]),
+              asApproved([{ name, executable, argv, cwd: "worktree" }]),
             ),
           ),
         ),
@@ -7625,6 +7637,41 @@ const outcomeText = (status: typeof RunStatus.Type) =>
     : status.status === "failed"
       ? status.reason
       : status.status;
+
+/** A comment's web address, as each forge gives one that is not in a thread. */
+const commentUrl = (name: MrForge, id: number) =>
+  `${RELEASING[name].mr}#${name === "gitlab" ? "note_" : "issuecomment-"}${id}`;
+
+/** What each forge reads as approved by nobody yet, and as approved by `who`. */
+const UNAPPROVED = { gitlab: { approvers: [], required: 1 }, github: { reviews: [] } } as const;
+const approvedBy = (name: MrForge, who: string): Partial<FakeMr> =>
+  name === "gitlab"
+    ? { approvers: [who], required: 1 }
+    : { reviews: [{ id: 2, author: who, state: "APPROVED", at: "2026-10-20T12:10:00Z" }] };
+
+/**
+ * What an agent's push of a commit on `parent` leaves: the commit on origin's `feature`, and
+ * the writes its step makes to put the Run's checkout and the forge's head on it.
+ */
+const agentPush = (
+  forge: { readonly holding: (next: ForgeModel) => { path: string; text: string } },
+  model: ForgeModel,
+  parent: string,
+) =>
+  Effect.gen(function* () {
+    const sha = yield* pushedBySomebody(parent);
+    const moved = { ...model, mrs: model.mrs.map((one) => ({ ...one, head: sha })) };
+    return {
+      sha,
+      writes: [
+        { path: `${rig.projectDir}/.git/refs/heads/feature`, text: `${sha}\n` },
+        forge.holding(moved),
+      ],
+    };
+  });
+
+/** The replies Collie posted on the merge request, in order. */
+const repliesOf = (model: ForgeModel) => Object.values(model.replies ?? {}).flat();
 
 for (const name of ["gitlab", "github"] as const) {
   const { mr, url, target } = RELEASING[name];
@@ -8112,39 +8159,407 @@ for (const name of ["gitlab", "github"] as const) {
   );
 
   scenario(
-    `release on ${name}: an unanswered external comment keeps it waiting, and the card says so`,
+    `release on ${name}: a reviewer's comment is fixed, pushed, proved and replied to with its commit, a second is disputed with its reason, and the approval asks go 1`,
     () =>
       runEffect(
         Effect.gen(function* () {
-          const comment = {
-            id: 41,
-            author: "bob",
-            at: "2026-10-20T11:00:00Z",
-            body: "please rename this",
-          };
-          const { bin, forge } = yield* releasable(name, { comments: [comment] });
-          const runId = `r-comment-${name}`;
+          const { bin, forge, head, reviewed, changed } = yield* releasable(name, UNAPPROVED[name]);
+          const runId = `r-answered-${name}`;
+          yield* checkedBy(runId, "unit");
           yield* rig.queueOutputs([PACKAGED]);
-          const rows = yield* driven(
+          const unopened: ReadonlyArray<FakeComment> = [
+            { id: 43, author: "renovate", kind: "bot", at: "2026-10-20T11:00:00Z", body: "bump" },
+            { id: 45, author: "tester", at: "2026-10-20T11:00:00Z", body: "my own note" },
+            ...(name === "gitlab"
+              ? [
+                  {
+                    id: 44,
+                    author: "bob",
+                    kind: "system" as const,
+                    at: "2026-10-20T11:00:00Z",
+                    body: "added 1 commit",
+                  },
+                ]
+              : []),
+          ];
+          const comments = [
+            { id: 41, author: "bob", at: "2026-10-20T11:01:00Z", body: "please rename this" },
+            { id: 42, author: "carol", at: "2026-10-20T11:02:00Z", body: "use a map here" },
+          ];
+          let fix = "";
+          const status = yield* driven(
             { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
             (run) =>
               Effect.gen(function* () {
-                expect(
-                  yield* until(
-                    () => parkedWhy(runId),
-                    (why) => why !== "",
-                  ),
-                ).toBe(`Waiting for review of ${mr}: 1 unanswered comment.`);
-                const before = (yield* forge.calls()).length;
                 yield* until(
-                  () => forge.calls(),
-                  (calls) => calls.length >= before + 4,
+                  () => parkedWhy(runId),
+                  (why) => why.includes("the approval"),
                 );
-                return yield* run.asked;
+                const now = yield* forge.model();
+                const commented = {
+                  ...now,
+                  mrs: now.mrs.map((one) => ({ ...one, comments: [...unopened, ...comments] })),
+                };
+                const pushed = yield* agentPush(forge, commented, head);
+                fix = pushed.sha;
+                yield* rig.queueOutputs([
+                  PACKAGED,
+                  {
+                    writes: pushed.writes,
+                    output: {
+                      verdict: "clean",
+                      answers: [
+                        { id: "41", answer: "fixed", commit: fix, note: "renamed it" },
+                        { id: "42", answer: "disputed", note: "a map costs more here" },
+                      ],
+                    },
+                  },
+                ]);
+                yield* forge.set(commented);
+                yield* until(
+                  () => forge.model(),
+                  (model) => repliesOf(model).length === 2,
+                );
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("the approval"),
+                );
+                yield* changed(approvedBy(name, "dave"));
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain("dave");
+                expect(go.prompt).toContain(fix.slice(0, 8));
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(repliesOf(model).map((one) => one.body)).toEqual([
+            `${commentUrl(name, 41)}\n\nFixed in \`${fix.slice(0, 8)}\`: renamed it`,
+            `${commentUrl(name, 42)}\n\nNot changed: a map costs more here`,
+          ]);
+          const answering = yield* asked(runId, "answer-1");
+          expect(answering).toContain(commentUrl(name, 41));
+          expect(answering).toContain("please rename this");
+          expect(answering).toContain("use a map here");
+          for (const quiet of unopened) expect(answering).not.toContain(quiet.body);
+          expect(yield* clearance(runId, "answer-1")).toBe(
+            `Cleared for this step: committing to the merge request's source branch on ${url} and pushing it with a plain push, never a force push; never posting on ${url} or resolving a thread there: Collie replies.`,
+          );
+          expect(yield* revParse("HEAD", reviewed)).toBe(fix);
+          const proved = (yield* readVerifications(evidenceDir(dir, runId))).map(
+            (one) => one.end.head_sha,
+          );
+          expect(proved).toEqual([head, fix]);
+          expect((yield* prompts()).filter((one) => one.includes("/answer-"))).toHaveLength(1);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a reply in a comment's thread after Collie's starts a round of its own`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const thread = name === "gitlab" ? "d51" : "51";
+          const original = {
+            id: 51,
+            author: "bob",
+            at: "2026-10-20T11:00:00Z",
+            body: "please rename this",
+            thread,
+            file: "src/app.ts",
+            line: 3,
+          };
+          const { bin, forge, changed } = yield* releasable(name, {
+            ...UNAPPROVED[name],
+            comments: [original],
+          });
+          const runId = `r-thread-${name}`;
+          const disputing = (id: string, note: string) => ({
+            verdict: "clean",
+            answers: [{ id, answer: "disputed", note }],
+          });
+          yield* rig.queueOutputs([
+            PACKAGED,
+            disputing("51", "the name is the domain's"),
+            disputing("53", "still the domain's"),
+          ]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => forge.model(),
+                  (model) => repliesOf(model).length === 1,
+                );
+                const now = yield* forge.model();
+                const followUp = {
+                  id: 53,
+                  author: "bob",
+                  at: "2026-10-20T12:05:00Z",
+                  body: "why is it the domain's?",
+                  thread,
+                };
+                yield* forge.set({
+                  ...now,
+                  mrs: now.mrs.map((one) => ({
+                    ...one,
+                    comments: [...(one.comments ?? []), followUp],
+                  })),
+                });
+                yield* until(
+                  () => forge.model(),
+                  (model) => repliesOf(model).length === 2,
+                );
+                yield* changed(approvedBy(name, "dave"));
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(repliesOf(model).map((one) => one.thread)).toEqual([thread, thread]);
+          expect(yield* asked(runId, "answer-1")).toContain("src/app.ts:3");
+          const second = yield* asked(runId, "answer-2");
+          expect(second).toContain("why is it the domain's?");
+          expect(second).not.toContain("please rename this");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a host restarted in the middle of the replies posts none of them twice`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comments = [61, 62].map((id) => ({
+            id,
+            author: "bob",
+            at: `2026-10-20T11:0${id - 60}:00Z`,
+            body: `comment ${id}`,
+          }));
+          const { bin, forge } = yield* releasable(name, { comments });
+          const runId = `r-restart-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            {
+              verdict: "clean",
+              answers: comments.map((one) => ({
+                id: String(one.id),
+                answer: "disputed",
+                note: `not ${one.id}`,
+              })),
+            },
+          ]);
+          const options = { entry: shipped("release"), runId, input: { mr: target } };
+          yield* driven({ ...options, host: releaseHost({}, Effect.void, 2) }, () =>
+            until(
+              () => forge.model(),
+              (model) => repliesOf(model).length === 2,
+            ),
+          );
+          const status = yield* driven(
+            { ...options, host: releaseHost(), restarted: true },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(repliesOf(model).map((one) => one.body)).toEqual([
+            `${commentUrl(name, 61)}\n\nNot changed: not 61`,
+            `${commentUrl(name, 62)}\n\nNot changed: not 62`,
+          ]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment left out of a round is carried into the next, and a round that answers nothing parks the Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comments = [
+            { id: 71, author: "bob", at: "2026-10-20T11:01:00Z", body: "rename this" },
+            { id: 72, author: "carol", at: "2026-10-20T11:02:00Z", body: "split that" },
+          ];
+          const { bin, forge } = yield* releasable(name, { comments });
+          const runId = `r-carried-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            { verdict: "clean", answers: [{ id: "71", answer: "disputed", note: "kept" }] },
+            { verdict: "clean", answers: [] },
+          ]);
+          const why = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            () =>
+              until(
+                () => parkedWhy(runId),
+                (why) => why.includes("answered none"),
+              ),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(why).toBe(
+            `answer-2 answered none of the comments it was given: ${commentUrl(name, 72)}. Repair it, then resume ${runId}.`,
+          );
+          expect(repliesOf(model)).toHaveLength(1);
+          const second = yield* asked(runId, "answer-2");
+          expect(second).toContain("split that");
+          expect(second).not.toContain("rename this");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a check failing on the head a round pushed goes to a fix round, whose head is proved again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comment = { id: 81, author: "bob", at: "2026-10-20T11:00:00Z", body: "rename" };
+          const { bin, forge, head, changed } = yield* releasable(name, {
+            ...UNAPPROVED[name],
+            comments: [comment],
+          });
+          const runId = `r-fixround-${name}`;
+          const flag = `${rig.root}/unit-${name}`;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(flag, "ok\n").pipe(Effect.orDie);
+          yield* checkedBy(runId, "unit", "grep", ["-qx", "ok", flag]);
+          const pushed = yield* agentPush(forge, yield* forge.model(), head);
+          yield* rig.queueOutputs([
+            PACKAGED,
+            {
+              writes: [...pushed.writes, { path: flag, text: "broken\n" }],
+              output: {
+                verdict: "clean",
+                answers: [{ id: "81", answer: "fixed", commit: pushed.sha, note: "renamed" }],
+              },
+            },
+            {
+              writes: [{ path: flag, text: "ok\n" }],
+              output: { verdict: "clean", fixed: [{ title: "unit failed" }] },
+            },
+          ]);
+          yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("the approval") && why.includes("Waiting"),
+                );
+                yield* until(
+                  () => prompts(),
+                  (typed) => typed.some((one) => one.includes("/fix-1.prompt.md")),
+                );
+                yield* changed(approvedBy(name, "dave"));
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
               }),
           );
           yield* bin.restore();
-          expect(rows.filter((row) => row.decision.startsWith("go-"))).toEqual([]);
+          const proved = (yield* readVerifications(evidenceDir(dir, runId))).map((one) => [
+            one.end.head_sha,
+            one.result,
+          ]);
+          expect(proved).toEqual([
+            [head, "pass"],
+            [pushed.sha, "fail"],
+            [pushed.sha, "pass"],
+          ]);
+          expect(yield* asked(runId, "fix-1")).toContain("unit failed");
+          expect(yield* clearance(runId, "fix-1")).toBe(
+            `Cleared for this step: committing to the merge request's source branch on ${url} and pushing it with a plain push, never a force push.`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: four fix rounds that leave a check failing park the Run with why`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head } = yield* releasable(name);
+          const runId = `r-unfixed-${name}`;
+          yield* checkedBy(runId, "unit", "false");
+          const tried = { verdict: "clean", fixed: [{ title: "unit failed" }] };
+          yield* rig.queueOutputs([PACKAGED, tried, tried, tried, tried]);
+          const why = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                const why = yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("fix rounds"),
+                );
+                expect(yield* run.asked).toEqual([]);
+                return why;
+              }),
+          );
+          yield* bin.restore();
+          expect(why).toBe(
+            `The checks failed at ${head.slice(0, 8)} after 4 fix rounds: unit failed. Repair it, then resume ${runId}.`,
+          );
+          expect((yield* prompts()).filter((one) => one.includes("/fix-"))).toHaveLength(4);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment between go 1 and its answer sends the Run back to the wait, and go 2 is asked once it is answered`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-pinned-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            { verdict: "clean", answers: [{ id: "91", answer: "disputed", note: "as meant" }] },
+          ]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                const now = yield* forge.model();
+                const late = { id: 91, author: "bob", at: "2026-10-20T11:00:00Z", body: "wait" };
+                yield* forge.set({
+                  ...now,
+                  mrs: now.mrs.map((one) => ({ ...one, comments: [late] })),
+                });
+                yield* run.answer("go-1", "Release");
+                yield* goAsked(run.asked, "go-2");
+                yield* run.answer("go-2", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([]);
+          expect(repliesOf(model)).toHaveLength(1);
+          expect(yield* runLog(runId)).toContain(
+            `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
+          );
         }),
       ),
     120_000,

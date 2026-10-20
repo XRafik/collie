@@ -100,8 +100,8 @@ import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
 import { ciJob } from "./ci-job";
 import { land, LandingSchema, readLanding, takeOver } from "./landing";
-import { fastForward, readTag } from "./releasing";
-import { standingOf, waitingLine, type ReviewStanding } from "./review-wait";
+import { carried, fastForward, readTag } from "./releasing";
+import { standingOf, waitingLine, type ReviewHead, type ReviewStanding } from "./review-wait";
 import {
   autoMergingHere,
   forgeHere,
@@ -403,6 +403,37 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | { readonly _tag: "Unreadable"; readonly reason: string };
   export const ReviewStandingSchema: Schema.Codec<ReviewStanding, unknown, never, never>;
 
+  /** The merge request's head, which of a round's commits it carries, and its open external comments. */
+  export interface ReviewHead {
+    readonly head: string;
+    readonly carries: ReadonlyArray<string>;
+    readonly open: ReadonlyArray<string>;
+  }
+  export const ReviewHeadSchema: Schema.Codec<ReviewHead, unknown, never, never>;
+
+  /** One comment a comment round answered: \`fixed\` in \`commit\`, or \`disputed\`. */
+  export interface Answer {
+    readonly id: string;
+    readonly answer: "fixed" | "disputed";
+    readonly commit?: string;
+    readonly note: string;
+  }
+  export const AnswerSchema: Schema.Codec<Answer, unknown, never, never>;
+
+  /** The replies a round's answers earn, and the comments handed to the next round. */
+  export interface SettledAnswers {
+    readonly replies: ReadonlyArray<{ readonly id: string; readonly body: string }>;
+    readonly carried: ReadonlyArray<OpenComment>;
+  }
+  export const SettledAnswersSchema: Schema.Codec<SettledAnswers, unknown, never, never>;
+  /** A fixed answer counts only where the head carries its commit; a comment answered meanwhile is dropped. */
+  export function settleAnswers(round: {
+    readonly given: ReadonlyArray<OpenComment>;
+    readonly answers: ReadonlyArray<Answer>;
+    readonly onHead: ReadonlyArray<string>;
+    readonly open: ReadonlyArray<string>;
+  }): SettledAnswers;
+
   /** Where a fast-forward left the checkout, or why it left it alone. */
   export type FastForward =
     | { readonly _tag: "At"; readonly head: string; readonly from: string }
@@ -645,6 +676,19 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly proved: string;
       readonly seen: ReadonlyArray<string>;
     }) => Effect.Effect<ReviewStanding, WorkflowError>;
+    /** Replies to comment \`comment\` of the recorded merge request, unless it is answered already. Take it inside an Activity. */
+    readonly reply: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly comment: string;
+      readonly body: string;
+    }) => Effect.Effect<"posted" | "already", WorkflowError>;
+    /** The recorded merge request's head, which of \`commits\` it carries, and its open external comments. Take it inside an Activity. */
+    readonly reviewHead: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly commits: ReadonlyArray<string>;
+    }) => Effect.Effect<ReviewHead, WorkflowError>;
     /** Fast-forwards the checkout to \`head\`, or refuses, resetting nothing. Take it inside an Activity. */
     readonly fastForward: (options: {
       readonly runId: string;
@@ -2933,7 +2977,14 @@ export const hostLayer = (options: {
               reason: "this Run has recorded no merge request to read the review of",
             });
           const read = yield* under(forgeOf(ref).readReview(ref, asked.cwd, runShell));
-          return { mr, standing: standingOf(read, asked) };
+          return { mr, ref, read, standing: standingOf(read, asked) };
+        });
+      const readable = (asked: { readonly runId: string; readonly cwd: string }) =>
+        Effect.gen(function* () {
+          const { mr, ref, read } = yield* reviewRead({ ...asked, proved: "", seen: [] });
+          if (!read.ok)
+            return yield* new WorkflowError({ reason: `${mr} could not be read: ${read.reason}` });
+          return { mr, ref, read };
         });
       const host = Host.of({
         dir,
@@ -3368,6 +3419,38 @@ export const hostLayer = (options: {
             const standing = yield* Effect.raceFirst(controlled, polled);
             yield* parkWaiting(asked.runId, null);
             return standing;
+          }),
+        reply: (asked) =>
+          Effect.gen(function* () {
+            const { mr, ref, read } = yield* readable(asked);
+            const comment = read.comments.find((one) => one.id === asked.comment);
+            if (comment === undefined)
+              return yield* new WorkflowError({
+                reason: `${mr} has no comment ${asked.comment} to reply to`,
+              });
+            if (comment.answered) return "already" as const;
+            const replied = yield* under(
+              forgeOf(ref).reply(ref, comment, redact(asked.body), asked.cwd, runShell),
+            );
+            if (!replied.ok)
+              return yield* new WorkflowError({
+                reason: `the forge refused the reply to ${comment.url}: ${replied.reason}`,
+              });
+            return "posted" as const;
+          }),
+        reviewHead: (asked) =>
+          Effect.gen(function* () {
+            const { read } = yield* readable(asked);
+            const carries = yield* under(
+              carried({ cwd: asked.cwd, head: read.head, commits: asked.commits, run: runShell }),
+            );
+            return {
+              head: read.head,
+              carries,
+              open: read.comments
+                .filter((one) => one.external && !one.answered)
+                .map((one) => one.id),
+            };
           }),
         fastForward: (asked) =>
           under(

@@ -52,6 +52,22 @@ export const fastForward = Effect.fn("Releasing.fastForward")(function* <R>(opts
   return { _tag: "At", head: opts.head, from } satisfies FastForward;
 });
 
+/** Which of `commits` `head` carries, once origin is fetched. */
+export const carried = Effect.fn("Releasing.carried")(function* <R>(opts: {
+  readonly cwd: string;
+  readonly head: string;
+  readonly commits: ReadonlyArray<string>;
+  readonly run: Runner<R>;
+}) {
+  const git = (args: string[]) => opts.run("git", args, opts.cwd);
+  if (opts.commits.length > 0) yield* git(["fetch", "--quiet", "origin"]);
+  const carries: string[] = [];
+  for (const commit of opts.commits)
+    if ((yield* git(["merge-base", "--is-ancestor", commit, opts.head])).code === 0)
+      carries.push(commit);
+  return carries;
+});
+
 /** What a tag must be shown to be: `finished` is a package's, its pipeline succeeded. */
 export const TagProofSchema = Schema.Literal("finished");
 

@@ -31,6 +31,51 @@ pipeline runs (`tag`). Either list may be empty.
 Then write your Output. `is_package` is the judgement everything after this branches on, so
 say it plainly and say what the evidence was.
 
+## answer
+
+Comment round {{round}}. These review comments on {{inputs.mr}} are unanswered:
+
+{{comments}}
+
+Check each one against the code. Where it holds, fix it test first, with
+{{skill:tdd}}: the failing test, then the fix. Commit each fix to this checkout's
+branch, the merge request's source branch, and push with a plain `git push origin HEAD` — never a force push.
+Where you judge a comment wrong, change nothing for it and dispute it with your reason.
+
+Collie replies to each comment on the forge for you, and never resolves a thread: never
+post on the merge request, reply to a comment or resolve a thread yourself.
+
+This Run's checks, which Collie runs on the head you push:
+
+{{verify}}
+
+Run the typecheck and the test files you touched, each through `collie verify`, and never
+the whole suite.
+
+Then write your Output: one entry in `answers` per comment, by its id. `fixed` names in
+`commit` the pushed commit that fixes it, and `note` says what changed; `disputed` says in
+`note` why nothing changed. Collie counts a fix only once the merge request's head carries its
+commit, and a comment you leave out goes to the next round.
+
+## fix
+
+Fix round {{iteration}} of at most {{max_iterations}}. Collie ran this Run's checks on
+the merge request's head, and this failed:
+
+{{findings}}
+
+Fix the cause test first, with {{skill:tdd}}, commit it to this checkout's branch and push
+with a plain `git push origin HEAD` — never a force push. Where you are sure a failure is not this
+branch's, change nothing and record it under `disputed` with your reason. The checks:
+
+{{verify}}
+
+Run the typecheck and the test files you touched, each through `collie verify`, and never
+the whole suite. Collie runs the checks again on the head you push.
+
+Then write your Output. `file` and `title` in `fixed` and `disputed` are exactly as the
+finding above gives them; `checks` names every test and lint command you ran.
+
 ## tag
 
 {{recovery}}

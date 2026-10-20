@@ -2269,6 +2269,14 @@ cost until the merge request is approved, every external comment is answered, an
 green and mergeable at that head. Its card says what it is still waiting for, and a push
 to the branch is proved again before anything is asked.
 
+A reviewer's comment is taken up as it comes: the Run's agent fixes what holds and
+pushes, or disputes it, and Collie replies on the forge with the commit or the reason. An
+external reviewer is a person other than the login Collie works as on the forge, so your
+own comments, bots' and system notes start nothing: to tell the Run something, steer it
+(`collie run steer <run> "<words>"`, or from the card) rather than commenting. Collie
+never resolves a thread; that stays the reviewer's. A check that fails on a pushed head
+goes to a fix round, and four of them in a row park the Run for you to repair and resume.
+
 Then it asks **Release** or **Finish**, naming the head and who approved it. **Release**
 claims the repository, merges at exactly that head and tags the package; the Run ends
 only once the tag is on origin and its pipeline has finished and succeeded. **Finish**

@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 import type { ReviewComment, ReviewRead } from "../src/forge/review";
-import { standingOf, waitingLine } from "../src/review-wait";
+import { settleAnswers, standingOf, waitingLine } from "../src/review-wait";
 
 const HEAD = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b";
 const MOVED = "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
@@ -123,4 +123,46 @@ test("a forge that cannot be read is said, and the line names the merge request"
   expect(waitingLine("https://x/-/merge_requests/30", ["the approval (none yet)"])).toBe(
     "Waiting for review of https://x/-/merge_requests/30: the approval (none yet).",
   );
+});
+
+const open = (id: string) => {
+  const { kind: _kind, external: _external, answered: _answered, ...rest } = comment(id);
+  return rest;
+};
+const FIX = "c0ffee1234567890c0ffee1234567890c0ffee12";
+
+test("a fixed answer is replied to with its commit only where the head carries it, linking the comment", () => {
+  const given = [open("1"), open("2")];
+  const settled = settleAnswers({
+    given,
+    answers: [
+      { id: "1", answer: "fixed", commit: FIX, note: "renamed it" },
+      { id: "2", answer: "fixed", commit: "deadbeef", note: "moved it" },
+    ],
+    onHead: [FIX],
+    open: ["1", "2"],
+  });
+  expect(settled.replies).toEqual([
+    { id: "1", body: `${given[0]!.url}\n\nFixed in \`c0ffee12\`: renamed it` },
+  ]);
+  expect(settled.carried.map((one) => one.id)).toEqual(["2"]);
+});
+
+test("a disputed answer is replied to with its reason, and one left out is carried", () => {
+  const given = [open("1"), open("2")];
+  const settled = settleAnswers({
+    given,
+    answers: [{ id: "1", answer: "disputed", note: "the name is the domain's" }],
+    onHead: [],
+    open: ["1", "2"],
+  });
+  expect(settled.replies).toEqual([
+    { id: "1", body: `${given[0]!.url}\n\nNot changed: the name is the domain's` },
+  ]);
+  expect(settled.carried.map((one) => one.id)).toEqual(["2"]);
+});
+
+test("a comment answered on the forge since is neither replied to nor carried", () => {
+  const settled = settleAnswers({ given: [open("1")], answers: [], onHead: [], open: [] });
+  expect(settled).toEqual({ replies: [], carried: [] });
 });
