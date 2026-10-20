@@ -1012,8 +1012,8 @@ export const idleAgentsSweeper = (opts: {
     const going: Launched[] = [];
     const now = yield* Clock.currentTimeMillis;
     for (const run of opts.runs)
-      if (FINISHED.has(run.state) && !opts.finishedSince.has(run.id))
-        opts.finishedSince.set(run.id, now);
+      if (!FINISHED.has(run.state)) opts.finishedSince.delete(run.id);
+      else if (!opts.finishedSince.has(run.id)) opts.finishedSince.set(run.id, now);
     for (const run of opts.runs)
       for (const launched of yield* readLaunches(opts.stateDir, run.id)) {
         if (FINISHED.has(run.state)) named.push({ run, launched });
@@ -1154,10 +1154,12 @@ export const idleAgentsSweeper = (opts: {
 
   return {
     judge: Effect.gen(function* () {
+      // Run even when closing is off: it records the sessions herdr reports.
+      const found = yield* candidates;
       if (opts.idleCloseMs <= 0) return { remove: [], keep: [] };
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
-      for (const one of yield* candidates) {
+      for (const one of found) {
         const target = targetOf(one.launched.agent, one.run.id);
         const judged = yield* verdict(one);
         if ("keep" in judged) keep.push({ kind, target, reason: judged.keep });

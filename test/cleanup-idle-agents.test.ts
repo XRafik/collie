@@ -256,6 +256,21 @@ test("a Run the host reads with no finish time counts from when the sweep first 
     }),
   ));
 
+test("a stopped Run that resumes counts its next finish from when the sweep sees that one", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      const finishedSince: FinishedSince = new Map([["r1", yield* ago(80 * MIN_MS)]]);
+      const idle = yield* idleFor(80 * MIN_MS);
+      const as = (state: RunFacts["state"]) =>
+        sweeper([runFacts({ id: "r1", state, finished: null })], idle, { finishedSince });
+      yield* sweep([as("running")], rig.stateDir, "host");
+      const again = yield* sweep([as("succeeded")], rig.stateDir, "host");
+      expect(again.keep).toEqual(kept("idle 0 of 60 min"));
+      expect(yield* closes).toBe(0);
+    }),
+  ));
+
 test("a turn clears the idle time, so a Reopened Run's agent has its hour again", () =>
   runEffect(
     Effect.gen(function* () {
@@ -728,6 +743,31 @@ test("a live Run's agent has the session herdr reports recorded, and is not judg
         "host",
       );
       expect([judged.remove, judged.keep]).toEqual([[], []]);
+      const fs = yield* FileSystem.FileSystem;
+      const record = yield* fs.readFileString(`${rig.stateDir}/agents/r1/build.launch.json`);
+      expect(
+        Schema.decodeUnknownSync(Schema.fromJsonString(Launched))(record).agentSession,
+      ).toEqual(SESSION);
+    }),
+  ));
+
+test("with idle_close_ms at 0 the sweep still records the session herdr reports", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addWorkspace("wT", "Project | Picker", "/project");
+      yield* rig.addRestored({
+        paneId: "wT-p2",
+        workspaceId: "wT",
+        terminalId: TERMINAL,
+        session: SESSION,
+        agent: "impl",
+      });
+      yield* launched("impl", "r1", TERMINAL, "pi");
+      yield* sweep(
+        [sweeper([runFacts({ id: "r1", state: "running" })], new Map(), { idleCloseMs: 0 })],
+        rig.stateDir,
+        "host",
+      );
       const fs = yield* FileSystem.FileSystem;
       const record = yield* fs.readFileString(`${rig.stateDir}/agents/r1/build.launch.json`);
       expect(
