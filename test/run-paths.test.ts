@@ -1,7 +1,7 @@
 // The lock every writer of a Run's directory takes: a crashed holder's claim is broken
 // at once, a live one is respected, and a claim that moved is never the one removed.
 
-import { Clock, DateTime, Effect, FileSystem, Path, Schema } from "effect";
+import { Clock, DateTime, Deferred, Duration, Effect, FileSystem, Path, Schema } from "effect";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { breakStaleLock, processStartTime, withDirLock, withLock } from "../src/lock";
 import { exec } from "./support/command";
@@ -266,5 +266,40 @@ test("fibers of one process contending for one lock each get it in turn, and non
           { concurrency: "unbounded" },
         );
       expect(most).toBe(1);
+    }),
+  ));
+
+test("a wait given as a duration counts the first claim, so a claim slower than it is the only one", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const lock = path.join(dir, "held.json.lock");
+      let claims = 0;
+      const turn = (wait: Effect.Effect<void>) =>
+        withLock(
+          lock,
+          Effect.succeed("contended"),
+          wait.pipe(Effect.as("held")),
+          Duration.millis(50),
+        );
+      const held = yield* Deferred.make<void>();
+      yield* turn(Deferred.succeed(held, undefined).pipe(Effect.andThen(Effect.never))).pipe(
+        Effect.forkChild,
+      );
+      yield* Deferred.await(held);
+      const answer = yield* turn(Effect.void).pipe(
+        Effect.updateService(FileSystem.FileSystem, (inner) => ({
+          ...inner,
+          writeFileString: (file, data, options) =>
+            Effect.sleep("60 millis").pipe(
+              Effect.andThen(Effect.sync(() => void (file === lock && claims++))),
+              Effect.andThen(inner.writeFileString(file, data, options)),
+            ),
+        })),
+      );
+      expect(answer).toBe("contended");
+      expect(claims).toBe(1);
+      expect(yield* fs.exists(lock)).toBe(true);
     }),
   ));

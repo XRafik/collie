@@ -72,20 +72,28 @@ const claimLock = Effect.fn("claimLock")(function* (lock: string) {
 });
 
 /** The one acquisition policy: recover stale claims and wait out brief live contention. */
-const acquireLock = Effect.fn("acquireLock")((lock: string, claims: number | Duration.Duration) =>
-  claimLock(lock).pipe(
+const acquireLock = Effect.fn("acquireLock")(function* (
+  lock: string,
+  claims: number | Duration.Duration,
+) {
+  const until = Duration.isDuration(claims)
+    ? (yield* Clock.currentTimeMillis) + Duration.toMillis(claims)
+    : Infinity;
+  const nextClaimInTime = Clock.currentTimeMillis.pipe(
+    Effect.map((now) => now + LOCK_CLAIM_SPACING_MS < until),
+  );
+  return yield* claimLock(lock).pipe(
     Effect.flatMap((claimed) =>
       claimed ? Effect.succeed(true) : Effect.fail(new LockContended()),
     ),
     Effect.retry({
-      schedule: Schedule.spaced(LOCK_CLAIM_SPACING_MS).pipe(
-        Schedule.upTo(Duration.isDuration(claims) ? { duration: claims } : { times: claims }),
-      ),
-      while: (error) => error instanceof LockContended,
+      times: Duration.isDuration(claims) ? undefined : claims,
+      schedule: Schedule.spaced(LOCK_CLAIM_SPACING_MS),
+      while: (error) => (error instanceof LockContended ? nextClaimInTime : false),
     }),
     Effect.catchTag("LockContended", () => Effect.succeed(false)),
-  ),
-);
+  );
+});
 
 /**
  * Runs `effect` while this process holds `lock`, and hands the lock back whichever way it
