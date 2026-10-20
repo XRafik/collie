@@ -57,6 +57,7 @@ import type { UsageReading } from "../src/usage-model";
 import { readCards } from "../src/cards";
 import { readDrift } from "../src/drift";
 import { FixOutputSchema, SynthesisSchema } from "../src/output";
+import { Triage } from "../workflows/retrospective";
 import { seedIntent, writeIntent } from "../src/intent";
 import { appendLine, deliveriesOf, readLedger, reconcile } from "../src/steering";
 import { readLaunches } from "../src/launches";
@@ -272,6 +273,19 @@ test("the contract an agent is held to is in the prompt it is sent, with the jud
   expect(prompt).toContain("clean only when there is nothing left for the implementer");
   expect(prompt).toContain("one sentence a human reads");
   expect(prompt).toContain("it is asking for your judgment");
+});
+
+test("self-improve's triager is shown that an Improvement's name and keys are kebab-case", () => {
+  const prompt = promptFor({
+    role: "retrospective",
+    instructions: "Triage the window.",
+    input: {},
+    output: "/state/agents/r1/triage.json",
+    contract: jsonSchemaFor(Triage),
+  });
+  const kebab = `"pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"`;
+  // Finding.key, Improvement.name and each of Improvement.keys.
+  expect(prompt.split(kebab)).toHaveLength(4);
 });
 
 test("a Run's attachments are listed between the instructions and the Output, and none means no section", () => {

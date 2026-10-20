@@ -1388,6 +1388,10 @@ constrains nothing — a `Schema.declare`, for instance, becomes `{}`. Neither m
 schema invalid. What is lost is the copy a model is held to at its own end; your workflow
 is still held to the schema itself.
 
+A `Schema.isPattern` is drawn as a `pattern` with or without the `u` flag, as long as its
+source means the same with it; one whose flags change what it matches, such as `i` or `m`,
+is not drawn.
+
 ## Typechecking a module
 
 ```sh

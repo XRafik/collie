@@ -251,6 +251,21 @@ test("a schema JSON Schema cannot say everything about is still a schema, and sa
   expect(projected.limits).toEqual(["properties.at projects to nothing"]);
 });
 
+test("a pattern check is drawn as the pattern a model is held to, with or without flags", () => {
+  const drawn = jsonSchemaFor(
+    Schema.Struct({
+      name: Schema.String.check(Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)),
+      code: Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/u)),
+    }),
+  );
+  expect(drawn.document).toMatchObject({
+    properties: {
+      name: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+      code: { type: "string", pattern: "^[A-Z]{3}$" },
+    },
+  });
+});
+
 test("what a card is given is ids, titles and projections — never the closures", () => {
   const described = describeMetadata({
     hints: { text: "work-source" },
