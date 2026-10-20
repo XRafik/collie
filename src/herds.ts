@@ -102,6 +102,34 @@ export const aliveIn = (sessions: ReadonlyArray<LiveHerd>) =>
     { concurrency: "unbounded" },
   ).pipe(Effect.map((each) => each.flat()));
 
+/** Panes herdr restored on a harness session without the agent's name, which `agentList` omits. */
+const restoredPanes = (session: LiveHerd, agents: ReadonlyArray<AgentInfo>) =>
+  session.herdr
+    .paneList()
+    .pipe(
+      Effect.map((panes) =>
+        panes.filter(
+          (pane) =>
+            pane.agentSession !== null && !agents.some((agent) => agent.paneId === pane.paneId),
+        ),
+      ),
+    );
+
+/** The terminal and status of every restored pane `aliveIn` cannot name; a session that does not answer has none. */
+export const restoredIn = (sessions: ReadonlyArray<LiveHerd>) =>
+  Effect.forEach(
+    sessions,
+    (session) =>
+      session.herdr.agentList().pipe(
+        Effect.flatMap((agents) => restoredPanes(session, agents)),
+        Effect.map((panes) =>
+          panes.map((pane) => ({ terminalId: pane.terminalId, status: pane.agentStatus ?? null })),
+        ),
+        Effect.orElseSucceed(() => []),
+      ),
+    { concurrency: "unbounded" },
+  ).pipe(Effect.map((each) => each.flat()));
+
 /**
  * One element each time herdr reports a change in this session. Subscribed again after
  * every event, so an agent pane that appeared since is watched too.
@@ -111,9 +139,13 @@ const changesIn = (session: LiveHerd) =>
   Stream.fromEffectRepeat(
     Effect.gen(function* () {
       const agents = yield* session.herdr.agentList();
+      const restored = yield* restoredPanes(session, agents);
       yield* session.herdr.waitForEvent([
         ...PANE_EVENTS,
-        ...agents.map((agent) => ({ type: "pane.agent_status_changed", pane_id: agent.paneId })),
+        ...[...agents, ...restored].map((one) => ({
+          type: "pane.agent_status_changed",
+          pane_id: one.paneId,
+        })),
       ]);
     }).pipe(Effect.retry(Schedule.spaced("5 seconds"))),
   );

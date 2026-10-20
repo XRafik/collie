@@ -254,7 +254,7 @@ import { latest, readDispositions } from "./disposition";
 import { runAgents, stepsOf } from "./launches";
 import { factsOfView, settled, type RunFacts } from "./runs";
 import { Store } from "./store";
-import { SESSIONS_EVERY, aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
+import { SESSIONS_EVERY, aliveIn, focusPane, herdChanges, liveHerds, restoredIn } from "./herds";
 import {
   withDirLock,
   currentPid,
@@ -892,7 +892,8 @@ const hostBoard = (dir: string) =>
     const listingOf = (herds: typeof herdsNow) =>
       Effect.gen(function* () {
         const alive = yield* Effect.flatMap(herds, aliveIn).pipe(Effect.provideContext(bun));
-        noteIdle(idle, alive, yield* Clock.currentTimeMillis);
+        const restored = yield* Effect.flatMap(herds, restoredIn).pipe(Effect.provideContext(bun));
+        noteIdle(idle, [...alive, ...restored], yield* Clock.currentTimeMillis);
         const facts = yield* runs;
         return { runs: facts, views: yield* boardOf(facts, alive) };
       });

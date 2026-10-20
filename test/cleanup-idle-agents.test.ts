@@ -15,6 +15,7 @@ import {
 } from "../src/cleanup";
 import { Launched } from "../src/launches";
 import { Herdr, type AgentInfo } from "../src/herdr";
+import { restoredIn } from "../src/herds";
 import type { CompactionPorts, Stopped } from "../src/compaction";
 import { appendLine, ledgerPath } from "../src/steering";
 import type { RunFacts } from "../src/runs";
@@ -734,5 +735,23 @@ test("a live Run's agent has the session herdr reports recorded, and is not judg
       expect(
         Schema.decodeUnknownSync(Schema.fromJsonString(Launched))(record).agentSession,
       ).toEqual(SESSION);
+    }),
+  ));
+
+test("a restored pane's turn between sweeps, as the host's board reads it, clears its idle time", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addWorkspace("wT", "Project | Picker", "/project");
+      yield* rig.addRestored({
+        paneId: "wT-p9",
+        workspaceId: "wT",
+        terminalId: RESTORED,
+        session: SESSION,
+        status: "working",
+      });
+      const idle = yield* restoredIdleFor(61 * MIN_MS);
+      const herds = [{ herd: null, herdr: new Herdr(rig.pluginEnv()) }];
+      noteIdle(idle, yield* restoredIn(herds), yield* Clock.currentTimeMillis);
+      expect(idle.has(RESTORED)).toBe(false);
     }),
   ));
