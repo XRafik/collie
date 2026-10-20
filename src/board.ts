@@ -941,9 +941,16 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             ? touched.get(run.id) || epochMs(run.created)
             : epochMs(run.finished);
         const last = Math.max(0, ...runs.map(endedAt).filter(Number.isFinite));
+        const fanned = runs.find((run) => repoRunsOf.has(run.id));
+        const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
+        const own = runs.map(mrOf).find((one) => one !== null) ?? null;
+        const only = fan?.children.length === 1 ? fan.children[0]!.run : null;
+        // A single-repository fan-out's card is its one Repo run's merge request.
+        const repoRun =
+          own === null ? children.find((run) => run.id === only && mrOf(run) !== null) : undefined;
         // Read whatever the state: a merge GitLab reported lands the work even while the Run
         // is still going, and the card must say so.
-        const disposition = yield* dispositionOf(runs);
+        const disposition = yield* dispositionOf(repoRun === undefined ? runs : [...runs, repoRun]);
         // Finished work older than a day is History's, behind `older…` — landed work only:
         // an unmerged branch from last week is still waiting on you, however old.
         if (
@@ -954,8 +961,6 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         )
           return null;
         const leader = leaderOf(runs);
-        const fanned = runs.find((run) => repoRunsOf.has(run.id));
-        const fan = fanned === undefined ? null : yield* fanOf(fanned, repoRunsOf.get(fanned.id)!);
         const proposed = pending[0];
         const questions = questionsOf(everyRun);
         const decision: Decision | null = proposed ? asProposal(proposed) : (questions[0] ?? null);
@@ -1021,7 +1026,8 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         // A Task is as old as its first Run; a Run with no readable stamp has no age.
         const first = started.length === 0 ? 0 : Math.min(...started);
 
-        const mr = runs.map(mrOf).find((one) => one !== null) ?? null;
+        const mr = repoRun === undefined ? own : mrOf(repoRun);
+        const merging = repoRun ?? leader;
         const mrState = mr === null ? null : (mrStates.get(mrLabel(mr)) ?? null);
         const branch = runs.map((run) => run.branch).find((b) => b !== null) ?? null;
         // What the Task left behind: the tickets are whichever of its Runs wrote any.
@@ -1047,18 +1053,22 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         const forged = mr === null ? null : (forge.get(mrLabel(mr)) ?? null);
         const verified = awaitingMerge
           ? {
-              records: yield* readVerifications(leader.evidence).pipe(
+              records: yield* readVerifications(merging.evidence).pipe(
                 Effect.catch(() => Effect.succeed([])),
               ),
-              head: forged?.head ?? (yield* branchHead(leader, now)),
+              head: forged?.head ?? (yield* branchHead(merging, now)),
               approved: yield* Effect.forEach(
                 approvedFor(
-                  yield* approvedIn(leader.evidence),
-                  yield* readIntent(leader.dir).pipe(Effect.orElseSucceed(() => null)),
+                  yield* approvedIn(merging.evidence),
+                  yield* readIntent(merging.dir).pipe(Effect.orElseSucceed(() => null)),
                 ),
                 (spec) =>
                   commandOf(
-                    { id: leader.id, cwd: leader.cwd, worktree: leader.worktree?.path ?? null },
+                    {
+                      id: merging.id,
+                      cwd: merging.cwd,
+                      worktree: merging.worktree?.path ?? null,
+                    },
                     spec,
                   ),
               ),
@@ -1069,7 +1079,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             ? null
             : withForge(checksAt(verified.records, verified.head, verified.approved), forged);
         const readiness = readyToRelease({
-          succeeded: leader.state === "succeeded",
+          succeeded: merging.state === "succeeded",
           mr,
           mrState,
           draft: forged?.draft ?? false,
@@ -1078,7 +1088,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           blocking:
             mr === null
               ? 0
-              : (yield* findingsIn(leader.dir)).filter((one) => isBlocking(one)).length,
+              : (yield* findingsIn(merging.dir)).filter((one) => isBlocking(one)).length,
           mergeable: forged?.mergeable ?? null,
         });
         const finishedAt = settledNow ? endedAt(leader) : 0;
