@@ -124,6 +124,9 @@ export const rowFacts = (file: DiffFile, drafts: ReadonlyArray<string>): RowFact
 export const TREE = {
   paneStart: 320,
   paneMin: 192,
+  paneStep: 16,
+  /** The most of the Diff tab the pane may take. */
+  paneShare: 0.4,
   indent: 12,
   /** Where the guide line sits inside an indent. */
   guide: 8,
@@ -134,6 +137,14 @@ export const TREE = {
   scrollbar: 12,
   nameMin: 120,
 } as const;
+
+/** The pane's drawn width: the chosen one within the least width and the tab's share. */
+export const paneWidth = (chosen: number, tab: number): number =>
+  Math.max(TREE.paneMin, Math.min(chosen, tab * TREE.paneShare));
+
+/** The width ← or → chooses, stepped from the drawn width. */
+export const paneStepped = (chosen: number, tab: number, by: 1 | -1): number =>
+  paneWidth(paneWidth(chosen, tab) + by * TREE.paneStep, tab);
 
 /** The row facts' own sizes, at their `text-xs`, on the generous side. */
 const FACTS = { gap: 4, mark: 16, tick: 14, draftIcon: 14, char: 7 } as const;

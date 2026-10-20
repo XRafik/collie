@@ -13,6 +13,8 @@ import {
   foldersOn,
   type Folders,
   openFolders,
+  paneStepped,
+  paneWidth,
   reachBy,
   readingHeight,
   rowFacts,
@@ -515,6 +517,42 @@ describe("viewed ticks", () => {
     const ticks = untickViewed(tickViewed(tickViewed(none, a, base), b, base), "a.ts");
     expect(viewed(ticks, [a, b])).toEqual(["b.ts"]);
     expect(viewedCount(ticks, [a, b], base)).toBe("1 of 2 viewed");
+  });
+});
+
+describe("the tree pane's width", () => {
+  test("is the chosen width while it is between the least width and 40% of the tab", () => {
+    expect(paneWidth(300, 1000)).toBe(300);
+  });
+
+  test("never goes below the least width", () => {
+    expect(paneWidth(100, 1000)).toBe(TREE.paneMin);
+  });
+
+  test("is capped at 40% of the tab", () => {
+    expect(paneWidth(600, 1000)).toBe(400);
+  });
+
+  test("is the least width in a tab so narrow that 40% of it is less", () => {
+    expect(paneWidth(320, 300)).toBe(TREE.paneMin);
+  });
+
+  test("gives back the chosen width when a narrowed tab widens again", () => {
+    const chosen = 360;
+    expect(paneWidth(chosen, 600)).toBe(240);
+    expect(paneWidth(chosen, 1200)).toBe(chosen);
+  });
+
+  test("steps by 16px either way from the drawn width, clamped", () => {
+    expect(TREE.paneStep).toBe(16);
+    expect(paneStepped(300, 1000, 1)).toBe(316);
+    expect(paneStepped(300, 1000, -1)).toBe(284);
+    expect(paneStepped(TREE.paneMin, 1000, -1)).toBe(TREE.paneMin);
+    expect(paneStepped(400, 1000, 1)).toBe(400);
+  });
+
+  test("steps from the drawn width when the tab caps the chosen one", () => {
+    expect(paneStepped(600, 1000, -1)).toBe(384);
   });
 });
 

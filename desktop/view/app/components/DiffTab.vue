@@ -17,6 +17,8 @@ import {
   filterTree,
   foldersOn,
   openFolders,
+  paneStepped,
+  paneWidth,
   READING_LINE,
   reachBy,
   rowFacts,
@@ -132,13 +134,46 @@ type Row = TreeItem & { path: string; hover: string };
 const chevron = useAppConfig().ui.icons.chevronDown;
 const factsOf = (row: Row) => facts.value.get(row.path);
 const viewedOf = (row: Row) => viewed.value.has(row.path);
-const pane = TREE.paneStart;
+const tab = ref<HTMLElement | null>(null);
+const tabWidth = ref<number | null>(null);
+watch(tab, (box, _, onCleanup) => {
+  if (box === null) return;
+  const resized = new ResizeObserver(([entry]) => {
+    if (entry !== undefined && entry.contentRect.width > 0)
+      tabWidth.value = entry.contentRect.width;
+  });
+  resized.observe(box);
+  onCleanup(() => resized.disconnect());
+});
+const chosen = useTreeWidth();
+const pane = computed(() =>
+  tabWidth.value === null ? chosen.value : paneWidth(chosen.value, tabWidth.value),
+);
+const paneMax = computed(() =>
+  tabWidth.value === null ? pane.value : paneWidth(Infinity, tabWidth.value),
+);
+const dragging = ref<{ x: number; from: number } | null>(null);
+const startDrag = (event: PointerEvent) => {
+  if (event.button !== 0 || !(event.currentTarget instanceof HTMLElement)) return;
+  event.preventDefault();
+  event.currentTarget.setPointerCapture(event.pointerId);
+  dragging.value = { x: event.clientX, from: pane.value };
+};
+const drag = (event: PointerEvent) => {
+  const start = dragging.value;
+  if (start === null || tabWidth.value === null) return;
+  chosen.value = paneWidth(start.from + event.clientX - start.x, tabWidth.value);
+};
+const stepPane = (by: 1 | -1) => {
+  if (tabWidth.value !== null) chosen.value = paneStepped(chosen.value, tabWidth.value, by);
+};
 /** Tree's `level` counts from 1. */
 const countsShow = (row: Row, level: number) => {
   const shown = factsOf(row);
   return (
     shown !== undefined &&
-    rowRoom({ depth: level - 1, pane, file: { facts: shown, viewed: viewedOf(row) } }).counts
+    rowRoom({ depth: level - 1, pane: pane.value, file: { facts: shown, viewed: viewedOf(row) } })
+      .counts
   );
 };
 const geometry = {
@@ -286,7 +321,12 @@ watch(
 </script>
 
 <template>
-  <div data-testid="diff" class="flex flex-col gap-3">
+  <div
+    ref="tab"
+    data-testid="diff"
+    class="flex flex-col gap-3"
+    :class="dragging !== null && 'cursor-col-resize select-none'"
+  >
     <div class="flex items-center gap-3 text-sm">
       <UBadge
         variant="subtle"
@@ -333,64 +373,88 @@ watch(
       @close="source = null"
     />
     <p v-if="diff.files.length === 0" class="text-sm text-muted">Nothing has changed yet.</p>
-    <div v-else class="flex items-start gap-3">
+    <div v-else class="flex items-start">
       <div
-        class="sticky top-0 flex shrink-0 flex-col gap-2"
-        :style="{
-          width: `${pane}px`,
-          maxHeight: visibleHeight === null ? undefined : `${visibleHeight}px`,
-        }"
+        class="sticky top-0 flex shrink-0"
+        :style="{ maxHeight: visibleHeight === null ? undefined : `${visibleHeight}px` }"
       >
-        <UInput
-          v-model="filter"
-          icon="i-lucide-search"
-          placeholder="Filter files"
-          size="sm"
-          class="w-full"
-          data-testid="diff-filter"
-        />
-        <div
-          ref="treeBox"
-          class="min-h-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
-          :style="geometry"
-        >
-          <p v-if="items.tree.length === 0" class="text-sm text-muted" data-testid="diff-no-match">
-            No file matches
-          </p>
-          <UTree
-            v-else
-            :items="items.tree"
-            :get-key="(item: Row) => item.path"
-            :model-value="selected"
-            :expanded="expanded"
-            :ui="treeUi"
-            data-testid="diff-tree"
-            @select="selectRow"
-            @update:expanded="setExpanded"
+        <div class="flex min-h-0 flex-col gap-2" :style="{ width: `${pane}px` }">
+          <UInput
+            v-model="filter"
+            icon="i-lucide-search"
+            placeholder="Filter files"
+            size="sm"
+            class="w-full"
+            data-testid="diff-filter"
+          />
+          <div
+            ref="treeBox"
+            class="min-h-0 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] [scrollbar-width:thin]"
+            :style="geometry"
           >
-            <template #item="{ item, ui, level }">
-              <span :title="item.hover" class="flex min-w-0 flex-1 items-center gap-[inherit]">
-                <UIcon
-                  :name="item.icon!"
-                  :class="ui.linkLeadingIcon({ class: treeUi.linkLeadingIcon })"
-                />
-                <span :class="ui.linkLabel()">{{ item.label }}</span>
-                <span :class="ui.linkTrailing({ class: treeUi.linkTrailing })">
+            <p
+              v-if="items.tree.length === 0"
+              class="text-sm text-muted"
+              data-testid="diff-no-match"
+            >
+              No file matches
+            </p>
+            <UTree
+              v-else
+              :items="items.tree"
+              :get-key="(item: Row) => item.path"
+              :model-value="selected"
+              :expanded="expanded"
+              :ui="treeUi"
+              data-testid="diff-tree"
+              @select="selectRow"
+              @update:expanded="setExpanded"
+            >
+              <template #item="{ item, ui, level }">
+                <span :title="item.hover" class="flex min-w-0 flex-1 items-center gap-[inherit]">
                   <UIcon
-                    v-if="item.children?.length"
-                    :name="chevron"
-                    :class="ui.linkTrailingIcon({ class: treeUi.linkTrailingIcon })"
+                    :name="item.icon!"
+                    :class="ui.linkLeadingIcon({ class: treeUi.linkLeadingIcon })"
                   />
-                  <DiffRowFacts
-                    v-else
-                    :facts="factsOf(item)"
-                    :viewed="viewedOf(item)"
-                    :counts="countsShow(item, level)"
-                  />
+                  <span :class="ui.linkLabel()">{{ item.label }}</span>
+                  <span :class="ui.linkTrailing({ class: treeUi.linkTrailing })">
+                    <UIcon
+                      v-if="item.children?.length"
+                      :name="chevron"
+                      :class="ui.linkTrailingIcon({ class: treeUi.linkTrailingIcon })"
+                    />
+                    <DiffRowFacts
+                      v-else
+                      :facts="factsOf(item)"
+                      :viewed="viewedOf(item)"
+                      :counts="countsShow(item, level)"
+                    />
+                  </span>
                 </span>
-              </span>
-            </template>
-          </UTree>
+              </template>
+            </UTree>
+          </div>
+        </div>
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize the file tree"
+          :aria-valuenow="Math.round(pane)"
+          :aria-valuemin="TREE.paneMin"
+          :aria-valuemax="Math.round(paneMax)"
+          tabindex="0"
+          class="group flex w-3 shrink-0 cursor-col-resize touch-none justify-center outline-none"
+          data-testid="diff-tree-resize"
+          @pointerdown="startDrag"
+          @pointermove="drag"
+          @lostpointercapture="dragging = null"
+          @keydown.left.prevent="stepPane(-1)"
+          @keydown.right.prevent="stepPane(1)"
+        >
+          <div
+            class="w-px transition-all group-hover:w-0.5 group-hover:bg-primary group-focus-visible:w-0.5 group-focus-visible:bg-primary"
+            :class="dragging === null ? 'bg-(--ui-border)' : 'w-0.5 bg-primary'"
+          />
         </div>
       </div>
       <div ref="sections" class="flex min-w-0 flex-1 flex-col gap-3">
