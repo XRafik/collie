@@ -1238,15 +1238,25 @@ const answeredLines = Effect.fn("operations.answeredLines")(function* (run: RunF
 const mergeLines = Effect.fn("operations.mergeLines")(function* (env: PluginEnv, run: RunFacts) {
   const lines = run.branch === null ? [] : [`Branch: ${run.branch}`];
   if (run.mr === null) return lines;
-  const label = mrLabel(run.mr);
-  const state = (yield* readMrStates(env.stateDir)).get(label);
-  const checks = (yield* readForge(env.stateDir)).get(label)?.checks;
-  const watched =
-    state === undefined
+  const watched = yield* watchedOf(env);
+  const noun = mrNounOf(run.mr);
+  return [
+    `${noun[0]!.toUpperCase()}${noun.slice(1)}: ${run.mr} — ${watched(mrLabel(run.mr))}`,
+    ...lines,
+  ];
+});
+
+/** What the host's merge watch last recorded of a merge request, by its label. */
+const watchedOf = Effect.fn("operations.watchedOf")(function* (env: PluginEnv) {
+  const states = yield* readMrStates(env.stateDir);
+  const forge = yield* readForge(env.stateDir);
+  return (label: string) => {
+    const state = states.get(label);
+    const checks = forge.get(label)?.checks;
+    return state === undefined
       ? "not watched"
       : `${state}, checks ${checks === undefined ? "not recorded" : checks.state === "failed" ? `failed (${checks.name})` : checks.state}`;
-  const noun = mrNounOf(run.mr);
-  return [`${noun[0]!.toUpperCase()}${noun.slice(1)}: ${run.mr} — ${watched}`, ...lines];
+  };
 });
 
 /** The Run's own plan directory and how many tickets it holds. */
@@ -1321,6 +1331,7 @@ export const runFacts = Effect.fn("operations.runFacts")(function* (
   const attention = yield* attentionFor(run);
   const started = (listed ?? (yield* listRuns(env))).filter((one) => one.parent === run.id);
   const agents = yield* runAgents(env.stateDir, run.id);
+  const watched = yield* watchedOf(env);
   const lines = [
     `Status: ${run.state}`,
     `Directory: ${run.cwd}`,
@@ -1342,7 +1353,10 @@ export const runFacts = Effect.fn("operations.runFacts")(function* (
           "",
           "### Runs it started",
           "",
-          ...started.map((one) => `- run ${one.id}: ${one.workflow}, ${one.state}`),
+          ...started.map(
+            (one) =>
+              `- run ${one.id}: ${one.workflow}, ${one.state}${one.mr === null ? "" : `; ${mrLabel(one.mr)} ${watched(mrLabel(one.mr))}`}`,
+          ),
         ]),
     ...(agents.length === 0
       ? []

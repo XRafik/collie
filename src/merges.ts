@@ -14,7 +14,7 @@ import {
   type MrState,
   type TaskView,
 } from "./board-model";
-import { readDispositions, recordDisposition } from "./disposition";
+import { latest, readDispositions, recordDisposition } from "./disposition";
 import { forgeOf } from "./forge/forge";
 import { forgeHere, type Runner } from "./mr";
 import { runDir } from "./engine";
@@ -74,10 +74,10 @@ function stateOf(state: string): MrState {
 
 /**
  * One round: a Task with a branch and no merge request takes the one opened from its
- * branch, every Task with a merge request whose answer is stale is asked about, a merged
- * one gets its `merged` disposition recorded as its forge's word, and what was learned is
- * written where `collie --json board` reads it. `checked` and `states` are the caller's
- * memory between rounds; the file is everyone else's.
+ * branch, every Task's and fan-out Repo run's merge request whose answer is stale is asked
+ * about, a merged one gets its `merged` disposition recorded as its forge's word, and what
+ * was learned is written where `collie --json board` reads it. `checked` and `states` are
+ * the caller's memory between rounds; the file is everyone else's.
  */
 export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
   stateDir: string;
@@ -103,15 +103,37 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     if (!opts.states.has(label)) opts.states.set(label, state);
   const forge = new Map(yield* readForge(opts.stateDir));
   let learned = false;
+  const watched: Array<Watched> = [];
   for (const view of opts.views) {
     const found = view.mr === null ? yield* fromBranch(view, opts) : null;
     const mr = view.mr ?? found?.url ?? null;
-    if (mr === null) continue;
+    const repos = view.children.flatMap((child) =>
+      child.run === null || child.mr === null ? [] : [{ run: child.run, mr: child.mr }],
+    );
+    // A card showing its one Repo run's merge request watches it as that Repo run's.
+    const shown = repos.find((repo) => mr !== null && mrLabel(repo.mr) === mrLabel(mr));
+    if (mr !== null)
+      watched.push({
+        mr,
+        disposition: view.disposition,
+        runs: shown === undefined ? view.runs : [...view.runs, shown.run],
+        owner: shown?.run ?? found?.run ?? view.run,
+      });
+    for (const repo of repos)
+      if (repo !== shown)
+        watched.push({
+          mr: repo.mr,
+          disposition: yield* dispositionIn(runDir(opts.stateDir, repo.run)),
+          runs: [repo.run],
+          owner: repo.run,
+        });
+  }
+  for (const { mr, disposition, runs, owner } of watched) {
     // A merged one is still followed to its deploy jobs, until production has it.
-    if (view.disposition !== null && !view.disposition.startsWith("merged")) continue;
+    if (disposition !== null && !disposition.startsWith("merged")) continue;
     const label = mrLabel(mr);
     if (mrRefOf(mr) === null) continue;
-    const dirs = view.runs.map((run) => runDir(opts.stateDir, run));
+    const dirs = runs.map((run) => runDir(opts.stateDir, run));
     if (
       opts.states.get(label) !== "in-prod" &&
       (opts.checked.get(label) ?? 0) + MERGE_POLL_MS <= opts.now
@@ -127,7 +149,7 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
         opts.states.set(label, state);
         forge.set(label, facts);
         if (state !== "open" && state !== "closed" && (yield* firstMerged(dirs, label)) === null)
-          yield* recordDisposition(runDir(opts.stateDir, found?.run ?? view.run), {
+          yield* recordDisposition(runDir(opts.stateDir, owner), {
             at: mergedAt ?? DateTime.formatIso(DateTime.makeUnsafe(opts.now)),
             by,
             kind: "merged",
@@ -148,13 +170,29 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
     if (merged === null) continue;
     for (const run of opts.runs)
       if (
-        view.runs.includes(run.id) &&
+        runs.includes(run.id) &&
         (run.state === "running" || run.state === "waiting") &&
         epochMs(run.created) < merged
       )
         yield* opts.stop(run.id, `${label} merged`);
   }
   if (learned) yield* writeMrStates(opts.stateDir, opts.states, forge);
+});
+
+/** A merge request the watch follows, and the Runs it lands. */
+interface Watched {
+  readonly mr: string;
+  /** What became of its work, as `kind ref`; null where nobody said. */
+  readonly disposition: string | null;
+  readonly runs: ReadonlyArray<string>;
+  /** The Run its `merged` disposition is recorded on. */
+  readonly owner: string;
+}
+
+/** A Run's latest disposition, as a card says one. */
+const dispositionIn = Effect.fn("Merges.dispositionIn")(function* (dir: string) {
+  const line = latest(yield* readDispositions(dir).pipe(Effect.catch(() => Effect.succeed([]))));
+  return line === null ? null : line.ref === "" ? line.kind : `${line.kind} ${line.ref}`;
 });
 
 /** When the Task's merge request merged, as its first `merged` Disposition says; null for none. */

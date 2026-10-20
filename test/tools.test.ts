@@ -1436,6 +1436,31 @@ test("a Run lists the Runs it started, each with its workflow and state", () =>
     }),
   ));
 
+test("a Run's row for a Run it started shows that Run's merge request as the merge watch last said", () =>
+  inWorld(
+    Effect.gen(function* () {
+      const parent = yield* aRun("start a child");
+      const child = yield* startedRun("hello", { name: "child" }, isSettled, parent.id);
+      const mr = "https://gitlab.cego.dk/mk/api/-/merge_requests/4";
+      yield* (yield* FileSystem.FileSystem).writeFileString(
+        `${child.dir}/merge-request`,
+        `${mr}\n`,
+      );
+      expect(yield* call("collie_run", { run: parent.id })).toContain(
+        `- run ${child.id}: hello, succeeded; mk/api!4 not watched`,
+      );
+
+      yield* writeMrStates(
+        stateDir,
+        new Map([["mk/api!4", "open"]]),
+        new Map([["mk/api!4", { checks: { state: "passed" }, head: null }]]),
+      );
+      expect(yield* call("collie_run", { run: parent.id })).toContain(
+        `- run ${child.id}: hello, succeeded; mk/api!4 open, checks passed`,
+      );
+    }),
+  ));
+
 test("a Run's own merge request is shown as recorded, with what the merge watch last said of it", () =>
   inWorld(
     Effect.gen(function* () {
