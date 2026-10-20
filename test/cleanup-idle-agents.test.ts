@@ -710,3 +710,29 @@ test("the sweep records the session of an agent still on its launch's terminal",
       ).toEqual(SESSION);
     }),
   ));
+
+test("a live Run's agent has the session herdr reports recorded, and is not judged", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addWorkspace("wT", "Project | Picker", "/project");
+      yield* rig.addRestored({
+        paneId: "wT-p2",
+        workspaceId: "wT",
+        terminalId: TERMINAL,
+        session: SESSION,
+        agent: "impl",
+      });
+      yield* launched("impl", "r1", TERMINAL, "pi");
+      const judged = yield* sweep(
+        [sweeper([runFacts({ id: "r1", state: "running" })], yield* idleFor(2 * HOUR_MS))],
+        rig.stateDir,
+        "host",
+      );
+      expect([judged.remove, judged.keep]).toEqual([[], []]);
+      const fs = yield* FileSystem.FileSystem;
+      const record = yield* fs.readFileString(`${rig.stateDir}/agents/r1/build.launch.json`);
+      expect(
+        Schema.decodeUnknownSync(Schema.fromJsonString(Launched))(record).agentSession,
+      ).toEqual(SESSION);
+    }),
+  ));

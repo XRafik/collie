@@ -1009,6 +1009,7 @@ export const idleAgentsSweeper = (opts: {
     const sessions: AgentSession[] = [];
     const live = { terminals: new Set<string>(), sessions };
     const named: Array<{ run: RunFacts; launched: Launched }> = [];
+    const going: Launched[] = [];
     const now = yield* Clock.currentTimeMillis;
     for (const run of opts.runs)
       if (FINISHED.has(run.state) && !opts.finishedSince.has(run.id))
@@ -1017,6 +1018,7 @@ export const idleAgentsSweeper = (opts: {
       for (const launched of yield* readLaunches(opts.stateDir, run.id)) {
         if (FINISHED.has(run.state)) named.push({ run, launched });
         else {
+          going.push(launched);
           if (launched.terminalId !== undefined) live.terminals.add(launched.terminalId);
           if (launched.agentSession !== undefined) sessions.push(launched.agentSession);
         }
@@ -1048,6 +1050,23 @@ export const idleAgentsSweeper = (opts: {
       ),
     );
     const seen = listings.flatMap((one) => one.live);
+    /** The agent herdr has on `launched`'s own terminal, whose session is recorded. */
+    const onOwnTerminal = (launched: Launched, here: ReadonlyArray<Live>) =>
+      Effect.gen(function* () {
+        const own = here.find(
+          (one) =>
+            one.name === launched.agent &&
+            one.terminalId !== null &&
+            one.terminalId === launched.terminalId,
+        );
+        if (own !== undefined && !sameSession(own.agentSession, launched.agentSession))
+          yield* recordSession(launched, own.agentSession);
+        return own;
+      });
+    for (const launched of going) {
+      const own = yield* onOwnTerminal(launched, seen);
+      if (own?.agentSession != null) sessions.push(own.agentSession);
+    }
     noteIdle(opts.idle, seen, now);
     if (listings.every((one) => one.listed))
       forgetGone(opts.idle, new Set(seen.flatMap((one) => one.terminalId ?? [])));
@@ -1060,14 +1079,7 @@ export const idleAgentsSweeper = (opts: {
     }> = [];
     for (const { run, launched } of named)
       for (const { session, live: here } of listings) {
-        const own = here.find(
-          (one) =>
-            one.name === launched.agent &&
-            one.terminalId !== null &&
-            one.terminalId === launched.terminalId,
-        );
-        if (own !== undefined && !sameSession(own.agentSession, launched.agentSession))
-          yield* recordSession(launched, own.agentSession);
+        const own = yield* onOwnTerminal(launched, here);
         const at = own ?? here.find((one) => sameSession(one.agentSession, launched.agentSession));
         if (at === undefined || at.terminalId === null) continue;
         const terminalId = at.terminalId;
