@@ -86,12 +86,13 @@ test(
             // The network starts refusing the port: the listener moves, a resetter holds it.
             const moved = yield* freePort;
             const blocking = yield* Scope.make();
+            // Counted from the stop, where the dialler's backoff starts, not the restart.
+            const paired = (yield* first.ssh.calls).length;
+            reads.set(first.name, 0);
             yield* stopHost(second.world.state);
             yield* resetter(advertised).pipe(Scope.provide(blocking));
             yield* first.ssh.maps({ [advertised]: moved });
             yield* second.cli(["machine", "list"], { ...extra, COLLIE_PEER_PORT: String(moved) });
-            const paired = (yield* first.ssh.calls).length;
-            reads.set(first.name, 0);
 
             const waiting = yield* until(
               () => listed(first, "second"),

@@ -1407,6 +1407,14 @@ tree. `--expect fail` makes no exception, and a human's `collie verify --run` is
 an agent's is. Any command that is not one of the Run's checks runs, and its envelope has
 `"ran": true`; no script name is special.
 
+While the Machine is [Short of memory](using.md#short-of-memory), the host holds the
+command before it runs, reading again every 15 seconds: `collie verify` first prints
+`waiting for memory on <Machine>: <a> of <t> GB available`, then runs it once the Machine
+is no longer short. Its result is the command's, unchanged. There is no flag to run anyway,
+and a human's `collie verify` waits as an agent's does. A stop of the Run ends the wait
+with `invalid_state`, and the command never runs. While a verify an agent asked for waits,
+that agent's Output budget does not run.
+
 `--expect fail` is how a bug is proved to exist. A regression test that exits non-zero on
 the tree before the fix is the evidence, so that record is a `pass`; the same command
 succeeding is the reproduction failing, not the bug being fixed. Stability comes first
@@ -1657,7 +1665,8 @@ with the one condition that keeps it, then the total a sweep would free. `--appl
 now, through the host, and prints what it removed and what it freed. There is no
 confirmation: the host sweeps the same way on its own every ten minutes. What each kind
 keeps, and why, is [ADR-0045](adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md);
-[Cleanup](using.md#cleanup) says what a sweep covers.
+[Cleanup](using.md#cleanup) says what a sweep covers. An `idle-agent` item is a finished
+Run's agent, named as `<agent> of <run>`; it frees no disk, so its size is 0.
 
 Under `--json`, both answer with the same `data`:
 
@@ -2046,6 +2055,13 @@ that installed herdr. Collie never runs `herdr update` or `herdr server stop` it
 worktrees and the temporary directory, once each. One with less than 10% or 5 GiB free is a
 `!` warning naming it, with what [`collie cleanup`](#cleaning-up) would free where a host has
 served this state directory, and `collie cleanup --apply` as the fix. It never fails the run.
+
+**Memory** gives this Machine's reading, as `8.1 of 62.0 GB available (13%)`, with
+`, pressure 0.0` on Linux. While the Machine is
+[Short of memory](using.md#short-of-memory) it is a `!` warning naming the agents
+[`collie cleanup`](#cleaning-up) would close, or saying there are none, with
+`collie cleanup --apply` as the fix. Memory that cannot be read is a `!` warning saying where
+it was read from. It never fails the run.
 
 **Checks**, where a host has served this state directory: a `!` warning while
 [`collie cleanup`](#cleaning-up) lists a `check` no host is collecting, saying how many and

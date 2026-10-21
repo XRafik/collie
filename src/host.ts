@@ -66,6 +66,7 @@ import {
   runDir,
   evidenceDir,
   STOP,
+  controlPath,
   type HostServices,
   type Locate,
 } from "./engine";
@@ -106,6 +107,7 @@ import { donePasses, markersOf, runningCheck, followLog } from "./checks";
 import { startCheckout } from "./agent-start";
 import { configuredAgents } from "./agents";
 import { Collecting } from "./collecting";
+import { memoryWaitOf, waitForMemory, waitLine } from "./memory-wait";
 import { runLog } from "./agent-end";
 import { hostLogger, rotateInPlace } from "./host-log";
 import { handoffsDir, handoffsIn } from "./handoffs";
@@ -130,6 +132,10 @@ import {
   stateSweeper,
   uploadsSweeper,
   taskWorkspacesSweeper,
+  idleAgentsSweeper,
+  noteIdle,
+  type FinishedSince,
+  type IdleSince,
   generationsDir,
   generationsSweeper,
   judge,
@@ -248,7 +254,7 @@ import { latest, readDispositions } from "./disposition";
 import { runAgents, stepsOf } from "./launches";
 import { factsOfView, settled, type RunFacts } from "./runs";
 import { Store } from "./store";
-import { SESSIONS_EVERY, aliveIn, focusPane, herdChanges, liveHerds } from "./herds";
+import { SESSIONS_EVERY, agentsIn, focusPane, herdChanges, liveHerds } from "./herds";
 import {
   withDirLock,
   currentPid,
@@ -331,6 +337,8 @@ const RunShown = Schema.Struct({
   handoffs: Schema.optionalKey(
     Schema.Array(Schema.Struct({ path: Schema.String, bytes: Schema.Int })),
   ),
+  /** What of it waits for memory, as the card says it. Absent from an older host. */
+  memory: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 
 const Loaded = Schema.Struct({
@@ -683,6 +691,9 @@ const handlers = (
                 path: `${handoffsDir(runDir(dir, runId))}/${file.name}`,
                 bytes: file.bytes,
               })),
+              memory: yield* Effect.map(memoryWaitOf(runDir(dir, runId)), (wait) =>
+                wait === null ? null : waitLine(wait),
+              ),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>
@@ -861,6 +872,8 @@ const hostBoard = (dir: string) =>
     const runs = registry
       .views(null)
       .pipe(Effect.map((views) => views.map((view) => factsOfView(env.stateDir, view))));
+    const idle: IdleSince = new Map();
+    const finishedSince: FinishedSince = new Map();
     const boardOf = (facts: ReadonlyArray<RunFacts>, alive: ReadonlyArray<AgentInfo>) =>
       Effect.gen(function* () {
         return yield* buildBoard({
@@ -878,7 +891,10 @@ const hostBoard = (dir: string) =>
     /** The board, with the Runs it was built from. */
     const listingOf = (herds: typeof herdsNow) =>
       Effect.gen(function* () {
-        const alive = yield* Effect.flatMap(herds, aliveIn).pipe(Effect.provideContext(bun));
+        const { alive, restored } = yield* Effect.flatMap(herds, agentsIn).pipe(
+          Effect.provideContext(bun),
+        );
+        noteIdle(idle, [...alive, ...restored], yield* Clock.currentTimeMillis);
         const facts = yield* runs;
         return { runs: facts, views: yield* boardOf(facts, alive) };
       });
@@ -904,6 +920,18 @@ const hostBoard = (dir: string) =>
           views: yield* build.pipe(Effect.orElseSucceed(() => [])),
           runs: all,
           seen,
+        }),
+        idleAgentsSweeper({
+          stateDir: env.stateDir,
+          sessions: herds,
+          runs: all,
+          idle,
+          finishedSince,
+          // A config that cannot be read closes nothing.
+          idleCloseMs: yield* loadDefaults(env.userDir).pipe(
+            Effect.map((defaults) => defaults.idleCloseMs),
+            Effect.orElseSucceed(() => 0),
+          ),
         }),
         worktreesSweeper({
           herdr,
@@ -1902,6 +1930,31 @@ const frontDoorHandlers = (
                   Effect.gen(function* () {
                     const echo = (stream: "stdout" | "stderr") => (text: string) =>
                       Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
+                    const from = whoOf(client).from;
+                    const fs = yield* FileSystem.FileSystem;
+                    const memory = yield* waitForMemory({
+                      env,
+                      stateDir: env.stateDir,
+                      runId,
+                      what: `collie verify "${name}"`,
+                      asker:
+                        whoOf(client).origin === "agent" && from?.run === runId
+                          ? (from.agent ?? null)
+                          : null,
+                      stopped: fs
+                        .exists(controlPath(env.stateDir, STOP, runId))
+                        .pipe(Effect.orElseSucceed(() => false)),
+                      say: (sentence) => echo("stderr")(`${sentence}\n`),
+                    });
+                    if (memory === "stopped") {
+                      yield* Queue.fail(
+                        queue,
+                        new HostRefused({
+                          reason: `invalid_state: run ${runId} was stopped while "${name}" waited for memory, so it did not run.`,
+                        }),
+                      );
+                      return;
+                    }
                     const started = (yield* nowIso()).replace(/[:.]/g, "-");
                     const log = `${evidenceDir(env.stateDir, runId)}/verify/${started}-${name.replace(/[^\w.-]/g, "_")}.log`;
                     const collected = yield* collect(

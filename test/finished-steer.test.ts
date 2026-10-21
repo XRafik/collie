@@ -287,6 +287,33 @@ test(
 );
 
 test(
+  "a finished Run's agent the idle close ended refuses a steer and names the follow-up offer",
+  () =>
+    steerable("collie-finished-idle-", (world) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs
+          .writeFileString(`${world.config}/config.json`, encode({ idle_close_ms: 1 }))
+          .pipe(Effect.orDie);
+        const { env, client, runId, agent } = yield* finishedWithAgent(world);
+
+        const swept = yield* until(
+          () => client.sweep({ request: `sweep-${++asked}` }).pipe(Effect.orDie),
+          (report) => report.remove.some((item) => item.kind === "idle-agent"),
+        );
+        expect(swept?.remove.find((item) => item.kind === "idle-agent")?.target).toBe(
+          `${agent.name} of ${runId}`,
+        );
+
+        const [done] = yield* carryOutAsked(env, [deliver(runId, agent.name, "tag it")], chat());
+        expect(done?.state).toBe("failed");
+        expect(done?.note).toContain('follow-up offer "carry-on"');
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a stop closes a succeeded Run's live pane and leaves it succeeded",
   () =>
     steerable("collie-finished-stop-", (world) =>

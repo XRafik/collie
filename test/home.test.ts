@@ -54,6 +54,7 @@ const pane = (over: Partial<PaneInfo> = {}): PaneInfo => ({
   foregroundCwd: null,
   tokens: {},
   terminalId: "term-1",
+  agentSession: null,
   ...over,
 });
 

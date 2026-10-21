@@ -9,7 +9,7 @@ import { asksRun, isSettled } from "./lifecycle";
 import { machineName, peersOf } from "./peers";
 import { Herdr, herdrFailureReason } from "./herdr";
 import { readTask, listTasks, withTaskLock } from "./task";
-import { launchedTerminals, paneNotOwned } from "./cleanup";
+import { isLaunched, launchedPanes, paneNotOwned } from "./cleanup";
 import { currentPid, signalProcess } from "./lock";
 import { socketOf } from "./host";
 import { nowIso } from "./time";
@@ -66,23 +66,20 @@ export const reportsLayer = (opts: {
               if ("collie_home" in open.tokens)
                 return { done: true, note: "The workspace is kept: it is the Home." };
               const panes = yield* herdr.paneList();
-              const siblingTerminals = yield* launchedTerminals(
+              const siblings = yield* launchedPanes(
                 env.stateDir,
                 runs.filter((one) => one.runId !== view.runId).map((one) => one.runId),
               );
               if (
                 panes.some(
-                  (pane) =>
-                    pane.workspaceId === task.workspace &&
-                    pane.terminalId !== null &&
-                    siblingTerminals.has(pane.terminalId),
+                  (pane) => pane.workspaceId === task.workspace && isLaunched(siblings, pane),
                 )
               )
                 return { done: true, note: "The workspace is kept: another Run has a live agent." };
               const foreign = paneNotOwned(
                 task,
                 panes,
-                yield* launchedTerminals(env.stateDir, [view.runId]),
+                yield* launchedPanes(env.stateDir, [view.runId]),
               );
               if (foreign !== undefined)
                 return {

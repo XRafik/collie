@@ -20,7 +20,10 @@ question it asked is open on the Run, the budget does not run. Time it is `idle`
 counts, and so does a status herdr cannot read, so an agent nobody can see is still parked
 in the end. The budget is still `collectMs`, two hours by default. When it runs out, the
 Run parks as it does today, and a gone agent is still revived or repaired the way it is
-today.
+today. Nor does the budget run while a `collie verify` the agent asked for waits for
+memory. Added by
+[ADR-draft-new-work-waits-while-its-machine-is-short-of-memory](draft-new-work-waits-while-its-machine-is-short-of-memory.md)
+D7.
 
 **A managed Claude agent's `AskUserQuestion` is asked on its Run.** Among the hooks Collie
 installs for a Claude agent it launches is a `PreToolUse` hook on `AskUserQuestion`. The

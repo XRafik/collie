@@ -245,6 +245,8 @@ export const loadDefaults = Effect.fn("Config.loadDefaults")(function* (userDir:
     boardQuietMs: isNumber(raw.board_quiet_ms)
       ? raw.board_quiet_ms
       : FALLBACK_DEFAULTS.boardQuietMs,
+    idleCloseMs: isNumber(raw.idle_close_ms) ? raw.idle_close_ms : FALLBACK_DEFAULTS.idleCloseMs,
+    memoryHold: isNumber(raw.memory_hold) ? raw.memory_hold : FALLBACK_DEFAULTS.memoryHold,
     compactAtTokens: isNumber(raw.compact_at_tokens)
       ? raw.compact_at_tokens
       : FALLBACK_DEFAULTS.compactAtTokens,

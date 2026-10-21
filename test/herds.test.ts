@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { type Duration, Effect, Option, Stream } from "effect";
 import { Herdr } from "../src/herdr";
-import { focusPane, herdChanges } from "../src/herds";
+import { agentsIn, focusPane, herdChanges } from "../src/herds";
 import { newTask, readTask, writeTask } from "../src/task";
 import { runEffect } from "./support/effect";
 import { Rig } from "./support/recorder";
@@ -51,6 +51,62 @@ test("a change is what herdr pushes on the session's subscription, for each agen
           { type: "pane.agent_status_changed", pane_id: "1-1" },
         ],
       });
+    }),
+  ));
+
+test("a pane herdr restored on a session but with no name is watched, and its status read", () =>
+  runEffect(
+    Effect.gen(function* () {
+      Bun.env.FAKE_HERDR_PUSH_EVENT = "1";
+      yield* rig.addRestored({
+        paneId: "wT-p9",
+        workspaceId: "wT",
+        terminalId: "t-restored",
+        session: { kind: "pi", value: "/home/mk/.pi/sessions/impl.jsonl" },
+        status: "working",
+      });
+      yield* rig.addRestored({
+        paneId: "wT-p8",
+        workspaceId: "wT",
+        terminalId: "t-shell",
+        session: null,
+      });
+      expect(Option.isSome(yield* changeAfter("10 seconds"))).toBe(true);
+
+      const subscribed = (yield* rig.calls()).find((call) => call.cmd === "events.subscribe");
+      expect(subscribed?.params).toEqual({
+        subscriptions: [
+          { type: "pane.created" },
+          { type: "pane.closed" },
+          { type: "pane.agent_detected" },
+          { type: "pane.agent_status_changed", pane_id: "1-1" },
+          { type: "pane.agent_status_changed", pane_id: "wT-p9" },
+        ],
+      });
+      const herdr = new Herdr(rig.pluginEnv());
+      expect((yield* agentsIn([{ herd: null, herdr }])).restored).toEqual([
+        { terminalId: "t-restored", status: "working" },
+      ]);
+    }),
+  ));
+
+test("a session's named agents and restored panes are read with one agent list", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* rig.addRestored({
+        paneId: "wT-p9",
+        workspaceId: "wT",
+        terminalId: "t-restored",
+        session: { kind: "pi", value: "/home/mk/.pi/sessions/impl.jsonl" },
+        status: "idle",
+      });
+      const herdr = new Herdr(rig.pluginEnv());
+      yield* herdr.cli(["agent", "start", "impl-1", "--pane", "1-1"]);
+      const before = (yield* rig.cmds()).length;
+      const read = yield* agentsIn([{ herd: null, herdr }]);
+      expect(read.alive.map((agent) => agent.paneId)).toContain("1-1");
+      expect(read.restored).toEqual([{ terminalId: "t-restored", status: "idle" }]);
+      expect((yield* rig.cmds()).slice(before).sort()).toEqual(["agent list", "pane list"]);
     }),
   ));
 

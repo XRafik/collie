@@ -46,7 +46,7 @@ proved. In the Flock chat it is also what the model is shown — an image, a PDF
 a name, size and path — and Desktop keeps a copy, so the conversation still shows it after a
 restart ([ADR-0046](docs/adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md)).
 
-**Output** — A structured JSON file an agent writes to the Run directory for one operation (e.g. a review verdict + findings). It is decoded against the Workflow's schema before anything believes it, and one that does not decode buys one repair. Workflows read Outputs, never terminal text. Collie waits for it against the agent's idle time only: while herdr reports the agent working or blocked, or a question it asked is open on the Run, the budget does not run (ADR-0062). When the budget runs out, the Run is parked and keeps waiting: an Output written later is collected without a resume (ADR-0062, amended 2026-10-19).
+**Output** — A structured JSON file an agent writes to the Run directory for one operation (e.g. a review verdict + findings). It is decoded against the Workflow's schema before anything believes it, and one that does not decode buys one repair. Workflows read Outputs, never terminal text. Collie waits for it against the agent's idle time only: while herdr reports the agent working or blocked, a question it asked is open on the Run, or a `collie verify` it asked for waits while its Machine is **Short of memory**, the budget does not run (ADR-0062). When the budget runs out, the Run is parked and keeps waiting: an Output written later is collected without a resume (ADR-0062, amended 2026-10-19).
 
 **Herd** — One herdr session: every workspace in it. The scope of the Collie tab, the
 conversation, proposals, the budget and elections. Keyed by the canonical path of the
@@ -63,6 +63,15 @@ A computer Desktop reaches that has no Collie yet is known by its herdr profile 
 host there reports an installation id. Not the plugin installation a host serves, which
 `identity` calls `root`. herdr's machine list (`herdr machine list`) is the list of
 Machines, for the CLI as for Desktop: adding a Machine there is all it takes to reach it.
+
+**Short of memory** — A Machine whose available memory is under `memory_hold` percent of
+its total (10 by default; 0 never), or, on Linux, whose memory pressure (`full avg10` in
+`/proc/pressure/memory`) is 10 or more. While it is, its host starts no agent, no **Check
+pass** and no `collie verify` command. Each waits, says so on its card and in its Run's
+log, and starts once the Machine is no longer short. Nothing running is stopped, and a
+Run's start, a steer, a stop, the chats and **Cleanup** never wait. It binds a human's
+start as it does an agent's, and no count of Runs, agents or checks is capped
+(ADR-draft-new-work-waits-while-its-machine-is-short-of-memory).
 
 **Installation** — What a Machine runs Collie from, which `identity` calls `root`. A
 **release** is placed in the Collie directory's `release/` by the runner that carries it,
@@ -403,6 +412,8 @@ that is how its steps ended. Derived from the delivery ledger and herdr's agent 
 nothing records it. Its card is in Working while that agent works and in Needs you while
 it is blocked, then stands on its own facts again. Steering reaches a finished Run's
 agents for as long as one is alive; a gone pane is the Follow-up Run's job (ADR-0041).
+A finished Run's agent is closed once it has been idle for an hour since the Run finished
+(**Cleanup**), so a Run can be Reopened only until then.
 
 **Landed** — What a Task's work has done once it needs nothing more from anyone: a
 **Disposition** was recorded — merged, abandoned or superseded — the Run succeeded at a
@@ -500,6 +511,15 @@ removal is recorded with who asked, and none is forced. A check's processes are 
 their record or by the marker they run with. Any that no host is collecting are ended,
 SIGKILL included, because a check's result is thrown away
 (ADR-draft-a-check-ends-with-the-host-that-runs-it).
+
+Apart from that order, an agent Collie launched for a Run that has finished is closed once
+herdr has reported it idle for `idle_close_ms` (an hour by default; 0 never), counted
+from the Run's finish if it went idle before then. It is kept while a Delivery to it is
+queued, a question it asked is open, its pane is focused or a human has typed into it
+since it went idle. A pane herdr restored after a restart is the agent whose recorded
+harness session it resumes. A closed agent stays closed: a steer to it is refused, and the
+Run's Follow-up is offered. A live Run's agents are not closed idle
+(ADR-draft-a-finished-runs-idle-agent-is-closed).
 
 **Renovate Run** — One execution of the `renovate` Workflow: one repository, from claiming
 it in Helle to checking it off in Linear. Its Worktree is detached and roams — it holds no
