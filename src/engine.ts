@@ -85,7 +85,7 @@ import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
 import { waitForMemory } from "./memory-wait";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
-import { publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
+import { marksRepository, publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
 import {
   HelleClaimSchema,
   HelleError,
@@ -2975,16 +2975,17 @@ export const hostLayer = (options: {
             return yield* new WorkflowError({
               reason: "issue checkout's Git identity could not be read",
             });
-          const own = yield* fs.realPath(common.stdout.trim());
+          const own = yield* fs.realPath(common.stdout.replace(/\n$/, ""));
           const ownRemote = here.project.split("/").slice(1).join("/");
           for (const checkout of inventory.checkouts) {
             const canonical = yield* fs.realPath(checkout);
-            const remotes = yield* runShell("git", ["remote", "-v"], checkout);
-            if (remotes.code !== 0)
+            const repository = yield* marksRepository(checkout);
+            const remotes = repository ? yield* runShell("git", ["remote", "-v"], checkout) : null;
+            if (remotes !== null && remotes.code !== 0)
               return yield* new WorkflowError({
                 reason: `issue privacy check could not read remotes: ${checkout}`,
               });
-            const names = remotes.stdout.split("\n").flatMap((line) => {
+            const names = (remotes?.stdout ?? "").split("\n").flatMap((line) => {
               const name = remoteOf(
                 line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
               );
@@ -3004,6 +3005,10 @@ export const hostLayer = (options: {
               )
             )
               continue;
+            if (!repository)
+              return yield* new WorkflowError({
+                reason: `issue text names another checkout: ${checkout}`,
+              });
             const shared = yield* runShell(
               "git",
               ["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -3013,7 +3018,7 @@ export const hostLayer = (options: {
               return yield* new WorkflowError({
                 reason: `issue privacy check could not identify checkout: ${checkout}`,
               });
-            if ((yield* fs.realPath(shared.stdout.trim())) === own) continue;
+            if ((yield* fs.realPath(shared.stdout.replace(/\n$/, ""))) === own) continue;
             return yield* new WorkflowError({
               reason: `issue text names another checkout: ${checkout}`,
             });
