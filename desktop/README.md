@@ -6,17 +6,20 @@ root's `test/desktop-*.test.ts` and `test/flock-*.test.ts`; the view's logic in 
 
 ## The board and the record
 
-| File                                | What it owns                                                                                                                                                                                                                                           |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `src/bun/machine.ts`                | A Machine reached through `collie bridge`; `act` carries out an action, `Deliver` as one `deliver`, word for word (`test/desktop-deliver.test.ts`)                                                                                                     |
-| `src/bun/index.ts`                  | The window, and its navigation rule                                                                                                                                                                                                                    |
-| `src/shared/`                       | The view's RPC and the Flock it folds                                                                                                                                                                                                                  |
-| `view/app/components/RunRecord.vue` | A card's record, one of the pages `usePage` lays over the board's column, with `SettingsPage.vue`, `MachinesPage.vue`, `UsagePage.vue` and `WorkflowsPage.vue` (the Flock's Workflows and Personas, read with `definitionsIn` in `src/bun/machine.ts`) |
-| `src/shared/markdown.ts`            | What agent markdown may keep (`desktop/test/markdown.test.ts`)                                                                                                                                                                                         |
-| `src/shared/board-clicks.ts`        | `afterGesture`: what a click, a double-click, a name, a page's back button and Escape do to the selected card and the open page (`test/desktop-view.test.ts`); where a gesture landed (`desktop/test/board-clicks.test.ts`)                            |
-| `src/shared/in-sync.ts`             | Whether a Machine is In sync (`test/desktop-view.test.ts`)                                                                                                                                                                                             |
-| `src/shared/flock-settings.ts`      | The Settings rows, shared with each host's settings ([ADR-0043](../docs/adr/0043-a-shared-setting-is-its-latest-edit.md); `test/desktop-settings.test.ts`)                                                                                             |
-| `src/shared/usage.ts`               | The header's Usage entries and the Usage page, one per Subscription account across the live Machines (`test/desktop-usage.test.ts`)                                                                                                                    |
+| File                                    | What it owns                                                                                                                                                                                                                                           |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/bun/machine.ts`                    | A Machine reached through `collie bridge`; `act` carries out an action, `Deliver` as one `deliver`, word for word (`test/desktop-deliver.test.ts`)                                                                                                     |
+| `src/bun/index.ts`                      | The window, and its navigation rule                                                                                                                                                                                                                    |
+| `src/shared/`                           | The view's RPC and the Flock it folds                                                                                                                                                                                                                  |
+| `view/app/components/RunRecord.vue`     | A card's record, one of the pages `usePage` lays over the board's column, with `SettingsPage.vue`, `MachinesPage.vue`, `UsagePage.vue` and `WorkflowsPage.vue` (the Flock's Workflows and Personas, read with `definitionsIn` in `src/bun/machine.ts`) |
+| `src/shared/markdown.ts`                | What agent markdown may keep (`desktop/test/markdown.test.ts`)                                                                                                                                                                                         |
+| `src/shared/board-clicks.ts`            | `afterGesture`: what a click, a double-click, a name, a page's back button and Escape do to the selected card and the open page (`test/desktop-view.test.ts`); where a gesture landed (`desktop/test/board-clicks.test.ts`)                            |
+| `src/shared/in-sync.ts`                 | Whether a Machine is In sync (`test/desktop-view.test.ts`)                                                                                                                                                                                             |
+| `src/shared/flock-settings.ts`          | The Settings rows, shared with each host's settings ([ADR-0043](../docs/adr/0043-a-shared-setting-is-its-latest-edit.md); `test/desktop-settings.test.ts`)                                                                                             |
+| `src/shared/usage.ts`                   | The header's Usage entries and the Usage page, one per Subscription account across the live Machines (`test/desktop-usage.test.ts`)                                                                                                                    |
+| `src/shared/machine-cleanup.ts`         | The Cleanup dialog's rows: what a sweep would remove on each Machine, or why it can't be cleaned, which are chosen, and each chosen one's sweep and toast (`test/desktop-machine-cleanup.test.ts`, with `cleanupsOn` in `src/bun/machine.ts`)          |
+| `src/bun/machine.ts`'s `sweepOn`        | Sweeps one chosen Machine: sent once and waited on for 10 minutes, not the 30 s writes are resent at, and kept in `actions.log` (`test/desktop-machine-sweep.test.ts`)                                                                                 |
+| `view/app/components/CleanupDialog.vue` | The Cleanup dialog the Machines page's **Clean up…** opens, drawn from it; `useCleanup.ts` reads each Machine's listing whenever it opens with no sweep running, and keeps the sweeps past the dialog                                                  |
 
 ## Go to pane
 
@@ -74,11 +77,11 @@ The Toolkit both chats share is the root's `src/toolkit.ts`.
 Done only on the host's reply, and kept in `actions.log`. Tested in
 `test/desktop-confirm.test.ts` and `test/desktop-pending-answer.test.ts`.
 
-| File                           | What it owns                                                  |
-| ------------------------------ | ------------------------------------------------------------- |
-| `src/bun/sent.ts`              | The 30 s wait, 3 tries under one request, and `actions.log`   |
-| `src/shared/actions.ts`        | One request per gesture, which **Try again** sends again      |
-| `src/shared/pending-answer.ts` | What a card shows of an answer until the board no longer asks |
+| File                           | What it owns                                                                                                                                                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/bun/sent.ts`              | The 30 s wait, 3 tries under one request, and `actions.log`; a Cleanup sweep alone is sent once and waited on 10 minutes, since a resend's reply holds only what it removed (`sweepOn`) |
+| `src/shared/actions.ts`        | One request per gesture, which **Try again** sends again                                                                                                                                |
+| `src/shared/pending-answer.ts` | What a card shows of an answer until the board no longer asks                                                                                                                           |
 
 ## Review comments and the Diff tab
 

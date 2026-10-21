@@ -126,6 +126,8 @@ const served = (main: Channel<ToView, ToMain>) =>
         runFile: () => Effect.die("not asked"),
         usage: () => Effect.die("not asked"),
         schedules: () => Effect.die("not asked"),
+        cleanup: () => Effect.die("not asked"),
+        sweep: () => Effect.die("not asked"),
         changeSchedule: () => Effect.die("not asked"),
         moveSchedule: () => Effect.die("not asked"),
         stage: () => Effect.die("not asked"),

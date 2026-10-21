@@ -139,8 +139,7 @@ import {
   generationsDir,
   generationsSweeper,
   judge,
-  sweep,
-  sweeping,
+  sweepAsked,
   worktreesSweeper,
   type SweptBy,
 } from "./cleanup";
@@ -160,7 +159,6 @@ import {
   Answered,
   ASKED_KINDS,
   RunAgent,
-  CleanupReport,
   Controlled,
   Disposition,
   FrontDoorRpcs,
@@ -1661,12 +1659,12 @@ const frontDoorHandlers = (
               const actor: SweptBy =
                 who.from === undefined ? spoken : { ...spoken, from: who.from };
               const trail = (yield* Path.Path).join(env.stateDir, "cleanup");
-              const swept = yield* once(
+              const swept = yield* sweepAsked(
                 trail,
-                { operation: "cleanup", request, ...who, asked: {}, result: CleanupReport },
-                sweeping.withPermit(
-                  Effect.flatMap(sweepers, (all) => sweep(all, env.stateDir, actor)),
-                ),
+                { operation: "cleanup", request, ...who, asked: {} },
+                sweepers,
+                env.stateDir,
+                actor,
               );
               yield* trimAudit(trail, CLEANUP_TRAIL).pipe(Effect.orDie);
               return swept;

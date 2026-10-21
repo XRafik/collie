@@ -18,6 +18,9 @@ const viewCrypto = Crypto.make({
   digest: () => Effect.die("the view digests nothing"),
 });
 
+/** A gesture's request, sent again on every Try again. */
+export const newRequest = () => Effect.runSync(viewCrypto.randomUUIDv4);
+
 export interface ActionNotice {
   readonly title: string;
   readonly color: "success" | "error";
@@ -48,7 +51,7 @@ export const actionRunner = (
     unsent?: () => string | undefined,
     tried?: (done: boolean | null) => void,
   ): Promise<boolean> => {
-    const request = again ?? Effect.runSync(viewCrypto.randomUUIDv4);
+    const request = again ?? newRequest();
     const why = unsent?.();
     tried?.(null);
     return act({
