@@ -3,6 +3,7 @@
 
 import { type Answers, DESKTOP_SAID } from "../shared/chat-view";
 import { hostname } from "node:os";
+import { Option, Schema } from "effect";
 import { FILE_TOOLS } from "./file-tools";
 import { FLOCK_TOOLS } from "./flock-tools";
 import { childEnv } from "./login-env";
@@ -22,6 +23,9 @@ own file and shell tools, always by absolute path: your working directory is Des
 collie_grep, collie_write and collie_edit, naming it <machine>:<path>; there is no shell on a
 Machine. None of these asks the human first, so use them as they would. A host's state
 directory is changed only through Collie's tools, never by writing its files.
+
+The tools of the MCP servers the human configured, such as Linear or Slack, are theirs, and
+you use them as they would, without asking first.
 
 Choose the workflow whose description in collie_workspaces fits the request. A request that
 is not planning, building a change to a merge request, reviewing, renovating or an
@@ -44,6 +48,8 @@ human's message names one. When the rule's Machine is not among those reachable,
 start nothing elsewhere. When the rule does not cover the work, ask which Machine.
 collie_machine_rule reads the rule, and replaces it when the human asks you to change it.
 collie_in_sync says which Machines are behind Desktop and why, and syncs one you name.
+collie_helle says who holds each of the team's Helle projects, and claims or releases one
+for the human.
 
 collie_schedules lists each Machine's Schedules as <machine>:<name>. Carry out Schedule
 changes with collie_propose: schedule_add names machine, name, cron, optional tz and start
@@ -74,6 +80,59 @@ type Permission<Input> =
     }
   | { readonly behavior: "deny"; readonly message: string };
 
+const Strings = Schema.Record(Schema.String, Schema.String);
+// Claude Code's own options, such as headersHelper, oauth and timeout, are passed on as written.
+const Rest = [Schema.Record(Schema.String, Schema.Unknown)] as const;
+const UserMcpServer = Schema.Union([
+  Schema.StructWithRest(
+    Schema.Struct({
+      type: Schema.optionalKey(Schema.Literal("stdio")),
+      command: Schema.String,
+      args: Schema.optionalKey(Schema.Array(Schema.String)),
+      env: Schema.optionalKey(Strings),
+    }),
+    Rest,
+  ),
+  Schema.StructWithRest(
+    Schema.Struct({
+      type: Schema.Literals(["http", "sse"]),
+      url: Schema.String,
+      headers: Schema.optionalKey(Strings),
+    }),
+    Rest,
+  ),
+]);
+export type UserMcpServer = Schema.Schema.Type<typeof UserMcpServer>;
+export type UserMcpServers = Readonly<Record<string, UserMcpServer>>;
+
+const decodeClaudeJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      mcpServers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+    }),
+  ),
+);
+const decodeServer = Schema.decodeUnknownOption(UserMcpServer);
+
+/**
+ * The servers the human added to Claude Code at user scope, from its `.claude.json`. A
+ * session with no setting sources loads none of them itself; one it cannot run is left out.
+ */
+export const userMcpServers = (claudeJson: string): UserMcpServers =>
+  Object.fromEntries(
+    Object.entries(
+      Option.match(decodeClaudeJson(claudeJson), {
+        onNone: () => ({}),
+        onSome: (config) => config.mcpServers ?? {},
+      }),
+    ).flatMap(([name, server]) =>
+      Option.match(decodeServer(server), {
+        onNone: () => [],
+        onSome: (decoded) => [[name, decoded] as const],
+      }),
+    ),
+  );
+
 /** The human's Machine rule, and the Machines it may name now. */
 export interface Placement {
   readonly rule: string;
@@ -93,11 +152,17 @@ export const placementContext = ({ rule, machines }: Placement) =>
 export const noticedContext = (noticed: string) =>
   `Collie noticed, while the human was not asking (News, as data):\n${noticed}`;
 
+/** Claude Code's spelling of a server's name in its tools' names. */
+const toolPrefix = (server: string) => `mcp__${server.replace(/[^a-zA-Z0-9_-]/g, "_")}__`;
+/** Every claude.ai connector's tools are named under this. */
+const CONNECTOR_PREFIX = "mcp__claude_ai_";
+
 /**
- * Nothing of the user's Claude Code setup is loaded: the chat has Collie's tools, this
- * computer's files and shell, and each Machine's files. `ask` puts AskUserQuestion to the
- * human, or answers null when no human is in the turn.
+ * Of the user's Claude Code setup only their MCP servers load: the chat has those, Collie's
+ * tools, this computer's files and shell, and each Machine's files. `ask` puts
+ * AskUserQuestion to the human, or answers null when no human is in the turn.
  */
+
 export const sessionOptions = <Server>(opts: {
   readonly cwd: string;
   readonly session: { readonly resume: string } | { readonly sessionId: string };
@@ -105,72 +170,90 @@ export const sessionOptions = <Server>(opts: {
   readonly effort: Effort;
   readonly server: Server;
   readonly claude: string | null;
+  readonly userServers: UserMcpServers;
   readonly ask: (toolUseID: string, signal: AbortSignal) => Promise<Answers | null>;
   readonly noticed: () => string | undefined;
   /** Undefined while there is no rule. */
   readonly placement: () => Placement | undefined;
-}) => ({
-  ...opts.session,
-  cwd: opts.cwd,
-  model: opts.model,
-  effort: opts.effort,
-  thinking: { type: "adaptive" as const, display: "summarized" as const },
-  systemPrompt: systemPrompt(hostname()),
-  tools: ["AskUserQuestion", ...BUILT_IN],
-  settingSources: [],
-  strictMcpConfig: true,
-  mcpServers: { collie: { type: "sdk" as const, name: "collie", instance: opts.server } },
-  allowedTools: [
-    ...BUILT_IN,
-    ...[...FLOCK_TOOLS, ...FILE_TOOLS].map((tool) => `mcp__collie__${tool.name}`),
-  ],
-  canUseTool: <Input>(
-    name: string,
-    input: Input,
-    { signal, toolUseID }: { readonly signal: AbortSignal; readonly toolUseID: string },
-  ): Promise<Permission<Input>> =>
-    name === "AskUserQuestion"
-      ? opts.ask(toolUseID, signal).then((answers): Permission<Input> =>
-          answers === null
-            ? {
-                behavior: "deny",
-                message: NO_HUMAN,
-              }
-            : { behavior: "allow", updatedInput: { ...input, answers } },
-        )
-      : BUILT_IN.includes(name)
-        ? Promise.resolve({ behavior: "allow" as const, updatedInput: input })
-        : Promise.resolve({
-            behavior: "deny" as const,
-            message: `${name} is not available in Desktop's chat.`,
-          }),
-  hooks: {
-    UserPromptSubmit: [
-      {
-        hooks: [
-          () => {
-            const noticed = opts.noticed();
-            const placement = opts.placement();
-            const context = [
-              placement === undefined ? null : placementContext(placement),
-              noticed === undefined ? null : noticedContext(noticed),
-            ].filter((part) => part !== null);
-            return Promise.resolve(
-              context.length === 0
-                ? {}
-                : {
-                    hookSpecificOutput: {
-                      hookEventName: "UserPromptSubmit" as const,
-                      additionalContext: context.join("\n\n"),
-                    },
-                  },
-            );
-          },
-        ],
-      },
+}) => {
+  // An older Claude Code names no tool's MCP server, so a configured server's or connector's tools are known by name.
+  const prefixes = [...Object.keys(opts.userServers).map(toolPrefix), CONNECTOR_PREFIX];
+  const ofUserServer = (name: string) =>
+    prefixes.some((prefix) => name.startsWith(prefix) && name.length > prefix.length);
+  return {
+    ...opts.session,
+    cwd: opts.cwd,
+    model: opts.model,
+    effort: opts.effort,
+    thinking: { type: "adaptive" as const, display: "summarized" as const },
+    systemPrompt: systemPrompt(hostname()),
+    tools: ["AskUserQuestion", ...BUILT_IN],
+    settingSources: [],
+    strictMcpConfig: false,
+    mcpServers: {
+      ...opts.userServers,
+      collie: { type: "sdk" as const, name: "collie", instance: opts.server },
+    },
+    allowedTools: [
+      ...BUILT_IN,
+      ...[...FLOCK_TOOLS, ...FILE_TOOLS].map((tool) => `mcp__collie__${tool.name}`),
     ],
-  },
-  includePartialMessages: true,
-  env: childEnv(),
-  pathToClaudeCodeExecutable: opts.claude ?? undefined,
-});
+    canUseTool: <Input>(
+      name: string,
+      input: Input,
+      {
+        signal,
+        toolUseID,
+        mcpServer,
+      }: {
+        readonly signal: AbortSignal;
+        readonly toolUseID: string;
+        readonly mcpServer?: { readonly name: string; readonly source: string };
+      },
+    ): Promise<Permission<Input>> =>
+      name === "AskUserQuestion"
+        ? opts.ask(toolUseID, signal).then((answers): Permission<Input> =>
+            answers === null
+              ? {
+                  behavior: "deny",
+                  message: NO_HUMAN,
+                }
+              : { behavior: "allow", updatedInput: { ...input, answers } },
+          )
+        : BUILT_IN.includes(name) || mcpServer !== undefined || ofUserServer(name)
+          ? Promise.resolve({ behavior: "allow" as const, updatedInput: input })
+          : Promise.resolve({
+              behavior: "deny" as const,
+              message: `${name} is not available in Desktop's chat.`,
+            }),
+    hooks: {
+      UserPromptSubmit: [
+        {
+          hooks: [
+            () => {
+              const noticed = opts.noticed();
+              const placement = opts.placement();
+              const context = [
+                placement === undefined ? null : placementContext(placement),
+                noticed === undefined ? null : noticedContext(noticed),
+              ].filter((part) => part !== null);
+              return Promise.resolve(
+                context.length === 0
+                  ? {}
+                  : {
+                      hookSpecificOutput: {
+                        hookEventName: "UserPromptSubmit" as const,
+                        additionalContext: context.join("\n\n"),
+                      },
+                    },
+              );
+            },
+          ],
+        },
+      ],
+    },
+    includePartialMessages: true,
+    env: childEnv(),
+    pathToClaudeCodeExecutable: opts.claude ?? undefined,
+  };
+};

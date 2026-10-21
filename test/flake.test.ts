@@ -157,6 +157,44 @@ test("output whose fail count does not match, that reports an error, or has over
     ),
   ));
 
+/** bun's output where a file's hook failed after `named` of its tests did; bun calls the hook `(unnamed)`. */
+const hookFailed = (named: ReadonlyArray<string>) =>
+  [
+    "bun test v1.4.3",
+    "",
+    "test/one.test.ts:",
+    ...named.map((name) => `(fail) ${name} [30001.75ms]`),
+    "(pass) one passes [1.00ms]",
+    "",
+    "test/two.test.ts:",
+    "(pass) two passes [1.00ms]",
+    "",
+    "test/one.test.ts:",
+    "error: The file left 1 thing(s) behind: directory /tmp/x",
+    "(fail) (unnamed) [2527.44ms]",
+    "",
+    `${named.length + 1} tests failed:`,
+    ...named.map((name) => `(fail) ${name} [30001.75ms]`),
+    "(fail) (unnamed) [2527.44ms]",
+    "",
+    " 2 pass",
+    ` ${named.length + 1} fail`,
+    "Ran 4 tests across 2 files. [10.00ms]",
+  ].join("\n");
+
+test("a check where a hook failed names no tests, even beside a named failure in its file", () =>
+  runEffect(
+    inHost((host) =>
+      Effect.gen(function* () {
+        for (const named of [["the slow one times out"], []]) {
+          const ran = yield* gateOn(host, hookFailed(named));
+          expect(ran.result).toBe("fail");
+          expect(ran.failed).toBeUndefined();
+        }
+      }),
+    ),
+  ));
+
 /** A `bun` on PATH that records its arguments and directory, prints `printed` and exits `exit`. */
 const fakeBun = (printed: string, exit: number) =>
   Effect.gen(function* () {

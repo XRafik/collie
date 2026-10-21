@@ -1197,6 +1197,8 @@ run's own checks itself at the tree as it stands, reading them again at every pa
 says what is missing. A check
 that failed and named its failing tests has each of them run once more alone (`rerun`); one
 that passes is a Flake, which is neither a gap nor a pass and is named in the merge request.
+A failure outside any test, such as a file's `afterAll` (bun's `(unnamed)`), cannot be run
+alone, so a check that has one names no tests.
 A check that failed naming no tests runs once more whole (`recheck`). Gaps a check could
 still close go to the implementer for up to four fixes. Checks still missing after those
 fixes suspend the Run with the gaps named, except where a fix changed nothing and disputed

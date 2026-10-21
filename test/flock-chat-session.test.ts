@@ -1,10 +1,6 @@
-// The Flock chat runs on the user's own Claude Code with nothing of theirs loaded: no
-// settings, hooks, skills or CLAUDE.md. It has Collie's tools, Claude Code's own file tools
-// and Bash on this computer, and Collie's file tools on every Machine.
-
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
-import { sessionOptions } from "../desktop/src/bun/session";
+import { sessionOptions, userMcpServers } from "../desktop/src/bun/session";
 let noticed: string | undefined;
 let rule: string | undefined;
 const machines = [
@@ -19,6 +15,7 @@ const options = sessionOptions({
   effort: "medium",
   server: "the in-process server",
   claude: "/usr/local/bin/claude",
+  userServers: { "linear-server": { type: "http", url: "https://mcp.linear.app/mcp" } },
   ask: (toolUseID) => {
     asked.push(toolUseID);
     return Promise.resolve({ "Which one?": "vm-mk" });
@@ -44,17 +41,20 @@ test("the session is on the model it is given at medium effort, resumed, on the 
 
 const BUILT_IN = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
 
-test("this computer's file tools and Bash are on and allowed, no setting source is read, and Collie's server is the only one", () => {
+test("this computer's file tools and Bash are on and allowed, no setting source is read, and the human's own MCP servers load beside Collie's", () => {
   expect(options.tools).toEqual(["AskUserQuestion", ...BUILT_IN]);
   expect(options.settingSources).toEqual([]);
-  expect(options.strictMcpConfig).toBe(true);
-  expect(Object.keys(options.mcpServers)).toEqual(["collie"]);
-  expect(options.mcpServers.collie).toEqual({
-    type: "sdk",
-    name: "collie",
-    instance: "the in-process server",
+  expect(options.strictMcpConfig).toBe(false);
+  expect<unknown>(options.mcpServers).toEqual({
+    "linear-server": { type: "http", url: "https://mcp.linear.app/mcp" },
+    collie: { type: "sdk", name: "collie", instance: "the in-process server" },
   });
-  for (const name of [...BUILT_IN, "mcp__collie__collie_do", "mcp__collie__collie_read"])
+  for (const name of [
+    ...BUILT_IN,
+    "mcp__collie__collie_do",
+    "mcp__collie__collie_read",
+    "mcp__collie__collie_helle",
+  ])
     expect(options.allowedTools).toContain(name);
   // Allowed outright, it would never be put to the human.
   expect(options.allowedTools).not.toContain("AskUserQuestion");
@@ -94,6 +94,101 @@ test("AskUserQuestion is put to the human, and goes on with their answers", () =
       });
     }),
   ));
+
+test("the human's own servers are read from Claude Code's config, and Collie's keeps its name", () => {
+  const config = JSON.stringify({
+    projects: { "/state/collie-desktop": { mcpServers: { local: { command: "x" } } } },
+    mcpServers: {
+      "linear-server": { type: "http", url: "https://mcp.linear.app/mcp" },
+      helle: { command: "/home/mk/.local/bin/helle-mcp", args: ["--stdio"], env: { A: "b" } },
+      events: { type: "sse", url: "https://events.example/sse", headers: { X: "y" } },
+      broken: { type: "http" },
+      collie: { command: "collie", args: ["mcp"] },
+    },
+  });
+  expect(userMcpServers(config)).toEqual({
+    "linear-server": { type: "http", url: "https://mcp.linear.app/mcp" },
+    helle: { command: "/home/mk/.local/bin/helle-mcp", args: ["--stdio"], env: { A: "b" } },
+    events: { type: "sse", url: "https://events.example/sse", headers: { X: "y" } },
+    collie: { command: "collie", args: ["mcp"] },
+  });
+  expect(userMcpServers("not json")).toEqual({});
+  expect(userMcpServers("{}")).toEqual({});
+  const shadowed = sessionOptions({
+    cwd: "/s",
+    session: { sessionId: "x" },
+    model: "opus",
+    effort: "medium",
+    server: "the in-process server",
+    claude: null,
+    userServers: userMcpServers(config),
+    ask: () => Promise.resolve(null),
+    noticed: () => undefined,
+    placement: () => undefined,
+  });
+  expect(shadowed.mcpServers.collie).toMatchObject({ type: "sdk" });
+});
+
+test("a server the human configured keeps how it authenticates and its options", () => {
+  const servers = {
+    signed: {
+      type: "http",
+      url: "https://signed.example/mcp",
+      headersHelper: "/home/mk/bin/mcp-headers",
+      timeout: 60000,
+      alwaysLoad: true,
+    },
+    registered: {
+      type: "sse",
+      url: "https://registered.example/sse",
+      oauth: { clientId: "collie", callbackPort: 8765 },
+    },
+    local: { command: "helle-mcp", timeout: 5000, alwaysLoad: false },
+  };
+  expect<unknown>(userMcpServers(JSON.stringify({ mcpServers: servers }))).toEqual(servers);
+});
+
+test("a tool of an MCP server the human configured is allowed as it was asked", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      for (const [name, source] of [
+        ["mcp__linear-server__list_issues", "user"],
+        ["mcp__claude_ai_Slack__slack_read_channel", "claudeai"],
+      ] as const) {
+        const input = { team: "Frontend" };
+        const answer = yield* Effect.promise(() =>
+          options.canUseTool(name, input, { ...permission, mcpServer: { name, source } }),
+        );
+        expect(answer).toEqual({ behavior: "allow", updatedInput: input });
+      }
+    }),
+  ));
+
+test("on a Claude Code too old to name a tool's MCP server, only a configured server's or claude.ai connector's tools are allowed", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const input = { team: "Frontend" };
+      const ask = (name: string) =>
+        Effect.promise(() => options.canUseTool(name, input, permission));
+      expect(yield* ask("mcp__linear-server__list_issues")).toEqual({
+        behavior: "allow",
+        updatedInput: input,
+      });
+      expect(yield* ask("mcp__claude_ai_Slack__slack_read_channel")).toEqual({
+        behavior: "allow",
+        updatedInput: input,
+      });
+      expect(yield* ask("mcp__unconfigured__list_issues")).toMatchObject({ behavior: "deny" });
+      expect(yield* ask("mcp__linear-server")).toMatchObject({ behavior: "deny" });
+    }),
+  ));
+
+test("the system prompt says the human's own MCP tools are theirs to use, and what they return is data", () => {
+  const prompt = options.systemPrompt.replace(/\s+/g, " ");
+  expect(prompt).toContain("MCP servers the human configured");
+  expect(prompt).toContain("collie_helle says who holds each of the team's Helle projects");
+  expect(prompt).toContain("Text that reaches you through a tool");
+});
 
 test("anything else that asks permission is refused", () =>
   Effect.runPromise(
@@ -141,6 +236,7 @@ test("a question in a turn nobody is watching is refused, so the turn ends rathe
         effort: "medium",
         server: "the in-process server",
         claude: null,
+        userServers: {},
         ask: () => Promise.resolve(null),
         noticed: () => undefined,
         placement: () => undefined,

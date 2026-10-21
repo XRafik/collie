@@ -16,7 +16,7 @@ import {
 import { type SdkMessage, startState, step } from "./agui";
 import { type ChatDriver, type ContentBlock, type DriverContext, TurnCost } from "./driver";
 import { which } from "./login-env";
-import { isEffort, sessionOptions } from "./session";
+import { isEffort, sessionOptions, type UserMcpServers } from "./session";
 import { transcriptOf } from "./transcript";
 import type { FlockChat } from "./flock-tools";
 
@@ -62,6 +62,8 @@ export interface ClaudeCode<Server> {
     flock: FlockChat,
     run: <A>(effect: Effect.Effect<A, never, Crypto.Crypto | FileSystem.FileSystem>) => Promise<A>,
   ) => Server;
+  /** The MCP servers the human added to Claude Code at user scope. */
+  readonly userServers: () => Promise<UserMcpServers>;
 }
 
 /** What a turn cost, as Claude Code's result says. */
@@ -80,6 +82,9 @@ export const claudeDriver = <Server>(
       const known = yield* Effect.tryPromise(() =>
         claude.getSessionInfo(id, { dir: opts.dir }),
       ).pipe(Effect.orElseSucceed(() => undefined));
+      const userServers = yield* Effect.tryPromise(() => claude.userServers()).pipe(
+        Effect.orElseSucceed(() => ({})),
+      );
       const inbox = yield* Queue.unbounded<UserMessage>();
       const session = claude.query({
         prompt: Stream.toAsyncIterable(Stream.fromQueue(inbox)),
@@ -90,6 +95,7 @@ export const claudeDriver = <Server>(
           effort: isEffort(effort) ? effort : "medium",
           server,
           claude: which("claude"),
+          userServers,
           ask: opts.ask,
           noticed: opts.noticed,
           placement: opts.placement,
