@@ -2884,7 +2884,6 @@ interface PersonaEnv {
   readonly cwd: string;
 }
 
-/** The persona every agent and the Home chat are given after their own. */
 const EVERY_AGENT = "every-agent";
 
 /**

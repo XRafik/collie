@@ -1724,7 +1724,6 @@ test("the agent is started on the operator's harness, model and permissions, wit
     }),
   ));
 
-/** Writes `text` as the persona `name` in one Layer's directory. */
 const writePersona = (layer: string, name: string, text: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
