@@ -856,7 +856,7 @@ export interface HostApi {
    * pipeline with a job waiting to be started by hand has not finished, and the answer names
    * the job. `staged`, an application's: `InProduction` where production already carries
    * `merged`; else each `stage` job passed and stage's newest successful deployment carries
-   * `merged`, or it is `StageFailed`; every other job passed and none is still running or pending; and each `production`
+   * `merged`, or it is `StageFailed`; every other job passed and none is still running or waiting to run; and each `production`
    * job, one at least, waits to be started by hand, which `Proved` lists with its address.
    * The pipeline's own state is not read. Take it inside an Activity.
    */
@@ -877,7 +877,7 @@ export interface HostApi {
    * Reads again, before production jobs are played: `Carried` where production already
    * carries `merged`; `Unproved` where the tag on origin is no longer `at` or no longer
    * carries it, one of `jobs` is gone
-   * from the pipeline or failed, or any other job failed or is still running or pending; else `Play` with those of `jobs` still waiting to be
+   * from the pipeline or failed, or any other job failed or is still running or waiting to run; else `Play` with those of `jobs` still waiting to be
    * started by hand, none where somebody started them. Take it inside an Activity.
    */
   readonly readProduction: (options: {

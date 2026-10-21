@@ -119,7 +119,7 @@ export type RollbackRead = typeof RollbackReadSchema.Type;
 const failing = new Set(["failed", "cancelled"]);
 const unfinished = new Set(["pending", "running"]);
 
-/** Why a pipeline's jobs other than `production` are not all finished and passed, or null. */
+/** Why a pipeline's jobs other than `production` have not all run and passed, or null. */
 const unsettled = (
   jobs: ReadonlyArray<{ readonly name: string; readonly state: string }>,
   production: ReadonlyArray<string>,
@@ -132,6 +132,9 @@ const unsettled = (
   if (failed.length > 0) return `${failed.join(", ")} failed ${on}`;
   const running = named(unfinished);
   if (running.length > 0) return `${running.join(", ")} has not finished ${on}`;
+  const waiting = named(new Set(["manual"]));
+  if (waiting.length > 0)
+    return `${waiting.join(", ")} waits ${on} for somebody to start it, and is not a production job`;
   return null;
 };
 
@@ -219,7 +222,7 @@ const inProduction = <R>(opts: {
  * `finished`: `pipeline`, else the newest the tag started, if any, finished and succeeded by
  * the forge's word, and a job waiting to be started by hand has not finished. `staged`: production carrying `merged`
  * already is `InProduction`; otherwise, where `stage` names jobs, each passed and stage carries
- * `merged`, or else it is `StageFailed`; every other job passed and none is still running or pending; and each
+ * `merged`, or else it is `StageFailed`; every other job passed and none is still running or waiting to run; and each
  * `production` job, at least one, waits on the pipeline to be started by hand. The
  * pipeline's own state is not read.
  */
@@ -322,7 +325,7 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
  * Reads, before production jobs are played, what is left to play: nothing where production
  * already carries `merged`, the `jobs` still waiting to be started by hand, and none at all
  * where the tag on origin is no longer `at` or no longer carries `merged`, a job is gone or failed, or any other job failed or
- * is still running or pending.
+ * is still running or waiting to run.
  */
 export const readProduction = Effect.fn("Releasing.readProduction")(function* <R>(opts: {
   readonly cwd: string;

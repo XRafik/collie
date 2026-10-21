@@ -167,13 +167,13 @@ test("an application's tag is not ready for production on a pipeline of another 
     }).pipe(Effect.scoped),
   ));
 
-test("a job still running or pending keeps an application's tag from production, before and at the go", () =>
+test("a job still running, pending or waiting by hand keeps an application's tag from production, before and at the go", () =>
   runEffect(
     Effect.gen(function* () {
       const { cwd, first, tag } = yield* repository;
       const at = yield* tag("v1.2.0");
       const object = yield* git(cwd, "rev-parse", "refs/tags/v1.2.0");
-      for (const state of ["running", "pending"] as const) {
+      for (const state of ["running", "pending", "manual"] as const) {
         const run = onGitlab({
           "7": tagRun(at, {
             jobs: [
