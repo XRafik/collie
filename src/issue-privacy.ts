@@ -1,4 +1,4 @@
-import { Effect, FileSystem, Option, Path } from "effect";
+import { Effect, FileSystem, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 
 interface DirectoryAlias {
@@ -116,21 +116,6 @@ export const gitDirOf = Effect.fn("Issues.gitDirOf")(function* (dir: string) {
   // Joined unnormalised, as Git does, so `..` leaves a linked `dir` physically.
   const gitDir = named === undefined ? marker : path.isAbsolute(named) ? named : `${dir}/${named}`;
   return (yield* fs.exists(`${gitDir}/HEAD`)) ? gitDir : null;
-});
-
-/** When the config holding a Git directory's remotes last changed, or null where it cannot be told. */
-export const configStamp = Effect.fn("Issues.configStamp")(function* (gitDir: string) {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const common = yield* fs.readFileString(`${gitDir}/commondir`).pipe(
-    Effect.map((text) => text.trim()),
-    Effect.orElseSucceed(() => "."),
-  );
-  const info = yield* fs
-    .stat(`${path.isAbsolute(common) ? common : `${gitDir}/${common}`}/config`)
-    .pipe(Effect.option);
-  if (Option.isNone(info) || Option.isNone(info.value.mtime)) return null;
-  return `${info.value.mtime.value.getTime()}:${info.value.size}`;
 });
 
 export function throughAliases(text: string, aliases: ReadonlyArray<DirectoryAlias>): string {

@@ -866,8 +866,8 @@ six levels and including hidden, nested and linked ones, plus every checkout a R
 store or an open workspace is in. The walk never looks into `node_modules`, `.git` or tool
 directories such as `~/.cache`, `~/.local` and `~/.claude`, and keeps eight filesystem
 calls in flight at most. The walk is kept for two minutes per Projects root, so a batch of
-findings shares one; the Runs and workspaces are read on every check, and a checkout's
-remotes are read again whenever its Git config changes. Building the inventory propagates
+findings shares one; the Runs, the workspaces and every checkout's remotes are read
+on every check. Building the inventory propagates
 inspection failures, and taking longer than a minute refuses the issue. Git's common directory decides which
 checkouts belong to the Run's own repository. Remote paths and host-qualified identities
 are checked, including URLs with ports and SCP syntax. The registry lends each workflow

@@ -86,13 +86,7 @@ import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
 import { waitForMemory } from "./memory-wait";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
-import {
-  configStamp,
-  gitDirOf,
-  publicationCheckouts,
-  throughAliases,
-  remoteOf,
-} from "./issue-privacy";
+import { gitDirOf, publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
 import {
   HelleClaimSchema,
   HelleError,
@@ -2979,26 +2973,17 @@ export const hostLayer = (options: {
           }).pipe(Effect.provideContext(bun)),
         { capacity: 4, timeToLive: (exit) => (Exit.isSuccess(exit) ? "2 minutes" : 0) },
       );
-      const remotesRead = new Map<
-        string,
-        { readonly stamp: string; readonly names: ReadonlyArray<{ project: string; path: string }> }
-      >();
-      const remotesOf = (checkout: string, gitDir: string) =>
+      const remotesOf = (checkout: string) =>
         Effect.gen(function* () {
-          const stamp = yield* configStamp(gitDir);
-          const kept = remotesRead.get(checkout);
-          if (stamp !== null && kept?.stamp === stamp) return kept.names;
           const remotes = yield* runShell("git", ["remote", "-v"], checkout);
           if (remotes.code !== 0)
             return yield* new WorkflowError({
               reason: `issue privacy check could not read remotes: ${checkout}`,
             });
-          const names = remotes.stdout.split("\n").flatMap((line) => {
+          return remotes.stdout.split("\n").flatMap((line) => {
             const name = remoteOf(line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "");
             return name === null ? [] : [name];
           });
-          if (stamp !== null) remotesRead.set(checkout, { stamp, names });
-          return names;
         });
       /** Every checkout issue text may not name, with its remotes; the walk under `root` is kept a while. */
       const inventoryOf = (root: string) =>
@@ -3029,7 +3014,7 @@ export const hostLayer = (options: {
                   checkout,
                   canonical: yield* fs.realPath(checkout),
                   repository: gitDir !== null,
-                  names: gitDir === null ? [] : yield* remotesOf(checkout, gitDir),
+                  names: gitDir === null ? [] : yield* remotesOf(checkout),
                 };
               }),
             { concurrency: 8 },

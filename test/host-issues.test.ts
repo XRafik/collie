@@ -727,18 +727,16 @@ test(
 );
 
 test(
-  "findings filed one after another share one inventory of the checkouts' remotes",
+  "findings filed one after another share one walk of the Projects root",
   () =>
     runEffect(
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
-        yield* repository(`${rig.root}/private`, "https://gitlab.example.com/private/service.git");
         yield* fs.writeFileString(
           `${rig.userDir}/config.json`,
           json({ projects: { root: rig.root } }),
         );
-        const git = Bun.which("git");
         const bin = yield* FakeBin.make(`${rig.root}/bin`);
         try {
           const fake = yield* forgeOnPath(bin, "github", {
@@ -747,35 +745,27 @@ test(
             login: "me",
             mrs: [],
           });
-          const log = `${rig.root}/remote-reads`;
-          yield* bin.add(
-            "git",
-            `[ "$*" = "remote -v" ] && echo "$PWD" >> "${log}"\nexec "${git}" "$@"`,
-          );
-          const reads = fs
-            .readFileString(log)
-            .pipe(Effect.map((text) => text.split("\n").filter(Boolean)));
           yield* Effect.gen(function* () {
             const registry = yield* Registry;
             const generation = yield* registry.load(
               new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
             );
-            const counted: number[] = [];
-            for (const text of ["First finding", "Second finding"]) {
-              const run = yield* registry.start({
-                generation,
-                request: text,
-                project: rig.projectDir,
-                input: { operation: "file", text },
-                handsOver: true,
-              });
-              expect(yield* registry.result(run.runId)).toMatchObject({
-                number: expect.any(Number),
-              });
-              counted.push((yield* reads).length);
-            }
-            expect(counted[0]).toBeGreaterThan(0);
-            expect(counted[1]).toBe(counted[0]);
+            const file = (text: string) =>
+              registry
+                .start({
+                  generation,
+                  request: text,
+                  project: rig.projectDir,
+                  input: { operation: "file", text },
+                  handsOver: true,
+                })
+                .pipe(Effect.flatMap((run) => registry.result(run.runId)));
+            yield* file("First finding");
+            yield* repository(
+              `${rig.root}/unwalked`,
+              "https://gitlab.example.com/private/unwalked.git",
+            );
+            yield* file("Seen in private/unwalked");
           }).pipe(withMachine);
           expect((yield* fake.model()).issues).toHaveLength(2);
         } finally {
@@ -836,7 +826,7 @@ test(
 );
 
 test(
-  "a checkout recorded, or a remote added, after an inventory was read is still private",
+  "a checkout recorded, or a remote added or included, after an inventory was read is still private",
   () =>
     runEffect(
       Effect.gen(function* () {
@@ -844,6 +834,11 @@ test(
         yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
         const walked = `${rig.root}/projects/walked`;
         yield* repository(walked, "https://gitlab.example.com/private/walked.git");
+        const included = `${rig.root}/included.config`;
+        yield* fs.writeFileString(included, "");
+        expect(
+          (yield* exec(["git", "-C", walked, "config", "include.path", included])).exitCode,
+        ).toBe(0);
         yield* fs.writeFileString(
           `${rig.userDir}/config.json`,
           json({ projects: { root: `${rig.root}/projects` } }),
@@ -892,17 +887,22 @@ test(
                 "https://gitlab.example.com/private/added.git",
               ])).exitCode,
             ).toBe(0);
-            for (const [text, checkout] of [
-              ["Seen in private/late", late],
-              ["Seen in private/added", walked],
-            ] as const) {
-              const answer = yield* file(text);
-              expect(Result.isFailure(answer)).toBe(true);
-              if (Result.isFailure(answer))
-                expect(answer.failure.reason).toBe(
-                  `issue text names another checkout: ${checkout}`,
-                );
-            }
+            const refused = (text: string, checkout: string) =>
+              Effect.gen(function* () {
+                const answer = yield* file(text);
+                expect(Result.isFailure(answer)).toBe(true);
+                if (Result.isFailure(answer))
+                  expect(answer.failure.reason).toBe(
+                    `issue text names another checkout: ${checkout}`,
+                  );
+              });
+            yield* refused("Seen in private/late", late);
+            yield* refused("Seen in private/added", walked);
+            yield* fs.writeFileString(
+              included,
+              '[remote "included"]\n\turl = https://gitlab.example.com/private/included.git\n',
+            );
+            yield* refused("Seen in private/included", walked);
           }).pipe(withMachine);
           expect((yield* fake.model()).issues).toHaveLength(1);
         } finally {
