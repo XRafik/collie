@@ -1001,8 +1001,7 @@ test.skipIf(process.platform !== "linux")(
         expect(clock.currentTimeMillisUnsafe() - began).toBeLessThan(2_000);
       }),
     ),
-  // Each look spawns `ps`, which under the whole suite's load took over 30 seconds of real time.
-  120_000,
+  30_000,
 );
 
 test(

@@ -16,6 +16,26 @@ test("a process's command and start time read alone are what reading it whole sa
 test("a process that is not running has no start time", () =>
   runEffect(Effect.map(startedOf(2 ** 22 + 1), (started) => expect(started).toBeNull())));
 
+test.skipIf(process.platform !== "linux")(
+  "a process gone from /proc is not looked for with ps",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const spawned: string[] = [];
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            if (command._tag === "StandardCommand") spawned.push(command.command);
+          }).pipe(Effect.andThen(Effect.die("nothing may be spawned"))),
+        );
+        const started = yield* startedOf(2 ** 22 + 1).pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+        expect(started).toBeNull();
+        expect(spawned).toEqual([]);
+      }),
+    ),
+);
+
 test("a running process's group and bindings are read, and a gone one has neither", () =>
   runEffect(
     Effect.gen(function* () {
