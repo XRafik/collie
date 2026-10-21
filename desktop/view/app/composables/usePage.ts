@@ -5,7 +5,8 @@ export type Page =
   | { readonly kind: "record"; readonly key: string }
   | { readonly kind: "settings" }
   | { readonly kind: "machines" }
-  | { readonly kind: "workflows" };
+  | { readonly kind: "workflows" }
+  | { readonly kind: "usage" };
 
 const page = ref<Page | null>(null);
 const asked = ref<string | null>(null);

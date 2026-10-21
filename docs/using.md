@@ -1361,18 +1361,24 @@ Beside **Machines**, the header names each **Subscription** and account in use a
 Flock with its busiest window, as in `Claude 72% · ChatGPT 2%`, naming the model where it is
 a model's own (`Claude Opus out`): amber at 90% or above, red
 and "out" once it is **Exhausted**. Hovering an entry gives its account, when that window
-resets and which Machine read it how long ago, and clicking it opens Machines. Machines
+resets and which Machine read it how long ago, and clicking it opens **Usage**, or closes
+it when it is open; with nothing read the button says just "Usage". Machines
 logged in to one account are one entry, and two accounts are two, each named. A Claude
 account is matched by its organization and account, so one email in two organizations is
 two; a ChatGPT account by its id and the login's email, because its id is the workspace's
 and every seat in it shares it. The provider counts usage per account, so the entry shows
-the newest of its Machines' readings. On the Machines page each Machine has a
-**Usage** block: per Subscription its plan and account, each window as a meter with its
-percent and when it resets, as a clock time and "in 2h 10m", and how fresh the numbers are
-and where they came from ("as of 3 minutes ago · Claude's usage endpoint"), or the
-reading's problem in its own words. A Machine running a Collie too old to read usage says
-"can't say; upgrade this Machine". Desktop asks every live Machine when it opens, again
-each minute while its window is shown, and whenever Machines opens; each host answers from
+the newest of its Machines' readings. The **Usage** page lists each Subscription account
+once across the live Machines, matched the same way: its plan and account, each window of
+its newest reading as a meter with its percent and when it resets, as a clock time and
+"in 2h 10m", how fresh the numbers are, which Machine read them and where they came from
+("as of 3 minutes ago · read on vm-mk · Claude's usage endpoint"), and the Machines logged
+in to it ("Logged in on mk-laptop, vm-mk"), each with its own reading's problem beside its
+name, such as an expired login. An account read only with problems is listed with them and
+no meters. Under **Not read** are a reading no account can be matched to, such as Codex not
+logged in, and a Machine whose host gave no readings; one running a Collie too old to read
+usage says "can't say; upgrade this Machine". The Machines page shows no usage. Desktop
+asks every live Machine when it opens, again each minute while its window is shown, and
+whenever Usage opens; each host answers from
 its own reading, which is at most five minutes old unless its source is refusing
 ([Usage](#usage)).
 
@@ -2780,7 +2786,7 @@ Native chat reads and manages its own Machine's Schedules and says which Machine
 for another Machine it runs `collie --machine <machine> schedule`.
 
 In Desktop, the Machines page has a **Schedules on <machine>** section for each Machine,
-beside its Usage, with the same facts as `collie schedule list` and the cron expression put
+with the same facts as `collie schedule list` and the cron expression put
 in words where it is a common one ("every day at 07:00"). Each row can be paused, resumed,
 removed, or moved with **Move to…**. A Machine Desktop cannot reach says so: its Schedules
 still fire there while its host runs. One whose Collie is too old to list them asks for an
@@ -3007,8 +3013,8 @@ where it was read from. It never fails the run.
 Each Machine's host reads how much of its Claude and ChatGPT **Subscriptions** is used
 ([ADR-0049](adr/0049-work-goes-to-an-agent-with-usage-left.md)), per window: the 5-hour
 session, the week, and a model's own week where the plan has one. `collie usage` prints it,
-the Control Plane's header names each Subscription's busiest window, Desktop shows it across
-the Flock and per Machine ([Collie Desktop](#collie-desktop)), and chat runs the command
+the Control Plane's header names each Subscription's busiest window, Desktop's Usage page shows
+it across the Flock, one entry per account ([Collie Desktop](#collie-desktop)), and chat runs the command
 when you ask how much is left.
 
 The numbers come from where the harnesses' own `/usage` and `/status` get them:
