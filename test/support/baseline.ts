@@ -8976,7 +8976,6 @@ const stageable = (
 /** The production job left waiting on the tag's pipeline, as the forge links it. */
 const waiting = (name: MrForge) => `\`deploy-production\` at ${tagJob(name, "deploy-production")}`;
 
-/** A monorepo's release, which deploys two of its applications. */
 const MONOREPO_ASSESSED = { ...APP_ASSESSED, applications: ["spilnu", "happytiger"] };
 
 {

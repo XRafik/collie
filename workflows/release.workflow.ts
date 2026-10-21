@@ -255,7 +255,6 @@ const quoted = (jobs: ReadonlyArray<string>) => jobs.map((job) => `\`${job}\``).
 /** What a Release Run goes on from once its merge request is merged. */
 interface Landed {
   readonly sha: string;
-  /** The Helle projects it holds claims on. */
   readonly slugs: ReadonlyArray<string>;
   readonly recovery: string;
   readonly production: ProductionGo | null;
