@@ -784,6 +784,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly cwd: string;
       readonly sha: string;
       readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
+      readonly played?: boolean;
       readonly slug?: string;
       readonly url: string;
     }) => Effect.Effect<boolean>;
@@ -3515,7 +3516,12 @@ export const hostLayer = (options: {
               // The question is the workflow's, so it is durable and asked once; this only
               // turns the answer into the word the gate reads.
               ask: () => asked.adopting.pipe(Effect.map((yes) => (yes ? "yes" : null))),
-            });
+              queued: (slug, position) =>
+                waitOn(asked.runId, {
+                  on: `its turn for the Helle claim on ${slug}, at ${position} in its queue`,
+                  who: "whoever holds it",
+                }),
+            }).pipe(Effect.ensuring(waitOn(asked.runId, null)));
           }).pipe(
             Effect.provide(FetchHttpClient.layer),
             Effect.provideContext(services),
@@ -3687,12 +3693,15 @@ export const hostLayer = (options: {
             const short = asked.sha.slice(0, 8);
             const plays = asked.jobs.map((job) => `\`${job.name}\` at ${job.url ?? asked.url}`);
             const held = asked.slug === undefined ? null : `The claim on \`${asked.slug}\` is held`;
-            yield* host.parked(
-              asked.runId,
-              plays.length === 0
-                ? `Waiting for production to carry \`${short}\` of ${asked.url}.${held === null ? "" : ` ${held} until it does.`}`
-                : `Waiting for production: play ${plays.join(", ")}. ${held ?? "The Run waits"} until the forge shows production carries \`${short}\`.`,
-            );
+            yield* plays.length > 0 && asked.played !== true
+              ? host.parked(
+                  asked.runId,
+                  `Waiting for production: play ${plays.join(", ")}. ${held ?? "The Run waits"} until the forge shows production carries \`${short}\`.`,
+                )
+              : waitOn(asked.runId, {
+                  on: `production to carry \`${short}\` of ${asked.url}${plays.length === 0 ? "" : `, from ${plays.join(", ")}`}${asked.slug === undefined ? "" : `, holding the claim on \`${asked.slug}\``}`,
+                  who: null,
+                });
             const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
               Effect.orElseSucceed(() => ({ gitlabHost: undefined })),
             );
@@ -3707,7 +3716,7 @@ export const hostLayer = (options: {
               return true;
             });
             const carries = yield* Effect.raceFirst(controlled, carried);
-            yield* host.parked(asked.runId, null);
+            yield* waitOn(asked.runId, null);
             return carries;
           }).pipe(Effect.provideContext(services)),
         mergeRequest: (runId, url) =>

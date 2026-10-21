@@ -180,6 +180,8 @@ export interface HelleGate<E, R> {
   record: (claim: HelleClaim) => Effect.Effect<void, E, R>;
   out: (line: string) => Effect.Effect<void, E, R>;
   ask: (question: string) => Effect.Effect<string | null, E, R>;
+  /** Told this Run's place in the queue each time it changes, while it is not the holder. */
+  queued?: (slug: string, position: number) => Effect.Effect<void, E, R>;
   pollMs?: number;
 }
 
@@ -237,6 +239,7 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
           ? `✓ this Run holds ${slug}`
           : `⏳ waiting for ${slug} — position ${position}`,
       );
+      if (position !== 0 && gate.queued !== undefined) yield* gate.queued(slug, position);
       said = position;
     }
     if (position === 0) return { slug };

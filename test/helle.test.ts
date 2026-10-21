@@ -218,6 +218,7 @@ function gate(opts: {
   answer?: string | null;
   lines: string[];
   recorded: (HelleClaim | null)[];
+  queued?: number[];
 }) {
   return waitForHelle({
     home: "/nowhere",
@@ -232,6 +233,7 @@ function gate(opts: {
     record: (claim) => Effect.sync(() => void opts.recorded.push(claim)),
     out: (line) => Effect.sync(() => void opts.lines.push(line)),
     ask: () => Effect.succeed(opts.answer ?? null),
+    queued: (_slug, position) => Effect.sync(() => void opts.queued?.push(position)),
     pollMs: 1,
   });
 }
@@ -291,7 +293,10 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         fake.claims = [{ position: 2, already_queued: false }];
         const lines: string[] = [];
         const recorded: (HelleClaim | null)[] = [];
-        const fiber = yield* Effect.forkScoped(gate({ file: yield* envFile(), lines, recorded }));
+        const queued: number[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({ file: yield* envFile(), lines, recorded, queued }),
+        );
 
         // The queue moves up once the gate has said where it stands, and then the project
         // becomes this token's own: moved on what the gate has seen, not on the clock.
@@ -311,6 +316,7 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         expect(said).toContain("position 2");
         expect(said).toContain("position 1");
         expect(said).toContain("holds spilnu");
+        expect(queued).toEqual([2, 1]);
       }),
     ),
   ));

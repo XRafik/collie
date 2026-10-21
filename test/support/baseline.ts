@@ -6648,6 +6648,15 @@ const parkedOn = (options: ShippedRun) =>
     ),
   );
 
+/** A Run run until it awaits something that ends by itself, and what. */
+const awaitingIn = (options: ShippedRun) =>
+  running(options, () =>
+    awaitingOn(options.runId).pipe(
+      Effect.filterOrFail((on) => on !== ""),
+      Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+    ),
+  );
+
 /** A stopped Run picked up again, as `collie run resume` does it, and run to its end. */
 const resumed = (options: {
   readonly entry: string;
@@ -7373,7 +7382,7 @@ for (const name of ["gitlab", "github"] as const) {
           ]);
           claimed.length = 0;
           const entry = shipped("renovate");
-          const waiting = `Waiting for production to carry \`${head.slice(0, 8)}\` of ${url}. The claim on \`project\` is held until it does.`;
+          const waiting = `production to carry \`${head.slice(0, 8)}\` of ${url}, holding the claim on \`project\``;
           const polled = (more: number) =>
             Effect.gen(function* () {
               const before = (yield* forge.calls()).length;
@@ -7399,8 +7408,8 @@ for (const name of ["gitlab", "github"] as const) {
               Effect.gen(function* () {
                 expect(
                   yield* until(
-                    () => parkedWhy(`r-omit-${name}`),
-                    (why) => why !== "",
+                    () => awaitingOn(`r-omit-${name}`),
+                    (on) => on !== "",
                   ),
                 ).toBe(waiting);
                 for (const behind of [
@@ -7435,8 +7444,8 @@ for (const name of ["gitlab", "github"] as const) {
               Effect.gen(function* () {
                 expect(
                   yield* until(
-                    () => parkedWhy(`r-empty-jobs-${name}`),
-                    (why) => why !== "",
+                    () => awaitingOn(`r-empty-jobs-${name}`),
+                    (on) => on !== "",
                   ),
                 ).toBe(waiting);
                 expect(claimed).not.toContain(`release r-empty-jobs-${name}`);
@@ -7468,8 +7477,8 @@ scenario(
         const runId = "r-prod-restart";
         const entry = shipped("renovate");
         yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
-        expect(yield* parkedOn({ entry, runId, input: {}, host: holdingClaim })).toContain(
-          "Waiting for production",
+        expect(yield* awaitingIn({ entry, runId, input: {}, host: holdingClaim })).toContain(
+          "production to carry",
         );
         expect(yield* prompts()).toHaveLength(5);
 
@@ -7501,8 +7510,8 @@ scenario(
           (status) =>
             Effect.gen(function* () {
               yield* until(
-                () => parkedWhy(runId),
-                (why) => why !== "",
+                () => awaitingOn(runId),
+                (on) => on !== "",
               );
               yield* until(
                 () => forge.calls(),
@@ -7520,6 +7529,7 @@ scenario(
         expect(status).toBe("suspended");
         expect(claimed).toEqual([`claim ${runId}`]);
         expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* awaitingOn(runId)).toBe("");
       }),
     ),
   120_000,
@@ -9232,8 +9242,8 @@ for (const name of ["gitlab", "github"] as const) {
               );
               yield* run.answer("production", "Send to production");
               yield* until(
-                () => parkedWhy(runId),
-                (why) => why !== "",
+                () => awaitingOn(runId),
+                (on) => on !== "",
               );
               yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
               return yield* ended(run.status);
@@ -9522,8 +9532,8 @@ for (const name of ["gitlab", "github"] as const) {
               expect(claimed).toEqual([`claim ${runId}`]);
               yield* run.answer("production", "Send to production");
               yield* until(
-                () => parkedWhy(runId),
-                (why) => why !== "",
+                () => awaitingOn(runId),
+                (on) => on !== "",
               );
               yield* forge.set(yield* now({ environments: deploys(head, merged) }));
               const end = yield* ended(run.status);

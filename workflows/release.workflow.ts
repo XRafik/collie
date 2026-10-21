@@ -899,6 +899,7 @@ export default defineWorkflow({
 
       // Go 2 holds for this tag and these jobs: the head go 1 was given for is merged.
       const jobs = read._tag === "Proved" ? read.production : [];
+      let played = false;
       if (read._tag === "Proved") {
         const answer =
           landed.production ??
@@ -908,6 +909,7 @@ export default defineWorkflow({
             options: [PRODUCTION.send, PRODUCTION.leave],
           }));
         if (answer === PRODUCTION.send) {
+          played = true;
           const now = yield* Activity.make({
             name: "production.read",
             success: ProductionReadSchema,
@@ -948,6 +950,7 @@ export default defineWorkflow({
         cwd,
         sha: landed.sha,
         jobs,
+        played,
         url,
         slug: landed.claim?.slug,
       });
