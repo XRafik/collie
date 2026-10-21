@@ -294,14 +294,14 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
   }
   if (needed._tag === "Unresolved") return needed satisfies Held;
   const me = yield* helleMe(creds);
+  const recorded = new Set(gate.claimed.map((one) => one.slug));
   let adopting: boolean | null = null;
 
-  for (const slug of needed.slugs) {
-    const recorded = gate.claimed.some((one) => one.slug === slug);
+  const hold = Effect.fn("Helle.hold")(function* (slug: string) {
     // Claimed on every entry, resume included: an idempotent claim is the only way back
     // into a queue this Run may have fallen out of while it was not running.
     const claimed = yield* claimProject(creds, slug);
-    if (claimed.already_queued && !recorded) {
+    if (claimed.already_queued && !recorded.has(slug)) {
       adopting ??= AFFIRMATIVE.test(
         (yield* gate.ask(
           `You already hold or are queued for the Helle project ${slug}. Take that claim over, and release it when the Run is done? [y/N]`,
@@ -313,9 +313,10 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
         );
       }
       yield* gate.record({ slug, claim: "adopted" });
-    } else if (!recorded) {
+    } else if (!recorded.has(slug)) {
       yield* gate.record({ slug, claim: "mine" });
     }
+    recorded.add(slug);
 
     let said: number | null = null;
     let position = claimed.position;
@@ -328,12 +329,21 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
         );
         said = position;
       }
-      if (position === 0) break;
+      if (position === 0) return;
       yield* Effect.sleep(gate.pollMs ?? POLL_MS);
       // A queue this Run is no longer in is not a turn it has taken: it keeps the last
       // position it knew rather than reporting a place it does not have.
       position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
     }
+  });
+
+  // One held earlier can be taken while a later one is waited for, so all are read again.
+  let pending = needed.slugs;
+  while (pending.length > 0) {
+    for (const slug of pending) yield* hold(slug);
+    pending = [];
+    for (const slug of needed.slugs)
+      if (positionOf(yield* helleProject(creds, slug), me.user_id) !== 0) pending.push(slug);
   }
   return { _tag: "Held", slugs: needed.slugs } satisfies Held;
 });

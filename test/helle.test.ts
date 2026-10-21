@@ -471,6 +471,69 @@ test("someone else's claim on one project keeps the gate waiting, and the next i
     ),
   ));
 
+test("a claim lost while the gate waited for the next is waited for again, not reported held", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        fake.projects = [
+          { slug: "happytiger", group: "spilnu/frontend", queue: [] },
+          {
+            slug: "spilnu",
+            group: "spilnu/frontend",
+            holder: { user_id: OTHER, display_name: "someone" },
+            queue: [{ user_id: ME }],
+          },
+        ];
+        fake.claims = [
+          { position: 0, already_queued: false },
+          { position: 1, already_queued: false },
+          { position: 1, already_queued: true },
+        ];
+        const lines: string[] = [];
+        const recorded: (HelleClaim | null)[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({
+            file: yield* envFile(),
+            repositoryPath: "gitlab.cego.dk/spilnu/frontend/monorepo",
+            repoName: "monorepo",
+            deploys: { applications: ["spilnu", "happytiger"], jobs: [] },
+            lines,
+            recorded,
+          }),
+        );
+        const saidSoFar = (text: string) =>
+          Effect.sync(() => lines.some((line) => line.includes(text))).pipe(
+            Effect.repeat({
+              until: (seen) => seen,
+              schedule: Schedule.spaced("5 millis"),
+            }),
+          );
+
+        yield* saidSoFar("waiting for spilnu");
+        const [happytiger, spilnu] = fake.projects;
+        happytiger!.holder = { user_id: OTHER, display_name: "someone" };
+        happytiger!.queue = [];
+        spilnu!.holder = { user_id: ME, display_name: "mk" };
+        spilnu!.queue = [];
+        yield* saidSoFar("waiting for happytiger");
+        expect(fiber.pollUnsafe()).toBeUndefined();
+
+        happytiger!.holder = { user_id: ME, display_name: "mk" };
+        expect(yield* Fiber.join(fiber)).toEqual({
+          _tag: "Held",
+          slugs: ["happytiger", "spilnu"],
+        });
+        expect(
+          fake.calls.filter((call) => call === "POST /api/v1/projects/happytiger/claim"),
+        ).toHaveLength(2);
+        expect(recorded).toEqual([
+          { slug: "happytiger", claim: "mine" },
+          { slug: "spilnu", claim: "mine" },
+        ]);
+      }),
+    ),
+  ));
+
 test("a release whose projects cannot be resolved claims nothing", () =>
   runEffect(
     Effect.gen(function* () {
