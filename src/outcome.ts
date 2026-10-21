@@ -14,6 +14,7 @@ import { checkProof, owedLocally, owesNothingHere } from "./check-proof";
 import {
   passed,
   ranOneTest,
+  sameCommand,
   type CheckCommand,
   type FailedTest,
   type Snapshot,
@@ -96,6 +97,41 @@ export interface Collected {
 function lastPassedAtFinal(got: Collected, name: string): boolean {
   return owesNothingHere(checkProof(got, name));
 }
+
+const TEXT_SEARCHES = new Set(["grep", "egrep", "fgrep", "rg", "ag", "ack"]);
+
+/** Whether a command only searches text, also as a `sh -c` or `bash -c` script's first word. */
+function textSearch(executable: string, argv: ReadonlyArray<string>): boolean {
+  const program = executable.split("/").at(-1) ?? "";
+  if (TEXT_SEARCHES.has(program)) return true;
+  if (program === "git") return argv[0] === "grep";
+  if (program !== "sh" && program !== "bash") return false;
+  const at = argv.indexOf("-c");
+  const script = at < 0 ? undefined : argv[at + 1];
+  if (script === undefined) return false;
+  const [first = "", ...rest] = script.trim().split(/\s+/);
+  return textSearch(first, rest);
+}
+
+/**
+ * Whether a name's latest result on this tree passed, a passing text search not counting:
+ * it shows the text is there, not that anything works. A Run's Check is the project's own.
+ */
+function provedAtFinal(got: Collected, name: string): "passed" | "searched" | "unproved" {
+  if (lastPassedAtFinal(withoutSearches(got, name), name)) return "passed";
+  return lastPassedAtFinal(got, name) ? "searched" : "unproved";
+}
+
+function withoutSearches(got: Collected, name: string): Collected {
+  const ownCheck = [...got.approved, ...(got.commands ?? [])].some((one) => one.name === name);
+  if (ownCheck) return got;
+  const searched = (v: Verification) =>
+    v.name === name && passed(v) && textSearch(v.executable, v.argv);
+  return { ...got, verifications: got.verifications.filter((v) => !searched(v)) };
+}
+
+const onlySearched = (what: string) =>
+  `${what}, whose only pass on this tree is a text search, which proves nothing`;
 
 type Journal = Pick<Collected, "verifications" | "final" | "commands"> &
   Partial<Pick<Collected, "approved">>;
@@ -301,6 +337,9 @@ function earlierTree(v: Verification, final: Snapshot): boolean {
   return v.end.head_sha !== final.head_sha || v.end.fingerprint !== final.fingerprint;
 }
 
+/** A record's command as a human would type it. */
+const shown = (v: Verification) => [v.executable.split("/").at(-1), ...v.argv].join(" ");
+
 function names(value: YamlValue | undefined): string[] {
   return Array.isArray(value) ? value.filter(isString) : [];
 }
@@ -353,9 +392,12 @@ function gapsOf(kind: Outcome, got: Collected): Array<{ text: string; check: boo
       // collected these itself; what matters is a pass on the tree in front of us.
       for (const ticket of got.tickets) {
         for (const name of ticket.checks) {
-          if (lastPassedAtFinal(got, name) || settledUnpassed(got, name)) continue;
+          const proof = provedAtFinal(got, name);
+          if (proof === "passed" || settledUnpassed(got, name)) continue;
           check(
-            `${ticket.file} promised check "${name}", which has no passing verification on this tree`,
+            proof === "searched"
+              ? onlySearched(`${ticket.file} promised check "${name}"`)
+              : `${ticket.file} promised check "${name}", which has no passing verification on this tree`,
           );
         }
       }
@@ -366,16 +408,27 @@ function gapsOf(kind: Outcome, got: Collected): Array<{ text: string; check: boo
       // nothing was reproduced, and one that never passed proves nothing was fixed.
       const regression = got.verifications.filter((v) => v.name === "regression");
       const reproduced = regression.filter((v) => v.expect === "fail" && v.result === "pass");
+      const before = reproduced.filter((v) => earlierTree(v, got.final));
       if (reproduced.length === 0)
         check(
           "no regression verification recorded with --expect fail, so the bug was never reproduced",
         );
-      else if (!reproduced.some((v) => earlierTree(v, got.final)))
+      else if (before.length === 0)
         check(
           "the bug was only reproduced on the tree the fix is already on, so nothing shows it failing before the fix",
         );
-      if (!lastPassedAtFinal(got, "regression"))
-        check("regression does not pass on the current tree, so the fix is not proven");
+      const fix = checkProof(withoutSearches(got, "regression"), "regression");
+      const fixedBy = fix.state === "passed" ? fix.last : undefined;
+      if (fixedBy === undefined)
+        check(
+          lastPassedAtFinal(got, "regression")
+            ? onlySearched("regression")
+            : "regression does not pass on the current tree, so the fix is not proven",
+        );
+      else if (before.length > 0 && !before.some((v) => sameCommand(v, fixedBy)))
+        check(
+          `the bug was reproduced by "${shown(before.at(-1)!)}" but the fix is proven by "${shown(fixedBy)}": one command has to fail before the fix and pass after it`,
+        );
       const named = anyField(got, "reproduced");
       if (!isString(named) || named.trim() === "")
         claim("the Output does not name the verification that reproduced the bug");
@@ -405,7 +458,9 @@ function gapsOf(kind: Outcome, got: Collected): Array<{ text: string; check: boo
       if (documented.length === 0)
         claim("no documented command is named, so the instructions were never run");
       for (const name of documented) {
-        if (!lastPassedAtFinal(got, name))
+        const proof = provedAtFinal(got, name);
+        if (proof === "searched") check(onlySearched(`documented command "${name}"`));
+        else if (proof === "unproved")
           check(`documented command "${name}" has no passing verification on this tree`);
       }
       if (!reviewerSays(got, "accurate"))
@@ -414,11 +469,19 @@ function gapsOf(kind: Outcome, got: Collected): Array<{ text: string; check: boo
     }
     case "migration": {
       for (const name of ["migrate-up", "migrate-down"]) {
-        if (lastPassedAtFinal(got, name)) continue;
         // `rollback` is the same thing under another name, and a project that calls it
         // that has still proved it can go back.
-        if (name === "migrate-down" && lastPassedAtFinal(got, "rollback")) continue;
-        check(`${name} has no passing verification on this tree`);
+        const proofs = (name === "migrate-down" ? [name, "rollback"] : [name]).map((one) => ({
+          one,
+          proof: provedAtFinal(got, one),
+        }));
+        if (proofs.some(({ proof }) => proof === "passed")) continue;
+        const searched = proofs.find(({ proof }) => proof === "searched");
+        check(
+          searched === undefined
+            ? `${name} has no passing verification on this tree`
+            : onlySearched(searched.one),
+        );
       }
       if (!reviewerSays(got, "compatible")) claim("the review did not report compatible: true");
       break;

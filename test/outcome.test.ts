@@ -323,6 +323,43 @@ test("a bug is a fail then a pass, on two different trees", () => {
   ).toEqual(["the Output does not name the verification that reproduced the bug"]);
 });
 
+/** A bug Run's `regression` failing as expected on an earlier tree, then passing, each as `[executable, ...argv]`. */
+const reproducedThenFixed = (reproducedAs: string[], fixedAs: string[]) =>
+  withOutput(
+    { reproduced: "regression" },
+    {
+      verifications: [
+        record({ name: "tests" }),
+        record({
+          name: "regression",
+          executable: reproducedAs[0],
+          argv: reproducedAs.slice(1),
+          expect: "fail",
+          exit: 1,
+          start: EARLIER,
+          end: EARLIER,
+        }),
+        record({ name: "regression", executable: fixedAs[0], argv: fixedAs.slice(1) }),
+      ],
+    },
+  );
+
+test("a bug reproduced by one command and fixed by another is a gap naming both", () => {
+  expect(
+    checkGaps(
+      "bug",
+      reproducedThenFixed(["/usr/bin/false"], ["/usr/bin/bun", "test", "test/x.test.ts"]),
+    ),
+  ).toEqual([
+    'the bug was reproduced by "false" but the fix is proven by "bun test test/x.test.ts": one command has to fail before the fix and pass after it',
+  ]);
+});
+
+test("a bug whose one command failed before the fix and passes after it has no reproduction gap", () => {
+  const command = ["/usr/bin/bun", "test", "test/x.test.ts"];
+  expect(checkGaps("bug", reproducedThenFixed(command, command))).toEqual([]);
+});
+
 test("a refactor needs the review to say behaviour survived; a green suite is not enough", () => {
   expect(evidenceGaps("refactor", collected())).toEqual([
     "the review did not report behavior_preserved: true",
@@ -556,6 +593,83 @@ test("a promised check is proved by a pass of its command under any name, and ne
     '01-a.md promised check "tests", which has no passing verification on this tree',
   ]);
   expect(gaps([agents(), reproduced])).toHaveLength(2);
+});
+
+const searched = (name: string, over: Partial<Verification> = {}) =>
+  record({ name, by: "agent", executable: "/usr/bin/rg", argv: ["foo", "src"], ...over });
+const promising = (verifications: Verification[]) =>
+  collected({
+    verifications: [record({ name: "tests" }), ...verifications],
+    tickets: [{ file: "01-a.md", checks: ["proves-a"] }],
+  });
+
+test("a promised check whose only pass is a text search is a gap", () => {
+  expect(checkGaps("feature", promising([searched("proves-a")]))).toEqual([
+    '01-a.md promised check "proves-a", whose only pass on this tree is a text search, which proves nothing',
+  ]);
+});
+
+test("a text search run as a shell script is still a text search", () => {
+  const script = searched("proves-a", {
+    executable: "/usr/bin/bash",
+    argv: ["-c", "grep -q foo src/x.ts"],
+  });
+  expect(checkGaps("feature", promising([script]))).toEqual([
+    '01-a.md promised check "proves-a", whose only pass on this tree is a text search, which proves nothing',
+  ]);
+});
+
+test("a documented command whose only pass is a text search is a gap", () => {
+  const got = withOutput(
+    { documented_commands: ["docs-quickstart"], accurate: true },
+    { verifications: [record({ name: "tests" }), searched("docs-quickstart")] },
+  );
+  expect(checkGaps("docs", got)).toEqual([
+    'documented command "docs-quickstart", whose only pass on this tree is a text search, which proves nothing',
+  ]);
+});
+
+test("a migration step whose only pass is a text search is a gap", () => {
+  const got = withOutput(
+    { compatible: true },
+    {
+      verifications: [
+        record({ name: "tests" }),
+        record({ name: "migrate-up" }),
+        searched("rollback"),
+      ],
+    },
+  );
+  expect(checkGaps("migration", got)).toEqual([
+    "rollback, whose only pass on this tree is a text search, which proves nothing",
+  ]);
+});
+
+test("a regression whose only pass is a text search does not prove the fix", () => {
+  const got = withOutput(
+    { reproduced: "regression" },
+    {
+      verifications: [
+        record({ name: "tests" }),
+        searched("regression", { expect: "fail", exit: 1, start: EARLIER, end: EARLIER }),
+        searched("regression"),
+      ],
+    },
+  );
+  expect(checkGaps("bug", got)).toEqual([
+    "regression, whose only pass on this tree is a text search, which proves nothing",
+  ]);
+});
+
+test("a promised check that also passed as a test is not a gap, whichever ran last", () => {
+  const tested = record({
+    name: "proves-a",
+    by: "agent",
+    executable: "/usr/bin/bun",
+    argv: ["test", "test/a.test.ts"],
+  });
+  expect(checkGaps("feature", promising([searched("proves-a"), tested]))).toEqual([]);
+  expect(checkGaps("feature", promising([tested, searched("proves-a")]))).toEqual([]);
 });
 
 const QUICK = { file: "test/one.test.ts", name: "the quick one" };
