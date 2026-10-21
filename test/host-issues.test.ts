@@ -234,6 +234,66 @@ test(
   30_000,
 );
 
+test(
+  "a directory under the Projects root that Git cannot open does not block filing, unless the text names it",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
+        const notRepository = `${rig.root}/.tool/cache/copied`;
+        yield* fs.makeDirectory(`${notRepository}/.git`, { recursive: true });
+        const brokenGit = `${rig.root}/.tool/cache/plugin`;
+        yield* fs.makeDirectory(brokenGit, { recursive: true });
+        yield* fs.writeFileString(`${brokenGit}/.git`, "gitdir: ../../.git/modules/plugin\n");
+        yield* fs.writeFileString(
+          `${rig.userDir}/config.json`,
+          json({ projects: { root: rig.root } }),
+        );
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        try {
+          const fake = yield* forgeOnPath(bin, "github", {
+            installed: true,
+            loggedIn: [FORGE_HOST.github],
+            login: "me",
+            mrs: [],
+          });
+          yield* Effect.gen(function* () {
+            const registry = yield* Registry;
+            const generation = yield* registry.load(
+              new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+            );
+            const filed = yield* registry.start({
+              generation,
+              request: "file",
+              project: rig.projectDir,
+              input: { operation: "file", text: "Evidence" },
+              handsOver: true,
+            });
+            expect(yield* registry.result(filed.runId)).toMatchObject({ number: 1 });
+            for (const named of [notRepository, brokenGit]) {
+              const run = yield* registry.start({
+                generation,
+                request: named,
+                project: rig.projectDir,
+                input: { operation: "file", text: `Seen in ${named}/file` },
+                handsOver: true,
+              });
+              const answer = yield* registry.result(run.runId).pipe(Effect.result);
+              expect(Result.isFailure(answer)).toBe(true);
+              if (Result.isFailure(answer))
+                expect(answer.failure.reason).toBe(`issue text names another checkout: ${named}`);
+            }
+          }).pipe(withMachine);
+          expect((yield* fake.model()).issues).toHaveLength(1);
+        } finally {
+          yield* bin.restore();
+        }
+      }),
+    ),
+  30_000,
+);
+
 for (const failure of ["configuration", "inventory"] as const) {
   test(
     `the host refuses with a recordable error when its ${failure} cannot be inspected`,

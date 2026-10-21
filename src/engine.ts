@@ -2752,12 +2752,15 @@ export const hostLayer = (options: {
           const ownRemote = here.project.split("/").slice(1).join("/");
           for (const checkout of inventory.checkouts) {
             const canonical = yield* fs.realPath(checkout);
-            const remotes = yield* runShell("git", ["remote", "-v"], checkout);
-            if (remotes.code !== 0)
+            // A `.git` Git cannot open, such as a copied submodule's, has no remotes to leak.
+            const top = yield* runShell("git", ["rev-parse", "--show-toplevel"], checkout);
+            const opens = top.code === 0 && (yield* fs.realPath(top.stdout.trim())) === canonical;
+            const remotes = opens ? yield* runShell("git", ["remote", "-v"], checkout) : null;
+            if (remotes !== null && remotes.code !== 0)
               return yield* new WorkflowError({
                 reason: `issue privacy check could not read remotes: ${checkout}`,
               });
-            const names = remotes.stdout.split("\n").flatMap((line) => {
+            const names = (remotes?.stdout ?? "").split("\n").flatMap((line) => {
               const name = remoteOf(
                 line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
               );
@@ -2777,6 +2780,10 @@ export const hostLayer = (options: {
               )
             )
               continue;
+            if (!opens)
+              return yield* new WorkflowError({
+                reason: `issue text names another checkout: ${checkout}`,
+              });
             const shared = yield* runShell(
               "git",
               ["rev-parse", "--path-format=absolute", "--git-common-dir"],
