@@ -50,7 +50,7 @@ export const NO_MR = { forge: "", noun: "", diff: "", view: "", checkout: "" };
 export const DEFAULT_BASE = "<default-branch>";
 
 /** A reviewer's round: the one before it, what was disputed, and where this Run keeps its work. */
-const REVIEW = content.template("review", {
+export const REVIEW = content.template("review", {
   ...change,
   run: Schema.Struct({ dir: text, id: text }),
   previous: Schema.Struct({ review: text, fix: text }),
@@ -121,7 +121,7 @@ export interface ReviewAsk {
 }
 
 /** What the reviewers and the synthesis are both told, beside the section they are given. */
-const told = (ask: ReviewAsk, run: { readonly dir: string; readonly id: string }) => ({
+export const told = (ask: ReviewAsk, run: { readonly dir: string; readonly id: string }) => ({
   inputs: {
     target: ask.target,
     target_kind: targetKind(ask.target),

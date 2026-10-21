@@ -1,0 +1,134 @@
+diff --git a/README.md b/README.md
+index 2dc77b1..10df8a8 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,8 @@
+ # durations
+ 
+-Reads durations such as `90s` and `5m` as milliseconds.
++Reads durations such as `90s`, `5m` and `1h30m` as milliseconds, and writes them back.
++
++## formatDuration
++
++`formatDuration(ms: number): string` is a function that takes a number called `ms` and
++returns a string.
+diff --git a/src/duration.ts b/src/duration.ts
+index 17ce1a5..6816834 100644
+--- a/src/duration.ts
++++ b/src/duration.ts
+@@ -1,12 +1,35 @@
+ export const UNITS: Record<string, number> = {
+   s: 1000,
+   m: 60 * 1000,
++  h: 60 * 60 * 1000,
+ };
+ 
+-/** Milliseconds in a duration written as a number and a unit, such as `90s` or `5m`. */
++/** Milliseconds in a duration such as `90s`, `5m` or `1h30m`. */
+ export function parseDuration(text: string): number {
+-  const match = /^(\d+)([a-z]+)$/.exec(text.trim().toLowerCase());
+-  const unit = match ? UNITS[match[2]!] : undefined;
+-  if (!match || unit === undefined) throw new Error(`not a duration: ${text}`);
+-  return Number(match[1]) * unit;
++  const written = text.trim().toLowerCase();
++  const parts = [...written.matchAll(/(\d+)([a-z]+)/g)];
++  // Matched whole: matchAll alone skips what lies between parts, so `1h junk 30m` would read.
++  if (parts.length === 0 || parts.map((part) => part[0]).join("") !== written)
++    throw new Error(`not a duration: ${text}`);
++  let total = 0;
++  for (const [, amount, name] of parts) {
++    if (!Object.hasOwn(UNITS, name!)) throw new Error(`not a duration: ${text}`);
++    // Add the amount times the unit to the total.
++    total += Number(amount) * UNITS[name!]!;
++  }
++  return total;
++}
++
++/** A duration as a person writes it, largest unit first: `5400000` is `1h30m`. */
++export function formatDuration(ms: number): string {
++  if (!Number.isFinite(ms) || ms < 0) throw new RangeError(`not a duration: ${ms}`);
++  let left = ms;
++  let out = "";
++  for (const name of ["h", "m", "s"]) {
++    const unit = UNITS[name]!;
++    const amount = Math.floor(left / unit);
++    if (amount > 0) out += `${amount}${name}`;
++    left -= amount * unit;
++  }
++  return out || "0s";
+ }
+diff --git a/src/timeout.ts b/src/timeout.ts
+new file mode 100644
+index 0000000..f482e71
+--- /dev/null
++++ b/src/timeout.ts
+@@ -0,0 +1,10 @@
++import { parseDuration } from "./duration";
++
++export interface Clock {
++  now(): number;
++}
++
++/** When work that starts now and is given `text` to run must be done by. */
++export function deadline(clock: Clock, text: string): number {
++  return clock.now() + parseDuration(text);
++}
+diff --git a/test/duration.test.ts b/test/duration.test.ts
+index daabb8f..784d3e0 100644
+--- a/test/duration.test.ts
++++ b/test/duration.test.ts
+@@ -1,5 +1,5 @@
+ import { expect, test } from "bun:test";
+-import { parseDuration } from "../src/duration";
++import { UNITS, formatDuration, parseDuration } from "../src/duration";
+ 
+ test("reads seconds", () => {
+   expect(parseDuration("90s")).toBe(90_000);
+@@ -8,3 +8,29 @@ test("reads seconds", () => {
+ test("reads minutes", () => {
+   expect(parseDuration("5m")).toBe(300_000);
+ });
++
++test("reads hours", () => {
++  for (const n of [1, 2, 3]) expect(parseDuration(`${n}h`)).toBe(n * UNITS.h!);
++});
++
++test("reads a compound duration", () => {
++  expect(parseDuration("1h30m")).toBe(5_400_000);
++});
++
++test("refuses a unit it does not know, or text between the parts", () => {
++  expect(() => parseDuration("2d")).toThrow("not a duration");
++  expect(() => parseDuration("1constructor")).toThrow("not a duration");
++  expect(() => parseDuration("1h junk 30m")).toThrow("not a duration");
++});
++
++test("formats a compound duration as a person writes it", () => {
++  expect(formatDuration(5_400_000)).toBe("1h30m");
++  expect(formatDuration(500)).toBe("0s");
++  expect(() => formatDuration(-1)).toThrow(RangeError);
++  expect(() => formatDuration(Infinity)).toThrow(RangeError);
++});
++
++test("formatting is stable", () => {
++  const shown = formatDuration(90_000);
++  expect(shown).toEqual(shown);
++});
+diff --git a/test/timeout.test.ts b/test/timeout.test.ts
+new file mode 100644
+index 0000000..8716dce
+--- /dev/null
++++ b/test/timeout.test.ts
+@@ -0,0 +1,12 @@
++import { expect, mock, test } from "bun:test";
++import { deadline } from "../src/timeout";
++
++test("the clock is read", () => {
++  const clock = { now: mock(() => 1_000) };
++  deadline(clock, "1s");
++  expect(clock.now()).toBe(1_000);
++});
++
++test("a deadline is the start plus the duration", () => {
++  expect(deadline({ now: () => 1_000 }, "2s")).toBe(3_000);
++});

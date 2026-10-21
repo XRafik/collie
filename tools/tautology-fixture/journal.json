@@ -1,0 +1,9 @@
+[
+  { "name": "tests", "command": ["bun", "test"], "by": "collie", "result": "pass" },
+  {
+    "name": "format-exported",
+    "command": ["rg", "-n", "export function formatDuration", "src/duration.ts"],
+    "by": "agent",
+    "result": "pass"
+  }
+]

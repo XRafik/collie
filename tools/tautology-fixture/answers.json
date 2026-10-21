@@ -1,0 +1,22 @@
+{
+  "item": "01-hours.md",
+  "answers": [
+    {
+      "criterion": "`parseDuration(\"1h30m\")` is 5400000.",
+      "met": "test/duration.test.ts, \"reads a compound duration\""
+    },
+    {
+      "criterion": "`parseDuration(\"90s\")` is 90000.",
+      "met": "test/duration.test.ts, \"reads seconds\""
+    },
+    {
+      "criterion": "`formatDuration(5400000)` is `1h30m`.",
+      "met": "test/duration.test.ts, \"formats a compound duration as a person writes it\"; the format-exported check passes"
+    },
+    {
+      "criterion": "`deadline` is the clock's time plus the duration.",
+      "met": "test/timeout.test.ts; what was built is written up in {run}/handoffs/build.md"
+    }
+  ],
+  "assumptions": []
+}

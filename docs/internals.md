@@ -1390,6 +1390,13 @@ Run them when a change touches a harness adapter — how an agent is launched in
 `src/agents.ts` or `src/harness.ts`, or a harness's controls in `src/compactors.ts` — or
 compaction in `src/compaction.ts`, and after upgrading a harness.
 
+`bun run tools/tautology-probe.ts` checks the reviewer's wording rather than a harness. It
+runs the shipped reviewer, three times by default, over the change in
+`tools/tautology-fixture/`, told what a review Run's reviewer is told. It fails unless most
+runs raise every Tautology in the fixture's key and none of its honest items
+(ADR-draft-a-tautology-proves-nothing). Each run is one full review on a real model, so it is
+never part of the suite. Run it when a persona or a review step's instructions change.
+
 Bun records file durations in `.scratch/test-timings.json` and uses them to schedule slow
 files first next time. When that file is absent, the runner seeds it from the measured
 durations in `tools/test-timings.json`, so a fresh checkout starts its longest files first

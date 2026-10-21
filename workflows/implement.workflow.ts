@@ -1315,7 +1315,7 @@ const boundTo = (wording: ReadonlyArray<string>, given: ReadonlyArray<Criterion>
   });
 
 /** What a builder said of one item's criteria, and what it decided that the plan did not. */
-interface Answered {
+export interface Answered {
   readonly item: string;
   readonly criteria: ReadonlyArray<string>;
   readonly answers: ReadonlyArray<Criterion>;
@@ -1325,7 +1325,7 @@ interface Answered {
 const showsAnything = (one: Answered) => one.criteria.length > 0 || one.assumptions.length > 0;
 
 /** Every built item's criteria, answers and assumptions, as a reviewer is shown them. */
-const renderAnswered = (all: ReadonlyArray<Answered>) =>
+export const renderAnswered = (all: ReadonlyArray<Answered>) =>
   all.some(showsAnything)
     ? [
         "What the builder says of each acceptance criterion, and what it decided where the plan did not settle it. Check each answer against the code rather than taking it on its word, and raise an assumption the spec contradicts. Raise as blocking an `after merge` answer to a criterion this Run could have shown before its merge request:",
