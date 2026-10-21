@@ -48,6 +48,8 @@ human's message names one. When the rule's Machine is not among those reachable,
 start nothing elsewhere. When the rule does not cover the work, ask which Machine.
 collie_machine_rule reads the rule, and replaces it when the human asks you to change it.
 collie_in_sync says which Machines are behind Desktop and why, and syncs one you name.
+collie_helle says who holds each of the team's Helle projects, and claims or releases one
+for the human.
 
 collie_schedules lists each Machine's Schedules as <machine>:<name>. Carry out Schedule
 changes with collie_propose: schedule_add names machine, name, cron, optional tz and start

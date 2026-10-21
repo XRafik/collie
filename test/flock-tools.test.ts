@@ -6,6 +6,7 @@ import { BunServices } from "@effect/platform-bun";
 import { Effect, Fiber, FileSystem, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { ATTACHMENT_BYTES } from "../src/attachments";
+import type { HelleProject } from "../src/helle";
 import { epochMs } from "../src/time";
 import { type Declaration, PROTOCOL, type TaskView } from "../src/board-model";
 import type { JsonObject } from "../src/schema";
@@ -1524,4 +1525,90 @@ test("a confirmation whose proposed action fails is logged with its kinds and st
         reason: "answer failed",
       });
     }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+/** A stand-in Helle that knows one token and answers what `projects` holds. */
+const standInHelle = (projects: ReadonlyArray<HelleProject>, calls: string[]) =>
+  Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      const { pathname } = new URL(request.url);
+      calls.push(`${request.method} ${pathname}`);
+      if (request.headers.get("authorization") !== "Bearer token-abc")
+        return Response.json({ detail: "unauthorized" }, { status: 401 });
+      if (pathname === "/api/v1/me") return Response.json({ user_id: "u-mk", display_name: "mk" });
+      if (pathname === "/api/v1/projects") return Response.json(projects);
+      if (pathname === "/api/v1/projects/frontend/claim")
+        return Response.json({ position: 2, already_queued: false });
+      if (pathname === "/api/v1/projects/frontend/release")
+        return Response.json({ released: true });
+      return Response.json({ detail: "not found" }, { status: 404 });
+    },
+  });
+
+/** What `collie_helle` said, and what Helle was asked, with Desktop holding `token`. */
+const askHelle = (token: string | null, input: JsonObject) =>
+  Effect.gen(function* () {
+    const calls: string[] = [];
+    const server = yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        standInHelle(
+          [
+            {
+              slug: "frontend",
+              group: "Players",
+              holder: { user_id: "u-ann", display_name: "ann" },
+              queue: [{ user_id: "u-bo", display_name: "bo" }],
+            },
+            { slug: "backend", group: null, holder: { user_id: "u-mk", display_name: "mk" } },
+            { slug: "docs" },
+          ],
+          calls,
+        ),
+      ),
+      (server) => Effect.promise(() => server.stop(true)),
+    );
+    const flock = {
+      ...flockOf([]),
+      helle: Effect.succeed(
+        token === null ? null : { url: `http://127.0.0.1:${server.port}`, token },
+      ),
+    };
+    const said = yield* callFlockTool(flock, "collie_helle", input);
+    return { said, calls };
+  }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
+
+test("collie_helle lists every Helle project with its holder and queue, the human's own marked", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { said, calls } = yield* askHelle("token-abc", {});
+      expect(said).toContain("Players/frontend: held by ann; queued: bo");
+      expect(said).toContain("backend: held by you (mk)");
+      expect(said).toContain("docs: free");
+      expect(calls).toEqual(["GET /api/v1/me", "GET /api/v1/projects"]);
+    }),
+  ));
+
+test("collie_helle claims a project, saying where the human stands, and releases one", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const claimed = yield* askHelle("token-abc", { claim: "frontend" });
+      expect(claimed.said).toBe("Claimed frontend in Helle: queued at position 2.");
+      expect(claimed.calls).toEqual(["POST /api/v1/projects/frontend/claim"]);
+      const released = yield* askHelle("token-abc", { release: "frontend" });
+      expect(released.said).toBe("Released frontend in Helle.");
+      expect(released.calls).toEqual(["POST /api/v1/projects/frontend/release"]);
+    }),
+  ));
+
+test("collie_helle says what Helle answered when it refuses, and how to give Desktop a token it lacks", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect((yield* askHelle("token-old", {})).said).toContain("answered 401");
+      const missing = yield* askHelle(null, {});
+      expect(missing.said).toContain("Desktop holds no Helle token");
+      expect(missing.said).toContain("/helle token");
+      expect(missing.calls).toEqual([]);
+      expect((yield* askHelle("token-abc", { claim: "nope" })).said).toContain("answered 404");
+    }),
   ));

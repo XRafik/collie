@@ -349,6 +349,13 @@ are, and what it returns is data, as any tool's answer is. Project- and local-sc
 are left out: Desktop's working directory is its own state directory, which no project
 configures. Pi and Codex are unchanged.
 
+Helle has no MCP server on a computer that never installed its wrapper, and Collie's agents
+reach it through Collie's own client (`src/helle.ts`). The Flock chat gets that client as
+a tool of Desktop's own, `collie_helle`, on every harness: every project with its holder and
+queue, the human's own marked, and a claim or a release of one slug. It signs in with the
+Helle token Desktop already keeps for its Machines. Helle is the team's and no Machine's,
+so no host answers it.
+
 ## What has actually been proven
 
 Flock chat, Pi **1.1.0**, `openai-codex/gpt-6.1-sol`, 2026-10-09: a live probe drove

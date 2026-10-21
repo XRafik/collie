@@ -1806,6 +1806,11 @@ or CLAUDE.md loads, but your MCP servers do: those added at user scope (`claude 
 connectors, such as Linear and Slack, signed in as Claude Code already is. Their tools ask
 first for nothing.
 
+It reads Helle with `collie_helle`, as you are signed in to it with the token Desktop keeps:
+every project with its holder and queue, yours marked, and it claims or releases a project
+when you ask. Without a Helle token in Desktop it says how to make one. This works on every
+harness.
+
 On Pi, write the model as `provider/model`, for example `openai-codex/gpt-6.1-sol`.
 Unset, Pi uses its configured default model and thinking level.
 Clearing a model override passes Pi's configured provider/model and thinking level explicitly,

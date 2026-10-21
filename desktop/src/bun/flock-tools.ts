@@ -17,6 +17,15 @@ import {
   type Significance,
   type TaskView,
 } from "../../../src/board-model";
+import {
+  claimProject,
+  type HelleCredentials,
+  type HelleProject,
+  helleMe,
+  helleProjects,
+  releaseClaim,
+} from "../../../src/helle";
+import { HELLE_TOKEN_STEPS } from "../../../src/helle-url";
 import { isString, type JsonObject } from "../../../src/schema";
 import { scheduleLines } from "../../../src/schedule-model";
 import {
@@ -98,6 +107,8 @@ export interface FlockChat {
   readonly setMachineRule: (rule: string) => Effect.Effect<void>;
   /** Each Machine's In sync standing; with a Machine's name, Sync now on it. */
   readonly inSync: (sync: string | undefined) => Effect.Effect<string>;
+  /** Helle with the token Desktop holds, or null without one; none where absent. */
+  readonly helle?: Effect.Effect<HelleCredentials | null, string>;
   /** The chat's harness and model as set, and `harness/model` of the session warm now. */
   readonly chatHarness: () => {
     readonly harness: string;
@@ -190,6 +201,24 @@ const InSyncTool = Tool.make("collie_in_sync", {
   .annotate(Tool.Title, "In sync")
   .annotate(Tool.Readonly, false);
 
+/** Desktop's own: Helle is the team's, not a Machine's. */
+const HelleTool = Tool.make("collie_helle", {
+  description:
+    "Helle, the team's record of who holds each project, as the human is signed in to it. " +
+    "Without arguments, every project with its holder and queue, the human's own marked. " +
+    "`claim` names a project's slug to claim for the human: they hold it or are queued. " +
+    "`release` names one to release. Claim or release only when the human asks.",
+  parameters: Schema.Struct({
+    claim: Schema.optionalKey(Schema.String),
+    release: Schema.optionalKey(Schema.String),
+  }),
+  success: Schema.String,
+  failureMode: "return",
+  needsApproval: false,
+})
+  .annotate(Tool.Title, "Helle")
+  .annotate(Tool.Readonly, false);
+
 /**
  * The Toolkit's tools a front door can answer. Definitions, the installation and
  * workspace-wide holds read a Machine's own files, which no host operation hands over.
@@ -208,6 +237,7 @@ export const FlockTools = Toolkit.make(
   SchedulesTool,
   ChatHarnessTool,
   InSyncTool,
+  HelleTool,
 );
 
 export const FLOCK_TOOLS = Object.values(FlockTools.tools).map(describeTool);
@@ -1048,6 +1078,40 @@ const chatHarness = (flock: FlockChat, change: { harness?: string; model?: strin
       : `${refused}. Nothing was changed.`;
   });
 
+const projectLine = (project: HelleProject, me: string) => {
+  const named = (member: { user_id: string; display_name?: string }) =>
+    member.user_id === me
+      ? `you (${member.display_name ?? me})`
+      : (member.display_name ?? member.user_id);
+  const slug = project.group ? `${project.group}/${project.slug}` : project.slug;
+  const queue = project.queue ?? [];
+  return `- ${slug}: ${project.holder ? `held by ${named(project.holder)}` : "free"}${
+    queue.length === 0 ? "" : `; queued: ${queue.map(named).join(", ")}`
+  }`;
+};
+
+const helle = (flock: FlockChat, asked: { claim?: string; release?: string }) =>
+  Effect.gen(function* () {
+    const creds = flock.helle === undefined ? null : yield* flock.helle;
+    if (creds === null)
+      return `Desktop holds no Helle token. To give it one, ${HELLE_TOKEN_STEPS}, and paste it in Desktop's Helle step.`;
+    if (asked.claim !== undefined) {
+      const { position } = yield* claimProject(creds, asked.claim);
+      return `Claimed ${asked.claim} in Helle: ${
+        position === 0 ? "you hold it" : `queued at position ${position}`
+      }.`;
+    }
+    if (asked.release !== undefined) {
+      yield* releaseClaim(creds, asked.release);
+      return `Released ${asked.release} in Helle.`;
+    }
+    const me = yield* helleMe(creds);
+    const projects = yield* helleProjects(creds);
+    return projects.length === 0
+      ? "Helle has no projects."
+      : projects.map((project) => projectLine(project, me.user_id)).join("\n");
+  }).pipe(Effect.catchTag("HelleError", ({ message }) => Effect.succeed(message)));
+
 /** The handlers for one call, which take the input as it was sent once the Toolkit has decoded it. */
 const handlersFor = (flock: FlockChat, sent: JsonObject) =>
   Effect.gen(function* () {
@@ -1071,6 +1135,7 @@ const handlersFor = (flock: FlockChat, sent: JsonObject) =>
       collie_move_schedule: (input) => answer(moveScheduleBetween(flock, input)),
       collie_chat_harness: (change) => answer(chatHarness(flock, change)),
       collie_in_sync: ({ sync }) => answer(flock.inSync(sync)),
+      collie_helle: (asked) => answer(helle(flock, asked)),
     });
   });
 

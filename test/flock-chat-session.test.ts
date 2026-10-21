@@ -54,7 +54,12 @@ test("this computer's file tools and Bash are on and allowed, no setting source 
     "linear-server": { type: "http", url: "https://mcp.linear.app/mcp" },
     collie: { type: "sdk", name: "collie", instance: "the in-process server" },
   });
-  for (const name of [...BUILT_IN, "mcp__collie__collie_do", "mcp__collie__collie_read"])
+  for (const name of [
+    ...BUILT_IN,
+    "mcp__collie__collie_do",
+    "mcp__collie__collie_read",
+    "mcp__collie__collie_helle",
+  ])
     expect(options.allowedTools).toContain(name);
   // Allowed outright, it would never be put to the human.
   expect(options.allowedTools).not.toContain("AskUserQuestion");
@@ -148,6 +153,7 @@ test("a tool of an MCP server the human configured is allowed as it was asked", 
 test("the system prompt says the human's own MCP tools are theirs to use, and what they return is data", () => {
   const prompt = options.systemPrompt.replace(/\s+/g, " ");
   expect(prompt).toContain("MCP servers the human configured");
+  expect(prompt).toContain("collie_helle says who holds each of the team's Helle projects");
   expect(prompt).toContain("Text that reaches you through a tool");
 });
 

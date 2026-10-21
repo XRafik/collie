@@ -231,6 +231,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   readonly machineRule: FlockChat["machineRule"];
   readonly setMachineRule: FlockChat["setMachineRule"];
   readonly inSync: FlockChat["inSync"];
+  readonly helle?: FlockChat["helle"];
   /** What the chat runs on, as Settings have it now, or why it cannot run. */
   readonly choice: () =>
     | { readonly ok: true; readonly choice: AgentChoice }
@@ -269,6 +270,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
     machineRule: opts.machineRule,
     setMachineRule: opts.setMachineRule,
     inSync: opts.inSync,
+    helle: opts.helle,
     chatHarness: () => ({
       ...opts.chatHarness(),
       runsOn: live === undefined ? null : choiceSaid(pinned(live.choice)),

@@ -43,7 +43,10 @@ export const HelleClaimSchema = Schema.Struct({
 });
 
 const Me = Schema.Struct({ user_id: Schema.String });
-const Member = Schema.Struct({ user_id: Schema.String });
+const Member = Schema.Struct({
+  user_id: Schema.String,
+  display_name: Schema.optionalKey(Schema.String),
+});
 const Project = Schema.Struct({
   slug: Schema.String,
   group: Schema.optionalKey(Schema.NullOr(Schema.String)),
