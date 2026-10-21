@@ -223,6 +223,16 @@ test("a deploy job naming another group's project does not claim it", () => {
   });
 });
 
+test("a project of a group the repository's group merely ends with is not the repository's group's", () => {
+  const frontend = [project("spilnu", "spilnu/frontend"), project("chat", "frontend")];
+  expect(resolveProjects(frontend, release({ jobs: ["stage:chat", "stage:spilnu"] }))).toEqual({
+    _tag: "Projects",
+    slugs: ["spilnu"],
+  });
+  const resolved = resolveProjects(frontend, release({ applications: ["chat"] }));
+  expect(resolved._tag).toBe("Unresolved");
+});
+
 test("a repository's own project is still needed, with its applications'", () => {
   expect(
     resolveProjects(

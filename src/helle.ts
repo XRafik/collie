@@ -195,13 +195,13 @@ export function resolveProjects(projects: readonly HelleProject[], release: Depl
       _tag: "Unresolved",
       why: `helle has ${own.slugs.length} projects matching ${release.repoName}: ${own.slugs.join(", ")}`,
     };
-  const group = release.repositoryPath?.toLowerCase().split("/").slice(0, -1).join("/") ?? null;
+  // The path's first segment is the forge's host, which no Helle group names.
+  const group = release.repositoryPath?.toLowerCase().split("/").slice(1, -1).join("/") ?? null;
   const inGroup = (name: string) =>
     projects.find(
       (p) =>
         group !== null &&
-        p.group &&
-        `/${group}`.endsWith(`/${p.group.toLowerCase()}`) &&
+        p.group?.toLowerCase() === group &&
         p.slug.toLowerCase() === name.toLowerCase(),
     );
   const slugs = new Set(own._tag === "Project" ? [own.slug] : []);
