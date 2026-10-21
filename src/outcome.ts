@@ -109,8 +109,37 @@ function textSearch(executable: string, argv: ReadonlyArray<string>): boolean {
   const at = argv.indexOf("-c");
   const script = at < 0 ? undefined : argv[at + 1];
   if (script === undefined) return false;
-  const [first = "", ...rest] = script.trim().split(/\s+/);
+  const [first = "", ...rest] = shellWords(script);
   return textSearch(first, rest);
+}
+
+/** A script's words as the shell reads them, its quotes and escapes removed. */
+function shellWords(script: string): ReadonlyArray<string> {
+  const words: string[] = [];
+  let word = "";
+  let started = false;
+  let quote = "";
+  for (let i = 0; i < script.length; i++) {
+    const c = script.charAt(i);
+    if (quote === "" && /\s/.test(c)) {
+      if (started) words.push(word);
+      word = "";
+      started = false;
+      continue;
+    }
+    started = true;
+    if (quote === "'") {
+      if (c === "'") quote = "";
+      else word += c;
+    } else if (c === "\\" && i + 1 < script.length) {
+      const next = script.charAt(++i);
+      word += quote === '"' && !'"\\$`'.includes(next) ? c + next : next;
+    } else if (c === quote) quote = "";
+    else if (quote === "" && (c === "'" || c === '"')) quote = c;
+    else word += c;
+  }
+  if (started) words.push(word);
+  return words;
 }
 
 /**
@@ -337,7 +366,6 @@ function earlierTree(v: Verification, final: Snapshot): boolean {
   return v.end.head_sha !== final.head_sha || v.end.fingerprint !== final.fingerprint;
 }
 
-/** A record's command as a human would type it. */
 const shown = (v: Verification) => [v.executable.split("/").at(-1), ...v.argv].join(" ");
 
 function names(value: YamlValue | undefined): string[] {

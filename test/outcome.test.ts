@@ -642,12 +642,15 @@ test("a promised check whose only pass is a text search is a gap", () => {
   ]);
 });
 
-test("a text search run as a shell script is still a text search", () => {
-  const script = searched("proves-a", {
-    executable: "/usr/bin/bash",
-    argv: ["-c", "grep -q foo src/x.ts"],
-  });
-  expect(checkGaps("feature", promising([script]))).toEqual([
+test.each([
+  "grep -q foo src/x.ts",
+  '"/usr/bin/grep" -q foo src/x.ts',
+  "'rg' foo src",
+  "g\\rep -q foo src/x.ts",
+  'git "grep" foo',
+])("a text search run as the shell script %p is still a text search", (script) => {
+  const run = searched("proves-a", { executable: "/usr/bin/bash", argv: ["-c", script] });
+  expect(checkGaps("feature", promising([run]))).toEqual([
     '01-a.md promised check "proves-a", whose only pass on this tree is a text search, which proves nothing',
   ]);
 });
