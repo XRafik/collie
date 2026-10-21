@@ -1527,7 +1527,6 @@ test("a confirmation whose proposed action fails is logged with its kinds and st
     }).pipe(Effect.provide(BunServices.layer)),
   ));
 
-/** A stand-in Helle that knows one token and answers what `projects` holds. */
 const standInHelle = (projects: ReadonlyArray<HelleProject>, calls: string[]) =>
   Bun.serve({
     port: 0,
@@ -1540,13 +1539,11 @@ const standInHelle = (projects: ReadonlyArray<HelleProject>, calls: string[]) =>
       if (pathname === "/api/v1/projects") return Response.json(projects);
       if (pathname === "/api/v1/projects/frontend/claim")
         return Response.json({ position: 2, already_queued: false });
-      if (pathname === "/api/v1/projects/frontend/release")
-        return Response.json({ released: true });
+      if (pathname.endsWith("/release")) return Response.json({ released: true });
       return Response.json({ detail: "not found" }, { status: 404 });
     },
   });
 
-/** What `collie_helle` said, and what Helle was asked, with Desktop holding `token`. */
 const askHelle = (token: string | null, input: JsonObject) =>
   Effect.gen(function* () {
     const calls: string[] = [];
@@ -1598,6 +1595,23 @@ test("collie_helle claims a project, saying where the human stands, and releases
       const released = yield* askHelle("token-abc", { release: "frontend" });
       expect(released.said).toBe("Released frontend in Helle.");
       expect(released.calls).toEqual(["POST /api/v1/projects/frontend/release"]);
+    }),
+  ));
+
+test("collie_helle asked to claim one project and release another does both, the release first", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { said, calls } = yield* askHelle("token-abc", {
+        claim: "frontend",
+        release: "backend",
+      });
+      expect(calls).toEqual([
+        "POST /api/v1/projects/backend/release",
+        "POST /api/v1/projects/frontend/claim",
+      ]);
+      expect(said).toBe(
+        "Released backend in Helle.\nClaimed frontend in Helle: queued at position 2.",
+      );
     }),
   ));
 

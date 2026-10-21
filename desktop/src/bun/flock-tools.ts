@@ -207,7 +207,7 @@ const HelleTool = Tool.make("collie_helle", {
     "Helle, the team's record of who holds each project, as the human is signed in to it. " +
     "Without arguments, every project with its holder and queue, the human's own marked. " +
     "`claim` names a project's slug to claim for the human: they hold it or are queued. " +
-    "`release` names one to release. Claim or release only when the human asks.",
+    "`release` names one to release, and is done before a `claim` in the same call. Claim or release only when the human asks.",
   parameters: Schema.Struct({
     claim: Schema.optionalKey(Schema.String),
     release: Schema.optionalKey(Schema.String),
@@ -1095,16 +1095,20 @@ const helle = (flock: FlockChat, asked: { claim?: string; release?: string }) =>
     const creds = flock.helle === undefined ? null : yield* flock.helle;
     if (creds === null)
       return `Desktop holds no Helle token. To give it one, ${HELLE_TOKEN_STEPS}, and paste it in Desktop's Helle step.`;
-    if (asked.claim !== undefined) {
-      const { position } = yield* claimProject(creds, asked.claim);
-      return `Claimed ${asked.claim} in Helle: ${
-        position === 0 ? "you hold it" : `queued at position ${position}`
-      }.`;
-    }
+    const done: string[] = [];
     if (asked.release !== undefined) {
       yield* releaseClaim(creds, asked.release);
-      return `Released ${asked.release} in Helle.`;
+      done.push(`Released ${asked.release} in Helle.`);
     }
+    if (asked.claim !== undefined) {
+      const { position } = yield* claimProject(creds, asked.claim);
+      done.push(
+        `Claimed ${asked.claim} in Helle: ${
+          position === 0 ? "you hold it" : `queued at position ${position}`
+        }.`,
+      );
+    }
+    if (done.length > 0) return done.join("\n");
     const me = yield* helleMe(creds);
     const projects = yield* helleProjects(creds);
     return projects.length === 0

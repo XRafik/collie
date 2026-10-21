@@ -339,7 +339,8 @@ forbids, since the human had to go and ask elsewhere.
 
 On Claude, the chat now loads the MCP servers the human configured: the user-scope servers
 in Claude Code's `.claude.json` (under `CLAUDE_CONFIG_DIR` where that is set), which Desktop
-reads at each session start and passes beside Collie's own, and the claude.ai connectors,
+reads at each session start and passes beside Collie's own with every option the human
+wrote (a `headersHelper` or `oauth` among them), and the claude.ai connectors,
 which Claude Code fetches itself once `strictMcpConfig` is off. Their credentials are the
 ones Claude Code already holds; Desktop adds none. Still no setting source is read: a
 session with one loads the user's hooks and permissions too, and with none it loads no
@@ -352,7 +353,8 @@ configures. Pi and Codex are unchanged.
 Helle has no MCP server on a computer that never installed its wrapper, and Collie's agents
 reach it through Collie's own client (`src/helle.ts`). The Flock chat gets that client as
 a tool of Desktop's own, `collie_helle`, on every harness: every project with its holder and
-queue, the human's own marked, and a claim or a release of one slug. It signs in with the
+queue, the human's own marked, and a claim or a release of a slug, or both in one call,
+the release first, to move from one project to another. It signs in with the
 Helle token Desktop already keeps for its Machines. Helle is the team's and no Machine's,
 so no host answers it.
 
