@@ -1615,6 +1615,19 @@ test("collie_helle asked to claim one project and release another does both, the
     }),
   ));
 
+test("collie_helle still says what it released when the claim after it fails", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const { said, calls } = yield* askHelle("token-abc", { claim: "nope", release: "backend" });
+      expect(calls).toEqual([
+        "POST /api/v1/projects/backend/release",
+        "POST /api/v1/projects/nope/claim",
+      ]);
+      expect(said).toStartWith("Released backend in Helle.\n");
+      expect(said).toContain("answered 404");
+    }),
+  ));
+
 test("collie_helle says what Helle answered when it refuses, and how to give Desktop a token it lacks", () =>
   Effect.runPromise(
     Effect.gen(function* () {

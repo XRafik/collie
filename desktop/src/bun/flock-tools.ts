@@ -1101,11 +1101,17 @@ const helle = (flock: FlockChat, asked: { claim?: string; release?: string }) =>
       done.push(`Released ${asked.release} in Helle.`);
     }
     if (asked.claim !== undefined) {
-      const { position } = yield* claimProject(creds, asked.claim);
+      const claim = asked.claim;
       done.push(
-        `Claimed ${asked.claim} in Helle: ${
-          position === 0 ? "you hold it" : `queued at position ${position}`
-        }.`,
+        yield* claimProject(creds, claim).pipe(
+          Effect.map(
+            ({ position }) =>
+              `Claimed ${claim} in Helle: ${
+                position === 0 ? "you hold it" : `queued at position ${position}`
+              }.`,
+          ),
+          Effect.catchTag("HelleError", ({ message }) => Effect.succeed(message)),
+        ),
       );
     }
     if (done.length > 0) return done.join("\n");
