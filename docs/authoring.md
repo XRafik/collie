@@ -162,6 +162,27 @@ everything else. A persona is told nothing but where its skills are: `{{skill:na
 only expression it may use, `collie doctor` names a persona using any other, and a Run
 launching an agent as one parks until the file is fixed.
 
+### `every-agent`
+
+The persona named `every-agent` is what every agent is told after its own persona: on every
+harness, for a persona from any Layer, and for a role with no persona, whose one line it
+follows. The Home chat is given it after `prompts/collie-chat.md`. The shipped one says what
+a **Tautology** is ([`CONTEXT.md`](../CONTEXT.md),
+[ADR-draft-a-tautology-proves-nothing](adr/draft-a-tautology-proves-nothing.md)), what a
+builder and a reviewer or judge do about one, and the code comment rules. A persona does not
+copy it, so a fork follows it without being edited.
+
+It is found Layer by Layer like any persona, and the first Layer that has one replaces the
+others' whole: the project's, then the user's, then the installation's. The Home chat belongs
+to no project, so it reads only the user's and the installation's. A user's copy is shared
+across the Flock like any persona ([ADR-0061](adr/0061-a-users-definitions-are-the-flocks.md)).
+Only its preamble is sent, as with any persona, so a single-word `##` section in it is dropped.
+
+One text reaches every agent, so a change to it changes every workflow at once. Check one by
+running `bun run tools/tautology-probe.ts`, which has the shipped reviewer, told what a
+launched reviewer is told, review a change full of Tautologies. It exits non-zero naming each
+Tautology the reviewer missed and each honest item it raised.
+
 ## Skills
 
 Workflows and personas name the skills they drive, and there are two ways to refer to one.

@@ -2877,25 +2877,43 @@ export const installedSkills = Effect.fn("Agents.skills")(function* (
   return found;
 });
 
+interface PersonaEnv {
+  readonly pluginRoot: string;
+  readonly userDir: string;
+  readonly home: string;
+  readonly cwd: string;
+}
+
+/** The persona every agent and the Home chat are given after their own. */
+const EVERY_AGENT = "every-agent";
+
 /**
  * What this role is, as the persona Markdown for it says — the project's, then this
- * machine's, then the installation's. A role nobody wrote a persona for is still a role:
- * it is stated in one line rather than left blank.
+ * machine's, then the installation's — followed by the `every-agent` text. A role nobody
+ * wrote a persona for is still a role: it is stated in one line rather than left blank.
  */
-export const personaText = Effect.fn("Agents.personaOf")(function* (
-  env: {
-    readonly pluginRoot: string;
-    readonly userDir: string;
-    readonly home: string;
-    readonly cwd: string;
-  },
-  role: string,
-) {
-  if (unsafePathComponent(role) !== null) return roleBody(role);
-  const fs = yield* FileSystem.FileSystem;
+export const personaText = Effect.fn("Agents.personaOf")(function* (env: PersonaEnv, role: string) {
+  const dirs = (yield* layers(env)).all.map((layer) => layer.dir).reverse();
+  const own = unsafePathComponent(role) === null ? yield* layeredPersona(env, role, dirs) : null;
+  const every = yield* layeredPersona(env, EVERY_AGENT, dirs);
+  return [own ?? roleBody(role), every].filter((part) => part !== null).join("\n\n");
+});
+
+/** The `every-agent` text for the Home chat, which belongs to no project. */
+export const everyAgentText = Effect.fn("Agents.everyAgentText")(function* (env: PersonaEnv) {
   const where = yield* layers(env);
-  for (const layer of [...where.all].reverse()) {
-    const file = `${layer.dir}/personas/${role}.md`;
+  return yield* layeredPersona(env, EVERY_AGENT, [where.user.dir, where.baseline.dir]);
+});
+
+/** The named persona's text from the first of `dirs` that has one, or null. */
+const layeredPersona = Effect.fn("Agents.layeredPersona")(function* (
+  env: PersonaEnv,
+  role: string,
+  dirs: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  for (const dir of dirs) {
+    const file = `${dir}/personas/${role}.md`;
     if (!(yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))) continue;
     const markdown = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
     const body = bodySections(markdown.replace(PERSONA_FRONT_MATTER, "")).preamble;
@@ -2910,7 +2928,7 @@ export const personaText = Effect.fn("Agents.personaOf")(function* (
     const named = yield* installedSkills(env, skillsIn(body));
     return renderTemplate(body, {}, { skill: skillMention(named) }).text;
   }
-  return roleBody(role);
+  return null;
 });
 
 /** What the role is stated as, in the persona and in the prompt alike. */
