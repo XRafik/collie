@@ -671,6 +671,21 @@ for (const name of ["gitlab", "github"] as const)
       }),
     ));
 
+test("GitHub finds a tag's newest run whatever event started it, a release's among them", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const runs: ForgeModel["runs"] = {
+        "7": { status: "success", ref: "v1.2.0", sha: MERGED },
+        "9": { status: "failed", ref: "v1.2.0", sha: MERGED, event: "release" },
+      };
+      const fake = fakeForge("github", model("github", { runs }));
+      expect(yield* FORGES.github.tagPipeline(ref("github"), "v1.2.0", "/w", fake.run)).toEqual({
+        ok: true,
+        url: URLS.github.run.replace(/7$/, "9"),
+      });
+    }),
+  ));
+
 test("GitLab finds a tier's deployment beyond a page of environments and of deployments", () =>
   runEffect(
     Effect.gen(function* () {

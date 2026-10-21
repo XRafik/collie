@@ -174,6 +174,8 @@ export const ForgeModel = Schema.Struct({
         /** The branch or tag it ran for, and its commit. */
         ref: Schema.optionalKey(Schema.String),
         sha: Schema.optionalKey(Schema.String),
+        /** The GitHub event that started it, `push` where not said. */
+        event: Schema.optionalKey(Schema.String),
         jobs: Schema.optionalKey(
           Schema.Array(
             Schema.Struct({
@@ -1061,7 +1063,12 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   const byBranch = /^repos\/(.+)\/actions\/runs\?.*\bbranch=([^&]+)/.exec(route);
   if (byBranch)
     return json({
-      workflow_runs: runsFor(model, decodeURIComponent(byBranch[2]!)).map(([id]) => ({
+      workflow_runs: runsFor(model, decodeURIComponent(byBranch[2]!))
+        .filter(([, one]) => {
+          const event = /[?&]event=([^&]+)/.exec(route)?.[1];
+          return event === undefined || (one.event ?? "push") === event;
+        })
+        .map(([id]) => ({
         id: Number(id),
         html_url: `https://github.com/${byBranch[1]}/actions/runs/${id}`,
       })),

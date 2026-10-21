@@ -1155,7 +1155,7 @@ const WorkflowRunsJson = Schema.fromJsonString(
   Schema.Struct({ workflow_runs: Schema.Array(Schema.Struct({ html_url: Schema.String })) }),
 );
 
-/** The newest Actions run a push of `tag` started in `ref`'s repository. */
+/** The newest Actions run `tag` started in `ref`'s repository, a push or a release. */
 function tagPipeline<R>(
   ref: MrRef,
   tag: string,
@@ -1168,7 +1168,7 @@ function tagPipeline<R>(
       "gh",
       [
         "api",
-        `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&event=push&per_page=1`,
+        `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&per_page=1`,
       ],
       cwd,
     );
