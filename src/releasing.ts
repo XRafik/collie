@@ -34,11 +34,11 @@ export const fastForward = Effect.fn("Releasing.fastForward")(function* <R>(opts
   const from = (yield* git(["rev-parse", "HEAD"])).stdout.trim();
   if (status.code !== 0 || from === "")
     return refused(`git could not read the checkout at ${opts.cwd}`);
-  if (from === opts.head) return { _tag: "At", head: opts.head, from } satisfies FastForward;
   if (status.stdout.trim() !== "")
     return refused(
-      `the checkout at ${opts.cwd} has uncommitted changes, so it was not moved to ${short(opts.head)}`,
+      `the checkout at ${opts.cwd} has uncommitted changes, so it is not taken as ${short(opts.head)}`,
     );
+  if (from === opts.head) return { _tag: "At", head: opts.head, from } satisfies FastForward;
   yield* git(["fetch", "--quiet", "origin"]);
   if ((yield* git(["cat-file", "-e", `${opts.head}^{commit}`])).code !== 0)
     return refused(`origin does not have ${short(opts.head)}`);
