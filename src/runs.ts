@@ -10,6 +10,7 @@ import { HOLD, STOP, evidenceDir, runDir, type RunView } from "./engine";
 import type { Settled } from "./strategies";
 import type { WorktreeRecord } from "./run";
 import type { Landing } from "./landing";
+import { awaitingLine, type Awaiting } from "./awaiting";
 
 /** Where a Run is, in the words every board and listing uses. */
 export type RunState = "running" | "waiting" | "succeeded" | "failed" | "stopped";
@@ -59,6 +60,8 @@ export interface RunFacts {
   readonly repo: string | null;
   /** Why it parked its own work, in its own words, or null while it has not. */
   readonly parked: string | null;
+  /** What it waits for that ends without anyone repairing anything, or null. */
+  readonly awaiting: Awaiting | null;
   /** Whether the engine could not be asked about it, so nothing drives it. */
   readonly undriven: boolean;
   /** Why it is not moving or why it ended, in its own words, where it said. */
@@ -127,9 +130,11 @@ export const factsOfView = (stateDir: string, view: RunView): RunFacts => ({
   held: view.controls.includes(HOLD),
   repo: view.options.repo ?? null,
   parked: view.parked,
+  awaiting: view.awaiting,
   undriven: view.diagnostic !== null,
   note:
     view.parked ??
+    (view.awaiting === null ? null : awaitingLine(view.awaiting)) ??
     (view.status.status === "failed"
       ? [view.status.reason, view.diagnostic].filter((part) => part !== null).join(" — ")
       : view.diagnostic),

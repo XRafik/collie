@@ -2,6 +2,7 @@
 // against the head the Run's Checks were proved on.
 
 import { Schema } from "effect";
+import { mrLabel } from "./board-model";
 import type { ReviewRead } from "./forge/review";
 
 /** An external comment nobody has answered yet. */
@@ -77,6 +78,7 @@ export function standingOf(
   const short = read.head.slice(0, 8);
   const why = [
     ...(read.approved ? [] : [`the approval (${read.unapproved || "none yet"})`]),
+    ...(read.changesRequested ? ["changes requested"] : []),
     ...(open.length === 0 ? [] : [plural(open.length, "unanswered comment")]),
     ...(read.pipeline.state === "passed" || read.pipeline.state === "none"
       ? []
@@ -147,6 +149,68 @@ export function settleAnswers(round: {
   return { replies, carried };
 }
 
-/** The card's parked line while the wait waits. */
-export const waitingLine = (mr: string, why: ReadonlyArray<string>) =>
-  `Waiting for review of ${mr}: ${why.join("; ")}.`;
+/** A review not yet ready: `Awaiting` what ends by itself, `Blocked` what needs a repair. */
+export type ReviewWait =
+  | { readonly _tag: "Awaiting"; readonly on: string; readonly who: string | null }
+  | { readonly _tag: "Blocked"; readonly why: ReadonlyArray<string> };
+
+const TEAMMATE = "a teammate";
+const CI = "CI";
+const APPROVAL = "a teammate's approval";
+const THREADS = "the review threads to be resolved";
+
+/** The forge's words for a merge it holds back until something already awaited comes; `blocked` is GitHub's. */
+const HELD_FOR = new Map<string, string | null>([
+  ["ci still running", CI],
+  ["ci must pass", CI],
+  ["not approved", APPROVAL],
+  ["discussions not resolved", THREADS],
+  ["blocked", null],
+]);
+
+export function reviewWaitOf(mr: string, read: ReviewRead): ReviewWait {
+  const label = mrLabel(mr);
+  if (!read.ok)
+    return {
+      _tag: "Awaiting",
+      on: `the forge to answer about ${label} (${read.reason})`,
+      who: null,
+    };
+  const mergeable = read.mergeable;
+  const held = mergeable?.state === "blocked" ? HELD_FOR.get(mergeable.said) : undefined;
+  const blocked = [
+    ...(read.pipeline.state === "failed"
+      ? [`the pipeline at ${read.head.slice(0, 8)} failed (${read.pipeline.name})`]
+      : []),
+    ...(read.changesRequested ? ["changes are requested"] : []),
+    ...(mergeable?.state === "blocked" && held === undefined
+      ? [`the forge will not merge it: ${mergeable.said}`]
+      : []),
+  ];
+  const open = read.comments.filter((one) => one.external && !one.answered).length;
+  const on = [
+    ...new Set([
+      ...(read.pipeline.state === "running" || read.pipeline.state === "unknown" ? [CI] : []),
+      ...(read.approved ? [] : [APPROVAL]),
+      ...(open === 0 ? [] : [`answers to ${plural(open, "comment")}`]),
+      ...(held === undefined || held === null ? [] : [held]),
+      ...(mergeable === null || mergeable.state === "unknown"
+        ? ["the forge to say it can merge"]
+        : []),
+    ]),
+  ];
+  if (blocked.length > 0 || on.length === 0)
+    return {
+      _tag: "Blocked",
+      why: blocked.length > 0 ? blocked : [`the forge will not merge it: ${mergeable?.said ?? ""}`],
+    };
+  return {
+    _tag: "Awaiting",
+    on: `${on.join(" and ")} on ${label}`,
+    who: on.some((one) => one === APPROVAL || one === THREADS) ? TEAMMATE : null,
+  };
+}
+
+/** The card's line while a person has to repair what holds the release back. */
+export const blockedLine = (mr: string, why: ReadonlyArray<string>) =>
+  `${mrLabel(mr)} cannot be released: ${why.join("; ")}. The Run goes on once that is repaired.`;

@@ -94,11 +94,12 @@ export const commandOf = (pid: number, proc = PROC) =>
 
 /** When it started, as a token only compared with itself; null where that cannot be read. */
 export const startedOf = Effect.fn("Processes.startedOf")(function* (pid: number) {
-  const proc = yield* statFields(pid).pipe(
-    Effect.map((fields) => fields[STARTED] || null),
-    Effect.catchTag("PlatformError", () => Effect.succeed(null)),
-  );
-  return proc ?? ((yield* ps(["-o", "lstart=", "-p", String(pid)])).trim() || null);
+  if (yield* readsSessions)
+    return yield* statFields(pid).pipe(
+      Effect.map((fields) => fields[STARTED] || null),
+      Effect.orElseSucceed(() => null),
+    );
+  return (yield* ps(["-o", "lstart=", "-p", String(pid)])).trim() || null;
 });
 
 /**

@@ -365,10 +365,13 @@ Holding the claim, the run then waits, at no token cost and with no agent turn, 
 forge shows production carries the default branch's head as it was right after the merge
 step, read through the same deployments a card's `in-prod` comes from. Whatever the Output
 names, an older deployment, a failed one, a forge that cannot be read and a repository with
-no production environment all keep it waiting. The card says what it waits for: "Waiting
-for production: play `<job>` at `<url>`. The claim on `<slug>` is held until the forge shows
-production carries `<sha>`.", or, with no job named, "Waiting for production to carry
-`<sha>` of `<url>`. The claim on `<slug>` is held until it does." A stop or hold ends the
+no production environment all keep it waiting. With a job left for you to play, the run
+parks as Needs you: "Waiting for production: play `<job>` at `<url>`. The claim on `<slug>`
+is held until the forge shows production carries `<sha>`." With no job named, nobody has to
+act, and the card stays under Working: "Waiting for production to carry `<sha>` of `<url>`,
+holding the claim on `<slug>`." While it waits its turn for the claim in Helle's queue, the
+card says so too, under Working: "Waiting for its turn for the Helle claim on `<slug>`, at 2
+in its queue." A stop or hold ends the
 wait with the claim kept, and a restarted host goes back into it. A run holding no claim
 does not wait, and its result names the production jobs left to play.
 
@@ -431,8 +434,13 @@ neither kind deploy to stage fails here, before any wait, saying it has no stage
 Collie can prove. Collie then proves the head with the Run's checks, and
 waits, at no token cost, reading the review every five minutes until the merge request is
 approved, has no unanswered external comment, is green and mergeable at the proved head.
-The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); the
-pipeline at `<sha>`.". A head that moves is fast-forwarded to and proved before anything
+Changes requested keep it from being ready. While what it waits for comes by itself — CI
+still running, a teammate's approval, review threads to be resolved — the Run is working,
+not needing you: the card stays under Working and says "Waiting for CI and a teammate's
+approval on `<mr>`.", with no notification and nothing in News, until the wait outlasts 2
+hours (2 days for a person), when it parks. A red pipeline, changes requested or a merge the
+forge refuses (a conflict, a rebase, a draft) parks it as Needs you, naming what holds it
+back; it keeps reading the review, and goes on by itself once that is repaired. A head that moves is fast-forwarded to and proved before anything
 can be asked about it. A merge request someone else merges, or closes, ends the Run with
 nothing tagged.
 
@@ -539,6 +547,9 @@ moved or a job is gone or failed, which fails the Run with the claim kept. The j
 waiting go to the agent's `production` step, cleared for exactly those. Either answer then
 waits, at no token cost, until the forge shows production carries the merge, whoever
 played it; the card names the production jobs meanwhile, and a Hold or Stop suspends it.
+After **Send to production** the jobs are playing and the wait is under Working; after
+**Leave production to me** they are yours to play, and the Run is in Needs you until
+production carries the merge.
 
 **Ends:** with `<mr> merged at <sha>, released as <tag>` and the claim given back, for an
 application `… released as <tag>, in production`, with `<mr> was left open, and stage rolled

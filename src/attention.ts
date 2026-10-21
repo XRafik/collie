@@ -67,6 +67,13 @@ export const attentionFor = Effect.fn("attention.attentionFor")(function* (run: 
         actions: ["show", "stop"],
       } satisfies Attention;
     case "running":
+      if (!run.held && run.awaiting !== null)
+        return {
+          category: "none",
+          reason: "awaiting",
+          explanation: `${run.id} is waiting for ${run.awaiting.on}, which ${run.awaiting.who === null ? "comes by itself" : `${run.awaiting.who} acts on`}.`,
+          actions: ["show", "stop"],
+        } satisfies Attention;
       return run.held
         ? ({
             category: "none",

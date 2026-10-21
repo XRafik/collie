@@ -313,6 +313,8 @@ function gate(opts: {
   answer?: string | null;
   lines: string[];
   recorded: (HelleClaim | null)[];
+  queued?: number[];
+  ended?: string[];
   forgotten?: string[];
 }) {
   return waitForHelle({
@@ -331,6 +333,8 @@ function gate(opts: {
     forget: (slug) => Effect.sync(() => void opts.forgotten?.push(slug)),
     out: (line) => Effect.sync(() => void opts.lines.push(line)),
     ask: () => Effect.succeed(opts.answer ?? null),
+    queued: (_slug, position) => Effect.sync(() => void opts.queued?.push(position)),
+    ended: () => Effect.sync(() => void opts.ended?.push("ended")),
     pollMs: 1,
   });
 }
@@ -341,16 +345,19 @@ test("a repository with no Helle project is unresolved, and nothing is claimed",
       fake.projects = [{ slug: "spilnu", group: "spilnu/frontend", queue: [] }];
       const lines: string[] = [];
       const recorded: (HelleClaim | null)[] = [];
+      const ended: string[] = [];
       const held = yield* gate({
         file: yield* envFile(),
         repositoryPath: "gitlab.cego.dk/cego/collie",
         repoName: "collie",
         lines,
         recorded,
+        ended,
       });
 
       expect(held._tag).toBe("Unresolved");
       expect(held._tag === "Unresolved" && held.why).toContain("no Helle project for collie");
+      expect(ended).toEqual(["ended"]);
       expect(recorded).toEqual([]);
       expect(fake.calls).not.toContain("POST /api/v1/projects/spilnu/claim");
     }),
@@ -390,7 +397,11 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         fake.claims = [{ position: 2, already_queued: false }];
         const lines: string[] = [];
         const recorded: (HelleClaim | null)[] = [];
-        const fiber = yield* Effect.forkScoped(gate({ file: yield* envFile(), lines, recorded }));
+        const queued: number[] = [];
+        const ended: string[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({ file: yield* envFile(), lines, recorded, queued, ended }),
+        );
 
         // The queue moves up once the gate has said where it stands, and then the project
         // becomes this token's own: moved on what the gate has seen, not on the clock.
@@ -399,6 +410,10 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
             Effect.repeat({ until: (seen) => seen, schedule: Schedule.spaced("5 millis") }),
           );
         yield* saidSoFar("position 2");
+        // Told again on every read, so a wait that has stopped moving is still seen to age.
+        yield* Effect.sync(() => queued.length).pipe(
+          Effect.repeat({ until: (told) => told >= 3, schedule: Schedule.spaced("5 millis") }),
+        );
         fake.projects[0]!.queue = [{ user_id: ME }];
         yield* saidSoFar("position 1");
         fake.projects[0]!.holder = { user_id: ME, display_name: "mk" };
@@ -410,6 +425,35 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         expect(said).toContain("position 2");
         expect(said).toContain("position 1");
         expect(said).toContain("holds spilnu");
+        expect([...new Set(queued)]).toEqual([2, 1]);
+        expect(ended).toEqual(["ended"]);
+      }),
+    ),
+  ));
+
+test("a gate interrupted in the queue is not told its wait ended", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        fake.projects = [
+          {
+            slug: "spilnu",
+            group: "spilnu/frontend",
+            holder: { user_id: OTHER, display_name: "someone" },
+            queue: [{ user_id: OTHER }, { user_id: ME }],
+          },
+        ];
+        fake.claims = [{ position: 2, already_queued: false }];
+        const queued: number[] = [];
+        const ended: string[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({ file: yield* envFile(), lines: [], recorded: [], queued, ended }),
+        );
+        yield* Effect.sync(() => queued.length).pipe(
+          Effect.repeat({ until: (told) => told >= 1, schedule: Schedule.spaced("5 millis") }),
+        );
+        yield* Fiber.interrupt(fiber);
+        expect(ended).toEqual([]);
       }),
     ),
   ));
@@ -813,6 +857,32 @@ test("a resumed Run does not ask again, and waits rather than assuming it holds 
         expect(lines.join("\n")).toContain("position 1");
       }),
     ),
+  ));
+
+test("a resumed Run granted the claim while it was down is told its wait ended", () =>
+  runEffect(
+    Effect.gen(function* () {
+      fake.projects = [
+        {
+          slug: "spilnu",
+          group: "spilnu/frontend",
+          holder: { user_id: ME, display_name: "mk" },
+          queue: [],
+        },
+      ];
+      fake.claims = [{ position: 0, already_queued: true }];
+      const ended: string[] = [];
+      const held = yield* gate({
+        file: yield* envFile(),
+        claimed: [{ slug: "spilnu", claim: "mine" }],
+        lines: [],
+        recorded: [],
+        ended,
+      });
+
+      expect(held).toEqual({ _tag: "Held", slugs: ["spilnu"] });
+      expect(ended).toEqual(["ended"]);
+    }),
   ));
 
 test("releasing gives the claim back", () =>

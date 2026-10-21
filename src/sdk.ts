@@ -960,7 +960,8 @@ export interface HostApi {
   /**
    * Blocks until the forge shows production carries `sha`, costing wall clock and no model
    * tokens, and says on the card meanwhile what it waits for: `jobs` are the production
-   * jobs left to play, and they and `slug` word the line only. A forge that cannot say is
+   * jobs, and they and `slug` word the line only. Jobs left for a person to play park the
+   * Run as Needs you; `played` jobs, or none, are awaited. A forge that cannot say is
    * waited on too. Answers true once production carries it, false where the Run was
    * stopped or held first.
    */
@@ -969,6 +970,8 @@ export interface HostApi {
     readonly cwd: string;
     readonly sha: string;
     readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
+    /** The jobs were played already, by this Run or somebody. */
+    readonly played?: boolean;
     /** The claims held meanwhile, where the Run holds any. */
     readonly slug?: string;
     /** The repository's web address, which a job without its own is played at. */

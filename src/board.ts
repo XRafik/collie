@@ -35,6 +35,7 @@ import { readIntent } from "./intent";
 import { findingsIn, isBlocking } from "./output";
 import { markersOf, runningCheck } from "./checks";
 import { memoryWaitOf, waitLine } from "./memory-wait";
+import { awaitingLine } from "./awaiting";
 import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
@@ -192,6 +193,8 @@ export interface Sentence {
   checking: string | null;
   /** What of its Runs waits for memory, which outranks all but a decision. */
   memory?: string | null;
+  /** What a Run of it waits for that ends without anyone repairing anything. */
+  awaiting?: string | null;
   /** A Reopened Run's agent at work on what it was told after the Run ended. */
   reopened: Pick<Reopened, "agent" | "told"> | null;
   /** How long it has written nothing, where it has gone quiet. */
@@ -439,6 +442,7 @@ function stalledSentence(facts: Sentence): string {
 
 function workingSentence(facts: Sentence): string {
   if (facts.checking !== null) return facts.checking;
+  if (facts.awaiting != null) return facts.awaiting;
   if (facts.reopened !== null)
     return facts.reopened.told === null
       ? `Working on what you told ${facts.reopened.agent}.`
@@ -981,11 +985,13 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           (yield* Effect.forEach(everyRun, (run) => memoryWaitOf(run.dir)))
             .filter((wait) => wait !== null)
             .sort((a, b) => a.since - b.since)[0] ?? null;
-        // An agent mid-turn, a check Collie is running or a wait for memory is work, however
-        // little it writes.
+        const awaiting = working.find((run) => run.awaiting !== null)?.awaiting ?? null;
+        // An agent mid-turn, a check Collie is running or a wait for memory or anything else
+        // that ends by itself is work, however little it writes.
         const busy =
           check !== null ||
           memory !== null ||
+          awaiting !== null ||
           agents.some((agent) => ownsAgent(agent) && agent.status === "working");
         const going = !ended(leader);
         const silentFor = going && !busy && at > 0 ? now - at : 0;
@@ -1130,6 +1136,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
             verb: doing?.verb ?? null,
             checking: check?.sentence ?? null,
             memory: memory === null ? null : waitLine(memory),
+            awaiting: awaiting === null ? null : awaitingLine(awaiting),
             reopened: state === "active" ? reopened : null,
             silent,
             wave: fan !== null && fanned === leader ? fan.wave : null,

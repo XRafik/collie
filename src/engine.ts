@@ -113,7 +113,14 @@ import {
   type RollbackRead,
   type StageRead,
 } from "./releasing";
-import { standingOf, waitingLine, type ReviewHead, type ReviewStanding } from "./review-wait";
+import {
+  blockedLine,
+  reviewWaitOf,
+  standingOf,
+  type ReviewHead,
+  type ReviewStanding,
+} from "./review-wait";
+import { AwaitingJson, AwaitingSchema, overdueLine } from "./awaiting";
 import {
   autoMergingHere,
   forgeHere,
@@ -788,6 +795,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly cwd: string;
       readonly sha: string;
       readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
+      readonly played?: boolean;
       readonly slug?: string;
       readonly url: string;
     }) => Effect.Effect<boolean>;
@@ -2428,6 +2436,8 @@ export const HOLD = "hold";
 export const STOP = "stop";
 /** Why work parked; the host clears it when taking that work up. */
 export const PARKED = "parked";
+/** A wait that ends by itself; the host clears it when the wait ends. */
+export const AWAITING = "awaiting";
 
 /** What a Run nobody classified proves: the approved set, and no ticket's evidence. */
 const UNSPECIFIED = "unspecified";
@@ -3151,14 +3161,42 @@ export const hostLayer = (options: {
             : new WorkflowError({ reason: `issue privacy check failed: ${String(cause)}` }),
         ),
       );
-      /** The card's parked line for a wait nobody is needed for: no notification, no halt. */
-      const parkWaiting = (runId: string, why: string | null) =>
+      /** Awaits, parking once overdue; parks a repair; null clears both. */
+      const waitOn = (
+        runId: string,
+        wait:
+          | { readonly on: string; readonly who: string | null }
+          | { readonly repair: string }
+          | null,
+      ) =>
         Effect.gen(function* () {
-          const path = controlPath(dir, PARKED, runId);
-          const before = Option.getOrNull(yield* fs.readFileString(path).pipe(Effect.option));
-          if (before === why) return;
-          yield* why === null ? fs.remove(path, { force: true }) : fs.writeFileString(path, why);
-          yield* store.announce;
+          const path = controlPath(dir, AWAITING, runId);
+          const before = yield* fs
+            .readFileString(path)
+            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(AwaitingJson)), Effect.option);
+          const parked = yield* fs.exists(controlPath(dir, PARKED, runId));
+          if (wait === null) {
+            if (Option.isSome(before)) yield* fs.remove(path, { force: true });
+            if (parked) yield* host.parked(runId, null);
+            else if (Option.isSome(before)) yield* store.announce;
+            return;
+          }
+          if ("repair" in wait) return yield* host.parked(runId, wait.repair);
+          const awaiting = {
+            on: wait.on,
+            who: wait.who,
+            since: Option.isSome(before) ? before.value.since : yield* nowIso(),
+          };
+          const overdue = overdueLine(awaiting, yield* Clock.currentTimeMillis);
+          if (
+            Option.isNone(before) ||
+            before.value.on !== awaiting.on ||
+            before.value.who !== awaiting.who
+          ) {
+            yield* fs.writeFileString(path, Schema.encodeSync(AwaitingJson)(awaiting));
+            if (overdue === null && !parked) yield* store.announce;
+          }
+          if (overdue !== null || parked) yield* host.parked(runId, overdue);
         }).pipe(Effect.orDie);
       /** One read of the review of the merge request a Run recorded, judged. */
       const reviewRead = (asked: {
@@ -3550,6 +3588,12 @@ export const hostLayer = (options: {
               // The question is the workflow's, so it is durable and asked once; this only
               // turns the answer into the word the gate reads.
               ask: () => asked.adopting.pipe(Effect.map((yes) => (yes ? "yes" : null))),
+              queued: (slug, position) =>
+                waitOn(asked.runId, {
+                  on: `its turn for the Helle claim on ${slug}, at ${position} in its queue`,
+                  who: "whoever holds it",
+                }),
+              ended: () => waitOn(asked.runId, null),
             });
             return held._tag === "Held" ? { slugs: held.slugs } : { unresolved: held.why };
           }).pipe(
@@ -3639,18 +3683,18 @@ export const hostLayer = (options: {
             });
             const polled = Effect.gen(function* () {
               for (;;) {
-                const { mr, standing } = yield* reviewRead(asked);
+                const { mr, read, standing } = yield* reviewRead(asked);
                 if (standing._tag !== "Waiting" && standing._tag !== "Unreadable") return standing;
-                const why =
-                  standing._tag === "Waiting"
-                    ? standing.why
-                    : [`the forge, which could not be read: ${standing.reason}`];
-                yield* parkWaiting(asked.runId, waitingLine(mr, why));
+                const wait = reviewWaitOf(mr, read);
+                yield* waitOn(
+                  asked.runId,
+                  wait._tag === "Awaiting" ? wait : { repair: blockedLine(mr, wait.why) },
+                );
                 yield* Effect.sleep(options.reviewPoll ?? "5 minutes");
               }
             });
             const standing = yield* Effect.raceFirst(controlled, polled);
-            yield* parkWaiting(asked.runId, null);
+            yield* waitOn(asked.runId, null);
             return standing;
           }),
         reply: (asked) =>
@@ -3739,11 +3783,19 @@ export const hostLayer = (options: {
             const short = asked.sha.slice(0, 8);
             const plays = asked.jobs.map((job) => `\`${job.name}\` at ${job.url ?? asked.url}`);
             const held = asked.slug === undefined ? null : `The claim on \`${asked.slug}\` is held`;
-            yield* host.parked(
-              asked.runId,
-              plays.length === 0
-                ? `Waiting for production to carry \`${short}\` of ${asked.url}.${held === null ? "" : ` ${held} until it does.`}`
-                : `Waiting for production: play ${plays.join(", ")}. ${held ?? "The Run waits"} until the forge shows production carries \`${short}\`.`,
+            const awaited =
+              plays.length > 0 && asked.played !== true
+                ? null
+                : waitOn(asked.runId, {
+                    on: `production to carry \`${short}\` of ${asked.url}${plays.length === 0 ? "" : `, from ${plays.join(", ")}`}${asked.slug === undefined ? "" : `, holding the claim on \`${asked.slug}\``}`,
+                    who: null,
+                  });
+            yield* (
+              awaited ??
+                host.parked(
+                  asked.runId,
+                  `Waiting for production: play ${plays.join(", ")}. ${held ?? "The Run waits"} until the forge shows production carries \`${short}\`.`,
+                )
             );
             const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
               Effect.orElseSucceed(() => ({ gitlabHost: undefined })),
@@ -3754,12 +3806,14 @@ export const hostLayer = (options: {
               return false;
             });
             const carried = Effect.gen(function* () {
-              while (!(yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost)))
+              while (!(yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost))) {
+                if (awaited !== null) yield* awaited;
                 yield* Effect.sleep(options.productionPoll ?? "5 minutes");
+              }
               return true;
             });
             const carries = yield* Effect.raceFirst(controlled, carried);
-            yield* host.parked(asked.runId, null);
+            yield* waitOn(asked.runId, null);
             return carries;
           }).pipe(Effect.provideContext(services)),
         mergeRequest: (runId, url) =>
@@ -4664,6 +4718,8 @@ export const RunView = Schema.Struct({
   diagnostic: Schema.NullOr(Schema.String),
   /** Why the Run parked its own work and what picks it up again, or null. */
   parked: Schema.NullOr(Schema.String),
+  /** What it waits for that needs nobody to repair anything, or null. */
+  awaiting: Schema.NullOr(AwaitingSchema),
   /** The merge request the Run opened, as its workflow recorded it, or null. */
   mr: Schema.NullOr(Schema.String),
   /** Its landing of that merge request through the host's merge, or null. */
@@ -5936,6 +5992,10 @@ const makeRegistry: (
       parked: yield* fs
         .readFileString(controlPath(dir, PARKED, row.run))
         .pipe(Effect.orElseSucceed(() => null)),
+      awaiting: yield* fs.readFileString(controlPath(dir, AWAITING, row.run)).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AwaitingJson)),
+        Effect.orElseSucceed(() => null),
+      ),
       mr: yield* mergeRequestOf(fs, dir, row.run),
       landing: yield* readLanding(runDir(dir, row.run)).pipe(
         Effect.provideService(FileSystem.FileSystem, fs),

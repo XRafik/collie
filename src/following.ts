@@ -39,6 +39,7 @@ export type FollowEvent =
       readonly state: "started" | "finished";
     }
   | { readonly type: "parked"; readonly reason: string }
+  | { readonly type: "awaiting"; readonly on: string; readonly who: string | null }
   | { readonly type: "mr"; readonly mr: string }
   | { readonly type: "ci"; readonly ci: ForgeChecks };
 
@@ -84,6 +85,9 @@ export function followEvents(before: Followed, after: Followed): ReadonlyArray<F
   const parked = after.view?.parked ?? null;
   if (parked !== null && parked !== (before.view?.parked ?? null))
     events.push({ type: "parked", reason: parked });
+  const awaiting = after.view?.awaiting ?? null;
+  if (awaiting !== null && awaiting.on !== before.view?.awaiting?.on)
+    events.push({ type: "awaiting", on: awaiting.on, who: awaiting.who });
   const mr = after.view?.mr ?? null;
   if (mr !== null && mr !== (before.view?.mr ?? null)) events.push({ type: "mr", mr });
   return events;
@@ -98,6 +102,8 @@ export function followLine(runId: string, event: FollowEvent): string {
       return `${runId}: step ${event.operation} ${event.state}`;
     case "parked":
       return `${runId}: parked: ${event.reason}`;
+    case "awaiting":
+      return `${runId}: Waiting for ${event.on}.`;
     case "mr":
       return `${runId}: merge request ${event.mr} opened`;
     case "ci":

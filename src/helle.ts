@@ -6,7 +6,7 @@
 // model tokens. So this is four endpoints over `/api/v1`, with the bearer credentials
 // read from the same environment file the MCP wrapper sources.
 
-import { Data, Effect, FileSystem, Schema } from "effect";
+import { Data, Effect, Exit, FileSystem, Schema } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -254,6 +254,10 @@ export interface HelleGate<E, R> {
   forget: (slug: string) => Effect.Effect<void, E, R>;
   out: (line: string) => Effect.Effect<void, E, R>;
   ask: (question: string) => Effect.Effect<string | null, E, R>;
+  /** Told this Run's place in the queue on every read of it, while it is not the holder. */
+  queued?: (slug: string, position: number) => Effect.Effect<void, E, R>;
+  /** Told once the gate ends, however it ends, unless it is interrupted. */
+  ended?: () => Effect.Effect<void, E, R>;
   pollMs?: number;
 }
 
@@ -269,9 +273,14 @@ const AFFIRMATIVE = /^(y|yes)$/i;
  * Projects are held one at a time in a fixed order, and never waited for while a later
  * one is held, so Runs needing overlapping sets cannot each hold what the other waits for.
  */
-export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
-  gate: HelleGate<E, R>,
-) {
+export const waitForHelle = <E, R>(gate: HelleGate<E, R>) =>
+  gateOf(gate).pipe(
+    Effect.onExit((exit) =>
+      gate.ended === undefined || Exit.hasInterrupts(exit) ? Effect.void : gate.ended(),
+    ),
+  );
+
+const gateOf = Effect.fn("Helle.waitForHelle")(function* <E, R>(gate: HelleGate<E, R>) {
   const creds = yield* credentials(gate);
   const projects = yield* helleProjects(creds);
   let needed: Needed;
@@ -340,6 +349,7 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
         said = position;
       }
       if (position === 0) return;
+      if (gate.queued !== undefined) yield* gate.queued(slug, position);
       yield* Effect.sleep(gate.pollMs ?? POLL_MS);
       // A queue this Run is no longer in is not a turn it has taken: it keeps the last
       // position it knew rather than reporting a place it does not have.

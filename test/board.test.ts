@@ -723,6 +723,44 @@ test("a Run parked with nothing to answer is Needs you, in its pane", () =>
     }),
   ));
 
+test("a release Run awaiting CI and a teammate's approval is Working, saying so, however long it is silent", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const awaiting = {
+        on: "CI and a teammate's approval on group/app!345",
+        who: "a teammate",
+        since: "2026-09-14T08:00:00Z",
+      };
+      const run = yield* madeRun(dir, { task: "task-1", workflow: "release", awaiting });
+
+      const [view] = yield* board(env, [run], { quietMs: 1 });
+
+      expect(sectionOf(view!)).toBe("working");
+      expect(view!.state).toBe("active");
+      expect(view!.sentence).toBe("Waiting for CI and a teammate's approval on group/app!345.");
+    }),
+  ));
+
+test("a release Run a red pipeline holds back is Needs you", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { dir, env } = yield* scratch();
+      const red = "group/app!345 cannot be released: the pipeline at 1d538252 failed (lint).";
+      const run = yield* madeRun(dir, {
+        task: "task-1",
+        workflow: "release",
+        state: "waiting",
+        parked: red,
+        note: red,
+      });
+
+      const [view] = yield* board(env, [run]);
+
+      expect(sectionOf(view!)).toBe("needs-you");
+    }),
+  ));
+
 test("an agent herdr reports blocked names its pane, with nothing recorded to say so", () =>
   runEffect(
     Effect.gen(function* () {

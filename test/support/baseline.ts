@@ -13,6 +13,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import {
+  DateTime,
   Deferred,
   Duration,
   Effect,
@@ -44,7 +45,8 @@ import * as BunServices from "@effect/platform-bun/BunServices";
 import { readLanding, takeOver, writeLanding } from "../../src/landing";
 import { shell } from "../../src/mr";
 import { readCheckpoints } from "../../src/cards";
-import { mrTarget, type MrForge } from "../../src/board-model";
+import { mrLabel, mrTarget, type MrForge } from "../../src/board-model";
+import { AwaitingJson } from "../../src/awaiting";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
 import {
@@ -68,6 +70,7 @@ import {
   sortOut,
 } from "../../workflows/retrospective";
 import {
+  AWAITING,
   HOLD,
   PARKED,
   RunStatus,
@@ -6648,6 +6651,15 @@ const parkedOn = (options: ShippedRun) =>
     ),
   );
 
+/** A Run run until it awaits something that ends by itself, and what. */
+const awaitingIn = (options: ShippedRun) =>
+  running(options, () =>
+    awaitingOn(options.runId).pipe(
+      Effect.filterOrFail((on) => on !== ""),
+      Effect.retry({ schedule: Schedule.spaced("20 millis") }),
+    ),
+  );
+
 /** A stopped Run picked up again, as `collie run resume` does it, and run to its end. */
 const resumed = (options: {
   readonly entry: string;
@@ -6671,6 +6683,15 @@ const resumed = (options: {
 const parkedWhy = (runId: string) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.readFileString(controlPath(dir, PARKED, runId))),
+    Effect.orElseSucceed(() => ""),
+  );
+
+/** What a Run awaits that ends by itself, or "" while it awaits nothing. */
+const awaitingOn = (runId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(controlPath(dir, AWAITING, runId))),
+    Effect.flatMap(Schema.decodeUnknownEffect(AwaitingJson)),
+    Effect.map((awaiting) => awaiting.on),
     Effect.orElseSucceed(() => ""),
   );
 
@@ -7364,7 +7385,7 @@ for (const name of ["gitlab", "github"] as const) {
           ]);
           claimed.length = 0;
           const entry = shipped("renovate");
-          const waiting = `Waiting for production to carry \`${head.slice(0, 8)}\` of ${url}. The claim on \`project\` is held until it does.`;
+          const waiting = `production to carry \`${head.slice(0, 8)}\` of ${url}, holding the claim on \`project\``;
           const polled = (more: number) =>
             Effect.gen(function* () {
               const before = (yield* forge.calls()).length;
@@ -7390,8 +7411,8 @@ for (const name of ["gitlab", "github"] as const) {
               Effect.gen(function* () {
                 expect(
                   yield* until(
-                    () => parkedWhy(`r-omit-${name}`),
-                    (why) => why !== "",
+                    () => awaitingOn(`r-omit-${name}`),
+                    (on) => on !== "",
                   ),
                 ).toBe(waiting);
                 for (const behind of [
@@ -7426,8 +7447,8 @@ for (const name of ["gitlab", "github"] as const) {
               Effect.gen(function* () {
                 expect(
                   yield* until(
-                    () => parkedWhy(`r-empty-jobs-${name}`),
-                    (why) => why !== "",
+                    () => awaitingOn(`r-empty-jobs-${name}`),
+                    (on) => on !== "",
                   ),
                 ).toBe(waiting);
                 expect(claimed).not.toContain(`release r-empty-jobs-${name}`);
@@ -7459,8 +7480,8 @@ scenario(
         const runId = "r-prod-restart";
         const entry = shipped("renovate");
         yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
-        expect(yield* parkedOn({ entry, runId, input: {}, host: holdingClaim })).toContain(
-          "Waiting for production",
+        expect(yield* awaitingIn({ entry, runId, input: {}, host: holdingClaim })).toContain(
+          "production to carry",
         );
         expect(yield* prompts()).toHaveLength(5);
 
@@ -7492,8 +7513,8 @@ scenario(
           (status) =>
             Effect.gen(function* () {
               yield* until(
-                () => parkedWhy(runId),
-                (why) => why !== "",
+                () => awaitingOn(runId),
+                (on) => on !== "",
               );
               yield* until(
                 () => forge.calls(),
@@ -7511,6 +7532,60 @@ scenario(
         expect(status).toBe("suspended");
         expect(claimed).toEqual([`claim ${runId}`]);
         expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* awaitingOn(runId)).toBe("");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a wait for production that outlasts its patience parks as Needs you, while production is still read",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { bin, head, deployed } = yield* deploying("gitlab", [
+          { name: "production", tier: "production", deployed: OLDER },
+        ]);
+        claimed.length = 0;
+        const runId = "r-prod-overdue";
+        yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        const status = yield* running(
+          { entry: shipped("renovate"), runId, input: {}, host: holdingClaim },
+          (status) =>
+            Effect.gen(function* () {
+              const on = yield* until(
+                () => awaitingOn(runId),
+                (got) => got !== "",
+              );
+              const fs = yield* FileSystem.FileSystem;
+              const threeHoursAgo = DateTime.subtract(yield* DateTime.now, { hours: 3 });
+              yield* fs
+                .writeFileString(
+                  controlPath(dir, AWAITING, runId),
+                  Schema.encodeSync(AwaitingJson)({
+                    on,
+                    who: null,
+                    since: DateTime.formatIso(threeHoursAgo),
+                  }),
+                )
+                .pipe(Effect.orDie);
+              expect(
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                ),
+              ).toContain("for over 2 hours");
+              yield* deployed(head);
+              return yield* until(
+                () => status,
+                (got) => got === "complete",
+              );
+            }),
+        );
+        yield* bin.restore();
+        expect(status).toBe("complete");
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* awaitingOn(runId)).toBe("");
       }),
     ),
   120_000,
@@ -8078,10 +8153,11 @@ for (const name of ["gitlab", "github"] as const) {
               Effect.gen(function* () {
                 expect(
                   yield* until(
-                    () => parkedWhy(runId),
-                    (why) => why !== "",
+                    () => awaitingOn(runId),
+                    (on) => on !== "",
                   ),
-                ).toBe(`Waiting for review of ${mr}: the pipeline at ${head.slice(0, 8)}.`);
+                ).toBe(`CI on ${mrLabel(mr)}`);
+                expect(yield* parkedWhy(runId)).toBe("");
                 moved = yield* pushedBySomebody(head);
                 yield* changed({ head: moved, checks: [{ name: "build", state: "passed" }] });
                 const go = yield* goAsked(run.asked, "go-1");
@@ -8103,6 +8179,41 @@ for (const name of ["gitlab", "github"] as const) {
   );
 
   scenario(
+    `release on ${name}: a red pipeline parks the Run as Needs you, and once green it is asked go 1`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const red = [{ name: "build", state: "failed" }] as const;
+          const { bin, head, changed } = yield* releasable(name, { checks: red });
+          const runId = `r-red-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(runId),
+                    (why) => why !== "",
+                  ),
+                ).toContain(
+                  `${mrLabel(mr)} cannot be released: the pipeline at ${head.slice(0, 8)} failed (`,
+                );
+                yield* changed({ checks: [{ name: "build", state: "passed" }] });
+                yield* goAsked(run.asked, "go-1");
+                expect(yield* parkedWhy(runId)).toBe("");
+                expect(yield* awaitingOn(runId)).toBe("");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
     `release on ${name}: a force-pushed head parks the Run, naming why, with nothing reset`,
     () =>
       runEffect(
@@ -8116,7 +8227,7 @@ for (const name of ["gitlab", "github"] as const) {
             (run) =>
               Effect.gen(function* () {
                 yield* until(
-                  () => parkedWhy(runId),
+                  () => awaitingOn(runId),
                   (why) => why !== "",
                 );
                 const forced = yield* pushedBySomebody(`${head}~1`, true);
@@ -8413,7 +8524,7 @@ for (const name of ["gitlab", "github"] as const) {
             (run) =>
               Effect.gen(function* () {
                 yield* until(
-                  () => parkedWhy(runId),
+                  () => awaitingOn(runId),
                   (why) => why !== "",
                 );
                 const fs = yield* FileSystem.FileSystem;
@@ -8467,8 +8578,8 @@ for (const name of ["gitlab", "github"] as const) {
             (run) =>
               Effect.gen(function* () {
                 yield* until(
-                  () => parkedWhy(runId),
-                  (why) => why.includes("the approval"),
+                  () => awaitingOn(runId),
+                  (on) => on.includes("approval"),
                 );
                 const now = yield* forge.model();
                 const commented = {
@@ -8496,8 +8607,8 @@ for (const name of ["gitlab", "github"] as const) {
                   (model) => repliesOf(model).length === 2,
                 );
                 yield* until(
-                  () => parkedWhy(runId),
-                  (why) => why.includes("the approval"),
+                  () => awaitingOn(runId),
+                  (on) => on.includes("approval"),
                 );
                 yield* changed(approvedBy(name, "dave"));
                 const go = yield* goAsked(run.asked, "go-1");
@@ -8733,8 +8844,8 @@ for (const name of ["gitlab", "github"] as const) {
             (run) =>
               Effect.gen(function* () {
                 yield* until(
-                  () => parkedWhy(runId),
-                  (why) => why.includes("the approval") && why.includes("Waiting"),
+                  () => awaitingOn(runId),
+                  (on) => on.includes("approval"),
                 );
                 yield* until(
                   () => prompts(),
@@ -9432,8 +9543,8 @@ for (const name of ["gitlab", "github"] as const) {
               );
               yield* run.answer("production", "Send to production");
               yield* until(
-                () => parkedWhy(runId),
-                (why) => why !== "",
+                () => awaitingOn(runId),
+                (on) => on !== "",
               );
               yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
               return yield* ended(run.status);
@@ -9722,8 +9833,8 @@ for (const name of ["gitlab", "github"] as const) {
               expect(claimed).toEqual([`claim ${runId}`]);
               yield* run.answer("production", "Send to production");
               yield* until(
-                () => parkedWhy(runId),
-                (why) => why !== "",
+                () => awaitingOn(runId),
+                (on) => on !== "",
               );
               yield* forge.set(yield* now({ environments: deploys(head, merged) }));
               const end = yield* ended(run.status);

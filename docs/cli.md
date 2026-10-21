@@ -647,7 +647,8 @@ Answer what the wait returned with `run answer <run-id> <option> --decision <nam
 `run` object as `run show`, and one line for each other change, with the Run's id as `run`:
 `{"type":"step","operation":…,"agent":…,"state":"started"|"finished"}`,
 `{"type":"agent","agent":…,"operation":…}` when an agent is launched,
-`{"type":"parked","reason":…}`, `{"type":"mr","mr":…}` when the merge request opens and
+`{"type":"parked","reason":…}`, `{"type":"awaiting","on":…,"who":…}` when it starts
+waiting for something that comes by itself, `{"type":"mr","mr":…}` when the merge request opens and
 `{"type":"ci","ci":…}` when the forge's pipeline changes state. Without `--json` each is
 one line: `run-1a2b: step 01-a.md finished`, `run-1a2b: parked: …`, `run-1a2b: CI running`. Failures still arrive as a normal envelope — a timeout, or a
 run the host could not watch — so a consumer reads each line as JSON and branches on
@@ -672,6 +673,7 @@ does not lead its Task's card is never ready. Its `run` object carries:
 | `waiting`                                | Every question it has been asked, oldest first: `name`, `prompt`, `options`, and `answer`, `null` while it is open.                                                                                  |
 | `controls`                               | A `hold` or a `stop` someone set over it.                                                                                                                                                            |
 | `parked`                                 | Why it parked its own work and what picks it up again, or `null`.                                                                                                                                    |
+| `awaiting`                               | What it waits for that comes without anyone repairing anything: `on`, `who` acts (`null` for nobody) and `since`, or `null`. It is not attention, and `run wait` waits through it.                   |
 | `diagnostic`                             | Why the engine could not be asked about it — a module that is missing, with the file named — or `null`.                                                                                              |
 
 Beside `run`, `data.startedBy` says who started it, as the Run's record says it: "Started by

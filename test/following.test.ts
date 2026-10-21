@@ -28,6 +28,7 @@ const view = (over: Partial<RunView> = {}): RunView => ({
   controls: [],
   diagnostic: null,
   parked: null,
+  awaiting: null,
   mr: null,
   landing: null,
   ...over,
@@ -119,5 +120,22 @@ test("follow says each step started and finished, each agent once, a park, the m
   // No pipeline at all is not news on the first look.
   expect(
     followEvents(first, { view: view(), progress: progress({ ci: { state: "none" } }) }),
+  ).toEqual([]);
+});
+
+test("a wait that ends by itself is no attention, and is followed as what it awaits", () => {
+  const awaiting = { on: "CI on group/app!3", who: null, since: "2026-10-21T10:00:00.000Z" };
+  expect(reached("attention", view({ awaiting }), null, false)).toBe("waiting");
+  const events = followEvents(
+    { view: view(), progress: null },
+    { view: view({ awaiting }), progress: null },
+  );
+  expect(events).toEqual([{ type: "awaiting", on: "CI on group/app!3", who: null }]);
+  expect(followLine("r1", events[0]!)).toBe("r1: Waiting for CI on group/app!3.");
+  expect(
+    followEvents(
+      { view: view({ awaiting }), progress: null },
+      { view: view({ awaiting }), progress: null },
+    ),
   ).toEqual([]);
 });

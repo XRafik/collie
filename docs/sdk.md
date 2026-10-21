@@ -753,11 +753,12 @@ The landing is what keeps the merge watch from stopping this Run, and the Runs i
 started from, when the merge lands ([The merge watch](internals.md#the-forge-boundary)).
 Take it inside an `Activity`, as `integrate` and `defaultHead` are: a replay after a host
 restart settles the attempt it left on the forge's word rather than merging again.
-`host.awaitProduction({ runId, cwd, sha, jobs, slug, url })` blocks, at no token cost, until
+`host.awaitProduction({ runId, cwd, sha, jobs, played, slug, url })` blocks, at no token cost, until
 the forge shows production carries `sha`, polling every five minutes. Meanwhile the card
-says what it waits for: `jobs` are the production jobs left to play, which word that line
-and decide nothing, `slug`, where the Run holds a claim, is the claim held, and `url` the
-repository. It answers
+says what it waits for: `jobs` are the production jobs, `slug`, where the Run holds a claim,
+is the claim held, and `url` the repository. Jobs left for a person to play park the Run as
+Needs you; with `played: true`, or no jobs, the wait is awaited under Working, as nobody has
+to act. It answers
 `true` once production carries the commit, and `false` where the Run was stopped or held
 first. A forge that cannot say keeps it waiting.
 
@@ -770,8 +771,11 @@ mergeable at `proved`, with its `approvers`), `Waiting` with `why` it is not, or
 `Unreadable` with the forge's `reason`. A repository with no pipeline has none to wait for.
 `host.awaitReview` takes the same options and reads every five minutes, at no token cost,
 until the standing is anything but `Waiting` or `Unreadable`, or a Hold or Stop ends it as
-`Held`. Meanwhile the card says what it waits for — "Waiting for review of `<mr>`: …" — and
-the line is cleared when it returns. Take either inside an Activity, and suspend on `Held`
+`Held`. Meanwhile what it waits for that comes by itself — CI, a teammate's approval, review
+threads resolved, the forge — is recorded as the Run awaiting it, under Working with no
+notification ("Waiting for CI and a teammate's approval on `<mr>`."), until it has waited 2
+hours (2 days for a person) and parks; a red pipeline, changes requested or a merge the
+forge refuses parks it as Needs you while it keeps reading. Both are cleared when it returns. Take either inside an Activity, and suspend on `Held`
 there, so a resume waits again.
 
 `host.reply({ runId, cwd, comment, body })` replies to the comment with id `comment` on
