@@ -468,7 +468,9 @@ job's name (`stage:spilnu`), names — a monorepo needs several. A repository's
 Where they cannot be settled — an application with no project, nothing found, Helle
 refusing — nothing is merged or tagged: it asks **`go-<n>.claim.unclaimed`**, saying why,
 with **Try again**, **Release without a Helle claim**, recorded on its log as the human's
-say, and **Finish**. Holding them, it reads the review again, as
+say, and **Finish**. Either of the last two first gives back what it did take; a claim
+Helle will not take back parks the Run, naming it, until a resume gives it back. Holding
+them, it reads the review again, as
 the claims may have waited: where it no longer holds, the claim is given back, and the Run
 says why on its log and waits for a fresh go. Where it holds, Collie merges at exactly the head the go named — never an admin
 merge, never auto-merge. A head that moved before the merge gives the claim back and goes

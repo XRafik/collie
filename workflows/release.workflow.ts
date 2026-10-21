@@ -469,7 +469,16 @@ export default defineWorkflow({
             });
             if (answer === UNCLAIMED.again) continue;
             // Whatever it did take is given back, so going on without claims holds none.
-            yield* Activity.make({ name: `${at}.give-back`, execute: host.release(runId) });
+            yield* Activity.make({
+              name: `${at}.give-back`,
+              execute: Effect.flatMap(host.release(runId), (kept) =>
+                kept.length === 0
+                  ? Effect.void
+                  : park(
+                      `Helle would not take back ${kept.join(", ")}, which this Run still holds, so it neither finishes nor goes on without its claims`,
+                    ),
+              ),
+            });
             if (answer === GO.finish) return null;
             yield* host.record(
               runId,
@@ -720,7 +729,10 @@ export default defineWorkflow({
           const giveBack =
             slugs.length === 0
               ? Effect.void
-              : Activity.make({ name: `go-${gos}.give-back`, execute: host.release(runId) });
+              : Activity.make({
+                  name: `go-${gos}.give-back`,
+                  execute: Effect.asVoid(host.release(runId)),
+                });
           // The claim can wait on Helle or a question, so the review is read once it is held.
           const still = yield* Activity.make({
             name: `go-${gos}.check`,

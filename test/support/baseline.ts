@@ -6883,7 +6883,7 @@ const helleAnswers = (claim: "held" | "none", production: "deployed" | "read"): 
                   ),
                 { slugs: ["project"] },
               ),
-        release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
+        release: (runId) => Effect.sync(() => (claimed.push(`release ${runId}`), [])),
       });
       if (production === "read") return answered;
       return Host.of({
@@ -7740,6 +7740,8 @@ interface HelleSays {
 }
 /** What each release's claim was asked to cover, in order. */
 const claimedFor: Array<{ applications: ReadonlyArray<string>; jobs: ReadonlyArray<string> }> = [];
+/** What Helle refuses to take back, a release at a time; it takes everything after. */
+const refusedBack: Array<ReadonlyArray<string>> = [];
 
 /**
  * Helle answered here, and the Runs' ends a landing takeover weighs given: what decides is
@@ -7787,7 +7789,11 @@ const releaseHost = (
                   ),
                   Effect.as({ slugs: ["project"] }),
                 ),
-        release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
+        release: (runId) =>
+          Effect.sync(() => {
+            claimed.push(`release ${runId}`);
+            return refusedBack.shift() ?? [];
+          }),
         takeOverLanding: (asked) =>
           Effect.gen(function* () {
             const fs = yield* FileSystem.FileSystem;
@@ -9074,6 +9080,43 @@ const MONOREPO_ASSESSED = { ...APP_ASSESSED, applications: ["spilnu", "happytige
       ),
     120_000,
   );
+
+  for (const answer of ["Finish", "Release without a Helle claim"])
+    scenario(
+      `release: a claim Helle will not take back parks the release on ${answer}, unmerged, naming it`,
+      () =>
+        runEffect(
+          Effect.gen(function* () {
+            const { bin, forge } = yield* stageable("gitlab");
+            claimed.length = 0;
+            refusedBack.length = 0;
+            refusedBack.push(["happytiger"]);
+            const runId = `r-helle-kept-${answer === "Finish" ? "finish" : "without"}`;
+            yield* rig.queueOutputs([MONOREPO_ASSESSED]);
+            const why = "helle POST /projects/spilnu/claim answered 500: down";
+            yield* driven(
+              helleRun(runId, () => ({ held: { unresolved: why } })),
+              (run) =>
+                Effect.gen(function* () {
+                  yield* goAsked(run.asked, "go-1");
+                  yield* run.answer("go-1", "Merge, tag and stage");
+                  yield* goAsked(run.asked, "go-1.claim.unclaimed");
+                  yield* run.answer("go-1.claim.unclaimed", answer);
+                  const parked = yield* until(
+                    () => parkedWhy(runId),
+                    (said) => said !== "",
+                  );
+                  expect(parked).toContain("happytiger");
+                  expect((yield* run.status).status).not.toBe("complete");
+                }),
+            );
+            yield* bin.restore();
+            expect((yield* forge.model()).merges ?? []).toEqual([]);
+            expect(yield* runLog(runId)).not.toContain("released without a Helle claim");
+          }),
+        ),
+      120_000,
+    );
 
   scenario(
     "release: a release goes on without a Helle claim only on the human's recorded say",

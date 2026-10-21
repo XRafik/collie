@@ -732,7 +732,8 @@ application or a deploy job's name (`stage:spilnu`) names. A repository's
 `ClaimedSchema` journals the answer. Waiting here costs wall clock and no model tokens,
 which is the point of claiming before an agent starts rather than after. `adopting` is your
 own durable question, asked only where a claim was already the operator's;
-`host.release(runId)` gives them all back, and only a Run that finished its work should.
+`host.release(runId)` gives them all back, and only a Run that finished its work should; it
+answers the slugs Helle would not take back, which stay recorded for a later release.
 
 `host.defaultHead(cwd)` is the commit origin's default branch is at now, and fails where
 origin cannot be read; take it inside an Activity, so a replay reads the same commit.

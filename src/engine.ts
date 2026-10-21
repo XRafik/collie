@@ -681,8 +681,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
         readonly jobs: ReadonlyArray<string>;
       };
     }) => Effect.Effect<Claimed, WorkflowError | E, R>;
-    /** Gives every claim back. Only a Run that finished its work releases. */
-    readonly release: (runId: string) => Effect.Effect<void>;
+    /** Gives every claim back, answering those Helle kept. Only a finished Run releases. */
+    readonly release: (runId: string) => Effect.Effect<ReadonlyArray<string>>;
     /** Records the merge request this Run opened, as a fact its card reads. */
     readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
     /**
@@ -3562,7 +3562,7 @@ export const hostLayer = (options: {
             const env = yield* currentEnv.pipe(Effect.orDie);
             const file = claimPath(dir, runId);
             const held = yield* recordedClaims(file);
-            if (held.length === 0) return;
+            if (held.length === 0) return [];
             const creds = yield* credentials({
               home: env.home,
               envFile: env.raw.HELLE_ENV_FILE ?? null,
@@ -3578,7 +3578,17 @@ export const hostLayer = (options: {
               if (released._tag === "Success") given.add(one.slug);
             }
             yield* updateClaims(file, (now) => now.filter((one) => !given.has(one.slug)));
-          }).pipe(Effect.provideContext(services), Effect.ignore),
+            return held.filter((one) => !given.has(one.slug)).map((one) => one.slug);
+          }).pipe(
+            Effect.provideContext(services),
+            // Helle not asked at all gave nothing back.
+            Effect.catch(() =>
+              recordedClaims(claimPath(dir, runId)).pipe(
+                Effect.map((held) => held.map((one) => one.slug)),
+                Effect.provideContext(services),
+              ),
+            ),
+          ),
         integrate: (runId, cwd) =>
           under(
             integrateDefault(runShell, cwd).pipe(

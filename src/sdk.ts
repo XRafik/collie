@@ -787,10 +787,11 @@ export interface HostApi {
     };
   }) => Effect.Effect<Claimed, WorkflowError | E, R>;
   /**
-   * Gives every claim back. Only a Run that has finished its work releases: holding it
-   * across a consultation is what stops anyone deploying on a half-finished change.
+   * Gives every claim back, and answers those Helle would not take, which stay recorded.
+   * Only a Run that has finished its work releases: holding it across a consultation is
+   * what stops anyone deploying on a half-finished change.
    */
-  readonly release: (runId: string) => Effect.Effect<void>;
+  readonly release: (runId: string) => Effect.Effect<ReadonlyArray<string>>;
   /**
    * Records the merge request this Run opened. It is a fact about the Run from then on:
    * its card links it, says it waits on it, and follows what the forge says of it.
