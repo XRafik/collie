@@ -161,6 +161,72 @@ export function resolveProject(
   return { _tag: "Ambiguous", slugs: matched.map((p) => p.slug) };
 }
 
+export type Needed = { _tag: "Projects"; slugs: string[] } | { _tag: "Unresolved"; why: string };
+
+/** What a release deploys, which is what decides the Helle projects it needs. */
+export interface Deploys {
+  repositoryPath: string | null;
+  repoName: string;
+  /** The applications it deploys, by the name their deploy jobs give them. */
+  applications: readonly string[];
+  jobs: readonly string[];
+  /** The repository's own `.collie/helle.json`, which is the whole answer where it is there. */
+  declared: readonly string[] | null;
+}
+
+/**
+ * Every Helle project a release needs: the repository's own, and each project of the
+ * repository's group that an application or a deploy job's name (`stage:spilnu`) names.
+ * Anything it cannot settle is `Unresolved`, never an empty set.
+ */
+export function resolveProjects(projects: readonly HelleProject[], release: Deploys): Needed {
+  if (release.declared !== null) {
+    const unknown = release.declared.filter((slug) => !projects.some((p) => p.slug === slug));
+    return unknown.length > 0
+      ? {
+          _tag: "Unresolved",
+          why: `.collie/helle.json names ${unknown.join(", ")}, which Helle does not know`,
+        }
+      : { _tag: "Projects", slugs: [...new Set(release.declared)].sort() };
+  }
+  const own = resolveProject(projects, release.repositoryPath, release.repoName);
+  if (own._tag === "Ambiguous")
+    return {
+      _tag: "Unresolved",
+      why: `helle has ${own.slugs.length} projects matching ${release.repoName}: ${own.slugs.join(", ")}`,
+    };
+  const group = release.repositoryPath?.toLowerCase().split("/").slice(0, -1).join("/") ?? null;
+  const inGroup = (name: string) =>
+    projects.find(
+      (p) =>
+        group !== null &&
+        p.group &&
+        `/${group}`.endsWith(`/${p.group.toLowerCase()}`) &&
+        p.slug.toLowerCase() === name.toLowerCase(),
+    );
+  const slugs = new Set(own._tag === "Project" ? [own.slug] : []);
+  for (const application of release.applications) {
+    const found = inGroup(application);
+    if (!found)
+      return {
+        _tag: "Unresolved",
+        why: `no Helle project in ${group ?? release.repoName}'s group for the application ${application}`,
+      };
+    slugs.add(found.slug);
+  }
+  for (const job of release.jobs)
+    for (const part of job.split(/[:/\s]+/)) {
+      const found = inGroup(part);
+      if (found) slugs.add(found.slug);
+    }
+  if (slugs.size === 0)
+    return {
+      _tag: "Unresolved",
+      why: `no Helle project for ${release.repoName}, its applications or its deploy jobs`,
+    };
+  return { _tag: "Projects", slugs: [...slugs].sort() };
+}
+
 /** Where this user stands: 0 while they hold it, else their place in the queue. */
 function positionOf(project: HelleProject, user: string): number | null {
   if (project.holder?.user_id === user) return 0;
@@ -175,74 +241,99 @@ export interface HelleGate<E, R> {
   /** `host/group/…/name` for the repository, or null where it has no remote on a forge. */
   repositoryPath: string | null;
   repoName: string;
+  /** What a release deploys; null where only the repository's own project is needed. */
+  deploys: Pick<Deploys, "applications" | "jobs"> | null;
+  declared: readonly string[] | null;
   /** What this Run already recorded, which is what makes it a resume rather than a start. */
-  claimed: HelleClaim | null;
+  claimed: readonly HelleClaim[];
   record: (claim: HelleClaim) => Effect.Effect<void, E, R>;
   out: (line: string) => Effect.Effect<void, E, R>;
   ask: (question: string) => Effect.Effect<string | null, E, R>;
   pollMs?: number;
 }
 
+export type Held = { _tag: "Held"; slugs: string[] } | { _tag: "Unresolved"; why: string };
+
 const AFFIRMATIVE = /^(y|yes)$/i;
 
 /**
- * Blocks until this Run holds the repository's Helle project, and answers which one it
- * is — or null where the repository has no Helle project at all, which is not a reason
- * to stop. Everything else Helle can do to this — several matching projects, an
- * unreachable API, a rejected token — fails, because "we could not ask" and "there is
- * nothing to ask about" must never come out the same way.
+ * Blocks until this Run holds every Helle project it needs, and answers which — or why
+ * they could not be settled, which only the caller may decide to carry on from. Helle
+ * failing to answer, or several projects the repository could be without `deploys`,
+ * fails: "we could not ask" and "there is nothing to ask about" never come out the same.
+ * Projects are held one at a time in a fixed order, so Runs needing overlapping sets
+ * cannot each hold what the other waits for.
  */
 export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
   gate: HelleGate<E, R>,
 ) {
   const creds = yield* credentials(gate);
-  const resolved = resolveProject(yield* helleProjects(creds), gate.repositoryPath, gate.repoName);
-  if (resolved._tag === "Ambiguous") {
-    return yield* Effect.fail(
-      failed(
-        `helle has ${resolved.slugs.length} projects matching ${gate.repoName}: ${resolved.slugs.join(", ")} — say which`,
-      ),
-    );
-  }
-  if (resolved._tag === "None") {
-    yield* gate.out(`◦ no Helle project for ${gate.repoName} — carrying on without one`);
-    return null;
-  }
-  const slug = resolved.slug;
-  const me = yield* helleMe(creds);
-
-  // Claimed on every entry, resume included: an idempotent claim is the only way back
-  // into a queue this Run may have fallen out of while it was not running.
-  const claimed = yield* claimProject(creds, slug);
-  if (claimed.already_queued && gate.claimed === null) {
-    const answer = yield* gate.ask(
-      `You already hold or are queued for the Helle project ${slug}. Take that claim over, and release it when the Run is done? [y/N]`,
-    );
-    if (answer === null || !AFFIRMATIVE.test(answer.trim())) {
+  const projects = yield* helleProjects(creds);
+  let needed: Needed;
+  if (gate.deploys !== null || gate.declared !== null) {
+    needed = resolveProjects(projects, {
+      repositoryPath: gate.repositoryPath,
+      repoName: gate.repoName,
+      applications: gate.deploys?.applications ?? [],
+      jobs: gate.deploys?.jobs ?? [],
+      declared: gate.declared,
+    });
+  } else {
+    const resolved = resolveProject(projects, gate.repositoryPath, gate.repoName);
+    if (resolved._tag === "Ambiguous") {
       return yield* Effect.fail(
-        failed(`the Helle claim on ${slug} was already yours and was not taken over`),
+        failed(
+          `helle has ${resolved.slugs.length} projects matching ${gate.repoName}: ${resolved.slugs.join(", ")} — say which`,
+        ),
       );
     }
-    yield* gate.record({ slug, claim: "adopted" });
-  } else if (gate.claimed === null) {
-    yield* gate.record({ slug, claim: "mine" });
+    needed =
+      resolved._tag === "Project"
+        ? { _tag: "Projects", slugs: [resolved.slug] }
+        : { _tag: "Unresolved", why: `no Helle project for ${gate.repoName}` };
   }
+  if (needed._tag === "Unresolved") return needed satisfies Held;
+  const me = yield* helleMe(creds);
+  let adopting: boolean | null = null;
 
-  let said: number | null = null;
-  let position = claimed.position;
-  while (true) {
-    if (position !== said) {
-      yield* gate.out(
-        position === 0
-          ? `✓ this Run holds ${slug}`
-          : `⏳ waiting for ${slug} — position ${position}`,
+  for (const slug of needed.slugs) {
+    const recorded = gate.claimed.some((one) => one.slug === slug);
+    // Claimed on every entry, resume included: an idempotent claim is the only way back
+    // into a queue this Run may have fallen out of while it was not running.
+    const claimed = yield* claimProject(creds, slug);
+    if (claimed.already_queued && !recorded) {
+      adopting ??= AFFIRMATIVE.test(
+        (yield* gate.ask(
+          `You already hold or are queued for the Helle project ${slug}. Take that claim over, and release it when the Run is done? [y/N]`,
+        ))?.trim() ?? "",
       );
-      said = position;
+      if (!adopting) {
+        return yield* Effect.fail(
+          failed(`the Helle claim on ${slug} was already yours and was not taken over`),
+        );
+      }
+      yield* gate.record({ slug, claim: "adopted" });
+    } else if (!recorded) {
+      yield* gate.record({ slug, claim: "mine" });
     }
-    if (position === 0) return { slug };
-    yield* Effect.sleep(gate.pollMs ?? POLL_MS);
-    // A queue this Run is no longer in is not a turn it has taken: it keeps the last
-    // position it knew rather than reporting a place it does not have.
-    position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
+
+    let said: number | null = null;
+    let position = claimed.position;
+    while (true) {
+      if (position !== said) {
+        yield* gate.out(
+          position === 0
+            ? `✓ this Run holds ${slug}`
+            : `⏳ waiting for ${slug} — position ${position}`,
+        );
+        said = position;
+      }
+      if (position === 0) break;
+      yield* Effect.sleep(gate.pollMs ?? POLL_MS);
+      // A queue this Run is no longer in is not a turn it has taken: it keeps the last
+      // position it knew rather than reporting a place it does not have.
+      position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
+    }
   }
+  return { _tag: "Held", slugs: needed.slugs } satisfies Held;
 });

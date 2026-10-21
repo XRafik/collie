@@ -2,6 +2,7 @@
 
 import {
   AnswerSchema,
+  ClaimedSchema,
   FindingSchema,
   FixOutputSchema,
   Host,
@@ -156,6 +157,10 @@ export const Assessed = Schema.Struct({
   ).annotate({
     description: "an application's stage deploy jobs, of a merge request's pipeline and a tag's",
   }),
+  applications: Schema.optionalKey(Schema.Array(Schema.String)).annotate({
+    description:
+      "every application this release deploys, by the name its deploy jobs give it (spilnu for stage:spilnu); empty for a package",
+  }),
 });
 
 export const Answered = Schema.Struct({
@@ -218,6 +223,7 @@ const GO = {
   finish: "Finish",
 } as const;
 const PRODUCTION = { send: "Send to production", leave: "Leave production to me" } as const;
+const UNCLAIMED = { again: "Try again", without: "Release without a Helle claim" } as const;
 type ProductionGo = (typeof PRODUCTION)[keyof typeof PRODUCTION];
 
 /** Why a claim waits on the adopt question, which is asked outside the claim's Activity. */
@@ -249,7 +255,8 @@ const quoted = (jobs: ReadonlyArray<string>) => jobs.map((job) => `\`${job}\``).
 /** What a Release Run goes on from once its merge request is merged. */
 interface Landed {
   readonly sha: string;
-  readonly claim: { readonly slug: string } | null;
+  /** The Helle projects it holds claims on. */
+  readonly slugs: ReadonlyArray<string>;
   readonly recovery: string;
   readonly production: ProductionGo | null;
 }
@@ -410,42 +417,79 @@ export default defineWorkflow({
             .filter((line) => line !== "")
             .join(" ");
 
+      const deploys = {
+        applications: assessed.applications ?? [],
+        jobs: [...testJobs, ...stageJobs],
+      };
       // A claim given back mid-Run must not be taken again when the Run replays, so it is
       // journaled, and the adopt question is asked outside the Activity.
-      const claimed = (name: string) =>
+      const attempt = (at: string, n: number) =>
         Effect.gen(function* () {
-          const take = (at: string, adopting: Effect.Effect<boolean, WorkflowError>) =>
+          const take = (step: string, adopting: Effect.Effect<boolean, WorkflowError>) =>
             Activity.make({
-              name: at,
-              success: Schema.NullOr(Schema.Struct({ slug: Schema.String })),
+              name: step,
+              success: ClaimedSchema,
               error: WorkflowError,
               execute: host.claim({
                 runId,
                 cwd,
                 adopting,
+                deploys,
                 say: (line) => host.record(runId, line),
               }),
             });
-          const first = yield* take(
-            name,
-            Effect.fail(new WorkflowError({ reason: ADOPTING })),
-          ).pipe(Effect.result);
+          const first = yield* take(at, Effect.fail(new WorkflowError({ reason: ADOPTING }))).pipe(
+            Effect.result,
+          );
           if (first._tag === "Success") return first.success;
-          if (first.failure.reason !== ADOPTING) return yield* first.failure;
+          if (first.failure.reason !== ADOPTING) return { unresolved: first.failure.reason };
           const adopt = yield* ask({
-            name: "adopt-claim",
-            prompt: "You already hold or are queued for this project's claim. Take it over?",
+            name: nth("adopt-claim", n),
+            prompt: "You already hold or are queued for a claim this release needs. Take it over?",
             options: ["yes", "no"],
           });
-          return yield* take(`${name}.adopt`, Effect.succeed(adopt === "yes"));
+          return yield* take(`${at}.adopt`, Effect.succeed(adopt === "yes")).pipe(
+            Effect.catch((failed) => Effect.succeed({ unresolved: failed.reason })),
+          );
+        });
+      /**
+       * Every Helle claim this release needs, held before anything is merged or tagged; none
+       * only on the human's say, and null where they finished instead.
+       */
+      const claimed = (name: string) =>
+        Effect.gen(function* () {
+          for (let n = 1; ; n++) {
+            const at = nth(name, n);
+            const held = yield* attempt(at, n);
+            if ("slugs" in held) return held.slugs;
+            const answer = yield* ask({
+              name: `${at}.unclaimed`,
+              prompt: `${mr} cannot hold the Helle claims its release needs: ${held.unresolved}. Nothing is merged or tagged without them. ${UNCLAIMED.again} claims them again; ${UNCLAIMED.without} goes on holding none; ${GO.finish} stops here.`,
+              options: [UNCLAIMED.again, UNCLAIMED.without, GO.finish],
+            });
+            if (answer === UNCLAIMED.again) continue;
+            // Whatever it did take is given back, so going on without claims holds none.
+            yield* Activity.make({ name: `${at}.give-back`, execute: host.release(runId) });
+            if (answer === GO.finish) return null;
+            yield* host.record(
+              runId,
+              `released without a Helle claim on the human's say: ${held.unresolved}`,
+            );
+            return [];
+          }
         });
 
       let landed: Landed;
       if (recovering !== null) {
         // That go was given and spent: no wait, no go and no merge, only what is left.
+        const slugs = yield* claimed("claim");
+        if (slugs === null)
+          return yield* fail(
+            `${mr} was merged at ${recovering.sha}, and its release was stopped without the Helle claims it needs, so nothing was tagged`,
+          );
         landed = {
           sha: recovering.sha,
-          claim: yield* claimed("claim"),
+          slugs,
           recovery: `This Run recovers the release of ${mr} that ${recovering.from} merged at \`${recovering.sha}\` and then failed: ${recovering.failure} Where a tag on origin already carries \`${recovering.sha}\`, finish that tag's release and its pipeline, stage included, instead of making another.`,
           production: null,
         };
@@ -665,9 +709,16 @@ export default defineWorkflow({
             yield* host.record(runId, `go ${gos}: finished with ${mr} left open`);
             return `${mr} was left open`;
           }
-          const claim = yield* claimed(`go-${gos}.claim`);
+          const slugs = yield* claimed(`go-${gos}.claim`);
+          if (slugs === null) {
+            yield* host.record(
+              runId,
+              `go ${gos}: finished without the Helle claims, ${mr} left open`,
+            );
+            return `${mr} was left open`;
+          }
           const giveBack =
-            claim === null
+            slugs.length === 0
               ? Effect.void
               : Activity.make({ name: `go-${gos}.give-back`, execute: host.release(runId) });
           // The claim can wait on Helle or a question, so the review is read once it is held.
@@ -791,7 +842,7 @@ export default defineWorkflow({
             execute: host.merge({ runId, cwd, head }),
           });
           if (outcome._tag === "Merged") {
-            merged = { sha: outcome.sha, claim, production };
+            merged = { sha: outcome.sha, slugs, production };
             continue;
           }
           yield* giveBack;
@@ -812,7 +863,7 @@ export default defineWorkflow({
       }
 
       const released = `${mr} merged at ${landed.sha}`;
-      const giveBack = landed.claim === null ? Effect.void : host.release(runId);
+      const giveBack = landed.slugs.length === 0 ? Effect.void : host.release(runId);
       if (assessed.is_package) {
         const tagged = yield* agentWork({
           ...as("tag"),
@@ -949,7 +1000,7 @@ export default defineWorkflow({
         sha: landed.sha,
         jobs,
         url,
-        slug: landed.claim?.slug,
+        slug: landed.slugs.length === 0 ? undefined : landed.slugs.join(", "),
       });
       if (!carried) return yield* Workflow.suspend(yield* WorkflowInstance);
       yield* giveBack;

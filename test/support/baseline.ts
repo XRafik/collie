@@ -13,6 +13,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import {
+  Deferred,
   Duration,
   Effect,
   Fiber,
@@ -53,6 +54,7 @@ import {
   WorkflowError,
   type ActionFacts,
   type ChildAsk,
+  type Claimed,
   type Issue,
 } from "../../src/sdk";
 import { measuresOf } from "../../src/outcomes";
@@ -6872,14 +6874,14 @@ const helleAnswers = (claim: "held" | "none", production: "deployed" | "read"): 
         ...host,
         claim: (options) =>
           claim === "none"
-            ? Effect.succeed(null)
+            ? Effect.succeed({ unresolved: "no Helle project for app" })
             : Effect.as(
                 options
                   .say("holding the claim")
                   .pipe(
                     Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
                   ),
-                { slug: "project" },
+                { slugs: ["project"] },
               ),
         release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
       });
@@ -7730,16 +7732,26 @@ const releasable = (name: MrForge, over: Partial<FakeMr> = {}, tagged = true) =>
 /** How each Run a takeover may weigh ended, as this test says; null still runs. */
 type Ends = Readonly<Record<string, { succeeded: boolean; failure: string } | null>>;
 
+/** What Helle answers a release's claim, with the lines it says and what it waits on first. */
+interface HelleSays {
+  readonly said?: ReadonlyArray<string>;
+  readonly waits?: Effect.Effect<void>;
+  readonly held: Claimed;
+}
+/** What each release's claim was asked to cover, in order. */
+const claimedFor: Array<{ applications: ReadonlyArray<string>; jobs: ReadonlyArray<string> }> = [];
+
 /**
  * Helle answered here, and the Runs' ends a landing takeover weighs given: what decides is
  * `takeOver`'s, from the landing records on disk and the forge. `whileClaiming` is what
  * happens elsewhere while the claim is taken, and the host stops for good once it has
- * posted `stallAfterReplies` replies.
+ * posted `stallAfterReplies` replies. `helle` answers each claim, where the test says.
  */
 const releaseHost = (
   ends: Ends = {},
   whileClaiming: Effect.Effect<void, unknown, FileSystem.FileSystem> = Effect.void,
   stallAfterReplies = Infinity,
+  helle?: () => HelleSays,
 ) =>
   Layer.effect(Host)(
     Effect.gen(function* () {
@@ -7755,14 +7767,26 @@ const releaseHost = (
             .pipe(Effect.tap(() => (++replies >= stallAfterReplies ? Effect.never : Effect.void))),
         // As the host's own claim, one a replay takes again is the one the Run already holds.
         claim: (options) =>
-          claimed.lastIndexOf(`claim ${options.runId}`) >
-          claimed.lastIndexOf(`release ${options.runId}`)
-            ? Effect.succeed({ slug: "project" })
-            : options.say("holding the claim").pipe(
-                Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
-                Effect.tap(() => whileClaiming.pipe(Effect.orDie, Effect.provideContext(services))),
-                Effect.as({ slug: "project" }),
-              ),
+          helle !== undefined
+            ? Effect.gen(function* () {
+                claimedFor.push(options.deploys ?? { applications: [], jobs: [] });
+                const says = helle();
+                for (const line of says.said ?? []) yield* options.say(line);
+                yield* says.waits ?? Effect.void;
+                if ("slugs" in says.held && says.held.slugs.length > 0)
+                  claimed.push(`claim ${options.runId}`);
+                return says.held;
+              })
+            : claimed.lastIndexOf(`claim ${options.runId}`) >
+                claimed.lastIndexOf(`release ${options.runId}`)
+              ? Effect.succeed({ slugs: ["project"] })
+              : options.say("holding the claim").pipe(
+                  Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
+                  Effect.tap(() =>
+                    whileClaiming.pipe(Effect.orDie, Effect.provideContext(services)),
+                  ),
+                  Effect.as({ slugs: ["project"] }),
+                ),
         release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
         takeOverLanding: (asked) =>
           Effect.gen(function* () {
@@ -8945,6 +8969,187 @@ const stageable = (
 
 /** The production job left waiting on the tag's pipeline, as the forge links it. */
 const waiting = (name: MrForge) => `\`deploy-production\` at ${tagJob(name, "deploy-production")}`;
+
+/** A monorepo's release, which deploys two of its applications. */
+const MONOREPO_ASSESSED = { ...APP_ASSESSED, applications: ["spilnu", "happytiger"] };
+
+{
+  const { mr, target } = RELEASING.gitlab;
+  const helleRun = (runId: string, helle: () => HelleSays) => ({
+    entry: shipped("release"),
+    runId,
+    input: { mr: target },
+    host: releaseHost({}, Effect.void, Infinity, helle),
+  });
+  /** Production taken to carry the merge, once the Run waits for it. */
+  const carried = (
+    run: { readonly answer: (decision: string, value: string) => Effect.Effect<void> },
+    forge: Effect.Success<ReturnType<typeof stageable>>["forge"],
+    runId: string,
+    merged: string,
+  ) =>
+    Effect.gen(function* () {
+      yield* run.answer("production", "Leave production to me");
+      yield* until(
+        () => parkedWhy(runId),
+        (why) => why !== "",
+      );
+      yield* forge.set({ ...(yield* forge.model()), environments: deploys(merged, merged) });
+    });
+
+  scenario(
+    "release: a monorepo's release holds the Helle claim of every application it deploys before it merges",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged } = yield* stageable("gitlab");
+          claimed.length = 0;
+          claimedFor.length = 0;
+          const runId = "r-helle-monorepo";
+          yield* rig.queueOutputs([MONOREPO_ASSESSED, stagedTag("gitlab")]);
+          yield* driven(
+            helleRun(runId, () => ({
+              said: ["✓ this Run holds happytiger", "✓ this Run holds spilnu"],
+              held: { slugs: ["happytiger", "spilnu"] },
+            })),
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                yield* goAsked(run.asked, "production");
+                yield* carried(run, forge, runId, merged);
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(claimedFor).toEqual([
+            { applications: ["spilnu", "happytiger"], jobs: ["deploy-stage"] },
+          ]);
+          expect((yield* forge.model()).merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          const log = yield* runLog(runId);
+          expect(log).toContain("holds happytiger");
+          expect(log).toContain("holds spilnu");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    "release: a release whose Helle projects cannot be resolved asks the human before any merge, and Finish merges nothing",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* stageable("gitlab");
+          claimed.length = 0;
+          const runId = "r-helle-unknown";
+          yield* rig.queueOutputs([MONOREPO_ASSESSED]);
+          const why = "no Helle project in spilnu/frontend's group for the application newapp";
+          const status = yield* driven(
+            helleRun(runId, () => ({ held: { unresolved: why } })),
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                const unclaimed = yield* goAsked(run.asked, "go-1.claim.unclaimed");
+                expect(unclaimed.prompt).toContain(why);
+                expect(optionsOf([unclaimed], "go-1.claim.unclaimed")).toEqual([
+                  "Try again",
+                  "Release without a Helle claim",
+                  "Finish",
+                ]);
+                expect((yield* forge.model()).merges ?? []).toEqual([]);
+                yield* run.answer("go-1.claim.unclaimed", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          const model = yield* forge.model();
+          expect(model.merges ?? []).toEqual([]);
+          expect(model.mrs[0]?.state).toBe("open");
+          // Anything a failed claim took is given back.
+          expect(claimed).toEqual([`release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    "release: a release goes on without a Helle claim only on the human's recorded say",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged } = yield* stageable("gitlab");
+          claimed.length = 0;
+          const runId = "r-helle-without";
+          yield* rig.queueOutputs([MONOREPO_ASSESSED, stagedTag("gitlab")]);
+          const why = "no Helle project for monorepo, its applications or its deploy jobs";
+          yield* driven(
+            helleRun(runId, () => ({ held: { unresolved: why } })),
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                yield* goAsked(run.asked, "go-1.claim.unclaimed");
+                yield* run.answer("go-1.claim.unclaimed", "Release without a Helle claim");
+                yield* goAsked(run.asked, "production");
+                yield* carried(run, forge, runId, merged);
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect((yield* forge.model()).merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`release ${runId}`]);
+          expect(yield* runLog(runId)).toContain(
+            `released without a Helle claim on the human's say: ${why}`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    "release: a Helle claim someone else holds keeps the release waiting, unmerged, until it is this Run's",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged } = yield* stageable("gitlab");
+          claimed.length = 0;
+          const runId = "r-helle-held";
+          yield* rig.queueOutputs([MONOREPO_ASSESSED, stagedTag("gitlab")]);
+          const free = yield* Deferred.make<void>();
+          yield* driven(
+            helleRun(runId, () => ({
+              said: ["⏳ waiting for spilnu — position 1"],
+              waits: Deferred.await(free),
+              held: { slugs: ["happytiger", "spilnu"] },
+            })),
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                yield* until(
+                  () => runLog(runId),
+                  (log) => log.includes("waiting for spilnu"),
+                );
+                yield* Effect.sleep("300 millis");
+                expect((yield* forge.model()).merges ?? []).toEqual([]);
+                expect((yield* run.status).status).not.toBe("complete");
+                yield* Deferred.succeed(free, undefined);
+                yield* goAsked(run.asked, "production");
+                yield* carried(run, forge, runId, merged);
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect((yield* forge.model()).merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+}
 
 for (const name of ["gitlab", "github"] as const) {
   const { mr, url, target } = RELEASING[name];

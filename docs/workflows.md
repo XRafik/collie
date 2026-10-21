@@ -460,9 +460,16 @@ Once ready, it asks **`go-<n>`**, naming the head and who approved it: **Release
 the assessment named a stage deploy of its merge request pipelines, **Merge, tag and stage**
 where it named one of its tag pipelines, and **Finish**, and says what each does. Anyone
 may answer, from any door, and the answer is recorded with who gave it. **Finish** ends the
-Run with the merge request left open. Any other answer claims the repository in Helle (a
-repository with no Helle project goes on without one), and then reads the review again, as
-the claim may have waited: where it no longer holds, the claim is given back, and the Run
+Run with the merge request left open. Any other answer claims, in Helle, every project the
+release deploys under, one at a time and each waited for: the repository's own, and each
+project of the repository's group that an application the assessment named, or a deploy
+job's name (`stage:spilnu`), names — a monorepo needs several. A repository's
+`.collie/helle.json`, `{"projects": [...]}`, names them instead, and `[]` declares none.
+Where they cannot be settled — an application with no project, nothing found, Helle
+refusing — nothing is merged or tagged: it asks **`go-<n>.claim.unclaimed`**, saying why,
+with **Try again**, **Release without a Helle claim**, recorded on its log as the human's
+say, and **Finish**. Holding them, it reads the review again, as
+the claims may have waited: where it no longer holds, the claim is given back, and the Run
 says why on its log and waits for a fresh go. Where it holds, Collie merges at exactly the head the go named — never an admin
 merge, never auto-merge. A head that moved before the merge gives the claim back and goes
 back to waiting. The agent then tags by the repository's own conventions, and Collie reads
