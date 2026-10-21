@@ -192,7 +192,10 @@ export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: Sw
     return { remove: removed, keep, bytes: total(removed) } satisfies CleanupReport;
   });
 
-/** A front door's sweep, once per request: asked again, even while it runs, it answers with its report. */
+/**
+ * A front door's sweep, once per request: asked again, even while it runs, it answers with its
+ * report. Once begun it finishes and records its report even if its caller goes away.
+ */
 export const sweepAsked = <E, R>(
   trail: string,
   line: Omit<Parameters<typeof once>[1], "result">,
@@ -201,10 +204,12 @@ export const sweepAsked = <E, R>(
   by: SweptBy,
 ) =>
   sweeping.withPermit(
-    once(
-      trail,
-      { ...line, result: CleanupReport },
-      Effect.flatMap(sweepers, (all) => sweep(all, stateDir, by)),
+    Effect.uninterruptible(
+      once(
+        trail,
+        { ...line, result: CleanupReport },
+        Effect.flatMap(sweepers, (all) => sweep(all, stateDir, by)),
+      ),
     ),
   );
 
