@@ -446,11 +446,7 @@ interface Gate {
   readonly release: Deferred.Deferred<void>;
 }
 
-/**
- * A FileSystem whose first read of a check's process's `stat`, once `armed` with the directory
- * the check is given, waits for `release`: never another check's, as the host's look before a
- * spawn reads.
- */
+/** A FileSystem whose first `stat` read of the check given `armed`'s directory waits for `release`; no other check's, which the pre-spawn sweep reads. */
 const gatedStat = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const gate: Gate = {
