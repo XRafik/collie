@@ -157,6 +157,47 @@ test("output whose fail count does not match, that reports an error, or has over
     ),
   ));
 
+/** bun's output where a file's hook failed after `named` of its tests did; bun calls the hook `(unnamed)`. */
+const hookFailed = (named: ReadonlyArray<string>) =>
+  [
+    "bun test v1.4.3",
+    "",
+    "test/one.test.ts:",
+    ...named.map((name) => `(fail) ${name} [30001.75ms]`),
+    "(pass) one passes [1.00ms]",
+    "",
+    "test/two.test.ts:",
+    "(pass) two passes [1.00ms]",
+    "",
+    "test/one.test.ts:",
+    "error: The file left 1 thing(s) behind: directory /tmp/x",
+    "(fail) (unnamed) [2527.44ms]",
+    "",
+    `${named.length + 1} tests failed:`,
+    ...named.map((name) => `(fail) ${name} [30001.75ms]`),
+    "(fail) (unnamed) [2527.44ms]",
+    "",
+    " 2 pass",
+    ` ${named.length + 1} fail`,
+    "Ran 4 tests across 2 files. [10.00ms]",
+  ].join("\n");
+
+test("a hook's failure is its file's: the check names that file's failed test, and none where the file has no other", () =>
+  runEffect(
+    inHost((host) =>
+      Effect.gen(function* () {
+        const withTest = yield* gateOn(host, hookFailed(["the slow one times out"]));
+        expect(withTest.result).toBe("fail");
+        expect(withTest.failed).toEqual([
+          { file: "test/one.test.ts", name: "the slow one times out" },
+        ]);
+        const alone = yield* gateOn(host, hookFailed([]));
+        expect(alone.result).toBe("fail");
+        expect(alone.failed).toBeUndefined();
+      }),
+    ),
+  ));
+
 /** A `bun` on PATH that records its arguments and directory, prints `printed` and exits `exit`. */
 const fakeBun = (printed: string, exit: number) =>
   Effect.gen(function* () {
