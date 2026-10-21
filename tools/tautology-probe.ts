@@ -88,6 +88,7 @@ const JournalSchema = Schema.Array(
     command: Schema.NonEmptyArray(Schema.String),
     by: Schema.Literals(["agent", "collie"]),
     result: Schema.Literals(["pass", "fail"]),
+    tree: Schema.optional(Schema.Literal("earlier")),
   }),
 );
 const AnswersSchema = Schema.Struct({
@@ -95,7 +96,7 @@ const AnswersSchema = Schema.Struct({
   answers: Schema.Array(Schema.Struct({ criterion: Schema.String, met: Schema.String })),
   assumptions: Schema.Array(Schema.String),
 });
-const readKey = Schema.decodeUnknownSync(Schema.fromJsonString(KeySchema));
+export const readKey = Schema.decodeUnknownSync(Schema.fromJsonString(KeySchema));
 const readJournal = Schema.decodeUnknownSync(Schema.fromJsonString(JournalSchema));
 const readAnswers = Schema.decodeUnknownSync(Schema.fromJsonString(AnswersSchema));
 
@@ -123,13 +124,22 @@ const scratch = Effect.fn("probe.scratch")(function* (keep: boolean) {
   yield* git(work, "apply", `${fixture}/change.patch`);
   yield* git(work, "add", "-A");
   yield* git(work, "commit", "-qm", "Read hours and compound durations");
-  const head = (yield* Effect.promise(() => Bun.$`git rev-parse HEAD`.cwd(work).text())).trim();
-  return { dir, work, head };
+  const sha = (ref: string) =>
+    Effect.promise(() => Bun.$`git rev-parse ${ref}`.cwd(work).text()).pipe(
+      Effect.map((out) => out.trim()),
+    );
+  return { dir, work, trees: { head: yield* sha("HEAD"), base: yield* sha("master") } };
 });
 
-/** The fixture's journal as recorded checks, every one on the reviewed tree. */
-const journal = (raw: string, cwd: string, head: string, at: string) => {
-  const final = { head_sha: head, fingerprint: "fixture" };
+/** The fixture's journal as recorded checks, on the reviewed tree unless one says `earlier`. */
+export const journal = (
+  raw: string,
+  cwd: string,
+  trees: { readonly head: string; readonly base: string },
+  at: string,
+) => {
+  const final = { head_sha: trees.head, fingerprint: "fixture" };
+  const earlier = { head_sha: trees.base, fingerprint: "fixture-base" };
   const verifications = readJournal(raw).map((one, n): Verification => ({
     id: `fixture-${n}`,
     run: "tautology-probe",
@@ -137,8 +147,8 @@ const journal = (raw: string, cwd: string, head: string, at: string) => {
     executable: one.command[0],
     argv: one.command.slice(1),
     cwd,
-    start: final,
-    end: final,
+    start: one.tree === "earlier" ? earlier : final,
+    end: one.tree === "earlier" ? earlier : final,
     exit: one.result === "pass" ? 0 : 1,
     seconds: 1,
     tail: { stdout: "", stderr: "" },
@@ -155,14 +165,17 @@ const journal = (raw: string, cwd: string, head: string, at: string) => {
  * is refused rather than recorded on, and run in the checkout of, the Run the probe was
  * started from.
  */
-const outsideAnyRun = (env: NodeJS.ProcessEnv) =>
+export const outsideAnyRun = (env: NodeJS.ProcessEnv) =>
   Object.fromEntries(
     Object.entries(env).filter(
       ([name]) =>
         ![
           "HERDR_PANE_ID",
+          "HERDR_ACTIVE_PANE_ID",
           "HERDR_TAB_ID",
+          "HERDR_ACTIVE_TAB_ID",
           "HERDR_WORKSPACE_ID",
+          "HERDR_ACTIVE_WORKSPACE_ID",
           "HERDR_PLUGIN_CONTEXT_JSON",
         ].includes(name),
     ),
@@ -209,7 +222,7 @@ const review = Effect.fn("probe.review")(function* (
 const probe = Effect.fn("probe.run")(function* (runs: number, keep: boolean) {
   const fs = yield* FileSystem.FileSystem;
   const key = readKey(yield* fs.readFileString(`${fixture}/key.json`));
-  const { dir, work, head } = yield* scratch(keep);
+  const { dir, work, trees } = yield* scratch(keep);
   const runDir = `${dir}/run`;
   const plan = `${dir}/plan`;
   const env = readEnv({ ...process.env, HERDR_PLUGIN_ROOT: repo, COLLIE_CWD: work });
@@ -222,7 +235,7 @@ const probe = Effect.fn("probe.run")(function* (runs: number, keep: boolean) {
   const checks = journal(
     yield* fs.readFileString(`${fixture}/journal.json`),
     work,
-    head,
+    trees,
     yield* nowIso(),
   );
   const input = {

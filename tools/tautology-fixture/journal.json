@@ -1,8 +1,101 @@
 [
-  { "name": "tests", "command": ["bun", "test"], "by": "collie", "result": "pass" },
+  {
+    "name": "test-compound",
+    "command": ["bun", "test", "test/duration.test.ts", "-t", "reads a compound duration"],
+    "by": "agent",
+    "result": "fail",
+    "tree": "earlier"
+  },
+  {
+    "name": "test-refuses",
+    "command": [
+      "bun",
+      "test",
+      "test/duration.test.ts",
+      "-t",
+      "refuses a unit it does not know, or text between the parts"
+    ],
+    "by": "agent",
+    "result": "fail",
+    "tree": "earlier"
+  },
+  {
+    "name": "test-formats",
+    "command": [
+      "bun",
+      "test",
+      "test/duration.test.ts",
+      "-t",
+      "formats a compound duration as a person writes it"
+    ],
+    "by": "agent",
+    "result": "fail",
+    "tree": "earlier"
+  },
+  {
+    "name": "test-deadline",
+    "command": [
+      "bun",
+      "test",
+      "test/timeout.test.ts",
+      "-t",
+      "a deadline is the start plus the duration"
+    ],
+    "by": "agent",
+    "result": "fail",
+    "tree": "earlier"
+  },
+  {
+    "name": "tests",
+    "command": ["bun", "test"],
+    "by": "collie",
+    "result": "pass"
+  },
   {
     "name": "format-exported",
     "command": ["rg", "-n", "export function formatDuration", "src/duration.ts"],
+    "by": "agent",
+    "result": "pass"
+  },
+  {
+    "name": "test-compound",
+    "command": ["bun", "test", "test/duration.test.ts", "-t", "reads a compound duration"],
+    "by": "agent",
+    "result": "pass"
+  },
+  {
+    "name": "test-refuses",
+    "command": [
+      "bun",
+      "test",
+      "test/duration.test.ts",
+      "-t",
+      "refuses a unit it does not know, or text between the parts"
+    ],
+    "by": "agent",
+    "result": "pass"
+  },
+  {
+    "name": "test-formats",
+    "command": [
+      "bun",
+      "test",
+      "test/duration.test.ts",
+      "-t",
+      "formats a compound duration as a person writes it"
+    ],
+    "by": "agent",
+    "result": "pass"
+  },
+  {
+    "name": "test-deadline",
+    "command": [
+      "bun",
+      "test",
+      "test/timeout.test.ts",
+      "-t",
+      "a deadline is the start plus the duration"
+    ],
     "by": "agent",
     "result": "pass"
   }
