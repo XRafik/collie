@@ -7677,6 +7677,9 @@ const pushedBySomebody = (parent: string, force = false) =>
     return sha;
   });
 
+/** What the forge says the tag's pipeline ran for: the tag, on the merged commit it tags. */
+const tagRun = (merged: string) => ({ ref: "v1.2.0", sha: merged });
+
 const tagOnOrigin = (sha: string) =>
   Effect.gen(function* () {
     yield* exec(["git", "tag", "-a", "v1.2.0", "-m", "1.2.0", sha], { cwd: rig.projectDir });
@@ -8019,7 +8022,7 @@ for (const name of ["gitlab", "github"] as const) {
           yield* bin.restore();
           expect(outcomeText(status)).toBe(`${mr} was left open`);
           expect(model.merges ?? []).toEqual([]);
-          expect(claimed).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
           const log = yield* runLog(runId);
           expect(log).toContain(`go 1 no longer holds for ${head.slice(0, 8)}`);
           expect(log).toContain(`moved the checkout from ${head} to ${moved}`);
@@ -8325,12 +8328,13 @@ for (const name of ["gitlab", "github"] as const) {
     () =>
       runEffect(
         Effect.gen(function* () {
-          const { bin, forge } = yield* releasable(name);
+          const { bin, forge, merged } = yield* releasable(name);
           const now = yield* forge.model();
           yield* forge.set({
             ...now,
             runs: {
               "7": {
+                ...tagRun(merged),
                 ...(name === "gitlab"
                   ? { status: "success" }
                   : { status: "completed", conclusion: "success" }),
@@ -8796,8 +8800,54 @@ for (const name of ["gitlab", "github"] as const) {
           yield* bin.restore();
           expect(outcomeText(status)).toBe(`${mr} was left open`);
           expect(model.merges ?? []).toEqual([]);
-          expect(claimed).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
           expect(repliesOf(model)).toHaveLength(1);
+          expect(yield* runLog(runId)).toContain(
+            `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment while the claim is taken merges nothing, gives the claim back and asks again once it is answered`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-claiming-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            { verdict: "clean", answers: [{ id: "92", answer: "disputed", note: "as meant" }] },
+          ]);
+          const late = { id: 92, author: "bob", at: "2026-10-20T11:00:00Z", body: "wait" };
+          const commented = Effect.gen(function* () {
+            const now = yield* forge.model();
+            yield* forge.set({ ...now, mrs: now.mrs.map((one) => ({ ...one, comments: [late] })) });
+          });
+          const status = yield* driven(
+            {
+              entry: shipped("release"),
+              runId,
+              input: { mr: target },
+              host: releaseHost({}, commented),
+            },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                yield* goAsked(run.asked, "go-2");
+                yield* run.answer("go-2", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
           expect(yield* runLog(runId)).toContain(
             `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
           );
@@ -8880,6 +8930,7 @@ const stageable = (
       environments: deploys(made.merged, made.base),
       runs: {
         "7": {
+          ...tagRun(made.merged),
           status: name === "gitlab" ? "manual" : "waiting",
           jobs: TAG_JOBS.map((job) => ({ name: job, state: jobs[job] })),
         },
@@ -9127,7 +9178,11 @@ for (const name of ["gitlab", "github"] as const) {
               const started = model.runs!["7"]!.jobs!.map((job) =>
                 job.name === "deploy-production" ? { ...job, state: "running" as const } : job,
               );
-              yield* forge.set(yield* now({ runs: { "7": { status: "running", jobs: started } } }));
+              yield* forge.set(
+                yield* now({
+                  runs: { "7": { ...tagRun(merged), status: "running", jobs: started } },
+                }),
+              );
               yield* run.answer("production", "Send to production");
               yield* until(
                 () => parkedWhy(runId),
@@ -9203,7 +9258,9 @@ for (const name of ["gitlab", "github"] as const) {
             name: job,
             state: job === "deploy-production" ? ("manual" as const) : ("passed" as const),
           }));
-          yield* forge.set(yield* now({ runs: { "7": { status: "manual", jobs: fixed } } }));
+          yield* forge.set(
+            yield* now({ runs: { "7": { ...tagRun(merged), status: "manual", jobs: fixed } } }),
+          );
           const status = yield* driven(
             options(again, { [first]: { succeeded: false, failure } }),
             (run) =>
