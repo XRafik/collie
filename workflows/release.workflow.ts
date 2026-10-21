@@ -1,12 +1,4 @@
-// One merge request taken the rest of the way, on a human's go.
-//
-// The host does everything that decides: it waits for the review at no model cost, proves
-// the head with the Run's checks, asks the go, merges at that head, reads the tag back and,
-// for an application, reads stage and production from the forge. The one agent assesses
-// what kind of repository it is, tags, and stages; its Output is a claim, and nothing here
-// takes it for proof.
-//
-// The Markdown beside this file is the content: what each step judges, and how.
+// One merge request taken the rest of the way on a human's go; its agent's Output is never proof.
 
 import {
   AnswerSchema,
@@ -254,10 +246,7 @@ const nth = (name: string, n: number) => (n === 1 ? name : `${name}-${n}`);
 
 const quoted = (jobs: ReadonlyArray<string>) => jobs.map((job) => `\`${job}\``).join(", ");
 
-/**
- * The merged commit a Run tags, the claim it holds, what a recovery is told, and the
- * production go given before the merge, if one was.
- */
+/** What a Release Run goes on from once its merge request is merged. */
 interface Landed {
   readonly sha: string;
   readonly claim: { readonly slug: string } | null;

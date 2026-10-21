@@ -804,9 +804,10 @@ production jobs are played, where `at` is `Proved`'s: `Carried` where production
 carries `merged`, `Unproved` with `why` where the tag on origin is no longer `at` or no
 longer carries it, one of `jobs` is gone or failed,
 or any other job failed or is still running or waiting to run, else `Play` with those still waiting to be started by hand — none where somebody
-already started them. `host.readRollback({ runId, cwd, merged })` answers `Shown` where
-stage's newest successful deployment no longer carries `merged` and carries what
-production's has, else `Unshown` with `why`.
+already started them. `host.readRollback({ runId, cwd, off })` answers `Shown` where
+stage's newest successful deployment no longer carries `off` — the merged commit, or the
+merge request's head staged unmerged — and carries what production's has, else `Unshown`
+with `why`.
 
 `host.takeOverLanding({ runId, cwd })`, for a merged merge request the Run recorded, takes
 over the landing of the newest Run on this host that landed it, where that Run ended

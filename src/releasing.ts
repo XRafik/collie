@@ -1,6 +1,4 @@
-// What a Release Run has the host do to its checkout and read of its tag: bring the
-// checkout to the merge request's head without discarding anything, and prove a tag, stage
-// and production from origin and the forge rather than from an Output.
+// A Release Run's checkout and its tag, stage and production, read from git and the forge.
 
 import { Effect, Schema } from "effect";
 import type { MrRef } from "./board-model";
