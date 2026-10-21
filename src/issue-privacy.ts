@@ -58,6 +58,22 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
   return { checkouts: [...checkouts].sort(), aliases };
 });
 
+/** Whether `dir/.git` leads to a Git directory; an empty `.git` or a copied submodule's gitfile does not. */
+export const marksRepository = Effect.fn("Issues.marksRepository")(function* (dir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const marker = path.join(dir, ".git");
+  const gitfile =
+    (yield* fs.stat(marker)).type === "Directory"
+      ? null
+      : (yield* fs.readFileString(marker)).replace(/[\r\n]+$/, "");
+  if (gitfile === null) return yield* fs.exists(path.join(marker, "HEAD"));
+  if (!gitfile.startsWith("gitdir: ")) return false;
+  const gitDir = gitfile.slice("gitdir: ".length);
+  // Joined unnormalised, as Git does, so `..` leaves a linked `dir` physically.
+  return yield* fs.exists(`${path.isAbsolute(gitDir) ? gitDir : `${dir}/${gitDir}`}/HEAD`);
+});
+
 export function throughAliases(text: string, aliases: ReadonlyArray<DirectoryAlias>): string {
   let expanded = text;
   for (let pass = 0; pass <= text.length; pass++) {
