@@ -1,4 +1,4 @@
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Option, Path } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 
 interface DirectoryAlias {
@@ -102,8 +102,8 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
   return { checkouts: [...checkouts].sort(), aliases };
 });
 
-/** Whether `dir/.git` leads to a Git directory; an empty `.git` or a copied submodule's gitfile does not. */
-export const marksRepository = Effect.fn("Issues.marksRepository")(function* (dir: string) {
+/** The Git directory `dir/.git` leads to, or null for an empty `.git` or a copied submodule's gitfile. */
+export const gitDirOf = Effect.fn("Issues.gitDirOf")(function* (dir: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const marker = path.join(dir, ".git");
@@ -111,11 +111,26 @@ export const marksRepository = Effect.fn("Issues.marksRepository")(function* (di
     (yield* fs.stat(marker)).type === "Directory"
       ? null
       : (yield* fs.readFileString(marker)).replace(/[\r\n]+$/, "");
-  if (gitfile === null) return yield* fs.exists(path.join(marker, "HEAD"));
-  if (!gitfile.startsWith("gitdir: ")) return false;
-  const gitDir = gitfile.slice("gitdir: ".length);
+  if (gitfile !== null && !gitfile.startsWith("gitdir: ")) return null;
+  const named = gitfile?.slice("gitdir: ".length);
   // Joined unnormalised, as Git does, so `..` leaves a linked `dir` physically.
-  return yield* fs.exists(`${path.isAbsolute(gitDir) ? gitDir : `${dir}/${gitDir}`}/HEAD`);
+  const gitDir = named === undefined ? marker : path.isAbsolute(named) ? named : `${dir}/${named}`;
+  return (yield* fs.exists(`${gitDir}/HEAD`)) ? gitDir : null;
+});
+
+/** When the config holding a Git directory's remotes last changed, or null where it cannot be told. */
+export const configStamp = Effect.fn("Issues.configStamp")(function* (gitDir: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const common = yield* fs.readFileString(`${gitDir}/commondir`).pipe(
+    Effect.map((text) => text.trim()),
+    Effect.orElseSucceed(() => "."),
+  );
+  const info = yield* fs
+    .stat(`${path.isAbsolute(common) ? common : `${gitDir}/${common}`}/config`)
+    .pipe(Effect.option);
+  if (Option.isNone(info) || Option.isNone(info.value.mtime)) return null;
+  return `${info.value.mtime.value.getTime()}:${info.value.size}`;
 });
 
 export function throughAliases(text: string, aliases: ReadonlyArray<DirectoryAlias>): string {

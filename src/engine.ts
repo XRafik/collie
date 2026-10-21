@@ -86,7 +86,13 @@ import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
 import { waitForMemory } from "./memory-wait";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
-import { marksRepository, publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
+import {
+  configStamp,
+  gitDirOf,
+  publicationCheckouts,
+  throughAliases,
+  remoteOf,
+} from "./issue-privacy";
 import {
   HelleClaimSchema,
   HelleError,
@@ -2962,51 +2968,73 @@ export const hostLayer = (options: {
         return { ...here, cwd, env };
       });
       const issuePrivacyBudget = Duration.fromInputUnsafe(options.issuePrivacyBudget ?? "1 minute");
-      /** Every checkout issue text may not name, and each one's remotes, read once for a while. */
+      const walks = yield* Cache.makeWith(
+        (root: string) =>
+          Effect.gen(function* () {
+            const { herdr } = yield* placing;
+            const worktrees = yield* herdr.worktreesDirectory();
+            return yield* publicationCheckouts(
+              (yield* fs.exists(worktrees)) ? [root, worktrees] : [root],
+            );
+          }).pipe(Effect.provideContext(bun)),
+        { capacity: 4, timeToLive: (exit) => (Exit.isSuccess(exit) ? "2 minutes" : 0) },
+      );
+      const remotesRead = new Map<
+        string,
+        { readonly stamp: string; readonly names: ReadonlyArray<{ project: string; path: string }> }
+      >();
+      const remotesOf = (checkout: string, gitDir: string) =>
+        Effect.gen(function* () {
+          const stamp = yield* configStamp(gitDir);
+          const kept = remotesRead.get(checkout);
+          if (stamp !== null && kept?.stamp === stamp) return kept.names;
+          const remotes = yield* runShell("git", ["remote", "-v"], checkout);
+          if (remotes.code !== 0)
+            return yield* new WorkflowError({
+              reason: `issue privacy check could not read remotes: ${checkout}`,
+            });
+          const names = remotes.stdout.split("\n").flatMap((line) => {
+            const name = remoteOf(line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "");
+            return name === null ? [] : [name];
+          });
+          if (stamp !== null) remotesRead.set(checkout, { stamp, names });
+          return names;
+        });
+      /** Every checkout issue text may not name, with its remotes; the walk under `root` is kept a while. */
       const inventoryOf = (root: string) =>
         Effect.gen(function* () {
+          const walked = yield* Cache.get(walks, root);
           const { herdr } = yield* placing;
-          const worktrees = yield* herdr.worktreesDirectory();
           const open = yield* herdr.workspaceList().pipe(Effect.orElseSucceed(() => []));
-          const known = new Set(
+          const known = yield* publicationCheckouts(
+            [],
             [
-              ...(yield* store.runs).flatMap((row) => {
-                const placed = placedOf(row, {});
-                return [row.project, placed.cwd, placed.worktree?.path ?? ""];
-              }),
-              ...open.flatMap((workspace) => [workspace.cwd, workspace.worktree ?? ""]),
-            ].filter((dir) => dir.startsWith("/")),
+              ...new Set(
+                [
+                  ...(yield* store.runs).flatMap((row) => {
+                    const placed = placedOf(row, {});
+                    return [row.project, placed.cwd, placed.worktree?.path ?? ""];
+                  }),
+                  ...open.flatMap((workspace) => [workspace.cwd, workspace.worktree ?? ""]),
+                ].filter((dir) => dir.startsWith("/")),
+              ),
+            ],
           );
-          const roots = (yield* fs.exists(worktrees)) ? [root, worktrees] : [root];
-          const found = yield* publicationCheckouts(roots, [...known]);
           const checkouts = yield* Effect.forEach(
-            found.checkouts,
+            [...new Set([...walked.checkouts, ...known.checkouts])].sort(),
             (checkout) =>
               Effect.gen(function* () {
-                const repository = yield* marksRepository(checkout);
-                const remotes = repository
-                  ? yield* runShell("git", ["remote", "-v"], checkout)
-                  : null;
+                const gitDir = yield* gitDirOf(checkout);
                 return {
                   checkout,
                   canonical: yield* fs.realPath(checkout),
-                  repository,
-                  names:
-                    remotes === null
-                      ? []
-                      : remotes.code !== 0
-                        ? null
-                        : remotes.stdout.split("\n").flatMap((line) => {
-                            const name = remoteOf(
-                              line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
-                            );
-                            return name === null ? [] : [name];
-                          }),
+                  repository: gitDir !== null,
+                  names: gitDir === null ? [] : yield* remotesOf(checkout, gitDir),
                 };
               }),
             { concurrency: 8 },
           );
-          return { aliases: found.aliases, checkouts };
+          return { aliases: [...walked.aliases, ...known.aliases], checkouts };
         }).pipe(
           Effect.timeoutOrElse({
             duration: issuePrivacyBudget,
@@ -3019,17 +3047,13 @@ export const hostLayer = (options: {
           }),
           Effect.provideContext(bun),
         );
-      const inventories = yield* Cache.makeWith(inventoryOf, {
-        capacity: 4,
-        timeToLive: (exit) => (Exit.isSuccess(exit) ? "2 minutes" : 0),
-      });
       const checkIssueText = Effect.fn("Host.checkIssueText")(
         function* (here: Effect.Success<ReturnType<typeof issueCheckout>>, text: string) {
           const root = yield* projectsRoot({
             ...here.env,
             userDir: options.userDir ?? here.env.userDir,
           });
-          const inventory = yield* Cache.get(inventories, root.path);
+          const inventory = yield* inventoryOf(root.path);
           const expanded = yield* Effect.try(() => throughAliases(text, inventory.aliases));
           const common = yield* runShell(
             "git",
@@ -3043,10 +3067,6 @@ export const hostLayer = (options: {
           const own = yield* fs.realPath(common.stdout.replace(/\n$/, ""));
           const ownRemote = here.project.split("/").slice(1).join("/");
           for (const { checkout, canonical, repository, names } of inventory.checkouts) {
-            if (names === null)
-              return yield* new WorkflowError({
-                reason: `issue privacy check could not read remotes: ${checkout}`,
-              });
             if (
               !(
                 text.includes(checkout) ||
