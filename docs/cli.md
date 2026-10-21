@@ -553,13 +553,15 @@ Examples:
 collie run start review --input target=https://gitlab.example.com/acme/app/-/merge_requests/2 --input plan= --input proves=
 collie run start review --input target=https://github.com/acme/app/pull/30 --input plan= --input proves=
 collie run start review --input target=worktree --input plan= --input proves=
-collie run start implement --input plan=ENG-123
+collie run start implement --input plan=ENG-123 --input then=
 collie run start plan --input goal="one registry" --input then= --input workspace=projects-root
 ```
 
 `plan` takes `goal` and `then`. `then=implement` builds the plan as soon as its tickets are
 written, with nothing asked of anyone; empty, its end menu is asked
-([`plan`](workflows.md#plan)).
+([`plan`](workflows.md#plan)). `implement` takes `plan` and `then`: `then=release` releases
+its merge request on a human's go, `finish` ends at the merge request, and empty asks
+([`implement`](workflows.md#implement)).
 
 A start that leaves anything out comes back as `needs_input`, one entry per missing field:
 what it means (the field's own description, else what its strategy is) and the facts that

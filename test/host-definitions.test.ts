@@ -13,6 +13,7 @@ const SHIPPED = [
   "implement",
   "investigate",
   "plan",
+  "release",
   "renovate",
   "review",
   "self-improve",

@@ -16,6 +16,8 @@ import {
 } from "./board-model";
 import { latest, readDispositions, recordDisposition } from "./disposition";
 import { forgeOf } from "./forge/forge";
+import type { ReviewRead } from "./forge/review";
+import { readLanding, settleLeft } from "./landing";
 import { forgeHere, type Runner } from "./mr";
 import { runDir } from "./engine";
 import type { RunFacts } from "./runs";
@@ -96,6 +98,8 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
   states: Map<string, MrState>;
   /** Where each panel read is kept, for the drawer of the Run it belongs to. */
   panels: MrPanels;
+  /** The Run directories whose landing attempt this host process is making now. */
+  making: ReadonlySet<string>;
 }) {
   // What an earlier host learned, under this one's own answers: a fresh host's empty memory
   // must not ask production again about what an earlier one already saw land there.
@@ -168,15 +172,66 @@ export const settleMerges = Effect.fn("Merges.settle")(function* <R>(opts: {
         ? epochMs(read.mergedAt)
         : yield* firstMerged(dirs, label);
     if (merged === null) continue;
-    for (const run of opts.runs)
-      if (
+    const going = opts.runs.filter(
+      (run) =>
         runs.includes(run.id) &&
         (run.state === "running" || run.state === "waiting") &&
-        epochMs(run.created) < merged
-      )
-        yield* opts.stop(run.id, `${label} merged`);
+        epochMs(run.created) < merged,
+    );
+    if (going.length === 0) continue;
+    const spared = yield* sparedBy(mr, runs, opts);
+    // An attempt the forge cannot settle yet spares nothing and stops nothing.
+    if (spared === null) continue;
+    for (const run of going) if (!spared.has(run.id)) yield* opts.stop(run.id, `${label} merged`);
   }
   if (learned) yield* writeMrStates(opts.stateDir, opts.states, forge);
+});
+
+/**
+ * The Runs a merge of `mr` leaves running: each whose landing of it is landed, being made
+ * by this process, or settled as landed now, and every Run up its parent chain. Null where
+ * an attempt an earlier process left cannot be settled yet.
+ */
+const sparedBy = Effect.fn("Merges.sparedBy")(function* <R>(
+  mr: string,
+  /** The ids of the Runs that land it. */
+  ids: ReadonlyArray<string>,
+  opts: {
+    readonly cwd: string;
+    readonly run: Runner<R>;
+    readonly runs: ReadonlyArray<RunFacts>;
+    readonly making: ReadonlySet<string>;
+  },
+) {
+  const label = mrLabel(mr);
+  const ref = mrRefOf(mr);
+  const landers: Array<string> = [];
+  let read: ReviewRead | undefined;
+  for (const run of opts.runs.filter((one) => ids.includes(one.id))) {
+    const landing = yield* readLanding(run.dir);
+    if (landing === null || mrLabel(landing.mr) !== label || landing.state === "withdrawn")
+      continue;
+    if (landing.state === "landed" || opts.making.has(run.dir)) {
+      landers.push(run.id);
+      continue;
+    }
+    if (ref === null) return null;
+    read ??= yield* forgeOf(ref).readReview(ref, opts.cwd, opts.run);
+    if (!read.ok) return null;
+    const settled = yield* settleLeft(run.dir, landing, read).pipe(Effect.orDie);
+    if (settled._tag === "Unmerged") return null;
+    if (settled._tag === "Landed") landers.push(run.id);
+  }
+  const parentOf = new Map(opts.runs.map((run) => [run.id, run.parent]));
+  const spared = new Set<string>();
+  for (const lander of landers) {
+    let at: string | null = lander;
+    while (at !== null && !spared.has(at)) {
+      spared.add(at);
+      at = parentOf.get(at) ?? null;
+    }
+  }
+  return spared;
 });
 
 /** A merge request the watch follows, and the Runs it lands. */

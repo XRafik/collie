@@ -26,6 +26,7 @@ const view = (over: Partial<RunView> = {}): RunView => ({
   diagnostic: null,
   parked: null,
   mr: null,
+  landing: null,
   ...over,
 });
 

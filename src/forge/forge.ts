@@ -11,6 +11,7 @@ import type { Posted } from "../sdk";
 import { github } from "./github";
 import { gitlab } from "./gitlab";
 import type { FiledIssue, IssueList } from "./issues";
+import type { ForgeComment, MergeAnswer, ReviewRead } from "./review";
 
 export interface Readiness {
   readonly ok: boolean;
@@ -68,6 +69,37 @@ export type JobRead =
       /** The merge commit a merged-results pipeline of `head` ran on, else null. */
       readonly merge: string | null;
     }
+  | { readonly ok: false; readonly reason: string };
+
+/** A job of a pipeline read whole; `manual` waits for somebody to start it by hand. */
+export type PipelineJobState = JobState | "manual";
+
+/** A pipeline or Actions run and its jobs, or why the forge could not say. */
+export type PipelineRead =
+  | {
+      readonly ok: true;
+      /** It finished, and the forge says it succeeded. */
+      readonly succeeded: boolean;
+      /** The project it ran in, as `host/path`, the branch or tag it ran for, and its commit. */
+      readonly project: string;
+      readonly ref: string;
+      readonly sha: string;
+      readonly jobs: ReadonlyArray<{
+        readonly name: string;
+        readonly state: PipelineJobState;
+        readonly url: string | null;
+      }>;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/** The newest pipeline or Actions run a tag started, null where none, or why not. */
+export type TagPipelineRead =
+  | { readonly ok: true; readonly url: string | null }
+  | { readonly ok: false; readonly reason: string };
+
+/** The commit a tier's newest successful deployment has, null where none, or why not. */
+export type DeployedRead =
+  | { readonly ok: true; readonly sha: string | null }
   | { readonly ok: false; readonly reason: string };
 
 /** The same job where the branch leaves its target, or on the target's latest pipeline. */
@@ -145,6 +177,13 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<DeployTier | null, never, R>;
+  /** The commit `tier`'s newest successful deployment has, in `ref`'s project (ADR-0050 D7). */
+  readonly deployed: <R>(
+    ref: MrRef,
+    tier: DeployTier,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<DeployedRead, never, R>;
   /** The open merge request whose source branch is `branch`, if any. */
   readonly forBranch: <R>(
     project: string,
@@ -212,6 +251,19 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<string | null, never, R>;
+  /** The pipeline or Actions run at `url`, with its jobs; another forge's is refused. */
+  readonly pipeline: <R>(
+    url: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<PipelineRead, never, R>;
+  /** The newest pipeline or Actions run `tag` started in `ref`'s project. */
+  readonly tagPipeline: <R>(
+    ref: MrRef,
+    tag: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<TagPipelineRead, never, R>;
   /** Clones `project` (`host/path`) into `into`, or says why it could not. */
   readonly clone: <R>(
     project: string,
@@ -244,6 +296,27 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<Posted, never, R>;
+  /** The merge request's review: its state, approval, mergeability, pipeline and comments. */
+  readonly readReview: <R>(
+    ref: MrRef,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<ReviewRead, never, R>;
+  /** Posts `body` as it is, in the comment's thread where it has one; never resolves it. */
+  readonly reply: <R>(
+    ref: MrRef,
+    to: Pick<ForgeComment, "thread">,
+    body: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<Readiness, never, R>;
+  /** Merges through the forge's REST merge at `head`: never admin, never auto-merge. */
+  readonly merge: <R>(
+    ref: MrRef,
+    head: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<MergeAnswer, never, R>;
   /** My open merge requests in `project`, as assignee or author, for a menu. */
   readonly mine: <R>(
     project: string | null,

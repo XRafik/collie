@@ -686,7 +686,7 @@ test(
         const shown = yield* cli(["--json", "workflow", "show", "ours"], scratch);
         const described = Schema.decodeUnknownSync(ShownModule)(shown.stdout).data.workflow;
         expect(described.layer).toBe("project");
-        expect(described.inputs.map((one) => one.name)).toEqual(["plan"]);
+        expect(described.inputs.map((one) => one.name)).toEqual(["plan", "then"]);
 
         // There is nothing to merge in a module, so the flags that merged steps say so.
         const merged = yield* cli(

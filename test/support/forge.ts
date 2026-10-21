@@ -33,6 +33,39 @@ export const FakeJob = Schema.Struct({
 });
 export type FakeJob = typeof FakeJob.Type;
 
+/** A comment on a merge request; on GitHub one with a thread is a review comment. */
+export const FakeComment = Schema.Struct({
+  id: Schema.Number,
+  author: Schema.String,
+  /** A person where unsaid; `system` is a GitLab system note. */
+  kind: Schema.optionalKey(Schema.Literals(["person", "bot", "system"])),
+  at: Schema.String,
+  body: Schema.String,
+  /** GitLab's discussion id, or the id of a GitHub review thread's first comment. */
+  thread: Schema.optionalKey(Schema.String),
+  file: Schema.optionalKey(Schema.String),
+  line: Schema.optionalKey(Schema.Number),
+});
+export type FakeComment = typeof FakeComment.Type;
+
+/** A GitHub review, with the body it was submitted with. */
+export const FakeReview = Schema.Struct({
+  id: Schema.Number,
+  author: Schema.String,
+  bot: Schema.optionalKey(Schema.Boolean),
+  state: Schema.Literals(["APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"]),
+  body: Schema.optionalKey(Schema.String),
+  at: Schema.String,
+});
+export type FakeReview = typeof FakeReview.Type;
+
+/** A GitLab approval rule, with who approved for it. */
+const FakeRule = Schema.Struct({
+  name: Schema.String,
+  required: Schema.Number,
+  approvers: Schema.Array(Schema.String),
+});
+
 export const FakeMr = Schema.Struct({
   /** `host/path`, as an `MrRef`'s project. */
   project: Schema.String,
@@ -66,6 +99,19 @@ export const FakeMr = Schema.Struct({
   closedAt: Schema.optionalKey(Schema.String),
   /** Whether the forge would merge it now; mergeable where unsaid. */
   mergeable: Schema.optionalKey(Schema.Literals(["yes", "conflict", "unapproved", "checking"])),
+  mergedBy: Schema.optionalKey(Schema.String),
+  comments: Schema.optionalKey(Schema.Array(FakeComment)),
+  /** Threads resolved, by their id. */
+  resolved: Schema.optionalKey(Schema.Array(Schema.String)),
+  /** GitHub's reviews. */
+  reviews: Schema.optionalKey(Schema.Array(FakeReview)),
+  /** GitLab: who approved it, and how many approvals it requires. */
+  approvers: Schema.optionalKey(Schema.Array(Schema.String)),
+  required: Schema.optionalKey(Schema.Number),
+  /** GitLab's approval rules; one rule of `required` and `approvers` where unsaid. */
+  rules: Schema.optionalKey(Schema.Array(FakeRule)),
+  /** GitLab's merge status says changes were requested. */
+  changesRequested: Schema.optionalKey(Schema.Boolean),
 });
 export type FakeMr = typeof FakeMr.Type;
 
@@ -118,11 +164,27 @@ export const ForgeModel = Schema.Struct({
       }),
     ),
   ),
-  /** Pipelines and Actions runs, by id. */
+  /** Pipelines and Actions runs, by id, with their jobs where a test names them. */
   runs: Schema.optionalKey(
     Schema.Record(
       Schema.String,
-      Schema.Struct({ status: Schema.String, conclusion: Schema.optionalKey(Schema.String) }),
+      Schema.Struct({
+        status: Schema.String,
+        conclusion: Schema.optionalKey(Schema.String),
+        /** The branch or tag it ran for, and its commit. */
+        ref: Schema.optionalKey(Schema.String),
+        sha: Schema.optionalKey(Schema.String),
+        /** The GitHub event that started it, `push` where not said. */
+        event: Schema.optionalKey(Schema.String),
+        jobs: Schema.optionalKey(
+          Schema.Array(
+            Schema.Struct({
+              name: Schema.String,
+              state: Schema.Literals([...JobStates.literals, "manual"]),
+            }),
+          ),
+        ),
+      }),
     ),
   ),
   /** The shas each sha descends from. */
@@ -151,6 +213,40 @@ export const ForgeModel = Schema.Struct({
   rulesets: Schema.optionalKey(Schema.Array(Schema.String)),
   /** Neither the repository nor its protection can be read. */
   protectionDown: Schema.optionalKey(Schema.Boolean),
+  /** GitLab without merge requests' approval state, as on Free. */
+  free: Schema.optionalKey(Schema.Boolean),
+  /** GitHub's required approving reviews: branch protection's, each ruleset's, and code owners'. */
+  reviewsRequired: Schema.optionalKey(
+    Schema.Struct({
+      classic: Schema.optionalKey(Schema.Number),
+      rulesets: Schema.optionalKey(Schema.Array(Schema.Number)),
+      codeOwners: Schema.optionalKey(Schema.Boolean),
+    }),
+  ),
+  /** GitHub's `viewerDefaultMergeMethod`; `MERGE` where unsaid. */
+  mergeMethod: Schema.optionalKey(Schema.Literals(["MERGE", "SQUASH", "REBASE"])),
+  /** Replies posted, by `project!iid` or `project#iid`: the thread, null for none, and the body. */
+  replies: Schema.optionalKey(
+    Schema.Record(
+      Schema.String,
+      Schema.Array(Schema.Struct({ thread: Schema.NullOr(Schema.String), body: Schema.String })),
+    ),
+  ),
+  /** Merges made: the merge request's key, the head, the method, every field, who and when. */
+  merges: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        sha: Schema.String,
+        method: Schema.NullOr(Schema.String),
+        fields: Schema.Array(Schema.String),
+        by: Schema.String,
+        at: Schema.String,
+      }),
+    ),
+  ),
+  /** What the forge stamps a reply or a merge with. */
+  now: Schema.optionalKey(Schema.String),
 });
 export type ForgeModel = typeof ForgeModel.Type;
 const ModelJson = Schema.fromJsonString(ForgeModel);
@@ -172,6 +268,13 @@ interface Answer {
   readonly noted?: { readonly key: string; readonly body: string };
   readonly approved?: string;
   readonly retried?: { readonly mr: FakeMr; readonly at: number };
+  readonly replied?: { readonly mr: FakeMr; readonly thread: string | null; readonly body: string };
+  readonly merged?: {
+    readonly mr: FakeMr;
+    readonly sha: string;
+    readonly method: string | undefined;
+    readonly fields: ReadonlyArray<string>;
+  };
 }
 
 const Json = Schema.fromJsonString(Schema.Json);
@@ -183,6 +286,115 @@ const flag = (args: ReadonlyArray<string>, name: string) => {
   const at = args.indexOf(name);
   return at === -1 ? undefined : args[at + 1];
 };
+
+/** Every `-f name=value` an API call carries, or each `-F` one. */
+const fieldsOf = (args: ReadonlyArray<string>, kind = "-f") =>
+  args.flatMap((arg, at) => (args[at - 1] === kind ? [arg] : []));
+const field = (args: ReadonlyArray<string>, name: string, kind = "-f") =>
+  fieldsOf(args, kind)
+    .find((one) => one.startsWith(`${name}=`))
+    ?.slice(name.length + 1);
+
+/** A refusal, with what the CLI says of it. */
+const refused = (said: string): Answer => ({ ran: { code: 1, stdout: "", stderr: said } });
+
+const NOW = "2026-10-20T12:00:00Z";
+
+/** The commit a merge of `mr` makes, where the test did not name one. */
+export const mergeCommitOf = (mr: FakeMr) => mr.mergedSha ?? `merge-of-${mr.head ?? ""}`;
+
+const NOT_MERGEABLE = {
+  gitlab: "405 Method Not Allowed",
+  github: "Pull Request is not mergeable (HTTP 405)",
+} as const;
+const HEAD_MOVED = {
+  gitlab: "409 SHA does not match HEAD of source branch",
+  github: "Head branch was modified. Review and try the merge again. (HTTP 409)",
+} as const;
+
+/** The forge's merge of `mr` at the head `sha` asks for, refused as each forge refuses it. */
+function mergeAnswer(forge: MrForge, mr: FakeMr, args: ReadonlyArray<string>): Answer {
+  const sha = field(args, "sha") ?? "";
+  if (mr.state !== "open") return refused(NOT_MERGEABLE[forge]);
+  if (sha !== (mr.head ?? "")) return refused(HEAD_MOVED[forge]);
+  if ((mr.mergeable ?? "yes") !== "yes") return refused(NOT_MERGEABLE[forge]);
+  return {
+    ...json(
+      forge === "gitlab"
+        ? { state: "merged", merge_commit_sha: mergeCommitOf(mr) }
+        : { merged: true, sha: mergeCommitOf(mr) },
+    ),
+    merged: { mr, sha, method: field(args, "merge_method"), fields: fieldsOf(args) },
+  };
+}
+
+/** GitLab's discussions of `mr`: one per thread, and one of its own for each other note. */
+function discussionsOf(mr: FakeMr) {
+  const threads = new Map<string, FakeComment[]>();
+  for (const comment of mr.comments ?? []) {
+    const id = comment.thread ?? `note-${comment.id}`;
+    threads.set(id, [...(threads.get(id) ?? []), comment]);
+  }
+  return [...threads].map(([id, notes]) => ({
+    id,
+    individual_note: notes[0]?.thread === undefined,
+    notes: notes.map((note) => ({
+      id: note.id,
+      body: note.body,
+      author: { username: note.author, bot: note.kind === "bot" },
+      created_at: note.at,
+      system: note.kind === "system",
+      resolvable: note.thread !== undefined && note.kind !== "system",
+      resolved: note.thread !== undefined && (mr.resolved ?? []).includes(note.thread),
+      position:
+        note.file === undefined
+          ? null
+          : {
+              new_path: note.file,
+              new_line: note.line ?? null,
+              old_path: note.file,
+              old_line: null,
+            },
+    })),
+  }));
+}
+
+/** GitLab's approval rules of `mr`: its own, or one rule of what it requires. */
+const rulesOf = (mr: FakeMr) =>
+  mr.rules ??
+  (mr.required === undefined && mr.approvers === undefined
+    ? []
+    : [{ name: "All Members", required: mr.required ?? 0, approvers: mr.approvers ?? [] }]);
+
+/** Each reviewer's standing review: their latest that is not only a comment. */
+const standingOf = (reviews: ReadonlyArray<FakeReview>) => {
+  const standing = new Map<string, FakeReview>();
+  for (const review of reviews)
+    if (review.state !== "COMMENTED") standing.set(review.author, review);
+  return [...standing.values()];
+};
+
+/** GitHub's review decision: none where the base branch requires no review. */
+function decisionOf(model: ForgeModel, pull: FakeMr): string | null {
+  if (pull.approved === true) return "APPROVED";
+  const rules = model.reviewsRequired;
+  const required = Math.max(rules?.classic ?? 0, ...(rules?.rulesets ?? []));
+  if (required === 0 && rules?.codeOwners !== true) return null;
+  const standing = standingOf(pull.reviews ?? []);
+  if (standing.some((one) => one.state === "CHANGES_REQUESTED")) return "CHANGES_REQUESTED";
+  return standing.filter((one) => one.state === "APPROVED").length >= required
+    ? "APPROVED"
+    : "REVIEW_REQUIRED";
+}
+
+const userOf = (login: string, bot: boolean | undefined) => ({
+  login,
+  type: bot === true ? "Bot" : "User",
+});
+
+/** `gh api --paginate --slurp`'s pages of `items`. */
+const pagesOf = (items: ReadonlyArray<Schema.Json>, args: ReadonlyArray<string>): Answer =>
+  json(args.includes("--slurp") ? [[...items]] : [...items]);
 
 function issueAnswer(forge: MrForge, model: ForgeModel, args: ReadonlyArray<string>): Answer {
   const project = `${forge === "github" ? "github.com/" : ""}${flag(args, "--repo") ?? ""}`;
@@ -255,6 +467,7 @@ function pipelineOf(checks: ReadonlyArray<Check> | undefined): string | null {
 }
 
 const GITLAB_JOB = {
+  manual: "manual",
   passed: "success",
   pending: "pending",
   running: "running",
@@ -264,6 +477,7 @@ const GITLAB_JOB = {
 } as const;
 
 const GITHUB_RUN = {
+  manual: { status: "waiting", conclusion: null },
   passed: { status: "completed", conclusion: "success" },
   pending: { status: "queued", conclusion: null },
   running: { status: "in_progress", conclusion: null },
@@ -271,6 +485,19 @@ const GITHUB_RUN = {
   skipped: { status: "completed", conclusion: "skipped" },
   cancelled: { status: "completed", conclusion: "cancelled" },
 } as const;
+
+/** The pipelines or Actions runs for `ref`, newest first. */
+const runsFor = (model: ForgeModel, ref: string) =>
+  Object.entries(model.runs ?? {})
+    .filter(([, one]) => one.ref === ref)
+    .toSorted(([a], [b]) => Number(b) - Number(a));
+
+/** The page a GitLab list route asks for, 20 to a page where it does not say. */
+function pageOf<T>(route: string, all: ReadonlyArray<T>): Array<T> {
+  const page = Number(/[?&]page=(\d+)/.exec(route)?.[1] ?? "1");
+  const size = Number(/[?&]per_page=(\d+)/.exec(route)?.[1] ?? "20");
+  return all.slice((page - 1) * size, page * size);
+}
 
 /** The id a merge request's head pipeline has; its base's is one more, its target's two. */
 const pipelineIdOf = (mr: FakeMr) => Number(mr.iid) * 100;
@@ -287,6 +514,44 @@ const headJobAt = (model: ForgeModel, project: (mr: FakeMr) => boolean, id: numb
   }
   return undefined;
 };
+
+/** A GitLab merge request as `glab mr view` and its API answer it. */
+function glabMrJson(mr: FakeMr) {
+  const pipeline = pipelineOf(mr.checks);
+  return {
+    iid: Number(mr.iid),
+    title: mr.title ?? "",
+    state: mr.state === "open" ? "opened" : mr.state,
+    draft: mr.draft ?? false,
+    author: { username: mr.author ?? "" },
+    assignees: (mr.assignees ?? []).map((username) => ({ username })),
+    sha: mr.head ?? null,
+    merge_commit_sha: mr.mergedSha ?? null,
+    merged_at: mr.mergedAt ?? null,
+    head_pipeline:
+      pipeline === null && mr.jobs === undefined
+        ? null
+        : {
+            id: pipelineIdOf(mr),
+            status: pipeline ?? "running",
+            sha: mr.pipelineAt ?? mr.head ?? null,
+          },
+    source_branch: mr.sourceBranch ?? null,
+    source_project_id: mr.fork === true ? 7 : 3,
+    target_project_id: 3,
+    target_branch: mr.targetBranch ?? null,
+    diff_refs: { base_sha: mr.base?.at ?? null },
+    merge_when_pipeline_succeeds: mr.autoMerge ?? false,
+    approvals_left: mr.approved === true ? 0 : null,
+    detailed_merge_status:
+      mr.changesRequested === true && mr.mergeable === undefined
+        ? "requested_changes"
+        : GITLAB_MERGE_STATUS[mr.mergeable ?? "yes"],
+    merge_user: mr.mergedBy === undefined ? null : { username: mr.mergedBy },
+    updated_at: mr.updatedAt ?? null,
+    web_url: `https://${mr.project}/-/merge_requests/${mr.iid}`,
+  };
+}
 
 function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (!model.installed) return no(127);
@@ -305,37 +570,7 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   };
   if (verb === "mr" && sub === "view") {
     const mr = mrAt(args[2]);
-    if (mr === undefined) return no();
-    const pipeline = pipelineOf(mr.checks);
-    return json({
-      iid: Number(mr.iid),
-      title: mr.title ?? "",
-      state: mr.state === "open" ? "opened" : mr.state,
-      draft: mr.draft ?? false,
-      author: { username: mr.author ?? "" },
-      assignees: (mr.assignees ?? []).map((username) => ({ username })),
-      sha: mr.head ?? null,
-      merge_commit_sha: mr.mergedSha ?? null,
-      merged_at: mr.mergedAt ?? null,
-      head_pipeline:
-        pipeline === null && mr.jobs === undefined
-          ? null
-          : {
-              id: pipelineIdOf(mr),
-              status: pipeline ?? "running",
-              sha: mr.pipelineAt ?? mr.head ?? null,
-            },
-      source_branch: mr.sourceBranch ?? null,
-      source_project_id: mr.fork === true ? 7 : 3,
-      target_project_id: 3,
-      target_branch: mr.targetBranch ?? null,
-      diff_refs: { base_sha: mr.base?.at ?? null },
-      merge_when_pipeline_succeeds: mr.autoMerge ?? false,
-      approvals_left: mr.approved === true ? 0 : null,
-      detailed_merge_status: GITLAB_MERGE_STATUS[mr.mergeable ?? "yes"],
-      updated_at: mr.updatedAt ?? null,
-      web_url: `https://${mr.project}/-/merge_requests/${mr.iid}`,
-    });
+    return mr === undefined ? no() : json(glabMrJson(mr));
   }
   if (verb === "mr" && sub === "list" && flag(args, "--source-branch") !== undefined) {
     const repo = flag(args, "--repo");
@@ -394,16 +629,32 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
           );
     if (model.deploysDown === true) return no();
     const environments = model.environments ?? [];
-    if (route.endsWith("/environments"))
-      return json(environments.map(({ name, tier }) => ({ name, tier })));
-    if (route.includes("/deployments?"))
+    if (/\/environments(\?|$)/.test(route))
       return json(
-        environments.flatMap((env) =>
-          env.deployed === undefined
-            ? []
-            : [{ sha: env.deployed, environment: { name: env.name } }],
+        pageOf(
+          route,
+          environments.map(({ name, tier }) => ({ name, tier })),
         ),
       );
+    if (route.includes("/deployments?"))
+      return json(
+        pageOf(
+          route,
+          environments.flatMap((env) =>
+            env.deployed === undefined
+              ? []
+              : [{ sha: env.deployed, environment: { name: env.name } }],
+          ),
+        ),
+      );
+    const onMr = /^projects\/([^/]+)\/merge_requests\/(\d+)(?:\/(.+))?$/.exec(route);
+    if (onMr) {
+      const [, path = "", iid = "", rest] = onMr;
+      const mr = model.mrs.find(
+        (one) => one.iid === iid && one.project.endsWith(`/${decodeURIComponent(path)}`),
+      );
+      return mr === undefined ? no() : glabOnMr(model, mr, rest ?? "", args);
+    }
     const retry = /^projects\/([^/]+)\/jobs\/(\d+)\/retry$/.exec(route);
     if (retry && args.includes("POST")) {
       const path = decodeURIComponent(retry[1]!);
@@ -417,15 +668,28 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(mr === undefined ? [] : [{ id: pipelineIdOf(mr) + 1, sha }]);
     }
     const byRef = /\/pipelines\?ref=([^&]+)/.exec(route);
+    const tagged = byRef === null ? [] : runsFor(model, decodeURIComponent(byRef[1]!));
+    if (tagged.length > 0)
+      return json(tagged.map(([id, one]) => ({ id: Number(id), sha: one.sha ?? "" })));
     if (byRef) {
       const mr = model.mrs.find(
         (one) => one.targetBranch === decodeURIComponent(byRef[1]!) && one.target !== undefined,
       );
       return json(mr === undefined ? [] : [{ id: pipelineIdOf(mr) + 2, sha: mr.target!.at }]);
     }
-    const jobs = /\/pipelines\/(\d+)\/jobs/.exec(route);
+    const jobs = /^projects\/([^/]+)\/pipelines\/(\d+)\/jobs/.exec(route);
+    const named = jobs === null ? undefined : model.runs?.[jobs[2]!]?.jobs;
+    if (named !== undefined)
+      return json(
+        named.map((job, at) => ({
+          id: at + 1,
+          name: job.name,
+          status: GITLAB_JOB[job.state],
+          web_url: `https://${flag(args, "--hostname")}/${decodeURIComponent(jobs![1]!)}/-/jobs/${at + 1}`,
+        })),
+      );
     if (jobs) {
-      const id = Number(jobs[1]);
+      const id = Number(jobs[2]);
       const mr = model.mrs.find((one) => Math.floor(id / 100) === Number(one.iid));
       const listed =
         mr === undefined
@@ -456,7 +720,9 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     const pipeline = /\/pipelines\/(\d+)$/.exec(route);
     if (pipeline) {
       const said = model.runs?.[pipeline[1]!];
-      return said === undefined ? no() : json({ status: said.status });
+      return said === undefined
+        ? no()
+        : json({ status: said.status, ref: said.ref ?? "main", sha: said.sha ?? "" });
     }
     const base = /merge_base\?refs\[\]=([^&]+)&refs\[\]=(.+)$/.exec(route);
     if (base) {
@@ -466,6 +732,167 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     }
   }
   return no();
+}
+
+/** `glab api` on one merge request: its approvals, its discussions, a reply and the merge. */
+function glabOnMr(
+  model: ForgeModel,
+  mr: FakeMr,
+  rest: string,
+  args: ReadonlyArray<string>,
+): Answer {
+  const method = flag(args, "-X") ?? "GET";
+  if (rest === "" && method === "GET") return json(glabMrJson(mr));
+  if (rest === "approval_state")
+    return model.free === true
+      ? refused("403 Forbidden")
+      : json({
+          rules: rulesOf(mr).map((rule) => ({
+            name: rule.name,
+            approvals_required: rule.required,
+            approved_by: rule.approvers.map((username) => ({ username })),
+          })),
+        });
+  if (rest === "approvals") {
+    const rules = rulesOf(mr);
+    const approvers = mr.approvers ?? [...new Set(rules.flatMap((rule) => rule.approvers))];
+    const required = mr.required ?? Math.max(0, ...rules.map((rule) => rule.required));
+    return json({
+      approvals_required: required,
+      approvals_left: Math.max(0, required - approvers.length),
+      approved_by: approvers.map((username) => ({ user: { username } })),
+    });
+  }
+  if (rest.startsWith("discussions?") && method === "GET") {
+    const page = Number(/[?&]page=(\d+)/.exec(rest)?.[1] ?? "1");
+    const size = Number(/[?&]per_page=(\d+)/.exec(rest)?.[1] ?? "20");
+    return json(discussionsOf(mr).slice((page - 1) * size, page * size));
+  }
+  const thread = /^discussions\/([^/]+)\/notes$/.exec(rest)?.[1];
+  if ((thread !== undefined || rest === "notes") && method === "POST") {
+    if (thread !== undefined && !discussionsOf(mr).some((one) => one.id === thread))
+      return refused("404 Discussion Not Found");
+    return {
+      ...json({ id: 1 }),
+      replied: { mr, thread: thread ?? null, body: field(args, "body") ?? "" },
+    };
+  }
+  if (rest === "merge" && method === "PUT") return mergeAnswer("gitlab", mr, args);
+  return no();
+}
+
+/** `gh api` on one pull request: its comments and reviews, a reply and the merge. */
+function ghOnPull(pull: FakeMr, kind: string, rest: string, args: ReadonlyArray<string>): Answer {
+  const url = `https://${pull.project}/pull/${pull.iid}`;
+  const method = flag(args, "-X") ?? "GET";
+  const comments = pull.comments ?? [];
+  const body = field(args, "body") ?? "";
+  if (kind === "issues" && rest === "comments" && method === "POST")
+    return { ...json({ id: 1 }), replied: { mr: pull, thread: null, body } };
+  if (kind === "issues" && rest.startsWith("comments?"))
+    return pagesOf(
+      comments
+        .filter((one) => one.thread === undefined)
+        .map((one) => ({
+          id: one.id,
+          html_url: `${url}#issuecomment-${one.id}`,
+          user: userOf(one.author, one.kind === "bot"),
+          created_at: one.at,
+          body: one.body,
+        })),
+      args,
+    );
+  const replyTo = /^comments\/(\d+)\/replies$/.exec(rest)?.[1];
+  if (kind === "pulls" && replyTo !== undefined && method === "POST")
+    return comments.some((one) => String(one.id) === replyTo && one.thread === replyTo)
+      ? { ...json({ id: 1 }), replied: { mr: pull, thread: replyTo, body } }
+      : refused("Not Found (HTTP 404)");
+  if (kind === "pulls" && rest.startsWith("comments?"))
+    return pagesOf(
+      comments.flatMap((one) =>
+        one.thread === undefined
+          ? []
+          : [
+              {
+                id: one.id,
+                html_url: `${url}#discussion_r${one.id}`,
+                user: userOf(one.author, one.kind === "bot"),
+                created_at: one.at,
+                body: one.body,
+                path: one.file ?? null,
+                line: one.line ?? null,
+                in_reply_to_id: one.thread === String(one.id) ? null : Number(one.thread),
+              },
+            ],
+      ),
+      args,
+    );
+  if (kind === "pulls" && rest.startsWith("reviews?"))
+    return pagesOf(
+      (pull.reviews ?? []).map((one) => ({
+        id: one.id,
+        html_url: `${url}#pullrequestreview-${one.id}`,
+        user: userOf(one.author, one.bot),
+        state: one.state,
+        body: one.body ?? "",
+        submitted_at: one.at,
+      })),
+      args,
+    );
+  if (kind === "pulls" && rest === "merge" && method === "PUT")
+    return mergeAnswer("github", pull, args);
+  return no();
+}
+
+/** `gh api graphql`: a pull request's review threads, or a branch's protection for the viewer. */
+function ghGraphql(model: ForgeModel, args: ReadonlyArray<string>): Answer | undefined {
+  const query = field(args, "query") ?? "";
+  const typed = (name: string) => field(args, name, "-F");
+  if (query.includes("reviewThreads")) {
+    const pull = model.mrs.find(
+      (one) =>
+        one.project === `github.com/${typed("owner")}/${typed("name")}` &&
+        one.iid === typed("number"),
+    );
+    if (pull === undefined) return no();
+    const threads = new Set((pull.comments ?? []).flatMap((one) => one.thread ?? []));
+    const page = {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [...threads].map((thread) => ({
+                isResolved: (pull.resolved ?? []).includes(thread),
+                comments: { nodes: [{ databaseId: Number(thread) }] },
+              })),
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        },
+      },
+    };
+    return json(args.includes("--slurp") ? [page] : page);
+  }
+  if (query.includes("refUpdateRule")) {
+    if (model.protectionDown === true) return no();
+    const required = model.reviewsRequired;
+    return json({
+      data: {
+        repository: {
+          ref: {
+            refUpdateRule:
+              required?.classic === undefined
+                ? null
+                : {
+                    requiredApprovingReviewCount: required.classic,
+                    requiresCodeOwnerReviews: required.codeOwners === true,
+                  },
+          },
+        },
+      },
+    });
+  }
+  return undefined;
 }
 
 /** Each environment's deployments, newest first: a failed newer one, then what is live. */
@@ -486,14 +913,36 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
       ? no()
       : json({ default_branch: model.defaultBranch ?? "main" });
   const ruled = /\/rules\/branches\/(.+)$/.exec(route);
-  if (ruled)
-    return model.protectionDown === true
-      ? no()
-      : json(
-          (model.rulesets ?? [])
-            .filter((pattern) => new Bun.Glob(pattern).match(decodeURIComponent(ruled[1]!)))
-            .map((_, at) => ({ type: "pull_request", ruleset_id: at + 1 })),
-        );
+  if (ruled) {
+    if (model.protectionDown === true) return no();
+    const required = model.reviewsRequired;
+    return pagesOf(
+      [
+        ...(model.rulesets ?? [])
+          .filter((pattern) => new Bun.Glob(pattern).match(decodeURIComponent(ruled[1]!)))
+          .map((_, at) => ({ type: "pull_request", ruleset_id: at + 1 })),
+        ...(required?.rulesets ?? []).map((count, at) => ({
+          type: "pull_request",
+          ruleset_id: 100 + at,
+          parameters: {
+            required_approving_review_count: count,
+            require_code_owner_review: required?.codeOwners === true,
+          },
+        })),
+      ],
+      args,
+    );
+  }
+  const asked = route === "graphql" ? ghGraphql(model, args) : undefined;
+  if (asked !== undefined) return asked;
+  const onPull = /^repos\/([^/]+\/[^/]+)\/(pulls|issues)\/(\d+)\/(.+)$/.exec(route);
+  if (onPull) {
+    const [, repo = "", kind = "", number = "", rest = ""] = onPull;
+    const pull = model.mrs.find(
+      (one) => one.project === `github.com/${repo}` && one.iid === number,
+    );
+    return pull === undefined ? no() : ghOnPull(pull, kind, rest, args);
+  }
   if (route === "graphql")
     return model.protectionDown === true
       ? no()
@@ -583,13 +1032,47 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
     );
     return found === undefined ? no() : { ...ok(), retried: found };
   }
+  const runJobs = /^repos\/(.+)\/actions\/runs\/(\d+)\/jobs/.exec(route);
+  if (runJobs) {
+    const said = model.runs?.[runJobs[2]!];
+    if (said === undefined) return no();
+    const jobs = (said.jobs ?? []).map((job, at) => ({
+      id: at + 1,
+      name: job.name,
+      ...GITHUB_RUN[job.state],
+      html_url: `https://github.com/${runJobs[1]}/actions/runs/${runJobs[2]}/job/${at + 1}`,
+    }));
+    if (!args.includes("--paginate")) return json({ jobs: jobs.slice(0, 100) });
+    const pages = [];
+    for (let at = 0; at === 0 || at < jobs.length; at += 100)
+      pages.push({ jobs: jobs.slice(at, at + 100) });
+    return json(args.includes("--slurp") ? pages : pages[0]!);
+  }
   const runs = /\/actions\/runs\/(\d+)$/.exec(route);
   if (runs) {
     const said = model.runs?.[runs[1]!];
     return said === undefined
       ? no()
-      : json({ status: said.status, conclusion: said.conclusion ?? null });
+      : json({
+          status: said.status,
+          conclusion: said.conclusion ?? null,
+          head_branch: said.ref ?? "main",
+          head_sha: said.sha ?? "",
+        });
   }
+  const byBranch = /^repos\/(.+)\/actions\/runs\?.*\bbranch=([^&]+)/.exec(route);
+  if (byBranch)
+    return json({
+      workflow_runs: runsFor(model, decodeURIComponent(byBranch[2]!))
+        .filter(([, one]) => {
+          const event = /[?&]event=([^&]+)/.exec(route)?.[1];
+          return event === undefined || (one.event ?? "push") === event;
+        })
+        .map(([id]) => ({
+          id: Number(id),
+          html_url: `https://github.com/${byBranch[1]}/actions/runs/${id}`,
+        })),
+    });
   return no();
 }
 
@@ -612,7 +1095,9 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (verb === "api") return ghApi(model, sub ?? "", args);
   if (verb === "repo" && sub === "view") {
     const repo = args[2] ?? "";
-    return (model.unreadable ?? []).includes(repo) ? no() : json({ nameWithOwner: repo });
+    return (model.unreadable ?? []).includes(repo)
+      ? no()
+      : json({ nameWithOwner: repo, viewerDefaultMergeMethod: model.mergeMethod ?? "MERGE" });
   }
   const pullAt = (number: string | undefined) =>
     model.mrs.find(
@@ -641,7 +1126,8 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       headRefName: pull.sourceBranch ?? "",
       isCrossRepository: pull.fork === true,
       baseRefName: pull.targetBranch ?? "",
-      reviewDecision: pull.approved === true ? "APPROVED" : "",
+      reviewDecision: decisionOf(model, pull),
+      mergedBy: pull.mergedBy === undefined ? null : { login: pull.mergedBy },
       comments: [],
       updatedAt: pull.updatedAt ?? null,
       url: `https://${pull.project}/pull/${pull.iid}`,
@@ -771,6 +1257,42 @@ export function answer(
                   : job,
               ),
             },
+      ),
+    };
+  }
+  if (said.replied !== undefined) {
+    const { mr, thread, body } = said.replied;
+    const key = keyOf(forge, mr);
+    const replies = after.replies ?? {};
+    const unthreaded: FakeComment = {
+      id: Math.max(0, ...after.mrs.flatMap((one) => (one.comments ?? []).map((c) => c.id))) + 1,
+      author: after.login ?? "",
+      at: after.now ?? NOW,
+      body,
+    };
+    const comment = thread === null ? unthreaded : { ...unthreaded, thread };
+    after = {
+      ...after,
+      replies: { ...replies, [key]: [...(replies[key] ?? []), { thread, body }] },
+      mrs: after.mrs.map((one) =>
+        one === mr ? { ...one, comments: [...(one.comments ?? []), comment] } : one,
+      ),
+    };
+  }
+  if (said.merged !== undefined) {
+    const { mr, sha, method, fields } = said.merged;
+    const at = after.now ?? NOW;
+    const by = after.login ?? "";
+    after = {
+      ...after,
+      merges: [
+        ...(after.merges ?? []),
+        { key: keyOf(forge, mr), sha, method: method ?? null, fields, by, at },
+      ],
+      mrs: after.mrs.map((one) =>
+        one === mr
+          ? { ...one, state: "merged", mergedSha: mergeCommitOf(one), mergedBy: by, mergedAt: at }
+          : one,
       ),
     };
   }

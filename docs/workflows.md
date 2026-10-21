@@ -1,6 +1,6 @@
 # Workflows
 
-Collie ships eight workflows. This page is the "which one do I want" level: what each is
+Collie ships nine workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
@@ -10,8 +10,8 @@ For what a Workflow, an operation, a Choice or a Run _is_, see [`CONTEXT.md`](..
 
 ## Choosing one
 
-A task that is not planning, building a change to a merge request, reviewing, renovating
-or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
+A task that is not planning, building a change to a merge request, reviewing, releasing
+one, renovating or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
 
 ## How inputs reach a run
 
@@ -34,7 +34,8 @@ written rather than before it exists.
 `then` is `implement` or empty. The Launch flow leaves it empty; an agent's start gives it,
 `--input then=` where unused. With `then=implement` nobody is asked anything: each prompt
 tells the planner that nobody is watching, so it decides what is open and records it under
-`decided`, and the end menu is skipped for **Implement now** at once. A plan whose tickets
+`decided`, and the end menu is skipped for **Implement now** at once. The `implement` it
+starts is given `then=finish`, so nobody is asked at its end either. A plan whose tickets
 cannot be built then fails with why, rather than asking again.
 
 **What happens:** a planner reads the goal and repository, asks only when a missing
@@ -66,7 +67,7 @@ Module: [`workflows/plan.workflow.ts`](../workflows/plan.workflow.ts), with its 
 **For:** building a change end to end on a branch, reviewing it, fixing what the review
 found, and opening the merge request.
 
-**Inputs:** `plan`, a work source, and `repo`, optional. It does not need a plan run: inference gathers the three
+**Inputs:** `plan`, a work source, and `repo` and `then`, optional. It does not need a plan run: inference gathers the three
 newest finished `plan` runs for this repo and a Linear issue id in the branch name. One
 candidate is taken as the answer; none or several bring up a menu of them plus **Type it…**,
 which accepts a Linear id or URL, a path to a plan directory, or a plain description of the
@@ -81,6 +82,10 @@ line names it: given one, the build step builds only the tickets naming it and l
 rest to their own run. It is empty for every single-repository run, which builds the whole
 plan, and for the parent of a fan-out, which sets it on each repository's run; see
 [Plans that span repositories](#plans-that-span-repositories).
+
+`then` says what follows the merge request: `finish` ends there, `release` releases it, and
+empty, the default, asks (see **Ends:**). A start nobody attends passes `finish`: plan's
+`then=implement`, and so a Self-improve Run's Improvements, and each Repo run of a fan-out.
 
 **Branch:** named after the work, not the path to it — an explicit `--input branch=`, else
 the reviewed branch, else the `<name>` of a `branch:<base>...<name>` target you gave, else
@@ -118,7 +123,24 @@ before it changes anything, from its `package.json` scripts, a Makefile or its C
 each with `collie run intent verification`. Nobody approves them, and the merge request
 lists each with its command ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-checks.md)).
 
-**Ends:** with the merge request, or fails with the reason there is none — a ticket stopped
+**Ends:** with the merge request, then a question where `then` is empty. Once the merge
+request is open and its checks left to CI are settled, the Run asks **What next?**, named
+`next`, naming the merge request, with two answers:
+
+- **Release** starts a [`release`](#release) Run of the merge request as this Run's child,
+  in this Run's own checkout and held to its Checks, and waits for it. The Run ends with
+  `<merge request URL>; <the release's result>`, and a release that fails fails this Run
+  with its reason. While the release waits on the review and the go, which can take days,
+  this Run and its implementer stay live and idle.
+- **Finish** ends the Run with the merge request URL.
+
+`then=finish` ends at the merge request and `then=release` starts the release, without
+asking. A merge request set to merge itself once green is not asked about: the Run ends at
+it. A succeeded Run with a merge request also offers **Release** on its card, through
+`collie run action` and in chat, so it can be released later; once its merge request has
+merged, or anybody recorded what became of the work, it is not offered.
+
+It fails with the reason there is no merge request — a ticket stopped
 on a blocking finding, acceptance criteria still unmet or unreadable, a review that halted — and says to
 continue with a follow-up Run, which **Keep going on this** starts. Nobody is asked along
 the way: the human verifies the work in the merge request, before it lands. Where a failed check's
@@ -203,8 +225,8 @@ Every other plan fans out, whether **Implement now** hands it to `implement` or 
 it yourself from the plan's root with `collie run start implement --input plan=<the plan
 directory>`. That `implement` cuts no checkout of its own and builds nothing itself: it
 starts one Run of itself per repository, each from that repository's checkout under the
-root, each with the shared plan directory, its own `repo` and every other option it was
-started with — `risks`, `outcome` — and all on one branch name: the `branch` you gave,
+root, each with the shared plan directory, `then=finish`, its own `repo` and every other
+option it was started with — `risks`, `outcome` — and all on one branch name: the `branch` you gave,
 else `<login>/<task>`, else one named after the Run that fanned out, so the sibling merge
 requests are findable by it. Each is held to its own checkout's `.collie/verify.json`, else
 the checks remembered for its remote, else the ones its builder names. See [Repo run](../CONTEXT.md) for the term.
@@ -386,6 +408,139 @@ content in [`workflows/renovate.gitlab.md`](../workflows/renovate.gitlab.md) for
 repository and [`workflows/renovate.github.md`](../workflows/renovate.github.md) for a
 GitHub one.
 
+## `release`
+
+**For:** one merge request taken the rest of the way, on your go: merged at the head its
+review approved and its checks proved, tagged, and the tag read back on origin. A
+**package** ends there. An **application** goes to stage, from its merge request before the
+merge or from its tag after it, and to production on your go.
+
+**Inputs:** `mr`, the merge request or pull request, picked from the same target menu
+`review` offers ([Reviewing someone else's merge request](using.md#reviewing-someone-elses-merge-request)).
+
+**Checkout:** its own, of the merge request's source branch (the pull request's head
+branch on GitHub): the one git already has for it, which is the implement Run's worktree
+for a release that Run started, or one cut from the branch. Collie only ever fast-forwards it. A checkout with uncommitted
+changes, or a head that does not fast-forward it, as after a force push, parks the Run
+with why: nothing is reset or discarded.
+
+**What happens:** one agent assesses, read only, whether the repository is a package or an
+application, by renovate's own rule, and for an application names the stage deploy jobs of
+its merge request pipelines and of its tag pipelines. An application whose pipelines of
+neither kind deploy to stage fails here, before any wait, saying it has no stage deploy
+Collie can prove. Collie then proves the head with the Run's checks, and
+waits, at no token cost, reading the review every five minutes until the merge request is
+approved, has no unanswered external comment, is green and mergeable at the proved head.
+The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); the
+pipeline at `<sha>`.". A head that moves is fast-forwarded to and proved before anything
+can be asked about it. A merge request someone else merges, or closes, ends the Run with
+nothing tagged.
+
+**Review comments** are answered as they come. An **external** comment is a person's,
+by anyone but the forge login Collie works as: a bot's comment, a system note and your
+own comments start nothing, so to direct the Run you steer it rather than comment. Each
+new external comment, or a reply in a thread after Collie's, starts a comment round,
+`answer-<n>`: the agent checks each against the code, fixes what holds test first and
+pushes with a plain push, and disputes what it judges wrong, with a reason. Collie then
+replies to each comment on the forge, linking it: "Fixed in `<sha>`: …" once the merge
+request's head carries that commit, or "Not changed: …" with the reason. It never
+resolves a thread, and a restart never posts a reply twice. A comment a round left out,
+or whose commit the head does not carry, goes to the next round, and a round that
+answers none of its comments parks the Run, naming them. Comment rounds are not bounded:
+they follow the reviewers.
+
+**Checks** run on every head before it can be asked about, the one a round pushed
+included, and a check Collie leaves to CI is waited on there. A failure goes to a fix
+round, `fix-<n>`, which fixes and pushes as implement's gate fixes do. Four rounds in a
+row that leave a check failing, or one that changes nothing, park the Run with why;
+resuming it runs the checks again.
+
+Once ready, it asks **`go-<n>`**, naming the head and who approved it: **Release** or
+**Finish** for a package. For an application it offers **Stage the merge request** where
+the assessment named a stage deploy of its merge request pipelines, **Merge, tag and stage**
+where it named one of its tag pipelines, and **Finish**, and says what each does. Anyone
+may answer, from any door, and the answer is recorded with who gave it. **Finish** ends the
+Run with the merge request left open. Any other answer claims the repository in Helle (a
+repository with no Helle project goes on without one), and then reads the review again, as
+the claim may have waited: where it no longer holds, the claim is given back, and the Run
+says why on its log and waits for a fresh go. Where it holds, Collie merges at exactly the head the go named — never an admin
+merge, never auto-merge. A head that moved before the merge gives the claim back and goes
+back to waiting. The agent then tags by the repository's own conventions, and Collie reads
+the tag back on origin, carrying the merged commit, with its pipeline finished and
+succeeded by the forge's word: the pipeline the agent named, or the newest the forge shows
+the tag started, and only one the forge shows ran for that tag and its commit in this
+repository. A job waiting to be started by hand has not finished.
+A merge request set to merge itself once green is refused at the start: it is already on
+its way.
+
+**An application** is tagged without a release on the forge, and the agent plays and
+watches the tag pipeline's stage deploy and the repository's own stage checks
+(`e2e-stage`, smoke or the like), until the only jobs left are production jobs waiting
+for somebody to start them: a manual job on GitLab, which blocks the pipeline, or a job
+waiting on its environment's approval on GitHub. Collie then reads from the forge that
+the tag carries the merged commit, that stage's newest successful deployment carries it,
+that each named stage job passed, that every other job passed and none is still running or
+waiting to run, and that at least
+one production job waits to be started by hand. The pipeline's own state is not read: it
+cannot succeed before production runs. Where a stage job failed, or stage does not carry
+the merge, the agent rolls stage back to the newest release production carries; once the
+forge shows stage there, the claim is given back and the Run fails saying stage failed
+after the merge, nothing went to production, and the merge stands, so the fix is a new
+merge request. A rollback the forge cannot show, or any other failed proof, fails the Run
+and keeps the claim.
+
+**Staging the merge request** tests it before anything is merged. The Run claims the
+repository and its `stage` step deploys the merge request's own pipeline at the go's head
+to stage, then runs the repository's stage checks there. Collie reads each stage job back
+on the merge request's head pipeline: every one passed, the head is still the go's, and
+stage's newest successful deployment carries that head. Where any of that does not hold,
+the `unstage` step rolls stage back to the newest release production carries; once the
+forge shows it there, the claim is given back, the failure is the finding of a fix round,
+and the Run goes back to the wait, so go 1 is asked again on the fixed head. A head that
+moved instead goes back to the wait with no fix round.
+
+Then, with the claim held while you test, it asks **`production`**: **Send to production**,
+**Leave production to me** or **Finish**, naming the merge request, its head and the stage
+jobs at their addresses. Nothing is merged yet, so **Send to production** and **Leave
+production to me** read again that go 1 still holds at that head and that stage still
+carries it. Where either does not, nothing is merged, stage is rolled back and the claim
+given back, and the Run says why and goes back to the wait: a comment that arrived while
+you tested is answered in its round there. Where both hold, Collie merges at that head, the
+agent tags (where the tag's pipeline deploys stage too, it plays and checks those jobs as
+**Merge, tag and stage** does) and Collie proves the tag ready for production. **Send to
+production** then plays production with no further question, and **Leave production to
+me** plays nothing; either waits until the forge shows production carries the merge.
+**Finish** merges nothing, rolls stage back and ends with the merge request left open.
+
+Choose **Stage the merge request** where you want to test the change on stage before it is
+on the default branch; choose **Merge, tag and stage** where reviewing it was enough and
+stage only has to check the release.
+
+After **Merge, tag and stage**, it asks **`production`**: **Send to production** or **Leave production to me**,
+naming the tag, saying stage carries it, and naming each production job with its address.
+You verify stage before you answer. It holds for that tag and those jobs: the head go 1
+was given for is merged, so it never goes back to the review wait. **Send to production**
+reads the tag and its jobs again first: nothing is played where production already
+carries the merge or somebody already started the job, and nothing at all where the tag
+moved or a job is gone or failed, which fails the Run with the claim kept. The jobs still
+waiting go to the agent's `production` step, cleared for exactly those. Either answer then
+waits, at no token cost, until the forge shows production carries the merge, whoever
+played it; the card names the production jobs meanwhile, and a Hold or Stop suspends it.
+
+**Ends:** with `<mr> merged at <sha>, released as <tag>` and the claim given back, for an
+application `… released as <tag>, in production`, with `<mr> was left open, and stage rolled
+back` after staging the merge request, or with what stopped it. A rollback the forge cannot
+show fails the Run and keeps the claim. A failed Run offers **Release again**: before the merge it is a fresh
+release; after it, the new Run takes over the failed Run's landing — never a merge someone
+made outside a Release Run — and only tags, asking to adopt the claim the failed Run kept. For an application it
+finishes the tag that already carries the merge, stage included, and asks `production`
+afresh; where production already carries the merge it asks nothing and ends.
+
+Module: [`workflows/release.workflow.ts`](../workflows/release.workflow.ts), with its
+content in [`workflows/release.gitlab.md`](../workflows/release.gitlab.md) and
+[`workflows/release.github.md`](../workflows/release.github.md). Why it is shaped this way:
+[ADR-draft-a-merge-request-is-released-on-a-humans-go](adr/draft-a-merge-request-is-released-on-a-humans-go.md).
+
 ## `architecture`
 
 **For:** looking at what a project already has and improving the parts whose cost you can
@@ -456,12 +611,34 @@ Each names only what that step's content tells the agent to do:
 - **`renovate`'s `release`**: pushing an annotated version tag of the default branch,
   creating its release where the repository is a package, and watching the tag's
   pipeline — never playing a production deploy job.
+- **`release`'s `answer`** and **`fix`**: committing to the merge request's source branch
+  and pushing it with a plain push, never a force push. `answer` is told too that it
+  never posts on the forge or resolves a thread: Collie replies.
+- **`release`'s `tag`**: a release commit to the repository's default branch where it makes
+  one, pushing an annotated version tag, creating its release where the package publishes
+  from its tags, and watching the tag's pipeline — never playing a production job. The
+  merge is Collie's, on the human's go, and clears nothing. For an application it is
+  cleared instead for the release commit, pushing the annotated tag with no release on the
+  forge, playing, retrying and watching the stage deploy and stage check jobs of the tag's
+  pipeline, rolling stage back to the newest release production carries, and watching the
+  pipeline until only production jobs waiting to be started are left — never a production
+  job. After the merge request was staged, and where the tag's pipeline deploys no stage,
+  it is cleared for the release commit, pushing the annotated tag with no release on the
+  forge, and watching the tag's pipeline — never a production job.
+- **`release`'s `stage`**: playing, retrying and watching the stage deploy job and stage
+  check jobs (e2e-stage, smoke or the like) of the merge request's pipeline, and rolling
+  stage back to the newest release production carries — never a production job.
+- **`release`'s `rollback`** and **`unstage`**: rolling stage back to the newest release
+  production carries, never a production job.
+- **`release`'s `production`**: playing exactly the production jobs the go named, at their
+  addresses, and no other job.
 
 Every other shipped step clears nothing.
 
 ## How they chain
 
-- `plan` → `implement`, with the plan directory forwarded as the work source.
+- `plan` → `implement`, with the plan directory forwarded as the work source, and
+  `then=finish` where the plan was started with `then=implement`.
 - `architecture` → `implement`, the same way.
 - `implement` imports the pass `review` runs (`workflows/reviewing.ts`), so the review a
   build gets is the review you would run standalone. It is an import, not a lookup:
@@ -472,7 +649,11 @@ Every other shipped step clears nothing.
 - `review` → `implement`, from **Fix findings in a full implement run**. See
   [Hand-offs](using.md#hand-offs-between-runs).
 - `general` chains into nothing.
+- `release` chains into nothing; a failed one offers **Release again** of the same merge
+  request.
 - `self-improve` → `plan` with `then=implement`, once per Improvement, each its own card.
+- `implement` → `release`, on its merge request, from **Release** at its end, `then=release`,
+  or the **Release** offer on a succeeded Run's card.
 
 A chained run is a child of the one that started it, its input decoded against the child's
 own schema before it is admitted. It has a card of its own, the parent waits for it and

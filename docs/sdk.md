@@ -731,12 +731,94 @@ its work should.
 
 `host.defaultHead(cwd)` is the commit origin's default branch is at now, and fails where
 origin cannot be read; take it inside an Activity, so a replay reads the same commit.
+
+`host.merge({ runId, cwd, head })` merges the merge request the Run recorded with
+`host.mergeRequest`, at `head`, through the forge's REST merge: never an admin merge, never
+auto-merge. It fails with `WorkflowError` for a Run that recorded none. Before the forge is
+asked it writes the Run's landing record, which the Run's view shows as `landing`, and
+after, what came of it. It answers a `MergeOutcome` (`MergeOutcomeSchema` journals it):
+
+- `Merged`: this call merged it, at `sha`, and the landing is recorded landed.
+- `HeadMoved`: the merge request's `head` is no longer the one asked for; nothing merged.
+- `MergedOutside`: someone else merged it first, at `sha`, `by` whom and `at` when.
+- `Refused`: the forge's `reason`, such as a conflict or a merge request already closed.
+
+The landing is what keeps the merge watch from stopping this Run, and the Runs it was
+started from, when the merge lands ([The merge watch](internals.md#the-forge-boundary)).
+Take it inside an `Activity`, as `integrate` and `defaultHead` are: a replay after a host
+restart settles the attempt it left on the forge's word rather than merging again.
 `host.awaitProduction({ runId, cwd, sha, jobs, slug, url })` blocks, at no token cost, until
 the forge shows production carries `sha`, polling every five minutes. Meanwhile the card
-says what it waits for: `jobs` are the production jobs left for a human to play, which word
-that line and decide nothing, `slug` is the claim held and `url` the repository. It answers
+says what it waits for: `jobs` are the production jobs left to play, which word that line
+and decide nothing, `slug`, where the Run holds a claim, is the claim held, and `url` the
+repository. It answers
 `true` once production carries the commit, and `false` where the Run was stopped or held
 first. A forge that cannot say keeps it waiting.
+
+`host.review({ runId, cwd, proved, seen })` reads the review of the merge request the Run
+recorded once, judged against `proved`, the head its Checks were proved on, and answers a
+`ReviewStanding` (`ReviewStandingSchema` journals it): `Merged` (at `sha`, `by` whom and
+`at` when), `Closed`, `Moved` (the head is no longer `proved`), `Unanswered` (external
+comments nobody answered, other than those named in `seen`), `Ready` (approved, green and
+mergeable at `proved`, with its `approvers`), `Waiting` with `why` it is not, or
+`Unreadable` with the forge's `reason`. A repository with no pipeline has none to wait for.
+`host.awaitReview` takes the same options and reads every five minutes, at no token cost,
+until the standing is anything but `Waiting` or `Unreadable`, or a Hold or Stop ends it as
+`Held`. Meanwhile the card says what it waits for — "Waiting for review of `<mr>`: …" — and
+the line is cleared when it returns. Take either inside an Activity, and suspend on `Held`
+there, so a resume waits again.
+
+`host.reply({ runId, cwd, comment, body })` replies to the comment with id `comment` on
+the merge request the Run recorded, posting `body` as it is, in the comment's thread where
+it has one. It never resolves a thread. It answers `posted`, or `already` where the forge
+reads the comment as answered — as after a restart that posted the reply before its
+Activity was journaled — and fails with `WorkflowError` when the forge refuses. Take each
+reply inside an Activity of its own. `host.reviewHead({ runId, cwd, commits })` reads the
+merge request's `head` as the forge reports it, which of `commits` it `carries` once
+origin is fetched, and the ids of its external comments still `open`. `settleAnswers`
+turns a comment round's answers into the replies they earn and the comments `carried` to
+the next round: a `fixed` answer counts only where the head carries its commit.
+
+`host.fastForward({ runId, cwd, head })` fetches origin and fast-forwards the checkout to
+`head`, writing the move to the Run's log. It answers `At` with the `head` and where it
+moved `from`, or `Refused` with `why`: a checkout with uncommitted changes, a head origin
+lacks, or one that does not fast-forward, as after a force push. Nothing is reset or
+discarded.
+
+`host.readTag({ runId, cwd, tag, merged, pipeline, proves, stage, production })` reads a
+tag back from origin and the forge rather than from an Output, against what it must prove.
+Either way the tag is on origin and carries `merged`, and a pipeline counts only where the
+forge shows it ran for that tag, at the commit it tags, in the merge request's project.
+`proves: "finished"` is a package's: its pipeline — `pipeline`, or where that is null the
+newest the forge shows the tag started — finished and succeeded by the forge's word, and a
+tag with none at all is proved. A job waiting for somebody to start it by hand has not
+finished, and `Unproved`'s `why` names it.
+`proves: "staged"` is an application's, read from the forge's deployments and the tag's
+pipeline, whose own state is not read: `InProduction` where production already carries
+`merged`; `StageFailed` with `why` where one of the `stage` jobs failed or stage's newest
+successful deployment does not carry `merged`; `Unproved` where any other job failed or is
+still running or waiting to run, a named job is missing or unfinished, or no `production` job waits to be started by
+hand; else `Proved`, with each `production` job and its address (`JobLink`), and `at`, the
+tag's object on origin.
+
+`host.readProduction({ runId, cwd, tag, at, merged, pipeline, jobs })` reads again before
+production jobs are played, where `at` is `Proved`'s: `Carried` where production already
+carries `merged`, `Unproved` with `why` where the tag on origin is no longer `at` or no
+longer carries it, one of `jobs` is gone or failed,
+or any other job failed or is still running or waiting to run, else `Play` with those still waiting to be started by hand — none where somebody
+already started them. `host.readRollback({ runId, cwd, off })` answers `Shown` where
+stage's newest successful deployment no longer carries `off` — the merged commit, or the
+merge request's head staged unmerged — and carries what production's has, else `Unshown`
+with `why`.
+
+`host.takeOverLanding({ runId, cwd })`, for a merged merge request the Run recorded, takes
+over the landing of the newest Run on this host that landed it, where that Run ended
+without succeeding and the forge's merged commit is the one it recorded. It answers
+`TakenOver` with the Run it came `from`, the `sha`, the `head` and the `failure`, or
+`Refused` with `why`: merged outside a Release Run, already released, still being
+released, or merged at another commit. Each of these calls takes its place inside an
+Activity. `readMrRef`, `mrUrlOf` and `forgeOfRef` turn a merge request input into its
+reference, its URL and its forge.
 
 ## Markdown as content
 

@@ -10,9 +10,9 @@ import { runEffect } from "./support/effect";
 
 const srcDir = new URL("../src/", import.meta.url).pathname;
 
-const SHIPPED = "plan|implement|review|architecture|renovate|general";
+const SHIPPED = "plan|implement|review|architecture|renovate|release|general";
 /** `plan` and `review` are also outcome kinds and board tabs; these are only ids. */
-const ONLY_IDS = new Set(["implement", "architecture", "renovate", "general"]);
+const ONLY_IDS = new Set(["implement", "architecture", "renovate", "release", "general"]);
 /** An expression that names a workflow rather than an outcome, a tab or a need. */
 const IDENTITY = /(workflow|definition|entry|module)\w*|\.(id|name)\b/i;
 

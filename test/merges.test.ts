@@ -26,6 +26,7 @@ import { madeRun } from "./support/records";
 import { task } from "./support/task";
 import { runEffect } from "./support/effect";
 import { epochMs } from "../src/time";
+import { readLanding, writeLanding, type Landing } from "../src/landing";
 import { fakeForge, type Check, type FakeMr, type ForgeModel } from "./support/forge";
 
 const GITLAB = "gitlab.cego.dk/mk/collie";
@@ -96,6 +97,7 @@ test("a merge GitLab reports lands the work: a disposition by gitlab, and the ca
         checked: new Map(),
         states,
         panels: new Map(),
+        making: new Set(),
       });
 
       const recorded = yield* readDispositions(run.dir);
@@ -131,6 +133,7 @@ test("a closed merge request is news, not a verdict, and a fresh answer is not a
         checked,
         states,
         panels: new Map(),
+        making: new Set(),
       });
       expect(yield* readDispositions(run.dir)).toEqual([]);
       const again = yield* boardOf({ mrStates: states, now });
@@ -151,6 +154,7 @@ test("a closed merge request is news, not a verdict, and a fresh answer is not a
         checked,
         states,
         panels: new Map(),
+        making: new Set(),
       });
       expect(log.length).toBe(asked);
     }),
@@ -197,6 +201,7 @@ test("a merged card follows its deploy jobs: on stage, then in production, then 
             checked,
             states,
             panels: new Map(),
+            making: new Set(),
           });
           return log;
         });
@@ -256,6 +261,7 @@ test("what is working is asked about, and what is already disposed of is not", (
         checked: new Map(),
         states: new Map(),
         panels: new Map(),
+        making: new Set(),
       });
       // A merge while a Run is busy or parked still lands its Task.
       for (const [run, label] of [
@@ -332,6 +338,7 @@ const onBranch = Effect.fn("merges.onBranch")(function* (
       checked,
       states,
       panels: new Map(),
+      making: new Set(),
     });
   });
   return { run: made, log, recorded, card, round };
@@ -441,6 +448,8 @@ const merging = Effect.fn("merges.merging")(function* (
   /** What the host does with a stop, beside recording it. */
   stopping: (stateDir: string, run: string, reason: string) => Effect.Effect<void> = () =>
     Effect.void,
+  /** More of the merged merge request, and the Run directories whose attempt is being made. */
+  over: { readonly mr?: Partial<FakeMr>; readonly making?: ReadonlySet<string> } = {},
 ) {
   const fs = yield* FileSystem.FileSystem;
   const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-settle-" });
@@ -463,7 +472,12 @@ const merging = Effect.fn("merges.merging")(function* (
   for (const over of others) runs.push(yield* of(over));
   const stops: Array<readonly [string, string]> = [];
   const runner = forge("gitlab", {
-    mrs: [mr65(mergedAt === null ? { state: "merged" } : { state: "merged", mergedAt })],
+    mrs: [
+      mr65({
+        ...(mergedAt === null ? { state: "merged" } : { state: "merged", mergedAt }),
+        ...over.mr,
+      }),
+    ],
   });
   const checked = new Map<string, number>();
   const states = new Map();
@@ -484,6 +498,7 @@ const merging = Effect.fn("merges.merging")(function* (
       checked,
       states,
       panels,
+      making: over.making ?? new Set(),
     });
   });
   /** The Runs as the host reads them once each stop it was handed took. */
@@ -676,6 +691,121 @@ test("a stop that did not take is asked again next round, before the forge is du
     }),
   ));
 
+// The Run that lands a merge request, and the Runs it was started from, are left running.
+
+const LANDED_HEAD = "head-1";
+/** A Release Run under the parked builder, and a sibling review of the same Task. */
+const RELEASE: ReadonlyArray<Partial<RunFacts>> = [
+  {
+    id: "r-release",
+    workflow: "release",
+    parent: "r-plan.implement",
+    state: "running",
+    created: "2026-10-15T08:20:00Z",
+  },
+  { id: "r-review", workflow: "review", state: "running", created: "2026-10-15T08:30:00Z" },
+];
+const attempt = (over: Partial<Landing> = {}): Landing => ({
+  state: "attempt",
+  mr: MR,
+  head: LANDED_HEAD,
+  at: "2026-10-15T08:55:00Z",
+  ...over,
+});
+const stoppedIds = (stops: ReadonlyArray<readonly [string, string]>) =>
+  [...new Set(stops.map(([run]) => run))].sort();
+const EVERY_RUN = ["r-plan", "r-plan.implement", "r-release", "r-review"];
+
+test("a landed Run, its parent and its grandparent are spared by the merge; a sibling is stopped", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { stateDir, stops, round } = yield* merging(RELEASE);
+      const landed = attempt({ state: "landed", sha: "m1" });
+      yield* writeLanding(runDir(stateDir, "r-release"), landed);
+      yield* round(TEN);
+      expect(stoppedIds(stops)).toEqual(["r-review"]);
+      expect(yield* readLanding(runDir(stateDir, "r-release"))).toEqual(landed);
+    }),
+  ));
+
+test("an attempt this host is making is spared, with its lineage, before it records landed", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const making = new Set<string>();
+      const { stateDir, stops, round } = yield* merging(RELEASE, MERGED_AT, undefined, {
+        making,
+        mr: { mergedBy: "alice" },
+      });
+      making.add(runDir(stateDir, "r-release"));
+      yield* writeLanding(runDir(stateDir, "r-release"), attempt());
+      yield* round(TEN);
+      expect(stoppedIds(stops)).toEqual(["r-review"]);
+      expect((yield* readLanding(runDir(stateDir, "r-release")))?.state).toBe("attempt");
+    }),
+  ));
+
+test("a withdrawn landing, or one of another merge request, spares nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const landing of [
+        attempt({ state: "withdrawn", why: "the head moved to head-2" }),
+        attempt({ state: "landed", sha: "m1", mr: mrUrl("66") }),
+      ]) {
+        const { stateDir, stops, round } = yield* merging(RELEASE);
+        yield* writeLanding(runDir(stateDir, "r-release"), landing);
+        yield* round(TEN);
+        expect(stoppedIds(stops)).toEqual(EVERY_RUN);
+      }
+    }),
+  ));
+
+test("an interrupted attempt is someone else's where another login, an earlier merge or another head merged it: withdrawn, and every Run stopped", () =>
+  runEffect(
+    Effect.gen(function* () {
+      for (const mr of [
+        { mergedBy: "alice", head: LANDED_HEAD, mergedAt: "2026-10-15T09:00:00Z" },
+        { mergedBy: "mk", head: LANDED_HEAD, mergedAt: "2026-10-15T08:53:00Z" },
+        { mergedBy: "mk", head: "head-2", mergedAt: "2026-10-15T09:00:00Z" },
+      ]) {
+        const { stateDir, stops, round } = yield* merging(RELEASE, mr.mergedAt, undefined, {
+          mr: { ...mr, mergedSha: "m1" },
+        });
+        yield* writeLanding(runDir(stateDir, "r-release"), attempt());
+        yield* round(TEN);
+        expect(stoppedIds(stops)).toEqual(EVERY_RUN);
+        expect(yield* readLanding(runDir(stateDir, "r-release"))).toMatchObject({
+          state: "withdrawn",
+          why: `merged outside this Run by ${mr.mergedBy}`,
+        });
+      }
+    }),
+  ));
+
+test("an interrupted attempt merged by Collie's login at its head after it was written is landed, and spared", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      // Within the minute the forge's clock may run behind the host's.
+      const { stateDir, stops, round } = yield* merging(
+        RELEASE,
+        "2026-10-15T08:54:30Z",
+        undefined,
+        {
+          mr: { mergedBy: "mk", head: LANDED_HEAD, mergedSha: "m1" },
+        },
+      );
+      yield* writeLanding(runDir(stateDir, "r-release"), attempt());
+      yield* round(TEN);
+      expect(stoppedIds(stops)).toEqual(["r-review"]);
+      expect(yield* readLanding(runDir(stateDir, "r-release"))).toEqual(
+        attempt({ state: "landed", sha: "m1" }),
+      );
+      expect(yield* fs.readFileString(`${runDir(stateDir, "r-release")}/log.txt`)).toContain(
+        `landing: merged ${MR} at ${LANDED_HEAD} as m1`,
+      );
+    }),
+  ));
+
 test("a Task its merge stopped is Finished and reads as the merge; one a human stopped still says so", () =>
   runEffect(
     Effect.gen(function* () {
@@ -721,6 +851,7 @@ test("a card whose Run ended is still followed while its Reopened agent works or
         checked: new Map(),
         states: new Map(),
         panels: new Map(),
+        making: new Set(),
       });
       expect(log).not.toEqual([]);
       const asked = log.length;
@@ -736,6 +867,7 @@ test("a card whose Run ended is still followed while its Reopened agent works or
         checked: new Map(),
         states: new Map(),
         panels: new Map(),
+        making: new Set(),
       });
       expect(log.length).toBeGreaterThan(asked);
     }),
@@ -823,6 +955,7 @@ const cardAfter = Effect.fn("merges.cardAfter")(function* (
     checked: new Map(),
     states: new Map(),
     panels: new Map(),
+    making: new Set(),
   });
   const [card] = yield* buildBoard({ env, runs: [made], now });
   return { card: card!, run: made, stateDir };
@@ -971,6 +1104,7 @@ test("green forge checks never stand in for Collie's own, which count only at th
         checked: new Map(),
         states: new Map(),
         panels: new Map(),
+        making: new Set(),
       });
       const [card] = yield* buildBoard({ env, runs: [made], now });
       expect(card!.checks).toEqual({ state: "unchecked" });
@@ -1063,6 +1197,7 @@ test("a merged pull request is followed to stage, then production, then asked no
             checked,
             states,
             panels: new Map(),
+            making: new Set(),
           });
           return (yield* buildBoard({ env, runs: [made], now }))[0]!;
         });
@@ -1144,6 +1279,7 @@ test("a fan-out's Repo run's merge request is watched: its facts recorded, its m
         checked: new Map(),
         states: new Map(),
         panels: new Map(),
+        making: new Set(),
       });
 
       expect(
@@ -1209,6 +1345,7 @@ test("a single-repository fan-out's card is its one merge request's, watched, an
         checked: new Map(),
         states,
         panels: new Map(),
+        making: new Set(),
       });
 
       const [card] = yield* buildBoard({
@@ -1267,6 +1404,7 @@ test("a single-repository fan-out's merge request is not watched once its Repo r
         checked: new Map(),
         states: new Map(),
         panels: new Map(),
+        making: new Set(),
       });
       expect(log).toEqual([]);
     }),
