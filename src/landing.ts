@@ -111,7 +111,8 @@ const outside = (by: string) => `merged outside this Run by ${by}`;
 
 /**
  * Merges the merge request a Run recorded at `head`, writing the attempt first and its
- * outcome after. An attempt an earlier process left is settled by `settleAttempt` first.
+ * outcome after. A landing already recorded at `head` is answered from its record, and an
+ * attempt an earlier process left is settled by `settleAttempt` first.
  */
 export const land = Effect.fn("Landing.land")(function* <R>(opts: {
   readonly runDir: string;
@@ -128,6 +129,9 @@ export const land = Effect.fn("Landing.land")(function* <R>(opts: {
   const withdraw = (record: Landing, why: string) =>
     writeLanding(opts.runDir, { ...record, state: "withdrawn", why });
   const left = yield* readLanding(opts.runDir);
+  const same = left !== null && mrLabel(left.mr) === mrLabel(mr) && left.head === opts.head;
+  if (same && left.state === "landed" && left.sha !== undefined)
+    return { _tag: "Merged", sha: left.sha } satisfies MergeOutcome;
   if (left?.state === "attempt" && mrLabel(left.mr) === mrLabel(mr)) {
     const read = yield* forge.readReview(ref, opts.cwd, opts.run);
     if (!read.ok)

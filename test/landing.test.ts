@@ -137,6 +137,18 @@ for (const forge of ["gitlab", "github"] as const) {
       }),
     ));
 
+  test(`${forge}: a replay of a landed merge answers its recorded merge, and asks the forge nothing`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { runDir, seen, merge } = yield* landing(forge);
+        yield* merge();
+        const landed = yield* readLanding(runDir);
+        expect(yield* merge()).toEqual({ _tag: "Merged", sha: MERGED });
+        expect(seen).toHaveLength(1);
+        expect(yield* readLanding(runDir)).toEqual(landed);
+      }),
+    ));
+
   test(`${forge}: a replay after a restart settles the attempt it left by the rule, merging only an open one`, () =>
     runEffect(
       Effect.gen(function* () {
