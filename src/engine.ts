@@ -14,6 +14,7 @@ import { actorOf, readAudit, type ScheduledBy } from "./audit";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
+  Cache,
   Cause,
   Clock,
   Context,
@@ -85,7 +86,7 @@ import type { UsageReading } from "./usage-model";
 import { currentEnv } from "./env";
 import { waitForMemory } from "./memory-wait";
 import { PROJECTS_ROOT_OPTION, projectsRoot } from "./projects";
-import { marksRepository, publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
+import { gitDirOf, publicationCheckouts, throughAliases, remoteOf } from "./issue-privacy";
 import {
   HelleClaimSchema,
   HelleError,
@@ -2688,6 +2689,8 @@ export const hostLayer = (options: {
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
   /** How often a wait for production asks the forge again. */
   readonly productionPoll?: Duration.Input;
+  /** How long the checkouts issue text is checked against may take to find. */
+  readonly issuePrivacyBudget?: Duration.Input;
   /** How often a wait for review reads the merge request again. */
   readonly reviewPoll?: Duration.Input;
 }): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices> =>
@@ -2958,13 +2961,84 @@ export const hostLayer = (options: {
         if (!here.ok) return yield* new WorkflowError({ reason: here.reason });
         return { ...here, cwd, env };
       });
+      const issuePrivacyBudget = Duration.fromInputUnsafe(options.issuePrivacyBudget ?? "1 minute");
+      const walks = yield* Cache.makeWith(
+        (root: string) =>
+          Effect.gen(function* () {
+            const { herdr } = yield* placing;
+            const worktrees = yield* herdr.worktreesDirectory();
+            return yield* publicationCheckouts(
+              (yield* fs.exists(worktrees)) ? [root, worktrees] : [root],
+            );
+          }).pipe(Effect.provideContext(bun)),
+        { capacity: 4, timeToLive: (exit) => (Exit.isSuccess(exit) ? "2 minutes" : 0) },
+      );
+      const remotesOf = (checkout: string) =>
+        Effect.gen(function* () {
+          const remotes = yield* runShell("git", ["remote", "-v"], checkout);
+          if (remotes.code !== 0)
+            return yield* new WorkflowError({
+              reason: `issue privacy check could not read remotes: ${checkout}`,
+            });
+          return remotes.stdout.split("\n").flatMap((line) => {
+            const name = remoteOf(line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "");
+            return name === null ? [] : [name];
+          });
+        });
+      /** Every checkout issue text may not name, with its remotes; the walk under `root` is kept a while. */
+      const inventoryOf = (root: string) =>
+        Effect.gen(function* () {
+          const walked = yield* Cache.get(walks, root);
+          const { herdr } = yield* placing;
+          const open = yield* herdr.workspaceList().pipe(Effect.orElseSucceed(() => []));
+          const known = yield* publicationCheckouts(
+            [],
+            [
+              ...new Set(
+                [
+                  ...(yield* store.runs).flatMap((row) => {
+                    const placed = placedOf(row, {});
+                    return [row.project, placed.cwd, placed.worktree?.path ?? ""];
+                  }),
+                  ...open.flatMap((workspace) => [workspace.cwd, workspace.worktree ?? ""]),
+                ].filter((dir) => dir.startsWith("/")),
+              ),
+            ],
+          );
+          const checkouts = yield* Effect.forEach(
+            [...new Set([...walked.checkouts, ...known.checkouts])].sort(),
+            (checkout) =>
+              Effect.gen(function* () {
+                const gitDir = yield* gitDirOf(checkout);
+                return {
+                  checkout,
+                  canonical: yield* fs.realPath(checkout),
+                  repository: gitDir !== null,
+                  names: gitDir === null ? [] : yield* remotesOf(checkout),
+                };
+              }),
+            { concurrency: 8 },
+          );
+          return { aliases: [...walked.aliases, ...known.aliases], checkouts };
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: issuePrivacyBudget,
+            orElse: () =>
+              Effect.fail(
+                new WorkflowError({
+                  reason: `issue privacy check did not finish within ${Duration.format(issuePrivacyBudget)}`,
+                }),
+              ),
+          }),
+          Effect.provideContext(bun),
+        );
       const checkIssueText = Effect.fn("Host.checkIssueText")(
         function* (here: Effect.Success<ReturnType<typeof issueCheckout>>, text: string) {
           const root = yield* projectsRoot({
             ...here.env,
             userDir: options.userDir ?? here.env.userDir,
           });
-          const inventory = yield* publicationCheckouts(root.path);
+          const inventory = yield* inventoryOf(root.path);
           const expanded = yield* Effect.try(() => throughAliases(text, inventory.aliases));
           const common = yield* runShell(
             "git",
@@ -2977,20 +3051,7 @@ export const hostLayer = (options: {
             });
           const own = yield* fs.realPath(common.stdout.replace(/\n$/, ""));
           const ownRemote = here.project.split("/").slice(1).join("/");
-          for (const checkout of inventory.checkouts) {
-            const canonical = yield* fs.realPath(checkout);
-            const repository = yield* marksRepository(checkout);
-            const remotes = repository ? yield* runShell("git", ["remote", "-v"], checkout) : null;
-            if (remotes !== null && remotes.code !== 0)
-              return yield* new WorkflowError({
-                reason: `issue privacy check could not read remotes: ${checkout}`,
-              });
-            const names = (remotes?.stdout ?? "").split("\n").flatMap((line) => {
-              const name = remoteOf(
-                line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
-              );
-              return name === null ? [] : [name];
-            });
+          for (const { checkout, canonical, repository, names } of inventory.checkouts) {
             if (
               !(
                 text.includes(checkout) ||
@@ -4832,6 +4893,7 @@ export const foundationLayer = (options: {
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
   readonly productionPoll?: Duration.Input;
+  readonly issuePrivacyBudget?: Duration.Input;
   readonly reviewPoll?: Duration.Input;
 }): Layer.Layer<
   | Host

@@ -15,13 +15,38 @@ export function remoteOf(url: string): { project: string; path: string } | null 
   return host && path ? { project: `${host}/${path}`, path } : null;
 }
 
-/** Working repositories under `root`, including hidden, nested and linked ones; a link to nothing or a path the user cannot access is skipped, other inspection errors propagate. */
+const DEPTH = 6;
+const SKIPPED = new Set([
+  ".git",
+  "node_modules",
+  ".cache",
+  ".local",
+  ".claude",
+  ".codex",
+  ".npm",
+  ".bun",
+  ".cargo",
+  ".rustup",
+  ".nvm",
+  ".pnpm-store",
+  ".yarn",
+  ".gradle",
+  ".m2",
+  ".vscode-server",
+]);
+
+/**
+ * Working repositories under each of `roots` to depth six, including hidden, nested and
+ * linked ones, plus each of `known` that is one; dependencies, Git metadata and tool
+ * directories are not looked into. A link to nothing or a path the user cannot access is
+ * skipped, other inspection errors propagate.
+ */
 export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(function* (
-  root: string,
+  roots: ReadonlyArray<string>,
+  known: ReadonlyArray<string> = [],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const visited = new Set<string>();
   const checkouts = new Set<string>();
   const aliases: DirectoryAlias[] = [];
   // A link to nothing, such as a forwarded agent socket left by a closed login, an entry
@@ -31,8 +56,7 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
     error.reason._tag === "NotFound" || error.reason._tag === "PermissionDenied"
       ? Effect.succeed(null)
       : Effect.fail(error);
-  const canonicalRoot = yield* fs.realPath(root);
-  const visit = (dir: string): Effect.Effect<void, PlatformError> =>
+  const record = (dir: string) =>
     Effect.gen(function* () {
       const canonical = yield* fs.realPath(dir);
       if (canonical !== dir) aliases.push({ from: dir, to: canonical });
@@ -40,26 +64,46 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
         checkouts.add(dir);
         checkouts.add(canonical);
       }
-      const fromRoot = path.relative(canonicalRoot, canonical);
-      if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`)) return;
-      if (visited.has(canonical)) return;
-      visited.add(canonical);
+      return canonical;
+    });
+  // Levels a directory was last walked with; a shallower route walks it again.
+  const walked = new Map<string, number>();
+  const children = (root: string, dir: string, left: number) =>
+    Effect.gen(function* () {
+      const canonical = yield* record(dir);
+      const fromRoot = path.relative(root, canonical);
+      if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`)) return [];
+      if (left === 0 || (walked.get(canonical) ?? -1) >= left) return [];
+      walked.set(canonical, left);
+      const directories: string[] = [];
       for (const name of yield* fs.readDirectory(canonical)) {
+        if (SKIPPED.has(name)) continue;
         const child = path.join(canonical, name);
         const info = yield* fs.stat(child).pipe(Effect.catchTag("PlatformError", unseen));
-        if (info?.type === "Directory") yield* visit(child);
+        if (info?.type === "Directory") directories.push(child);
       }
+      return directories;
     }).pipe(
       Effect.catchTag("PlatformError", (error) =>
-        error.reason._tag === "PermissionDenied" ? Effect.void : Effect.fail(error),
+        error.reason._tag === "PermissionDenied" ? Effect.succeed([]) : Effect.fail(error),
       ),
     );
-  yield* visit(root);
+  for (const root of roots) {
+    const canonicalRoot = yield* fs.realPath(root);
+    let level = [root];
+    for (let left = DEPTH; level.length > 0; left--) {
+      const found = yield* Effect.forEach(level, (dir) => children(canonicalRoot, dir, left), {
+        concurrency: 8,
+      });
+      level = found.flat();
+    }
+  }
+  for (const dir of known) yield* record(dir).pipe(Effect.catchTag("PlatformError", unseen));
   return { checkouts: [...checkouts].sort(), aliases };
 });
 
-/** Whether `dir/.git` leads to a Git directory; an empty `.git` or a copied submodule's gitfile does not. */
-export const marksRepository = Effect.fn("Issues.marksRepository")(function* (dir: string) {
+/** The Git directory `dir/.git` leads to, or null for an empty `.git` or a copied submodule's gitfile. */
+export const gitDirOf = Effect.fn("Issues.gitDirOf")(function* (dir: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const marker = path.join(dir, ".git");
@@ -67,11 +111,11 @@ export const marksRepository = Effect.fn("Issues.marksRepository")(function* (di
     (yield* fs.stat(marker)).type === "Directory"
       ? null
       : (yield* fs.readFileString(marker)).replace(/[\r\n]+$/, "");
-  if (gitfile === null) return yield* fs.exists(path.join(marker, "HEAD"));
-  if (!gitfile.startsWith("gitdir: ")) return false;
-  const gitDir = gitfile.slice("gitdir: ".length);
+  if (gitfile !== null && !gitfile.startsWith("gitdir: ")) return null;
+  const named = gitfile?.slice("gitdir: ".length);
   // Joined unnormalised, as Git does, so `..` leaves a linked `dir` physically.
-  return yield* fs.exists(`${path.isAbsolute(gitDir) ? gitDir : `${dir}/${gitDir}`}/HEAD`);
+  const gitDir = named === undefined ? marker : path.isAbsolute(named) ? named : `${dir}/${named}`;
+  return (yield* fs.exists(`${gitDir}/HEAD`)) ? gitDir : null;
 });
 
 export function throughAliases(text: string, aliases: ReadonlyArray<DirectoryAlias>): string {

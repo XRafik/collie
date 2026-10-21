@@ -859,10 +859,16 @@ pages; GitHub requests all open issues through its list command. These flags fol
 [GitHub issue list](https://cli.github.com/manual/gh_issue_list) contracts.
 
 The Host service chooses the forge of the Run's recorded checkout. Before publishing,
-it applies Conversation redaction and checks text against other checkouts under the
-Projects root, including their remote paths. A refusal is a `WorkflowError`, with no
-issue call sent. This privacy inventory includes hidden, deep, nested and linked
-checkouts, and propagates inspection failures. Git's common directory decides which
+it applies Conversation redaction and checks text against other checkouts, including
+their remote paths. A refusal is a `WorkflowError`, with no issue call sent. This privacy
+inventory is the checkouts under the Projects root and herdr's worktrees directory, to
+six levels and including hidden, nested and linked ones, plus every checkout a Run in the
+store or an open workspace is in. The walk never looks into `node_modules`, `.git` or tool
+directories such as `~/.cache`, `~/.local` and `~/.claude`, and keeps eight filesystem
+calls in flight at most. The walk is kept for two minutes per Projects root, so a batch of
+findings shares one; the Runs, the workspaces and every checkout's remotes are read
+on every check. Building the inventory propagates
+inspection failures, and taking longer than a minute refuses the issue. Git's common directory decides which
 checkouts belong to the Run's own repository. Remote paths and host-qualified identities
 are checked, including URLs with ports and SCP syntax. The registry lends each workflow
 its Machine report using the same Run views and `reportOf` reading as the CLI, including

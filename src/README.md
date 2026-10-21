@@ -59,7 +59,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `metrics.ts`           | What a Run produced and when: evidence, slices, rework, context — never pane activity                     |
 | `report.ts`            | Where Runs end across every Run: per workflow, and each that failed, finished or stopped                  |
 | `outcomes.ts`          | The report's measures: rounds, dispositions, steering, verifications, parks, context — each with its Runs |
-| `issue-privacy.ts`     | All checkouts and directory aliases inspected before publishing issue text                                |
+| `issue-privacy.ts`     | The bounded checkout walk and directory aliases inspected before publishing issue text                    |
 | `cards.ts`             | One slice of work as a human wants it handed over, with its readiness and significance                    |
 | `disposition.ts`       | What became of a Run's work, recorded beside its status and never over it                                 |
 | `conversation.ts`      | What the human and Collie have said about this Herd, redacted and reference-checked                       |
