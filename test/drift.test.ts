@@ -447,16 +447,16 @@ test("nothing to judge is never a judgement that happened", () =>
   runEffect(
     Effect.gen(function* () {
       const dir = yield* checkout("hw-judge-");
-      // No semantic constraint and no goal: `alignment` never asks, so a call would buy
-      // nothing but its own cost.
-      const bare = { ...seedIntent("r1", {}), goal: null };
+      // A goal alone: only a semantic constraint can be reported against, so a call would
+      // buy nothing but its own cost.
+      const bare = seedIntent("r1", { goal: "ship it" });
       const out = yield* judge(judgementDeps(dir), bare, {
         runDir: dir,
         worktree: dir,
         base: "HEAD",
         at: "t0",
       });
-      expect(out.judged).toEqual({ semantic: false, truncated: false, goal: false });
+      expect(out.judged).toEqual({ semantic: false, truncated: false });
       expect(out.reports).toEqual([]);
     }),
   ));
@@ -575,7 +575,7 @@ test("what the model returns is filed against this Run, at this version, and now
       });
       evaluator.restore();
 
-      expect(out.judged).toEqual({ semantic: true, truncated: false, goal: true });
+      expect(out.judged).toEqual({ semantic: true, truncated: false });
       expect(out.reports).toHaveLength(1);
       const report = out.reports[0]!;
       expect(report.run).toBe("r1");

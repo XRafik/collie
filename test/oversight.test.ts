@@ -24,6 +24,7 @@ import { readCards } from "../src/cards";
 import {
   MAX_FILES,
   alignment,
+  NOT_JUDGED,
   currentReports,
   electionsPath,
   evidenceFor,
@@ -363,9 +364,7 @@ test("a rule check git cannot answer leaves the Run unverified, never aligned", 
         expect.stringContaining("rule check skipped at build collected: git diff"),
       ]);
       const intent = yield* readIntent(runDir(dir, "r1"));
-      expect(
-        alignment(intent, lines, { semantic: false, truncated: false, goal: false }).aligned,
-      ).toBe("unverified");
+      expect(alignment(intent, lines, NOT_JUDGED).aligned).toBe("unverified");
       expect(yield* fs.exists(`${dir}/.git`)).toBe(false);
     }),
   ));
@@ -553,7 +552,7 @@ test("a rule check skipped is not answered by a judgement made after it", () => 
     reason,
     ...(check && { check }),
   });
-  const judged = { semantic: true, truncated: false, goal: false, at: "2026-01-02T00:00:00.000Z" };
+  const judged = { semantic: true, truncated: false, at: "2026-01-02T00:00:00.000Z" };
   expect(alignment(intent, [skipped("there is no Herd to charge a judgement to")], judged)).toEqual(
     { aligned: "true", why: "every constraint was checked and none is open" },
   );
@@ -561,6 +560,56 @@ test("a rule check skipped is not answered by a judgement made after it", () => 
     alignment(intent, [skipped("rule check skipped at build: git diff", "rule")], judged).aligned,
   ).toBe("unverified");
 });
+
+test.each([
+  ["a goal", "ship it"],
+  ["no goal", undefined],
+])("an Intent with %s and no constraint is unverified, since nothing was judged", (_, goal) => {
+  expect(alignment(seedIntent("r1", { constraints: [], goal }), [], NOT_JUDGED)).toEqual({
+    aligned: "unverified",
+    why: "nothing was judged",
+  });
+});
+
+test("rules that passed and semantic constraints judged with nothing open are aligned", () => {
+  const intent = seedIntent("r1", { constraints: [SRC_ONLY, SMALL] });
+  const judged = { semantic: true, truncated: false, at: "2026-01-02T00:00:00.000Z" };
+  expect(alignment(intent, [], judged).aligned).toBe("true");
+});
+
+/** A Run with this Intent finishing under a Herd, and how many judgements it asked for. */
+const judgementsAtFinish = (intent: { constraints: Constraint[]; goal: string }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* repository();
+    const at = runDir(dir, "r1");
+    yield* fs.makeDirectory(at, { recursive: true });
+    yield* writeIntent(at, seedIntent("r1", intent));
+    const calls = `${rig.root}/judgements`;
+    yield* evaluatorAnswering(
+      `echo asked >> ${calls}\ncat > /dev/null\necho '{"result":{"reports":[]}}'`,
+    );
+    yield* session(Oversight.pipe(Effect.flatMap((one) => one.drift("r1", "finish", "finish"))), {
+      socketPath: `${rig.root}/herd.sock`,
+      pluginRoot: rig.root,
+    });
+    const asked = yield* fs.readFileString(calls).pipe(Effect.orElseSucceed(() => ""));
+    return asked.split("\n").filter((line) => line === "asked").length;
+  });
+
+test("a Run that finishes with a goal and no semantic constraint asks for no judgement", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(yield* judgementsAtFinish({ constraints: [], goal: "ship it" })).toBe(0);
+    }),
+  ));
+
+test("a Run that finishes with a semantic constraint asks for its one judgement", () =>
+  runEffect(
+    Effect.gen(function* () {
+      expect(yield* judgementsAtFinish({ constraints: [SMALL], goal: "ship it" })).toBe(1);
+    }),
+  ));
 
 const SRC_ONLY: Constraint = {
   id: "src-only",
