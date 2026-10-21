@@ -28,6 +28,11 @@ For an application, also name from its CI configuration, in `stage_jobs`, the jo
 deploy to stage: those a merge request's pipeline runs (`merge_request`), and those a tag's
 pipeline runs (`tag`). Either list may be empty.
 
+Name in `applications` every application this release deploys, by the name its deploy jobs
+give it: `spilnu` for `stage:spilnu` and `prod:spilnu`. A repository that deploys several,
+such as a monorepo, names each one it deploys. Collie claims each one's Helle project before
+the merge, and asks the human before any merge where one has none.
+
 Then write your Output. `is_package` is the judgement everything after this branches on, so
 say it plainly and say what the evidence was.
 

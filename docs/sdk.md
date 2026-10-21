@@ -722,12 +722,18 @@ unreadable answer. If creation returns no issue URL, inspect the repository befo
 retrying; the issue might already exist. Workflows call these methods directly and
 never construct forge CLI commands.
 
-`host.claim({ runId, cwd, adopting, say })` blocks until this Run holds the shared claim on
-the repository it works in, and answers `null` where that repository has none. Waiting here
-costs wall clock and no model tokens, which is the point of claiming before an agent starts
-rather than after. `adopting` is your own durable question, asked only where the claim was
-already the operator's; `host.release(runId)` gives it back, and only a Run that finished
-its work should.
+`host.claim({ runId, cwd, adopting, say, deploys })` blocks until this Run holds every shared
+claim it needs, each recorded on the Run, and answers `{ slugs }`; `{ unresolved }` says why
+they could not be settled, with nothing claimed, and what to do then is your workflow's
+call. Without `deploys` it needs the repository's own project. With `deploys`
+(`{ applications, jobs }`), it also needs each project of the repository's group that an
+application or a deploy job's name (`stage:spilnu`) names. A repository's
+`.collie/helle.json`, `{"projects": [...]}`, overrides both, and `[]` declares none.
+`ClaimedSchema` journals the answer. Waiting here costs wall clock and no model tokens,
+which is the point of claiming before an agent starts rather than after. `adopting` is your
+own durable question, asked only where a claim was already the operator's;
+`host.release(runId)` gives them all back, and only a Run that finished its work should; it
+answers the slugs Helle would not take back, which stay recorded for a later release.
 
 `host.defaultHead(cwd)` is the commit origin's default branch is at now, and fails where
 origin cannot be read; take it inside an Activity, so a replay reads the same commit.

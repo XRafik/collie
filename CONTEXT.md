@@ -547,7 +547,8 @@ blocker is not an exception: it leaves the entry unchecked and the Run open.
 
 **Release Run** — One execution of the `release` Workflow: one merge request taken from
 open to landed. It answers **External review comments** until the forge says the merge
-request is approved, then asks for a **Go**. On it, it claims the repository in Helle.
+request is approved, then asks for a **Go**. On it, it claims in Helle every project it
+deploys under, and merges nothing without them unless the human says so.
 An application is either staged from its merge request for testing, then merged and
 tagged, or merged, tagged and staged from its tag. Either way it goes to production on a
 second Go. A package is merged and tagged. Collie merges, and reads from the forge every fact it
