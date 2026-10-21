@@ -68,6 +68,13 @@ A `collie verify` you started in the background is reported to you when it ends,
 so you may end your turn waiting on it. Never end a turn waiting on any other
 background job.
 
+## What you bring up
+
+A stack you bring up to test outlives your turn and your process: containers, compose
+projects, workloads in a local cluster. Bring up only what the test needs. When the
+testing it was for is done, take it down with the tool that brought it up, unless the
+human asked to keep it. Say in your reply what you left running.
+
 ## Output
 
 Each step gives you an `OUTPUT_PATH` and names the keys it wants. Write that JSON there

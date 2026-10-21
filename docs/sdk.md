@@ -324,7 +324,10 @@ const verdict =
   only while herdr reports it `idle`, `done` or `unknown`, or cannot say. While it is
   `working` or `blocked` the clock stops, so a long suite is never parked for being slow.
   It stops too while a question the agent asked is open on the Run
-  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)). Past the budget the Run parks saying how many minutes it sat idle, and Collie
+  ([`docs/cli.md`](cli.md#answering-holding-and-steering-one)), and while a `collie verify`
+  it asked for waits because its Machine is [Short of memory](using.md#short-of-memory). A
+  launch that waits for memory spends none of it either: the budget starts once the agent
+  is launched. Past the budget the Run parks saying how many minutes it sat idle, and Collie
   keeps collecting: an Output written later clears the park and the step goes on, with no
   resume. An agent that has gone by the end of another idle budget is started again. A stop
   still ends the wait.

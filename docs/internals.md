@@ -148,6 +148,26 @@ time it reaches its list, so a ticket edited since is built as it reads now and 
 one is not built again
 ([ADR-0024](adr/0024-a-list-of-work-is-known-by-its-names.md)).
 
+### Waiting for memory
+
+Three starts wait while their Machine is Short of memory, all through `waitForMemory` in
+`src/memory-wait.ts`
+([ADR-draft-new-work-waits-while-its-machine-is-short-of-memory](adr/draft-new-work-waits-while-its-machine-is-short-of-memory.md)):
+an agent's launch, in `launch` in `src/agents.ts` before it lists, opens a tab or asks
+herdr to start anything; a Check pass, in the engine's `check` once no earlier pass is
+relied on and before the checkout moves; and `collie verify`, in the host's `verify`
+handler, so the CLI and the agent's tool wait alike. The reading is `src/memory.ts`'s,
+taken with `memory_hold` fresh at the start and every 15 seconds after. While it waits, a
+start keeps a file in its run directory's `memory-waits/` naming what waits, its sentence,
+when it began, when it last read the Machine and, for an agent's verify, that agent. The
+board, the drawer, `collie run show` and `collie_run` read the oldest one through
+`memoryWaitOf`, a card reading those of every Run it shows, and an agent's Output budget
+does not run while one names it (`holdsBudgetOf`). A file not read again for three periods
+was left by a host that died, and is not read. Each start passes its Run's stop file to
+the wait, which reads it again as memory frees: a stop during the wait, or as it ends,
+ends it with nothing started.
+The chats' agents start elsewhere, and never wait.
+
 ## A workflow made of workflows
 
 `child({ runId, invocation, workflow, input })` starts another workflow as part of a Run
@@ -1067,6 +1087,18 @@ therefore **healed** rather than refused: the panes still under their recorded i
 taken back with their new terminals, any that are gone are reopened, and the tokens are
 written again. The record keeps when and why, and `collie home show` prints it as `healed`.
 This rests on herdr never handing a workspace id to a different workspace.
+
+A Run's agents come back the same way, each resumed in its harness session on a new
+terminal, and sometimes without its name. A launch record keeps the terminal and the
+harness session herdr reported for its agent, and the Cleanup sweep fills the session in
+while the agent is still on that terminal. A restored pane is proved to be that agent by
+its session alone, in kind and value, whatever its terminal, name or pane id: the idle
+close ends it as that agent, and the Task workspace sweep counts it as Collie's pane. The
+sweep records the session for a live Run's agent too. Where another agent has since been
+started on its name, its stop controls are that agent's: a restored pane whose harness works
+outside the pane cannot be made Quiet, and is left open. A pane with no session, or one no
+launch recorded, proves nothing
+([ADR-draft-a-finished-runs-idle-agent-is-closed](adr/draft-a-finished-runs-idle-agent-is-closed.md), D4).
 
 A **label is never proof**. Two workspaces can be called the same thing, and a home test
 reads `home.ts` to keep it that way. A live token with no record is not proof either — it

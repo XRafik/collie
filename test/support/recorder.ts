@@ -228,12 +228,38 @@ export class Rig {
     const dirs = [this.stateDir, this.userDir, this.baselineDir, this.projectDir];
     const binPath = this.binPath;
     const fakeHerdrPath = this.fakeHerdrPath;
+    const memory = this.memory(50);
     return Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       for (const dir of dirs) {
         yield* fs.makeDirectory(dir, { recursive: true });
       }
       yield* writeFakeHerdrShim(binPath, fakeHerdrPath);
+      yield* memory;
+    });
+  }
+
+  get procDir(): string {
+    return this.path.join(this.root, "proc");
+  }
+
+  /** This Machine's memory from now on: `availableGiB` of 100 GiB, under `pressure`. */
+  memory(
+    availableGiB: number,
+    pressure = 0,
+  ): Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem> {
+    const proc = this.procDir;
+    return Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(`${proc}/pressure`, { recursive: true });
+      yield* fs.writeFileString(
+        `${proc}/meminfo`,
+        `MemTotal:       ${100 * 1048576} kB\nMemAvailable:   ${Math.round(availableGiB * 1048576)} kB\n`,
+      );
+      yield* fs.writeFileString(
+        `${proc}/pressure/memory`,
+        `some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=${pressure.toFixed(2)} avg60=0.00 avg300=0.00 total=0\n`,
+      );
     });
   }
 
@@ -338,6 +364,43 @@ export class Rig {
         ? { name, pane_id: paneId }
         : { name, pane_id: paneId, terminal_id: terminalId },
     );
+  }
+
+  /**
+   * A pane herdr restored after a restart: a new terminal resuming `session`, under
+   * `agent`'s name where it kept one.
+   */
+  addRestored(opts: {
+    paneId: string;
+    workspaceId: string;
+    terminalId: string;
+    session: { kind: string; value: string } | null;
+    agent?: string;
+    status?: string;
+  }) {
+    const agentSession =
+      opts.session === null ? null : { source: "herdr", agent: opts.session.kind, ...opts.session };
+    const pane = this.appendState("paneList", {
+      pane_id: opts.paneId,
+      tab_id: `${opts.workspaceId}-t9`,
+      label: null,
+      cwd: "/project",
+      agent: opts.agent ?? null,
+      agent_status: opts.status ?? "idle",
+      workspace_id: opts.workspaceId,
+      foreground_cwd: null,
+      terminal_id: opts.terminalId,
+      agent_session: agentSession,
+    });
+    if (opts.agent === undefined) return pane;
+    const agent = this.appendState("agents", {
+      name: opts.agent,
+      pane_id: opts.paneId,
+      workspace_id: opts.workspaceId,
+      terminal_id: opts.terminalId,
+      agent_session: agentSession,
+    });
+    return Effect.andThen(pane, agent);
   }
 
   /** Another process under this agent's name, in the same pane. */
@@ -613,6 +676,8 @@ export class Rig {
       FAKE_HERDR_STATUS_SOCKET: this.socketPath,
       // Refused at once: a test that wants releases serves its own.
       COLLIE_RELEASES: UNREACHABLE_RELEASES,
+      // This Machine's memory as Collie reads it: never the real Machine's.
+      COLLIE_PROC: this.procDir,
       ...overrides,
     };
     if (this.gone.length > 0) environment.FAKE_HERDR_AGENTS_GONE = this.gone.join(",");

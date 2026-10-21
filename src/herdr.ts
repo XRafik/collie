@@ -117,6 +117,12 @@ const TabListReply = Schema.Struct({
     tabs: Schema.Array(Schema.Struct({ tab_id: Schema.String, label: Schema.String })),
   }),
 });
+const AgentSessionReply = Schema.Struct({
+  source: Schema.String,
+  agent: Schema.String,
+  kind: Schema.String,
+  value: Schema.String,
+});
 const PaneListReply = Schema.Struct({
   result: Schema.Struct({
     panes: Schema.Array(
@@ -134,6 +140,7 @@ const PaneListReply = Schema.Struct({
         /** Metadata a plugin attached to this pane, and herdr's identity for its terminal. */
         tokens: Schema.optionalKey(Schema.NullOr(Schema.Record(Schema.String, Schema.String))),
         terminal_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
+        agent_session: Schema.optionalKey(Schema.NullOr(AgentSessionReply)),
       }),
     ),
   }),
@@ -161,16 +168,7 @@ const AgentReply = Schema.Struct({
    * `terminal_id` is refused as a delivery target rather than guessed at.
    */
   terminal_id: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  agent_session: Schema.optionalKey(
-    Schema.NullOr(
-      Schema.Struct({
-        source: Schema.String,
-        agent: Schema.String,
-        kind: Schema.String,
-        value: Schema.String,
-      }),
-    ),
-  ),
+  agent_session: Schema.optionalKey(Schema.NullOr(AgentSessionReply)),
 });
 const AgentListReply = Schema.Struct({
   result: Schema.Struct({ agents: Schema.Array(AgentReply) }),
@@ -525,7 +523,17 @@ export interface PaneInfo {
   tokens: Readonly<Record<string, string>>;
   /** herdr's identity for the terminal in this pane, where it names one. */
   terminalId: string | null;
+  /** The harness session its agent is driving, where herdr knows one. */
+  agentSession: AgentSession | null;
 }
+
+export interface AgentSession {
+  kind: string;
+  value: string;
+}
+
+const sessionOf = (reply: typeof AgentSessionReply.Type | null | undefined): AgentSession | null =>
+  reply ? { kind: reply.kind, value: reply.value } : null;
 
 /** A live agent as herdr sees it. Only named agents — the ones this plugin started. */
 export interface AgentInfo {
@@ -543,7 +551,7 @@ export interface AgentInfo {
   /** herdr's identity for this live process, or `null` from a release that omits it. */
   terminalId: string | null;
   /** The harness session it is driving, where herdr knows one. */
-  agentSession: { kind: string; value: string } | null;
+  agentSession: AgentSession | null;
 }
 
 /**
@@ -576,9 +584,7 @@ export const decodeAgentList = (res: BoundaryValue) =>
                 status: agentStatus(agent.agent_status),
                 title: agentTitle(agent.terminal_title),
                 terminalId: agent.terminal_id ?? null,
-                agentSession: agent.agent_session
-                  ? { kind: agent.agent_session.kind, value: agent.agent_session.value }
-                  : null,
+                agentSession: sessionOf(agent.agent_session),
               },
             ]
           : [],
@@ -823,6 +829,7 @@ export class Herdr {
           foregroundCwd: pane.foreground_cwd ?? null,
           tokens: pane.tokens ?? {},
           terminalId: pane.terminal_id ?? null,
+          agentSession: sessionOf(pane.agent_session),
         }));
       }),
     );
@@ -1116,9 +1123,7 @@ export class Herdr {
         status: agentStatus(agent.agent_status),
         title: null,
         terminalId: agent.terminal_id ?? null,
-        agentSession: agent.agent_session
-          ? { kind: agent.agent_session.kind, value: agent.agent_session.value }
-          : null,
+        agentSession: sessionOf(agent.agent_session),
       };
       if (!verifyIncarnation(entry, [candidate]).ok) return false;
       const renamed = yield* rename;

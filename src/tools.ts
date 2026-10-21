@@ -65,6 +65,7 @@ import { epochMs } from "./time";
 import { findRun, listRuns, type RunFacts } from "./runs";
 import { readyLines } from "./following";
 import { donePasses, markersOf, runningCheck } from "./checks";
+import { memoryWaitOf, waitLine } from "./memory-wait";
 import { deliveriesOf, herdOf } from "./steering";
 import { loadDefinitions, layers } from "./definitions";
 import { chatHarnessOf, chatPath, heardVoice, pushable, readChat, whyUnavailable } from "./chat";
@@ -332,8 +333,8 @@ const settle = Effect.fn("Tools.settle")(function* (
 });
 
 /**
- * What `collie_run` leads with while Collie runs a check for the Run: the card's sentence,
- * then the last lines the check has written.
+ * What `collie_run` leads with while something of the Run waits for memory or Collie runs a
+ * check for it: the card's sentence, then the last lines the check has written.
  */
 export const checkLines = Effect.fn("Tools.checkLines")(function* (
   run: RunFacts,
@@ -341,8 +342,11 @@ export const checkLines = Effect.fn("Tools.checkLines")(function* (
   now: number,
 ) {
   const check = yield* runningCheck(run, runs, yield* markersOf(runs), now);
-  if (check === null) return [];
+  const memory = yield* memoryWaitOf(run.dir);
+  const waiting = memory === null ? [] : [waitLine(memory)];
+  if (check === null) return waiting;
   return [
+    ...waiting,
     `Check running: ${check.sentence}`,
     ...(check.lastLines.length === 0
       ? []

@@ -259,6 +259,8 @@ Run ended, `bodil remote down <name>` takes the instance down once you are done 
 | `COLLIE_MODE`         | Internal picker mode passed from a herdr action to its picker pane.                                                                          |
 | `COLLIE_CWD`          | Working directory passed to picker and agent processes; also re-roots a CLI run.                                                             |
 | `COLLIE_HOST`         | Host executable for development and tests: one executable path, or a JSON array containing the executable and arguments.                     |
+| `COLLIE_PROC`         | Where the host reads `meminfo` and `pressure/memory` instead of `/proc`, for tests.                                                          |
+| `COLLIE_MEMORY_EVERY` | How often a start held for memory reads the Machine again, for tests; 15 seconds unset.                                                      |
 | `GITLAB_USER_LOGIN`   | Who a generated branch is namespaced under on GitLab. Unset, Collie asks `glab` who you are for this checkout's host.                        |
 | `GITHUB_ACTOR`        | Who a generated branch is namespaced under on GitHub. Unset, Collie asks `gh` who you are on github.com.                                     |
 | `HELLE_ENV_FILE`      | Where Helle credentials are read from; defaults to `~/.config/helle/env`. See [Optional integrations](#optional-integrations).               |
@@ -668,7 +670,9 @@ it”.`; while it is blocked, the card is in Needs you naming its pane; once it 
 card stands on its own facts again — Ready to release, Waiting on you or Finished — and
 chat is told once that it finished what it was told. Nothing records it: the delivery
 ledger says what was sent and when, herdr says what the agent is doing, the step glyphs
-still show the Workflow's steps as they ended, and `run show` still says `succeeded`. **Waiting on you** is work that ended without landing, and that nobody has
+still show the Workflow's steps as they ended, and `run show` still says `succeeded`. A
+Run can be Reopened only until its agents close, an hour after it finished by default
+([Cleanup](#cleanup)). **Waiting on you** is work that ended without landing, and that nobody has
 asked you about: an implement that succeeded and whose merge request is open, a plan that
 is ready to implement, a Run that failed, was stopped or was abandoned with a branch or a
 merge request behind it and has neither been resumed nor disposed of. An implement whose
@@ -1432,8 +1436,8 @@ Settings offers — each default a Run reads, `proactive`, the extra `models.<ha
 name with its config key in small print, a sentence or two on what it changes (what 0 or
 unset means where that matters, and that `scope`, `density` and `questions` change the TUI's
 board, not Desktop's), a control that fits it (a choice, a number, a switch, or text), its
-default, and the same refusals as the TUI. Durations — `quiet_ms`, `handoff_timeout_ms` and
-`board_quiet_ms` — are shown and typed in minutes, decimals where a value is not a whole
+default, and the same refusals as the TUI. Durations — `quiet_ms`, `idle_close_ms`,
+`handoff_timeout_ms` and `board_quiet_ms` — are shown and typed in minutes, decimals where a value is not a whole
 number of them, and still stored in milliseconds, so `config.json` and `collie settings` are
 unchanged. **Reset to default**, shown while a setting is set, unsets it. Each says whether
 **Every Machine** shares it or it is for **This computer only**. Under **Chat**, the Flock
@@ -2328,6 +2332,8 @@ asks the second go afresh ([`release`](workflows.md#release)).
   "max_iterations": 5,
   "handoff_timeout_ms": 7200000,
   "quiet_ms": 600000,
+  "idle_close_ms": 3600000,
+  "memory_hold": 10,
   "board_quiet_ms": 300000,
   "compact_at_tokens": 150000,
   "claude_auto_compact_window": 400000,
@@ -2413,6 +2419,14 @@ Settings, but a run of a workflow module consults none of them: `implement` carr
 ceiling of four review and fix rounds, there is no hand-off between runs to time out, and no
 quiet agent is nudged.
 
+`idle_close_ms` is how long a finished Run's agent may be idle, counted from the Run's
+finish where it went idle before it, before [Cleanup](#cleanup) closes it. An hour by
+default; 0 never closes one.
+
+`memory_hold` ("Hold new work below free memory") is the percent of this Machine's total
+memory under which it is [Short of memory](#short-of-memory). 10 by default; 0 means never,
+and turns the pressure rule off too.
+
 `board_quiet_ms` is how long a running run's directories — its own, its agents' and its
 evidence — may go unchanged, with no agent of it working and no check running, before its card
 reads `…but silent for 9m` and takes the quiet edge. Five minutes by default. Nothing is
@@ -2495,6 +2509,12 @@ runbook find tools printing tokens — a second guard against the commands that 
   file Collie passes with `--settings`, Collie's own hooks first. `disableAllHooks`, which
   would switch Collie's hooks off, and any other key are refused with the reason. Codex, Pi
   and OpenCode take `env` only.
+
+The shipped `implementer`, `generalist` and `investigator` personas tell their agent that
+a stack it brings up to test — containers, compose projects, workloads in a local cluster
+— outlives it: to bring up only what the test needs, take it down once that testing is
+done unless you asked to keep it, and say what it left running. Collie cannot see a stack
+in a cluster, so it neither records nor tears one down.
 
 ### What a Claude agent's auto mode is told
 
@@ -2924,6 +2944,28 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   closed workspace on the Task's checkout. A Codex agent of the Task is stopped where its
   work runs first, and a workspace whose agent does not reach **Quiet** is kept, with the
   reason.
+- **A finished Run's idle agents**, once herdr has reported one `idle` or `done`, without a
+  break, for **Close an idle agent after** (`idle_close_ms`, an hour by default; 0 never)
+  ([ADR-draft-a-finished-runs-idle-agent-is-closed](adr/draft-a-finished-runs-idle-agent-is-closed.md)).
+  An agent that went idle before its Run finished counts from the finish, so a builder that
+  sat idle through its Run's review and gate still has the whole hour for a steer. Only an
+  agent a launch record of a `succeeded`, `failed` or `stopped` Run names, on the terminal
+  that record names, is judged: a live Run's agents, the chats and your own agents never
+  are. A `blocked` agent is not idle, and any turn starts its hour again. One is kept while
+  a Delivery to it is queued, a question it asked is open, its workspace is in focus, or you
+  have typed into it since it went idle, and `collie cleanup` lists each one kept with why.
+  It ends as any agent does: stopped where its work runs, **Quiet**, its pane closed and
+  its Task's workspace kept with a shell. One that does not reach **Quiet** is kept, and
+  tried again by the next sweep. The Run's log says `<agent> ended: idle for <N> min; its
+  transcript is at <path>`, or that its harness reported none. A host counts from when it
+  first sees an agent idle, so a restart only delays a close. After a herdr restart, the
+  agents herdr resumed for finished Runs close within the hour too: a pane on a new
+  terminal, even one that lost its name, is the agent whose harness session Collie recorded
+  at its launch or at a sweep, and one resuming any other session, or none, is left alone.
+  The same proof makes it Collie's pane, not yours, when its Task's workspace closes. A
+  finished Run can be
+  **Reopened** only until its agents close: a steer after that is refused, naming its
+  Follow-up, and Collie never launches the agent again for that Run.
 - **Worktrees** Collie made, once they are **Settled** (see
   [What a run does to your repository](#what-a-run-does-to-your-repository)).
 - **Staged module generations** under `~/.cache/collie/entries`, once unused for 7 days.
@@ -2965,6 +3007,55 @@ that names none while several Machines are reachable; Native chat sweeps its own
 Every removal is judged again at the moment it is made, never forced, and recorded in the
 state directory's `cleanup.jsonl` with when, what, how big, why and who asked, for 30 days.
 Anything a sweep cannot judge is kept, with the reason.
+
+## Short of memory
+
+A Machine is **Short of memory** while its available memory is under `memory_hold` percent
+of its total, or, on Linux, while its memory pressure (`full avg10` in
+`/proc/pressure/memory`) is 10 or more
+([ADR-draft-new-work-waits-while-its-machine-is-short-of-memory](adr/draft-new-work-waits-while-its-machine-is-short-of-memory.md)).
+`memory_hold` is **Hold new work below free memory** under Settings, in Runs: 10 percent by
+default, shared across the Flock like every setting. At 0 a Machine is never short, and the
+pressure rule is off too. Each host reads its own Machine: Linux `MemAvailable` and
+`MemTotal` from `/proc/meminfo`, and the pressure where the kernel has it; macOS
+`kern.memorystatus_level`, the percent available, and `hw.memsize`, with no pressure. A
+Machine whose memory cannot be read is not short.
+
+While its Machine is short, a host starts three things only once it no longer is:
+
+- an agent's launch, whether a Run's agent, a Fallback's successor or an agent started
+  again, before any tab or pane is made for it;
+- a Check pass the gate runs (a gate answered from an agent's pass on the same tree runs
+  nothing, and does not wait);
+- a `collie verify` command, from the CLI or an agent's tool alike.
+
+Each reads the Machine and `memory_hold` again every 15 seconds, so lowering the setting, or
+setting it to 0, lets it go at the next read. Nothing is refused, nothing fails or times out
+because of the wait, and there is no option to start anyway: a human's `collie verify` and a
+Schedule's start wait just as an agent's do. Nothing already running is stopped. A Run's
+start never waits — its row and card appear, and its first agent waits instead — nor do a
+steer, an answer, a hold, a stop, the Home's and the Flock chat, or Cleanup. A steer that
+needs an agent launched waits like any other launch.
+
+A Run that waits says so: its card reads
+`Waiting for memory on vm-mk: 2.1 of 62.0 GB available.`, naming the pressure too where
+that is high, and so do the drawer, `collie run show`, `collie_run` and `collie_herd`. The
+Run's log gets a line when each wait begins, naming what waits and the reading, and another
+when it ends, saying how long it waited. `collie verify` prints the same line before it
+runs the command, and its result is the command's. A `collie verify` an agent asked for
+that waits for memory does not spend that agent's Output budget, as an open question of
+its does not; once the command starts, the budget runs again.
+
+To free memory: stop a Run you can spare, whose waits end with it and which then launches
+and runs nothing; run `collie cleanup --apply`, which closes finished Runs' idle agents;
+or take down whatever else holds it, such as a stack an agent left running in a local
+cluster. Collie does not name what else holds the memory.
+
+`collie doctor`'s `memory` check gives the reading, as `8.1 of 62.0 GB available (13%)`,
+with `, pressure 0.0` on Linux. While the Machine is short it is a `!` warning that names
+the agents [`collie cleanup`](#cleanup) would close, or says there are none, with
+`collie cleanup --apply` as the fix. Memory that cannot be read is a `!` warning saying
+where it was read from. It never fails the run.
 
 ## Usage
 

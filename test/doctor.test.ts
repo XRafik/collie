@@ -9,7 +9,7 @@ import { FakeHerdr, Rig } from "./support/recorder";
 import { installBaseline } from "./support/engine";
 import { installFakeSkills } from "./support/defs";
 import { FakeBin } from "./support/bin";
-import { doctor } from "../src/doctor";
+import { doctor, memoryOutcome } from "../src/doctor";
 import { withLock } from "../src/lock";
 import { claudeSettingsPath, installStatusLine } from "../src/statusline";
 import { hostname } from "node:os";
@@ -61,6 +61,7 @@ const healthy = Effect.fn("doctorTest.healthy")(function* () {
   );
   yield* installFakeSkills(rig.root);
   yield* freeSpace(50);
+  yield* rig.memory(50);
 });
 
 /** A `df` that says the one filesystem it is asked about is `percent` free, of 100 GiB. */
@@ -159,6 +160,7 @@ test("a healthy machine passes every check and says so", () =>
         "personas",
         "projects root",
         "disk",
+        "memory",
         "checks",
         "glab",
         "gitlab token",
@@ -193,6 +195,60 @@ test("a filesystem with room to spare passes the disk check", () =>
       expect(disk.detail).toBe("/ has 50.0 GiB free (50%)");
     }),
   ));
+
+test("a Machine with memory to spare passes the memory check, with its reading", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+
+      const memory = check(yield* report(), "memory");
+      expect(memory).toMatchObject({ ok: true, fix: "" });
+      expect(memory.warn).toBeUndefined();
+      expect(memory.detail).toBe(`50.0 of 100.0 GB available (50%), pressure 0.0`);
+    }),
+  ));
+
+test("a Machine short of memory warns, with what cleanup would close and its fix", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      yield* rig.memory(8);
+
+      const memory = check(yield* report(), "memory");
+      expect(memory).toMatchObject({ ok: true, warn: true, fix: "collie cleanup --apply" });
+      expect(memory.detail).toBe(
+        `short of memory: 8.0 of 100.0 GB available (8%), pressure 0.0; \`collie cleanup\` would close no agent`,
+      );
+    }),
+  ));
+
+test("memory that cannot be read is a warning naming where it was read from", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* healthy();
+      yield* remove(`${rig.procDir}/meminfo`);
+
+      const memory = check(yield* report(), "memory");
+      expect(memory).toMatchObject({ ok: true, warn: true });
+      expect(memory.detail).toBe(`memory could not be read from ${rig.procDir}/meminfo`);
+    }),
+  ));
+
+test("a short Machine's warning names each agent cleanup would close", () => {
+  const short = {
+    known: true as const,
+    available: 2 * 1024 ** 3,
+    total: 62 * 1024 ** 3,
+    pressure: 90.75,
+  };
+  expect(memoryOutcome(short, true, ["impl of r1", "review of r2"])).toMatchObject({
+    ok: true,
+    warn: true,
+    detail:
+      "short of memory: 2.0 of 62.0 GB available (3%), pressure 90.8; `collie cleanup` would close impl of r1, review of r2",
+    fix: "collie cleanup --apply",
+  });
+});
 
 test("the Projects root is named with where it came from, and the home fallback is a warning", () =>
   runEffect(
