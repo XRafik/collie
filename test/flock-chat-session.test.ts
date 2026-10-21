@@ -1,8 +1,3 @@
-// The Flock chat runs on the user's own Claude Code with none of their settings, hooks,
-// skills or CLAUDE.md, but with the MCP servers they configured. It has Collie's tools,
-// Claude Code's own file tools and Bash on this computer, and Collie's file tools on every
-// Machine.
-
 import { expect, test } from "bun:test";
 import { Effect } from "effect";
 import { sessionOptions, userMcpServers } from "../desktop/src/bun/session";
@@ -166,6 +161,21 @@ test("a tool of an MCP server the human configured is allowed as it was asked", 
         );
         expect(answer).toEqual({ behavior: "allow", updatedInput: input });
       }
+    }),
+  ));
+
+test("on a Claude Code too old to name a tool's MCP server, only a configured server's tools are allowed", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const input = { team: "Frontend" };
+      const ask = (name: string) =>
+        Effect.promise(() => options.canUseTool(name, input, permission));
+      expect(yield* ask("mcp__linear-server__list_issues")).toEqual({
+        behavior: "allow",
+        updatedInput: input,
+      });
+      expect(yield* ask("mcp__unconfigured__list_issues")).toMatchObject({ behavior: "deny" });
+      expect(yield* ask("mcp__linear-server")).toMatchObject({ behavior: "deny" });
     }),
   ));
 

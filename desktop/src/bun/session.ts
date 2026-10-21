@@ -157,6 +157,9 @@ export const noticedContext = (noticed: string) =>
  * tools, this computer's files and shell, and each Machine's files. `ask` puts
  * AskUserQuestion to the human, or answers null when no human is in the turn.
  */
+/** Claude Code's spelling of a server's name in its tools' names. */
+const toolPrefix = (server: string) => `mcp__${server.replace(/[^a-zA-Z0-9_-]/g, "_")}__`;
+
 export const sessionOptions = <Server>(opts: {
   readonly cwd: string;
   readonly session: { readonly resume: string } | { readonly sessionId: string };
@@ -169,79 +172,85 @@ export const sessionOptions = <Server>(opts: {
   readonly noticed: () => string | undefined;
   /** Undefined while there is no rule. */
   readonly placement: () => Placement | undefined;
-}) => ({
-  ...opts.session,
-  cwd: opts.cwd,
-  model: opts.model,
-  effort: opts.effort,
-  thinking: { type: "adaptive" as const, display: "summarized" as const },
-  systemPrompt: systemPrompt(hostname()),
-  tools: ["AskUserQuestion", ...BUILT_IN],
-  settingSources: [],
-  strictMcpConfig: false,
-  mcpServers: {
-    ...opts.userServers,
-    collie: { type: "sdk" as const, name: "collie", instance: opts.server },
-  },
-  allowedTools: [
-    ...BUILT_IN,
-    ...[...FLOCK_TOOLS, ...FILE_TOOLS].map((tool) => `mcp__collie__${tool.name}`),
-  ],
-  canUseTool: <Input>(
-    name: string,
-    input: Input,
-    {
-      signal,
-      toolUseID,
-      mcpServer,
-    }: {
-      readonly signal: AbortSignal;
-      readonly toolUseID: string;
-      readonly mcpServer?: { readonly name: string; readonly source: string };
+}) => {
+  // An older Claude Code names no tool's MCP server, so a configured server's tools are known by name.
+  const prefixes = Object.keys(opts.userServers).map(toolPrefix);
+  const ofUserServer = (name: string) =>
+    prefixes.some((prefix) => name.startsWith(prefix) && name.length > prefix.length);
+  return {
+    ...opts.session,
+    cwd: opts.cwd,
+    model: opts.model,
+    effort: opts.effort,
+    thinking: { type: "adaptive" as const, display: "summarized" as const },
+    systemPrompt: systemPrompt(hostname()),
+    tools: ["AskUserQuestion", ...BUILT_IN],
+    settingSources: [],
+    strictMcpConfig: false,
+    mcpServers: {
+      ...opts.userServers,
+      collie: { type: "sdk" as const, name: "collie", instance: opts.server },
     },
-  ): Promise<Permission<Input>> =>
-    name === "AskUserQuestion"
-      ? opts.ask(toolUseID, signal).then((answers): Permission<Input> =>
-          answers === null
-            ? {
-                behavior: "deny",
-                message: NO_HUMAN,
-              }
-            : { behavior: "allow", updatedInput: { ...input, answers } },
-        )
-      : BUILT_IN.includes(name) || mcpServer !== undefined
-        ? Promise.resolve({ behavior: "allow" as const, updatedInput: input })
-        : Promise.resolve({
-            behavior: "deny" as const,
-            message: `${name} is not available in Desktop's chat.`,
-          }),
-  hooks: {
-    UserPromptSubmit: [
-      {
-        hooks: [
-          () => {
-            const noticed = opts.noticed();
-            const placement = opts.placement();
-            const context = [
-              placement === undefined ? null : placementContext(placement),
-              noticed === undefined ? null : noticedContext(noticed),
-            ].filter((part) => part !== null);
-            return Promise.resolve(
-              context.length === 0
-                ? {}
-                : {
-                    hookSpecificOutput: {
-                      hookEventName: "UserPromptSubmit" as const,
-                      additionalContext: context.join("\n\n"),
-                    },
-                  },
-            );
-          },
-        ],
-      },
+    allowedTools: [
+      ...BUILT_IN,
+      ...[...FLOCK_TOOLS, ...FILE_TOOLS].map((tool) => `mcp__collie__${tool.name}`),
     ],
-  },
-  includePartialMessages: true,
-  env: childEnv(),
-  pathToClaudeCodeExecutable: opts.claude ?? undefined,
-});
+    canUseTool: <Input>(
+      name: string,
+      input: Input,
+      {
+        signal,
+        toolUseID,
+        mcpServer,
+      }: {
+        readonly signal: AbortSignal;
+        readonly toolUseID: string;
+        readonly mcpServer?: { readonly name: string; readonly source: string };
+      },
+    ): Promise<Permission<Input>> =>
+      name === "AskUserQuestion"
+        ? opts.ask(toolUseID, signal).then((answers): Permission<Input> =>
+            answers === null
+              ? {
+                  behavior: "deny",
+                  message: NO_HUMAN,
+                }
+              : { behavior: "allow", updatedInput: { ...input, answers } },
+          )
+        : BUILT_IN.includes(name) || mcpServer !== undefined || ofUserServer(name)
+          ? Promise.resolve({ behavior: "allow" as const, updatedInput: input })
+          : Promise.resolve({
+              behavior: "deny" as const,
+              message: `${name} is not available in Desktop's chat.`,
+            }),
+    hooks: {
+      UserPromptSubmit: [
+        {
+          hooks: [
+            () => {
+              const noticed = opts.noticed();
+              const placement = opts.placement();
+              const context = [
+                placement === undefined ? null : placementContext(placement),
+                noticed === undefined ? null : noticedContext(noticed),
+              ].filter((part) => part !== null);
+              return Promise.resolve(
+                context.length === 0
+                  ? {}
+                  : {
+                      hookSpecificOutput: {
+                        hookEventName: "UserPromptSubmit" as const,
+                        additionalContext: context.join("\n\n"),
+                      },
+                    },
+              );
+            },
+          ],
+        },
+      ],
+    },
+    includePartialMessages: true,
+    env: childEnv(),
+    pathToClaudeCodeExecutable: opts.claude ?? undefined,
+  };
+};
