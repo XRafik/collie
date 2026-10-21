@@ -470,10 +470,12 @@ test("someone else's claim on one project keeps the gate waiting, and the next i
           }),
         );
 
+        yield* Effect.sync(() =>
+          lines.some((line) => line.includes("waiting for happytiger")),
+        ).pipe(Effect.repeat({ until: (seen) => seen, schedule: Schedule.spaced("5 millis") }));
         yield* Effect.sleep(30);
         expect(fiber.pollUnsafe()).toBeUndefined();
         expect(fake.calls).not.toContain("POST /api/v1/projects/spilnu/claim");
-        expect(lines.join("\n")).toContain("waiting for happytiger");
 
         fake.projects[0]!.holder = { user_id: ME, display_name: "mk" };
         fake.projects[0]!.queue = [];
