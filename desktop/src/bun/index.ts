@@ -95,6 +95,8 @@ import {
   runDetailOn,
   usageOn,
   schedulesOn,
+  cleanupsOn,
+  sweepOn,
   changeScheduleOn,
   moveScheduleOn,
   runFileOn,
@@ -1077,6 +1079,15 @@ const main = Effect.gen(function* () {
         ([installation, door]) => schedulesOn({ ...door.machine, installation }, door.desktop),
         { concurrency: "unbounded" },
       ),
+    cleanup: () =>
+      cleanupsOn(
+        Array.from(doors, ([installation, door]) => [
+          { ...door.machine, installation },
+          door.desktop,
+        ]),
+      ),
+    sweep: ({ installation, machine, request }) =>
+      sweepOn(doors, { installation, machine }, request, logged),
     changeSchedule: ({ installation, change, name, request: again }) =>
       Effect.gen(function* () {
         const request = again ?? (yield* uuid);

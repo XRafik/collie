@@ -27,6 +27,7 @@ import * as Socket from "effect/socket/Socket";
 import {
   BRIDGE_READY,
   type BoardMessage,
+  type CleanupReport,
   type BoardSnapshot,
   PROTOCOL,
   FrontDoorRpcs,
@@ -58,13 +59,22 @@ import {
 import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
 import { type MachineSchedules, SCHEDULES_UPGRADE_SAID } from "../shared/schedules";
+import { CLEANUP_UPGRADE_SAID, type MachineCleanup } from "../shared/machine-cleanup";
 import type { ScheduleChange } from "../../../src/schedule-model";
 import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 import { addressOf } from "../shared/record-terminal";
 import { withNotice } from "../../../src/redact";
-import { type ActionsLog, confirmed, type Unconfirmed, unlogged, withheldOf } from "./sent";
+import {
+  type ActionsLog,
+  type Attempted,
+  confirmed,
+  reasonOf,
+  type Unconfirmed,
+  unlogged,
+  withheldOf,
+} from "./sent";
 
 const children = new Set<Bun.Subprocess>();
 export const endChildren = () => {
@@ -1437,6 +1447,118 @@ export const schedulesOn = (
           : read({ unreachable: true, problem: Cause.pretty(cause).split("\n")[0]! }),
       );
     }),
+  );
+};
+
+/** What a sweep on the Machine would remove now; a host too old to have the call asks for an upgrade. */
+export const cleanupOn = (
+  { installation, profile, name }: KnownMachine & { readonly installation: string },
+  door: Pick<Door, "cleanup">,
+): Effect.Effect<MachineCleanup> => {
+  const read = (problem: string): MachineCleanup => ({
+    installation,
+    profile,
+    name,
+    report: null,
+    problem,
+  });
+  return door.cleanup().pipe(
+    Effect.map((report): MachineCleanup => ({
+      installation,
+      profile,
+      name,
+      report,
+      problem: null,
+    })),
+    Effect.timeoutOrElse({
+      duration: "15 seconds",
+      orElse: () => Effect.succeed(read("its host did not answer in time")),
+    }),
+    Effect.catch((error) =>
+      Effect.succeed(read(error._tag === "HostRefused" ? error.reason : error.message)),
+    ),
+    // Its caller letting go is not caught; the door closing under it is.
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterruptsOnly(cause))
+        return Effect.succeed(read("its connection was renewed before it answered"));
+      const defect = Cause.findDefect(cause);
+      return Effect.succeed(
+        read(
+          defect._tag === "Success" && String(defect.success).startsWith("Unknown request tag")
+            ? CLEANUP_UPGRADE_SAID
+            : Cause.pretty(cause).split("\n")[0]!,
+        ),
+      );
+    }),
+  );
+};
+
+/** Each Machine's listing at once, so one that does not answer holds back no other. */
+export const cleanupsOn = (
+  doors: Iterable<
+    readonly [KnownMachine & { readonly installation: string }, Pick<Door, "cleanup">]
+  >,
+) =>
+  Effect.forEach(doors, ([machine, door]) => cleanupOn(machine, door), {
+    concurrency: "unbounded",
+  });
+
+/**
+ * Sweeps the Machine now under `request`. Sent once and waited on for up to 10 minutes, not
+ * the 30 s writes are resent at: a resend's reply would hold only what it removed.
+ */
+export const sweepOn = (
+  doors: ReadonlyMap<string, Reached>,
+  { installation, machine }: { readonly installation: string; readonly machine: string },
+  request: string,
+  log: ActionsLog,
+): Effect.Effect<CleanupReport, ActionFailed> => {
+  const door = doors.get(installation);
+  const name = door?.machine.name ?? machine;
+  const sending = { door: "board", machine: name, request, kind: "cleanup", about: null } as const;
+  const note = (attempt: number, ended: Attempted["ended"], reason?: string) =>
+    log(
+      reason === undefined
+        ? { ...sending, attempt, ended }
+        : { ...sending, attempt, ended, reason },
+    );
+  const failed = (attempt: number, ended: Attempted["ended"], reason: string, logged = reason) =>
+    note(attempt, ended, logged).pipe(
+      Effect.andThen(Effect.fail(new ActionFailed({ request, reason }))),
+    );
+  if (door === undefined)
+    return failed(
+      0,
+      "not-sent",
+      `Not sent to ${name}: that Machine is not connected.`,
+      "that Machine is not connected",
+    );
+  return door.desktop.sweep({ request }).pipe(
+    Effect.timeoutOption("10 minutes"),
+    Effect.catch((error) =>
+      failed(1, error._tag === "RpcClientError" ? "failed" : "refused", reasonOf(error)),
+    ),
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? failed(
+            1,
+            "failed",
+            `${name}'s connection was renewed before this finished`,
+            "the connection was renewed before this finished",
+          )
+        : Effect.failCause(cause),
+    ),
+    Effect.flatMap(
+      Option.match({
+        onSome: (report) => note(1, "accepted").pipe(Effect.as(report)),
+        onNone: () =>
+          failed(
+            1,
+            "timed-out",
+            `${name} did not finish cleaning up within 10 minutes. It may still be sweeping; Try again asks for the same sweep.`,
+          ),
+      }),
+    ),
   );
 };
 

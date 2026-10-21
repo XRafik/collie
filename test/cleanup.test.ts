@@ -2,7 +2,18 @@
 // sweeps now; the host also sweeps on its own (ADR-0045).
 
 import { expect, test } from "bun:test";
-import { Clock, ConfigProvider, DateTime, Effect, FileSystem, Option, Schema } from "effect";
+import {
+  Clock,
+  ConfigProvider,
+  DateTime,
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Option,
+  Schema,
+} from "effect";
+import { readAudit } from "../src/audit";
 import { loadEntry } from "../src/engine";
 import { connect } from "../src/host";
 import { proposalsPath, record as recordProposal } from "../src/proposals";
@@ -13,7 +24,7 @@ import {
   hostCheckProcesses,
   runningChecksDir,
 } from "../src/check-processes";
-import { checksSweeper, generationsSweeper } from "../src/cleanup";
+import { checksSweeper, generationsSweeper, sweepAsked, type Sweeper } from "../src/cleanup";
 import { signalProcess } from "../src/lock";
 import { startedOf, stillRunning } from "../src/processes";
 import { sweepEvery } from "../src/side-jobs";
@@ -165,6 +176,107 @@ test(
     ),
   60_000,
 );
+
+test("a sweep asked again under its request while it runs waits for it and answers with its report", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "sweep-twice-" });
+      const trail = `${dir}/cleanup`;
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let sweeps = 0;
+      let left = 3;
+      const slow: Sweeper = {
+        judge: Effect.gen(function* () {
+          sweeps += 1;
+          yield* Deferred.succeed(started, undefined);
+          yield* Deferred.await(release);
+          return {
+            remove:
+              left === 0
+                ? []
+                : [{ kind: "generation", target: `${dir}/g${left}`, bytes: 10, reason: "unused" }],
+            keep: [],
+          };
+        }),
+        remove: () => Effect.sync(() => ((left -= 1), { freed: 10 })),
+      };
+      const asked = (request: string) =>
+        sweepAsked(
+          trail,
+          { operation: "cleanup", request, origin: "desktop", asked: {} },
+          Effect.succeed([slow]),
+          dir,
+          { origin: "desktop", request },
+        );
+
+      const first = yield* Effect.forkScoped(asked("d-1"));
+      yield* Deferred.await(started);
+      const second = yield* Effect.forkScoped(asked("d-1"));
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(release, undefined);
+      const [one, two] = [yield* Fiber.join(first), yield* Fiber.join(second)];
+
+      expect(sweeps).toBe(1);
+      expect(one.remove).toHaveLength(1);
+      expect(two).toEqual(one);
+      expect((yield* readAudit(trail)).filter((line) => line.request === "d-1")).toHaveLength(1);
+
+      yield* asked("d-2");
+      expect(sweeps).toBe(2);
+    }),
+  ));
+
+test("a sweep whose caller goes away still finishes and keeps its report for the same request", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "sweep-left-" });
+      const trail = `${dir}/cleanup`;
+      const removing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      let sweeps = 0;
+      let left = 1;
+      const slow: Sweeper = {
+        judge: Effect.sync(() => {
+          sweeps += 1;
+          return {
+            remove:
+              left === 0
+                ? []
+                : [{ kind: "generation", target: `${dir}/g`, bytes: 1024, reason: "unused" }],
+            keep: [],
+          };
+        }),
+        remove: () =>
+          Effect.gen(function* () {
+            left -= 1;
+            yield* Deferred.succeed(removing, undefined);
+            yield* Deferred.await(release);
+            return { freed: 1024 };
+          }),
+      };
+      const asked = sweepAsked(
+        trail,
+        { operation: "cleanup", request: "d-1", origin: "desktop", asked: {} },
+        Effect.succeed([slow]),
+        dir,
+        { origin: "desktop", request: "d-1" },
+      );
+
+      const first = yield* Effect.forkScoped(asked);
+      yield* Deferred.await(removing);
+      const gone = yield* Effect.forkScoped(Fiber.interrupt(first));
+      yield* Effect.yieldNow;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(gone);
+      const again = yield* asked;
+
+      expect(sweeps).toBe(1);
+      expect(again.bytes).toBe(1024);
+    }),
+  ));
 
 test("the host sweeps on its own every ten minutes, and journals it as its own", () =>
   runEffect(

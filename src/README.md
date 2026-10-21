@@ -77,6 +77,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `run-detail.ts`        | One Run's diff against its merge base, items by reference, and a drawer's subscription                    |
 | `side-jobs.ts`         | What the host does with no pane open: the merge watch, each Herd's News, cleanup and Home tokens          |
 | `cleanup.ts`           | What a sweep removes and keeps, one sweeper per kind, and the journal of what went (ADR-0045)             |
+| `bytes.ts`             | A size as `collie cleanup` and Desktop say it (pure)                                                      |
 | `discovery.ts`         | Where a workflow module is looked for, which layer wins, and what counts as an edit                       |
 | `authoring.ts`         | What a module says about itself, how it is checked, and the file an author starts from                    |
 | `definitions-model.ts` | A host's Workflows and Personas as front doors read them: Schemas shared with Desktop (pure)              |

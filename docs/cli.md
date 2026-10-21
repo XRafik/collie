@@ -26,8 +26,8 @@ Put these before the subcommand:
 collie --json --workspace wT run start plan --input goal="ship it" --input then=
 ```
 
-`--machine` is for a command that names no Run: `board`, `run start`, `run list` and
-`schedule`. A
+`--machine` is for a command that names no Run: `board`, `run start`, `run list`,
+`schedule` and `cleanup`. A
 command that names a Run needs none (see [Another Machine's Runs](#another-machines-runs)).
 A start on another Machine opens its own Task there, so `--task`, `--continue-task` and
 `--here` are refused with it, and the module is the one that Machine has saved.
