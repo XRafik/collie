@@ -8,6 +8,7 @@ const { machines, summary } = useInSync();
 const { checkForUpdates, removeMachine, syncNow } = useActions();
 const { onboardOn, loginOn } = useOnboarding();
 const adding = ref(false);
+const cleaning = ref(false);
 const scheduled = useSchedules();
 onMounted(() => void scheduled.refresh());
 const schedulesOf = (row: (typeof machines.value)[number]["row"]) => {
@@ -79,14 +80,24 @@ const missing = (run: OnboardRun) => run.steps.filter(({ status }) => !SETTLED.i
         >
           {{ summary.said }}
         </p>
-        <UButton
-          class="self-start"
-          icon="i-lucide-plus"
-          label="Add Machine"
-          data-testid="add-machine"
-          @click="adding = true"
-        />
+        <div class="flex gap-2">
+          <UButton
+            icon="i-lucide-plus"
+            label="Add Machine"
+            data-testid="add-machine"
+            @click="adding = true"
+          />
+          <UButton
+            color="neutral"
+            variant="outline"
+            icon="i-lucide-brush-cleaning"
+            label="Clean up…"
+            data-testid="clean-up"
+            @click="cleaning = true"
+          />
+        </div>
         <AddMachineDialog v-model:open="adding" />
+        <CleanupDialog v-model:open="cleaning" />
         <MoveScheduleDialog
           v-model:open="movingOpen"
           :name="moving?.name ?? ''"

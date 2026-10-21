@@ -95,6 +95,7 @@ import {
   runDetailOn,
   usageOn,
   schedulesOn,
+  cleanupsOn,
   changeScheduleOn,
   moveScheduleOn,
   runFileOn,
@@ -1076,6 +1077,13 @@ const main = Effect.gen(function* () {
         doors.entries(),
         ([installation, door]) => schedulesOn({ ...door.machine, installation }, door.desktop),
         { concurrency: "unbounded" },
+      ),
+    cleanup: () =>
+      cleanupsOn(
+        Array.from(doors, ([installation, door]) => [
+          { ...door.machine, installation },
+          door.desktop,
+        ]),
       ),
     changeSchedule: ({ installation, change, name, request: again }) =>
       Effect.gen(function* () {

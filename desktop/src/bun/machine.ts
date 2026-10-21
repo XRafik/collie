@@ -58,6 +58,7 @@ import {
 import { CREDENTIAL_SAID, type Lag } from "../shared/in-sync";
 import { type MachineUsage, UPGRADE_SAID } from "../shared/usage";
 import { type MachineSchedules, SCHEDULES_UPGRADE_SAID } from "../shared/schedules";
+import { CLEANUP_UPGRADE_SAID, type MachineCleanup } from "../shared/machine-cleanup";
 import type { ScheduleChange } from "../../../src/schedule-model";
 import { moveSchedule, type ScheduleDoor } from "../../../src/schedule-move";
 import { CHILD_CWD, childEnv } from "./login-env";
@@ -1439,6 +1440,59 @@ export const schedulesOn = (
     }),
   );
 };
+
+/** What a sweep on the Machine would remove now; a host too old to have the call asks for an upgrade. */
+export const cleanupOn = (
+  { installation, profile, name }: KnownMachine & { readonly installation: string },
+  door: Pick<Door, "cleanup">,
+): Effect.Effect<MachineCleanup> => {
+  const read = (problem: string): MachineCleanup => ({
+    installation,
+    profile,
+    name,
+    report: null,
+    problem,
+  });
+  return door.cleanup().pipe(
+    Effect.map((report): MachineCleanup => ({
+      installation,
+      profile,
+      name,
+      report,
+      problem: null,
+    })),
+    Effect.timeoutOrElse({
+      duration: "15 seconds",
+      orElse: () => Effect.succeed(read("its host did not answer in time")),
+    }),
+    Effect.catch((error) =>
+      Effect.succeed(read(error._tag === "HostRefused" ? error.reason : error.message)),
+    ),
+    // Its caller letting go is not caught; the door closing under it is.
+    Effect.catchCause((cause) => {
+      if (Cause.hasInterruptsOnly(cause))
+        return Effect.succeed(read("its connection was renewed before it answered"));
+      const defect = Cause.findDefect(cause);
+      return Effect.succeed(
+        read(
+          defect._tag === "Success" && String(defect.success).startsWith("Unknown request tag")
+            ? CLEANUP_UPGRADE_SAID
+            : Cause.pretty(cause).split("\n")[0]!,
+        ),
+      );
+    }),
+  );
+};
+
+/** Each Machine's listing at once, so one that does not answer holds back no other. */
+export const cleanupsOn = (
+  doors: Iterable<
+    readonly [KnownMachine & { readonly installation: string }, Pick<Door, "cleanup">]
+  >,
+) =>
+  Effect.forEach(doors, ([machine, door]) => cleanupOn(machine, door), {
+    concurrency: "unbounded",
+  });
 
 /** A pause, resume or removal of one of the Machine's Schedules, under its own request. */
 export const changeScheduleOn = (door: Reached, change: ScheduleChange, request: string) =>

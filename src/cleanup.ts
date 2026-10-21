@@ -61,6 +61,7 @@ import { COMPACTION_PORTS, transcriptOf } from "./compactors";
 import { uploadsDir } from "./uploads";
 import { finishedOnRecord } from "./cards";
 import type { CheckProcessesApi, Leftover } from "./check-processes";
+import { humanBytes } from "./bytes";
 
 /** One kind of thing Collie cleans. */
 export interface Sweeper {
@@ -103,18 +104,6 @@ export const sizesOf = (paths: ReadonlyArray<string>) =>
 
 /** What `path` takes on disk. */
 export const sizeOf = (path: string) => sizesOf([path]).pipe(Effect.map(([bytes]) => bytes ?? 0));
-
-/** `1.2 GiB`, for a human. */
-export const humanBytes = (bytes: number) => {
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${unit === 0 ? value : value.toFixed(1)} ${units[unit]}`;
-};
 
 /** One sweep at a time in this host, whichever door or schedule asked. */
 export const sweeping = Semaphore.makeUnsafe(1);

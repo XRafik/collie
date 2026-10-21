@@ -1328,6 +1328,18 @@ herdr's — with how it stands, and is where Machines join the Flock. Each joins
 - **Onboard** on a Machine herdr already has, or on this computer, onboards it there and
   then. It is the same button on a Machine whose Collie isn't installed.
 
+**Clean up…**, beside **Add Machine**, opens a dialog listing every Machine on the page with
+what a sweep there would free and remove now ([Cleanup](#cleanup)). What it would remove is
+grouped by kind, largest first, each kind with its count and size, opening to each item's
+path, size and reason; **Kept N** opens to what Collie keeps there and why. A Machine with
+nothing to remove says "Nothing to remove now". Every Machine that listed starts chosen,
+**All** and **None** change that, and a line under the list says what the chosen Machines
+would free together, sized as `collie cleanup` prints it. A Machine Desktop doesn't reach
+shows its state and why, and can't be chosen; one Out of reach or Waiting for SSO adds that
+its host still cleans up there every ten minutes. One whose listing failed, whose host did
+not answer in 15 seconds, or whose Collie is too old to list says so and can't be chosen.
+The dialog only shows: a sweep is still `collie cleanup --apply` on that Machine, or a chat.
+
 The page opens with one line saying whether the whole Flock is **In sync** with Desktop
 ("Every Machine is in sync with Desktop 0.35.0"), or naming each Machine that isn't and what
 it lags on. Each Machine's row shows the Collie it runs — "Collie 0.35.0", "development build
@@ -3012,6 +3024,8 @@ removed. [Schedules](#schedules) under `schedules/` are the host's own: listed a
 and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.
 The Flock chat sweeps the Machine a `cleanup` names in its `machine` field, and refuses one
 that names none while several Machines are reachable; Native chat sweeps its own Machine.
+`collie --machine <machine> cleanup` lists another Machine's, and Desktop's **Clean up…** on
+the Machines page shows every Machine's ([Collie Desktop](#collie-desktop)).
 Every removal is judged again at the moment it is made, never forced, and recorded in the
 state directory's `cleanup.jsonl` with when, what, how big, why and who asked, for 30 days.
 Anything a sweep cannot judge is kept, with the reason.

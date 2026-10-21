@@ -34,7 +34,7 @@ import {
   changeSchedule,
 } from "./lifecycle";
 import type { ScheduleChange } from "./schedule-model";
-import { humanBytes } from "./cleanup";
+import { humanBytes } from "./bytes";
 import { agentStartRefusal, CHAT_CHECKOUT_FIX } from "./agent-start";
 import { RESERVED_INPUTS } from "./sdk";
 import { PROJECTS_ROOT_OPTION, projectsRoot, repositoryCheckout } from "./projects";
