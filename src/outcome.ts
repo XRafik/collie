@@ -113,7 +113,7 @@ function textSearch(executable: string, argv: ReadonlyArray<string>): boolean {
   return textSearch(first, rest);
 }
 
-/** A script's words as the shell reads them, its quotes and escapes removed. */
+/** A script's words as the shell reads them, its quotes, escapes and line continuations removed. */
 function shellWords(script: string): ReadonlyArray<string> {
   const words: string[] = [];
   let word = "";
@@ -121,6 +121,10 @@ function shellWords(script: string): ReadonlyArray<string> {
   let quote = "";
   for (let i = 0; i < script.length; i++) {
     const c = script.charAt(i);
+    if (quote !== "'" && c === "\\" && script.charAt(i + 1) === "\n") {
+      i++;
+      continue;
+    }
     if (quote === "" && /\s/.test(c)) {
       if (started) words.push(word);
       word = "";

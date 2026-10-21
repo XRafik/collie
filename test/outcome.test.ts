@@ -648,6 +648,9 @@ test.each([
   "'rg' foo src",
   "g\\rep -q foo src/x.ts",
   'git "grep" foo',
+  "gr\\\nep -q foo src/x.ts",
+  '"gr\\\nep" -q foo src/x.ts',
+  "\\\n grep -q foo src/x.ts",
 ])("a text search run as the shell script %p is still a text search", (script) => {
   const run = searched("proves-a", { executable: "/usr/bin/bash", argv: ["-c", script] });
   expect(checkGaps("feature", promising([run]))).toEqual([
