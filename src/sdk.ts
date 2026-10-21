@@ -23,6 +23,7 @@ import {
   Path,
   Predicate,
   Schema,
+  SchemaGetter,
   SchemaRepresentation,
 } from "effect";
 import type { CheckEvidence } from "./output";
@@ -590,10 +591,27 @@ export const definitionOf = (written: WrittenDefinition): WorkflowDefinition => 
 /** What `claim` holds, or why the claims a Run needs could not be settled. */
 export type Claimed = { readonly slugs: ReadonlyArray<string> } | { readonly unresolved: string };
 
-export const ClaimedSchema = Schema.Union([
+const Holding = Schema.Union([
   Schema.Struct({ slugs: Schema.Array(Schema.String) }),
   Schema.Struct({ unresolved: Schema.String }),
 ]);
+
+/**
+ * What a claim journaled before a Run could hold several: one project, or null where it
+ * went on holding none, which is read as unsettled so a replay asks rather than goes on.
+ */
+const SingleClaim = Schema.NullOr(Schema.Struct({ slug: Schema.String })).pipe(
+  Schema.decodeTo(Holding, {
+    decode: SchemaGetter.transform((one) =>
+      one === null
+        ? { unresolved: "an earlier Collie took this claim and held no Helle project" }
+        : { slugs: [one.slug] },
+    ),
+    encode: SchemaGetter.forbidden(() => "a claim is journaled in its current shape"),
+  }),
+);
+
+export const ClaimedSchema = Schema.Union([Holding, SingleClaim]);
 
 export interface HostApi {
   readonly dir: string;

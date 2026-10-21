@@ -4,7 +4,7 @@
 // exactly the ones a real Helle will not produce on demand.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, Fiber, FileSystem, Path, Result, Schedule } from "effect";
+import { Effect, Fiber, FileSystem, Path, Result, Schedule, Schema } from "effect";
 import { runEffect } from "./support/effect";
 import {
   credentials,
@@ -18,6 +18,7 @@ import {
 } from "../src/helle";
 import { HELLE_URL } from "../src/helle-url";
 import { handOverClaim } from "../src/engine";
+import { ClaimedSchema } from "../src/sdk";
 
 const ME = "6b9ba520-user";
 const OTHER = "2dd236ac-other";
@@ -272,6 +273,14 @@ test("a repository that declares its projects is held to exactly those, and [] d
   });
   const unknown = resolveProjects(FRONTEND, release({ declared: ["gone"] }));
   expect(unknown._tag === "Unresolved" && unknown.why).toContain("gone");
+});
+
+test("a claim an earlier release journaled reads as what it held, and holding none asks again", () => {
+  const decode = Schema.decodeUnknownSync(ClaimedSchema);
+  expect(decode({ slug: "spilnu" })).toEqual({ slugs: ["spilnu"] });
+  expect("unresolved" in decode(null)).toBe(true);
+  expect(decode({ slugs: ["happytiger", "spilnu"] })).toEqual({ slugs: ["happytiger", "spilnu"] });
+  expect(Schema.encodeSync(ClaimedSchema)({ slugs: ["spilnu"] })).toEqual({ slugs: ["spilnu"] });
 });
 
 test("a 500 from the project list is a refusal", () =>
