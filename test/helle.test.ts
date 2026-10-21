@@ -492,7 +492,7 @@ test("a claim lost while the gate waited for the next gives the later ones back 
             slug: "spilnu",
             group: "spilnu/frontend",
             holder: { user_id: OTHER, display_name: "someone" },
-            queue: [{ user_id: ME }],
+            queue: [],
           },
         ];
         fake.claims = [
@@ -554,76 +554,87 @@ test("a claim lost while the gate waited for the next gives the later ones back 
     ),
   ));
 
+/** Helle as several users see it: a token is the user, and a release passes the project on. */
+const sharedHelle = Effect.fn("test.sharedHelle")(function* (
+  projects: { slug: string; holder?: { user_id: string }; queue: { user_id: string }[] }[],
+) {
+  const helle = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      const user = request.headers.get("authorization")!.replace("Bearer ", "");
+      const path = new URL(request.url).pathname.replace("/api/v1", "");
+      if (path === "/me") return Response.json({ user_id: user });
+      if (path === "/projects") return Response.json(projects);
+      const one = /^\/projects\/([^/]+)(\/claim|\/release)?$/.exec(path);
+      const project = projects.find((p) => p.slug === one?.[1]);
+      if (!one || !project) return Response.json({}, { status: 404 });
+      if (one[2] === "/claim") {
+        const already =
+          project.holder?.user_id === user || project.queue.some((m) => m.user_id === user);
+        if (!already) {
+          if (project.holder) project.queue.push({ user_id: user });
+          else project.holder = { user_id: user };
+        }
+        const at = project.queue.findIndex((m) => m.user_id === user);
+        return Response.json({ position: at + 1, already_queued: already });
+      }
+      if (one[2] === "/release") {
+        if (project.holder?.user_id === user) project.holder = project.queue.shift();
+        else project.queue = project.queue.filter((m) => m.user_id !== user);
+        return Response.json({ released: true });
+      }
+      return Response.json(project);
+    },
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => void helle.stop(true)));
+  const url = `http://127.0.0.1:${helle.port}`;
+  const lines: string[] = [];
+  const release = (user: string, claimed: HelleClaim[], ask: () => string | null) =>
+    Effect.gen(function* () {
+      return yield* waitForHelle({
+        home: "/nowhere",
+        envFile: yield* envFile(user),
+        url,
+        repositoryPath: null,
+        repoName: "monorepo",
+        deploys: null,
+        declared: ["alpha", "beta"],
+        claimed,
+        record: () => Effect.void,
+        forget: () => Effect.void,
+        out: (line) => Effect.sync(() => void lines.push(`${user}: ${line}`)),
+        ask: () => Effect.sync(ask),
+        pollMs: 1,
+      });
+    });
+  return { url, lines, release };
+});
+
 test("Runs resuming with each other's next claim give theirs back rather than deadlock", () =>
   runEffect(
     Effect.scoped(
       Effect.gen(function* () {
-        // Helle as two users see it: a token is the user, and a release passes the project on.
-        const projects: {
-          slug: string;
-          holder?: { user_id: string };
-          queue: { user_id: string }[];
-        }[] = [
+        const { url, lines, release } = yield* sharedHelle([
           { slug: "alpha", holder: { user_id: "B" }, queue: [] },
           { slug: "beta", holder: { user_id: "A" }, queue: [] },
-        ];
-        const helle = Bun.serve({
-          port: 0,
-          fetch: (request) => {
-            const user = request.headers.get("authorization")!.replace("Bearer ", "");
-            const path = new URL(request.url).pathname.replace("/api/v1", "");
-            if (path === "/me") return Response.json({ user_id: user });
-            if (path === "/projects") return Response.json(projects);
-            const one = /^\/projects\/([^/]+)(\/claim|\/release)?$/.exec(path);
-            const project = projects.find((p) => p.slug === one?.[1]);
-            if (!one || !project) return Response.json({}, { status: 404 });
-            if (one[2] === "/claim") {
-              const already =
-                project.holder?.user_id === user || project.queue.some((m) => m.user_id === user);
-              if (!already) {
-                if (project.holder) project.queue.push({ user_id: user });
-                else project.holder = { user_id: user };
-              }
-              const at = project.queue.findIndex((m) => m.user_id === user);
-              return Response.json({ position: at + 1, already_queued: already });
-            }
-            if (one[2] === "/release") {
-              if (project.holder?.user_id === user) project.holder = project.queue.shift();
-              else project.queue = project.queue.filter((m) => m.user_id !== user);
-              return Response.json({ released: true });
-            }
-            return Response.json(project);
-          },
-        });
-        yield* Effect.addFinalizer(() => Effect.sync(() => void helle.stop(true)));
-        const url = `http://127.0.0.1:${helle.port}`;
-        const lines: string[] = [];
-        const resume = (user: string, claimed: HelleClaim[]) =>
-          Effect.gen(function* () {
-            return yield* waitForHelle({
-              home: "/nowhere",
-              envFile: yield* envFile(user),
-              url,
-              repositoryPath: null,
-              repoName: "monorepo",
-              deploys: null,
-              declared: ["alpha", "beta"],
-              claimed,
-              record: () => Effect.void,
-              forget: () => Effect.void,
-              out: (line) => Effect.sync(() => void lines.push(`${user}: ${line}`)),
-              ask: () => Effect.die("every claim is already recorded"),
-              pollMs: 1,
-            });
-          });
+        ]);
+        const unasked = () => {
+          throw new Error("every claim is already recorded");
+        };
 
         const a = yield* Effect.forkScoped(
-          resume("A", [
-            { slug: "alpha", claim: "mine" },
-            { slug: "beta", claim: "mine" },
-          ]),
+          release(
+            "A",
+            [
+              { slug: "alpha", claim: "mine" },
+              { slug: "beta", claim: "mine" },
+            ],
+            unasked,
+          ),
         );
-        const b = yield* Effect.forkScoped(resume("B", [{ slug: "alpha", claim: "mine" }]));
+        const b = yield* Effect.forkScoped(
+          release("B", [{ slug: "alpha", claim: "mine" }], unasked),
+        );
 
         expect(yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"))).toEqual({
           _tag: "Held",
@@ -638,6 +649,59 @@ test("Runs resuming with each other's next claim give theirs back rather than de
           _tag: "Held",
           slugs: ["alpha", "beta"],
         });
+      }),
+    ),
+  ));
+
+test("a later project the operator already holds is taken over and given back before an earlier one is waited for", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { url, lines, release } = yield* sharedHelle([
+          { slug: "alpha", holder: { user_id: "A" }, queue: [] },
+          { slug: "beta", holder: { user_id: "B" }, queue: [] },
+        ]);
+        const asked: string[] = [];
+        const yes = (user: string) => () => (asked.push(user), "yes");
+
+        const b = yield* Effect.forkScoped(release("B", [], yes("B")));
+        const a = yield* Effect.forkScoped(release("A", [], yes("A")));
+
+        expect(yield* Fiber.join(a).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+        expect(lines).toContain(
+          "B: ⚠ this Run does not hold alpha, so it gives back beta to take them again in order",
+        );
+        expect(asked.sort()).toEqual(["A", "B"]);
+        yield* releaseClaim({ url, token: "A" }, "alpha");
+        yield* releaseClaim({ url, token: "A" }, "beta");
+        expect(yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+      }),
+    ),
+  ));
+
+test("a later project the operator will not have taken over stops the Run before it waits", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { release } = yield* sharedHelle([
+          { slug: "alpha", holder: { user_id: "A" }, queue: [] },
+          { slug: "beta", holder: { user_id: "B" }, queue: [] },
+        ]);
+
+        const result = yield* release("B", [], () => "no").pipe(
+          Effect.timeout("2 seconds"),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        expect(String(Result.isFailure(result) && result.failure.message)).toContain(
+          "the Helle claim on beta was already yours and was not taken over",
+        );
       }),
     ),
   ));

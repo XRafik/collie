@@ -298,22 +298,27 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
   const recorded = new Set(gate.claimed.map((one) => one.slug));
   let adopting: boolean | null = null;
 
+  const takeOver = Effect.fn("Helle.takeOver")(function* (slug: string) {
+    adopting ??= AFFIRMATIVE.test(
+      (yield* gate.ask(
+        `You already hold or are queued for the Helle project ${slug}. Take that claim over, and release it when the Run is done? [y/N]`,
+      ))?.trim() ?? "",
+    );
+    if (!adopting) {
+      return yield* Effect.fail(
+        failed(`the Helle claim on ${slug} was already yours and was not taken over`),
+      );
+    }
+    yield* gate.record({ slug, claim: "adopted" });
+    recorded.add(slug);
+  });
+
   const hold = Effect.fn("Helle.hold")(function* (slug: string) {
     // Claimed on every entry, resume included: an idempotent claim is the only way back
     // into a queue this Run may have fallen out of while it was not running.
     const claimed = yield* claimProject(creds, slug);
     if (claimed.already_queued && !recorded.has(slug)) {
-      adopting ??= AFFIRMATIVE.test(
-        (yield* gate.ask(
-          `You already hold or are queued for the Helle project ${slug}. Take that claim over, and release it when the Run is done? [y/N]`,
-        ))?.trim() ?? "",
-      );
-      if (!adopting) {
-        return yield* Effect.fail(
-          failed(`the Helle claim on ${slug} was already yours and was not taken over`),
-        );
-      }
-      yield* gate.record({ slug, claim: "adopted" });
+      yield* takeOver(slug);
     } else if (!recorded.has(slug)) {
       yield* gate.record({ slug, claim: "mine" });
     }
@@ -338,17 +343,17 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
     }
   });
 
-  // A claim on a later project is given back before an earlier one is waited for, whether
-  // this attempt is fresh, resumed or retried, or it lost the earlier one while it waited.
+  // A claim on a later project, the operator's own included, is given back before an earlier
+  // one is waited for, whether this attempt is fresh, resumed or retried, or it lost the
+  // earlier one while it waited.
   while (true) {
     const positions: (number | null)[] = [];
     for (const slug of needed.slugs)
       positions.push(positionOf(yield* helleProject(creds, slug), me.user_id));
     const from = needed.slugs.findIndex((slug, i) => !recorded.has(slug) || positions[i] !== 0);
     if (from < 0) break;
-    const later = needed.slugs.filter(
-      (slug, i) => i > from && recorded.has(slug) && positions[i] !== null,
-    );
+    const later = needed.slugs.filter((_, i) => i > from && positions[i] !== null);
+    for (const slug of later) if (!recorded.has(slug)) yield* takeOver(slug);
     if (later.length > 0)
       yield* gate.out(
         `⚠ this Run does not hold ${needed.slugs[from]}, so it gives back ${later.join(", ")} to take them again in order`,
