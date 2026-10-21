@@ -14,6 +14,7 @@ import { actorOf, readAudit, type ScheduledBy } from "./audit";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
+  Cache,
   Cause,
   Clock,
   Context,
@@ -2478,6 +2479,8 @@ export const hostLayer = (options: {
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
   /** How often a wait for production asks the forge again. */
   readonly productionPoll?: Duration.Input;
+  /** How long the checkouts issue text is checked against may take to find. */
+  readonly issuePrivacyBudget?: Duration.Input;
 }): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices> =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -2746,13 +2749,75 @@ export const hostLayer = (options: {
         if (!here.ok) return yield* new WorkflowError({ reason: here.reason });
         return { ...here, cwd, env };
       });
+      const issuePrivacyBudget = Duration.fromInputUnsafe(options.issuePrivacyBudget ?? "1 minute");
+      /** Every checkout issue text may not name, and each one's remotes, read once for a while. */
+      const inventoryOf = (root: string) =>
+        Effect.gen(function* () {
+          const { herdr } = yield* placing;
+          const worktrees = yield* herdr.worktreesDirectory();
+          const open = yield* herdr.workspaceList().pipe(Effect.orElseSucceed(() => []));
+          const known = new Set(
+            [
+              ...(yield* store.runs).flatMap((row) => {
+                const placed = placedOf(row, {});
+                return [row.project, placed.cwd, placed.worktree?.path ?? ""];
+              }),
+              ...open.flatMap((workspace) => [workspace.cwd, workspace.worktree ?? ""]),
+            ].filter((dir) => dir.startsWith("/")),
+          );
+          const roots = (yield* fs.exists(worktrees)) ? [root, worktrees] : [root];
+          const found = yield* publicationCheckouts(roots, [...known]);
+          const checkouts = yield* Effect.forEach(
+            found.checkouts,
+            (checkout) =>
+              Effect.gen(function* () {
+                const repository = yield* marksRepository(checkout);
+                const remotes = repository
+                  ? yield* runShell("git", ["remote", "-v"], checkout)
+                  : null;
+                return {
+                  checkout,
+                  canonical: yield* fs.realPath(checkout),
+                  repository,
+                  names:
+                    remotes === null
+                      ? []
+                      : remotes.code !== 0
+                        ? null
+                        : remotes.stdout.split("\n").flatMap((line) => {
+                            const name = remoteOf(
+                              line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
+                            );
+                            return name === null ? [] : [name];
+                          }),
+                };
+              }),
+            { concurrency: 8 },
+          );
+          return { aliases: found.aliases, checkouts };
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: issuePrivacyBudget,
+            orElse: () =>
+              Effect.fail(
+                new WorkflowError({
+                  reason: `issue privacy check did not finish within ${Duration.format(issuePrivacyBudget)}`,
+                }),
+              ),
+          }),
+          Effect.provideContext(bun),
+        );
+      const inventories = yield* Cache.makeWith(inventoryOf, {
+        capacity: 4,
+        timeToLive: (exit) => (Exit.isSuccess(exit) ? "2 minutes" : 0),
+      });
       const checkIssueText = Effect.fn("Host.checkIssueText")(
         function* (here: Effect.Success<ReturnType<typeof issueCheckout>>, text: string) {
           const root = yield* projectsRoot({
             ...here.env,
             userDir: options.userDir ?? here.env.userDir,
           });
-          const inventory = yield* publicationCheckouts(root.path);
+          const inventory = yield* Cache.get(inventories, root.path);
           const expanded = yield* Effect.try(() => throughAliases(text, inventory.aliases));
           const common = yield* runShell(
             "git",
@@ -2765,20 +2830,11 @@ export const hostLayer = (options: {
             });
           const own = yield* fs.realPath(common.stdout.replace(/\n$/, ""));
           const ownRemote = here.project.split("/").slice(1).join("/");
-          for (const checkout of inventory.checkouts) {
-            const canonical = yield* fs.realPath(checkout);
-            const repository = yield* marksRepository(checkout);
-            const remotes = repository ? yield* runShell("git", ["remote", "-v"], checkout) : null;
-            if (remotes !== null && remotes.code !== 0)
+          for (const { checkout, canonical, repository, names } of inventory.checkouts) {
+            if (names === null)
               return yield* new WorkflowError({
                 reason: `issue privacy check could not read remotes: ${checkout}`,
               });
-            const names = (remotes?.stdout ?? "").split("\n").flatMap((line) => {
-              const name = remoteOf(
-                line.split("\t")[1]?.replace(/\s+\((?:fetch|push)\)$/, "") ?? "",
-              );
-              return name === null ? [] : [name];
-            });
             if (
               !(
                 text.includes(checkout) ||
@@ -4463,6 +4519,7 @@ export const foundationLayer = (options: {
   /** The herdr a reviewed checkout is made through; the host's own by default. */
   readonly placing?: { readonly herdr: Herdr; readonly env: PluginEnv };
   readonly productionPoll?: Duration.Input;
+  readonly issuePrivacyBudget?: Duration.Input;
 }): Layer.Layer<
   | Host
   | Notifier

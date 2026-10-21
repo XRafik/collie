@@ -15,9 +15,35 @@ export function remoteOf(url: string): { project: string; path: string } | null 
   return host && path ? { project: `${host}/${path}`, path } : null;
 }
 
-/** Working repositories under `root`, including hidden, nested and linked ones; a link to nothing or a path the user cannot access is skipped, other inspection errors propagate. */
+const DEPTH = 6;
+const SKIPPED = new Set([
+  ".git",
+  "node_modules",
+  ".cache",
+  ".local",
+  ".claude",
+  ".codex",
+  ".npm",
+  ".bun",
+  ".cargo",
+  ".rustup",
+  ".nvm",
+  ".pnpm-store",
+  ".yarn",
+  ".gradle",
+  ".m2",
+  ".vscode-server",
+]);
+
+/**
+ * Working repositories under each of `roots` to depth six, including hidden, nested and
+ * linked ones, plus each of `known` that is one; dependencies, Git metadata and tool
+ * directories are not looked into. A link to nothing or a path the user cannot access is
+ * skipped, other inspection errors propagate.
+ */
 export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(function* (
-  root: string,
+  roots: ReadonlyArray<string>,
+  known: ReadonlyArray<string> = [],
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -31,8 +57,7 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
     error.reason._tag === "NotFound" || error.reason._tag === "PermissionDenied"
       ? Effect.succeed(null)
       : Effect.fail(error);
-  const canonicalRoot = yield* fs.realPath(root);
-  const visit = (dir: string): Effect.Effect<void, PlatformError> =>
+  const record = (dir: string) =>
     Effect.gen(function* () {
       const canonical = yield* fs.realPath(dir);
       if (canonical !== dir) aliases.push({ from: dir, to: canonical });
@@ -40,21 +65,33 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
         checkouts.add(dir);
         checkouts.add(canonical);
       }
-      const fromRoot = path.relative(canonicalRoot, canonical);
+      return canonical;
+    });
+  const visit = (root: string, dir: string, depth: number): Effect.Effect<void, PlatformError> =>
+    Effect.gen(function* () {
+      const canonical = yield* record(dir);
+      const fromRoot = path.relative(root, canonical);
       if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`)) return;
-      if (visited.has(canonical)) return;
+      if (depth === DEPTH || visited.has(canonical)) return;
       visited.add(canonical);
-      for (const name of yield* fs.readDirectory(canonical)) {
-        const child = path.join(canonical, name);
-        const info = yield* fs.stat(child).pipe(Effect.catchTag("PlatformError", unseen));
-        if (info?.type === "Directory") yield* visit(child);
-      }
+      const children = (yield* fs.readDirectory(canonical)).filter((name) => !SKIPPED.has(name));
+      yield* Effect.forEach(
+        children,
+        (name) =>
+          Effect.gen(function* () {
+            const child = path.join(canonical, name);
+            const info = yield* fs.stat(child).pipe(Effect.catchTag("PlatformError", unseen));
+            if (info?.type === "Directory") yield* visit(root, child, depth + 1);
+          }),
+        { concurrency: 8, discard: true },
+      );
     }).pipe(
       Effect.catchTag("PlatformError", (error) =>
         error.reason._tag === "PermissionDenied" ? Effect.void : Effect.fail(error),
       ),
     );
-  yield* visit(root);
+  for (const root of roots) yield* visit(yield* fs.realPath(root), root, 0);
+  for (const dir of known) yield* record(dir).pipe(Effect.catchTag("PlatformError", unseen));
   return { checkouts: [...checkouts].sort(), aliases };
 });
 
