@@ -478,7 +478,8 @@ watches the tag pipeline's stage deploy and the repository's own stage checks
 for somebody to start them: a manual job on GitLab, which blocks the pipeline, or a job
 waiting on its environment's approval on GitHub. Collie then reads from the forge that
 the tag carries the merged commit, that stage's newest successful deployment carries it,
-that each named stage job passed and every other finished job passed, and that at least
+that each named stage job passed, that every other job passed and none is still running or
+waiting to run, and that at least
 one production job waits to be started by hand. The pipeline's own state is not read: it
 cannot succeed before production runs. Where a stage job failed, or stage does not carry
 the merge, the agent rolls stage back to the newest release production carries; once the

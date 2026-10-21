@@ -149,7 +149,7 @@ left. Collie proves the tag **ready for production**:
 - where the tag's pipeline staged it, stage carries the merged commit and its stage jobs
   passed;
 - each named production job waits to be started by hand;
-- every job that finished passed.
+- every job that finished passed, and no other job is still running or waiting to run.
 
 It does not ask for the pipeline to have succeeded. A blocking manual job holds the
 pipeline until it runs, and it must not run before the second go. The Run then waits until

@@ -115,6 +115,23 @@ export const RollbackReadSchema = Schema.Union([
 export type RollbackRead = typeof RollbackReadSchema.Type;
 
 const failing = new Set(["failed", "cancelled"]);
+const unfinished = new Set(["pending", "running"]);
+
+/** Why a pipeline's jobs other than `production` are not all finished and passed, or null. */
+const unsettled = (
+  jobs: ReadonlyArray<{ readonly name: string; readonly state: string }>,
+  production: ReadonlyArray<string>,
+  on: string,
+) => {
+  const others = jobs.filter((job) => !production.includes(job.name));
+  const named = (states: Set<string>) =>
+    others.filter((job) => states.has(job.state)).map((job) => `\`${job.name}\``);
+  const failed = named(failing);
+  if (failed.length > 0) return `${failed.join(", ")} failed ${on}`;
+  const running = named(unfinished);
+  if (running.length > 0) return `${running.join(", ")} has not finished ${on}`;
+  return null;
+};
 
 const gitOf =
   <R>(opts: { readonly cwd: string; readonly run: Runner<R> }) =>
@@ -199,7 +216,7 @@ const inProduction = <R>(opts: {
  * `finished`: `pipeline`, else the newest the tag started, if any, finished and succeeded by
  * the forge's word, and a job waiting to be started by hand has not finished. `staged`: production carrying `merged`
  * already is `InProduction`; otherwise, where `stage` names jobs, each passed and stage carries
- * `merged`, or else it is `StageFailed`; every other finished job passed; and each
+ * `merged`, or else it is `StageFailed`; every other job passed and none is still running or pending; and each
  * `production` job, at least one, waits on the pipeline to be started by hand. The
  * pipeline's own state is not read.
  */
@@ -281,10 +298,8 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
         why: `stage does not carry the merged commit ${short(opts.merged)}`,
       } satisfies TagRead;
   }
-  const failed = read.jobs
-    .filter((job) => failing.has(job.state) && !opts.production.includes(job.name))
-    .map((job) => `\`${job.name}\``);
-  if (failed.length > 0) return unproved(`${failed.join(", ")} failed ${on}`);
+  const settled = unsettled(read.jobs, opts.production, on);
+  if (settled !== null) return unproved(settled);
   if (opts.production.length === 0) return unproved(`no production job ${on} was named`);
   const production: JobLink[] = [];
   for (const name of opts.production) {
@@ -302,7 +317,8 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
 /**
  * Reads, before production jobs are played, what is left to play: nothing where production
  * already carries `merged`, the `jobs` still waiting to be started by hand, and none at all
- * where the tag no longer carries `merged` or a job is gone or failed.
+ * where the tag no longer carries `merged`, a job is gone or failed, or any other job failed or
+ * is still running or pending.
  */
 export const readProduction = Effect.fn("Releasing.readProduction")(function* <R>(opts: {
   readonly cwd: string;
@@ -321,6 +337,8 @@ export const readProduction = Effect.fn("Releasing.readProduction")(function* <R
   if (!tags.ok) return unproved(tags.why);
   const read = tags.read;
   const on = `on ${opts.tag}'s pipeline at ${opts.pipeline}`;
+  const settled = unsettled(read.jobs, opts.jobs, on);
+  if (settled !== null) return unproved(settled);
   const jobs: JobLink[] = [];
   for (const name of opts.jobs) {
     const job = read.jobs.find((one) => one.name === name);

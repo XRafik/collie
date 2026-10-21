@@ -166,3 +166,43 @@ test("an application's tag is not ready for production on a pipeline of another 
       expect((yield* read(PIPELINE.replace("group/app", "other/project")))._tag).toBe("Unproved");
     }).pipe(Effect.scoped),
   ));
+
+test("a job still running or pending keeps an application's tag from production, before and at the go", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { cwd, first, tag } = yield* repository;
+      const at = yield* tag("v1.2.0");
+      for (const state of ["running", "pending"] as const) {
+        const run = onGitlab({
+          "7": tagRun(at, {
+            jobs: [
+              { name: "test", state },
+              { name: "deploy-production", state: "manual" },
+            ],
+          }),
+        });
+        const proved = yield* readTag({
+          cwd,
+          tag: "v1.2.0",
+          merged: first,
+          pipeline: PIPELINE,
+          proves: "staged",
+          ref: REF,
+          stage: [],
+          production: ["deploy-production"],
+          run,
+        });
+        expect(proved._tag).toBe("Unproved");
+        const played = yield* readProduction({
+          cwd,
+          ref: REF,
+          tag: "v1.2.0",
+          merged: first,
+          pipeline: PIPELINE,
+          jobs: ["deploy-production"],
+          run,
+        });
+        expect(played._tag).toBe("Unproved");
+      }
+    }).pipe(Effect.scoped),
+  ));
