@@ -134,7 +134,7 @@ happens.
   later. An agent started in that gap runs out on its first request and falls back mid-work
   (D8). Collie does not relay readings between Machines. Every Machine on an account calls
   the endpoint, so a refusal is more likely, and D2's back-off absorbs it. Desktop shows
-  one entry per account, keyed by the account's id and not its email.
+  one entry per account, matched as "Amended 2026-10-21" says.
 - Some fallbacks only help when a harness fails. pi on `openai-codex` draws on the same
   ChatGPT subscription as Codex. For usage, a fallback needs another subscription.
 - The Claude endpoint is not documented. If it changes, the reading says it cannot be
@@ -177,3 +177,30 @@ another. It now moves as work does, on the same judgement.
   before opens with a line of Desktop's own: from what, to what and why. Where nothing has
   room, the turn runs on the conversation's own choice, and the line says so (D4). A move
   never refuses or holds a message.
+
+## Amended 2026-10-21: Usage is a page of Desktop's own
+
+**Status: accepted.**
+
+Desktop showed each Subscription's usage inside each Machine's section of the Machines page,
+so an account logged in on two Machines appeared twice, each copy with its own age, though
+the provider counts it once. Desktop also matched a ChatGPT reading by Codex's
+`chatgptAccountId`, which belongs to the workspace, not the seat: two people's seats in one
+business workspace became one entry, showing whichever reading was newer.
+
+- **An account is matched in Desktop, by one grouping.** Its key is the Subscription and
+  the reading's account. A Claude account is its organization and account, which already
+  names the seat. A ChatGPT account adds the login's email, because its id is the
+  workspace's. The email is never the key on its own. A reading with no account cannot be
+  matched across Machines and stays its Machine's own. Only live Machines count. The
+  header and the Usage page are drawn from this grouping, so they cannot disagree. No host,
+  `UsageReading` or `collie usage` changes, so Machines whose hosts are older match too.
+- **Usage is a page.** The header's usage button opens it and is always shown. Each account
+  is one section: the meters of its newest reading that has windows, which Machine read it
+  how long ago and from where, and every live Machine logged in to it, each with its own
+  reading's problem. A reading with no account and no numbers, and a Machine whose host
+  gave no readings, are listed under **Not read**. The Machines page shows no usage.
+- **Nothing else moves.** Windows of one account are not merged across readings; the newest
+  that has windows is shown whole. Agents keep reading usage per Machine with `collie usage`
+  and `collie --machine <m> usage`, and the page adds no action. Usage still never refuses
+  work.

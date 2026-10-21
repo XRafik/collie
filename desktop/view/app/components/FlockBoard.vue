@@ -165,12 +165,14 @@ watch(update, (now) => {
         </p>
         <div class="ml-auto flex items-center">
           <UButton
-            v-if="usage.entries.value.length > 0"
             color="neutral"
             variant="ghost"
             size="sm"
             data-testid="usage"
-            @click="open('machines')"
+            :active="page?.kind === 'usage'"
+            active-variant="soft"
+            :aria-pressed="page?.kind === 'usage'"
+            @click="toggle('usage')"
           >
             <template v-for="(entry, i) in usage.entries.value" :key="entry.key">
               <span v-if="i > 0" class="text-muted">·</span>
@@ -180,6 +182,7 @@ watch(update, (now) => {
                 </span>
               </UTooltip>
             </template>
+            <template v-if="usage.entries.value.length === 0">Usage</template>
           </UButton>
         </div>
         <UButton
@@ -326,6 +329,11 @@ watch(update, (now) => {
         />
         <WorkflowsPage
           v-if="page?.kind === 'workflows'"
+          class="absolute inset-0"
+          @back="gesture({ kind: 'close' })"
+        />
+        <UsagePage
+          v-if="page?.kind === 'usage'"
           class="absolute inset-0"
           @back="gesture({ kind: 'close' })"
         />
