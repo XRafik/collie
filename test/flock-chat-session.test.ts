@@ -134,6 +134,25 @@ test("the human's own servers are read from Claude Code's config, and Collie's k
   expect(shadowed.mcpServers.collie).toMatchObject({ type: "sdk" });
 });
 
+test("a server the human configured keeps how it authenticates and its options", () => {
+  const servers = {
+    signed: {
+      type: "http",
+      url: "https://signed.example/mcp",
+      headersHelper: "/home/mk/bin/mcp-headers",
+      timeout: 60000,
+      alwaysLoad: true,
+    },
+    registered: {
+      type: "sse",
+      url: "https://registered.example/sse",
+      oauth: { clientId: "collie", callbackPort: 8765 },
+    },
+    local: { command: "helle-mcp", timeout: 5000, alwaysLoad: false },
+  };
+  expect<unknown>(userMcpServers(JSON.stringify({ mcpServers: servers }))).toEqual(servers);
+});
+
 test("a tool of an MCP server the human configured is allowed as it was asked", () =>
   Effect.runPromise(
     Effect.gen(function* () {

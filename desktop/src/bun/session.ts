@@ -81,21 +81,28 @@ type Permission<Input> =
   | { readonly behavior: "deny"; readonly message: string };
 
 const Strings = Schema.Record(Schema.String, Schema.String);
+// Claude Code's own options, such as headersHelper, oauth and timeout, are passed on as written.
+const Rest = [Schema.Record(Schema.String, Schema.Unknown)] as const;
 const UserMcpServer = Schema.Union([
-  Schema.Struct({
-    type: Schema.optionalKey(Schema.Literal("stdio")),
-    command: Schema.String,
-    args: Schema.optionalKey(Schema.Array(Schema.String)),
-    env: Schema.optionalKey(Strings),
-  }),
-  Schema.Struct({
-    type: Schema.Literals(["http", "sse"]),
-    url: Schema.String,
-    headers: Schema.optionalKey(Strings),
-  }),
+  Schema.StructWithRest(
+    Schema.Struct({
+      type: Schema.optionalKey(Schema.Literal("stdio")),
+      command: Schema.String,
+      args: Schema.optionalKey(Schema.Array(Schema.String)),
+      env: Schema.optionalKey(Strings),
+    }),
+    Rest,
+  ),
+  Schema.StructWithRest(
+    Schema.Struct({
+      type: Schema.Literals(["http", "sse"]),
+      url: Schema.String,
+      headers: Schema.optionalKey(Strings),
+    }),
+    Rest,
+  ),
 ]);
 export type UserMcpServer = Schema.Schema.Type<typeof UserMcpServer>;
-/** Each MCP server the human configured, by its name. */
 export type UserMcpServers = Readonly<Record<string, UserMcpServer>>;
 
 const decodeClaudeJson = Schema.decodeUnknownOption(
