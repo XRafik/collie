@@ -47,7 +47,6 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const visited = new Set<string>();
   const checkouts = new Set<string>();
   const aliases: DirectoryAlias[] = [];
   // A link to nothing, such as a forwarded agent socket left by a closed login, an entry
@@ -67,30 +66,38 @@ export const publicationCheckouts = Effect.fn("Issues.publicationCheckouts")(fun
       }
       return canonical;
     });
-  const visit = (root: string, dir: string, depth: number): Effect.Effect<void, PlatformError> =>
+  // Levels a directory was last walked with; a shallower route walks it again.
+  const walked = new Map<string, number>();
+  const children = (root: string, dir: string, left: number) =>
     Effect.gen(function* () {
       const canonical = yield* record(dir);
       const fromRoot = path.relative(root, canonical);
-      if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`)) return;
-      if (depth === DEPTH || visited.has(canonical)) return;
-      visited.add(canonical);
-      const children = (yield* fs.readDirectory(canonical)).filter((name) => !SKIPPED.has(name));
-      yield* Effect.forEach(
-        children,
-        (name) =>
-          Effect.gen(function* () {
-            const child = path.join(canonical, name);
-            const info = yield* fs.stat(child).pipe(Effect.catchTag("PlatformError", unseen));
-            if (info?.type === "Directory") yield* visit(root, child, depth + 1);
-          }),
-        { concurrency: 8, discard: true },
-      );
+      if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`)) return [];
+      if (left === 0 || (walked.get(canonical) ?? -1) >= left) return [];
+      walked.set(canonical, left);
+      const directories: string[] = [];
+      for (const name of yield* fs.readDirectory(canonical)) {
+        if (SKIPPED.has(name)) continue;
+        const child = path.join(canonical, name);
+        const info = yield* fs.stat(child).pipe(Effect.catchTag("PlatformError", unseen));
+        if (info?.type === "Directory") directories.push(child);
+      }
+      return directories;
     }).pipe(
       Effect.catchTag("PlatformError", (error) =>
-        error.reason._tag === "PermissionDenied" ? Effect.void : Effect.fail(error),
+        error.reason._tag === "PermissionDenied" ? Effect.succeed([]) : Effect.fail(error),
       ),
     );
-  for (const root of roots) yield* visit(yield* fs.realPath(root), root, 0);
+  for (const root of roots) {
+    const canonicalRoot = yield* fs.realPath(root);
+    let level = [root];
+    for (let left = DEPTH; level.length > 0; left--) {
+      const found = yield* Effect.forEach(level, (dir) => children(canonicalRoot, dir, left), {
+        concurrency: 8,
+      });
+      level = found.flat();
+    }
+  }
   for (const dir of known) yield* record(dir).pipe(Effect.catchTag("PlatformError", unseen));
   return { checkouts: [...checkouts].sort(), aliases };
 });

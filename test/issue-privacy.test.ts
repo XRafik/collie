@@ -112,3 +112,54 @@ test("a checkout Collie knows of is in the inventory wherever it is", () =>
       expect(inventory.checkouts).toEqual([`${tmp}/elsewhere/sibling`, `${root}/own`]);
     }),
   ));
+
+test("a root inside another root is still walked its own six levels", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tmp = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const root = `${tmp}/home`;
+      const worktrees = `${root}/.herdr/worktrees`;
+      yield* fs.makeDirectory(`${worktrees}/a/b/c/d/repo/.git`, { recursive: true });
+
+      const inventory = yield* publicationCheckouts([root, worktrees]);
+
+      expect(inventory.checkouts).toEqual([`${worktrees}/a/b/c/d/repo`]);
+    }),
+  ));
+
+test("the walk keeps at most eight filesystem calls in flight however wide the tree", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const tmp = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const root = `${tmp}/home`;
+      const names = ["a", "b", "c", "d"];
+      let level = [root];
+      for (let depth = 0; depth < 5; depth++)
+        level = level.flatMap((dir) => names.map((name) => `${dir}/${name}`));
+      yield* Effect.forEach(level, (dir) => fs.makeDirectory(dir, { recursive: true }), {
+        concurrency: 32,
+      });
+      let inFlight = 0;
+      let most = 0;
+      const counted = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.suspend(() => {
+          most = Math.max(most, ++inFlight);
+          return effect;
+        }).pipe(Effect.ensuring(Effect.sync(() => inFlight--)));
+
+      yield* publicationCheckouts([root]).pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          stat: (path) => counted(fs.stat(path)),
+          readDirectory: (path, options) => counted(fs.readDirectory(path, options)),
+          realPath: (path) => counted(fs.realPath(path)),
+          exists: (path) => counted(fs.exists(path)),
+        }),
+      );
+
+      expect(most).toBeGreaterThan(1);
+      expect(most).toBeLessThanOrEqual(8);
+    }),
+  ));
