@@ -1069,9 +1069,9 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
           return event === undefined || (one.event ?? "push") === event;
         })
         .map(([id]) => ({
-        id: Number(id),
-        html_url: `https://github.com/${byBranch[1]}/actions/runs/${id}`,
-      })),
+          id: Number(id),
+          html_url: `https://github.com/${byBranch[1]}/actions/runs/${id}`,
+        })),
     });
   return no();
 }

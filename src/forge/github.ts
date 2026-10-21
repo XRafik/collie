@@ -1166,10 +1166,7 @@ function tagPipeline<R>(
     if (ref.project === null) return { ok: false, reason: "no repository to read runs of" };
     const listed = yield* run(
       "gh",
-      [
-        "api",
-        `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&per_page=1`,
-      ],
+      ["api", `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&per_page=1`],
       cwd,
     );
     const runs = Schema.decodeUnknownOption(WorkflowRunsJson)(listed.stdout);
