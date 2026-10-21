@@ -308,8 +308,8 @@ runs from a shell inside herdr: `herdr plugin action invoke cego.collie.pick`.
    `cd`-ed into the checkout the run works in. An operation that reuses an agent opens
    nothing. The label carries no state: the run's card on the board says what it is doing,
    and herdr's own agent-status column says what each agent is.
-7. `plan`, `architecture` and `review` end in a question — **What next?** — answered on the
-   run's card, with `collie run answer`, or in chat. Launching asks nothing about it: a
+7. `plan`, `architecture`, `review` and `implement` end in a question — **What next?** —
+   answered from the run's card's answer menu, with `collie run answer`, or in chat. Launching asks nothing about it: a
    question is asked when the run reaches it, so you decide with the work in front of you.
    `prefix+u` asks the host to pick a run that is still going back up.
 
@@ -2270,6 +2270,63 @@ A step pointed at a merge request needs its forge's CLI logged in to its host: `
 `glab auth status --hostname <host>` on GitLab, `gh` and `gh auth status --hostname
 github.com` on GitHub. In a directory that is not a checkout there is no branch and no
 working tree to review, so the target menu is one entry — **Type it…**.
+
+## Releasing a merge request
+
+`collie run start release --input mr=<target>` — or **release** from the board's start menu —
+takes one merge request the rest of the way once you have said go. The target is the
+same as a review's ([above](#reviewing-someone-elses-merge-request)). Start it as soon as
+the merge request is open: the Run proves the head with its checks, then waits at no token
+cost until the merge request is approved, every external comment is answered, and it is
+green and mergeable at that head. Its card says what it is still waiting for, and a push
+to the branch is proved again before anything is asked.
+
+An `implement` Run starts one for you. Once its merge request is open, it asks **What
+next?**: answer **Release** from the card's answer menu, Desktop, chat or `collie run answer
+<run> Release --decision next`, and the release runs as its child, in its checkout and held
+to its Checks, or **Finish** to end there. To release it later, a succeeded implement Run
+whose merge request is still open offers **Release** in the card's Actions, and through
+`collie run action`.
+
+A reviewer's comment is taken up as it comes: the Run's agent fixes what holds and
+pushes, or disputes it, and Collie replies on the forge with the commit or the reason. An
+external reviewer is a person other than the login Collie works as on the forge, so your
+own comments, bots' and system notes start nothing: to tell the Run something, steer it
+(`collie run steer <run> "<words>"`, or from the card) rather than commenting. Collie
+never resolves a thread; that stays the reviewer's. A check that fails on a pushed head
+goes to a fix round, and four of them in a row park the Run for you to repair and resume.
+
+Then it asks **Release** or **Finish**, naming the head and who approved it. **Release**
+claims the repository, merges at exactly that head and tags the package; the Run ends
+only once the tag is on origin and its pipeline has finished and succeeded. **Finish**
+leaves the merge request open. Answer it from the card, Desktop, chat or
+`collie run answer <run> Release --decision go-1`. A merge request that is set to merge
+itself once green is refused at the start with why.
+
+An application has two ways to stage, each offered where its pipelines deploy to stage:
+
+- **Stage the merge request** deploys the merge request's own head to stage, unmerged, for
+  you to test. Collie reads from the forge that its stage jobs passed and stage carries
+  that head, and asks **`production`** while the Run holds the claim: **Send to
+  production** merges at that head, tags and plays production with no further question;
+  **Leave production to me** merges and tags, and you play production; **Finish** merges
+  nothing and rolls stage back. A stage that fails, or a comment that arrives while you
+  test, rolls stage back, gives the claim back and goes back to the wait, through a fix
+  round or the comment's round, and go 1 is asked again. Choose it to test a change on
+  stage before it reaches the default branch.
+- **Merge, tag and stage**: Collie merges, the agent tags and the tag's pipeline deploys
+  to stage, and Collie reads from the forge that stage carries the merge and that the
+  production jobs wait for somebody to start them. Then it asks a second go,
+  **`production`**: verify stage, then answer **Send to production**, and the agent plays
+  exactly the production jobs it named, or **Leave production to me** and play them
+  yourself. A stage that fails after the merge is rolled back to what production carries,
+  and the Run fails with the merge standing: the fix is a new merge request. Choose it
+  where the review was enough and stage only has to check the release.
+
+Either way the Run holds the claim until the forge shows production carries the merge. An
+application whose pipelines deploy nothing to stage is refused at the start. If a Run fails after
+it merged, **Release again** tags what it merged rather than merging anything again, and
+asks the second go afresh ([`release`](workflows.md#release)).
 
 ## Your defaults
 

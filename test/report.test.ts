@@ -30,6 +30,7 @@ const view = (over: Partial<RunView> & { runId: string }): RunView => ({
   diagnostic: null,
   parked: null,
   mr: null,
+  landing: null,
   ...over,
 });
 

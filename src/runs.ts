@@ -9,6 +9,7 @@ import { resultText, runView, runViews } from "./lifecycle";
 import { HOLD, STOP, evidenceDir, runDir, type RunView } from "./engine";
 import type { Settled } from "./strategies";
 import type { WorktreeRecord } from "./run";
+import type { Landing } from "./landing";
 
 /** Where a Run is, in the words every board and listing uses. */
 export type RunState = "running" | "waiting" | "succeeded" | "failed" | "stopped";
@@ -40,6 +41,8 @@ export interface RunFacts {
   readonly settled: Settled;
   readonly branch: string | null;
   readonly mr: string | null;
+  /** Its landing of that merge request, which the merge watch spares it by. */
+  readonly landing: Landing | null;
   /** A workspace of its own; null lives in its Task's. */
   readonly workspace: string | null;
   /** The checkout Collie made for it, which is what says it may take it away again. */
@@ -110,6 +113,7 @@ export const factsOfView = (stateDir: string, view: RunView): RunFacts => ({
   },
   branch: view.branch,
   mr: view.mr,
+  landing: view.landing,
   workspace: view.workspace,
   worktree: view.worktree,
   dir: runDir(stateDir, view.runId),

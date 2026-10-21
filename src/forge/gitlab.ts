@@ -3,6 +3,7 @@
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import {
   mrPath,
+  mrWords,
   type ForgeChecks,
   type Mergeability,
   type MrDetails,
@@ -15,6 +16,7 @@ import { keepCredentialHelper, whatItSaid, type Ran, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type {
   DeployTier,
+  DeployedRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -22,9 +24,12 @@ import type {
   BaseJobRead,
   JobRead,
   JobState,
+  PipelineRead,
+  TagPipelineRead,
   Readiness,
 } from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
+import { judgeComments, type ForgeComment, type MergeAnswer, type ReviewRead } from "./review";
 
 export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
 
@@ -341,6 +346,45 @@ export function liveTier<R>(
   });
 }
 
+/** The commit the newest successful deployment to an environment of `tier` has. */
+function deployed<R>(
+  ref: MrRef,
+  tier: DeployTier,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<DeployedRead, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(ref.project);
+    if (!host || !ref.project) return { ok: false, reason: `${ref.project} is not on GitLab` };
+    const path = encodeURIComponent(ref.project.slice(host.length + 1));
+    const api = (route: string) =>
+      run("glab", ["api", "--hostname", host, `projects/${path}/${route}`], cwd);
+    const unread = {
+      ok: false,
+      reason: `glab could not read ${ref.project}'s deployments`,
+    } as const;
+    const names = new Set<string>();
+    for (let page = 1; ; page++) {
+      const environments = yield* api(`environments?per_page=100&page=${page}`);
+      const listed = Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout);
+      if (environments.code !== 0 || Option.isNone(listed)) return unread;
+      for (const env of listed.value) if (env.tier === tier) names.add(env.name);
+      if (listed.value.length < 100) break;
+    }
+    if (names.size === 0) return { ok: true, sha: null };
+    for (let page = 1; ; page++) {
+      const deployments = yield* api(
+        `deployments?status=success&order_by=created_at&sort=desc&per_page=100&page=${page}`,
+      );
+      const newest = Schema.decodeUnknownOption(DeploymentsJson)(deployments.stdout);
+      if (deployments.code !== 0 || Option.isNone(newest)) return unread;
+      const found = newest.value.find((one) => names.has(one.environment.name));
+      if (found !== undefined) return { ok: true, sha: found.sha };
+      if (newest.value.length < 100) return { ok: true, sha: null };
+    }
+  });
+}
+
 const OpenMrsJson = Schema.fromJsonString(
   Schema.Array(
     Schema.Struct({
@@ -572,8 +616,24 @@ const projectApi = <R>(ref: MrRef, cwd: string, run: Runner<R>) =>
     const project = encodeURIComponent(ref.project.slice(host.length + 1));
     return {
       ok: true,
-      api: (route: string, method: "GET" | "POST" = "GET") =>
-        run("glab", ["api", "--hostname", host, "-X", method, `projects/${project}/${route}`], cwd),
+      api: (
+        route: string,
+        method: "GET" | "POST" | "PUT" = "GET",
+        fields: ReadonlyArray<string> = [],
+      ) =>
+        run(
+          "glab",
+          [
+            "api",
+            "--hostname",
+            host,
+            "-X",
+            method,
+            ...fields.flatMap((one) => ["-f", one]),
+            `projects/${project}/${route}`,
+          ],
+          cwd,
+        ),
     } as const;
   });
 
@@ -638,6 +698,272 @@ function baseJob<R>(
   });
 }
 
+const Username = Schema.Struct({ username: Schema.String });
+const ReviewMrJson = Schema.fromJsonString(
+  Schema.Struct({
+    state: Schema.String,
+    sha: optionalText,
+    merge_commit_sha: optionalText,
+    squash_commit_sha: optionalText,
+    merged_at: optionalText,
+    merge_user: Schema.optionalKey(Schema.NullOr(Username)),
+    merged_by: Schema.optionalKey(Schema.NullOr(Username)),
+    head_pipeline: optionalStatus,
+    pipeline: optionalStatus,
+    detailed_merge_status: optionalText,
+    merge_status: optionalText,
+    web_url: optionalText,
+  }),
+);
+const ApprovalStateJson = Schema.fromJsonString(
+  Schema.Struct({
+    rules: Schema.Array(
+      Schema.Struct({
+        name: Schema.String,
+        approvals_required: Schema.Number,
+        approved_by: Schema.optionalKey(Schema.NullOr(Schema.Array(Username))),
+      }),
+    ),
+  }),
+);
+const ApprovalsJson = Schema.fromJsonString(
+  Schema.Struct({
+    approvals_required: optionalCount,
+    approved_by: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Struct({ user: Username })))),
+  }),
+);
+const DiscussionsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      individual_note: Schema.Boolean,
+      notes: Schema.Array(
+        Schema.Struct({
+          id: Schema.Number,
+          body: Schema.String,
+          author: Schema.Struct({ username: Schema.String, bot: optionalFlag }),
+          created_at: Schema.String,
+          system: Schema.Boolean,
+          resolvable: optionalFlag,
+          resolved: optionalFlag,
+          position: Schema.optionalKey(
+            Schema.NullOr(
+              Schema.Struct({
+                new_path: optionalText,
+                old_path: optionalText,
+                new_line: optionalCount,
+                old_line: optionalCount,
+              }),
+            ),
+          ),
+        }),
+      ),
+    }),
+  ),
+);
+
+/** A project or group access token's user. */
+const TOKEN_BOT = /^(project|group)_\d+_bot(_\w+)?$/;
+
+/** Each rule's requirement, counted again without `login`'s approval. */
+function approvalOf(
+  rules: ReadonlyArray<{
+    readonly name: string;
+    readonly required: number;
+    readonly by: ReadonlyArray<string>;
+  }>,
+  login: string,
+  changesRequested: boolean,
+): string {
+  const requiring = rules.filter((rule) => rule.required > 0);
+  if (requiring.length === 0) return changesRequested ? "changes were requested" : "";
+  return requiring
+    .flatMap((rule) => {
+      const others = rule.by.filter((who) => who !== login).length;
+      return others >= rule.required
+        ? []
+        : [
+            `${rule.name} needs ${rule.required} approval(s) and has ${others} besides ${login}'s own`,
+          ];
+    })
+    .join("; ");
+}
+
+/**
+ * The merge request, its approvals (rule by rule where this GitLab has approval state) and
+ * every page of its discussions.
+ */
+function readReview<R>(
+  ref: MrRef,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<ReviewRead, never, R> {
+  return Effect.gen(function* () {
+    const where = whereOf(ref);
+    const reached = yield* projectApi(ref, cwd, run);
+    if (!reached.ok) return reached;
+    const { api } = reached;
+    const login = yield* glabLogin(cwd, run, ref.project);
+    if (login === null) return { ok: false, reason: "glab will not say who it is logged in as" };
+    const route = `merge_requests/${ref.iid}`;
+    const view = yield* api(route);
+    const mr = Schema.decodeUnknownOption(ReviewMrJson)(view.stdout);
+    if (view.code !== 0 || Option.isNone(mr))
+      return { ok: false, reason: `glab could not read ${where}` };
+    const approvals = yield* api(`${route}/approvals`);
+    const approved = Schema.decodeUnknownOption(ApprovalsJson)(approvals.stdout);
+    if (approvals.code !== 0 || Option.isNone(approved))
+      return { ok: false, reason: `glab could not read ${where}'s approvals` };
+    const approvers = (approved.value.approved_by ?? []).map((one) => one.user.username);
+    // Approval state is Premium's and Ultimate's; elsewhere the approvals read is one rule.
+    const state = yield* api(`${route}/approval_state`);
+    const rules = Option.match(
+      state.code === 0
+        ? Schema.decodeUnknownOption(ApprovalStateJson)(state.stdout)
+        : Option.none(),
+      {
+        onNone: () => [
+          {
+            name: "the merge request",
+            required: approved.value.approvals_required ?? 0,
+            by: approvers,
+          },
+        ],
+        onSome: (said) =>
+          said.rules.map((rule) => ({
+            name: `rule "${rule.name}"`,
+            required: rule.approvals_required,
+            by: (rule.approved_by ?? []).map((one) => one.username),
+          })),
+      },
+    );
+    const comments: ForgeComment[] = [];
+    const resolved = new Set<string>();
+    const web = mr.value.web_url ?? mrWords(ref).url ?? "";
+    for (let page = 1; ; page++) {
+      const listed = yield* api(`${route}/discussions?per_page=${PAGE}&page=${page}`);
+      const discussions = Schema.decodeUnknownOption(DiscussionsJson)(listed.stdout);
+      if (listed.code !== 0 || Option.isNone(discussions))
+        return { ok: false, reason: `glab could not read ${where}'s discussions` };
+      for (const discussion of discussions.value) {
+        const thread = discussion.individual_note ? null : discussion.id;
+        const resolvable = discussion.notes.filter((note) => note.resolvable === true);
+        if (thread !== null && resolvable.length > 0 && resolvable.every((note) => note.resolved))
+          resolved.add(thread);
+        for (const note of discussion.notes)
+          comments.push({
+            id: String(note.id),
+            url: `${web}#note_${note.id}`,
+            thread,
+            author: note.author.username,
+            kind: note.system
+              ? "system"
+              : note.author.bot === true || TOKEN_BOT.test(note.author.username)
+                ? "bot"
+                : "person",
+            at: note.created_at,
+            body: note.body,
+            file: note.position?.new_path ?? note.position?.old_path ?? null,
+            line: note.position?.new_line ?? note.position?.old_line ?? null,
+          });
+      }
+      if (discussions.value.length < PAGE) break;
+    }
+    const said = mr.value;
+    const changesRequested = said.detailed_merge_status === "requested_changes";
+    const unapproved = approvalOf(rules, login, changesRequested);
+    const head = said.sha ?? "";
+    return {
+      ok: true,
+      login,
+      state: said.state === "merged" ? "merged" : said.state === "opened" ? "open" : "closed",
+      head,
+      merged:
+        said.state === "merged"
+          ? {
+              sha: said.merge_commit_sha ?? said.squash_commit_sha ?? head,
+              by: said.merge_user?.username ?? said.merged_by?.username ?? "",
+              at: said.merged_at ?? "",
+            }
+          : null,
+      approved: unapproved === "",
+      unapproved,
+      approvers: approvers.filter((who) => who !== login),
+      changesRequested,
+      mergeable: mergeabilityOf(said.detailed_merge_status, said.merge_status) ?? null,
+      pipeline: headChecks(said.head_pipeline ?? said.pipeline ?? null, head),
+      comments: judgeComments(comments, login, resolved),
+    };
+  });
+}
+
+/** A note in the comment's discussion, or a note of its own on the merge request. */
+function reply<R>(
+  ref: MrRef,
+  to: Pick<ForgeComment, "thread">,
+  body: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<Readiness, never, R> {
+  return Effect.gen(function* () {
+    const reached = yield* projectApi(ref, cwd, run);
+    if (!reached.ok) return reached;
+    const route =
+      to.thread === null
+        ? `merge_requests/${ref.iid}/notes`
+        : `merge_requests/${ref.iid}/discussions/${encodeURIComponent(to.thread)}/notes`;
+    const posted = yield* reached.api(route, "POST", [`body=${body}`]);
+    return posted.code === 0
+      ? { ok: true, reason: "" }
+      : {
+          ok: false,
+          reason: `glab could not reply on ${whereOf(ref)}: ${whatItSaid(posted) || `exit ${posted.code}`}`,
+        };
+  });
+}
+
+/**
+ * GitLab's merge endpoint at `head`, never `glab mr merge`, whose `--auto-merge` defaults
+ * to on. No squash is passed, so the project's own setting stands.
+ */
+function merge<R>(
+  ref: MrRef,
+  head: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<MergeAnswer, never, R> {
+  return Effect.gen(function* () {
+    const where = whereOf(ref);
+    const reached = yield* projectApi(ref, cwd, run);
+    if (!reached.ok) return { _tag: "Refused", reason: reached.reason };
+    const { api } = reached;
+    const route = `merge_requests/${ref.iid}`;
+    const merging = yield* api(`${route}/merge`, "PUT", [`sha=${head}`]);
+    const after = yield* api(route);
+    const mr = Option.getOrNull(Schema.decodeUnknownOption(ReviewMrJson)(after.stdout));
+    const mergedSha = (said: typeof ReviewMrJson.Type) =>
+      said.merge_commit_sha ?? said.squash_commit_sha ?? said.sha ?? "";
+    if (merging.code === 0) {
+      const merged =
+        mr ?? Option.getOrNull(Schema.decodeUnknownOption(ReviewMrJson)(merging.stdout));
+      return { _tag: "Merged", merged: merged === null ? "" : mergedSha(merged) };
+    }
+    const refusal = whatItSaid(merging) || `exit ${merging.code}`;
+    if (after.code !== 0 || mr === null)
+      return { _tag: "Refused", reason: `GitLab refused to merge ${where}: ${refusal}` };
+    if (mr.state === "merged")
+      return {
+        _tag: "AlreadyMerged",
+        merged: mergedSha(mr),
+        head: mr.sha ?? "",
+        by: mr.merge_user?.username ?? mr.merged_by?.username ?? "",
+        at: mr.merged_at ?? "",
+      };
+    if ((mr.sha ?? "") !== head) return { _tag: "HeadMoved", head: mr.sha ?? "" };
+    return { _tag: "Refused", reason: `GitLab refused to merge ${where}: ${refusal}` };
+  });
+}
+
 function retryJob<R>(
   ref: MrRef,
   id: string,
@@ -695,6 +1021,85 @@ function pipelineStatus<R>(
     return Option.getOrNull(
       Option.map(Schema.decodeUnknownOption(PipelineJson)(answer.stdout), (one) => one.status),
     );
+  });
+}
+
+const PipelineIdentityJson = Schema.fromJsonString(
+  Schema.Struct({ status: Schema.String, ref: Schema.String, sha: Schema.String }),
+);
+
+/** The newest pipeline of `tag` in `ref`'s project. */
+function tagPipeline<R>(
+  ref: MrRef,
+  tag: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<TagPipelineRead, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(ref.project);
+    if (!host || !ref.project) return { ok: false, reason: `${ref.project} is not on GitLab` };
+    const path = ref.project.slice(host.length + 1);
+    const listed = yield* run(
+      "glab",
+      [
+        "api",
+        "--hostname",
+        host,
+        `projects/${encodeURIComponent(path)}/pipelines?ref=${encodeURIComponent(tag)}&order_by=id&sort=desc&per_page=1`,
+      ],
+      cwd,
+    );
+    const pipelines = Schema.decodeUnknownOption(PipelinesJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(pipelines))
+      return { ok: false, reason: `glab could not list ${tag}'s pipelines in ${ref.project}` };
+    const newest = pipelines.value[0];
+    return {
+      ok: true,
+      url: newest === undefined ? null : `https://${host}/${path}/-/pipelines/${newest.id}`,
+    };
+  });
+}
+
+/** `https://host/group/project/-/pipelines/7` and its jobs, a manual one as waiting by hand. */
+function pipeline<R>(
+  url: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<PipelineRead, never, R> {
+  return Effect.gen(function* () {
+    const m = /^https?:\/\/([^/\s]+)\/(.+?)\/-\/pipelines\/(\d+)(?:[/?#]\S*)?$/.exec(url.trim());
+    if (!m) return { ok: false, reason: `${url} is not a GitLab pipeline` };
+    const [, host, project, id] = m;
+    // The address is agent text: only a host the human signed glab in to is called.
+    if ((yield* run("glab", ["auth", "status", "--hostname", host!], cwd)).code !== 0)
+      return { ok: false, reason: `glab is not logged in to ${host}` };
+    const route = `projects/${encodeURIComponent(project!)}/pipelines/${id}`;
+    const api = (path: string) => run("glab", ["api", "--hostname", host!, path], cwd);
+    const said = yield* api(route);
+    const status = Schema.decodeUnknownOption(PipelineIdentityJson)(said.stdout);
+    if (said.code !== 0 || Option.isNone(status))
+      return { ok: false, reason: `glab could not read ${url}` };
+    const jobs: Array<(typeof JobsJson.Type)[number]> = [];
+    for (let page = 1; ; page++) {
+      const listed = yield* api(`${route}/jobs?per_page=100&page=${page}`);
+      const some = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
+      if (listed.code !== 0 || Option.isNone(some))
+        return { ok: false, reason: `glab could not list the jobs of ${url}` };
+      jobs.push(...some.value);
+      if (some.value.length < 100) break;
+    }
+    return {
+      ok: true,
+      succeeded: status.value.status === "success",
+      project: `${host}/${project}`,
+      ref: status.value.ref,
+      sha: status.value.sha,
+      jobs: jobs.map((one) => ({
+        name: one.name,
+        state: one.status === "manual" ? "manual" : (JOB_STATES.get(one.status) ?? "pending"),
+        url: one.web_url ?? null,
+      })),
+    };
   });
 }
 
@@ -799,6 +1204,7 @@ export const gitlab: Forge = {
         reason: answer.code === 0 ? "" : whatItSaid(answer) || "issue comment failed",
       }),
     ),
+  tagPipeline,
   clone,
   credentials: (project, into, run) => {
     const host = hostOf(project) ?? project.split("/")[0]!;
@@ -812,6 +1218,7 @@ export const gitlab: Forge = {
   display: "GitLab",
   cli: "glab",
   runStatus: pipelineStatus,
+  pipeline,
   noun: "merge request",
   webUrl: (project) => `https://${project}`,
   forBranch,
@@ -842,6 +1249,10 @@ export const gitlab: Forge = {
   login: glabLogin,
   details: mrDetails,
   liveTier,
+  deployed,
+  readReview,
+  reply,
+  merge,
   post: (ref, body, approve, cwd, run) =>
     Effect.gen(function* () {
       const where = whereOf(ref);

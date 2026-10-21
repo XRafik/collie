@@ -904,6 +904,49 @@ test(
 );
 
 test(
+  "a chained child is held to its parent's checks, grants included, rather than the project's",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${rig.projectDir}/.collie`, { recursive: true });
+        yield* fs.writeFileString(
+          `${rig.projectDir}/.collie/verify.json`,
+          '[{"name":"unit","executable":"true","argv":[],"cwd":"worktree"}]',
+        );
+        const task = yield* aTask;
+        yield* rig.queueOutputs([{ verdict: "clean" }, { verdict: "clean" }]);
+        const granted = { ...UNIT, name: "granted" };
+        const runId = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [chains] = yield* loaded(registry, [
+              `${fixtures}/chains.workflow.ts`,
+              `${fixtures}/builds.workflow.ts`,
+            ]);
+            const started = yield* registry
+              .start({
+                generation: chains!,
+                request: "r1",
+                project: rig.projectDir,
+                input: {},
+                verify: [granted],
+                task: task.id,
+              })
+              .pipe(Effect.result);
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            yield* finished(started.success.runId);
+            return started.success.runId;
+          }),
+        );
+        expect(yield* frozen(runId)).toEqual([granted]);
+        expect(yield* frozen(`${runId}.build`)).toEqual([granted]);
+      }),
+    ),
+  120_000,
+);
+
+test(
   "a Run started in a checkout with a remote begins with the checks remembered for it, over the user's",
   () =>
     runEffect(

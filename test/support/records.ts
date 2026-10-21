@@ -23,6 +23,7 @@ export function runFacts(over: Partial<RunFacts> = {}): RunFacts {
     settled: { inputs: {}, strategies: {}, sources: {} },
     branch: null,
     mr: null,
+    landing: null,
     workspace: null,
     worktree: null,
     dir: `/state/runs/${id}`,

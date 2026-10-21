@@ -55,6 +55,9 @@ import type { Source } from "./offers";
 import type { Asker } from "./proposals";
 import type { UsageReading } from "./usage-model";
 import type { Integration } from "./integrate";
+import type { MergeOutcome, Takeover } from "./landing";
+import type { ReviewHead, ReviewStanding } from "./review-wait";
+import type { FastForward, ProductionRead, RollbackRead, StageRead, TagRead } from "./releasing";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -70,9 +73,41 @@ export { repoArgs } from "./forge/gitlab";
 export { mrForgeFacts } from "./forge/forge";
 /** How much of a Subscription is used, as the host reads it (ADR-0049). */
 export { subscriptionOf, usedFor, type UsageReading } from "./usage-model";
-export { parseMrTarget, type MrRef } from "./board-model";
+export { forgeOfRef, mrUrlOf, parseMrTarget, readMrRef, type MrRef } from "./board-model";
 /** What merging the default branch into a Run's branch did (`HostApi.integrate`). */
 export { IntegrationSchema, type Integration } from "./integrate";
+export { MergeOutcomeSchema, TakeoverSchema, type MergeOutcome, type Takeover } from "./landing";
+/** Where a merge request's review stands for a Release Run (`HostApi.awaitReview`). */
+export {
+  AnswerSchema,
+  ReviewHeadSchema,
+  ReviewStandingSchema,
+  SettledAnswersSchema,
+  settleAnswers,
+  type Answer,
+  type OpenComment,
+  type ReviewHead,
+  type ReviewStanding,
+  type SettledAnswers,
+} from "./review-wait";
+/**
+ * A checkout brought to a head, and a tag, production and stage read back
+ * (`HostApi.fastForward`, `readTag`, `readProduction`, `readStage`, `readRollback`).
+ */
+export {
+  FastForwardSchema,
+  JobLinkSchema,
+  ProductionReadSchema,
+  RollbackReadSchema,
+  StageReadSchema,
+  TagReadSchema,
+  type FastForward,
+  type JobLink,
+  type ProductionRead,
+  type RollbackRead,
+  type StageRead,
+  type TagRead,
+} from "./releasing";
 
 export {
   CheckSchema,
@@ -741,9 +776,156 @@ export interface HostApi {
    */
   readonly defaultHead: (cwd: string) => Effect.Effect<string, WorkflowError>;
   /**
+   * Merges the merge request this Run recorded at `head`, through the forge's REST merge,
+   * never as an admin and never by auto-merge. The Run's landing record is written before
+   * the forge is asked and says after what came of it; the merge watch reads it to leave this
+   * Run, and the Runs it was started from, running when the merge lands. Answers `Merged`
+   * with the merged commit, `HeadMoved` where the merge request's head is no longer `head`,
+   * `MergedOutside` where someone else merged it first, or `Refused` with the forge's why.
+   * Fails for a Run that recorded no merge request. Take it inside an Activity: a replay
+   * settles an attempt an earlier host left on the forge's word rather than merging again.
+   */
+  readonly merge: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly head: string;
+  }) => Effect.Effect<MergeOutcome, WorkflowError>;
+  /**
+   * One read of the review of the merge request this Run recorded, judged against `proved`,
+   * the head its Checks were proved on: `Ready`, `Waiting` with what is missing, or any of
+   * what `awaitReview` returns. `Unreadable` says why the forge could not be read. Take it
+   * inside an Activity, so a replay takes the same path.
+   */
+  readonly review: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly proved: string;
+    /** Unanswered comments already returned, which keep the review waiting rather than return. */
+    readonly seen: ReadonlyArray<string>;
+  }) => Effect.Effect<ReviewStanding, WorkflowError>;
+  /**
+   * Reads the review every 5 minutes, spending no model tokens, until it is `Ready` at
+   * `proved`, has `Unanswered` external comments not in `seen`, has `Moved` from `proved`, is
+   * `Merged` or `Closed`, or a Hold or Stop ends the wait (`Held`). A moved head is said
+   * before readiness. Meanwhile the card's parked line says what it waits for, cleared when
+   * it returns. Take it inside an Activity, and suspend the Run on `Held` there.
+   */
+  readonly awaitReview: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly proved: string;
+    readonly seen: ReadonlyArray<string>;
+  }) => Effect.Effect<ReviewStanding, WorkflowError>;
+  /**
+   * Replies to the comment with id `comment` on the merge request this Run recorded, posting
+   * `body` as it is, in the comment's thread where it has one. Never resolves a thread. A
+   * comment already answered, as after a restart that posted the reply before it was
+   * journaled, is `already` and gets no second reply. Take each inside its own Activity.
+   */
+  readonly reply: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly comment: string;
+    readonly body: string;
+  }) => Effect.Effect<"posted" | "already", WorkflowError>;
+  /**
+   * The recorded merge request's head as the forge reports it, which of `commits` that head
+   * carries (fetched from origin), and the ids of its external comments still unanswered.
+   * Take it inside an Activity.
+   */
+  readonly reviewHead: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly commits: ReadonlyArray<string>;
+  }) => Effect.Effect<ReviewHead, WorkflowError>;
+  /**
+   * Fetches origin and fast-forwards the checkout at `cwd` to `head`, recording the move in
+   * the Run log. A checkout with uncommitted changes, or one `head` does not fast-forward
+   * (a force push), is `Refused` with why: nothing is reset or discarded. Take it inside an
+   * Activity.
+   */
+  readonly fastForward: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly head: string;
+  }) => Effect.Effect<FastForward>;
+  /**
+   * Reads `tag` back from origin and the forge, rather than from an Output, against what it
+   * must prove. Either way the tag is on origin and carries `merged`. `finished`, a
+   * package's: where `pipeline` names one, the forge says it finished and succeeded; a
+   * pipeline with a job waiting to be started by hand has not finished, and the answer names
+   * the job. `staged`, an application's: `InProduction` where production already carries
+   * `merged`; else each `stage` job passed and stage's newest successful deployment carries
+   * `merged`, or it is `StageFailed`; every other job passed and none is still running or waiting to run; and each `production`
+   * job, one at least, waits to be started by hand, which `Proved` lists with its address.
+   * The pipeline's own state is not read. Take it inside an Activity.
+   */
+  readonly readTag: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly tag: string;
+    readonly merged: string;
+    /** The tag's pipeline, or null where it named none. */
+    readonly pipeline: string | null;
+    readonly proves: "finished" | "staged";
+    /** For `staged`: the stage deploy and stage check jobs of the pipeline. */
+    readonly stage?: ReadonlyArray<string>;
+    /** For `staged`: the production jobs of the pipeline. */
+    readonly production?: ReadonlyArray<string>;
+  }) => Effect.Effect<TagRead>;
+  /**
+   * Reads again, before production jobs are played: `Carried` where production already
+   * carries `merged`; `Unproved` where the tag on origin is no longer `at` or no longer
+   * carries it, one of `jobs` is gone
+   * from the pipeline or failed, or any other job failed or is still running or waiting to run; else `Play` with those of `jobs` still waiting to be
+   * started by hand, none where somebody started them. Take it inside an Activity.
+   */
+  readonly readProduction: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly tag: string;
+    /** `Proved`'s `at`: the tag's object on origin when it was proved. */
+    readonly at: string;
+    readonly merged: string;
+    readonly pipeline: string;
+    readonly jobs: ReadonlyArray<string>;
+  }) => Effect.Effect<ProductionRead>;
+  /**
+   * Reads the recorded merge request's head on stage from the forge, rather than from an
+   * Output: `Staged` where each of `jobs`, one at least, passed on its head's pipeline and
+   * stage's newest successful deployment carries `head`, with each job's address; `Moved`
+   * where its head is no longer `head`; else `Failed` with why. Take it inside an Activity.
+   */
+  readonly readStage: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly head: string;
+    readonly jobs: ReadonlyArray<string>;
+  }) => Effect.Effect<StageRead>;
+  /**
+   * Whether the forge shows stage rolled back: its newest successful deployment no longer
+   * carries `off` and carries what production's has. Take it inside an Activity.
+   */
+  readonly readRollback: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly off: string;
+  }) => Effect.Effect<RollbackRead>;
+  /**
+   * For a merged merge request this Run recorded: takes over the landing of the newest Run
+   * on this host that landed it, where that Run ended without succeeding and the forge's
+   * merged commit is the one it recorded. The landing is recorded on this Run, naming the
+   * Run it came from. `Refused` says why not: merged outside a Release Run, already
+   * released, or still being released. Take it inside an Activity.
+   */
+  readonly takeOverLanding: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+  }) => Effect.Effect<Takeover, WorkflowError>;
+  /**
    * Blocks until the forge shows production carries `sha`, costing wall clock and no model
    * tokens, and says on the card meanwhile what it waits for: `jobs` are the production
-   * jobs left for a human to play, and word the line only. A forge that cannot say is
+   * jobs left to play, and they and `slug` word the line only. A forge that cannot say is
    * waited on too. Answers true once production carries it, false where the Run was
    * stopped or held first.
    */
@@ -752,8 +934,8 @@ export interface HostApi {
     readonly cwd: string;
     readonly sha: string;
     readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
-    /** The claim held meanwhile. */
-    readonly slug: string;
+    /** The claim held meanwhile, where the Run holds one. */
+    readonly slug?: string;
     /** The repository's web address, which a job without its own is played at. */
     readonly url: string;
   }) => Effect.Effect<boolean>;

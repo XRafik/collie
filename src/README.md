@@ -51,6 +51,9 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `verify-spec.ts`       | Which commands Collie may run itself for a Run, and where that permission came from                       |
 | `check-proof.ts`       | A Check's proof on a tree, and which of a Run's Checks it runs itself                                     |
 | `ci-job.ts`            | A check left to CI: its job read through the forge, a failure settled, waited on, its pass recorded       |
+| `landing.ts`           | A Run's merge at a head: its landing record, and the one rule settling an attempt a restart interrupted   |
+| `review-wait.ts`       | Where a merge request's review stands for a Release Run, and the wait's parked line                       |
+| `releasing.ts`         | A Release Run's checkout fast-forward, and its tag, stage and production read from the forge              |
 | `checks.ts`            | The one reading of a Run's running and finished checks that every door uses                               |
 | `outcome.ts`           | What a Run must prove to close, per kind, and what is still missing                                       |
 | `metrics.ts`           | What a Run produced and when: evidence, slices, rework, context — never pane activity                     |
@@ -113,6 +116,7 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `mr.ts`                | What a merge request step needs: assignee, template, the Linear tickets a branch answers                  |
 | `forge/forge.ts`       | The forge interface, and which adapter a merge request is on (ADR-0050)                                   |
 | `forge/issues.ts`      | Shared issue values and the created issue URL decoded from an adapter's answer                            |
+| `forge/review.ts`      | A merge request's review read and merge answer, and the one rule for external and answered comments       |
 | `forge/gitlab.ts`      | The GitLab adapter: everything Collie asks GitLab, through `glab`                                         |
 | `forge/github.ts`      | The GitHub adapter: everything Collie asks GitHub, through `gh`                                           |
 | `forge/*-checks.ts`    | Each forge's doctor checks: glab, its token and push; gh where a checkout uses GitHub                     |

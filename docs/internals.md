@@ -768,7 +768,12 @@ checks sit beside its adapter, in `src/forge/gitlab-checks.ts` and
 (`<name>.gitlab.md`, `<name>.github.md`) may name that forge's CLI. A caller asks the
 forge of the merge request in front of it (`forgeOf(ref)`, from the reference's host), and
 gets answers rather than CLI calls: whether the CLI is ready for a host, who it is logged
-in as, one merge request as the panel, how far a merged commit is deployed, and a note.
+in as, one merge request as the panel, how far a merged commit is deployed, the commit a
+tier's newest successful deployment has (`deployed`, which a Release Run reads stage and
+production by, a rollback included, since the release rolled back to is older than the
+merge), and a note. A pipeline read whole by its address (`pipeline`) names each job with
+its state and address, a job waiting to be started by hand as `manual`: GitLab's manual
+job, or a GitHub job waiting on its environment's approval.
 An operation is added to the interface when its first caller moves onto it.
 
 A checkout Collie clones keeps a credential helper for its forge's host in its own git
@@ -785,6 +790,67 @@ rules active for the name (`rules/branches/<name>`), and the classic protection 
 patterns through GraphQL. A Claude agent's launch reads it for the branch its Run created,
 and only `false` gives the agent the history allowance
 ([What a Claude agent's auto mode is told](using.md#what-a-claude-agents-auto-mode-is-told)).
+
+Three operations carry a merge request through its review and merge. Collie decides on
+what the review read says, never on an agent's Output
+([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D4):
+
+- **`readReview(ref)`** reads the state and head, the merged commit with who merged it and
+  when, approval, whether an external reviewer asks for changes, mergeability, the
+  pipeline at the head, and every comment. GitLab reads the merge request, its approvals
+  and every page of its discussions; GitHub reads the pull request and every page of its
+  issue comments, review comments, reviews with a body, and review threads. A comment is
+  `person`, `bot` or `system`, and one rule in `src/forge/review.ts` decides for both
+  forges which are **external** (a person's, not by Collie's login) and **answered** (a
+  later comment by Collie's login in its thread, any comment by Collie's login linking it,
+  or a resolved thread). **Approved** means the forge's rules are met without Collie's
+  own approval: GitLab counts each approval rule again without Collie's login (the
+  approvals read is one rule where the tier has no approval state); GitHub's `APPROVED`
+  stands where Collie's login has no approving review, else only where others reach the
+  base branch's required count, from its protection and rulesets. A count that cannot be
+  read, or code owners' review, is not approved, and the read says why.
+- **`reply(ref, comment, body)`** posts `body` as it is: in the comment's thread where it
+  has one (a GitLab discussion, a GitHub review comment's replies), else as a new comment.
+  It never resolves a thread.
+- **`merge(ref, head)`** merges through the forge's REST merge endpoint at `head`, never
+  `glab mr merge`, whose `--auto-merge` defaults to on. GitLab passes no squash, so the
+  project's setting stands; GitHub uses the repository's `viewerDefaultMergeMethod`. It is
+  never an admin merge or auto-merge. It answers merged (with the merged commit, read
+  back), already merged (with the commit, head, who and when), head moved, or refused with
+  the forge's reason.
+- **`pipeline(url)`** reads a pipeline (a GitHub workflow run) by its URL: whether it
+  succeeded, and each job's state. A job waiting for somebody to start it by hand — a
+  GitLab `manual` job, a GitHub job `waiting` for approval — reads as manual, and
+  `host.readTag` counts it as not finished.
+
+A Run merges through `host.merge`, never through `merge` itself, so that it lands with a
+**landing record** (`src/landing.ts`), kept as `landing.json` and log lines in the Run's
+own directory. The attempt, naming the merge request, the head and when, is written before
+the forge is asked; it becomes landed with the merged commit when the forge answers that
+this call merged it, and withdrawn on a refusal, a moved head, or a merge someone else made
+first.
+
+**The merge watch** (`settleMerges` in `src/merges.ts`) stops every running or waiting Run
+of a Task that began before its merge request merged: the work landed, so what is still
+building it is done. It leaves running the Run that landed it, and every Run up that Run's
+parent chain, since a Release Run under an implement Run has more to do after the merge
+(tag, stage, production), and its parents wait on it. It decides this from the recorded
+landing and the parent chain, never from a workflow's id
+([ADR-0029](adr/0029-one-host-acts-for-a-run-and-a-workflows-name-decides-nothing.md)): a
+landed record for that merge request spares, and so does an attempt this host process is
+making now, since the watch can read the merge before the call records landed. A withdrawn
+record, or one for another merge request, spares nothing.
+
+An attempt with no outcome, left by an earlier host process, is settled on the forge's word
+before it spares anything, by one rule (`settleAttempt`) that a replayed `host.merge` uses
+too. A merge request still open has nothing to settle: the replay withdraws the attempt and
+merges. One merged by Collie's login at the attempt's head, no earlier than a minute before
+the attempt was written, is the merge whose answer the restart lost, and becomes landed.
+Any other merge is someone else's: the attempt is withdrawn, the replay answers merged
+outside this Run, and the watch stops the Run and its parents. Where the forge cannot be
+read, the watch stops nothing for that merge request until it can. Collie's login is the
+operator's own, so a hand merge by that login, at the very head that was approved, after
+the attempt, cannot be told from Collie's, and is taken as the merge the go asked for.
 
 The interface also lists open issues, files issues, and comments on them. The adapters
 decode their own CLI answers into the shared issue shape. GitLab reads consecutive

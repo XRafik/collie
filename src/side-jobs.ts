@@ -10,6 +10,7 @@ import type { PluginEnv } from "./env";
 import type { Herdr } from "./herdr";
 import { liveHerds } from "./herds";
 import { homeDeps, restateHome, type HomeDeps } from "./home";
+import { landingNow } from "./landing";
 import { settleMerges, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { append as appendNews, newsPath, read as readNews, retired, supersede } from "./news";
@@ -194,6 +195,7 @@ export const sideJobs = <E, R>(opts: {
             checked,
             states,
             panels: opts.panels,
+            making: landingNow,
           });
         }),
       ),

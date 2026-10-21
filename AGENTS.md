@@ -1,7 +1,7 @@
 # Collie
 
 Collie codifies agent workflows for herdr — `plan`, `implement`, `review`, `architecture`,
-`renovate`, `general`, `investigate`, `self-improve` — as TypeScript modules run by one Effect v4 program with two front doors:
+`renovate`, `release`, `general`, `investigate`, `self-improve` — as TypeScript modules run by one Effect v4 program with two front doors:
 herdr actions, and the `collie` CLI.
 
 ## Where to look
@@ -113,6 +113,11 @@ here are in [`src/README.md`](src/README.md).
   `test/codex-stop.test.ts`, `test/agent-end.test.ts`.
 - **Child workflows, services** → [ADR-0022](docs/adr/0022-a-workflow-is-made-of-workflows.md),
   [`docs/sdk.md`](docs/sdk.md#a-workflow-made-of-other-workflows), `test/children.test.ts`.
+- **Release Run** → [ADR-draft-a-merge-request-is-released-on-a-humans-go](docs/adr/draft-a-merge-request-is-released-on-a-humans-go.md),
+  [`docs/workflows.md`](docs/workflows.md#release), `workflows/release.workflow.ts`,
+  `workflows/release.gitlab.md`, `workflows/release.github.md`, `src/review-wait.ts`,
+  `src/releasing.ts`, `src/landing.ts`, `test/release-content.test.ts`, `test/review-wait.test.ts`,
+  `test/landing.test.ts`, `test/support/baseline.ts`.
 - **Rallies, checks as proof** → [ADR-0023](docs/adr/0023-a-rally-is-a-loop-and-a-claim-is-not-proof.md),
   [ADR-0055](docs/adr/0055-a-run-never-asks-to-run-its-checks.md),
   [`docs/sdk.md`](docs/sdk.md#reviewing-and-fixing-until-it-converges), `settleRound`, `test/rally.test.ts`.

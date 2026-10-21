@@ -29,7 +29,19 @@ import { Rig, FakeHerdr } from "./recorder";
 import { exec } from "./command";
 import { fastForward, runEffect } from "./effect";
 import { FakeBin } from "./bin";
-import { CLI, FORGE_HOST, PROJECT, forgeOnPath, type FakeJob, type ForgeModel } from "./forge";
+import {
+  CLI,
+  FORGE_HOST,
+  PROJECT,
+  forgeOnPath,
+  type FakeJob,
+  type FakeComment,
+  type FakeMr,
+  type ForgeModel,
+} from "./forge";
+import * as BunServices from "@effect/platform-bun/BunServices";
+import { readLanding, takeOver, writeLanding } from "../../src/landing";
+import { shell } from "../../src/mr";
 import { readCheckpoints } from "../../src/cards";
 import { mrTarget, type MrForge } from "../../src/board-model";
 import { installFakeSkills } from "./defs";
@@ -56,6 +68,7 @@ import {
 import {
   HOLD,
   PARKED,
+  RunStatus,
   answerDecision,
   controlPath,
   declaredByModule,
@@ -82,6 +95,7 @@ const UNRELATED = {
   review: "second-look",
   architecture: "survey-the-ground",
   renovate: "keep-current",
+  release: "ship-it",
   investigate: "find-the-cause",
   general: "odd-job",
   "self-improve": "look-back",
@@ -153,7 +167,7 @@ const children = Layer.succeed(Children)(
 );
 
 /** A host layer a test may wrap, for the one capability it has no service to answer with. */
-type HostOverride = Layer.Layer<Host, never, Host>;
+type HostOverride = Layer.Layer<Host, never, Host | BunServices.BunServices>;
 
 /** The host's own layers, placing checkouts through the rig's herdr. */
 const foundation = () => ({
@@ -161,10 +175,12 @@ const foundation = () => ({
   userDir: rig.userDir,
   placing: { herdr: hostOf().herdr, env: hostOf().env },
   productionPoll,
+  reviewPoll,
 });
 
 /** How often production is read; a scenario that must not wait on it sets it long. */
 let productionPoll: Duration.Input = "20 millis";
+const reviewPoll: Duration.Input = "20 millis";
 
 const session = <A, E>(
   run: Effect.Effect<
@@ -514,6 +530,9 @@ const GRILLED = {
 const SPEC = { verdict: "clean", findings: [], spec: "plan/SPEC.md" };
 const TICKETS = { verdict: "clean", findings: [], issues_dir: "plan/issues", tickets: 3 };
 const GOAL = { goal: "make the registries one" };
+/** What a start passes for implement to end at its merge request without asking. */
+// oxlint-disable-next-line unicorn/no-thenable -- implement's Input is named `then`
+const FINISH = { then: "finish" } as const;
 
 scenario("a plan at the Projects root is told the root is not a repository", () =>
   runEffect(
@@ -777,7 +796,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-fan",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { task: "one-registry", outcome: "feature" },
         });
 
@@ -795,8 +814,12 @@ scenario(
             },
           ]),
         );
-        expect(new Set(started.map((one) => one.input.plan))).toEqual(new Set([plan]));
-        // The parent builds nothing itself.
+        // Nobody attends a repository's share, so each ends at its merge request.
+        expect(started.map((one) => one.input)).toEqual(
+          ["api", "docs", "web"].map(() => ({ plan, ...FINISH })),
+        );
+        // The parent builds nothing itself, and asks nothing.
+        expect(yield* questions("r-impl-fan")).toEqual([]);
         expect(yield* prompts()).toEqual([]);
       }),
     ),
@@ -885,7 +908,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-share",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { repo: "api" },
         });
 
@@ -932,7 +955,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-blocked",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
 
         expect(result._tag).toBe("Failure");
@@ -980,7 +1003,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-unverified",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
 
         expect(result._tag).toBe("Failure");
@@ -1079,7 +1102,7 @@ scenario(
         expect(started.map((one) => [one.workflow, one.input, one.options])).toEqual([
           [
             "implement",
-            { plan: `${runDir(dir, "r-plan-alone")}/plan` },
+            { plan: `${runDir(dir, "r-plan-alone")}/plan`, ...FINISH },
             { task: "one-registry", outcome: "feature" },
           ],
         ]);
@@ -1906,6 +1929,24 @@ scenario("what a finished Run of each shipped module offers is the module's own 
       expect(
         offersFrom(implement, facts({ succeeded: false, branch: "feature" })).map((o) => o.id),
       ).toEqual(["follow-up"]);
+      // A merge request still open is released later; a merged one, or none, is not.
+      const mrUrl = "https://gitlab.example.com/group/project/-/merge_requests/7";
+      const delivered = facts({ outcome: "feature", branch: "feature", mrUrl });
+      const offered = offersFrom(implement, delivered, { self: idOf("implement") });
+      expect(offered.map((o) => [o.id, o.title, o.workflow])).toEqual([
+        ["release", "Release", "release"],
+        ["follow-up", "Keep going on this", idOf("implement")],
+      ]);
+      expect(inputsFor(offered[0]!, { runDir: "/r", facts: delivered, input: {} })).toEqual({
+        mr: mrUrl,
+      });
+      expect(offersFrom(implement, { ...delivered, disposed: true })).toEqual([]);
+      expect(
+        offersFrom(implement, facts({ outcome: "feature", branch: "feature" })).map((o) => o.id),
+      ).toEqual(["follow-up"]);
+      expect(offersFrom(implement, { ...delivered, succeeded: false }).map((o) => o.id)).toEqual([
+        "follow-up",
+      ]);
 
       // A plan offers what it wrote, and only once it has written something.
       const plan = yield* declaredIn(shipped("plan"));
@@ -2177,7 +2218,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2242,7 +2283,7 @@ scenario(
         // The first ticket's Output is written by hand, once the plan has moved under it.
         yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-live", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-live", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-live`;
         yield* until(
@@ -2282,7 +2323,7 @@ scenario(
         yield* approve("r-grow", ["unit"]);
         yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-grow", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-grow", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-grow`;
         yield* until(
@@ -2347,7 +2388,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-criteria",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2401,7 +2442,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-unmet",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2444,7 +2485,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-amended", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-amended", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-amended`;
         yield* until(
@@ -2508,7 +2549,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-lead", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-lead", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-lead`;
         yield* until(
@@ -2571,7 +2612,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-lead-back", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-lead-back", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-lead-back`;
         yield* until(
@@ -2634,7 +2675,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-shared-lead", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-shared-lead", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-shared-lead`;
         yield* until(
@@ -2694,7 +2735,7 @@ scenario(
           OPENED,
         ]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-old-words", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-old-words", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-old-words`;
         yield* until(
@@ -2758,7 +2799,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-after-merge",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2806,7 +2847,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-answered-later",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2859,7 +2900,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-not-met",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -2905,6 +2946,7 @@ scenario(
           runId: "r-words",
           input: {
             plan: "Count the registries.\n\n- [ ] **Counted.** Every registry is counted once.",
+            ...FINISH,
           },
         });
         yield* bin.restore();
@@ -2950,7 +2992,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: copied,
-          input: { plan: "ABC-123" },
+          input: { plan: "ABC-123", ...FINISH },
         });
         expect(said(result)).toBe(OPENED.mr_url);
         expect(yield* asked(copied, "build.criteria-1")).toContain(
@@ -2973,7 +3015,7 @@ scenario(
         const stopped = yield* ran({
           entry: shipped("implement"),
           runId: "r-linear-uncopied",
-          input: { plan: "ABC-124" },
+          input: { plan: "ABC-124", ...FINISH },
         });
         expect(stopped._tag).toBe("Failure");
         expect(reasonOf(stopped)).toContain("plan/SPEC.md cannot be read");
@@ -3018,7 +3060,7 @@ scenario(
         yield* approve("r-planned", ["unit"]);
         yield* rig.queueOutputs([null, BUILT, CLEAN_SYNTHESIS, OPENED]);
         const running = yield* Effect.forkChild(
-          ran({ entry: shipped("implement"), runId: "r-planned", input: { plan } }),
+          ran({ entry: shipped("implement"), runId: "r-planned", input: { plan, ...FINISH } }),
         );
         const agents = `${dir}/agents/r-planned`;
         yield* until(
@@ -3119,7 +3161,7 @@ const builtUntilParked = (
     yield* approve(runId, ["unit"]);
     yield* rig.queueOutputs(outputs);
     const running = yield* Effect.forkChild(
-      ran({ entry: shipped("implement"), runId, input: { plan } }),
+      ran({ entry: shipped("implement"), runId, input: { plan, ...FINISH } }),
     );
     const agents = `${dir}/agents/${runId}`;
     for (const { operation, step } of hands) {
@@ -3387,7 +3429,7 @@ scenario(
         yield* approve("r-impl-mr", ["unit"]);
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
 
-        yield* ran({ entry: shipped("implement"), runId: "r-impl-mr", input: { plan } });
+        yield* ran({ entry: shipped("implement"), runId: "r-impl-mr", input: { plan, ...FINISH } });
         yield* bin.restore();
 
         const opening = yield* asked("r-impl-mr", "mr");
@@ -3402,6 +3444,160 @@ scenario(
         // What was collected, by whom — Collie ran it, so it is not the agent's claim.
         expect(opening).toContain("unit");
         expect(opening).toContain("by collie");
+      }),
+    ),
+  120_000,
+);
+
+/** One ticket built, reviewed clean and delivered on a forge where nothing merges itself. */
+const delivering = (runId: string) =>
+  Effect.gen(function* () {
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    yield* bin.add("glab", `exit 0`);
+    yield* repository();
+    const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
+    yield* approve(runId, ["unit"]);
+    yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
+    return { bin, plan };
+  });
+
+/** implement parked on what next, once its merge request is open. */
+const deliveredAsking = (runId: string) =>
+  Effect.gen(function* () {
+    const { bin, plan } = yield* delivering(runId);
+    const rows = yield* parked({
+      entry: shipped("implement"),
+      runId,
+      input: { plan },
+      decision: "next",
+    });
+    return { bin, plan, rows };
+  });
+
+const RELEASE_STARTED = {
+  invocation: "release",
+  workflow: "release",
+  input: { mr: OPENED.mr_url },
+};
+
+scenario(
+  "implement asks what next once its merge request is open, and Finish ends with its URL",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-next";
+        const { bin, plan, rows } = yield* deliveredAsking(runId);
+        expect(optionsOf(rows, "next")).toEqual(["Release", "Finish"]);
+        expect(rows.find((row) => row.decision === "next")?.prompt).toContain(OPENED.mr_url);
+
+        const result = yield* answered({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          decision: "next",
+          value: "Finish",
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "Release starts the release on the merge request where implement works, and ends with its result",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-release";
+        const { bin, plan } = yield* deliveredAsking(runId);
+
+        const result = yield* answered({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          decision: "next",
+          value: "Release",
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(`${OPENED.mr_url}; done`);
+        // No placement of its own: it works in implement's checkout, on the branch.
+        expect(started).toEqual([RELEASE_STARTED]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a release that fails fails implement with the release's reason",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        failing = new Set(["release"]);
+        const runId = "r-impl-release-fails";
+        const { bin, plan } = yield* deliveredAsking(runId);
+
+        const result = yield* answered({
+          entry: shipped("implement"),
+          runId,
+          input: { plan },
+          decision: "next",
+          value: "Release",
+        });
+        yield* bin.restore();
+
+        expect(reasonOf(result)).toBe("release failed");
+        expect(started).toEqual([RELEASE_STARTED]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "implement started with then=finish ends at its merge request and asks nothing",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-finish";
+        const { bin, plan } = yield* delivering(runId);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan, ...FINISH },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(OPENED.mr_url);
+        expect(yield* questions(runId)).toEqual([]);
+        expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "implement started with then=release releases its merge request without asking",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-then-release";
+        const { bin, plan } = yield* delivering(runId);
+
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          // oxlint-disable-next-line unicorn/no-thenable -- implement's Input is named `then`
+          input: { plan, then: "release" },
+        });
+        yield* bin.restore();
+
+        expect(said(result)).toBe(`${OPENED.mr_url}; done`);
+        expect(yield* questions(runId)).toEqual([]);
+        expect(started).toEqual([RELEASE_STARTED]);
       }),
     ),
   120_000,
@@ -3424,7 +3620,11 @@ scenario(
           OPENED,
         ]);
 
-        yield* ran({ entry: shipped("implement"), runId: "r-impl-minor", input: { plan } });
+        yield* ran({
+          entry: shipped("implement"),
+          runId: "r-impl-minor",
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
 
         // No fix round for a minor finding, by design; but not silently either.
@@ -3475,7 +3675,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-build-findings",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -3527,7 +3727,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-build-cleared",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
         expect(said(result)).toBe(OPENED.mr_url);
@@ -3568,7 +3768,11 @@ once(
           CLEAN_SYNTHESIS,
           OPENED,
         ]);
-        const result = yield* ran({ entry, runId: "r-impl-build-panel", input: { plan } });
+        const result = yield* ran({
+          entry,
+          runId: "r-impl-build-panel",
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
@@ -3659,7 +3863,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-fix",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -3741,7 +3945,7 @@ scenario(
         yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-review",
-          input: { plan: reviewed },
+          input: { plan: reviewed, ...FINISH },
         });
         yield* bin.restore();
 
@@ -3791,7 +3995,7 @@ scenario(
         const options = {
           entry,
           runId: "r-impl-gate",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         };
         const result = yield* running(options, (status) =>
@@ -3844,7 +4048,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-gate-judged",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -3873,7 +4077,7 @@ scenario(
           {
             entry: shipped("implement"),
             runId: "r-gate-unproved",
-            input: { plan },
+            input: { plan, ...FINISH },
             options: { outcome: "feature" },
           },
           (status) =>
@@ -3930,7 +4134,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-gate-fix",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -3985,7 +4189,7 @@ scenario(
         yield* ran({
           entry: shipped("implement"),
           runId: "r-passes",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4074,7 +4278,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4143,7 +4347,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4172,7 +4376,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         expect(why).toContain("Cannot open the merge request");
@@ -4217,7 +4421,7 @@ scenario(
         const options = {
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         };
         expect(yield* parkedOn(options)).toContain(
@@ -4305,7 +4509,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4352,7 +4556,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4388,7 +4592,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4430,7 +4634,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4467,7 +4671,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4500,7 +4704,7 @@ scenario(
         const why = yield* parkedOn({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4575,7 +4779,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4633,7 +4837,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4739,7 +4943,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4774,7 +4978,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4807,7 +5011,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4852,7 +5056,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4900,7 +5104,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4938,7 +5142,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -4993,7 +5197,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5024,7 +5228,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5074,7 +5278,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5144,7 +5348,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5185,7 +5389,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5219,7 +5423,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5257,7 +5461,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5298,7 +5502,7 @@ const heldUnproved = (runId: string) =>
     const options = {
       entry: shipped("implement"),
       runId,
-      input: { plan },
+      input: { plan, ...FINISH },
       options: { outcome: "feature" },
     };
     const result = yield* running(options, (status) =>
@@ -5388,7 +5592,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5425,7 +5629,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId,
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5481,7 +5685,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-red-base",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -5534,7 +5738,7 @@ scenario(
           {
             entry: shipped("implement"),
             runId: "r-impl-own-red",
-            input: { plan },
+            input: { plan, ...FINISH },
             options: { outcome: "feature" },
           },
           (status) =>
@@ -5593,7 +5797,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-dispute",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5647,7 +5851,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-weakened",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5720,7 +5924,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-final-dispute",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5794,7 +5998,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-final-stands",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5844,7 +6048,11 @@ scenario(
           ]),
         );
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-        yield* ran({ entry: shipped("implement"), runId: "r-late-grant", input: { plan } });
+        yield* ran({
+          entry: shipped("implement"),
+          runId: "r-late-grant",
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
 
         const opening = yield* asked("r-late-grant", "mr");
@@ -5909,7 +6117,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-early-dispute",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -5948,7 +6156,7 @@ scenario(
         yield* approve(runId, ["unit"]);
         yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
         const entry = shipped("implement");
-        yield* stalled({ entry, runId, input: { plan } });
+        yield* stalled({ entry, runId, input: { plan, ...FINISH } });
         expect(yield* parkedWhy(runId)).toContain("gh is not installed");
         const fs = yield* FileSystem.FileSystem;
         yield* fs.writeFileString(
@@ -5967,7 +6175,7 @@ scenario(
           Effect.gen(function* () {
             const made = yield* loaded(entry, runId);
             const engine = yield* WorkflowEngine.WorkflowEngine;
-            const payload = { runId, input: { plan } };
+            const payload = { runId, input: { plan, ...FINISH } };
             return yield* Effect.gen(function* () {
               const id = yield* made.workflow.executionId(payload);
               yield* engine.resume(made.workflow, id);
@@ -6042,7 +6250,11 @@ for (const name of ["gitlab", "github"] as const) {
           const runId = `r-impl-${name}-open`;
           yield* approve(runId, ["unit"]);
           yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
-          const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+          const result = yield* ran({
+            entry: shipped("implement"),
+            runId,
+            input: { plan, ...FINISH },
+          });
           yield* bin.restore();
           expect(said(result)).toBe(OPENED.mr_url);
           const prompt = yield* asked(runId, "mr");
@@ -6074,7 +6286,7 @@ for (const name of ["gitlab", "github"] as const) {
           yield* ran({
             entry: shipped("implement"),
             runId,
-            input: { plan },
+            input: { plan, ...FINISH },
           });
           yield* bin.restore();
           const prompt = yield* asked(runId, "mr");
@@ -6115,7 +6327,7 @@ for (const name of ["gitlab", "github"] as const) {
           const options = {
             entry: shipped("implement"),
             runId: `r-impl-${name}-auto-merge`,
-            input: { plan },
+            input: { plan, ...FINISH },
           };
           yield* approve(options.runId, ["unit"]);
           yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, OPENED]);
@@ -6136,6 +6348,32 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* prompts()).toHaveLength(3);
           expect(yield* parkedWhy(options.runId)).toBe("");
           yield* bin.restore();
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `implement asks nothing once its ${name} ${noun} merges itself once green`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* deliveringOn(name, autoMerging(false));
+          const plan = yield* planOf([
+            { file: "01-only.md", title: "the only one", checks: "unit" },
+          ]);
+          const runId = `r-impl-${name}-merges-itself`;
+          yield* approve(runId, ["unit"]);
+          // Set to merge itself as it is opened.
+          const on = forge.holding({ ...(yield* forge.model()), mrs: autoMerging(true) });
+          yield* rig.queueOutputs([BUILT, CLEAN_SYNTHESIS, { writes: [on], output: OPENED }]);
+
+          const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+          yield* bin.restore();
+
+          expect(said(result)).toBe(OPENED.mr_url);
+          expect(yield* questions(runId)).toEqual([]);
+          expect(started).toEqual([]);
         }),
       ),
     120_000,
@@ -6163,9 +6401,9 @@ for (const name of ["gitlab", "github"] as const) {
             { writes: [on], output: BUILT },
             { ...CLEAN_SYNTHESIS, verdict: "findings", findings: [finding] },
           ]);
-          expect(yield* stalled({ entry: shipped("implement"), runId, input: { plan } })).toBe(
-            "suspended",
-          );
+          expect(
+            yield* stalled({ entry: shipped("implement"), runId, input: { plan, ...FINISH } }),
+          ).toBe("suspended");
           yield* bin.restore();
           // The build and the review, and no fix.
           expect(yield* prompts()).toHaveLength(2);
@@ -6272,7 +6510,11 @@ scenario(
             findings: [{ severity: "major", title: "push denied" }],
           },
         ]);
-        const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
         expect(reasonOf(result)).toContain("Merge request delivery did not finish");
         expect(reasonOf(result)).toContain("push denied");
@@ -6298,7 +6540,11 @@ scenario(
           CLEAN_SYNTHESIS,
           { ...OPENED, findings: [{ severity: "major", title: "delivery blocked" }] },
         ]);
-        const result = yield* ran({ entry: shipped("implement"), runId, input: { plan } });
+        const result = yield* ran({
+          entry: shipped("implement"),
+          runId,
+          input: { plan, ...FINISH },
+        });
         yield* bin.restore();
         expect(reasonOf(result)).toContain("Merge request delivery did not finish");
         expect(reasonOf(result)).toContain("delivery blocked");
@@ -6327,7 +6573,7 @@ scenario(
         const options = {
           entry: shipped("implement"),
           runId: "r-impl-no-forge",
-          input: { plan },
+          input: { plan, ...FINISH },
         };
         const status = yield* running(options, (reading) =>
           until(
@@ -6466,7 +6712,7 @@ scenario(
         const options = {
           entry: shipped("implement"),
           runId: "r-impl-none",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         };
 
@@ -6523,7 +6769,7 @@ scenario(
         const result = yield* ran({
           entry: shipped("implement"),
           runId: "r-impl-named",
-          input: { plan },
+          input: { plan, ...FINISH },
           options: { outcome: "feature" },
         });
         yield* bin.restore();
@@ -6564,7 +6810,7 @@ scenario(
         const status = yield* stalled({
           entry: shipped("implement"),
           runId: "r-impl-emptied",
-          input: { plan },
+          input: { plan, ...FINISH },
         });
         yield* bin.restore();
 
@@ -6600,7 +6846,7 @@ scenario(
           const why = yield* parkedOn({
             entry: shipped("implement"),
             runId: "r-impl-inv",
-            input: { plan: "why is the board slow?" },
+            input: { plan: "why is the board slow?", ...FINISH },
             options: { outcome: "investigation" },
           });
           expect(why).toContain("has written nothing to");
@@ -7364,6 +7610,2150 @@ scenario(
 
 /** A prompt with the Run it is about taken out, so two Runs' prompts can be compared. */
 const byRun = (prompt: string) => prompt.replaceAll(/r-(fork|shipped)/g, "<run>");
+
+/** Each forge's merge request a Release Run is started on, and its repository. */
+const RELEASING = {
+  gitlab: {
+    remote: "git@gitlab.example.com:group/app.git",
+    url: "https://gitlab.example.com/group/app",
+    mr: `https://${PROJECT.gitlab}/-/merge_requests/30`,
+    target: `mr:${PROJECT.gitlab}!30`,
+  },
+  github: {
+    remote: "git@github.com:owner/repo.git",
+    url: "https://github.com/owner/repo",
+    mr: `https://${PROJECT.github}/pull/30`,
+    target: `mr:${PROJECT.github}#30`,
+  },
+} as const;
+
+const APP_ASSESSED = {
+  verdict: "clean",
+  is_package: false,
+  kind_evidence: "a stage and a production environment",
+  stage_jobs: { merge_request: [], tag: ["deploy-stage"] },
+};
+
+const PACKAGED = {
+  verdict: "clean",
+  is_package: true,
+  kind_evidence: "a publish job on tags, and no deploy",
+};
+const TAGGED = { verdict: "clean", tag: "v1.2.0", version: "1.2.0" };
+
+/** The merge request as a forge reads it approved by alice, green and mergeable at `head`. */
+const readyMr = (name: MrForge, head: string, merged: string, over: Partial<FakeMr> = {}) =>
+  ({
+    project: PROJECT[name],
+    iid: "30",
+    state: "open",
+    head,
+    mergedSha: merged,
+    sourceBranch: "feature",
+    targetBranch: "main",
+    checks: [{ name: "build", state: "passed" }],
+    ...(name === "gitlab"
+      ? { approvers: ["alice"], required: 1 }
+      : {
+          reviews: [{ id: 1, author: "alice", state: "APPROVED", at: "2026-10-20T10:00:00Z" }],
+        }),
+    ...over,
+  }) satisfies FakeMr;
+
+const revParse = (ref: string, cwd = rig.projectDir) =>
+  exec(["git", "rev-parse", ref], { cwd }).pipe(Effect.map((ran) => ran.stdout.trim()));
+
+/** A commit on `parent`'s tree, made without a checkout and pushed to origin's `feature`. */
+const pushedBySomebody = (parent: string, force = false) =>
+  Effect.gen(function* () {
+    const sha = (yield* exec(
+      ["git", "commit-tree", `${parent}^{tree}`, "-p", parent, "-m", "pushed by somebody"],
+      { cwd: rig.projectDir },
+    )).stdout.trim();
+    yield* exec(
+      ["git", "push", "-q", ...(force ? ["-f"] : []), "origin", `${sha}:refs/heads/feature`],
+      { cwd: rig.projectDir },
+    );
+    return sha;
+  });
+
+/** What the forge says the tag's pipeline ran for: the tag, on the merged commit it tags. */
+const tagRun = (merged: string) => ({ ref: "v1.2.0", sha: merged });
+
+const tagOnOrigin = (sha: string) =>
+  Effect.gen(function* () {
+    yield* exec(["git", "tag", "-a", "v1.2.0", "-m", "1.2.0", sha], { cwd: rig.projectDir });
+    yield* exec(["git", "push", "-q", "origin", "v1.2.0"], { cwd: rig.projectDir });
+  });
+
+/**
+ * A merge request from `feature`, whose checkout git already has, ready on `name`'s forge.
+ * What its merge makes is already on origin's default branch, and tagged unless `tagged` is
+ * false: the agent that would push the tag is a stand-in.
+ */
+const releasable = (name: MrForge, over: Partial<FakeMr> = {}, tagged = true) =>
+  Effect.gen(function* () {
+    const reviewed = yield* reviewedBranch();
+    yield* exec(["git", "commit", "-qm", "the change", "--allow-empty"], { cwd: reviewed });
+    yield* exec(["git", "push", "-q", "origin", "feature"], { cwd: reviewed });
+    const head = yield* revParse("HEAD", reviewed);
+    const base = yield* revParse("HEAD");
+    const merged = (yield* exec(
+      ["git", "commit-tree", `${head}^{tree}`, "-p", base, "-p", head, "-m", "Merge feature"],
+      { cwd: rig.projectDir },
+    )).stdout.trim();
+    yield* exec(["git", "push", "-q", "origin", `${merged}:refs/heads/main`], {
+      cwd: rig.projectDir,
+    });
+    if (tagged) yield* tagOnOrigin(merged);
+    yield* exec(["git", "remote", "set-url", "upstream", RELEASING[name].remote], {
+      cwd: rig.projectDir,
+    });
+    const bin = yield* FakeBin.make(`${rig.root}/bin`);
+    const model: ForgeModel = {
+      installed: true,
+      loggedIn: [FORGE_HOST[name]],
+      login: "tester",
+      mrs: [readyMr(name, head, merged, over)],
+      reviewsRequired: { classic: name === "github" ? 1 : 0 },
+    };
+    const forge = yield* forgeOnPath(bin, name, model);
+    /** The merge request changed on the forge, as a reviewer or a push changes it. */
+    const changed = (over: Partial<FakeMr>) =>
+      Effect.gen(function* () {
+        const now = yield* forge.model();
+        yield* forge.set({ ...now, mrs: now.mrs.map((one) => ({ ...one, ...over })) });
+      });
+    return { bin, forge, head, base, merged, reviewed, changed };
+  });
+
+/** How each Run a takeover may weigh ended, as this test says; null still runs. */
+type Ends = Readonly<Record<string, { succeeded: boolean; failure: string } | null>>;
+
+/**
+ * Helle answered here, and the Runs' ends a landing takeover weighs given: what decides is
+ * `takeOver`'s, from the landing records on disk and the forge. `whileClaiming` is what
+ * happens elsewhere while the claim is taken, and the host stops for good once it has
+ * posted `stallAfterReplies` replies.
+ */
+const releaseHost = (
+  ends: Ends = {},
+  whileClaiming: Effect.Effect<void, unknown, FileSystem.FileSystem> = Effect.void,
+  stallAfterReplies = Infinity,
+) =>
+  Layer.effect(Host)(
+    Effect.gen(function* () {
+      const host = yield* Host;
+      const services = yield* Effect.context<BunServices.BunServices>();
+      let replies = 0;
+      return Host.of({
+        ...host,
+        // A host that stops after posting a reply, before its Activity is journaled.
+        reply: (asked) =>
+          host
+            .reply(asked)
+            .pipe(Effect.tap(() => (++replies >= stallAfterReplies ? Effect.never : Effect.void))),
+        // As the host's own claim, one a replay takes again is the one the Run already holds.
+        claim: (options) =>
+          claimed.lastIndexOf(`claim ${options.runId}`) >
+          claimed.lastIndexOf(`release ${options.runId}`)
+            ? Effect.succeed({ slug: "project" })
+            : options.say("holding the claim").pipe(
+                Effect.tap(() => Effect.sync(() => claimed.push(`claim ${options.runId}`))),
+                Effect.tap(() => whileClaiming.pipe(Effect.orDie, Effect.provideContext(services))),
+                Effect.as({ slug: "project" }),
+              ),
+        release: (runId) => Effect.sync(() => void claimed.push(`release ${runId}`)),
+        takeOverLanding: (asked) =>
+          Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const runs = yield* Effect.forEach(Object.entries(ends), ([runId, ended]) =>
+              Effect.map(readLanding(runDir(dir, runId)), (landing) => ({
+                runId,
+                landing,
+                ended,
+              })),
+            );
+            const mr = yield* fs.readFileString(`${runDir(dir, asked.runId)}/merge-request`);
+            return yield* takeOver({
+              runDir: runDir(dir, asked.runId),
+              mr: mr.trim(),
+              runs,
+              cwd: asked.cwd,
+              run: shell,
+            });
+          }).pipe(Effect.orDie, Effect.provideContext(services)),
+      });
+    }),
+  );
+
+/**
+ * A Run of a shipped module, driven from outside while it runs: its status, what it asks,
+ * and an answer given as a door gives one. Answers with what `drive` does. A `restarted` Run
+ * was admitted by an earlier host, which this one takes over from.
+ */
+const driven = <A, E>(
+  options: ShippedRun & { readonly restarted?: boolean },
+  drive: (run: {
+    readonly status: Effect.Effect<typeof RunStatus.Type>;
+    readonly asked: Effect.Effect<
+      ReadonlyArray<{ decision: string; prompt: string; options: string; answer: string | null }>
+    >;
+    readonly answer: (decision: string, value: string) => Effect.Effect<void>;
+  }) => Effect.Effect<A, E, FileSystem.FileSystem>,
+) =>
+  session(
+    Effect.gen(function* () {
+      const made = yield* loaded(options.entry, options.runId);
+      const engine = yield* WorkflowEngine.WorkflowEngine;
+      const store = yield* Store;
+      if (options.restarted !== true)
+        yield* admit({ runId: options.runId, workflow: made.workflow.name, input: options.input });
+      const payload = { runId: options.runId, input: options.input };
+      return yield* Effect.gen(function* () {
+        yield* made.workflow.execute(payload, { discard: true });
+        const id = yield* made.workflow.executionId(payload);
+        return yield* drive({
+          status: engine.poll(made.workflow, id).pipe(Effect.map((got) => pollStatus(got, ""))),
+          asked: store.asked(options.runId),
+          answer: (decision, value) =>
+            answerDecision(made, { name: decision, executionId: id, value }).pipe(
+              Effect.orDie,
+              Effect.provideService(WorkflowEngine.WorkflowEngine, engine),
+            ),
+        });
+      }).pipe(Effect.provide(made.layer));
+    }),
+    options.host,
+  );
+
+/** The go asked under `name`, once it is open. */
+const goAsked = (
+  asked: Effect.Effect<
+    ReadonlyArray<{ decision: string; prompt: string; options: string; answer: string | null }>
+  >,
+  name: string,
+) =>
+  until(
+    () => asked,
+    (rows) => rows.some((row) => row.decision === name && row.answer === null),
+  ).pipe(Effect.map((rows) => rows.find((row) => row.decision === name)!));
+
+const PIPELINE_OF = {
+  gitlab: "https://gitlab.example.com/group/app/-/pipelines/7",
+  github: "https://github.com/owner/repo/actions/runs/7",
+} as const;
+
+const runLog = (runId: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.readFileString(`${runDir(dir, runId)}/log.txt`)),
+    Effect.orElseSucceed(() => ""),
+  );
+
+/** One check of this Run's, `true` unless said, run in the Run's own checkout. */
+const checkedBy = (runId: string, name: string, executable = "true", argv: string[] = []) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      fs
+        .makeDirectory(evidenceDir(dir, runId), { recursive: true })
+        .pipe(
+          Effect.andThen(
+            fs.writeFileString(
+              `${evidenceDir(dir, runId)}/approved.json`,
+              asApproved([{ name, executable, argv, cwd: "worktree" }]),
+            ),
+          ),
+        ),
+    ),
+    Effect.orDie,
+  );
+
+/** What a Run came to, once it has. */
+const ended = (status: Effect.Effect<typeof RunStatus.Type>) =>
+  until(
+    () => status,
+    (got) => got.status === "complete" || got.status === "failed",
+  );
+
+const outcomeText = (status: typeof RunStatus.Type) =>
+  status.status === "complete"
+    ? Schema.decodeUnknownSync(Schema.String)(status.value)
+    : status.status === "failed"
+      ? status.reason
+      : status.status;
+
+/** A comment's web address, as each forge gives one that is not in a thread. */
+const commentUrl = (name: MrForge, id: number) =>
+  `${RELEASING[name].mr}#${name === "gitlab" ? "note_" : "issuecomment-"}${id}`;
+
+/** What each forge reads as approved by nobody yet, and as approved by `who`. */
+const UNAPPROVED = { gitlab: { approvers: [], required: 1 }, github: { reviews: [] } } as const;
+const approvedBy = (name: MrForge, who: string): Partial<FakeMr> =>
+  name === "gitlab"
+    ? { approvers: [who], required: 1 }
+    : { reviews: [{ id: 2, author: who, state: "APPROVED", at: "2026-10-20T12:10:00Z" }] };
+
+/**
+ * What an agent's push of a commit on `parent` leaves: the commit on origin's `feature`, and
+ * the writes its step makes to put the Run's checkout and the forge's head on it.
+ */
+const agentPush = (
+  forge: { readonly holding: (next: ForgeModel) => { path: string; text: string } },
+  model: ForgeModel,
+  parent: string,
+) =>
+  Effect.gen(function* () {
+    const sha = yield* pushedBySomebody(parent);
+    const moved = { ...model, mrs: model.mrs.map((one) => ({ ...one, head: sha })) };
+    return {
+      sha,
+      writes: [
+        { path: `${rig.projectDir}/.git/refs/heads/feature`, text: `${sha}\n` },
+        forge.holding(moved),
+      ],
+    };
+  });
+
+/** The replies Collie posted on the merge request, in order. */
+const repliesOf = (model: ForgeModel) => Object.values(model.replies ?? {}).flat();
+
+for (const name of ["gitlab", "github"] as const) {
+  const { mr, url, target } = RELEASING[name];
+
+  scenario(
+    `release on ${name}: an approved, green, mergeable package is asked go 1 once, merged at that head, tagged and read back under the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-release-${name}`;
+          yield* rig.queueOutputs([PACKAGED, TAGGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain(mr);
+                expect(go.prompt).toContain(head.slice(0, 8));
+                expect(go.prompt).toContain("alice");
+                expect(optionsOf([go], "go-1")).toEqual(["Release", "Finish"]);
+                // Nothing shared is touched before the go.
+                expect(claimed).toEqual([]);
+                yield* run.answer("go-1", "Release");
+                const end = yield* ended(run.status);
+                expect(
+                  (yield* run.asked).filter((row) => row.decision.startsWith("go-")),
+                ).toHaveLength(1);
+                return end;
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} merged at ${merged}, released as v1.2.0`);
+          expect(model.merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "tag")).toBe(
+            `Cleared for this step: a release commit to ${url}'s default branch, where the repository makes one; pushing an annotated version tag of ${url} to origin; creating its release on ${url}, where the package publishes from its tags; watching the tag's pipeline on ${url}, never playing a production job.`,
+          );
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["assess", "tag"])
+            expect(yield* asked(runId, step)).not.toMatch(other);
+          expect(yield* asked(runId, "tag")).toContain(`merged commit is \`${merged}\``);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Finish leaves the merge request open, with no claim and no merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-finish-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(model.mrs[0]?.state).toBe("open");
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a go answered after the head moved is asked again on the new head`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, changed } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-moved-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          let moved = "";
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                moved = yield* pushedBySomebody(head);
+                yield* changed({ head: moved });
+                yield* run.answer("go-1", "Release");
+                const again = yield* goAsked(run.asked, "go-2");
+                expect(again.prompt).toContain(moved.slice(0, 8));
+                yield* run.answer("go-2", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          const log = yield* runLog(runId);
+          expect(log).toContain(`go 1 no longer holds for ${head.slice(0, 8)}`);
+          expect(log).toContain(`moved the checkout from ${head} to ${moved}`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a head somebody else pushed during the wait is fast-forwarded and proved by the checks before go 1`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const running = [{ name: "build", state: "running" }] as const;
+          const { bin, head, reviewed, changed } = yield* releasable(name, { checks: running });
+          const runId = `r-pushed-${name}`;
+          yield* checkedBy(runId, "unit");
+          yield* rig.queueOutputs([PACKAGED]);
+          let moved = "";
+          yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                expect(
+                  yield* until(
+                    () => parkedWhy(runId),
+                    (why) => why !== "",
+                  ),
+                ).toBe(`Waiting for review of ${mr}: the pipeline at ${head.slice(0, 8)}.`);
+                moved = yield* pushedBySomebody(head);
+                yield* changed({ head: moved, checks: [{ name: "build", state: "passed" }] });
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain(moved.slice(0, 8));
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(yield* revParse("HEAD", reviewed)).toBe(moved);
+          const proved = (yield* readVerifications(evidenceDir(dir, runId))).map(
+            (one) => one.end.head_sha,
+          );
+          expect(proved).toEqual([head, moved]);
+          expect(yield* runLog(runId)).toContain(`moved the checkout from ${head} to ${moved}`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a force-pushed head parks the Run, naming why, with nothing reset`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const running = [{ name: "build", state: "running" }] as const;
+          const { bin, head, reviewed, changed } = yield* releasable(name, { checks: running });
+          const runId = `r-forced-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const why = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                );
+                const forced = yield* pushedBySomebody(`${head}~1`, true);
+                yield* changed({ head: forced, checks: [{ name: "build", state: "passed" }] });
+                yield* until(
+                  () => run.status,
+                  (got) => got.status === "suspended",
+                );
+                return yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("fast-forward"),
+                );
+              }),
+          );
+          yield* bin.restore();
+          expect(why).toContain(`does not fast-forward ${head.slice(0, 8)}`);
+          expect(why).toContain(`Repair it, then resume ${runId}.`);
+          expect(yield* revParse("HEAD", reviewed)).toBe(head);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: an auto-merging, closed or hand-merged merge request fails at the start`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, changed } = yield* releasable(name);
+          claimed.length = 0;
+          const started = (runId: string, over: Partial<FakeMr>) =>
+            Effect.gen(function* () {
+              yield* changed(over);
+              return reasonOf(
+                yield* ran({
+                  entry: shipped("release"),
+                  runId,
+                  input: { mr: target },
+                  host: releaseHost(),
+                }),
+              );
+            });
+          expect(yield* started(`r-auto-${name}`, { autoMerge: true })).toBe(
+            `${mr} is set to merge itself once green, so this Run leaves it to do that`,
+          );
+          expect(yield* started(`r-closed-${name}`, { autoMerge: false, state: "closed" })).toBe(
+            `${mr} is closed, so nothing was released`,
+          );
+          expect(
+            yield* started(`r-hand-${name}`, {
+              state: "merged",
+              mergedBy: "alice",
+              mergedAt: "2026-10-20T11:00:00Z",
+            }),
+          ).toBe(`${mr} was merged outside a Release Run: no Run on this host landed it`);
+          yield* bin.restore();
+          expect(yield* prompts()).toEqual([]);
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a merge by hand between the go and Collie's merge fails as merged outside this Run, and gives the claim back`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, changed } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-raced-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const byHand = changed({
+            state: "merged",
+            mergedBy: "alice",
+            mergedAt: "2026-10-20T12:30:00Z",
+          });
+          const status = yield* driven(
+            {
+              entry: shipped("release"),
+              runId,
+              input: { mr: target },
+              host: releaseHost({}, byHand),
+            },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} was merged outside this Run by alice, so nothing was tagged`,
+          );
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: an application whose assessment named no stage deploy fails before any wait or claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-app-${name}`;
+          yield* rig.queueOutputs([
+            { ...APP_ASSESSED, stage_jobs: { merge_request: [], tag: [] } },
+          ]);
+          const result = yield* ran({
+            entry: shipped("release"),
+            runId,
+            input: { mr: target },
+            host: releaseHost(),
+          });
+          yield* bin.restore();
+          expect(reasonOf(result)).toBe(
+            `${mr} is an application with no stage deploy that Collie can prove, on its merge request's pipeline or its tags', so nothing was released: a stage and a production environment`,
+          );
+          expect(yield* prompts()).toHaveLength(1);
+          expect(claimed).toEqual([]);
+          expect(yield* parkedWhy(runId)).toBe("");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a tag missing on origin keeps the claim and offers Release again, which finishes the release without merging again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged } = yield* releasable(name, {}, false);
+          claimed.length = 0;
+          const first = `r-untagged-${name}`;
+          const again = `r-again-${name}`;
+          yield* rig.queueOutputs([PACKAGED, TAGGED, PACKAGED, TAGGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId: first, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                return yield* ended(run.status);
+              }),
+          );
+          const failure = outcomeText(status);
+          expect(failure).toBe(
+            `${mr} merged at ${merged}, but v1.2.0 is not released: v1.2.0 is not on origin`,
+          );
+          expect(claimed).toEqual([`claim ${first}`]);
+
+          const declared = yield* loadEntry(shipped("release")).pipe(
+            Effect.map((described) => declaredByModule(described.metadata)),
+            Effect.orDie,
+          );
+          const facts: ActionFacts = {
+            outcome: "unspecified",
+            succeeded: false,
+            branch: null,
+            mrUrl: mr,
+            planIssues: 0,
+            disposed: false,
+            openFindings: 0,
+            diffTarget: target,
+            claim: "project",
+          };
+          const offered = offersFrom(declared, facts, { self: idOf("release") });
+          expect(offered.map((offer) => [offer.id, offer.title, offer.workflow])).toEqual([
+            ["release-again", "Release again", idOf("release")],
+          ]);
+          expect(inputsFor(offered[0]!, { runDir: "/r", facts, input: { mr: target } })).toEqual({
+            mr: target,
+          });
+
+          yield* tagOnOrigin(merged);
+          const result = yield* ran({
+            entry: shipped("release"),
+            runId: again,
+            input: { mr: target },
+            host: releaseHost({ [first]: { succeeded: false, failure } }),
+          });
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(said(result)).toBe(`${mr} merged at ${merged}, released as v1.2.0`);
+          expect(model.merges ?? []).toHaveLength(1);
+          expect(claimed).toEqual([`claim ${first}`, `claim ${again}`, `release ${again}`]);
+          const tagging = yield* asked(again, "tag");
+          expect(tagging).toContain(`recovers the release of ${mr} that ${first} merged`);
+          expect(tagging).toContain(failure);
+          expect(yield* readLanding(runDir(dir, again))).toMatchObject({
+            state: "landed",
+            sha: merged,
+            from: first,
+          });
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a merge request whose landing Run succeeded fails at the start, naming that Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, merged } = yield* releasable(name, {
+            state: "merged",
+            mergedBy: "tester",
+            mergedAt: "2026-10-20T11:00:00Z",
+          });
+          yield* writeLanding(runDir(dir, "r-done"), {
+            state: "landed",
+            mr,
+            head,
+            at: "2026-10-20T10:59:00Z",
+            sha: merged,
+          });
+          const result = yield* ran({
+            entry: shipped("release"),
+            runId: `r-released-${name}`,
+            input: { mr: target },
+            host: releaseHost({ "r-done": { succeeded: true, failure: "" } }),
+          });
+          yield* bin.restore();
+          expect(reasonOf(result)).toBe(`${mr} was already released by r-done`);
+          expect(yield* prompts()).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a tag pipeline still waiting on a job somebody must start by hand fails the read-back, naming the job`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged } = yield* releasable(name);
+          const now = yield* forge.model();
+          yield* forge.set({
+            ...now,
+            runs: {
+              "7": {
+                ...tagRun(merged),
+                ...(name === "gitlab"
+                  ? { status: "success" }
+                  : { status: "completed", conclusion: "success" }),
+                jobs: [
+                  { name: "build", state: "passed" },
+                  { name: "publish", state: "manual" },
+                ],
+              },
+            },
+          });
+          claimed.length = 0;
+          const runId = `r-manual-${name}`;
+          const pipeline = PIPELINE_OF[name];
+          yield* rig.queueOutputs([PACKAGED, { ...TAGGED, pipeline_url: pipeline }]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain(
+            `v1.2.0's pipeline at ${pipeline} has not finished: \`publish\` waits for somebody to start it by hand`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a Hold during the review wait suspends the Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const running = [{ name: "build", state: "running" }] as const;
+          const { bin } = yield* releasable(name, { checks: running });
+          claimed.length = 0;
+          const runId = `r-held-${name}`;
+          yield* rig.queueOutputs([PACKAGED]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                );
+                const fs = yield* FileSystem.FileSystem;
+                yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
+                return yield* until(
+                  () => Effect.map(run.status, (got) => got.status),
+                  (got) => got === "suspended",
+                );
+              }),
+          );
+          yield* bin.restore();
+          expect(status).toBe("suspended");
+          expect(yield* parkedWhy(runId)).toBe("");
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a reviewer's comment is fixed, pushed, proved and replied to with its commit, a second is disputed with its reason, and the approval asks go 1`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, reviewed, changed } = yield* releasable(name, UNAPPROVED[name]);
+          const runId = `r-answered-${name}`;
+          yield* checkedBy(runId, "unit");
+          yield* rig.queueOutputs([PACKAGED]);
+          const unopened: ReadonlyArray<FakeComment> = [
+            { id: 43, author: "renovate", kind: "bot", at: "2026-10-20T11:00:00Z", body: "bump" },
+            { id: 45, author: "tester", at: "2026-10-20T11:00:00Z", body: "my own note" },
+            ...(name === "gitlab"
+              ? [
+                  {
+                    id: 44,
+                    author: "bob",
+                    kind: "system" as const,
+                    at: "2026-10-20T11:00:00Z",
+                    body: "added 1 commit",
+                  },
+                ]
+              : []),
+          ];
+          const comments = [
+            { id: 41, author: "bob", at: "2026-10-20T11:01:00Z", body: "please rename this" },
+            { id: 42, author: "carol", at: "2026-10-20T11:02:00Z", body: "use a map here" },
+          ];
+          let fix = "";
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("the approval"),
+                );
+                const now = yield* forge.model();
+                const commented = {
+                  ...now,
+                  mrs: now.mrs.map((one) => ({ ...one, comments: [...unopened, ...comments] })),
+                };
+                const pushed = yield* agentPush(forge, commented, head);
+                fix = pushed.sha;
+                yield* rig.queueOutputs([
+                  PACKAGED,
+                  {
+                    writes: pushed.writes,
+                    output: {
+                      verdict: "clean",
+                      answers: [
+                        { id: "41", answer: "fixed", commit: fix, note: "renamed it" },
+                        { id: "42", answer: "disputed", note: "a map costs more here" },
+                      ],
+                    },
+                  },
+                ]);
+                yield* forge.set(commented);
+                yield* until(
+                  () => forge.model(),
+                  (model) => repliesOf(model).length === 2,
+                );
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("the approval"),
+                );
+                yield* changed(approvedBy(name, "dave"));
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain("dave");
+                expect(go.prompt).toContain(fix.slice(0, 8));
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(repliesOf(model).map((one) => one.body)).toEqual([
+            `${commentUrl(name, 41)}\n\nFixed in \`${fix.slice(0, 8)}\`: renamed it`,
+            `${commentUrl(name, 42)}\n\nNot changed: a map costs more here`,
+          ]);
+          const answering = yield* asked(runId, "answer-1");
+          expect(answering).toContain(commentUrl(name, 41));
+          expect(answering).toContain("please rename this");
+          expect(answering).toContain("use a map here");
+          for (const quiet of unopened) expect(answering).not.toContain(quiet.body);
+          expect(yield* clearance(runId, "answer-1")).toBe(
+            `Cleared for this step: committing to the merge request's source branch on ${url} and pushing it with a plain push, never a force push; never posting on ${url} or resolving a thread there: Collie replies.`,
+          );
+          expect(yield* revParse("HEAD", reviewed)).toBe(fix);
+          const proved = (yield* readVerifications(evidenceDir(dir, runId))).map(
+            (one) => one.end.head_sha,
+          );
+          expect(proved).toEqual([head, fix]);
+          expect((yield* prompts()).filter((one) => one.includes("/answer-"))).toHaveLength(1);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a reply in a comment's thread after Collie's starts a round of its own`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const thread = name === "gitlab" ? "d51" : "51";
+          const original = {
+            id: 51,
+            author: "bob",
+            at: "2026-10-20T11:00:00Z",
+            body: "please rename this",
+            thread,
+            file: "src/app.ts",
+            line: 3,
+          };
+          const { bin, forge, changed } = yield* releasable(name, {
+            ...UNAPPROVED[name],
+            comments: [original],
+          });
+          const runId = `r-thread-${name}`;
+          const disputing = (id: string, note: string) => ({
+            verdict: "clean",
+            answers: [{ id, answer: "disputed", note }],
+          });
+          yield* rig.queueOutputs([
+            PACKAGED,
+            disputing("51", "the name is the domain's"),
+            disputing("53", "still the domain's"),
+          ]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => forge.model(),
+                  (model) => repliesOf(model).length === 1,
+                );
+                const now = yield* forge.model();
+                const followUp = {
+                  id: 53,
+                  author: "bob",
+                  at: "2026-10-20T12:05:00Z",
+                  body: "why is it the domain's?",
+                  thread,
+                };
+                yield* forge.set({
+                  ...now,
+                  mrs: now.mrs.map((one) => ({
+                    ...one,
+                    comments: [...(one.comments ?? []), followUp],
+                  })),
+                });
+                yield* until(
+                  () => forge.model(),
+                  (model) => repliesOf(model).length === 2,
+                );
+                yield* changed(approvedBy(name, "dave"));
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(repliesOf(model).map((one) => one.thread)).toEqual([thread, thread]);
+          expect(yield* asked(runId, "answer-1")).toContain("src/app.ts:3");
+          const second = yield* asked(runId, "answer-2");
+          expect(second).toContain("why is it the domain's?");
+          expect(second).not.toContain("please rename this");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a host restarted in the middle of the replies posts none of them twice`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comments = [61, 62].map((id) => ({
+            id,
+            author: "bob",
+            at: `2026-10-20T11:0${id - 60}:00Z`,
+            body: `comment ${id}`,
+          }));
+          const { bin, forge } = yield* releasable(name, { comments });
+          const runId = `r-restart-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            {
+              verdict: "clean",
+              answers: comments.map((one) => ({
+                id: String(one.id),
+                answer: "disputed",
+                note: `not ${one.id}`,
+              })),
+            },
+          ]);
+          const options = { entry: shipped("release"), runId, input: { mr: target } };
+          yield* driven({ ...options, host: releaseHost({}, Effect.void, 2) }, () =>
+            until(
+              () => forge.model(),
+              (model) => repliesOf(model).length === 2,
+            ),
+          );
+          const status = yield* driven(
+            { ...options, host: releaseHost(), restarted: true },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(repliesOf(model).map((one) => one.body)).toEqual([
+            `${commentUrl(name, 61)}\n\nNot changed: not 61`,
+            `${commentUrl(name, 62)}\n\nNot changed: not 62`,
+          ]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment left out of a round is carried into the next, and a round that answers nothing parks the Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comments = [
+            { id: 71, author: "bob", at: "2026-10-20T11:01:00Z", body: "rename this" },
+            { id: 72, author: "carol", at: "2026-10-20T11:02:00Z", body: "split that" },
+          ];
+          const { bin, forge } = yield* releasable(name, { comments });
+          const runId = `r-carried-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            { verdict: "clean", answers: [{ id: "71", answer: "disputed", note: "kept" }] },
+            { verdict: "clean", answers: [] },
+          ]);
+          const why = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            () =>
+              until(
+                () => parkedWhy(runId),
+                (why) => why.includes("answered none"),
+              ),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(why).toBe(
+            `answer-2 answered none of the comments it was given: ${commentUrl(name, 72)}. Repair it, then resume ${runId}.`,
+          );
+          expect(repliesOf(model)).toHaveLength(1);
+          const second = yield* asked(runId, "answer-2");
+          expect(second).toContain("split that");
+          expect(second).not.toContain("rename this");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a check failing on the head a round pushed goes to a fix round, whose head is proved again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const comment = { id: 81, author: "bob", at: "2026-10-20T11:00:00Z", body: "rename" };
+          const { bin, forge, head, changed } = yield* releasable(name, {
+            ...UNAPPROVED[name],
+            comments: [comment],
+          });
+          const runId = `r-fixround-${name}`;
+          const flag = `${rig.root}/unit-${name}`;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(flag, "ok\n").pipe(Effect.orDie);
+          yield* checkedBy(runId, "unit", "grep", ["-qx", "ok", flag]);
+          const pushed = yield* agentPush(forge, yield* forge.model(), head);
+          yield* rig.queueOutputs([
+            PACKAGED,
+            {
+              writes: [...pushed.writes, { path: flag, text: "broken\n" }],
+              output: {
+                verdict: "clean",
+                answers: [{ id: "81", answer: "fixed", commit: pushed.sha, note: "renamed" }],
+              },
+            },
+            {
+              writes: [{ path: flag, text: "ok\n" }],
+              output: { verdict: "clean", fixed: [{ title: "unit failed" }] },
+            },
+          ]);
+          yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("the approval") && why.includes("Waiting"),
+                );
+                yield* until(
+                  () => prompts(),
+                  (typed) => typed.some((one) => one.includes("/fix-1.prompt.md")),
+                );
+                yield* changed(approvedBy(name, "dave"));
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          const proved = (yield* readVerifications(evidenceDir(dir, runId))).map((one) => [
+            one.end.head_sha,
+            one.result,
+          ]);
+          expect(proved).toEqual([
+            [head, "pass"],
+            [pushed.sha, "fail"],
+            [pushed.sha, "pass"],
+          ]);
+          expect(yield* asked(runId, "fix-1")).toContain("unit failed");
+          expect(yield* clearance(runId, "fix-1")).toBe(
+            `Cleared for this step: committing to the merge request's source branch on ${url} and pushing it with a plain push, never a force push.`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: four fix rounds that leave a check failing park the Run with why`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head } = yield* releasable(name);
+          const runId = `r-unfixed-${name}`;
+          yield* checkedBy(runId, "unit", "false");
+          const tried = { verdict: "clean", fixed: [{ title: "unit failed" }] };
+          yield* rig.queueOutputs([PACKAGED, tried, tried, tried, tried]);
+          const why = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                const why = yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why.includes("fix rounds"),
+                );
+                expect(yield* run.asked).toEqual([]);
+                return why;
+              }),
+          );
+          yield* bin.restore();
+          expect(why).toBe(
+            `The checks failed at ${head.slice(0, 8)} after 4 fix rounds: unit failed. Repair it, then resume ${runId}.`,
+          );
+          expect((yield* prompts()).filter((one) => one.includes("/fix-"))).toHaveLength(4);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment between go 1 and its answer sends the Run back to the wait, and go 2 is asked once it is answered`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-pinned-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            { verdict: "clean", answers: [{ id: "91", answer: "disputed", note: "as meant" }] },
+          ]);
+          const status = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                const now = yield* forge.model();
+                const late = { id: 91, author: "bob", at: "2026-10-20T11:00:00Z", body: "wait" };
+                yield* forge.set({
+                  ...now,
+                  mrs: now.mrs.map((one) => ({ ...one, comments: [late] })),
+                });
+                yield* run.answer("go-1", "Release");
+                yield* goAsked(run.asked, "go-2");
+                yield* run.answer("go-2", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(repliesOf(model)).toHaveLength(1);
+          expect(yield* runLog(runId)).toContain(
+            `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment while the claim is taken merges nothing, gives the claim back and asks again once it is answered`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head } = yield* releasable(name);
+          claimed.length = 0;
+          const runId = `r-claiming-${name}`;
+          yield* rig.queueOutputs([
+            PACKAGED,
+            { verdict: "clean", answers: [{ id: "92", answer: "disputed", note: "as meant" }] },
+          ]);
+          const late = { id: 92, author: "bob", at: "2026-10-20T11:00:00Z", body: "wait" };
+          const commented = Effect.gen(function* () {
+            const now = yield* forge.model();
+            yield* forge.set({ ...now, mrs: now.mrs.map((one) => ({ ...one, comments: [late] })) });
+          });
+          const status = yield* driven(
+            {
+              entry: shipped("release"),
+              runId,
+              input: { mr: target },
+              host: releaseHost({}, commented),
+            },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Release");
+                yield* goAsked(run.asked, "go-2");
+                yield* run.answer("go-2", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* runLog(runId)).toContain(
+            `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
+          );
+        }),
+      ),
+    120_000,
+  );
+}
+
+/** Whether a failed Release Run on `target` offers Release again. */
+const releaseAgainOffered = (target: string) =>
+  Effect.gen(function* () {
+    const declared = yield* loadEntry(shipped("release")).pipe(
+      Effect.map((described) => declaredByModule(described.metadata)),
+      Effect.orDie,
+    );
+    const facts: ActionFacts = {
+      outcome: "unspecified",
+      succeeded: false,
+      branch: null,
+      mrUrl: null,
+      planIssues: 0,
+      disposed: false,
+      openFindings: 0,
+      diffTarget: target,
+      claim: "project",
+    };
+    return offersFrom(declared, facts, { self: idOf("release") }).some(
+      (offer) => offer.id === "release-again",
+    );
+  });
+
+/** The jobs of an application's tag pipeline, in the order each forge's job read numbers them. */
+const TAG_JOBS = ["build", "deploy-stage", "e2e-stage", "deploy-production"] as const;
+type TagJob = (typeof TAG_JOBS)[number];
+
+/** A job of the tag's pipeline or Actions run, as the forge links it. */
+const tagJob = (name: MrForge, job: TagJob) => {
+  const id = TAG_JOBS.indexOf(job) + 1;
+  return name === "gitlab"
+    ? `https://gitlab.example.com/group/app/-/jobs/${id}`
+    : `https://github.com/owner/repo/actions/runs/7/job/${id}`;
+};
+
+/** What the tag step of an application says it did, which nothing takes for proof. */
+const stagedTag = (name: MrForge) => ({
+  ...TAGGED,
+  pipeline_url: PIPELINE_OF[name],
+  stage_jobs: ["deploy-stage", "e2e-stage"],
+  production_jobs: [{ name: "deploy-production", url: `${RELEASING[name].url}/said-by-the-agent` }],
+});
+
+/** Where stage and production are, by the commit each one's newest successful deployment has. */
+const deploys = (stage: string, production: string) => [
+  { name: "stage", tier: "staging", deployed: stage },
+  { name: "production", tier: "production", deployed: production },
+];
+
+/**
+ * An application's merge request, ready, whose tag pipeline put the merge on stage and is
+ * held by a blocking production job nobody has started: GitLab's pipeline is `manual`, and
+ * GitHub's run waits on its environment's approval. Production carries the commit the merge
+ * is made on.
+ */
+const stageable = (
+  name: MrForge,
+  states: Partial<Record<TagJob, "passed" | "failed" | "manual" | "running">> = {},
+) =>
+  Effect.gen(function* () {
+    const made = yield* releasable(name);
+    const jobs = {
+      build: "passed",
+      "deploy-stage": "passed",
+      "e2e-stage": "passed",
+      "deploy-production": "manual",
+      ...states,
+    } as const;
+    const model: ForgeModel = {
+      ...(yield* made.forge.model()),
+      environments: deploys(made.merged, made.base),
+      runs: {
+        "7": {
+          ...tagRun(made.merged),
+          status: name === "gitlab" ? "manual" : "waiting",
+          jobs: TAG_JOBS.map((job) => ({ name: job, state: jobs[job] })),
+        },
+      },
+    };
+    yield* made.forge.set(model);
+    /** The forge as it is now, with `over` changed: someone deployed or played a job. */
+    const now = (over: Partial<ForgeModel>) =>
+      Effect.map(made.forge.model(), (current) => ({ ...current, ...over }));
+    return { ...made, model, now };
+  });
+
+/** The production job left waiting on the tag's pipeline, as the forge links it. */
+const waiting = (name: MrForge) => `\`deploy-production\` at ${tagJob(name, "deploy-production")}`;
+
+for (const name of ["gitlab", "github"] as const) {
+  const { mr, url, target } = RELEASING[name];
+  const options = (runId: string, ends: Ends = {}) => ({
+    entry: shipped("release"),
+    runId,
+    input: { mr: target },
+    host: releaseHost(ends),
+  });
+  /** Go 1 answered, and the go to production once it is asked. */
+  const staged = (run: {
+    readonly asked: Parameters<typeof goAsked>[0];
+    readonly answer: (decision: string, value: string) => Effect.Effect<void>;
+  }) =>
+    Effect.gen(function* () {
+      yield* goAsked(run.asked, "go-1");
+      yield* run.answer("go-1", "Merge, tag and stage");
+      return yield* goAsked(run.asked, "production");
+    });
+
+  scenario(
+    `release on ${name}: an application is merged, tagged and staged, sent to production on go 2, and waited on until production carries it, under the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged, now } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-prod-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              const go = yield* goAsked(run.asked, "go-1");
+              expect(optionsOf([go], "go-1")).toEqual(["Merge, tag and stage", "Finish"]);
+              expect(go.prompt).toContain(head.slice(0, 8));
+              expect(go.prompt).toContain("stage gets the tag; production waits for a second go");
+              expect(claimed).toEqual([]);
+              yield* run.answer("go-1", "Merge, tag and stage");
+              const production = yield* goAsked(run.asked, "production");
+              expect(optionsOf([production], "production")).toEqual([
+                "Send to production",
+                "Leave production to me",
+              ]);
+              expect(production.prompt).toContain("v1.2.0");
+              expect(production.prompt).toContain(`stage carries \`${merged.slice(0, 8)}\``);
+              expect(production.prompt).toContain(waiting(name));
+              expect(claimed).toEqual([`claim ${runId}`]);
+              const played = yield* now({ environments: deploys(merged, merged) });
+              yield* rig.queueOutputs([
+                APP_ASSESSED,
+                stagedTag(name),
+                {
+                  writes: [forge.holding(played)],
+                  output: { verdict: "clean", played: ["deploy-production"] },
+                },
+              ]);
+              yield* run.answer("production", "Send to production");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(model.merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "tag")).toBe(
+            `Cleared for this step: a release commit to ${url}'s default branch, where it makes one; pushing an annotated version tag to origin, with no forge release; playing, retrying and watching the tag pipeline's stage deploy and check jobs until only production jobs waiting to be started are left; rolling stage back to the newest release production carries; never a production job.`,
+          );
+          expect(yield* clearance(runId, "production")).toBe(
+            `Cleared for this step: playing ${waiting(name)} on ${url}, and no other job.`,
+          );
+          expect(yield* asked(runId, "tag")).toContain("`deploy-stage`");
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["tag", "production"])
+            expect(yield* asked(runId, step)).not.toMatch(other);
+          expect(yield* parkedWhy(runId)).toBe("");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Leave production to me plays nothing and waits, naming the job, until production carries the merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-leave-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              yield* run.answer("production", "Leave production to me");
+              expect(
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                ),
+              ).toBe(
+                `Waiting for production: play ${waiting(name)}. The claim on \`project\` is held until the forge shows production carries \`${merged.slice(0, 8)}\`.`,
+              );
+              expect(claimed).toEqual([`claim ${runId}`]);
+              yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a stage check failing after the merge is rolled back, gives the claim back and fails, asking no go 2`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, base, merged, model } = yield* stageable(name, {
+            "e2e-stage": "failed",
+          });
+          claimed.length = 0;
+          const runId = `r-app-rollback-${name}`;
+          yield* rig.queueOutputs([
+            APP_ASSESSED,
+            stagedTag(name),
+            {
+              writes: [forge.holding({ ...model, environments: deploys(base, base) })],
+              output: { verdict: "clean", stage: "v1.1.0" },
+            },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Merge, tag and stage");
+              const end = yield* ended(run.status);
+              expect((yield* run.asked).map((row) => row.decision)).not.toContain("production");
+              return end;
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, but stage failed after the merge: \`e2e-stage\` failed on v1.2.0's pipeline at ${PIPELINE_OF[name]}. Stage is back on what production carries, nothing went to production, and the merge stands: the fix is a new merge request`,
+          );
+          expect(yield* asked(runId, "rollback")).toContain("`e2e-stage` failed");
+          expect(yield* clearance(runId, "rollback")).toBe(
+            `Cleared for this step: rolling ${url}'s stage back to the newest release production carries, never a production job.`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a rollback the forge cannot show fails the Run, keeps the claim and offers Release again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, merged } = yield* stageable(name, { "e2e-stage": "failed" });
+          claimed.length = 0;
+          const runId = `r-app-unshown-${name}`;
+          yield* rig.queueOutputs([
+            APP_ASSESSED,
+            stagedTag(name),
+            { verdict: "clean", stage: "v1.1.0" },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Merge, tag and stage");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, but stage failed after the merge: \`e2e-stage\` failed on v1.2.0's pipeline at ${PIPELINE_OF[name]}. Its rollback is not shown: stage still carries ${merged.slice(0, 8)}`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`]);
+          expect(yield* releaseAgainOffered(target)).toBe(true);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a failed job of the tag's pipeline fails the read-back, keeps the claim and asks no go 2`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, merged } = yield* stageable(name, { build: "failed" });
+          claimed.length = 0;
+          const runId = `r-app-failed-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Merge, tag and stage");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, but v1.2.0 is not ready for production: \`build\` failed on v1.2.0's pipeline at ${PIPELINE_OF[name]}`,
+          );
+          expect(yield* clearance(runId, "rollback")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Send to production after somebody already played the job plays nothing twice, and waits`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now, model } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-played-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              const started = model.runs!["7"]!.jobs!.map((job) =>
+                job.name === "deploy-production" ? { ...job, state: "running" as const } : job,
+              );
+              yield* forge.set(
+                yield* now({
+                  runs: { "7": { ...tagRun(merged), status: "running", jobs: started } },
+                }),
+              );
+              yield* run.answer("production", "Send to production");
+              yield* until(
+                () => parkedWhy(runId),
+                (why) => why !== "",
+              );
+              yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Send to production after the tag moved plays nothing, fails and keeps the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, base, merged } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-moved-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              yield* exec(["git", "tag", "-fa", "v1.2.0", "-m", "moved", base], {
+                cwd: rig.projectDir,
+              });
+              yield* exec(["git", "push", "-qf", "origin", "v1.2.0"], { cwd: rig.projectDir });
+              yield* run.answer("production", "Send to production");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged} and tagged v1.2.0, but nothing was sent to production: v1.2.0 on origin does not carry the merged commit ${merged.slice(0, 8)}`,
+          );
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Release again after a failure past the merge asks go 2 afresh, and succeeds once production carries the merge`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now } = yield* stageable(name, { build: "failed" });
+          claimed.length = 0;
+          const first = `r-app-first-${name}`;
+          const again = `r-app-again-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name), APP_ASSESSED, stagedTag(name)]);
+          const failure = outcomeText(
+            yield* driven(options(first), (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                return yield* ended(run.status);
+              }),
+            ),
+          );
+          expect(claimed).toEqual([`claim ${first}`]);
+          const fixed = TAG_JOBS.map((job) => ({
+            name: job,
+            state: job === "deploy-production" ? ("manual" as const) : ("passed" as const),
+          }));
+          yield* forge.set(
+            yield* now({ runs: { "7": { ...tagRun(merged), status: "manual", jobs: fixed } } }),
+          );
+          const status = yield* driven(
+            options(again, { [first]: { succeeded: false, failure } }),
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "production");
+                expect((yield* run.asked).map((row) => row.decision)).not.toContain("go-1");
+                yield* run.answer("production", "Leave production to me");
+                yield* until(
+                  () => parkedWhy(again),
+                  (why) => why !== "",
+                );
+                yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+                return yield* ended(run.status);
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(model.merges ?? []).toHaveLength(1);
+          expect(claimed).toEqual([`claim ${first}`, `claim ${again}`, `release ${again}`]);
+          expect(yield* asked(again, "tag")).toContain(
+            `recovers the release of ${mr} that ${first} merged`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Release again where production already carries the merge asks nothing and ends at once`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, merged, now } = yield* stageable(name, { build: "failed" });
+          claimed.length = 0;
+          const first = `r-app-live-first-${name}`;
+          const again = `r-app-live-again-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name), APP_ASSESSED, stagedTag(name)]);
+          const failure = outcomeText(
+            yield* driven(options(first), (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Merge, tag and stage");
+                return yield* ended(run.status);
+              }),
+            ),
+          );
+          yield* forge.set(yield* now({ environments: deploys(merged, merged) }));
+          const result = yield* ran(options(again, { [first]: { succeeded: false, failure } }));
+          yield* bin.restore();
+          expect(said(result)).toBe(`${mr} merged at ${merged}, released as v1.2.0, in production`);
+          expect(claimed).toEqual([`claim ${first}`, `claim ${again}`, `release ${again}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a Hold during the production wait suspends the Run`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* stageable(name);
+          claimed.length = 0;
+          const runId = `r-app-held-${name}`;
+          yield* rig.queueOutputs([APP_ASSESSED, stagedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* staged(run);
+              yield* run.answer("production", "Leave production to me");
+              yield* until(
+                () => parkedWhy(runId),
+                (why) => why !== "",
+              );
+              const fs = yield* FileSystem.FileSystem;
+              yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
+              return yield* until(
+                () => Effect.map(run.status, (got) => got.status),
+                (got) => got === "suspended",
+              );
+            }),
+          );
+          yield* bin.restore();
+          expect(status).toBe("suspended");
+          expect(yield* parkedWhy(runId)).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+}
+
+/** An application's assessment, naming the stage deploys of a merge request's pipeline and a tag's. */
+const assessedWith = (mergeRequest: ReadonlyArray<string>, tag: ReadonlyArray<string>) => ({
+  ...APP_ASSESSED,
+  stage_jobs: { merge_request: [...mergeRequest], tag: [...tag] },
+});
+const MR_STAGED = assessedWith(["deploy-stage"], []);
+
+/** The jobs of the merge request's own pipeline, numbered as each forge's job read numbers them. */
+const MR_JOBS = ["build", "deploy-stage", "e2e-stage"] as const;
+type MrJob = (typeof MR_JOBS)[number];
+
+const mrJob = (name: MrForge, job: MrJob) => {
+  const id = MR_JOBS.indexOf(job) + 1;
+  return name === "gitlab"
+    ? `https://${PROJECT.gitlab}/-/jobs/${id}`
+    : `https://github.com/owner/repo/runs/${id}`;
+};
+
+/** What the stage step says it played and checked, which nothing takes for proof. */
+const STAGED_MR = { verdict: "clean", stage_jobs: ["deploy-stage", "e2e-stage"] };
+
+/** What the tag step of an application tested on stage says it did. */
+const testedTag = (name: MrForge) => ({
+  ...TAGGED,
+  pipeline_url: PIPELINE_OF[name],
+  production_jobs: [{ name: "deploy-production", url: `${RELEASING[name].url}/said-by-the-agent` }],
+});
+
+const UNSTAGED = { verdict: "clean", stage: "v1.1.0" };
+const DISPUTED_FIX = { verdict: "clean", fixed: [], disputed: [] };
+
+for (const name of ["gitlab", "github"] as const) {
+  const { mr, url, target } = RELEASING[name];
+  const options = (runId: string, ends: Ends = {}) => ({
+    entry: shipped("release"),
+    runId,
+    input: { mr: target },
+    host: releaseHost(ends),
+  });
+
+  /**
+   * An application whose merge request's pipeline stages it, ready: its stage jobs at
+   * `states`, its tag pipeline held by a production job nobody started, and stage and
+   * production on the commit the merge is made on. `staging` is the stage step's stand-in,
+   * which leaves stage on the merge request's head.
+   */
+  const testable = (states: Partial<Record<MrJob, "passed" | "failed" | "skipped">> = {}) =>
+    Effect.gen(function* () {
+      const made = yield* stageable(name);
+      const jobs = {
+        build: "passed",
+        "deploy-stage": "passed",
+        "e2e-stage": "passed",
+        ...states,
+      } as const;
+      const model: ForgeModel = {
+        ...made.model,
+        environments: deploys(made.base, made.base),
+        mrs: made.model.mrs.map((one) => ({
+          ...one,
+          jobs: MR_JOBS.map((job) => ({ name: job, state: jobs[job] })),
+        })),
+      };
+      yield* made.forge.set(model);
+      const onStage = { ...model, environments: deploys(made.head, made.base) };
+      const staging = { writes: [made.forge.holding(onStage)], output: STAGED_MR };
+      const unstaging = { writes: [made.forge.holding(model)], output: UNSTAGED };
+      return { ...made, model, onStage, staging, unstaging };
+    });
+
+  /** Go 1 answered with staging, and the production go once it is asked. */
+  const tested = (run: {
+    readonly asked: Parameters<typeof goAsked>[0];
+    readonly answer: (decision: string, value: string) => Effect.Effect<void>;
+  }) =>
+    Effect.gen(function* () {
+      yield* goAsked(run.asked, "go-1");
+      yield* run.answer("go-1", "Stage the merge request");
+      return yield* goAsked(run.asked, "production");
+    });
+
+  const stageJobs = `\`deploy-stage\` at ${mrJob(name, "deploy-stage")}, \`e2e-stage\` at ${mrJob(name, "e2e-stage")}`;
+
+  scenario(
+    `release on ${name}: an application staged from its merge request is merged at the tested head, tagged and sent to production on one go, under the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged, now, staging } = yield* testable();
+          claimed.length = 0;
+          const runId = `r-tested-prod-${name}`;
+          yield* rig.queueOutputs([
+            MR_STAGED,
+            staging,
+            testedTag(name),
+            { verdict: "clean", played: ["deploy-production"] },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              const go = yield* goAsked(run.asked, "go-1");
+              expect(optionsOf([go], "go-1")).toEqual(["Stage the merge request", "Finish"]);
+              expect(go.prompt).toContain("deploys that head to stage for you to test, unmerged");
+              yield* run.answer("go-1", "Stage the merge request");
+              const production = yield* goAsked(run.asked, "production");
+              expect(optionsOf([production], "production")).toEqual([
+                "Send to production",
+                "Leave production to me",
+                "Finish",
+              ]);
+              expect(production.prompt).toContain(mr);
+              expect(production.prompt).toContain(head.slice(0, 8));
+              expect(production.prompt).toContain(stageJobs);
+              expect(production.prompt).toContain("for testing, unmerged");
+              expect(production.prompt).toContain(
+                "Send to production merges it at that head, tags it and plays production with no further question",
+              );
+              expect((yield* forge.model()).merges ?? []).toEqual([]);
+              expect(claimed).toEqual([`claim ${runId}`]);
+              yield* run.answer("production", "Send to production");
+              yield* until(
+                () => parkedWhy(runId),
+                (why) => why !== "",
+              );
+              yield* forge.set(yield* now({ environments: deploys(head, merged) }));
+              const end = yield* ended(run.status);
+              expect(
+                (yield* run.asked).filter((row) => row.decision.startsWith("production")),
+              ).toHaveLength(1);
+              return end;
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(model.merges?.map((one) => one.sha)).toEqual([head]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "stage")).toBe(
+            `Cleared for this step: playing, retrying and watching ${url}'s stage deploy job and stage check jobs (e2e-stage, smoke or the like) of the merge request's pipeline; rolling ${url}'s stage back to the newest release production carries; never a production job.`,
+          );
+          expect(yield* asked(runId, "stage")).toContain("`deploy-stage`");
+          expect(yield* clearance(runId, "production")).toBe(
+            `Cleared for this step: playing ${waiting(name)} on ${url}, and no other job.`,
+          );
+          const other = new RegExp(`\\b${name === "gitlab" ? "gh" : "glab"}\\b`);
+          for (const step of ["stage", "tag"]) expect(yield* asked(runId, step)).not.toMatch(other);
+          expect(yield* asked(runId, "tag")).toContain(`merged commit is \`${merged}\``);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Leave production to me after staging the merge request merges and tags, plays nothing and waits`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, merged, now, staging } = yield* testable();
+          claimed.length = 0;
+          const runId = `r-tested-leave-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging, testedTag(name)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* tested(run);
+              yield* run.answer("production", "Leave production to me");
+              expect(
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                ),
+              ).toContain(`play ${waiting(name)}`);
+              expect(claimed).toEqual([`claim ${runId}`]);
+              yield* forge.set(yield* now({ environments: deploys(head, merged) }));
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} merged at ${merged}, released as v1.2.0, in production`,
+          );
+          expect(model.merges?.map((one) => one.sha)).toEqual([head]);
+          expect(yield* clearance(runId, "production")).toBe("");
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: Finish after staging the merge request merges nothing, rolls stage back and gives the claim back`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, staging, unstaging } = yield* testable();
+          claimed.length = 0;
+          const runId = `r-tested-finish-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging, unstaging]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* tested(run);
+              yield* run.answer("production", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open, and stage rolled back`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "unstage")).toBe(
+            `Cleared for this step: rolling ${url}'s stage back to the newest release production carries, never a production job.`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a comment while the human tests merges nothing on the go, rolls stage back, gives the claim back and runs its round`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, model: ready, staging } = yield* testable();
+          claimed.length = 0;
+          const runId = `r-tested-comment-${name}`;
+          const late = { id: 95, author: "bob", at: "2026-10-20T11:00:00Z", body: "wait" };
+          const commented = (on: ForgeModel) => ({
+            ...on,
+            mrs: on.mrs.map((one) => ({ ...one, comments: [late] })),
+          });
+          yield* rig.queueOutputs([
+            MR_STAGED,
+            staging,
+            { writes: [forge.holding(commented(ready))], output: UNSTAGED },
+            { verdict: "clean", answers: [{ id: "95", answer: "disputed", note: "as meant" }] },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* tested(run);
+              yield* forge.set(commented(yield* forge.model()));
+              yield* run.answer("production", "Send to production");
+              yield* goAsked(run.asked, "go-2");
+              yield* run.answer("go-2", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(repliesOf(model)).toHaveLength(1);
+          expect(yield* runLog(runId)).toContain(
+            `the production go no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a stage job that did not pass at the go's head merges nothing, is rolled back, gives the claim back, runs a fix round and asks go 1 again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, staging, unstaging } = yield* testable({
+            "e2e-stage": "failed",
+          });
+          claimed.length = 0;
+          const runId = `r-tested-failed-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging, unstaging, DISPUTED_FIX]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Stage the merge request");
+              yield* goAsked(run.asked, "go-2");
+              expect((yield* run.asked).map((row) => row.decision)).not.toContain("production");
+              yield* run.answer("go-2", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          const why = `\`e2e-stage\` has not passed on the merge request's pipeline at ${head.slice(0, 8)}: it is failed`;
+          expect(yield* asked(runId, "unstage")).toContain(why);
+          expect(yield* asked(runId, "fix-1")).toContain(why);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a stage that does not carry the go's head merges nothing, and the fix round is asked about it`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head } = yield* testable();
+          claimed.length = 0;
+          const runId = `r-tested-uncarried-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, STAGED_MR, UNSTAGED, DISPUTED_FIX]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Stage the merge request");
+              yield* goAsked(run.asked, "go-2");
+              yield* run.answer("go-2", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* asked(runId, "fix-1")).toContain(
+            `stage does not carry ${head.slice(0, 8)}`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: a staged merge request's rollback the forge cannot show fails the Run, keeps the claim and offers Release again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, staging } = yield* testable({ "e2e-stage": "failed" });
+          claimed.length = 0;
+          const runId = `r-tested-unshown-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging, UNSTAGED]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Stage the merge request");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `stage of ${mr} at ${head.slice(0, 8)} failed: \`e2e-stage\` has not passed on the merge request's pipeline at ${head.slice(0, 8)}: it is failed. Its rollback is not shown: stage still carries ${head.slice(0, 8)}`,
+          );
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`]);
+          expect(yield* releaseAgainOffered(target)).toBe(true);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: go 1 offers only the staging the assessment found, and an application with neither fails before any wait`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* testable();
+          claimed.length = 0;
+          yield* rig.queueOutputs([
+            assessedWith(["deploy-stage"], ["deploy-stage"]),
+            assessedWith([], ["deploy-stage"]),
+            assessedWith(["deploy-stage"], []),
+            assessedWith([], []),
+          ]);
+          const offered = (runId: string) =>
+            driven(options(runId), (run) =>
+              Effect.gen(function* () {
+                const go = yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                yield* ended(run.status);
+                return optionsOf([go], "go-1");
+              }),
+            );
+          expect(yield* offered(`r-offer-both-${name}`)).toEqual([
+            "Stage the merge request",
+            "Merge, tag and stage",
+            "Finish",
+          ]);
+          expect(yield* offered(`r-offer-tag-${name}`)).toEqual(["Merge, tag and stage", "Finish"]);
+          expect(yield* offered(`r-offer-mr-${name}`)).toEqual([
+            "Stage the merge request",
+            "Finish",
+          ]);
+          const neither = yield* ran(options(`r-offer-none-${name}`));
+          yield* bin.restore();
+          expect(reasonOf(neither)).toBe(
+            `${mr} is an application with no stage deploy that Collie can prove, on its merge request's pipeline or its tags', so nothing was released: a stage and a production environment`,
+          );
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+}
 
 const CHORE = "upgrade the VM's install to 0.45.1";
 const DONE = { summary: "Upgraded the VM's install to 0.45.1 and restarted the host." };
