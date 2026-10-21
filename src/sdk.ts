@@ -23,6 +23,7 @@ import {
   Path,
   Predicate,
   Schema,
+  SchemaGetter,
   SchemaRepresentation,
 } from "effect";
 import type { CheckEvidence } from "./output";
@@ -587,6 +588,31 @@ export const definitionOf = (written: WrittenDefinition): WorkflowDefinition => 
  * operator sets a control between attempts, and an Activity would hand back the answer
  * from the attempt that first ran.
  */
+/** What `claim` holds, or why the claims a Run needs could not be settled. */
+export type Claimed = { readonly slugs: ReadonlyArray<string> } | { readonly unresolved: string };
+
+const Holding = Schema.Union([
+  Schema.Struct({ slugs: Schema.Array(Schema.String) }),
+  Schema.Struct({ unresolved: Schema.String }),
+]);
+
+/**
+ * What a claim journaled before a Run could hold several: one project, or null where it
+ * went on holding none, which is read as unsettled so a replay asks rather than goes on.
+ */
+const SingleClaim = Schema.NullOr(Schema.Struct({ slug: Schema.String })).pipe(
+  Schema.decodeTo(Holding, {
+    decode: SchemaGetter.transform((one) =>
+      one === null
+        ? { unresolved: "an earlier Collie took this claim and held no Helle project" }
+        : { slugs: [one.slug] },
+    ),
+    encode: SchemaGetter.forbidden(() => "a claim is journaled in its current shape"),
+  }),
+);
+
+export const ClaimedSchema = Schema.Union([Holding, SingleClaim]);
+
 export interface HostApi {
   readonly dir: string;
   /** This Machine's Run report, for admissions at or after the ISO moment. */
@@ -740,23 +766,32 @@ export interface HostApi {
     readonly body: string;
   }) => Effect.Effect<Posted>;
   /**
-   * Blocks until this Run holds the shared claim on the repository it works in, and
-   * answers null where that repository has none. Waiting here costs wall clock and no
-   * model tokens, which is the point of claiming before an agent starts rather than
-   * after. `adopting` is asked only where the claim was already the operator's own, so
-   * the question is the workflow's — durable, and answered once.
+   * Blocks until this Run holds every shared claim it needs, each recorded on the Run, and
+   * answers which; `unresolved` says why the claims it needs could not be settled, and
+   * nothing is claimed. Without `deploys` that is the repository's own project; with them,
+   * also every project they name. A repository's `.collie/helle.json` overrides both.
+   * Waiting here costs wall clock and no model tokens, which is the point of claiming
+   * before an agent starts rather than after. `adopting` is asked only where a claim was
+   * already the operator's own, so the question is the workflow's — durable, and
+   * answered once.
    */
   readonly claim: <E, R>(options: {
     readonly runId: string;
     readonly cwd: string;
     readonly adopting: Effect.Effect<boolean, E, R>;
     readonly say: (line: string) => Effect.Effect<void, E, R>;
-  }) => Effect.Effect<{ readonly slug: string } | null, WorkflowError | E, R>;
+    /** What a release deploys: its applications, and its deploy jobs (`stage:<app>`). */
+    readonly deploys?: {
+      readonly applications: ReadonlyArray<string>;
+      readonly jobs: ReadonlyArray<string>;
+    };
+  }) => Effect.Effect<Claimed, WorkflowError | E, R>;
   /**
-   * Gives the claim back. Only a Run that has finished its work releases: holding it
-   * across a consultation is what stops anyone deploying on a half-finished change.
+   * Gives every claim back, and answers those Helle would not take, which stay recorded.
+   * Only a Run that has finished its work releases: holding it across a consultation is
+   * what stops anyone deploying on a half-finished change.
    */
-  readonly release: (runId: string) => Effect.Effect<void>;
+  readonly release: (runId: string) => Effect.Effect<ReadonlyArray<string>>;
   /**
    * Records the merge request this Run opened. It is a fact about the Run from then on:
    * its card links it, says it waits on it, and follows what the forge says of it.
@@ -937,7 +972,7 @@ export interface HostApi {
     readonly jobs: ReadonlyArray<{ readonly name: string; readonly url?: string }>;
     /** The jobs were played already, by this Run or somebody. */
     readonly played?: boolean;
-    /** The claim held meanwhile, where the Run holds one. */
+    /** The claims held meanwhile, where the Run holds any. */
     readonly slug?: string;
     /** The repository's web address, which a job without its own is played at. */
     readonly url: string;
@@ -1243,7 +1278,7 @@ export interface ActionFacts {
   readonly openFindings: number;
   /** What it was pointed at, where it was pointed at anything. */
   readonly diffTarget: string | null;
-  /** The shared claim it still holds, by the project it claimed; null where it holds none. */
+  /** The shared claims it still holds, by the projects claimed; null where it holds none. */
   readonly claim: string | null;
 }
 

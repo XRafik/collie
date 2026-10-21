@@ -4,19 +4,21 @@
 // exactly the ones a real Helle will not produce on demand.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { Effect, Fiber, FileSystem, Path, Result, Schedule } from "effect";
+import { Effect, Fiber, FileSystem, Path, Result, Schedule, Schema } from "effect";
 import { runEffect } from "./support/effect";
 import {
   credentials,
   helleProjects,
   releaseClaim,
   resolveProject,
+  resolveProjects,
   waitForHelle,
   type HelleClaim,
   type HelleProject,
 } from "../src/helle";
 import { HELLE_URL } from "../src/helle-url";
 import { handOverClaim } from "../src/engine";
+import { ClaimedSchema } from "../src/sdk";
 
 const ME = "6b9ba520-user";
 const OTHER = "2dd236ac-other";
@@ -189,6 +191,98 @@ test("several matches are ambiguous, and name them", () => {
   });
 });
 
+/** Helle's projects in the monorepo's own group, and one elsewhere named like an app. */
+const FRONTEND = [
+  project("spilnu", "spilnu/frontend"),
+  project("happytiger", "spilnu/frontend"),
+  project("playground", "spilnu/frontend"),
+  project("chat", "Players"),
+];
+const MONOREPO = "gitlab.cego.dk/spilnu/frontend/monorepo";
+const release = (over: Partial<Parameters<typeof resolveProjects>[1]> = {}) => ({
+  repositoryPath: MONOREPO,
+  repoName: "monorepo",
+  applications: [],
+  jobs: [],
+  declared: null,
+  ...over,
+});
+
+test("a monorepo's release needs the project of every application it deploys, in its own group", () => {
+  expect(
+    resolveProjects(
+      FRONTEND,
+      release({ applications: ["spilnu"], jobs: ["stage:happytiger", "prod:happytiger"] }),
+    ),
+  ).toEqual({ _tag: "Projects", slugs: ["happytiger", "spilnu"] });
+});
+
+test("a deploy job naming another group's project does not claim it", () => {
+  expect(resolveProjects(FRONTEND, release({ jobs: ["stage:chat", "stage:spilnu"] }))).toEqual({
+    _tag: "Projects",
+    slugs: ["spilnu"],
+  });
+});
+
+test("a project of a group the repository's group merely ends with is not the repository's group's", () => {
+  const frontend = [project("spilnu", "spilnu/frontend"), project("chat", "frontend")];
+  expect(resolveProjects(frontend, release({ jobs: ["stage:chat", "stage:spilnu"] }))).toEqual({
+    _tag: "Projects",
+    slugs: ["spilnu"],
+  });
+  const resolved = resolveProjects(frontend, release({ applications: ["chat"] }));
+  expect(resolved._tag).toBe("Unresolved");
+});
+
+test("a repository's own project is still needed, with its applications'", () => {
+  expect(
+    resolveProjects(
+      [...FRONTEND, project("monorepo", "spilnu/frontend")],
+      release({ jobs: ["stage:spilnu"] }),
+    ),
+  ).toEqual({ _tag: "Projects", slugs: ["monorepo", "spilnu"] });
+});
+
+test("an application Helle has no project for leaves the release unresolved", () => {
+  const resolved = resolveProjects(FRONTEND, release({ applications: ["spilnu", "newapp"] }));
+  expect(resolved._tag).toBe("Unresolved");
+  expect(resolved._tag === "Unresolved" && resolved.why).toContain("newapp");
+});
+
+test("a release that resolves to no project at all is unresolved, never carried on without", () => {
+  const resolved = resolveProjects(FRONTEND, release({ jobs: ["deploy:stage"] }));
+  expect(resolved._tag).toBe("Unresolved");
+  expect(resolved._tag === "Unresolved" && resolved.why).toContain("monorepo");
+});
+
+test("several projects the repository could be leave it unresolved", () => {
+  const resolved = resolveProjects(
+    [project("sim", "a"), project("sim", "b")],
+    release({ repositoryPath: null, repoName: "sim" }),
+  );
+  expect(resolved._tag).toBe("Unresolved");
+});
+
+test("a repository that declares its projects is held to exactly those, and [] declares none", () => {
+  expect(
+    resolveProjects(FRONTEND, release({ jobs: ["stage:spilnu"], declared: ["playground"] })),
+  ).toEqual({ _tag: "Projects", slugs: ["playground"] });
+  expect(resolveProjects(FRONTEND, release({ jobs: ["stage:spilnu"], declared: [] }))).toEqual({
+    _tag: "Projects",
+    slugs: [],
+  });
+  const unknown = resolveProjects(FRONTEND, release({ declared: ["gone"] }));
+  expect(unknown._tag === "Unresolved" && unknown.why).toContain("gone");
+});
+
+test("a claim an earlier release journaled reads as what it held, and holding none asks again", () => {
+  const decode = Schema.decodeUnknownSync(ClaimedSchema);
+  expect(decode({ slug: "spilnu" })).toEqual({ slugs: ["spilnu"] });
+  expect("unresolved" in decode(null)).toBe(true);
+  expect(decode({ slugs: ["happytiger", "spilnu"] })).toEqual({ slugs: ["happytiger", "spilnu"] });
+  expect(Schema.encodeSync(ClaimedSchema)({ slugs: ["spilnu"] })).toEqual({ slugs: ["spilnu"] });
+});
+
 test("a 500 from the project list is a refusal", () =>
   runEffect(
     Effect.gen(function* () {
@@ -214,12 +308,14 @@ function gate(opts: {
   file: string;
   repositoryPath?: string | null;
   repoName?: string;
-  claimed?: HelleClaim | null;
+  deploys?: { applications: string[]; jobs: string[] } | null;
+  claimed?: HelleClaim[];
   answer?: string | null;
   lines: string[];
   recorded: (HelleClaim | null)[];
   queued?: number[];
   ended?: string[];
+  forgotten?: string[];
 }) {
   return waitForHelle({
     home: "/nowhere",
@@ -230,8 +326,11 @@ function gate(opts: {
         ? "gitlab.cego.dk/spilnu/frontend/spilnu"
         : opts.repositoryPath,
     repoName: opts.repoName ?? "spilnu",
-    claimed: opts.claimed ?? null,
+    deploys: opts.deploys ?? null,
+    declared: null,
+    claimed: opts.claimed ?? [],
     record: (claim) => Effect.sync(() => void opts.recorded.push(claim)),
+    forget: (slug) => Effect.sync(() => void opts.forgotten?.push(slug)),
     out: (line) => Effect.sync(() => void opts.lines.push(line)),
     ask: () => Effect.succeed(opts.answer ?? null),
     queued: (_slug, position) => Effect.sync(() => void opts.queued?.push(position)),
@@ -240,7 +339,7 @@ function gate(opts: {
   });
 }
 
-test("a repository with no Helle project carries straight on", () =>
+test("a repository with no Helle project is unresolved, and nothing is claimed", () =>
   runEffect(
     Effect.gen(function* () {
       fake.projects = [{ slug: "spilnu", group: "spilnu/frontend", queue: [] }];
@@ -256,10 +355,10 @@ test("a repository with no Helle project carries straight on", () =>
         ended,
       });
 
-      expect(held).toBeNull();
+      expect(held._tag).toBe("Unresolved");
+      expect(held._tag === "Unresolved" && held.why).toContain("no Helle project for collie");
       expect(ended).toEqual(["ended"]);
       expect(recorded).toEqual([]);
-      expect(lines.join("\n")).toContain("no Helle project");
       expect(fake.calls).not.toContain("POST /api/v1/projects/spilnu/claim");
     }),
   ));
@@ -320,7 +419,7 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         fake.projects[0]!.holder = { user_id: ME, display_name: "mk" };
         fake.projects[0]!.queue = [];
 
-        expect(yield* Fiber.join(fiber)).toEqual({ slug: "spilnu" });
+        expect(yield* Fiber.join(fiber)).toEqual({ _tag: "Held", slugs: ["spilnu"] });
         expect(recorded).toEqual([{ slug: "spilnu", claim: "mine" }]);
         const said = lines.join("\n");
         expect(said).toContain("position 2");
@@ -359,6 +458,318 @@ test("a gate interrupted in the queue is not told its wait ended", () =>
     ),
   ));
 
+test("a monorepo's release holds every application's project before it answers", () =>
+  runEffect(
+    Effect.gen(function* () {
+      fake.projects = [
+        { slug: "spilnu", group: "spilnu/frontend", queue: [] },
+        { slug: "happytiger", group: "spilnu/frontend", queue: [] },
+        { slug: "playground", group: "spilnu/frontend", queue: [] },
+      ];
+      const lines: string[] = [];
+      const recorded: (HelleClaim | null)[] = [];
+      const held = yield* gate({
+        file: yield* envFile(),
+        repositoryPath: "gitlab.cego.dk/spilnu/frontend/monorepo",
+        repoName: "monorepo",
+        deploys: { applications: ["spilnu"], jobs: ["stage:happytiger"] },
+        lines,
+        recorded,
+      });
+
+      expect(held).toEqual({ _tag: "Held", slugs: ["happytiger", "spilnu"] });
+      expect(recorded).toEqual([
+        { slug: "happytiger", claim: "mine" },
+        { slug: "spilnu", claim: "mine" },
+      ]);
+      expect(fake.calls).not.toContain("POST /api/v1/projects/playground/claim");
+      expect(lines.join("\n")).toContain("holds happytiger");
+      expect(lines.join("\n")).toContain("holds spilnu");
+    }),
+  ));
+
+test("someone else's claim on one project keeps the gate waiting, and the next is not queued for meanwhile", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        fake.projects = [
+          {
+            slug: "happytiger",
+            group: "spilnu/frontend",
+            holder: { user_id: OTHER, display_name: "someone" },
+            queue: [{ user_id: ME }],
+          },
+          { slug: "spilnu", group: "spilnu/frontend", queue: [] },
+        ];
+        fake.claims = [{ position: 1, already_queued: false }];
+        const lines: string[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({
+            file: yield* envFile(),
+            repositoryPath: "gitlab.cego.dk/spilnu/frontend/monorepo",
+            repoName: "monorepo",
+            deploys: { applications: ["spilnu", "happytiger"], jobs: [] },
+            lines,
+            recorded: [],
+          }),
+        );
+
+        yield* Effect.sync(() =>
+          lines.some((line) => line.includes("waiting for happytiger")),
+        ).pipe(Effect.repeat({ until: (seen) => seen, schedule: Schedule.spaced("5 millis") }));
+        yield* Effect.sleep(30);
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        expect(fake.calls).not.toContain("POST /api/v1/projects/spilnu/claim");
+
+        fake.projects[0]!.holder = { user_id: ME, display_name: "mk" };
+        fake.projects[0]!.queue = [];
+        expect(yield* Fiber.join(fiber)).toEqual({ _tag: "Held", slugs: ["happytiger", "spilnu"] });
+      }),
+    ),
+  ));
+
+test("a claim lost while the gate waited for the next gives the later ones back and takes them again in order", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        fake.projects = [
+          { slug: "happytiger", group: "spilnu/frontend", queue: [] },
+          {
+            slug: "spilnu",
+            group: "spilnu/frontend",
+            holder: { user_id: OTHER, display_name: "someone" },
+            queue: [],
+          },
+        ];
+        fake.claims = [
+          { position: 0, already_queued: false },
+          { position: 1, already_queued: false },
+          { position: 1, already_queued: false },
+        ];
+        const lines: string[] = [];
+        const recorded: (HelleClaim | null)[] = [];
+        const forgotten: string[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({
+            file: yield* envFile(),
+            repositoryPath: "gitlab.cego.dk/spilnu/frontend/monorepo",
+            repoName: "monorepo",
+            deploys: { applications: ["spilnu", "happytiger"], jobs: [] },
+            lines,
+            recorded,
+            forgotten,
+          }),
+        );
+        const saidSoFar = (text: string) =>
+          Effect.sync(() => lines.some((line) => line.includes(text))).pipe(
+            Effect.repeat({
+              until: (seen) => seen,
+              schedule: Schedule.spaced("5 millis"),
+            }),
+          );
+
+        yield* saidSoFar("waiting for spilnu");
+        const [happytiger, spilnu] = fake.projects;
+        happytiger!.holder = { user_id: OTHER, display_name: "someone" };
+        happytiger!.queue = [];
+        spilnu!.holder = { user_id: ME, display_name: "mk" };
+        spilnu!.queue = [];
+        yield* saidSoFar("waiting for happytiger");
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        expect(spilnu!.holder).toBeUndefined();
+        expect(forgotten).toEqual(["spilnu"]);
+
+        happytiger!.holder = { user_id: ME, display_name: "mk" };
+        expect(yield* Fiber.join(fiber)).toEqual({
+          _tag: "Held",
+          slugs: ["happytiger", "spilnu"],
+        });
+        expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([
+          "POST /api/v1/projects/happytiger/claim",
+          "POST /api/v1/projects/spilnu/claim",
+          "POST /api/v1/projects/spilnu/release",
+          "POST /api/v1/projects/happytiger/claim",
+          "POST /api/v1/projects/spilnu/claim",
+        ]);
+        expect(recorded).toEqual([
+          { slug: "happytiger", claim: "mine" },
+          { slug: "spilnu", claim: "mine" },
+          { slug: "spilnu", claim: "mine" },
+        ]);
+      }),
+    ),
+  ));
+
+/** Helle as several users see it: a token is the user, and a release passes the project on. */
+const sharedHelle = Effect.fn("test.sharedHelle")(function* (
+  projects: { slug: string; holder?: { user_id: string }; queue: { user_id: string }[] }[],
+) {
+  const helle = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      const user = request.headers.get("authorization")!.replace("Bearer ", "");
+      const path = new URL(request.url).pathname.replace("/api/v1", "");
+      if (path === "/me") return Response.json({ user_id: user });
+      if (path === "/projects") return Response.json(projects);
+      const one = /^\/projects\/([^/]+)(\/claim|\/release)?$/.exec(path);
+      const project = projects.find((p) => p.slug === one?.[1]);
+      if (!one || !project) return Response.json({}, { status: 404 });
+      if (one[2] === "/claim") {
+        const already =
+          project.holder?.user_id === user || project.queue.some((m) => m.user_id === user);
+        if (!already) {
+          if (project.holder) project.queue.push({ user_id: user });
+          else project.holder = { user_id: user };
+        }
+        const at = project.queue.findIndex((m) => m.user_id === user);
+        return Response.json({ position: at + 1, already_queued: already });
+      }
+      if (one[2] === "/release") {
+        if (project.holder?.user_id === user) project.holder = project.queue.shift();
+        else project.queue = project.queue.filter((m) => m.user_id !== user);
+        return Response.json({ released: true });
+      }
+      return Response.json(project);
+    },
+  });
+  yield* Effect.addFinalizer(() => Effect.sync(() => void helle.stop(true)));
+  const url = `http://127.0.0.1:${helle.port}`;
+  const lines: string[] = [];
+  const release = (user: string, claimed: HelleClaim[], ask: () => string | null) =>
+    Effect.gen(function* () {
+      return yield* waitForHelle({
+        home: "/nowhere",
+        envFile: yield* envFile(user),
+        url,
+        repositoryPath: null,
+        repoName: "monorepo",
+        deploys: null,
+        declared: ["alpha", "beta"],
+        claimed,
+        record: () => Effect.void,
+        forget: () => Effect.void,
+        out: (line) => Effect.sync(() => void lines.push(`${user}: ${line}`)),
+        ask: () => Effect.sync(ask),
+        pollMs: 1,
+      });
+    });
+  return { url, lines, release };
+});
+
+test("Runs resuming with each other's next claim give theirs back rather than deadlock", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { url, lines, release } = yield* sharedHelle([
+          { slug: "alpha", holder: { user_id: "B" }, queue: [] },
+          { slug: "beta", holder: { user_id: "A" }, queue: [] },
+        ]);
+        const unasked = () => {
+          throw new Error("every claim is already recorded");
+        };
+
+        const a = yield* Effect.forkScoped(
+          release(
+            "A",
+            [
+              { slug: "alpha", claim: "mine" },
+              { slug: "beta", claim: "mine" },
+            ],
+            unasked,
+          ),
+        );
+        const b = yield* Effect.forkScoped(
+          release("B", [{ slug: "alpha", claim: "mine" }], unasked),
+        );
+
+        expect(yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+        expect(lines).toContain(
+          "A: ⚠ this Run does not hold alpha, so it gives back beta to take them again in order",
+        );
+        yield* releaseClaim({ url, token: "B" }, "alpha");
+        yield* releaseClaim({ url, token: "B" }, "beta");
+        expect(yield* Fiber.join(a).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+      }),
+    ),
+  ));
+
+test("a later project the operator already holds is taken over and given back before an earlier one is waited for", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { url, lines, release } = yield* sharedHelle([
+          { slug: "alpha", holder: { user_id: "A" }, queue: [] },
+          { slug: "beta", holder: { user_id: "B" }, queue: [] },
+        ]);
+        const asked: string[] = [];
+        const yes = (user: string) => () => (asked.push(user), "yes");
+
+        const b = yield* Effect.forkScoped(release("B", [], yes("B")));
+        const a = yield* Effect.forkScoped(release("A", [], yes("A")));
+
+        expect(yield* Fiber.join(a).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+        expect(lines).toContain(
+          "B: ⚠ this Run does not hold alpha, so it gives back beta to take them again in order",
+        );
+        expect(asked.sort()).toEqual(["A", "B"]);
+        yield* releaseClaim({ url, token: "A" }, "alpha");
+        yield* releaseClaim({ url, token: "A" }, "beta");
+        expect(yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+      }),
+    ),
+  ));
+
+test("a later project the operator will not have taken over stops the Run before it waits", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { release } = yield* sharedHelle([
+          { slug: "alpha", holder: { user_id: "A" }, queue: [] },
+          { slug: "beta", holder: { user_id: "B" }, queue: [] },
+        ]);
+
+        const result = yield* release("B", [], () => "no").pipe(
+          Effect.timeout("2 seconds"),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        expect(String(Result.isFailure(result) && result.failure.message)).toContain(
+          "the Helle claim on beta was already yours and was not taken over",
+        );
+      }),
+    ),
+  ));
+
+test("a release whose projects cannot be resolved claims nothing", () =>
+  runEffect(
+    Effect.gen(function* () {
+      fake.projects = [{ slug: "spilnu", group: "spilnu/frontend", queue: [] }];
+      const held = yield* gate({
+        file: yield* envFile(),
+        repositoryPath: "gitlab.cego.dk/spilnu/frontend/monorepo",
+        repoName: "monorepo",
+        deploys: { applications: ["spilnu", "newapp"], jobs: [] },
+        lines: [],
+        recorded: [],
+      });
+
+      expect(held._tag).toBe("Unresolved");
+      expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([]);
+    }),
+  ));
+
 test("a claim that was already the operator's is adopted only when they say so", () =>
   runEffect(
     Effect.gen(function* () {
@@ -375,7 +786,7 @@ test("a claim that was already the operator's is adopted only when they say so",
       const recorded: (HelleClaim | null)[] = [];
       const held = yield* gate({ file: yield* envFile(), answer: "yes", lines, recorded });
 
-      expect(held).toEqual({ slug: "spilnu" });
+      expect(held).toEqual({ _tag: "Held", slugs: ["spilnu"] });
       expect(recorded).toEqual([{ slug: "spilnu", claim: "adopted" }]);
     }),
   ));
@@ -427,8 +838,11 @@ test("a resumed Run does not ask again, and waits rather than assuming it holds 
             url: server.base,
             repositoryPath: "gitlab.cego.dk/spilnu/frontend/spilnu",
             repoName: "spilnu",
-            claimed: { slug: "spilnu", claim: "mine" },
+            deploys: null,
+            declared: null,
+            claimed: [{ slug: "spilnu", claim: "mine" }],
             record: (claim) => Effect.sync(() => void recorded.push(claim)),
+            forget: () => Effect.die("a resumed Run that keeps its claim forgets none"),
             out: (line) => Effect.sync(() => void lines.push(line)),
             ask: () => Effect.die("a resumed Run must not ask"),
             pollMs: 1,
@@ -439,7 +853,7 @@ test("a resumed Run does not ask again, and waits rather than assuming it holds 
         fake.projects[0]!.holder = { user_id: ME, display_name: "mk" };
         fake.projects[0]!.queue = [];
 
-        expect(yield* Fiber.join(fiber)).toEqual({ slug: "spilnu" });
+        expect(yield* Fiber.join(fiber)).toEqual({ _tag: "Held", slugs: ["spilnu"] });
         expect(lines.join("\n")).toContain("position 1");
       }),
     ),
@@ -460,13 +874,13 @@ test("a resumed Run granted the claim while it was down is told its wait ended",
       const ended: string[] = [];
       const held = yield* gate({
         file: yield* envFile(),
-        claimed: { slug: "spilnu", claim: "mine" },
+        claimed: [{ slug: "spilnu", claim: "mine" }],
         lines: [],
         recorded: [],
         ended,
       });
 
-      expect(held).toEqual({ slug: "spilnu" });
+      expect(held).toEqual({ _tag: "Held", slugs: ["spilnu"] });
       expect(ended).toEqual(["ended"]);
     }),
   ));
@@ -609,5 +1023,35 @@ test("adopting a claim stops the Run that held it and its children, waits them o
       }).pipe(Effect.flip);
       expect(running.message).toContain("r-old is still running");
       expect(yield* held("r-old")).toBe(true);
+    }).pipe(Effect.scoped),
+  ));
+
+test("two Runs taking over different claims of one Run both remove theirs from its record", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-handover-" });
+      yield* fs.makeDirectory(`${dir}/runs/r-old`, { recursive: true });
+      yield* fs.writeFileString(
+        `${dir}/runs/r-old/helle.json`,
+        `[{"slug":"happytiger","claim":"mine"},{"slug":"spilnu","claim":"mine"}]`,
+      );
+      const takeOver = (slug: string, to: string) =>
+        handOverClaim({
+          dir,
+          slug,
+          to,
+          runs: ["r-old"],
+          stop: (runId) => Effect.succeed({ runs: [runId], left: [] }),
+          // Both have read the record before either is done waiting.
+          stopped: () => Effect.sleep(20).pipe(Effect.as(true)),
+          halt: () => Effect.succeed({ stopped: [], left: [] }),
+          patience: { everyMs: 5, forMs: 5_000 },
+        });
+
+      yield* Effect.all([takeOver("happytiger", "r-a"), takeOver("spilnu", "r-b")], {
+        concurrency: "unbounded",
+      });
+      expect(yield* fs.exists(`${dir}/runs/r-old/helle.json`)).toBe(false);
     }).pipe(Effect.scoped),
   ));

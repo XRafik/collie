@@ -399,6 +399,12 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | { readonly _tag: "Refused"; readonly reason: string };
   export const MergeOutcomeSchema: Schema.Codec<MergeOutcome, unknown, never, never>;
 
+  /** What claim holds, or why the claims a Run needs could not be settled. */
+  export type Claimed =
+    | { readonly slugs: ReadonlyArray<string> }
+    | { readonly unresolved: string };
+  export const ClaimedSchema: Schema.Codec<Claimed, unknown, never, never>;
+
   /** An external comment nobody has answered yet. */
   export interface OpenComment {
     readonly id: string;
@@ -667,18 +673,23 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly body: string;
     }) => Effect.Effect<Posted>;
     /**
-     * Blocks until this Run holds the shared claim on the repository it works in, and
-     * answers null where that repository has none. Waiting here costs wall clock and no
-     * model tokens. adopting is asked only where the claim was already the operator's.
+     * Blocks until this Run holds every shared claim it needs, and answers which; unresolved
+     * says why they could not be settled, with nothing claimed. deploys adds each project an
+     * application or deploy job names. Waiting here costs wall clock and no model tokens.
+     * adopting is asked only where a claim was already the operator's.
      */
     readonly claim: <E, R>(options: {
       readonly runId: string;
       readonly cwd: string;
       readonly adopting: Effect.Effect<boolean, E, R>;
       readonly say: (line: string) => Effect.Effect<void, E, R>;
-    }) => Effect.Effect<{ readonly slug: string } | null, WorkflowError | E, R>;
-    /** Gives the claim back. Only a Run that finished its work releases. */
-    readonly release: (runId: string) => Effect.Effect<void>;
+      readonly deploys?: {
+        readonly applications: ReadonlyArray<string>;
+        readonly jobs: ReadonlyArray<string>;
+      };
+    }) => Effect.Effect<Claimed, WorkflowError | E, R>;
+    /** Gives every claim back, answering those Helle kept. Only a finished Run releases. */
+    readonly release: (runId: string) => Effect.Effect<ReadonlyArray<string>>;
     /** Records the merge request this Run opened, as a fact its card reads. */
     readonly mergeRequest: (runId: string, url: string) => Effect.Effect<void>;
     /**
@@ -1312,7 +1323,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly openFindings: number;
     /** What it was pointed at, where it was pointed at anything. */
     readonly diffTarget: string | null;
-    /** The shared claim it still holds, by the project it claimed; null where it holds none. */
+    /** The shared claims it still holds, by the projects claimed; null where it holds none. */
     readonly claim: string | null;
   }
 
@@ -2531,18 +2542,65 @@ const approvedOf = (dir: string, runId: string) => approvedIn(evidenceDir(dir, r
 /** Where a host keeps what a Run claimed, so a resume knows whose the claim was. */
 const claimPath = (dir: string, runId: string) => `${runDir(dir, runId)}/helle.json`;
 
-const decodeClaim = Schema.decodeUnknownEffect(Schema.fromJsonString(HelleClaimSchema));
-const encodeClaim = Schema.encodeSync(Schema.fromJsonString(HelleClaimSchema));
+// A single claim is how a host recorded one before a Run could hold several.
+const decodeClaims = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Union([HelleClaimSchema, Schema.Array(HelleClaimSchema)])),
+);
+const encodeClaims = Schema.encodeSync(Schema.fromJsonString(Schema.Array(HelleClaimSchema)));
 
-/** What this Run already claimed, and null where it has claimed nothing yet. */
-const recordedClaim = (
+/** What this Run already claimed, empty where it has claimed nothing yet. */
+const recordedClaims = (
   file: string,
-): Effect.Effect<HelleClaim | null, never, FileSystem.FileSystem> =>
+): Effect.Effect<ReadonlyArray<HelleClaim>, never, FileSystem.FileSystem> =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.readFileString(file)),
-    Effect.flatMap(decodeClaim),
-    Effect.orElseSucceed((): HelleClaim | null => null),
+    Effect.flatMap(decodeClaims),
+    Effect.map((read) => ("slug" in read ? [read] : read)),
+    Effect.orElseSucceed((): ReadonlyArray<HelleClaim> => []),
   );
+
+/** Writes a Run's claims, and removes the record where none are left. */
+const writeClaims = (file: string, claims: ReadonlyArray<HelleClaim>) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      claims.length === 0
+        ? fs.remove(file, { force: true })
+        : fs.writeFileString(file, encodeClaims(claims)),
+    ),
+  );
+
+// Several Runs change one Run's record at once: one adopting a claim, the Run recording or
+// releasing its own.
+const changingClaims = Semaphore.makeUnsafe(1);
+
+/** Changes a Run's claims as they are now, one change at a time. */
+const updateClaims = (
+  file: string,
+  change: (claims: ReadonlyArray<HelleClaim>) => ReadonlyArray<HelleClaim>,
+) =>
+  changingClaims.withPermits(1)(
+    recordedClaims(file).pipe(Effect.flatMap((claims) => writeClaims(file, change(claims)))),
+  );
+
+const DeclaredSchema = Schema.fromJsonString(
+  Schema.Struct({ projects: Schema.Array(Schema.String) }),
+);
+
+/** The Helle projects a repository's `.collie/helle.json` declares, null where it has none. */
+const declaredProjects = (cwd: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const file = `${cwd}/.collie/helle.json`;
+    if (!(yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))) return null;
+    const read = yield* fs.readFileString(file).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(DeclaredSchema)),
+      Effect.mapError(
+        (cause) =>
+          new HelleError({ message: `${file} is not {"projects": [...]}: ${String(cause)}` }),
+      ),
+    );
+    return read.projects;
+  });
 
 /**
  * The Run's Check a command is, with the latest record this host collected of it on this
@@ -2593,13 +2651,13 @@ export const handOverClaim = Effect.fn("Engine.handOverClaim")(function* (option
   readonly halt: (runId: string) => Effect.Effect<AgentsSdk.Halted>;
   readonly patience?: { readonly everyMs: number; readonly forMs: number };
 }) {
-  const fs = yield* FileSystem.FileSystem;
   const patience = options.patience ?? { everyMs: 250, forMs: 60_000 };
   const handed: string[] = [];
   for (const runId of options.runs) {
     if (runId === options.to) continue;
     const file = claimPath(options.dir, runId);
-    if ((yield* recordedClaim(file))?.slug !== options.slug) continue;
+    const record = yield* recordedClaims(file);
+    if (!record.some((one) => one.slug === options.slug)) continue;
     const refused = (left: ReadonlyArray<string>) =>
       new HelleError({
         message: `the claim on ${options.slug} is ${runId}'s, and its agents did not all close (${left.join("; ")}); close them, then resume ${options.to}`,
@@ -2620,7 +2678,9 @@ export const handOverClaim = Effect.fn("Engine.handOverClaim")(function* (option
     const late: string[] = [];
     for (const one of tree.runs) late.push(...(yield* options.halt(one)).left);
     if (late.length > 0) return yield* refused(late);
-    yield* fs.remove(file, { force: true }).pipe(Effect.orDie);
+    yield* updateClaims(file, (now) => now.filter((one) => one.slug !== options.slug)).pipe(
+      Effect.orDie,
+    );
     yield* appendLog(
       runDir(options.dir, runId),
       `claim on ${options.slug} taken over by ${options.to}; its agents were closed`,
@@ -3459,11 +3519,15 @@ export const hostLayer = (options: {
           readonly cwd: string;
           readonly adopting: Effect.Effect<boolean, E, R>;
           readonly say: (line: string) => Effect.Effect<void, E, R>;
-        }): Effect.Effect<{ readonly slug: string } | null, WorkflowError | E, R> =>
+          readonly deploys?: {
+            readonly applications: ReadonlyArray<string>;
+            readonly jobs: ReadonlyArray<string>;
+          };
+        }): Effect.Effect<Sdk.Claimed, WorkflowError | E, R> =>
           Effect.gen(function* () {
             const env = yield* currentEnv.pipe(Effect.orDie);
             const file = claimPath(dir, asked.runId);
-            return yield* waitForHelle({
+            const held = yield* waitForHelle({
               home: env.home,
               envFile: env.raw.HELLE_ENV_FILE ?? null,
               url: helleUrlOf(env.raw),
@@ -3474,7 +3538,9 @@ export const hostLayer = (options: {
               repoName:
                 (yield* repositoryName(runShell, asked.cwd)) ??
                 (yield* Path.Path).basename(asked.cwd),
-              claimed: yield* recordedClaim(file),
+              deploys: asked.deploys ?? null,
+              declared: yield* declaredProjects(asked.cwd),
+              claimed: yield* recordedClaims(file),
               record: (claim) =>
                 Effect.gen(function* () {
                   if (claim.claim === "adopted") {
@@ -3505,10 +3571,19 @@ export const hostLayer = (options: {
                   yield* fs
                     .makeDirectory(runDir(dir, asked.runId), { recursive: true })
                     .pipe(
-                      Effect.andThen(fs.writeFileString(file, encodeClaim(claim))),
+                      Effect.andThen(
+                        updateClaims(file, (before) => [
+                          ...before.filter((one) => one.slug !== claim.slug),
+                          claim,
+                        ]),
+                      ),
                       Effect.orDie,
                     );
                 }),
+              forget: (slug) =>
+                updateClaims(file, (before) => before.filter((one) => one.slug !== slug)).pipe(
+                  Effect.orDie,
+                ),
               out: asked.say,
               // The question is the workflow's, so it is durable and asked once; this only
               // turns the answer into the word the gate reads.
@@ -3520,6 +3595,7 @@ export const hostLayer = (options: {
                 }),
               ended: () => waitOn(asked.runId, null),
             });
+            return held._tag === "Held" ? { slugs: held.slugs } : { unresolved: held.why };
           }).pipe(
             Effect.provide(FetchHttpClient.layer),
             Effect.provideContext(services),
@@ -3533,18 +3609,34 @@ export const hostLayer = (options: {
           Effect.gen(function* () {
             const env = yield* currentEnv.pipe(Effect.orDie);
             const file = claimPath(dir, runId);
-            const held = yield* recordedClaim(file);
-            if (held === null) return;
-            yield* credentials({
+            const held = yield* recordedClaims(file);
+            if (held.length === 0) return [];
+            const creds = yield* credentials({
               home: env.home,
               envFile: env.raw.HELLE_ENV_FILE ?? null,
               url: helleUrlOf(env.raw),
-            }).pipe(
-              Effect.flatMap((creds) => releaseClaim(creds, held.slug)),
-              Effect.provide(FetchHttpClient.layer),
-            );
-            yield* fs.remove(file, { force: true });
-          }).pipe(Effect.provideContext(services), Effect.ignore),
+            });
+            // One Helle refuses to give back stays recorded, for a later release to retry.
+            const given = new Set<string>();
+            for (const one of held) {
+              const released = yield* releaseClaim(creds, one.slug).pipe(
+                Effect.provide(FetchHttpClient.layer),
+                Effect.result,
+              );
+              if (released._tag === "Success") given.add(one.slug);
+            }
+            yield* updateClaims(file, (now) => now.filter((one) => !given.has(one.slug)));
+            return held.filter((one) => !given.has(one.slug)).map((one) => one.slug);
+          }).pipe(
+            Effect.provideContext(services),
+            // Helle not asked at all gave nothing back.
+            Effect.catch(() =>
+              recordedClaims(claimPath(dir, runId)).pipe(
+                Effect.map((held) => held.map((one) => one.slug)),
+                Effect.provideContext(services),
+              ),
+            ),
+          ),
         integrate: (runId, cwd) =>
           under(
             integrateDefault(runShell, cwd).pipe(
@@ -5833,8 +5925,12 @@ const makeRegistry: (
   /** The file a generation was built from, which a row keeps naming after it has gone. */
   const entryOf = (name: string) => known.find((route) => route.name === name)?.entry ?? "";
 
+  /** The projects a Run still holds a claim on, as one line; null where it holds none. */
   const claimOf = (runId: string) =>
-    recordedClaim(claimPath(dir, runId)).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+    recordedClaims(claimPath(dir, runId)).pipe(
+      Effect.map((held) => (held.length === 0 ? null : held.map((one) => one.slug).join(", "))),
+      Effect.provideService(FileSystem.FileSystem, fs),
+    );
 
   /** A finished execution's status: it is never resumed, so it cannot change. */
   const finished = new Map<string, typeof RunStatus.Type>();
@@ -5924,7 +6020,7 @@ const makeRegistry: (
       diagnostic:
         kept === null
           ? null
-          : `claim on ${kept.slug} retained; recovery required: a new Run of ${row.workflow} takes it over and closes this Run's agents`,
+          : `claim on ${kept} retained; recovery required: a new Run of ${row.workflow} takes it over and closes this Run's agents`,
     };
   });
 
@@ -6290,7 +6386,7 @@ const makeRegistry: (
       disposed: disposition !== null,
       openFindings: yield* openFindingsIn(where),
       diffTarget: pointedAt(generation, input),
-      claim: (yield* claimOf(runId))?.slug ?? null,
+      claim: yield* claimOf(runId),
     };
     // A plan spanning repositories is a fan-out, which an offer does not start.
     const refused = new Map<string, string>();

@@ -397,7 +397,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
 
         // The first thing that touches anything shared, so the claim is taken here and held
         // until the Run is settled. Waiting costs wall clock and no model tokens.
-        const claim = yield* host.claim({
+        const held = yield* host.claim({
           runId,
           cwd,
           adopting: ask({
@@ -407,6 +407,9 @@ export const renovation = (landing: Landing = shippedLanding) =>
           }).pipe(Effect.map((answer) => answer === "yes")),
           say: (line) => host.record(runId, line),
         });
+        if ("unresolved" in held)
+          yield* host.record(runId, `◦ ${held.unresolved} — carrying on without one`);
+        const claim = "slugs" in held && held.slugs.length > 0 ? held.slugs.join(", ") : null;
         // Given back once the work is finished, merged or not, and not before: holding it
         // across a consultation is what stops anyone deploying on a half-finished renovation.
         const finished = (outcome: string) =>
@@ -481,7 +484,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
           cwd,
           sha: head,
           jobs,
-          slug: claim.slug,
+          slug: claim,
           url: here.url,
         });
         if (!carried) return yield* Workflow.suspend(yield* WorkflowInstance);

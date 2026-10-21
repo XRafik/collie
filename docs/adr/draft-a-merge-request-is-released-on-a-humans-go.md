@@ -105,8 +105,15 @@ whether it is a package or an application. This reads only, and no claim is held
 package publishes from its tag pipeline and deploys nowhere. An application has deploy jobs
 or environments of its own, and the agent names the stage deploy jobs of its merge
 requests' pipelines and of its tags' pipelines. The first go's options depend on the
-answer. After the go, the Run claims the repository in Helle and holds the claim until it
-ends, as `renovate` does.
+answer. After the go, the Run claims in Helle every project the release deploys under and
+holds the claims until it ends, as `renovate` does. The agent also names the applications
+the release deploys. A monorepo deploys several, and Helle keeps a project for each in the
+repository's own group (`spilnu/frontend/monorepo` deploys `spilnu/frontend`'s `spilnu`), so
+the projects are the repository's own, plus each project of its group that an application
+or a deploy job's name names, unless the repository's `.collie/helle.json` names them.
+Claims fail closed: where the projects cannot be settled, or a claim cannot be taken,
+nothing is merged or tagged and the human is asked; only their recorded say goes on without
+one. A release that went on "without one" merged and tagged a monorepo holding no claim.
 
 The human set the application's two paths on 2026-10-20. Its first go offers both, each
 only where its stage jobs were found, and `Finish`:

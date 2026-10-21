@@ -11,11 +11,14 @@ const FAILED = /^\(fail\) (.+?)(?: \[[\d.]+m?s\])?$/;
 const LIST_HEADER = /^\d+ tests? failed:$/;
 const FAIL_COUNT = /^\s*(\d+) fail$/;
 const ERROR_COUNT = /^\s*\d+ errors?$/;
+// What bun names a failure outside any test, such as a file's afterAll.
+const HOOK = "(unnamed)";
 
 /**
  * The failed tests bun's output names, each under the file whose header is nearest above it;
  * null where the output cannot be read whole: its fail count disagrees, it reports an error
- * outside any test, a failure has no file, or there are over `MAX_FAILED`.
+ * outside any test, a failure has no file or is a hook's, which no test run alone proves,
+ * or there are over `MAX_FAILED`.
  */
 export function failedTests(output: string): ReadonlyArray<FailedTest> | null {
   const lines = output.split("\n");
@@ -34,7 +37,7 @@ export function failedTests(output: string): ReadonlyArray<FailedTest> | null {
     if (header !== null) file = header[1]!;
     const failed = FAILED.exec(line);
     if (failed === null) continue;
-    if (file === null) return null;
+    if (file === null || failed[1] === HOOK) return null;
     found.set(`${file}\0${failed[1]}`, { file, name: failed[1]! });
   }
   if (found.size === 0 || failCount !== found.size || found.size > MAX_FAILED) return null;

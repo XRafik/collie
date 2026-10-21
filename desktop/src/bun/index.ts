@@ -740,6 +740,9 @@ const main = Effect.gen(function* () {
         Effect.provide(BunServices.layer),
       );
     },
+    helle: keyring
+      .lookup("helle-token")
+      .pipe(Effect.map((token) => (token === null ? null : { url: helle, token }))),
     inSync: (sync) =>
       Effect.gen(function* () {
         const rows = machineRows(shown);
