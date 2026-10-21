@@ -77,6 +77,8 @@ const master = (path: string) => {
         return reply("ok");
       }
       if (asked.op === "exit" || asked.op === "drop") {
+        // Gone before it answers, so the asker may bind the path at once.
+        rmSync(path, { force: true });
         conn.end("ok\n", end);
         return;
       }

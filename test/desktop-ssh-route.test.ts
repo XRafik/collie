@@ -179,6 +179,19 @@ test("a connection found gone is opened again, once for uses that come together"
     }),
   ));
 
+test("a dropped master's control path is gone once the drop answers, so another can bind it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      for (let round = 0; round < 20; round++) {
+        const { ssh, fake, path } = yield* rig;
+        yield* run([ssh, "-M", "-N", "-S", path, "-o", "ControlPersist=yes", "mk@vm-mk"]);
+        yield* fake.drop;
+        expect(yield* fs.exists(path)).toBe(false);
+      }
+    }),
+  ));
+
 test("a connection whose master stops answering is not waited on: the next use connects again", () =>
   runEffect(
     Effect.gen(function* () {
