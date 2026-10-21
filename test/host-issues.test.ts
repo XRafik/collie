@@ -294,6 +294,64 @@ test(
   30_000,
 );
 
+for (const state of ["bare", "unreadable"] as const) {
+  test(
+    `a real repository Git calls ${state} under the Projects root still guards its remote`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          yield* repository(rig.projectDir, `https://${PROJECT.github}.git`);
+          const other = `${rig.root}/private`;
+          yield* repository(other, "https://gitlab.example.com/private/service.git");
+          if (state === "bare")
+            expect(
+              (yield* exec(["git", "-C", other, "config", "core.bare", "true"])).exitCode,
+            ).toBe(0);
+          else yield* fs.writeFileString(`${other}/.git/config`, "[broken\n");
+          yield* fs.writeFileString(
+            `${rig.userDir}/config.json`,
+            json({ projects: { root: rig.root } }),
+          );
+          const bin = yield* FakeBin.make(`${rig.root}/bin`);
+          try {
+            const fake = yield* forgeOnPath(bin, "github", {
+              installed: true,
+              loggedIn: [FORGE_HOST.github],
+              login: "me",
+              mrs: [],
+            });
+            yield* Effect.gen(function* () {
+              const registry = yield* Registry;
+              const generation = yield* registry.load(
+                new URL("./fixtures/workflows/issues.workflow.ts", import.meta.url).pathname,
+              );
+              const run = yield* registry.start({
+                generation,
+                request: "file",
+                project: rig.projectDir,
+                input: { operation: "file", text: "Seen in private/service" },
+                handsOver: true,
+              });
+              const answer = yield* registry.result(run.runId).pipe(Effect.result);
+              expect(Result.isFailure(answer)).toBe(true);
+              if (Result.isFailure(answer))
+                expect(answer.failure.reason).toBe(
+                  state === "bare"
+                    ? `issue text names another checkout: ${other}`
+                    : `issue privacy check could not read remotes: ${other}`,
+                );
+            }).pipe(withMachine);
+            expect((yield* fake.calls()).filter((line) => line.startsWith("gh issue"))).toEqual([]);
+          } finally {
+            yield* bin.restore();
+          }
+        }),
+      ),
+    30_000,
+  );
+}
+
 for (const failure of ["configuration", "inventory"] as const) {
   test(
     `the host refuses with a recordable error when its ${failure} cannot be inspected`,

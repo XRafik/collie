@@ -712,8 +712,8 @@ agent starts on a skill the work cannot do without.
 Before filing or commenting, the host redacts credential-shaped values with the
 Conversation's redaction. It refuses text naming another checkout under the Projects
 root, by absolute path or remote path, and names the checkout in `WorkflowError`.
-A directory whose `.git` Git cannot open, such as a tool's copied plugin, has no
-remotes to compare and is refused only by its path.
+A `.git` that leads to no Git directory, such as a tool's copy of a submodule, is not a
+checkout: it is refused only by its path. A real repository Git cannot read stops the check.
 Both safeguards cover the title and body when filing. A refusal sends nothing to the
 forge. The Run's own checkout and repository remain valid references.
 
