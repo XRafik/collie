@@ -1,5 +1,5 @@
 // What Desktop draws of each Machine's Usage readings: the header's entry per Subscription
-// and account, and a Machine's Usage block.
+// and account, and the Usage page.
 
 import { describe, expect, test } from "bun:test";
 import { Config, Effect, Option, Schema } from "effect";
@@ -13,11 +13,12 @@ import { FrontDoorRpcs } from "../src/board-model";
 import { epochMs } from "../src/time";
 import type { UsageReading, UsageWindow } from "../src/usage-model";
 import {
-  machineUsage,
   type MachineUsage,
   UPGRADE_SAID,
   usageDue,
+  usageAccounts,
   usageEntries,
+  usagePage,
 } from "../desktop/src/shared/usage";
 import { suiteEnv } from "./support/effect";
 import { root, stopHost } from "./support/host";
@@ -54,6 +55,11 @@ const machine = (name: string, readings: ReadonlyArray<UsageReading>): MachineUs
   problem: null,
 });
 
+const chatgpt = (over: Partial<UsageReading>) =>
+  reading({ subscription: "chatgpt", account: "workspace", source: "codex-app-server", ...over });
+
+const LIVE = ["p-mk-pc", "p-vm-mk"];
+
 describe("the header", () => {
   test("two Machines on one account are one entry, showing the newer reading and its Machine", () => {
     const entries = usageEntries(
@@ -63,6 +69,7 @@ describe("the header", () => {
           reading({ windows: [window({ usedPercent: 72 })], at: "2026-10-08T07:59:00Z" }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text, level }) => [text, level])).toEqual([["Claude 72%", "ok"]]);
@@ -80,6 +87,7 @@ describe("the header", () => {
           reading({ subscription: "chatgpt", account: "c-1", accountLabel: "me@example.com" }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text }) => text)).toEqual([
@@ -97,6 +105,7 @@ describe("the header", () => {
           reading({ account: "org-team:acct", accountLabel: "me@example.com (Cego)" }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text }) => text)).toEqual([
@@ -107,7 +116,7 @@ describe("the header", () => {
 
   test("amber at 90%, red and out when Exhausted, naming a model whose own window is the busiest", () => {
     const at = (windows: ReadonlyArray<UsageWindow>) =>
-      usageEntries([machine("mk-pc", [reading({ windows })])], NOW).map(({ text, level }) => [
+      usageEntries([machine("mk-pc", [reading({ windows })])], LIVE, NOW).map(({ text, level }) => [
         text,
         level,
       ]);
@@ -133,73 +142,276 @@ describe("the header", () => {
           }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text }) => text)).toEqual(["Claude 31%"]);
   });
+
+  test("two ChatGPT seats of one workspace are two entries, each named by its email", () => {
+    const entries = usageEntries(
+      [
+        machine("mk-pc", [chatgpt({ accountLabel: "me@example.com" })]),
+        machine("vm-mk", [chatgpt({ accountLabel: "ops@example.com" })]),
+      ],
+      LIVE,
+      NOW,
+    );
+    expect(entries.map(({ text }) => text)).toEqual([
+      "ChatGPT me@example.com 31%",
+      "ChatGPT ops@example.com 31%",
+    ]);
+  });
+
+  test("one ChatGPT seat on two Machines is one entry, showing the newer reading and its Machine", () => {
+    const entries = usageEntries(
+      [
+        machine("mk-pc", [
+          chatgpt({ windows: [window({ usedPercent: 72 })], at: "2026-10-08T07:59:00Z" }),
+        ]),
+        machine("vm-mk", [chatgpt({ windows: [window({ usedPercent: 40 })] })]),
+      ],
+      LIVE,
+      NOW,
+    );
+    expect(entries.map(({ text }) => text)).toEqual(["ChatGPT 72%"]);
+    expect(entries[0]?.title).toContain("mk-pc");
+  });
+
+  test("a reading with no account and windows is its own Machine's entry", () => {
+    const entries = usageEntries(
+      [
+        machine("mk-pc", [reading({ account: null, accountLabel: null })]),
+        machine("vm-mk", [
+          reading({ account: null, accountLabel: null, windows: [window({ usedPercent: 50 })] }),
+        ]),
+      ],
+      LIVE,
+      NOW,
+    );
+    expect(entries.map(({ text }) => text)).toEqual(["Claude 31%", "Claude 50%"]);
+    expect(entries[1]?.title).toContain("vm-mk");
+  });
 });
 
-describe("a Machine's Usage block", () => {
-  test("each Subscription's plan and account, each window's meter and reset, and its age and source", () => {
-    const shown = machineUsage(
-      machine("mk-pc", [
-        reading({
-          windows: [
-            window({ usedPercent: 31 }),
-            window({ kind: "weekly", label: "Weekly", usedPercent: 95, resetsAt: null }),
-          ],
-        }),
+describe("a Subscription account across Machines", () => {
+  test("a Machine that is not live adds nothing and takes nothing from another's reading", () => {
+    const machines = [
+      machine("mk-pc", [reading({})]),
+      machine("gone", [
+        reading({ windows: [window({ usedPercent: 90 })], at: "2026-10-08T07:59:00Z" }),
+        chatgpt({}),
       ]),
-      NOW,
-    );
-    expect(shown.said).toBeNull();
-    expect(shown.subscriptions).toHaveLength(1);
-    const [claude] = shown.subscriptions;
-    expect(claude?.title).toBe("Claude · max · me@example.com");
-    expect(claude?.said).toBe("as of 3 minutes ago · Claude's usage endpoint");
-    expect(claude?.windows.map(({ label, percent, level }) => [label, percent, level])).toEqual([
-      ["Session", 31, "ok"],
-      ["Weekly", 95, "warn"],
+    ];
+    const accounts = usageAccounts(machines, ["p-mk-pc"]);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.newest?.machine).toBe("mk-pc");
+    expect(accounts[0]?.machines.map(({ machine }) => machine)).toEqual(["mk-pc"]);
+    expect(usageEntries(machines, ["p-mk-pc"], NOW).map(({ text }) => text)).toEqual([
+      "Claude 31%",
     ]);
-    expect(claude?.windows[0]?.reset).toMatch(/^resets \S+ \(in 2h 10m\)$/);
-    expect(claude?.windows[1]?.reset).toBeNull();
   });
 
-  test("a window past its reset is shown as unused", () => {
-    const shown = machineUsage(
-      machine("mk-pc", [
-        reading({
-          windows: [window({ usedPercent: 100, reached: true, resetsAt: "2026-10-08T07:00:00Z" })],
-        }),
-      ]),
+  test("lists every live Machine on the account with its own reading, in the Flock's order", () => {
+    const expired = reading({ windows: [], problem: "Claude Code's login expired" });
+    const accounts = usageAccounts(
+      [machine("mk-pc", [reading({})]), machine("vm-mk", [expired])],
+      ["p-vm-mk", "p-mk-pc"],
+    );
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.newest?.machine).toBe("mk-pc");
+    expect(accounts[0]?.machines.map(({ machine, reading }) => [machine, reading.problem])).toEqual(
+      [
+        ["vm-mk", "Claude Code's login expired"],
+        ["mk-pc", null],
+      ],
+    );
+  });
+
+  test("an account read only with problems is a group with no newest reading", () => {
+    const accounts = usageAccounts(
+      [machine("mk-pc", [reading({ windows: [], problem: "Claude Code's login expired" })])],
+      ["p-mk-pc"],
+    );
+    expect(accounts.map(({ newest, machines }) => [newest, machines.length])).toEqual([[null, 1]]);
+  });
+
+  test("ordered by Subscription, then by account label with none last", () => {
+    const accounts = usageAccounts(
+      [
+        machine("mk-pc", [
+          chatgpt({ accountLabel: "me@example.com" }),
+          reading({ account: null, accountLabel: null }),
+          reading({ account: "org:z", accountLabel: "z@example.com" }),
+          reading({ account: "org:a", accountLabel: "a@example.com" }),
+        ]),
+      ],
+      ["p-mk-pc"],
+    );
+    expect(accounts.map(({ subscription, label }) => [subscription, label])).toEqual([
+      ["claude", "a@example.com"],
+      ["claude", "z@example.com"],
+      ["claude", null],
+      ["chatgpt", "me@example.com"],
+    ]);
+  });
+});
+
+describe("the Usage page", () => {
+  const LAPTOP = ["p-mk-laptop", "p-vm-mk"];
+  const EXPIRED = "Claude Code's login expired; it refreshes when Claude Code next runs";
+
+  test("one Claude seat and one ChatGPT account on two Machines are two sections, each listing both", () => {
+    const team = reading({ account: "org-cego:acct", accountLabel: "mk@cego.dk" });
+    const seat = chatgpt({ accountLabel: "mk@cego.dk", plan: "team" });
+    const page = usagePage(
+      [
+        machine("mk-laptop", [
+          team,
+          { ...seat, windows: [window({ usedPercent: 2 })], at: "2026-10-08T07:59:00Z" },
+        ]),
+        machine("vm-mk", [
+          { ...team, windows: [window({ usedPercent: 72 })], at: "2026-10-08T07:59:00Z" },
+          seat,
+        ]),
+      ],
+      LAPTOP,
       NOW,
     );
-    expect(shown.subscriptions[0]?.windows.map(({ percent, level }) => [percent, level])).toEqual([
+    expect(page.notRead).toEqual([]);
+    expect(
+      page.sections.map(({ title, windows, said, machines }) => [
+        title,
+        windows.map(({ percent }) => percent),
+        said,
+        machines,
+      ]),
+    ).toEqual([
+      [
+        "Claude · max · mk@cego.dk",
+        [72],
+        "as of 1 minute ago · read on vm-mk · Claude's usage endpoint",
+        [
+          { name: "mk-laptop", problem: null },
+          { name: "vm-mk", problem: null },
+        ],
+      ],
+      [
+        "ChatGPT · team · mk@cego.dk",
+        [2],
+        "as of 1 minute ago · read on mk-laptop · Codex's app server",
+        [
+          { name: "mk-laptop", problem: null },
+          { name: "vm-mk", problem: null },
+        ],
+      ],
+    ]);
+  });
+
+  test("an expired login on one Machine is said beside it while the other's windows are shown", () => {
+    const page = usagePage(
+      [
+        machine("mk-laptop", [
+          reading({ windows: [], problem: EXPIRED, at: "2026-10-08T07:59:00Z" }),
+        ]),
+        machine("vm-mk", [reading({})]),
+      ],
+      LAPTOP,
+      NOW,
+    );
+    expect(page.sections).toHaveLength(1);
+    expect(page.sections[0]?.windows.map(({ percent }) => percent)).toEqual([31]);
+    expect(page.sections[0]?.said).toContain("read on vm-mk");
+    expect(page.sections[0]?.machines).toEqual([
+      { name: "mk-laptop", problem: EXPIRED },
+      { name: "vm-mk", problem: null },
+    ]);
+  });
+
+  test("an account read only with problems is a section with its title and no windows", () => {
+    const page = usagePage(
+      [
+        machine("mk-laptop", [reading({ windows: [], problem: EXPIRED })]),
+        machine("vm-mk", [reading({ windows: [], problem: "Claude's usage endpoint refused" })]),
+      ],
+      LAPTOP,
+      NOW,
+    );
+    expect(page.sections).toEqual([
+      {
+        key: "claude:org:acct",
+        title: "Claude · max · me@example.com",
+        windows: [],
+        said: null,
+        machines: [
+          { name: "mk-laptop", problem: EXPIRED },
+          { name: "vm-mk", problem: "Claude's usage endpoint refused" },
+        ],
+      },
+    ]);
+  });
+
+  test("a reading with no account and no numbers, and a Machine whose host gave none, are Not read", () => {
+    const page = usagePage(
+      [
+        { ...machine("mk-laptop", []), problem: UPGRADE_SAID },
+        machine("vm-mk", [
+          chatgpt({
+            account: null,
+            accountLabel: null,
+            windows: [],
+            problem: "Codex is not logged in on this Machine; run `codex login`",
+          }),
+        ]),
+      ],
+      LAPTOP,
+      NOW,
+    );
+    expect(page.sections).toEqual([]);
+    expect(page.notRead.map(({ said }) => said)).toEqual([
+      "mk-laptop: can't say; upgrade this Machine",
+      "vm-mk · ChatGPT: Codex is not logged in on this Machine; run `codex login`",
+    ]);
+  });
+
+  test("a window past its reset is unused, and a full one is out", () => {
+    const page = usagePage(
+      [
+        machine("mk-laptop", [
+          reading({
+            windows: [
+              window({ usedPercent: 100, reached: true, resetsAt: "2026-10-08T07:00:00Z" }),
+              window({ kind: "weekly", label: "Weekly", usedPercent: 100, resetsAt: null }),
+              window({ kind: "weekly", label: "Weekly", usedPercent: 95, resetsAt: null }),
+            ],
+          }),
+        ]),
+      ],
+      LAPTOP,
+      NOW,
+    );
+    expect(page.sections[0]?.windows.map(({ percent, level }) => [percent, level])).toEqual([
       [0, "ok"],
+      [100, "out"],
+      [95, "warn"],
     ]);
   });
 
-  test("a reading with only a problem says it in its own words; one with windows too adds its age", () => {
-    const shown = machineUsage(
-      machine("mk-pc", [
-        reading({ windows: [], problem: "Claude Code's login expired" }),
-        reading({
-          subscription: "chatgpt",
-          source: "codex-app-server",
-          problem: "Codex took too long to answer",
-        }),
-      ]),
+  test("a Machine that is not live is nowhere on the page", () => {
+    const page = usagePage(
+      [
+        machine("mk-laptop", [reading({})]),
+        { ...machine("gone", [reading({ windows: [], problem: EXPIRED })]), problem: null },
+        { ...machine("old", []), problem: UPGRADE_SAID },
+        machine("off", [chatgpt({ account: null, windows: [], problem: "not logged in" })]),
+      ],
+      ["p-mk-laptop"],
       NOW,
     );
-    expect(shown.subscriptions.map(({ said }) => said)).toEqual([
-      "Claude Code's login expired",
-      "Codex took too long to answer · as of 3 minutes ago · Codex's app server",
+    expect(page.sections.map(({ machines }) => machines)).toEqual([
+      [{ name: "mk-laptop", problem: null }],
     ]);
-  });
-
-  test("a Machine whose host cannot say asks for an upgrade", () => {
-    const shown = machineUsage({ ...machine("old", []), problem: UPGRADE_SAID }, NOW);
-    expect(shown).toEqual({ said: "can't say; upgrade this Machine", subscriptions: [] });
+    expect(page.notRead).toEqual([]);
   });
 });
 

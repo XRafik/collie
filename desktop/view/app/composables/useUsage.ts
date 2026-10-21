@@ -1,9 +1,9 @@
 // Each connected Machine's Usage readings, asked when Desktop opens, each minute while it is
-// shown, and whenever the Machines page opens.
+// shown, and whenever the Usage page opens.
 
 import { useAtomSet } from "@effect/atom-vue";
 import { Exit } from "effect";
-import { type MachineUsage, usageDue, usageEntries } from "../../../src/shared/usage";
+import { type MachineUsage, usageDue, usageEntries, usagePage } from "../../../src/shared/usage";
 import { FlockClient } from "../flock";
 
 const usageAtom = FlockClient.mutation("usage");
@@ -27,18 +27,13 @@ export const useUsage = () => {
     // The clock reads 0 until its first tick.
     if (now.value > 0 && usageDue(askedAt, now.value, shown())) void refresh();
   };
+  const live = computed(() =>
+    rows.value.filter(({ state }) => state === "live").map(({ profile }) => profile),
+  );
   return {
-    machines: readonly(machines),
     /** Of Machines live now, so one that left the Flock leaves the header at once. */
-    entries: computed(() => {
-      const live = new Set(
-        rows.value.filter(({ state }) => state === "live").map(({ profile }) => profile),
-      );
-      return usageEntries(
-        machines.value.filter(({ profile }) => live.has(profile)),
-        now.value,
-      );
-    }),
+    entries: computed(() => usageEntries(machines.value, live.value, now.value)),
+    page: computed(() => usagePage(machines.value, live.value, now.value)),
     refresh,
     /** For the one component that lives as long as the window. */
     keepFresh: () => {

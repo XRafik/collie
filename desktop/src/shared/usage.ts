@@ -1,5 +1,5 @@
 // Each Machine's Usage readings as Desktop draws them: the header's entry per Subscription
-// and account across the Flock, and a Machine's Usage block (ADR-0049).
+// and account across the Flock, and the Usage page (ADR-0049).
 
 import { Schema } from "effect";
 import { ago, epochMs } from "../../../src/time";
@@ -54,31 +54,75 @@ export interface UsageEntry {
   readonly title: string;
 }
 
+export interface UsageAccount {
+  readonly key: string;
+  readonly subscription: Subscription;
+  readonly account: string | null;
+  readonly label: string | null;
+  /** Its newest reading that has windows, and the Machine that read it. */
+  readonly newest: { readonly reading: UsageReading; readonly machine: string } | null;
+  /** Each live Machine logged in to it, with its own reading, in the Flock's order. */
+  readonly machines: ReadonlyArray<{ readonly machine: string; readonly reading: UsageReading }>;
+}
+
+// ChatGPT's account id is its workspace's, shared by every seat, so its email tells seats apart.
+const accountKey = (reading: UsageReading, machine: string) =>
+  reading.account === null
+    ? `${reading.subscription}:on ${machine}`
+    : reading.subscription === "chatgpt"
+      ? `${reading.subscription}:${reading.account}:${reading.accountLabel ?? ""}`
+      : `${reading.subscription}:${reading.account}`;
+
+const byLabel = (a: string | null, b: string | null) =>
+  a === b ? 0 : a === null ? 1 : b === null ? -1 : a.localeCompare(b);
+
+/** The live Machines' readings, one group per Subscription account (ADR-0049). */
+export const usageAccounts = (
+  machines: ReadonlyArray<MachineUsage>,
+  live: ReadonlyArray<string>,
+): ReadonlyArray<UsageAccount> => {
+  const groups = new Map<string, UsageAccount>();
+  for (const profile of live)
+    for (const { name, readings } of machines.filter((machine) => machine.profile === profile))
+      for (const reading of readings) {
+        const key = accountKey(reading, name);
+        const held = groups.get(key);
+        const newest = held?.newest ?? null;
+        const newer =
+          reading.windows.length > 0 &&
+          (newest === null || epochMs(reading.at) > epochMs(newest.reading.at));
+        groups.set(key, {
+          key,
+          subscription: reading.subscription,
+          account: reading.account,
+          label: held?.label ?? reading.accountLabel,
+          newest: newer ? { reading, machine: name } : newest,
+          machines: [...(held?.machines ?? []), { machine: name, reading }],
+        });
+      }
+  return [...groups.values()].sort(
+    (a, b) =>
+      SUBSCRIPTIONS.indexOf(a.subscription) - SUBSCRIPTIONS.indexOf(b.subscription) ||
+      byLabel(a.label, b.label),
+  );
+};
+
 /**
- * One entry per Subscription and account across the Flock. The provider counts usage per
+ * One entry per Subscription account read with windows. The provider counts usage per
  * account, so of one account's readings the newest is shown.
  */
 export const usageEntries = (
   machines: ReadonlyArray<MachineUsage>,
+  live: ReadonlyArray<string>,
   now: number,
 ): ReadonlyArray<UsageEntry> => {
-  const newest = new Map<string, { reading: UsageReading; machine: string }>();
-  for (const { name, readings } of machines)
-    for (const reading of readings) {
-      if (reading.windows.length === 0) continue;
-      const key = `${reading.subscription}:${reading.account ?? `on ${name}`}`;
-      const held = newest.get(key);
-      if (held === undefined || epochMs(reading.at) > epochMs(held.reading.at))
-        newest.set(key, { reading, machine: name });
-    }
-  const shown = [...newest].sort(
-    ([, a], [, b]) =>
-      SUBSCRIPTIONS.indexOf(a.reading.subscription) - SUBSCRIPTIONS.indexOf(b.reading.subscription),
+  const shown = usageAccounts(machines, live).flatMap(({ key, newest }) =>
+    newest === null ? [] : [{ key, ...newest }],
   );
   const accounts = new Map<Subscription, number>();
-  for (const [, { reading }] of shown)
+  for (const { reading } of shown)
     accounts.set(reading.subscription, (accounts.get(reading.subscription) ?? 0) + 1);
-  return shown.flatMap(([key, { reading, machine }]) => {
+  return shown.flatMap(({ key, reading, machine }) => {
     const used = busiestWindow(reading, now);
     if (used === null) return [];
     const label =
@@ -112,49 +156,88 @@ export interface WindowView {
   readonly reset: string | null;
 }
 
-export interface SubscriptionView {
+export interface UsageSection {
   readonly key: string;
   /** `Claude · max · me@example.com`. */
   readonly title: string;
   readonly windows: ReadonlyArray<WindowView>;
-  /** How fresh the numbers are and where they came from, or the reading's problem. */
-  readonly said: string;
-}
-
-export interface MachineUsageView {
-  /** Why the Machine's host gave no readings. */
+  /** `as of 3 minutes ago · read on vm-mk · Claude's usage endpoint`; null with no windows. */
   readonly said: string | null;
-  readonly subscriptions: ReadonlyArray<SubscriptionView>;
+  /** Each live Machine logged in to it, in the Flock's order, with its own reading's problem. */
+  readonly machines: ReadonlyArray<{ readonly name: string; readonly problem: string | null }>;
 }
 
-/** A Machine's Usage block: per Subscription, each window's meter and reset, and its age. */
-export const machineUsage = (machine: MachineUsage, now: number): MachineUsageView => ({
-  said: machine.problem,
-  subscriptions: machine.readings.map((reading, index) => {
-    const windows = reading.windows.map((raw, i) => {
-      const window = current(raw, now);
-      const full = isFull(window);
-      return {
-        key: `${i}:${window.label}`,
-        label: window.label,
-        percent: full ? 100 : Math.round(window.usedPercent),
-        level: levelOf(window.usedPercent, full),
-        reset: window.resetsAt === null ? null : resetPhrase(window.resetsAt, now),
-      };
-    });
-    const age = `as of ${ago(reading.at, now)} · ${SOURCES[reading.source]}`;
+export interface UsagePageView {
+  readonly sections: ReadonlyArray<UsageSection>;
+  /** A reading that could not be matched to an account, and a Machine that gave no readings. */
+  readonly notRead: ReadonlyArray<{ readonly key: string; readonly said: string }>;
+}
+
+const windowsOf = (reading: UsageReading, now: number): ReadonlyArray<WindowView> =>
+  reading.windows.map((raw, i) => {
+    const window = current(raw, now);
+    const full = isFull(window);
     return {
-      key: `${index}:${reading.subscription}:${reading.account ?? ""}`,
-      title: [NAMES[reading.subscription], reading.plan, reading.accountLabel]
-        .filter((part) => part !== null)
-        .join(" · "),
-      windows,
-      said:
-        reading.problem === null
-          ? age
-          : windows.length === 0
-            ? reading.problem
-            : `${reading.problem} · ${age}`,
+      key: `${i}:${window.label}`,
+      label: window.label,
+      percent: full ? 100 : Math.round(window.usedPercent),
+      level: levelOf(window.usedPercent, full),
+      reset: window.resetsAt === null ? null : resetPhrase(window.resetsAt, now),
     };
-  }),
-});
+  });
+
+const titleOf = (reading: UsageReading) =>
+  [NAMES[reading.subscription], reading.plan, reading.accountLabel]
+    .filter((part) => part !== null)
+    .join(" · ");
+
+/** The Usage page: one section per Subscription account across the live Machines. */
+export const usagePage = (
+  machines: ReadonlyArray<MachineUsage>,
+  live: ReadonlyArray<string>,
+  now: number,
+): UsagePageView => {
+  const sections = usageAccounts(machines, live).flatMap(
+    ({ key, account, newest, machines: readers }): ReadonlyArray<UsageSection> => {
+      if (account === null && newest === null) return [];
+      const titled =
+        newest?.reading ??
+        readers.reduce((a, b) => (epochMs(b.reading.at) > epochMs(a.reading.at) ? b : a)).reading;
+      return [
+        {
+          key,
+          title: titleOf(titled),
+          windows: newest === null ? [] : windowsOf(newest.reading, now),
+          said:
+            newest === null
+              ? null
+              : `as of ${ago(newest.reading.at, now)} · read on ${newest.machine} · ${SOURCES[newest.reading.source]}`,
+          machines: readers.map(({ machine, reading }) => ({
+            name: machine,
+            problem: reading.problem,
+          })),
+        },
+      ];
+    },
+  );
+  const notRead = live.flatMap((profile) =>
+    machines
+      .filter((machine) => machine.profile === profile)
+      .flatMap(({ name, readings, problem }) => [
+        ...(problem === null ? [] : [{ key: profile, said: `${name}: ${problem}` }]),
+        ...readings.flatMap((reading, i) =>
+          reading.account === null && reading.windows.length === 0
+            ? [
+                {
+                  key: `${profile}:${i}`,
+                  said: [`${name} · ${NAMES[reading.subscription]}`, reading.problem]
+                    .filter((part) => part !== null)
+                    .join(": "),
+                },
+              ]
+            : [],
+        ),
+      ]),
+  );
+  return { sections, notRead };
+};
