@@ -247,6 +247,7 @@ export interface HelleGate<E, R> {
   /** What this Run already recorded, which is what makes it a resume rather than a start. */
   claimed: readonly HelleClaim[];
   record: (claim: HelleClaim) => Effect.Effect<void, E, R>;
+  forget: (slug: string) => Effect.Effect<void, E, R>;
   out: (line: string) => Effect.Effect<void, E, R>;
   ask: (question: string) => Effect.Effect<string | null, E, R>;
   pollMs?: number;
@@ -261,8 +262,8 @@ const AFFIRMATIVE = /^(y|yes)$/i;
  * they could not be settled, which only the caller may decide to carry on from. Helle
  * failing to answer, or several projects the repository could be without `deploys`,
  * fails: "we could not ask" and "there is nothing to ask about" never come out the same.
- * Projects are held one at a time in a fixed order, so Runs needing overlapping sets
- * cannot each hold what the other waits for.
+ * Projects are held one at a time in a fixed order, and never waited for while a later
+ * one is held, so Runs needing overlapping sets cannot each hold what the other waits for.
  */
 export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
   gate: HelleGate<E, R>,
@@ -337,13 +338,28 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
     }
   });
 
-  // One held earlier can be taken while a later one is waited for, so all are read again.
-  let pending = needed.slugs;
-  while (pending.length > 0) {
-    for (const slug of pending) yield* hold(slug);
-    pending = [];
+  // One held earlier can be taken while a later one is waited for. Holding the later ones
+  // while waiting for it again would break the order, so they are given back first.
+  let from = 0;
+  while (from < needed.slugs.length) {
+    for (const slug of needed.slugs.slice(from)) yield* hold(slug);
+    const positions: (number | null)[] = [];
     for (const slug of needed.slugs)
-      if (positionOf(yield* helleProject(creds, slug), me.user_id) !== 0) pending.push(slug);
+      positions.push(positionOf(yield* helleProject(creds, slug), me.user_id));
+    from = positions.findIndex((position) => position !== 0);
+    if (from < 0) break;
+    const later = needed.slugs.filter((_, i) => i > from && positions[i] !== null);
+    yield* gate.out(
+      `⚠ this Run lost ${needed.slugs[from]}` +
+        (later.length > 0
+          ? `, so it gives back ${later.join(", ")} to take them again in order`
+          : ""),
+    );
+    for (const slug of later) {
+      yield* releaseClaim(creds, slug);
+      yield* gate.forget(slug);
+      recorded.delete(slug);
+    }
   }
   return { _tag: "Held", slugs: needed.slugs } satisfies Held;
 });

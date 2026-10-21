@@ -313,6 +313,7 @@ function gate(opts: {
   answer?: string | null;
   lines: string[];
   recorded: (HelleClaim | null)[];
+  forgotten?: string[];
 }) {
   return waitForHelle({
     home: "/nowhere",
@@ -327,6 +328,7 @@ function gate(opts: {
     declared: null,
     claimed: opts.claimed ?? [],
     record: (claim) => Effect.sync(() => void opts.recorded.push(claim)),
+    forget: (slug) => Effect.sync(() => void opts.forgotten?.push(slug)),
     out: (line) => Effect.sync(() => void opts.lines.push(line)),
     ask: () => Effect.succeed(opts.answer ?? null),
     pollMs: 1,
@@ -480,7 +482,7 @@ test("someone else's claim on one project keeps the gate waiting, and the next i
     ),
   ));
 
-test("a claim lost while the gate waited for the next is waited for again, not reported held", () =>
+test("a claim lost while the gate waited for the next gives the later ones back and takes them again in order", () =>
   runEffect(
     Effect.scoped(
       Effect.gen(function* () {
@@ -496,10 +498,11 @@ test("a claim lost while the gate waited for the next is waited for again, not r
         fake.claims = [
           { position: 0, already_queued: false },
           { position: 1, already_queued: false },
-          { position: 1, already_queued: true },
+          { position: 1, already_queued: false },
         ];
         const lines: string[] = [];
         const recorded: (HelleClaim | null)[] = [];
+        const forgotten: string[] = [];
         const fiber = yield* Effect.forkScoped(
           gate({
             file: yield* envFile(),
@@ -508,6 +511,7 @@ test("a claim lost while the gate waited for the next is waited for again, not r
             deploys: { applications: ["spilnu", "happytiger"], jobs: [] },
             lines,
             recorded,
+            forgotten,
           }),
         );
         const saidSoFar = (text: string) =>
@@ -526,17 +530,24 @@ test("a claim lost while the gate waited for the next is waited for again, not r
         spilnu!.queue = [];
         yield* saidSoFar("waiting for happytiger");
         expect(fiber.pollUnsafe()).toBeUndefined();
+        expect(spilnu!.holder).toBeUndefined();
+        expect(forgotten).toEqual(["spilnu"]);
 
         happytiger!.holder = { user_id: ME, display_name: "mk" };
         expect(yield* Fiber.join(fiber)).toEqual({
           _tag: "Held",
           slugs: ["happytiger", "spilnu"],
         });
-        expect(
-          fake.calls.filter((call) => call === "POST /api/v1/projects/happytiger/claim"),
-        ).toHaveLength(2);
+        expect(fake.calls.filter((call) => call.startsWith("POST"))).toEqual([
+          "POST /api/v1/projects/happytiger/claim",
+          "POST /api/v1/projects/spilnu/claim",
+          "POST /api/v1/projects/spilnu/release",
+          "POST /api/v1/projects/happytiger/claim",
+          "POST /api/v1/projects/spilnu/claim",
+        ]);
         expect(recorded).toEqual([
           { slug: "happytiger", claim: "mine" },
+          { slug: "spilnu", claim: "mine" },
           { slug: "spilnu", claim: "mine" },
         ]);
       }),
@@ -633,6 +644,7 @@ test("a resumed Run does not ask again, and waits rather than assuming it holds 
             declared: null,
             claimed: [{ slug: "spilnu", claim: "mine" }],
             record: (claim) => Effect.sync(() => void recorded.push(claim)),
+            forget: () => Effect.die("a resumed Run that keeps its claim forgets none"),
             out: (line) => Effect.sync(() => void lines.push(line)),
             ask: () => Effect.die("a resumed Run must not ask"),
             pollMs: 1,

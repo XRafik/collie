@@ -3542,6 +3542,10 @@ export const hostLayer = (options: {
                       Effect.orDie,
                     );
                 }),
+              forget: (slug) =>
+                updateClaims(file, (before) => before.filter((one) => one.slug !== slug)).pipe(
+                  Effect.orDie,
+                ),
               out: asked.say,
               // The question is the workflow's, so it is durable and asked once; this only
               // turns the answer into the word the gate reads.
