@@ -536,8 +536,8 @@ export interface LeftToCiState {
 
 /**
  * Every check this Run's journal holds, latest of each, for a reviewer to read rather than run
- * again: who ran it, whether on the tree in front of it, when, and the baseline where there is
- * one. Then each check left to CI, which no reviewer runs.
+ * again: who ran it, whether on the tree in front of it, when, whether the same command was seen
+ * failing on an earlier tree, and the baseline where there is one. Then each check left to CI, which no reviewer runs.
  */
 export function renderRecordedChecks(
   got: Pick<Collected, "verifications" | "final">,
@@ -554,9 +554,15 @@ export function renderRecordedChecks(
     v.end.head_sha === got.final.head_sha && v.end.fingerprint === got.final.fingerprint
       ? "on this tree"
       : "on an earlier tree";
+  const seenFailing = (v: Verification) =>
+    got.verifications.some(
+      (one) => one.exit !== 0 && onTree(one) === "on an earlier tree" && sameCommand(one, v),
+    )
+      ? "seen failing on an earlier tree"
+      : "never seen failing on an earlier tree";
   return [
     ...[...latest.values()].map(
-      (v) => `- ${v.name}: ${v.result} (by ${v.by}), ${onTree(v)}, at ${v.at}`,
+      (v) => `- ${v.name}: ${v.result} (by ${v.by}), ${onTree(v)}, at ${v.at}; ${seenFailing(v)}`,
     ),
     ...[...baseline.values()].map(
       (v) =>

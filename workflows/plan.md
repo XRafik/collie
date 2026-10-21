@@ -52,6 +52,16 @@ file, or a command's result on the branch. An outcome that only CI, a merge or a
 show is not a criterion: put it under the ticket's `## After merge` heading as a plain list,
 not as checkboxes, and the merge request names it.
 
+A criterion is one the ticket's absence would make false: one the base already meets is a
+Tautology. Before you write a criterion that names a command, run that command through
+`collie verify` on the tree this plan is written against, the default branch's head:
+
+- where it passes there, the criterion is a guard, and says it is one;
+- where it fails there, the criterion is that the branch adds no failure over the base, and
+  names the failures already present.
+
+A text search is never a criterion.
+
 Every ticket also carries a fifth header line, `**Repo:** <path>`, between "Blocked by"
 and "Status" — always, one repository per ticket. The path is the checkout the ticket
 changes, relative to the project root above and as it is on disk; write `.` when the root
@@ -94,6 +104,9 @@ Read `{{run.dir}}/plan/SPEC.md` and every ticket in `{{run.dir}}/plan/issues/`.
 Review the plan, not the code: stories the spec is missing, seams in the wrong place,
 tickets that cannot land on their own, an order that cannot work, criteria nobody can
 check. Do not review the repository, do not propose implementations, and change nothing.
+
+Raise, too, each criterion that is true by construction, each guard not labelled as one, and
+each criterion whose only proof is a text search.
 
 ## revise
 

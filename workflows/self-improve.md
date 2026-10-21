@@ -42,7 +42,10 @@ What counts as a finding:
 - a defect or a friction in what this project's repository holds, backed by at least one
   Run of the window and the record that shows it;
 - recurring: shown by two of the window's Runs, or matching an issue already open.
-  Anything else seen once is left out.
+  Anything else seen once is left out;
+- cited: each finding's `records` names a journal line, a verification, a transcript or an
+  issue that shows it. A Run's goal, its summary or an agent's Output read back is not a
+  record, so a finding that rests only on one is left out.
 
 What is left out, with why, under `left_out`:
 

@@ -511,11 +511,44 @@ test("a reviewer is handed the recorded checks: result, who, tree, when, and the
     }),
   );
   expect(rendered.split("\n")).toEqual([
-    "- tests: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z",
-    "- lint: pass (by collie), on an earlier tree, at 2026-09-11T08:00:00.000Z",
-    "- typecheck: pass (by agent), on this tree, at 2026-09-11T10:00:00.000Z",
+    "- tests: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z; never seen failing on an earlier tree",
+    "- lint: pass (by collie), on an earlier tree, at 2026-09-11T08:00:00.000Z; never seen failing on an earlier tree",
+    "- typecheck: pass (by agent), on this tree, at 2026-09-11T10:00:00.000Z; never seen failing on an earlier tree",
     "- tests (baseline, where this branch leaves the default branch, abc000): fail, at 2026-09-11T09:30:00.000Z",
   ]);
+});
+
+const BUN_TEST = { executable: "/usr/bin/bun", argv: ["test", "test/x.test.ts"] };
+
+test("a check whose same command failed on an earlier tree is shown as seen failing", () => {
+  const rendered = renderRecordedChecks(
+    collected({
+      verifications: [
+        record({ name: "x", ...BUN_TEST, expect: "fail", exit: 1, end: EARLIER }),
+        record({ name: "x", ...BUN_TEST }),
+      ],
+    }),
+  );
+  expect(rendered).toBe(
+    "- x: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z; seen failing on an earlier tree",
+  );
+});
+
+test.each([
+  {
+    why: "its only failing run was another command",
+    before: [
+      record({ name: "x", executable: "/usr/bin/false", exit: 1, result: "fail", end: EARLIER }),
+    ],
+  },
+  { why: "it has no failing run", before: [record({ name: "x", ...BUN_TEST, end: EARLIER })] },
+])("a check is shown as never seen failing where $why", ({ before }) => {
+  const rendered = renderRecordedChecks(
+    collected({ verifications: [...before, record({ name: "x", ...BUN_TEST })] }),
+  );
+  expect(rendered).toBe(
+    "- x: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z; never seen failing on an earlier tree",
+  );
 });
 
 test("a reviewer is told a check left to CI is proved by its job, and the job's state where there is a merge request", () => {
@@ -527,7 +560,7 @@ test("a reviewer is told a check left to CI is proved by its job, and the job's 
     { ...nuxi, state: "running" },
   ]);
   expect(rendered.split("\n")).toEqual([
-    "- tests: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z",
+    "- tests: pass (by collie), on this tree, at 2026-09-11T10:00:00.000Z; never seen failing on an earlier tree",
     "- nuxi: left to CI (job nuxi-typecheck), do not run it. left to CI: proved by nuxi-typecheck on the merge request's head; its job is running now",
   ]);
 });

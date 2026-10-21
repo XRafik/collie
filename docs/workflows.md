@@ -44,6 +44,13 @@ decision changes the work, then writes `SPEC.md` and one ticket per slice into t
 handoff. Plans never enter the repository
 ([ADR-0002](adr/0002-plan-artefacts-live-in-the-run-directory.md)).
 
+A criterion is one the ticket's absence would make false, never a text search. Before a
+criterion names a command, the planner runs it on the default branch's head: one that passes
+there is labelled a guard, and one that fails there becomes "the branch adds no failure over
+the base", naming the failures already present. The second opinion raises a criterion true
+by construction, a guard not labelled as one, and one whose only proof is a text search
+([ADR-draft-a-tautology-proves-nothing](adr/draft-a-tautology-proves-nothing.md)).
+
 **Ends with a menu:** and you can answer it in conversation. Telling the planner
 "proceed", "implement", "build" or "go" makes it answer the menu with
 `collie run answer <run id> "Implement now"` — it starts nothing itself.
@@ -104,6 +111,9 @@ or a deploy can show may be answered `after merge: <reason>`: it does not end th
 reviewer blocks one the Run could have shown, and the merge request names the ticket, the
 criterion and the reason under the same heading
 ([ADR-draft-a-criterion-is-what-the-run-can-show-before-its-merge-request](adr/draft-a-criterion-is-what-the-run-can-show-before-its-merge-request.md)).
+The builder records each new test failing before the code that makes it pass, never offers a
+text search as a verification, and does not count as met a criterion only a
+[Tautology](../CONTEXT.md) shows.
 The merge request is opened or updated last, and not at
 all only where there is no GitLab to open one on. Missing evidence does not keep it
 closed: an opened merge request is not a gate that passed, and what is unproved is
@@ -284,6 +294,12 @@ settled against the diff, and anything that cannot be defended listed under `dro
 a reason — rendered to `review.md` in the run directory, which is what you read and what
 **Post to MR** sends. The shipped review has one reviewer; a fork that wants another adds an
 entry to the list in `workflows/reviewing.ts`, not a new step.
+
+The reviewer is shown each recorded check with whether a failing run of the same command was
+recorded on an earlier tree, and raises a new test never seen failing. A
+[Tautology](../CONTEXT.md) is a `blocker` where it is the only proof of a criterion or a
+promised check, and a `minor` otherwise. The synthesis drops a finding that only repeats the
+goal or the diff.
 
 Every `blocker` and `major` has to say **where** and **why**: a `file` it is about and a
 `detail`. One that says neither goes back to its own reviewer once, rather than to the
@@ -693,7 +709,9 @@ cleanup sweep removes it once the Run has ended. It reads the 24 hours of Runs b
 started. A `retrospective`
 agent triages their records with the installed `retro` skill, and each finding that
 recurs is filed on the forge of the checkout it runs in, or commented on the open issue it
-matches. Up to `improvements` groups of newly filed issues start as `plan` Runs that build
+matches. Each finding cites a record that shows it, a journal line, a verification, a
+transcript or an issue, and never a Run's goal, summary or Output read back. Up to
+`improvements` groups of newly filed issues start as `plan` Runs that build
 themselves. Nobody is asked anything, and nothing is merged. See
 [Self-improve](using.md#self-improve).
 

@@ -100,10 +100,13 @@ touched, each through `collie verify` as below, and never the whole suite: it is
 gate's, and Collie runs this run's checks itself once the review is done.
 Commit to this branch as you go — one commit per ticket. There is no separate commit step.
 
+Record each new test failing, through `collie verify --name <name> --expect fail -- <command>`,
+before you write the code that makes it pass. Never offer a text search as a verification.
+
 Collie reviews this work in its own rally once you are done. Do not run a review skill,
 and do not start review sub-agents or threads.
 
-Apply your persona's **Code comment hygiene** rules to comments this branch added or
+Apply the **Code comment hygiene** rules you were given to comments this branch added or
 changed: make the code self-explanatory, delete unnecessary comments, and reduce each
 essential comment to the fewest words that preserve its meaning.
 
@@ -192,7 +195,7 @@ itself. Commit each fix to this branch.
 Collie reviews this fix in its own rally. Do not run a review skill, and do not start
 review sub-agents or threads.
 
-Apply your persona's **Code comment hygiene** rules to comments this fix added or changed,
+Apply the **Code comment hygiene** rules you were given to comments this fix added or changed,
 the same way `build` does.
 
 A finding that arrives with `answers your dispute:` is one you rejected before and a
@@ -282,6 +285,9 @@ so you may end your turn waiting on it. Never end a turn waiting on any other
 background job.
 
 {{session.ask}}
+
+A criterion that only a Tautology shows is not met: show it with something that would fail
+without the ticket, or say why it cannot be.
 
 Then write your Output: `criteria` answers every criterion in the whole list above, not
 only these, with `met` naming the test or the file that shows it or `not met: <reason>`.
