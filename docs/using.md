@@ -651,7 +651,13 @@ drifted, the step glyphs, where it has got to, how many agents are on it and how
 has been going. The sentence names the step the Run last launched an agent for, with its
 round (`Fixing the review findings, round 1.`, `Building ticket 02.`). Silence past
 `board_quiet_ms` reads `…but silent for 14 minutes` and moves nothing; a Run whose agent
-herdr reports working, or whose check Collie is running, is never silent. While Collie runs
+herdr reports working, or whose check Collie is running, is never silent. Nor is a Run
+**awaiting** something that comes without anyone repairing anything — CI finishing, a
+teammate's approval, review threads resolved, its turn in a Helle claim's queue, production
+carrying a deploy: it stays under Working and says what it waits for and on whom
+(`Waiting for CI and a teammate's approval on group/app!345.`), with no notification and
+nothing in News. Once such a wait outlasts its patience — 2 hours where nobody acts, 2 days
+where a person does — it parks, and the card goes to Needs you. While Collie runs
 one of the Run's checks itself, the sentence is about that check rather than the last step:
 which check, which pass and why, how long it has run against the median of its last five
 runs in this repository, and how many other checks this host is running —
@@ -3010,7 +3016,7 @@ every ten minutes, whether or not a pane is open. A sweep removes:
   Loading a module again counts as using it, and one that is needed after it went is
   staged again.
 - **State no Run owns:** a Run's directories under `runs/`, `agents/` and `evidence/`, its
-  `stop.`, `hold.`, `parked.` and `notified.` markers and the steering ledgers of its
+  `stop.`, `hold.`, `parked.`, `awaiting.` and `notified.` markers and the steering ledgers of its
   agents, once no Run has a row for them and nothing in them has changed for a day. That
   includes what the previous engine left, and `events.*.log`, `plans/` and `runs/.seq`,
   which nothing reads.

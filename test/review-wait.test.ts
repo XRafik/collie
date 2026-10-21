@@ -2,7 +2,7 @@
 
 import { expect, test } from "bun:test";
 import type { ReviewComment, ReviewRead } from "../src/forge/review";
-import { settleAnswers, standingOf, waitingLine } from "../src/review-wait";
+import { reviewWaitOf, settleAnswers, standingOf } from "../src/review-wait";
 
 const HEAD = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b";
 const MOVED = "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
@@ -115,14 +115,88 @@ test("a repository with no pipeline has none to wait for", () => {
   expect(standingOf(read({ pipeline: { state: "none" } }), at)._tag).toBe("Ready");
 });
 
-test("a forge that cannot be read is said, and the line names the merge request", () => {
+test("a forge that cannot be read is said", () => {
   expect(standingOf({ ok: false, reason: "glab is not logged in" }, at)).toEqual({
     _tag: "Unreadable",
     reason: "glab is not logged in",
   });
-  expect(waitingLine("https://x/-/merge_requests/30", ["the approval (none yet)"])).toBe(
-    "Waiting for review of https://x/-/merge_requests/30: the approval (none yet).",
+});
+
+const MR = "https://gitlab.example.com/spilnu/frontend/monorepo/-/merge_requests/345";
+
+test("CI running and a missing approval are awaited, on a teammate, and say what on", () => {
+  expect(
+    reviewWaitOf(
+      MR,
+      read({
+        approved: false,
+        unapproved: "none yet",
+        pipeline: { state: "running" },
+        mergeable: { state: "blocked", said: "ci still running" },
+      }),
+    ),
+  ).toEqual({
+    _tag: "Awaiting",
+    on: "CI and a teammate's approval on spilnu/frontend/monorepo!345",
+    who: "a teammate",
+  });
+});
+
+test("CI alone is awaited on nobody", () => {
+  expect(reviewWaitOf(MR, read({ pipeline: { state: "running" }, mergeable: null }))).toEqual({
+    _tag: "Awaiting",
+    on: "CI and the forge to say it can merge on spilnu/frontend/monorepo!345",
+    who: null,
+  });
+});
+
+test("unresolved review threads are awaited on a teammate", () => {
+  expect(
+    reviewWaitOf(MR, read({ mergeable: { state: "blocked", said: "discussions not resolved" } })),
+  ).toEqual({
+    _tag: "Awaiting",
+    on: "the review threads to be resolved on spilnu/frontend/monorepo!345",
+    who: "a teammate",
+  });
+});
+
+test("a red pipeline, changes requested or a merge the forge refuses blocks, whatever else is awaited", () => {
+  expect(
+    reviewWaitOf(
+      MR,
+      read({
+        approved: false,
+        changesRequested: true,
+        pipeline: { state: "failed", name: "lint" },
+        mergeable: { state: "blocked", said: "conflict" },
+      }),
+    ),
+  ).toEqual({
+    _tag: "Blocked",
+    why: [
+      "the pipeline at 1a2b3c4d failed (lint)",
+      "changes are requested",
+      "the forge will not merge it: conflict",
+    ],
+  });
+  expect(reviewWaitOf(MR, read({ mergeable: { state: "blocked", said: "blocked" } }))._tag).toBe(
+    "Blocked",
   );
+});
+
+test("a forge that cannot be read is awaited on nobody", () => {
+  expect(reviewWaitOf(MR, { ok: false, reason: "a timeout" })).toEqual({
+    _tag: "Awaiting",
+    on: "the forge to answer about spilnu/frontend/monorepo!345 (a timeout)",
+    who: null,
+  });
+});
+
+test("changes requested keep a merge request from being ready", () => {
+  expect(standingOf(read({ changesRequested: true }), at)).toEqual({
+    _tag: "Waiting",
+    why: ["changes requested"],
+  });
 });
 
 const open = (id: string) => {

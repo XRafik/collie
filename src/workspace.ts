@@ -260,6 +260,7 @@ const activeDetail = Effect.fn("activeDetail")(function* (
   // so would be noise on the one row that needs none.
   if (asked !== undefined) return `waiting on ${asked.name} — your turn`;
   if (run.state === "waiting") return run.note ?? "parked";
+  if (run.awaiting !== null) return `waiting for ${run.awaiting.on}`;
   const parts = [run.workflow];
   const quiet = yield* quietFor(run.dir, now, quietMs);
   if (quiet) parts.push(quiet);

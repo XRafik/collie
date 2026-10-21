@@ -25,6 +25,7 @@ const view = (over: Partial<RunView> = {}): RunView => ({
   controls: [],
   diagnostic: null,
   parked: null,
+  awaiting: null,
   mr: null,
   landing: null,
   ...over,
@@ -46,4 +47,18 @@ test("the merge request a Run opened is one of its facts", () => {
 test("a Run parked inside a wait, still pending, is waiting on you rather than working", () => {
   const parked = view({ parked: "r1-review-r1 in pane 1-1 was sent delivery r1-review-step-1…" });
   expect(factsOfView("/state", parked).state).toBe("waiting");
+});
+
+test("a Run awaiting what comes by itself is working, and says what it awaits", () => {
+  const awaiting = { on: "CI on group/app!3", who: null, since: "2026-10-21T10:00:00.000Z" };
+  const facts = factsOfView("/state", view({ status: { status: "suspended" }, awaiting }));
+  expect(facts.state).toBe("running");
+  expect(facts.awaiting).toEqual(awaiting);
+  expect(facts.note).toBe("Waiting for CI on group/app!3.");
+  const repair = factsOfView(
+    "/state",
+    view({ parked: "group/app!3 cannot be released", awaiting }),
+  );
+  expect(repair.state).toBe("waiting");
+  expect(repair.note).toBe("group/app!3 cannot be released");
 });

@@ -29,6 +29,7 @@ const view = (over: Partial<RunView> & { runId: string }): RunView => ({
   controls: [],
   diagnostic: null,
   parked: null,
+  awaiting: null,
   mr: null,
   landing: null,
   ...over,

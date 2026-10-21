@@ -65,6 +65,32 @@ test("the things worth saying are the things a human would want to know", () => 
   expect(said({ state: "failed" })!.run).toBe("r1");
 });
 
+test("a release Run awaiting CI or a teammate's approval says nothing consequential; a blocker or its go still does", () => {
+  const release = (over: Partial<RunFacts>) =>
+    eventsIn([record({ id: "r1", workflow: "release", ...over })]);
+  const awaiting = {
+    on: "CI and a teammate's approval on group/app!345",
+    who: "a teammate",
+    since: "2026-10-21T10:00:00.000Z",
+  };
+
+  expect(release({ state: "running", awaiting })).toEqual([]);
+
+  const red = "group/app!345 cannot be released: the pipeline at 1d538252 failed (lint).";
+  const blocked = release({ state: "waiting", parked: red, note: red, awaiting })[0]!;
+  expect(blocked.significance).toBe("consequential");
+  expect(blocked.text).toContain("the pipeline at 1d538252 failed");
+  const changes = "group/app!345 cannot be released: changes are requested.";
+  expect(release({ state: "waiting", parked: changes, note: changes })[0]!.text).toContain(
+    "changes are requested",
+  );
+
+  const go = { name: "go-1", prompt: "Release group/app!345?", options: ["Release", "Finish"] };
+  const asked = release({ state: "waiting", asking: [go], awaiting })[0]!;
+  expect(asked.significance).toBe("decision");
+  expect(asked.key).toBe("r1:asking:go-1");
+});
+
 /** What `sayWhatHappened` keeps: every event this Herd has not already said. */
 const unsaid = (events: ReadonlyArray<Event>, said: ReadonlySet<string>) =>
   events.filter((event) => !said.has(event.key));

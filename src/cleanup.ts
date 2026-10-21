@@ -432,7 +432,7 @@ const KEPT_KINDS = new Set([
   "claude.json.bak",
   "running-checks",
 ]);
-const MARKER_KINDS = ["stop", "hold", "parked", "notified"];
+const MARKER_KINDS = ["stop", "hold", "parked", "awaiting", "notified"];
 const MARKER = new RegExp(`^(?:${MARKER_KINDS.join("|")})\\.(.+)$`);
 /** Nothing reads these any more ([ADR-0027](../docs/adr/0027-one-engine-and-a-hard-cutover.md)). */
 const DEAD = /^(?:events\..*\.log|plans)$/;

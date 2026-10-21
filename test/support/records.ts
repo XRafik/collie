@@ -33,6 +33,7 @@ export function runFacts(over: Partial<RunFacts> = {}): RunFacts {
     held: false,
     repo: null,
     parked: null,
+    awaiting: null,
     undriven: false,
     note: null,
     summary: null,

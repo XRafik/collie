@@ -431,8 +431,13 @@ neither kind deploy to stage fails here, before any wait, saying it has no stage
 Collie can prove. Collie then proves the head with the Run's checks, and
 waits, at no token cost, reading the review every five minutes until the merge request is
 approved, has no unanswered external comment, is green and mergeable at the proved head.
-The card says what it waits for: "Waiting for review of `<mr>`: the approval (…); the
-pipeline at `<sha>`.". A head that moves is fast-forwarded to and proved before anything
+Changes requested keep it from being ready. While what it waits for comes by itself — CI
+still running, a teammate's approval, review threads to be resolved — the Run is working,
+not needing you: the card stays under Working and says "Waiting for CI and a teammate's
+approval on `<mr>`.", with no notification and nothing in News, until the wait outlasts 2
+hours (2 days for a person), when it parks. A red pipeline, changes requested or a merge the
+forge refuses (a conflict, a rebase, a draft) parks it as Needs you, naming what holds it
+back; it keeps reading the review, and goes on by itself once that is repaired. A head that moves is fast-forwarded to and proved before anything
 can be asked about it. A merge request someone else merges, or closes, ends the Run with
 nothing tagged.
 

@@ -53,6 +53,7 @@ const view = (runId: string, parent: string | null = null): RunView => ({
   controls: [],
   diagnostic: null,
   parked: null,
+  awaiting: null,
   mr: null,
   landing: null,
 });

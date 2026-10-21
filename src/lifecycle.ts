@@ -8,6 +8,7 @@
 // What a Run is and what became of it stays Collie's; what a workflow has done stays
 // Effect's. Nothing here copies the second into the first.
 
+import { awaitingLine } from "./awaiting";
 import { redactedField, withNotice } from "./redact";
 import type { SettingValue } from "./settings";
 import { reportOf, resultText, type Recorded } from "./report";
@@ -1153,6 +1154,7 @@ export const describeRun = (view: RunView): ReadonlyArray<string> => [
   ...describeWaiting(view),
   ...(view.diagnostic === null ? [] : [view.diagnostic]),
   ...(view.parked === null ? [] : [view.parked]),
+  ...(view.awaiting === null ? [] : [awaitingLine(view.awaiting)]),
 ];
 
 /** The questions a Run is still waiting on, with what each will take. */
