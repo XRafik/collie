@@ -63,11 +63,15 @@ export const marksRepository = Effect.fn("Issues.marksRepository")(function* (di
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const marker = path.join(dir, ".git");
-  const gitDir =
+  const gitfile =
     (yield* fs.stat(marker)).type === "Directory"
-      ? marker
-      : /^gitdir:\s*(.+?)\s*$/m.exec(yield* fs.readFileString(marker))?.[1];
-  return gitDir !== undefined && (yield* fs.exists(path.resolve(dir, gitDir, "HEAD")));
+      ? null
+      : (yield* fs.readFileString(marker)).replace(/[\r\n]+$/, "");
+  if (gitfile === null) return yield* fs.exists(path.join(marker, "HEAD"));
+  if (!gitfile.startsWith("gitdir: ")) return false;
+  const gitDir = gitfile.slice("gitdir: ".length);
+  // Joined unnormalised, as Git does, so `..` leaves a linked `dir` physically.
+  return yield* fs.exists(`${path.isAbsolute(gitDir) ? gitDir : `${dir}/${gitDir}`}/HEAD`);
 });
 
 export function throughAliases(text: string, aliases: ReadonlyArray<DirectoryAlias>): string {

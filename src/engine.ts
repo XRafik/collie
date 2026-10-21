@@ -2763,7 +2763,7 @@ export const hostLayer = (options: {
             return yield* new WorkflowError({
               reason: "issue checkout's Git identity could not be read",
             });
-          const own = yield* fs.realPath(common.stdout.trim());
+          const own = yield* fs.realPath(common.stdout.replace(/\n$/, ""));
           const ownRemote = here.project.split("/").slice(1).join("/");
           for (const checkout of inventory.checkouts) {
             const canonical = yield* fs.realPath(checkout);
@@ -2806,7 +2806,7 @@ export const hostLayer = (options: {
               return yield* new WorkflowError({
                 reason: `issue privacy check could not identify checkout: ${checkout}`,
               });
-            if ((yield* fs.realPath(shared.stdout.trim())) === own) continue;
+            if ((yield* fs.realPath(shared.stdout.replace(/\n$/, ""))) === own) continue;
             return yield* new WorkflowError({
               reason: `issue text names another checkout: ${checkout}`,
             });
