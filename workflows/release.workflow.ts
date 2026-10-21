@@ -676,6 +676,12 @@ export default defineWorkflow({
             yield* host.record(runId, `go ${gos}: finished with ${mr} left open`);
             return `${mr} was left open`;
           }
+          const claim = yield* claimed(`go-${gos}.claim`);
+          const giveBack =
+            claim === null
+              ? Effect.void
+              : Activity.make({ name: `go-${gos}.give-back`, execute: host.release(runId) });
+          // The claim can wait on Helle or a question, so the review is read once it is held.
           const still = yield* Activity.make({
             name: `go-${gos}.check`,
             success: ReviewStandingSchema,
@@ -683,17 +689,13 @@ export default defineWorkflow({
             execute: host.review({ runId, cwd, proved: head, seen: [] }),
           });
           if (still._tag !== "Ready") {
+            yield* giveBack;
             yield* host.record(
               runId,
               `go ${gos} no longer holds for ${short(head)}: ${notReady(still)}`,
             );
             continue;
           }
-          const claim = yield* claimed(`go-${gos}.claim`);
-          const giveBack =
-            claim === null
-              ? Effect.void
-              : Activity.make({ name: `go-${gos}.give-back`, execute: host.release(runId) });
           let production: ProductionGo | null = null;
           if (answer === GO.test) {
             stagings += 1;

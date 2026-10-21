@@ -460,9 +460,10 @@ Once ready, it asks **`go-<n>`**, naming the head and who approved it: **Release
 the assessment named a stage deploy of its merge request pipelines, **Merge, tag and stage**
 where it named one of its tag pipelines, and **Finish**, and says what each does. Anyone
 may answer, from any door, and the answer is recorded with who gave it. **Finish** ends the
-Run with the merge request left open. Any other answer reads the review again: where it no longer holds, the Run says why on its log and waits for a fresh go.
-Where it holds, the Run claims the repository in Helle (a repository with no Helle project
-goes on without one), and Collie merges at exactly the head the go named — never an admin
+Run with the merge request left open. Any other answer claims the repository in Helle (a
+repository with no Helle project goes on without one), and then reads the review again, as
+the claim may have waited: where it no longer holds, the claim is given back, and the Run
+says why on its log and waits for a fresh go. Where it holds, Collie merges at exactly the head the go named — never an admin
 merge, never auto-merge. A head that moved before the merge gives the claim back and goes
 back to waiting. The agent then tags by the repository's own conventions, and Collie reads
 the tag back on origin, carrying the merged commit, with its pipeline finished and
