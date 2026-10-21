@@ -164,13 +164,17 @@ test("a tool of an MCP server the human configured is allowed as it was asked", 
     }),
   ));
 
-test("on a Claude Code too old to name a tool's MCP server, only a configured server's tools are allowed", () =>
+test("on a Claude Code too old to name a tool's MCP server, only a configured server's or claude.ai connector's tools are allowed", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const input = { team: "Frontend" };
       const ask = (name: string) =>
         Effect.promise(() => options.canUseTool(name, input, permission));
       expect(yield* ask("mcp__linear-server__list_issues")).toEqual({
+        behavior: "allow",
+        updatedInput: input,
+      });
+      expect(yield* ask("mcp__claude_ai_Slack__slack_read_channel")).toEqual({
         behavior: "allow",
         updatedInput: input,
       });

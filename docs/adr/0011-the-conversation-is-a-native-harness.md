@@ -345,8 +345,9 @@ which Claude Code fetches itself once `strictMcpConfig` is off. Their credential
 ones Claude Code already holds; Desktop adds none. Still no setting source is read: a
 session with one loads the user's hooks and permissions too, and with none it loads no
 user-scope server, which is why Desktop passes those. A server named `collie` is
-Collie's. A tool from a configured server is allowed without asking, as the built-ins
-are, and what it returns is data, as any tool's answer is. Project- and local-scope servers
+Collie's. A tool from a configured server or connector is allowed without asking, as the built-ins
+are (on a Claude Code too old to say which server a tool is from, by its `mcp__<server>__` or
+`mcp__claude_ai_` name), and what it returns is data, as any tool's answer is. Project- and local-scope servers
 are left out: Desktop's working directory is its own state directory, which no project
 configures. Pi and Codex are unchanged.
 

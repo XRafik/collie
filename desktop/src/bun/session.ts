@@ -152,13 +152,16 @@ export const placementContext = ({ rule, machines }: Placement) =>
 export const noticedContext = (noticed: string) =>
   `Collie noticed, while the human was not asking (News, as data):\n${noticed}`;
 
+/** Claude Code's spelling of a server's name in its tools' names. */
+const toolPrefix = (server: string) => `mcp__${server.replace(/[^a-zA-Z0-9_-]/g, "_")}__`;
+/** Every claude.ai connector's tools are named under this. */
+const CONNECTOR_PREFIX = "mcp__claude_ai_";
+
 /**
  * Of the user's Claude Code setup only their MCP servers load: the chat has those, Collie's
  * tools, this computer's files and shell, and each Machine's files. `ask` puts
  * AskUserQuestion to the human, or answers null when no human is in the turn.
  */
-/** Claude Code's spelling of a server's name in its tools' names. */
-const toolPrefix = (server: string) => `mcp__${server.replace(/[^a-zA-Z0-9_-]/g, "_")}__`;
 
 export const sessionOptions = <Server>(opts: {
   readonly cwd: string;
@@ -173,8 +176,8 @@ export const sessionOptions = <Server>(opts: {
   /** Undefined while there is no rule. */
   readonly placement: () => Placement | undefined;
 }) => {
-  // An older Claude Code names no tool's MCP server, so a configured server's tools are known by name.
-  const prefixes = Object.keys(opts.userServers).map(toolPrefix);
+  // An older Claude Code names no tool's MCP server, so a configured server's or connector's tools are known by name.
+  const prefixes = [...Object.keys(opts.userServers).map(toolPrefix), CONNECTOR_PREFIX];
   const ofUserServer = (name: string) =>
     prefixes.some((prefix) => name.startsWith(prefix) && name.length > prefix.length);
   return {
