@@ -27,6 +27,7 @@ import * as Socket from "effect/socket/Socket";
 import {
   BRIDGE_READY,
   type BoardMessage,
+  type CleanupReport,
   type BoardSnapshot,
   PROTOCOL,
   FrontDoorRpcs,
@@ -65,7 +66,15 @@ import { CHILD_CWD, childEnv } from "./login-env";
 import { backoff } from "../shared/retrying";
 import { addressOf } from "../shared/record-terminal";
 import { withNotice } from "../../../src/redact";
-import { type ActionsLog, confirmed, type Unconfirmed, unlogged, withheldOf } from "./sent";
+import {
+  type ActionsLog,
+  type Attempted,
+  confirmed,
+  reasonOf,
+  type Unconfirmed,
+  unlogged,
+  withheldOf,
+} from "./sent";
 
 const children = new Set<Bun.Subprocess>();
 export const endChildren = () => {
@@ -1493,6 +1502,65 @@ export const cleanupsOn = (
   Effect.forEach(doors, ([machine, door]) => cleanupOn(machine, door), {
     concurrency: "unbounded",
   });
+
+/**
+ * Sweeps the Machine now under `request`. Sent once and waited on for up to 10 minutes, not
+ * the 30 s writes are resent at: a resend's reply would hold only what it removed.
+ */
+export const sweepOn = (
+  doors: ReadonlyMap<string, Reached>,
+  { installation, machine }: { readonly installation: string; readonly machine: string },
+  request: string,
+  log: ActionsLog,
+): Effect.Effect<CleanupReport, ActionFailed> => {
+  const door = doors.get(installation);
+  const name = door?.machine.name ?? machine;
+  const sending = { door: "board", machine: name, request, kind: "cleanup", about: null } as const;
+  const note = (attempt: number, ended: Attempted["ended"], reason?: string) =>
+    log(
+      reason === undefined
+        ? { ...sending, attempt, ended }
+        : { ...sending, attempt, ended, reason },
+    );
+  const failed = (attempt: number, ended: Attempted["ended"], reason: string, logged = reason) =>
+    note(attempt, ended, logged).pipe(
+      Effect.andThen(Effect.fail(new ActionFailed({ request, reason }))),
+    );
+  if (door === undefined)
+    return failed(
+      0,
+      "not-sent",
+      `Not sent to ${name}: that Machine is not connected.`,
+      "that Machine is not connected",
+    );
+  return door.desktop.sweep({ request }).pipe(
+    Effect.timeoutOption("10 minutes"),
+    Effect.catch((error) =>
+      failed(1, error._tag === "RpcClientError" ? "failed" : "refused", reasonOf(error)),
+    ),
+    Effect.catchCause((cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? failed(
+            1,
+            "failed",
+            `${name}'s connection was renewed before this finished`,
+            "the connection was renewed before this finished",
+          )
+        : Effect.failCause(cause),
+    ),
+    Effect.flatMap(
+      Option.match({
+        onSome: (report) => note(1, "accepted").pipe(Effect.as(report)),
+        onNone: () =>
+          failed(
+            1,
+            "timed-out",
+            `${name} did not finish cleaning up within 10 minutes. It may still be sweeping; Try again asks for the same sweep.`,
+          ),
+      }),
+    ),
+  );
+};
 
 /** A pause, resume or removal of one of the Machine's Schedules, under its own request. */
 export const changeScheduleOn = (door: Reached, change: ScheduleChange, request: string) =>

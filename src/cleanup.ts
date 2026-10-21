@@ -12,7 +12,7 @@ import {
   type TaskView,
   type CleanupItem,
   type CleanupKept,
-  type CleanupReport,
+  CleanupReport,
 } from "./board-model";
 import {
   herdrFailureReason,
@@ -62,6 +62,7 @@ import { uploadsDir } from "./uploads";
 import { finishedOnRecord } from "./cards";
 import type { CheckProcessesApi, Leftover } from "./check-processes";
 import { humanBytes } from "./bytes";
+import { once } from "./audit";
 
 /** One kind of thing Collie cleans. */
 export interface Sweeper {
@@ -190,6 +191,22 @@ export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: Sw
     yield* trimJournal(journal);
     return { remove: removed, keep, bytes: total(removed) } satisfies CleanupReport;
   });
+
+/** A front door's sweep, once per request: asked again, even while it runs, it answers with its report. */
+export const sweepAsked = <E, R>(
+  trail: string,
+  line: Omit<Parameters<typeof once>[1], "result">,
+  sweepers: Effect.Effect<ReadonlyArray<Sweeper>, E, R>,
+  stateDir: string,
+  by: SweptBy,
+) =>
+  sweeping.withPermit(
+    once(
+      trail,
+      { ...line, result: CleanupReport },
+      Effect.flatMap(sweepers, (all) => sweep(all, stateDir, by)),
+    ),
+  );
 
 /** Drops journal lines older than 30 days, rewriting it only when something went. */
 const trimJournal = (file: string) =>

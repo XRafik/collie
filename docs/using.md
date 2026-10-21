@@ -1283,7 +1283,7 @@ same request again, so a host that took it before the answer was lost does it on
 stream like any other change. One click is one request, whatever fails after it: a refusal,
 a renewed connection, or the window's own channel to Desktop. An action counts as done only
 on the host's reply. Desktop waits 30 s for it, and sends the same request again when none
-comes, 3 times in all; a request that landed earlier reads back as a repeat, never a second
+comes, 3 times in all (a Cleanup sweep is the exception: below); a request that landed earlier reads back as a repeat, never a second
 write. A refusal or a failed connection is said at once and not tried again by itself. After
 the third wait it says "vm-mk did not confirm the answer to r-1 within 30 s, 3 times. It may
 still land; Try again sends the same request, which vm-mk takes at most once." An action
@@ -1338,7 +1338,25 @@ would free together, sized as `collie cleanup` prints it. A Machine Desktop does
 shows its state and why, and can't be chosen; one Out of reach or Waiting for SSO adds that
 its host still cleans up there every ten minutes. One whose listing failed, whose host did
 not answer in 15 seconds, or whose Collie is too old to list says so and can't be chosen.
-The dialog only shows: a sweep is still `collie cleanup --apply` on that Machine, or a chat.
+
+**Clean up 2 Machines** ("Clean up 1 Machine" for one) under that line sweeps every chosen
+Machine at once, each on its own, with no question first: its host does the same every ten
+minutes. From then on the choice is fixed and each chosen row says Cleaning… while its host
+works, which includes waiting for a sweep the host is already making. A row then says
+"Freed 3.2 GiB" with what went grouped by kind as before, or "Nothing removed", and **Kept N**
+with each kept item's reason, including anything the listing offered that the sweep judged
+again and kept. A sweep that failed says "Not cleaned" with the reason, and **Try again**
+sends that Machine's sweep again under the same request: if the first sweep finished, or
+is still running, its host answers with that sweep's report rather than sweeping twice.
+A sweep is sent once and waited on for up to 10 minutes, not
+sent again at 30 s as other writes are: one that deletes gigabytes can take longer, and a
+resend's reply would hold only what the last attempt removed. With no reply by then the row
+says "vm-mk did not finish cleaning up within 10 minutes. It may still be sweeping; Try
+again asks for the same sweep." Each send is a line in `actions.log`, of kind `cleanup`.
+Each outcome is also told in a toast, "Cleaned up vm-mk: freed 3.2 GiB" or "vm-mk not
+cleaned: …". Closing the dialog stops nothing and the toasts still come; opened again while
+a sweep runs, it shows the sweeps as they stand, and opened once none runs, it reads fresh
+listings. The button stays disabled until then.
 
 The page opens with one line saying whether the whole Flock is **In sync** with Desktop
 ("Every Machine is in sync with Desktop 0.35.0"), or naming each Machine that isn't and what
@@ -3025,7 +3043,9 @@ and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do 
 The Flock chat sweeps the Machine a `cleanup` names in its `machine` field, and refuses one
 that names none while several Machines are reachable; Native chat sweeps its own Machine.
 `collie --machine <machine> cleanup` lists another Machine's, and Desktop's **Clean up…** on
-the Machines page shows every Machine's ([Collie Desktop](#collie-desktop)).
+the Machines page shows every Machine's and sweeps the ones chosen ([Collie Desktop](#collie-desktop)).
+A sweep asked again under its request answers with that sweep's report, whether it finished
+or is still running, and never sweeps twice.
 Every removal is judged again at the moment it is made, never forced, and recorded in the
 state directory's `cleanup.jsonl` with when, what, how big, why and who asked, for 30 days.
 Anything a sweep cannot judge is kept, with the reason.

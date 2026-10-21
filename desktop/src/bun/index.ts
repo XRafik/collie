@@ -96,6 +96,7 @@ import {
   usageOn,
   schedulesOn,
   cleanupsOn,
+  sweepOn,
   changeScheduleOn,
   moveScheduleOn,
   runFileOn,
@@ -1085,6 +1086,8 @@ const main = Effect.gen(function* () {
           door.desktop,
         ]),
       ),
+    sweep: ({ installation, machine, request }) =>
+      sweepOn(doors, { installation, machine }, request, logged),
     changeSchedule: ({ installation, change, name, request: again }) =>
       Effect.gen(function* () {
         const request = again ?? (yield* uuid);

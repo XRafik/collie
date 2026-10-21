@@ -3,14 +3,15 @@ import { choose, cleanupView } from "../../../src/shared/machine-cleanup";
 
 const open = defineModel<boolean>("open", { required: true });
 const { machines } = useInSync();
-const { read, chosen, refresh } = useCleanup();
-watch(open, (now) => now && void refresh());
+const { read, chosen, sweeps, opened, clean, tryAgain } = useCleanup();
+watch(open, (now) => now && void opened());
 
 const view = computed(() =>
   cleanupView(
     machines.value.map(({ row }) => row),
     read.value,
     chosen.value,
+    sweeps.value,
   ),
 );
 const toggle = (profile: string, on: boolean) => {
@@ -31,6 +32,7 @@ const toggle = (profile: string, on: boolean) => {
             color="neutral"
             variant="outline"
             label="All"
+            :disabled="view.choosable.length === 0"
             data-testid="cleanup-all"
             @click="chosen = choose(view, 'all')"
           />
@@ -39,6 +41,7 @@ const toggle = (profile: string, on: boolean) => {
             color="neutral"
             variant="outline"
             label="None"
+            :disabled="view.choosable.length === 0"
             data-testid="cleanup-none"
             @click="chosen = choose(view, 'none')"
           />
@@ -59,7 +62,7 @@ const toggle = (profile: string, on: boolean) => {
             <strong>{{ row.name }}</strong>
             <span
               class="ml-auto"
-              :class="row.choosable ? 'text-default' : 'text-warning'"
+              :class="row.warn ? 'text-warning' : 'text-default'"
               data-testid="cleanup-said"
             >
               {{ row.said }}
@@ -68,6 +71,19 @@ const toggle = (profile: string, on: boolean) => {
           <p v-if="row.note !== null" class="text-muted" data-testid="cleanup-note">
             {{ row.note }}
           </p>
+          <div v-if="row.reason !== null" class="flex items-center gap-2">
+            <p class="text-error" data-testid="cleanup-reason">{{ row.reason }}</p>
+            <UButton
+              v-if="row.tryAgain"
+              size="xs"
+              color="neutral"
+              variant="outline"
+              label="Try again"
+              class="ml-auto"
+              data-testid="cleanup-try-again"
+              @click="tryAgain(row.profile)"
+            />
+          </div>
           <details v-for="group in row.groups" :key="group.kind" data-testid="cleanup-kind">
             <summary class="cursor-pointer">
               {{ group.kind }} · {{ group.count }} · {{ group.size }}
@@ -90,6 +106,14 @@ const toggle = (profile: string, on: boolean) => {
           </details>
         </section>
         <p class="text-sm font-medium" data-testid="cleanup-total">{{ view.chosen }}</p>
+        <UButton
+          class="self-start"
+          icon="i-lucide-brush-cleaning"
+          :label="view.button.said"
+          :disabled="view.button.disabled"
+          data-testid="cleanup-clean"
+          @click="clean(view)"
+        />
       </div>
     </template>
   </UModal>

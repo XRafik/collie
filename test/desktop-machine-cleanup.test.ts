@@ -15,6 +15,7 @@ import {
   choose,
   cleanupView,
   type MachineCleanup,
+  sweptToast,
 } from "../desktop/src/shared/machine-cleanup";
 import { cleanupLines } from "../src/cleanup";
 import { type CleanupReport, FrontDoorRpcs, HostRefused } from "../src/board-model";
@@ -327,5 +328,109 @@ describe("the Cleanup dialog", () => {
     expect(cleanupView(rows, read, new Set(["p-b"])).chosen).toBe(
       "1 Machine chosen · would free 1.1 GiB",
     );
+  });
+});
+
+describe("the Cleanup dialog while and after it sweeps", () => {
+  const rows = [live("a"), live("b"), live("c")];
+  const read = [
+    listed("a", { remove: [item("worktree", "/w", 3 * GiB)], keep: [], bytes: 3 * GiB }),
+    listed("b", { remove: [item("worktree", "/v", GiB)], keep: [], bytes: GiB }),
+    listed("c", { remove: [item("generation", "/g", 1024)], keep: [], bytes: 1024 }),
+  ];
+  const chosen = new Set(["p-a", "p-b"]);
+
+  test("the button counts the chosen Machines and is disabled when none is", () => {
+    expect(cleanupView(rows, read, null).button).toEqual({
+      said: "Clean up 3 Machines",
+      disabled: false,
+    });
+    expect(cleanupView(rows, read, new Set(["p-a"])).button).toEqual({
+      said: "Clean up 1 Machine",
+      disabled: false,
+    });
+    expect(cleanupView(rows, read, new Set()).button).toMatchObject({ disabled: true });
+    expect(cleanupView(rows, null, null).button).toMatchObject({ disabled: true });
+  });
+
+  test("a sweeping Machine says Cleaning…, the choice is fixed, and the button is disabled", () => {
+    const view = cleanupView(
+      rows,
+      read,
+      chosen,
+      new Map([
+        ["p-a", { state: "running", request: "s-a" }],
+        ["p-b", { state: "running", request: "s-b" }],
+      ]),
+    );
+    expect(
+      view.rows.map(({ said, chosen, choosable, warn }) => [said, chosen, choosable, warn]),
+    ).toEqual([
+      ["Cleaning…", true, false, false],
+      ["Cleaning…", true, false, false],
+      ["Would free 1.0 KiB", false, false, false],
+    ]);
+    expect(view.rows[2]!.groups).toHaveLength(1);
+    expect(view.choosable).toEqual([]);
+    expect(view.button).toEqual({ said: "Clean up 2 Machines", disabled: true });
+  });
+
+  test("a done sweep says what it freed, its removals by kind, and what it kept and why", () => {
+    const swept = {
+      remove: [item("worktree", "/w/a", 2 * GiB), item("worktree", "/w/b", 1.2 * GiB)],
+      keep: [{ kind: "worktree", target: "/w/open", reason: "its Task is open" }],
+      bytes: 3.2 * GiB,
+    };
+    const view = cleanupView(
+      rows,
+      read,
+      chosen,
+      new Map([["p-a", { state: "done", report: swept }]]),
+    );
+    expect(view.rows[0]).toMatchObject({
+      said: "Freed 3.2 GiB",
+      warn: false,
+      reason: null,
+      tryAgain: false,
+      groups: [{ kind: "worktree", count: 2, size: "3.2 GiB" }],
+      kept: { said: "Kept 1", items: swept.keep },
+    });
+    expect(view.button.disabled).toBe(true);
+  });
+
+  test("a sweep that removed nothing says so", () => {
+    const view = cleanupView(
+      rows,
+      read,
+      chosen,
+      new Map([["p-a", { state: "done", report: { remove: [], keep: [], bytes: 0 } }]]),
+    );
+    expect(view.rows[0]).toMatchObject({ said: "Nothing removed", groups: [], kept: null });
+  });
+
+  test("a failed sweep says Not cleaned with its reason, and offers Try again", () => {
+    const view = cleanupView(
+      rows,
+      read,
+      chosen,
+      new Map([["p-b", { state: "failed", request: "s-b", reason: "the disk is gone" }]]),
+    );
+    expect(view.rows[1]).toMatchObject({
+      said: "Not cleaned",
+      reason: "the disk is gone",
+      tryAgain: true,
+      warn: true,
+      groups: [],
+    });
+    expect(view.rows[0]).toMatchObject({ tryAgain: false, reason: null });
+  });
+
+  test("each sweep's end is told in a toast", () => {
+    expect(
+      sweptToast("vm-mk", { state: "done", report: { remove: [], keep: [], bytes: 3.2 * GiB } }),
+    ).toEqual({ title: "Cleaned up vm-mk: freed 3.2 GiB", color: "success" });
+    expect(
+      sweptToast("vm-mk", { state: "failed", request: "s-1", reason: "the disk is gone" }),
+    ).toEqual({ title: "vm-mk not cleaned: the disk is gone", color: "error" });
   });
 });

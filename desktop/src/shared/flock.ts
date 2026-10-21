@@ -15,6 +15,7 @@ import { MachineSchedules } from "./schedules";
 import { MachineUsage } from "./usage";
 import {
   BoardMessage,
+  CleanupReport,
   Herd,
   OfferView,
   PaneAt,
@@ -527,6 +528,12 @@ export const DesktopRpcs = RpcGroup.make(
   Rpc.make("schedules", { success: Schema.Array(MachineSchedules) }),
   /** What a sweep would remove now on each connected Machine. */
   Rpc.make("cleanup", { success: Schema.Array(MachineCleanup) }),
+  /** Sweeps one Machine now under the view's request; `machine` names it if it isn't connected. */
+  Rpc.make("sweep", {
+    payload: { installation: Schema.String, machine: Schema.String, request: Schema.String },
+    success: CleanupReport,
+    error: ActionFailed,
+  }),
   /** Pauses, resumes or removes one of a Machine's Schedules; what came of it in a line. */
   Rpc.make("changeSchedule", {
     payload: {
