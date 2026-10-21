@@ -171,6 +171,9 @@ export const ForgeModel = Schema.Struct({
       Schema.Struct({
         status: Schema.String,
         conclusion: Schema.optionalKey(Schema.String),
+        /** The branch or tag it ran for, and its commit. */
+        ref: Schema.optionalKey(Schema.String),
+        sha: Schema.optionalKey(Schema.String),
         jobs: Schema.optionalKey(
           Schema.Array(
             Schema.Struct({
@@ -481,6 +484,12 @@ const GITHUB_RUN = {
   cancelled: { status: "completed", conclusion: "cancelled" },
 } as const;
 
+/** The pipelines or Actions runs for `ref`, newest first. */
+const runsFor = (model: ForgeModel, ref: string) =>
+  Object.entries(model.runs ?? {})
+    .filter(([, one]) => one.ref === ref)
+    .toSorted(([a], [b]) => Number(b) - Number(a));
+
 /** The page a GitLab list route asks for, 20 to a page where it does not say. */
 function pageOf<T>(route: string, all: ReadonlyArray<T>): Array<T> {
   const page = Number(/[?&]page=(\d+)/.exec(route)?.[1] ?? "1");
@@ -657,6 +666,9 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(mr === undefined ? [] : [{ id: pipelineIdOf(mr) + 1, sha }]);
     }
     const byRef = /\/pipelines\?ref=([^&]+)/.exec(route);
+    const tagged = byRef === null ? [] : runsFor(model, decodeURIComponent(byRef[1]!));
+    if (tagged.length > 0)
+      return json(tagged.map(([id, one]) => ({ id: Number(id), sha: one.sha ?? "" })));
     if (byRef) {
       const mr = model.mrs.find(
         (one) => one.targetBranch === decodeURIComponent(byRef[1]!) && one.target !== undefined,
@@ -706,7 +718,9 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     const pipeline = /\/pipelines\/(\d+)$/.exec(route);
     if (pipeline) {
       const said = model.runs?.[pipeline[1]!];
-      return said === undefined ? no() : json({ status: said.status });
+      return said === undefined
+        ? no()
+        : json({ status: said.status, ref: said.ref ?? "main", sha: said.sha ?? "" });
     }
     const base = /merge_base\?refs\[\]=([^&]+)&refs\[\]=(.+)$/.exec(route);
     if (base) {
@@ -1037,8 +1051,21 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
     const said = model.runs?.[runs[1]!];
     return said === undefined
       ? no()
-      : json({ status: said.status, conclusion: said.conclusion ?? null });
+      : json({
+          status: said.status,
+          conclusion: said.conclusion ?? null,
+          head_branch: said.ref ?? "main",
+          head_sha: said.sha ?? "",
+        });
   }
+  const byBranch = /^repos\/(.+)\/actions\/runs\?.*\bbranch=([^&]+)/.exec(route);
+  if (byBranch)
+    return json({
+      workflow_runs: runsFor(model, decodeURIComponent(byBranch[2]!)).map(([id]) => ({
+        id: Number(id),
+        html_url: `https://github.com/${byBranch[1]}/actions/runs/${id}`,
+      })),
+    });
   return no();
 }
 

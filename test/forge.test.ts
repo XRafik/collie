@@ -581,6 +581,8 @@ for (const name of ["gitlab", "github"] as const) {
           yield* read(URLS[name].run, {
             "7": {
               ...(name === "gitlab" ? { status: "success" } : done),
+              ref: "v1.2.0",
+              sha: MERGED,
               jobs: [
                 { name: "build", state: "passed" },
                 { name: "publish", state: "manual" },
@@ -590,15 +592,30 @@ for (const name of ["gitlab", "github"] as const) {
         ).toEqual({
           ok: true,
           succeeded: true,
+          project: PROJECT[name],
+          ref: "v1.2.0",
+          sha: MERGED,
           jobs: [
             { name: "build", state: "passed", url: JOB_URL[name](1) },
             { name: "publish", state: "manual", url: JOB_URL[name](2) },
           ],
         });
         const running = yield* read(URLS[name].run, {
-          "7": { status: name === "gitlab" ? "running" : "in_progress", jobs: [] },
+          "7": {
+            status: name === "gitlab" ? "running" : "in_progress",
+            ref: "main",
+            sha: "0ld",
+            jobs: [],
+          },
         });
-        expect(running).toEqual({ ok: true, succeeded: false, jobs: [] });
+        expect(running).toEqual({
+          ok: true,
+          succeeded: false,
+          project: PROJECT[name],
+          ref: "main",
+          sha: "0ld",
+          jobs: [],
+        });
         expect((yield* read(URLS[name].other, { "7": done })).ok).toBe(false);
         expect((yield* read(URLS[name].run, {})).ok).toBe(false);
       }),
@@ -626,6 +643,33 @@ test("GitHub finds production beyond a full page of newer deployments", () =>
       );
     }),
   ));
+
+for (const name of ["gitlab", "github"] as const)
+  test(`the ${name} forge finds the newest pipeline a tag started in the project, and none where it started none`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runs: ForgeModel["runs"] = {
+          "7": { status: "success", ref: "v1.2.0", sha: MERGED },
+          "8": { status: "success", ref: "main", sha: MERGED },
+          "9": { status: "failed", ref: "v1.2.0", sha: MERGED },
+        };
+        const fake = fakeForge(name, model(name, { runs }));
+        const found = (tag: string) => FORGES[name].tagPipeline(ref(name), tag, "/w", fake.run);
+        expect(yield* found("v1.2.0")).toEqual({
+          ok: true,
+          url: URLS[name].run.replace(/7$/, "9"),
+        });
+        expect(yield* found("v9.9.9")).toEqual({ ok: true, url: null });
+        expect(
+          (yield* FORGES[name].tagPipeline(
+            ref(name),
+            "v1.2.0",
+            "/w",
+            fakeForge(name, model(name, { runs, installed: false })).run,
+          )).ok,
+        ).toBe(false);
+      }),
+    ));
 
 test("GitLab finds a tier's deployment beyond a page of environments and of deployments", () =>
   runEffect(

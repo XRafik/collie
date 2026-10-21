@@ -24,6 +24,7 @@ import type {
   JobRead,
   JobState,
   PipelineRead,
+  TagPipelineRead,
   Readiness,
 } from "./forge";
 import { Issue, filedIssueOf } from "./issues";
@@ -1142,6 +1143,42 @@ const RunJobsJson = Schema.fromJsonString(
   ),
 );
 
+const RunIdentityJson = Schema.fromJsonString(
+  Schema.Struct({
+    status: Schema.String,
+    conclusion: optionalText,
+    head_branch: optionalText,
+    head_sha: Schema.String,
+  }),
+);
+const WorkflowRunsJson = Schema.fromJsonString(
+  Schema.Struct({ workflow_runs: Schema.Array(Schema.Struct({ html_url: Schema.String })) }),
+);
+
+/** The newest Actions run a push of `tag` started in `ref`'s repository. */
+function tagPipeline<R>(
+  ref: MrRef,
+  tag: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<TagPipelineRead, never, R> {
+  return Effect.gen(function* () {
+    if (ref.project === null) return { ok: false, reason: "no repository to read runs of" };
+    const listed = yield* run(
+      "gh",
+      [
+        "api",
+        `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&event=push&per_page=1`,
+      ],
+      cwd,
+    );
+    const runs = Schema.decodeUnknownOption(WorkflowRunsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(runs))
+      return { ok: false, reason: `gh could not list ${tag}'s Actions runs in ${ref.project}` };
+    return { ok: true, url: runs.value.workflow_runs[0]?.html_url ?? null };
+  });
+}
+
 /** An Actions run and its jobs; one waiting on an environment's reviewers waits by hand. */
 function pipeline<R>(
   url: string,
@@ -1158,7 +1195,7 @@ function pipeline<R>(
       return { ok: false, reason: `gh is not logged in to ${HOST}` };
     const route = `repos/${m[1]}/actions/runs/${m[2]}`;
     const said = yield* run("gh", ["api", route], cwd);
-    const status = Schema.decodeUnknownOption(RunJson)(said.stdout);
+    const status = Schema.decodeUnknownOption(RunIdentityJson)(said.stdout);
     if (said.code !== 0 || Option.isNone(status))
       return { ok: false, reason: `gh could not read ${url}` };
     const listed = yield* run(
@@ -1172,6 +1209,9 @@ function pipeline<R>(
     return {
       ok: true,
       succeeded: status.value.conclusion === "success",
+      project: `${HOST}/${m[1]}`,
+      ref: status.value.head_branch ?? "",
+      sha: status.value.head_sha,
       jobs: pages.value
         .flatMap((page) => page.jobs)
         .map((one) => ({
@@ -1310,6 +1350,7 @@ export const github: Forge = {
   deployed,
   runStatus,
   pipeline,
+  tagPipeline,
   readReview,
   reply,
   merge,

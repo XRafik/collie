@@ -785,9 +785,12 @@ discarded.
 
 `host.readTag({ runId, cwd, tag, merged, pipeline, proves, stage, production })` reads a
 tag back from origin and the forge rather than from an Output, against what it must prove.
-Either way the tag is on origin and carries `merged`. `proves: "finished"` is a package's:
-where `pipeline` names one, the forge says it finished and succeeded. A job waiting for
-somebody to start it by hand has not finished, and `Unproved`'s `why` names it.
+Either way the tag is on origin and carries `merged`, and a pipeline counts only where the
+forge shows it ran for that tag, at the commit it tags, in the merge request's project.
+`proves: "finished"` is a package's: its pipeline — `pipeline`, or where that is null the
+newest the forge shows the tag started — finished and succeeded by the forge's word, and a
+tag with none at all is proved. A job waiting for somebody to start it by hand has not
+finished, and `Unproved`'s `why` names it.
 `proves: "staged"` is an application's, read from the forge's deployments and the tag's
 pipeline, whose own state is not read: `InProduction` where production already carries
 `merged`; `StageFailed` with `why` where one of the `stage` jobs failed or stage's newest

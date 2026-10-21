@@ -80,12 +80,21 @@ export type PipelineRead =
       readonly ok: true;
       /** It finished, and the forge says it succeeded. */
       readonly succeeded: boolean;
+      /** The project it ran in, as `host/path`, the branch or tag it ran for, and its commit. */
+      readonly project: string;
+      readonly ref: string;
+      readonly sha: string;
       readonly jobs: ReadonlyArray<{
         readonly name: string;
         readonly state: PipelineJobState;
         readonly url: string | null;
       }>;
     }
+  | { readonly ok: false; readonly reason: string };
+
+/** The newest pipeline or Actions run a tag started, null where none, or why not. */
+export type TagPipelineRead =
+  | { readonly ok: true; readonly url: string | null }
   | { readonly ok: false; readonly reason: string };
 
 /** The commit a tier's newest successful deployment has, null where none, or why not. */
@@ -248,6 +257,13 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
   ) => Effect.Effect<PipelineRead, never, R>;
+  /** The newest pipeline or Actions run `tag` started in `ref`'s project. */
+  readonly tagPipeline: <R>(
+    ref: MrRef,
+    tag: string,
+    cwd: string,
+    run: Runner<R>,
+  ) => Effect.Effect<TagPipelineRead, never, R>;
   /** Clones `project` (`host/path`) into `into`, or says why it could not. */
   readonly clone: <R>(
     project: string,

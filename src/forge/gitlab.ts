@@ -25,6 +25,7 @@ import type {
   JobRead,
   JobState,
   PipelineRead,
+  TagPipelineRead,
   Readiness,
 } from "./forge";
 import { filedIssueOf, type Issue } from "./issues";
@@ -1023,6 +1024,42 @@ function pipelineStatus<R>(
   });
 }
 
+const PipelineIdentityJson = Schema.fromJsonString(
+  Schema.Struct({ status: Schema.String, ref: Schema.String, sha: Schema.String }),
+);
+
+/** The newest pipeline of `tag` in `ref`'s project. */
+function tagPipeline<R>(
+  ref: MrRef,
+  tag: string,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<TagPipelineRead, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(ref.project);
+    if (!host || !ref.project) return { ok: false, reason: `${ref.project} is not on GitLab` };
+    const path = ref.project.slice(host.length + 1);
+    const listed = yield* run(
+      "glab",
+      [
+        "api",
+        "--hostname",
+        host,
+        `projects/${encodeURIComponent(path)}/pipelines?ref=${encodeURIComponent(tag)}&order_by=id&sort=desc&per_page=1`,
+      ],
+      cwd,
+    );
+    const pipelines = Schema.decodeUnknownOption(PipelinesJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(pipelines))
+      return { ok: false, reason: `glab could not list ${tag}'s pipelines in ${ref.project}` };
+    const newest = pipelines.value[0];
+    return {
+      ok: true,
+      url: newest === undefined ? null : `https://${host}/${path}/-/pipelines/${newest.id}`,
+    };
+  });
+}
+
 /** `https://host/group/project/-/pipelines/7` and its jobs, a manual one as waiting by hand. */
 function pipeline<R>(
   url: string,
@@ -1039,7 +1076,7 @@ function pipeline<R>(
     const route = `projects/${encodeURIComponent(project!)}/pipelines/${id}`;
     const api = (path: string) => run("glab", ["api", "--hostname", host!, path], cwd);
     const said = yield* api(route);
-    const status = Schema.decodeUnknownOption(PipelineJson)(said.stdout);
+    const status = Schema.decodeUnknownOption(PipelineIdentityJson)(said.stdout);
     if (said.code !== 0 || Option.isNone(status))
       return { ok: false, reason: `glab could not read ${url}` };
     const jobs: Array<(typeof JobsJson.Type)[number]> = [];
@@ -1054,6 +1091,9 @@ function pipeline<R>(
     return {
       ok: true,
       succeeded: status.value.status === "success",
+      project: `${host}/${project}`,
+      ref: status.value.ref,
+      sha: status.value.sha,
       jobs: jobs.map((one) => ({
         name: one.name,
         state: one.status === "manual" ? "manual" : (JOB_STATES.get(one.status) ?? "pending"),
@@ -1164,6 +1204,7 @@ export const gitlab: Forge = {
         reason: answer.code === 0 ? "" : whatItSaid(answer) || "issue comment failed",
       }),
     ),
+  tagPipeline,
   clone,
   credentials: (project, into, run) => {
     const host = hostOf(project) ?? project.split("/")[0]!;

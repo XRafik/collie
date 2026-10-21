@@ -466,7 +466,9 @@ goes on without one), and Collie merges at exactly the head the go named — nev
 merge, never auto-merge. A head that moved before the merge gives the claim back and goes
 back to waiting. The agent then tags by the repository's own conventions, and Collie reads
 the tag back on origin, carrying the merged commit, with its pipeline finished and
-succeeded by the forge's word. A job waiting to be started by hand has not finished.
+succeeded by the forge's word: the pipeline the agent named, or the newest the forge shows
+the tag started, and only one the forge shows ran for that tag and its commit in this
+repository. A job waiting to be started by hand has not finished.
 A merge request set to merge itself once green is refused at the start: it is already on
 its way.
 
