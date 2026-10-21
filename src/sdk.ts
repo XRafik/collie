@@ -875,7 +875,8 @@ export interface HostApi {
   }) => Effect.Effect<TagRead>;
   /**
    * Reads again, before production jobs are played: `Carried` where production already
-   * carries `merged`; `Unproved` where the tag no longer carries it, one of `jobs` is gone
+   * carries `merged`; `Unproved` where the tag on origin is no longer `at` or no longer
+   * carries it, one of `jobs` is gone
    * from the pipeline or failed, or any other job failed or is still running or pending; else `Play` with those of `jobs` still waiting to be
    * started by hand, none where somebody started them. Take it inside an Activity.
    */
@@ -883,6 +884,8 @@ export interface HostApi {
     readonly runId: string;
     readonly cwd: string;
     readonly tag: string;
+    /** `Proved`'s `at`: the tag's object on origin when it was proved. */
+    readonly at: string;
     readonly merged: string;
     readonly pipeline: string;
     readonly jobs: ReadonlyArray<string>;

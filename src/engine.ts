@@ -456,7 +456,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export const JobLinkSchema: Schema.Codec<JobLink, unknown, never, never>;
   /** A tag proved, with the production jobs waiting on it; in production; failed on stage; or what it lacks. */
   export type TagRead =
-    | { readonly _tag: "Proved"; readonly production: ReadonlyArray<JobLink> }
+    | { readonly _tag: "Proved"; readonly production: ReadonlyArray<JobLink>; readonly at: string }
     | { readonly _tag: "InProduction" }
     | { readonly _tag: "StageFailed"; readonly why: string }
     | { readonly _tag: "Unproved"; readonly why: string };
@@ -744,6 +744,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly runId: string;
       readonly cwd: string;
       readonly tag: string;
+      readonly at: string;
       readonly merged: string;
       readonly pipeline: string;
       readonly jobs: ReadonlyArray<string>;

@@ -84,7 +84,11 @@ export type JobLink = typeof JobLinkSchema.Type;
  * stage after the merge; or what it lacks.
  */
 export const TagReadSchema = Schema.Union([
-  Schema.TaggedStruct("Proved", { production: Schema.Array(JobLinkSchema) }),
+  Schema.TaggedStruct("Proved", {
+    production: Schema.Array(JobLinkSchema),
+    /** The tag's object on origin, which a later read must find unchanged. */
+    at: Schema.String,
+  }),
   Schema.TaggedStruct("InProduction", {}),
   Schema.TaggedStruct("StageFailed", { why: Schema.String }),
   Schema.TaggedStruct("Unproved", { why: Schema.String }),
@@ -150,7 +154,7 @@ const carries = <R>(
     return (yield* git(["merge-base", "--is-ancestor", ancestor, sha])).code === 0;
   });
 
-/** `tag` on origin carrying `merged`, with the commit it tags; or why not. */
+/** `tag` on origin carrying `merged`, with its object there and the commit it tags; or why not. */
 const tagOn = <R>(
   git: (args: string[]) => Effect.Effect<Ran, never, R>,
   tag: string,
@@ -161,13 +165,14 @@ const tagOn = <R>(
     const ref = `refs/tags/${tag}`;
     const listed = yield* git(["ls-remote", "--tags", "origin", ref]);
     if (listed.code !== 0) return lacks(`origin could not be read: ${whatItSaid(listed)}`);
-    if (listed.stdout.trim() === "") return lacks(`${tag} is not on origin`);
+    const at = listed.stdout.trim().split(/\s+/)[0] ?? "";
+    if (at === "") return lacks(`${tag} is not on origin`);
     yield* git(["fetch", "--quiet", "--force", "origin", `${ref}:${ref}`]);
     yield* git(["fetch", "--quiet", "origin"]);
     if ((yield* git(["merge-base", "--is-ancestor", merged, ref])).code !== 0)
       return lacks(`${tag} on origin does not carry the merged commit ${short(merged)}`);
     const commit = (yield* git(["rev-parse", `${ref}^{commit}`])).stdout.trim();
-    return { ok: true, commit } as const;
+    return { ok: true, at, commit } as const;
   });
 
 /** The pipeline at `url`, where the forge shows it ran for `tag` at `commit` in `ref`'s project. */
@@ -246,7 +251,8 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
       const found = yield* forgeOf(ref).tagPipeline(ref, opts.tag, opts.cwd, opts.run);
       if (!found.ok)
         return unproved(`${opts.tag}'s pipelines could not be listed: ${found.reason}`);
-      if (found.url === null) return { _tag: "Proved", production: [] } satisfies TagRead;
+      if (found.url === null)
+        return { _tag: "Proved", production: [], at: tagged.at } satisfies TagRead;
       pipeline = found.url;
     }
     const tags = yield* pipelineAt(pipeline);
@@ -261,7 +267,7 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
       );
     if (!read.succeeded)
       return unproved(`${opts.tag}'s pipeline at ${pipeline} has not finished and succeeded`);
-    return { _tag: "Proved", production: [] } satisfies TagRead;
+    return { _tag: "Proved", production: [], at: tagged.at } satisfies TagRead;
   }
 
   if (yield* inProduction({ ...opts, ref })) return { _tag: "InProduction" } satisfies TagRead;
@@ -311,19 +317,21 @@ export const readTag = Effect.fn("Releasing.readTag")(function* <R>(opts: {
       );
     production.push({ name, url: job.url ?? pipeline });
   }
-  return { _tag: "Proved", production } satisfies TagRead;
+  return { _tag: "Proved", production, at: tagged.at } satisfies TagRead;
 });
 
 /**
  * Reads, before production jobs are played, what is left to play: nothing where production
  * already carries `merged`, the `jobs` still waiting to be started by hand, and none at all
- * where the tag no longer carries `merged`, a job is gone or failed, or any other job failed or
+ * where the tag on origin is no longer `at` or no longer carries `merged`, a job is gone or failed, or any other job failed or
  * is still running or pending.
  */
 export const readProduction = Effect.fn("Releasing.readProduction")(function* <R>(opts: {
   readonly cwd: string;
   readonly ref: MrRef;
   readonly tag: string;
+  /** The tag's object on origin when it was proved. */
+  readonly at: string;
   readonly merged: string;
   readonly pipeline: string;
   readonly jobs: ReadonlyArray<string>;
@@ -333,6 +341,10 @@ export const readProduction = Effect.fn("Releasing.readProduction")(function* <R
   if (yield* inProduction(opts)) return { _tag: "Carried" } satisfies ProductionRead;
   const tagged = yield* tagOn(gitOf(opts), opts.tag, opts.merged);
   if (!tagged.ok) return unproved(tagged.why);
+  if (tagged.at !== opts.at)
+    return unproved(
+      `${opts.tag} on origin moved since it was proved, from ${short(opts.at)} to ${short(tagged.at)}`,
+    );
   const tags = yield* tagsPipeline({ ...opts, url: opts.pipeline, commit: tagged.commit });
   if (!tags.ok) return unproved(tags.why);
   const read = tags.read;

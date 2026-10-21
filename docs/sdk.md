@@ -796,11 +796,13 @@ pipeline, whose own state is not read: `InProduction` where production already c
 `merged`; `StageFailed` with `why` where one of the `stage` jobs failed or stage's newest
 successful deployment does not carry `merged`; `Unproved` where any other job failed or is
 still running or waiting to run, a named job is missing or unfinished, or no `production` job waits to be started by
-hand; else `Proved`, with each `production` job and its address (`JobLink`).
+hand; else `Proved`, with each `production` job and its address (`JobLink`), and `at`, the
+tag's object on origin.
 
-`host.readProduction({ runId, cwd, tag, merged, pipeline, jobs })` reads again before
-production jobs are played: `Carried` where production already carries `merged`,
-`Unproved` with `why` where the tag no longer carries it, one of `jobs` is gone or failed,
+`host.readProduction({ runId, cwd, tag, at, merged, pipeline, jobs })` reads again before
+production jobs are played, where `at` is `Proved`'s: `Carried` where production already
+carries `merged`, `Unproved` with `why` where the tag on origin is no longer `at` or no
+longer carries it, one of `jobs` is gone or failed,
 or any other job failed or is still running or waiting to run, else `Play` with those still waiting to be started by hand — none where somebody
 already started them. `host.readRollback({ runId, cwd, merged })` answers `Shown` where
 stage's newest successful deployment no longer carries `merged` and carries what

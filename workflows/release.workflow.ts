@@ -924,6 +924,7 @@ export default defineWorkflow({
               runId,
               cwd,
               tag: staged.tag,
+              at: read.at,
               merged: landed.sha,
               pipeline: pipeline ?? "",
               jobs: jobs.map((job) => job.name),

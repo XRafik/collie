@@ -172,6 +172,7 @@ test("a job still running or pending keeps an application's tag from production,
     Effect.gen(function* () {
       const { cwd, first, tag } = yield* repository;
       const at = yield* tag("v1.2.0");
+      const object = yield* git(cwd, "rev-parse", "refs/tags/v1.2.0");
       for (const state of ["running", "pending"] as const) {
         const run = onGitlab({
           "7": tagRun(at, {
@@ -197,6 +198,7 @@ test("a job still running or pending keeps an application's tag from production,
           cwd,
           ref: REF,
           tag: "v1.2.0",
+          at: object,
           merged: first,
           pipeline: PIPELINE,
           jobs: ["deploy-production"],
@@ -204,5 +206,41 @@ test("a job still running or pending keeps an application's tag from production,
         });
         expect(played._tag).toBe("Unproved");
       }
+    }).pipe(Effect.scoped),
+  ));
+
+test("a tag moved after its proof plays nothing in production, even onto a descendant with its own pipeline", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const { cwd, first, commit, tag } = yield* repository;
+      const at = yield* tag("v1.2.0");
+      const jobs = [{ name: "deploy-production", state: "manual" as const }];
+      const proved = yield* readTag({
+        cwd,
+        tag: "v1.2.0",
+        merged: first,
+        pipeline: PIPELINE,
+        proves: "staged",
+        ref: REF,
+        stage: [],
+        production: ["deploy-production"],
+        run: onGitlab({ "7": tagRun(at, { jobs }) }),
+      });
+      if (proved._tag !== "Proved") throw new Error(`not proved: ${JSON.stringify(proved)}`);
+      const read = (sha: string) =>
+        readProduction({
+          cwd,
+          ref: REF,
+          tag: "v1.2.0",
+          at: proved.at,
+          merged: first,
+          pipeline: PIPELINE,
+          jobs: ["deploy-production"],
+          run: onGitlab({ "7": tagRun(sha, { jobs }) }),
+        });
+      expect((yield* read(at))._tag).toBe("Play");
+      const later = yield* commit("two.ts");
+      yield* tag("v1.2.0", true);
+      expect((yield* read(later))._tag).toBe("Unproved");
     }).pipe(Effect.scoped),
   ));
