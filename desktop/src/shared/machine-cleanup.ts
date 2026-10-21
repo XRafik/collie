@@ -19,7 +19,6 @@ export type MachineCleanup = typeof MachineCleanup.Type;
 
 export const CLEANUP_UPGRADE_SAID = "Can't list what it would clean up; upgrade this Machine.";
 
-/** What the dialog draws of a Machines page row. */
 export type CleanupShown = Pick<MachineRow, "profile" | "name" | "state" | "reason">;
 
 export interface CleanupGroup {
@@ -33,7 +32,6 @@ export interface CleanupGroup {
   }>;
 }
 
-/** A chosen Machine's sweep: running, or how it ended. */
 export type CleanupSweep =
   | { readonly state: "running"; readonly request: string }
   | { readonly state: "done"; readonly report: CleanupReport }
@@ -175,7 +173,6 @@ export const cleanupView = (
   };
 };
 
-/** What a toast says of a sweep that ended. */
 export const sweptToast = (
   name: string,
   sweep: Exclude<CleanupSweep, { state: "running" }>,
@@ -184,6 +181,5 @@ export const sweptToast = (
     ? { title: `Cleaned up ${name}: freed ${humanBytes(sweep.report.bytes)}`, color: "success" }
     : { title: `${name} not cleaned: ${sweep.reason}`, color: "error" };
 
-/** What All and None choose. */
 export const choose = (view: CleanupView, which: "all" | "none"): ReadonlySet<string> =>
   new Set(which === "all" ? view.choosable : []);
