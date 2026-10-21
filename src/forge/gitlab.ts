@@ -362,18 +362,25 @@ function deployed<R>(
       ok: false,
       reason: `glab could not read ${ref.project}'s deployments`,
     } as const;
-    const environments = yield* api("environments");
-    const listed = Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout);
-    if (environments.code !== 0 || Option.isNone(listed)) return unread;
-    const names = new Set(listed.value.filter((env) => env.tier === tier).map((env) => env.name));
+    const names = new Set<string>();
+    for (let page = 1; ; page++) {
+      const environments = yield* api(`environments?per_page=100&page=${page}`);
+      const listed = Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout);
+      if (environments.code !== 0 || Option.isNone(listed)) return unread;
+      for (const env of listed.value) if (env.tier === tier) names.add(env.name);
+      if (listed.value.length < 100) break;
+    }
     if (names.size === 0) return { ok: true, sha: null };
-    const deployments = yield* api(
-      "deployments?status=success&order_by=created_at&sort=desc&per_page=50",
-    );
-    const newest = Schema.decodeUnknownOption(DeploymentsJson)(deployments.stdout);
-    if (deployments.code !== 0 || Option.isNone(newest)) return unread;
-    const found = newest.value.find((one) => names.has(one.environment.name));
-    return { ok: true, sha: found?.sha ?? null };
+    for (let page = 1; ; page++) {
+      const deployments = yield* api(
+        `deployments?status=success&order_by=created_at&sort=desc&per_page=100&page=${page}`,
+      );
+      const newest = Schema.decodeUnknownOption(DeploymentsJson)(deployments.stdout);
+      if (deployments.code !== 0 || Option.isNone(newest)) return unread;
+      const found = newest.value.find((one) => names.has(one.environment.name));
+      if (found !== undefined) return { ok: true, sha: found.sha };
+      if (newest.value.length < 100) return { ok: true, sha: null };
+    }
   });
 }
 

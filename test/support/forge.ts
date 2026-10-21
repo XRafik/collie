@@ -481,6 +481,13 @@ const GITHUB_RUN = {
   cancelled: { status: "completed", conclusion: "cancelled" },
 } as const;
 
+/** The page a GitLab list route asks for, 20 to a page where it does not say. */
+function pageOf<T>(route: string, all: ReadonlyArray<T>): Array<T> {
+  const page = Number(/[?&]page=(\d+)/.exec(route)?.[1] ?? "1");
+  const size = Number(/[?&]per_page=(\d+)/.exec(route)?.[1] ?? "20");
+  return all.slice((page - 1) * size, page * size);
+}
+
 /** The id a merge request's head pipeline has; its base's is one more, its target's two. */
 const pipelineIdOf = (mr: FakeMr) => Number(mr.iid) * 100;
 
@@ -611,14 +618,22 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
           );
     if (model.deploysDown === true) return no();
     const environments = model.environments ?? [];
-    if (route.endsWith("/environments"))
-      return json(environments.map(({ name, tier }) => ({ name, tier })));
+    if (/\/environments(\?|$)/.test(route))
+      return json(
+        pageOf(
+          route,
+          environments.map(({ name, tier }) => ({ name, tier })),
+        ),
+      );
     if (route.includes("/deployments?"))
       return json(
-        environments.flatMap((env) =>
-          env.deployed === undefined
-            ? []
-            : [{ sha: env.deployed, environment: { name: env.name } }],
+        pageOf(
+          route,
+          environments.flatMap((env) =>
+            env.deployed === undefined
+              ? []
+              : [{ sha: env.deployed, environment: { name: env.name } }],
+          ),
         ),
       );
     const onMr = /^projects\/([^/]+)\/merge_requests\/(\d+)(?:\/(.+))?$/.exec(route);
@@ -1004,16 +1019,18 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   const runJobs = /^repos\/(.+)\/actions\/runs\/(\d+)\/jobs/.exec(route);
   if (runJobs) {
     const said = model.runs?.[runJobs[2]!];
-    return said === undefined
-      ? no()
-      : json({
-          jobs: (said.jobs ?? []).map((job, at) => ({
-            id: at + 1,
-            name: job.name,
-            ...GITHUB_RUN[job.state],
-            html_url: `https://github.com/${runJobs[1]}/actions/runs/${runJobs[2]}/job/${at + 1}`,
-          })),
-        });
+    if (said === undefined) return no();
+    const jobs = (said.jobs ?? []).map((job, at) => ({
+      id: at + 1,
+      name: job.name,
+      ...GITHUB_RUN[job.state],
+      html_url: `https://github.com/${runJobs[1]}/actions/runs/${runJobs[2]}/job/${at + 1}`,
+    }));
+    if (!args.includes("--paginate")) return json({ jobs: jobs.slice(0, 100) });
+    const pages = [];
+    for (let at = 0; at === 0 || at < jobs.length; at += 100)
+      pages.push({ jobs: jobs.slice(at, at + 100) });
+    return json(args.includes("--slurp") ? pages : pages[0]!);
   }
   const runs = /\/actions\/runs\/(\d+)$/.exec(route);
   if (runs) {

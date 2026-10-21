@@ -1128,16 +1128,18 @@ function runStatus<R>(
 }
 
 const RunJobsJson = Schema.fromJsonString(
-  Schema.Struct({
-    jobs: Schema.Array(
-      Schema.Struct({
-        name: Schema.String,
-        status: Schema.String,
-        conclusion: optionalText,
-        html_url: optionalText,
-      }),
-    ),
-  }),
+  Schema.Array(
+    Schema.Struct({
+      jobs: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          status: Schema.String,
+          conclusion: optionalText,
+          html_url: optionalText,
+        }),
+      ),
+    }),
+  ),
 );
 
 /** An Actions run and its jobs; one waiting on an environment's reviewers waits by hand. */
@@ -1159,25 +1161,31 @@ function pipeline<R>(
     const status = Schema.decodeUnknownOption(RunJson)(said.stdout);
     if (said.code !== 0 || Option.isNone(status))
       return { ok: false, reason: `gh could not read ${url}` };
-    const listed = yield* run("gh", ["api", `${route}/jobs?per_page=100`], cwd);
-    const jobs = Schema.decodeUnknownOption(RunJobsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(jobs))
+    const listed = yield* run(
+      "gh",
+      ["api", `${route}/jobs?per_page=100`, "--paginate", "--slurp"],
+      cwd,
+    );
+    const pages = Schema.decodeUnknownOption(RunJobsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(pages))
       return { ok: false, reason: `gh could not list the jobs of ${url}` };
     return {
       ok: true,
       succeeded: status.value.conclusion === "success",
-      jobs: jobs.value.jobs.map((one) => ({
-        name: one.name,
-        state:
-          one.status === "waiting"
-            ? "manual"
-            : one.status === "completed"
-              ? (CONCLUSIONS.get(one.conclusion ?? "") ?? "failed")
-              : one.status === "in_progress"
-                ? "running"
-                : "pending",
-        url: one.html_url ?? null,
-      })),
+      jobs: pages.value
+        .flatMap((page) => page.jobs)
+        .map((one) => ({
+          name: one.name,
+          state:
+            one.status === "waiting"
+              ? "manual"
+              : one.status === "completed"
+                ? (CONCLUSIONS.get(one.conclusion ?? "") ?? "failed")
+                : one.status === "in_progress"
+                  ? "running"
+                  : "pending",
+          url: one.html_url ?? null,
+        })),
     };
   });
 }

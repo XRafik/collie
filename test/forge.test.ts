@@ -627,6 +627,48 @@ test("GitHub finds production beyond a full page of newer deployments", () =>
     }),
   ));
 
+test("GitLab finds a tier's deployment beyond a page of environments and of deployments", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "gitlab",
+        model("gitlab", {
+          environments: [
+            ...Array.from({ length: 120 }, (_, at) => ({
+              name: `preview-${at}`,
+              tier: "development",
+              deployed: "preview",
+            })),
+            { name: "stage", tier: "staging", deployed: "child" },
+          ],
+        }),
+      );
+      expect(yield* FORGES.gitlab.deployed(ref("gitlab"), "staging", "/w", fake.run)).toEqual({
+        ok: true,
+        sha: "child",
+      });
+    }),
+  ));
+
+test("GitHub reads every page of an Actions run's jobs", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const jobs = [
+        ...Array.from({ length: 120 }, (_, at) => ({
+          name: `test-${at}`,
+          state: "passed" as const,
+        })),
+        { name: "lint", state: "failed" as const },
+      ];
+      const fake = fakeForge(
+        "github",
+        model("github", { runs: { "7": { status: "completed", conclusion: "failure", jobs } } }),
+      );
+      const read = yield* FORGES.github.pipeline(URLS.github.run, "/w", fake.run);
+      expect(read.ok && read.jobs.map((job) => job.state)).toEqual(jobs.map((job) => job.state));
+    }),
+  ));
+
 test("a status context's state counts as a check run's conclusion does", () => {
   expect(rollupChecks([{ context: "ci/build", state: "PENDING" }])).toEqual({ state: "running" });
   expect(rollupChecks([{ context: "ci/build", state: "SUCCESS" }])).toEqual({ state: "passed" });
