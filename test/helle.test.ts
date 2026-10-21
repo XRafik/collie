@@ -789,3 +789,33 @@ test("adopting a claim stops the Run that held it and its children, waits them o
       expect(yield* held("r-old")).toBe(true);
     }).pipe(Effect.scoped),
   ));
+
+test("two Runs taking over different claims of one Run both remove theirs from its record", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-handover-" });
+      yield* fs.makeDirectory(`${dir}/runs/r-old`, { recursive: true });
+      yield* fs.writeFileString(
+        `${dir}/runs/r-old/helle.json`,
+        `[{"slug":"happytiger","claim":"mine"},{"slug":"spilnu","claim":"mine"}]`,
+      );
+      const takeOver = (slug: string, to: string) =>
+        handOverClaim({
+          dir,
+          slug,
+          to,
+          runs: ["r-old"],
+          stop: (runId) => Effect.succeed({ runs: [runId], left: [] }),
+          // Both have read the record before either is done waiting.
+          stopped: () => Effect.sleep(20).pipe(Effect.as(true)),
+          halt: () => Effect.succeed({ stopped: [], left: [] }),
+          patience: { everyMs: 5, forMs: 5_000 },
+        });
+
+      yield* Effect.all([takeOver("happytiger", "r-a"), takeOver("spilnu", "r-b")], {
+        concurrency: "unbounded",
+      });
+      expect(yield* fs.exists(`${dir}/runs/r-old/helle.json`)).toBe(false);
+    }).pipe(Effect.scoped),
+  ));

@@ -2559,6 +2559,19 @@ const writeClaims = (file: string, claims: ReadonlyArray<HelleClaim>) =>
     ),
   );
 
+// Several Runs change one Run's record at once: one adopting a claim, the Run recording or
+// releasing its own.
+const changingClaims = Semaphore.makeUnsafe(1);
+
+/** Changes a Run's claims as they are now, one change at a time. */
+const updateClaims = (
+  file: string,
+  change: (claims: ReadonlyArray<HelleClaim>) => ReadonlyArray<HelleClaim>,
+) =>
+  changingClaims.withPermits(1)(
+    recordedClaims(file).pipe(Effect.flatMap((claims) => writeClaims(file, change(claims)))),
+  );
+
 const DeclaredSchema = Schema.fromJsonString(
   Schema.Struct({ projects: Schema.Array(Schema.String) }),
 );
@@ -2655,10 +2668,9 @@ export const handOverClaim = Effect.fn("Engine.handOverClaim")(function* (option
     const late: string[] = [];
     for (const one of tree.runs) late.push(...(yield* options.halt(one)).left);
     if (late.length > 0) return yield* refused(late);
-    yield* writeClaims(
-      file,
-      record.filter((one) => one.slug !== options.slug),
-    ).pipe(Effect.orDie);
+    yield* updateClaims(file, (now) => now.filter((one) => one.slug !== options.slug)).pipe(
+      Effect.orDie,
+    );
     yield* appendLog(
       runDir(options.dir, runId),
       `claim on ${options.slug} taken over by ${options.to}; its agents were closed`,
@@ -3518,12 +3530,11 @@ export const hostLayer = (options: {
                       yield* asked.say(`took the claim on ${claim.slug} over from ${runId}`);
                     }
                   }
-                  const before = yield* recordedClaims(file);
                   yield* fs
                     .makeDirectory(runDir(dir, asked.runId), { recursive: true })
                     .pipe(
                       Effect.andThen(
-                        writeClaims(file, [
+                        updateClaims(file, (before) => [
                           ...before.filter((one) => one.slug !== claim.slug),
                           claim,
                         ]),
@@ -3558,15 +3569,15 @@ export const hostLayer = (options: {
               url: helleUrlOf(env.raw),
             });
             // One Helle refuses to give back stays recorded, for a later release to retry.
-            const kept: HelleClaim[] = [];
+            const given = new Set<string>();
             for (const one of held) {
-              const given = yield* releaseClaim(creds, one.slug).pipe(
+              const released = yield* releaseClaim(creds, one.slug).pipe(
                 Effect.provide(FetchHttpClient.layer),
                 Effect.result,
               );
-              if (given._tag === "Failure") kept.push(one);
+              if (released._tag === "Success") given.add(one.slug);
             }
-            yield* writeClaims(file, kept);
+            yield* updateClaims(file, (now) => now.filter((one) => !given.has(one.slug)));
           }).pipe(Effect.provideContext(services), Effect.ignore),
         integrate: (runId, cwd) =>
           under(
