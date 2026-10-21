@@ -6,8 +6,11 @@ import {
   listSessions,
   query,
 } from "@anthropic-ai/claude-agent-sdk";
+import { homedir } from "node:os";
 import type { ClaudeCode } from "./claude-driver";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { childEnv } from "./login-env";
+import { userMcpServers } from "./session";
 import { toolServer } from "./tool-server";
 
 export const claudeCode: ClaudeCode<McpServer> = {
@@ -16,4 +19,8 @@ export const claudeCode: ClaudeCode<McpServer> = {
   getSessionMessages,
   listSessions,
   server: toolServer,
+  userServers: () =>
+    Bun.file(`${childEnv().CLAUDE_CONFIG_DIR ?? homedir()}/.claude.json`)
+      .text()
+      .then(userMcpServers),
 };

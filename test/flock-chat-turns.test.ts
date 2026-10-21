@@ -82,6 +82,8 @@ interface Seen {
     readonly resume?: string;
     readonly sessionId?: string;
   }>;
+  /** Each session's MCP servers, by name. */
+  readonly servers: string[][];
 }
 
 const SAID = { type: "stream_event", parent_tool_use_id: null };
@@ -98,6 +100,7 @@ const scripted = (
 ): ClaudeCode<string> => ({
   query: ({ prompt, options }) => {
     const id = "resume" in options ? options.resume : options.sessionId;
+    seen.servers.push(Object.keys(options.mcpServers));
     seen.sessions.push({
       model: options.model,
       ...("resume" in options ? { resume: options.resume } : { sessionId: options.sessionId }),
@@ -165,6 +168,8 @@ const scripted = (
     seen.flock = flock;
     return "collie";
   },
+  userServers: () =>
+    Promise.resolve({ "linear-server": { type: "http", url: "https://mcp.linear.app/mcp" } }),
 });
 
 const answered = (text: string) => [
@@ -249,6 +254,7 @@ const withChat = <A, E>(
         refusals: [],
         interrupts: [],
         sessions: [],
+        servers: [],
         transcripts: new Map(opts.transcripts),
       };
       const read: string[] = [];
@@ -715,6 +721,7 @@ test("a conversation file from before harnesses is claude's, resumed as before, 
         expect(seen.sessions).toEqual([
           { model: "opus", resume: "5c1e6c8e-0000-4000-8000-000000000000" },
         ]);
+        expect(seen.servers).toEqual([["linear-server", "collie"]]);
         expect((yield* conversation.transcript).map(({ parts }) => parts)).toEqual([
           [{ type: "text", content: "before the change" }],
           [{ type: "text", content: "hello" }],

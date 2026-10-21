@@ -330,6 +330,25 @@ nothing else changes.
   Settings checks them, as `collie_machine_rule` does the rule. Its own change applies
   after the turn it was made in.
 
+## Amended 2026-10-21: the Flock chat reaches the human's own MCP servers
+
+A human at Desktop could ask their own Claude Code to list the Frontend team's Linear issues
+or read a Slack channel, and the Flock chat could not: it ran with `strictMcpConfig` and
+only Collie's server, and refused every tool not its own. That is the ceremony invariant 1
+forbids, since the human had to go and ask elsewhere.
+
+On Claude, the chat now loads the MCP servers the human configured: the user-scope servers
+in Claude Code's `.claude.json` (under `CLAUDE_CONFIG_DIR` where that is set), which Desktop
+reads at each session start and passes beside Collie's own, and the claude.ai connectors,
+which Claude Code fetches itself once `strictMcpConfig` is off. Their credentials are the
+ones Claude Code already holds; Desktop adds none. Still no setting source is read: a
+session with one loads the user's hooks and permissions too, and with none it loads no
+user-scope server, which is why Desktop passes those. A server named `collie` is
+Collie's. A tool from a configured server is allowed without asking, as the built-ins
+are, and what it returns is data, as any tool's answer is. Project- and local-scope servers
+are left out: Desktop's working directory is its own state directory, which no project
+configures. Pi and Codex are unchanged.
+
 ## What has actually been proven
 
 Flock chat, Pi **1.1.0**, `openai-codex/gpt-6.1-sol`, 2026-10-09: a live probe drove

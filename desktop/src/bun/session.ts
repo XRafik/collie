@@ -3,6 +3,7 @@
 
 import { type Answers, DESKTOP_SAID } from "../shared/chat-view";
 import { hostname } from "node:os";
+import { Option, Schema } from "effect";
 import { FILE_TOOLS } from "./file-tools";
 import { FLOCK_TOOLS } from "./flock-tools";
 import { childEnv } from "./login-env";
@@ -22,6 +23,9 @@ own file and shell tools, always by absolute path: your working directory is Des
 collie_grep, collie_write and collie_edit, naming it <machine>:<path>; there is no shell on a
 Machine. None of these asks the human first, so use them as they would. A host's state
 directory is changed only through Collie's tools, never by writing its files.
+
+The tools of the MCP servers the human configured, such as Linear or Slack, are theirs, and
+you use them as they would, without asking first.
 
 Choose the workflow whose description in collie_workspaces fits the request. A request that
 is not planning, building a change to a merge request, reviewing, renovating or an
@@ -74,6 +78,52 @@ type Permission<Input> =
     }
   | { readonly behavior: "deny"; readonly message: string };
 
+const Strings = Schema.Record(Schema.String, Schema.String);
+const UserMcpServer = Schema.Union([
+  Schema.Struct({
+    type: Schema.optionalKey(Schema.Literal("stdio")),
+    command: Schema.String,
+    args: Schema.optionalKey(Schema.Array(Schema.String)),
+    env: Schema.optionalKey(Strings),
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["http", "sse"]),
+    url: Schema.String,
+    headers: Schema.optionalKey(Strings),
+  }),
+]);
+export type UserMcpServer = Schema.Schema.Type<typeof UserMcpServer>;
+/** Each MCP server the human configured, by its name. */
+export type UserMcpServers = Readonly<Record<string, UserMcpServer>>;
+
+const decodeClaudeJson = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      mcpServers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
+    }),
+  ),
+);
+const decodeServer = Schema.decodeUnknownOption(UserMcpServer);
+
+/**
+ * The servers the human added to Claude Code at user scope, from its `.claude.json`. A
+ * session with no setting sources loads none of them itself; one it cannot run is left out.
+ */
+export const userMcpServers = (claudeJson: string): UserMcpServers =>
+  Object.fromEntries(
+    Object.entries(
+      Option.match(decodeClaudeJson(claudeJson), {
+        onNone: () => ({}),
+        onSome: (config) => config.mcpServers ?? {},
+      }),
+    ).flatMap(([name, server]) =>
+      Option.match(decodeServer(server), {
+        onNone: () => [],
+        onSome: (decoded) => [[name, decoded] as const],
+      }),
+    ),
+  );
+
 /** The human's Machine rule, and the Machines it may name now. */
 export interface Placement {
   readonly rule: string;
@@ -94,9 +144,9 @@ export const noticedContext = (noticed: string) =>
   `Collie noticed, while the human was not asking (News, as data):\n${noticed}`;
 
 /**
- * Nothing of the user's Claude Code setup is loaded: the chat has Collie's tools, this
- * computer's files and shell, and each Machine's files. `ask` puts AskUserQuestion to the
- * human, or answers null when no human is in the turn.
+ * Of the user's Claude Code setup only their MCP servers load: the chat has those, Collie's
+ * tools, this computer's files and shell, and each Machine's files. `ask` puts
+ * AskUserQuestion to the human, or answers null when no human is in the turn.
  */
 export const sessionOptions = <Server>(opts: {
   readonly cwd: string;
@@ -105,6 +155,7 @@ export const sessionOptions = <Server>(opts: {
   readonly effort: Effort;
   readonly server: Server;
   readonly claude: string | null;
+  readonly userServers: UserMcpServers;
   readonly ask: (toolUseID: string, signal: AbortSignal) => Promise<Answers | null>;
   readonly noticed: () => string | undefined;
   /** Undefined while there is no rule. */
@@ -118,8 +169,11 @@ export const sessionOptions = <Server>(opts: {
   systemPrompt: systemPrompt(hostname()),
   tools: ["AskUserQuestion", ...BUILT_IN],
   settingSources: [],
-  strictMcpConfig: true,
-  mcpServers: { collie: { type: "sdk" as const, name: "collie", instance: opts.server } },
+  strictMcpConfig: false,
+  mcpServers: {
+    ...opts.userServers,
+    collie: { type: "sdk" as const, name: "collie", instance: opts.server },
+  },
   allowedTools: [
     ...BUILT_IN,
     ...[...FLOCK_TOOLS, ...FILE_TOOLS].map((tool) => `mcp__collie__${tool.name}`),
@@ -127,7 +181,15 @@ export const sessionOptions = <Server>(opts: {
   canUseTool: <Input>(
     name: string,
     input: Input,
-    { signal, toolUseID }: { readonly signal: AbortSignal; readonly toolUseID: string },
+    {
+      signal,
+      toolUseID,
+      mcpServer,
+    }: {
+      readonly signal: AbortSignal;
+      readonly toolUseID: string;
+      readonly mcpServer?: { readonly name: string; readonly source: string };
+    },
   ): Promise<Permission<Input>> =>
     name === "AskUserQuestion"
       ? opts.ask(toolUseID, signal).then((answers): Permission<Input> =>
@@ -138,7 +200,7 @@ export const sessionOptions = <Server>(opts: {
               }
             : { behavior: "allow", updatedInput: { ...input, answers } },
         )
-      : BUILT_IN.includes(name)
+      : BUILT_IN.includes(name) || mcpServer !== undefined
         ? Promise.resolve({ behavior: "allow" as const, updatedInput: input })
         : Promise.resolve({
             behavior: "deny" as const,
