@@ -11,7 +11,8 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import { HELLE_URL } from "./helle-url";
-import { reason } from "./naming";
+
+const reason = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
 
 export class HelleError extends Data.TaggedError("HelleError")<{
   readonly message: string;
