@@ -226,7 +226,7 @@ test("a tag moved after its proof plays nothing in production, even onto a desce
         production: ["deploy-production"],
         run: onGitlab({ "7": tagRun(at, { jobs }) }),
       });
-      if (proved._tag !== "Proved") throw new Error(`not proved: ${JSON.stringify(proved)}`);
+      if (proved._tag !== "Proved") throw new Error(`not proved: ${proved._tag}`);
       const read = (sha: string) =>
         readProduction({
           cwd,
