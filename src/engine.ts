@@ -3101,10 +3101,7 @@ export const hostLayer = (options: {
             : new WorkflowError({ reason: `issue privacy check failed: ${String(cause)}` }),
         ),
       );
-      /**
-       * A wait's record: what ends by itself is awaited, without a notification, until it is
-       * overdue and parks; what a person has to repair parks; null clears both.
-       */
+      /** Awaits, parking once overdue; parks a repair; null clears both. */
       const waitOn = (
         runId: string,
         wait:
@@ -3521,7 +3518,8 @@ export const hostLayer = (options: {
                   on: `its turn for the Helle claim on ${slug}, at ${position} in its queue`,
                   who: "whoever holds it",
                 }),
-            }).pipe(Effect.ensuring(waitOn(asked.runId, null)));
+              dequeued: () => waitOn(asked.runId, null),
+            });
           }).pipe(
             Effect.provide(FetchHttpClient.layer),
             Effect.provideContext(services),
@@ -3693,15 +3691,20 @@ export const hostLayer = (options: {
             const short = asked.sha.slice(0, 8);
             const plays = asked.jobs.map((job) => `\`${job.name}\` at ${job.url ?? asked.url}`);
             const held = asked.slug === undefined ? null : `The claim on \`${asked.slug}\` is held`;
-            yield* plays.length > 0 && asked.played !== true
-              ? host.parked(
+            const awaited =
+              plays.length > 0 && asked.played !== true
+                ? null
+                : waitOn(asked.runId, {
+                    on: `production to carry \`${short}\` of ${asked.url}${plays.length === 0 ? "" : `, from ${plays.join(", ")}`}${asked.slug === undefined ? "" : `, holding the claim on \`${asked.slug}\``}`,
+                    who: null,
+                  });
+            yield* (
+              awaited ??
+                host.parked(
                   asked.runId,
                   `Waiting for production: play ${plays.join(", ")}. ${held ?? "The Run waits"} until the forge shows production carries \`${short}\`.`,
                 )
-              : waitOn(asked.runId, {
-                  on: `production to carry \`${short}\` of ${asked.url}${plays.length === 0 ? "" : `, from ${plays.join(", ")}`}${asked.slug === undefined ? "" : `, holding the claim on \`${asked.slug}\``}`,
-                  who: null,
-                });
+            );
             const { gitlabHost } = yield* loadDefaults(options.userDir ?? dir).pipe(
               Effect.orElseSucceed(() => ({ gitlabHost: undefined })),
             );
@@ -3711,8 +3714,10 @@ export const hostLayer = (options: {
               return false;
             });
             const carried = Effect.gen(function* () {
-              while (!(yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost)))
+              while (!(yield* productionCarries(asked.cwd, asked.sha, runShell, gitlabHost))) {
+                if (awaited !== null) yield* awaited;
                 yield* Effect.sleep(options.productionPoll ?? "5 minutes");
+              }
               return true;
             });
             const carries = yield* Effect.raceFirst(controlled, carried);

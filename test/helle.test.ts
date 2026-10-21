@@ -219,6 +219,7 @@ function gate(opts: {
   lines: string[];
   recorded: (HelleClaim | null)[];
   queued?: number[];
+  dequeued?: string[];
 }) {
   return waitForHelle({
     home: "/nowhere",
@@ -234,6 +235,7 @@ function gate(opts: {
     out: (line) => Effect.sync(() => void opts.lines.push(line)),
     ask: () => Effect.succeed(opts.answer ?? null),
     queued: (_slug, position) => Effect.sync(() => void opts.queued?.push(position)),
+    dequeued: (slug) => Effect.sync(() => void opts.dequeued?.push(slug)),
     pollMs: 1,
   });
 }
@@ -294,8 +296,9 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         const lines: string[] = [];
         const recorded: (HelleClaim | null)[] = [];
         const queued: number[] = [];
+        const dequeued: string[] = [];
         const fiber = yield* Effect.forkScoped(
-          gate({ file: yield* envFile(), lines, recorded, queued }),
+          gate({ file: yield* envFile(), lines, recorded, queued, dequeued }),
         );
 
         // The queue moves up once the gate has said where it stands, and then the project
@@ -305,6 +308,10 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
             Effect.repeat({ until: (seen) => seen, schedule: Schedule.spaced("5 millis") }),
           );
         yield* saidSoFar("position 2");
+        // Told again on every read, so a wait that has stopped moving is still seen to age.
+        yield* Effect.sync(() => queued.length).pipe(
+          Effect.repeat({ until: (told) => told >= 3, schedule: Schedule.spaced("5 millis") }),
+        );
         fake.projects[0]!.queue = [{ user_id: ME }];
         yield* saidSoFar("position 1");
         fake.projects[0]!.holder = { user_id: ME, display_name: "mk" };
@@ -316,7 +323,35 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         expect(said).toContain("position 2");
         expect(said).toContain("position 1");
         expect(said).toContain("holds spilnu");
-        expect(queued).toEqual([2, 1]);
+        expect([...new Set(queued)]).toEqual([2, 1]);
+        expect(dequeued).toEqual(["spilnu"]);
+      }),
+    ),
+  ));
+
+test("a gate interrupted in the queue is not told its wait ended", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        fake.projects = [
+          {
+            slug: "spilnu",
+            group: "spilnu/frontend",
+            holder: { user_id: OTHER, display_name: "someone" },
+            queue: [{ user_id: OTHER }, { user_id: ME }],
+          },
+        ];
+        fake.claims = [{ position: 2, already_queued: false }];
+        const queued: number[] = [];
+        const dequeued: string[] = [];
+        const fiber = yield* Effect.forkScoped(
+          gate({ file: yield* envFile(), lines: [], recorded: [], queued, dequeued }),
+        );
+        yield* Effect.sync(() => queued.length).pipe(
+          Effect.repeat({ until: (told) => told >= 1, schedule: Schedule.spaced("5 millis") }),
+        );
+        yield* Fiber.interrupt(fiber);
+        expect(dequeued).toEqual([]);
       }),
     ),
   ));

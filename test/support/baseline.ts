@@ -13,6 +13,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import {
+  DateTime,
   Duration,
   Effect,
   Fiber,
@@ -7528,6 +7529,59 @@ scenario(
         yield* bin.restore();
         expect(status).toBe("suspended");
         expect(claimed).toEqual([`claim ${runId}`]);
+        expect(yield* parkedWhy(runId)).toBe("");
+        expect(yield* awaitingOn(runId)).toBe("");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a wait for production that outlasts its patience parks as Needs you, while production is still read",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const { bin, head, deployed } = yield* deploying("gitlab", [
+          { name: "production", tier: "production", deployed: OLDER },
+        ]);
+        claimed.length = 0;
+        const runId = "r-prod-overdue";
+        yield* rig.queueOutputs([TRACKED, PACKAGE, MERGED, RELEASED, RECORDED]);
+        const status = yield* running(
+          { entry: shipped("renovate"), runId, input: {}, host: holdingClaim },
+          (status) =>
+            Effect.gen(function* () {
+              const on = yield* until(
+                () => awaitingOn(runId),
+                (got) => got !== "",
+              );
+              const fs = yield* FileSystem.FileSystem;
+              const threeHoursAgo = DateTime.subtract(yield* DateTime.now, { hours: 3 });
+              yield* fs
+                .writeFileString(
+                  controlPath(dir, AWAITING, runId),
+                  Schema.encodeSync(AwaitingJson)({
+                    on,
+                    who: null,
+                    since: DateTime.formatIso(threeHoursAgo),
+                  }),
+                )
+                .pipe(Effect.orDie);
+              expect(
+                yield* until(
+                  () => parkedWhy(runId),
+                  (why) => why !== "",
+                ),
+              ).toContain("for over 2 hours");
+              yield* deployed(head);
+              return yield* until(
+                () => status,
+                (got) => got === "complete",
+              );
+            }),
+        );
+        yield* bin.restore();
+        expect(status).toBe("complete");
         expect(yield* parkedWhy(runId)).toBe("");
         expect(yield* awaitingOn(runId)).toBe("");
       }),

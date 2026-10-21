@@ -6,7 +6,7 @@
 // model tokens. So this is four endpoints over `/api/v1`, with the bearer credentials
 // read from the same environment file the MCP wrapper sources.
 
-import { Data, Effect, FileSystem, Schema } from "effect";
+import { Data, Effect, Exit, FileSystem, Schema } from "effect";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -180,8 +180,10 @@ export interface HelleGate<E, R> {
   record: (claim: HelleClaim) => Effect.Effect<void, E, R>;
   out: (line: string) => Effect.Effect<void, E, R>;
   ask: (question: string) => Effect.Effect<string | null, E, R>;
-  /** Told this Run's place in the queue each time it changes, while it is not the holder. */
+  /** Told this Run's place in the queue on every read of it, while it is not the holder. */
   queued?: (slug: string, position: number) => Effect.Effect<void, E, R>;
+  /** Told once the queue is behind it, or the wait fails; never when it is interrupted. */
+  dequeued?: (slug: string) => Effect.Effect<void, E, R>;
   pollMs?: number;
 }
 
@@ -232,20 +234,30 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
 
   let said: number | null = null;
   let position = claimed.position;
-  while (true) {
-    if (position !== said) {
-      yield* gate.out(
-        position === 0
-          ? `✓ this Run holds ${slug}`
-          : `⏳ waiting for ${slug} — position ${position}`,
-      );
-      if (position !== 0 && gate.queued !== undefined) yield* gate.queued(slug, position);
-      said = position;
+  let waited = false;
+  return yield* Effect.gen(function* () {
+    while (true) {
+      if (position !== said) {
+        yield* gate.out(
+          position === 0
+            ? `✓ this Run holds ${slug}`
+            : `⏳ waiting for ${slug} — position ${position}`,
+        );
+        said = position;
+      }
+      if (position === 0) return { slug };
+      waited = true;
+      if (gate.queued !== undefined) yield* gate.queued(slug, position);
+      yield* Effect.sleep(gate.pollMs ?? POLL_MS);
+      // A queue this Run is no longer in is not a turn it has taken: it keeps the last
+      // position it knew rather than reporting a place it does not have.
+      position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
     }
-    if (position === 0) return { slug };
-    yield* Effect.sleep(gate.pollMs ?? POLL_MS);
-    // A queue this Run is no longer in is not a turn it has taken: it keeps the last
-    // position it knew rather than reporting a place it does not have.
-    position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
-  }
+  }).pipe(
+    Effect.onExit((exit) =>
+      !waited || gate.dequeued === undefined || Exit.hasInterrupts(exit)
+        ? Effect.void
+        : gate.dequeued(slug),
+    ),
+  );
 });
