@@ -253,7 +253,6 @@ const JudgedJson = Schema.fromJsonString(
   Schema.Struct({
     semantic: Schema.Boolean,
     truncated: Schema.Boolean,
-    goal: Schema.Boolean,
     at: Schema.optionalKey(Schema.String),
   }),
 );
@@ -334,21 +333,17 @@ const checkRuleDrift = Effect.fn("Oversight.checkRuleDrift")(function* (
 });
 
 /**
- * The half only a model can make: one Judgement, of the semantic constraints at every
- * boundary and of the goal as well at the finish. A judgement that could not be made is
- * recorded as skipped, which keeps the Run `unverified` rather than reading as checked.
+ * The half only a model can make: one Judgement of the semantic constraints, at a
+ * boundary or the finish. A judgement that could not be made is recorded as skipped,
+ * which keeps the Run `unverified` rather than reading as checked.
  */
 const judgeDrift = Effect.fn("Oversight.judgeDrift")(function* (
   at: Watched,
   intent: Intent,
   where: string,
-  final: boolean,
   deps: JudgementDeps | null,
 ) {
-  // A goal is judged once, at the finish: nothing mid-Run is corrected from it, so judging
-  // it at every boundary would pay for the same question over and over.
-  const semantic = intent.constraints.some((constraint) => constraint.kind === "semantic");
-  if (!final && !semantic) return;
+  if (!intent.constraints.some((constraint) => constraint.kind === "semantic")) return;
   if (deps === null) {
     yield* recordSkipped(at.runDir, at.runId, "there is no Herd to charge a judgement to").pipe(
       Effect.ignore,
@@ -565,7 +560,7 @@ export const checkDrift = Effect.fn("Oversight.checkDrift")(function* (
   const deferred = judging === "boundary" && (yield* merging(at.cwd));
   if (deferred)
     yield* said(at, `drift not judged at ${where}: an integration's conflicts are open`);
-  else if (judging !== "none") yield* judgeDrift(at, intent, where, judging === "finish", deps);
+  else if (judging !== "none") yield* judgeDrift(at, intent, where, deps);
   const rules = intent.constraints.some((constraint) => constraint.kind === "rule");
   if (rules) yield* checkRuleDrift(at, intent, where);
   // With no rule to check there may still be something to correct, from the judgement.

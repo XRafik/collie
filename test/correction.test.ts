@@ -155,7 +155,7 @@ test("aligned: true is the strong claim, and every way of not knowing is unverif
       { id: "c1", kind: "semantic", text: "keep it readable", severity: "warn", source: "human" },
     ],
   });
-  const judged = { semantic: true, truncated: false, goal: true };
+  const judged = { semantic: true, truncated: false };
 
   expect(alignment(intent, [], judged).aligned).toBe("true");
 
@@ -168,10 +168,6 @@ test("aligned: true is the strong claim, and every way of not knowing is unverif
   expect(alignment(intent, [], { ...judged, truncated: true })).toMatchObject({
     aligned: "unverified",
     why: expect.stringContaining("truncated"),
-  });
-  expect(alignment(intent, [], { ...judged, goal: false })).toMatchObject({
-    aligned: "unverified",
-    why: expect.stringContaining("goal"),
   });
 
   const skipped: DriftLine[] = [
@@ -200,9 +196,9 @@ test("a Run with no goal and no semantic constraints can still be aligned", () =
       { id: "c1", kind: "rule", text: "rule:branch_is:main", severity: "block", source: "human" },
     ],
   });
-  expect(
-    alignment(rulesOnly, [], { semantic: false, truncated: false, goal: false }),
-  ).toMatchObject({ aligned: "true" });
+  expect(alignment(rulesOnly, [], { semantic: false, truncated: false })).toMatchObject({
+    aligned: "true",
+  });
 });
 
 test("a Driver says it is standing once per pending, not once per boundary", () => {

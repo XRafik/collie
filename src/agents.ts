@@ -1339,50 +1339,8 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
   const promptFile = (ask: AgentAsk) => `${dirFor(ask.runId)}/${stemOf(ask)}.prompt.md`;
   const log = (runId: string, line: string) => append(`${dirFor(runId)}/agents.log`, line);
 
-  /**
-   * Where each named skill is installed. Resolved from the directories the operator's own
-   * skills live in, so a mention is the path a harness can actually read and one nobody
-   * installed is left out for `skillMention` to say so.
-   */
-  const skills = Effect.fn("Agents.skills")(function* (names: ReadonlyArray<string>) {
-    const found = new Map<string, string>();
-    if (names.length === 0) return found;
-    const dirs = yield* skillDirs(host.env);
-    for (const name of names) {
-      if (unsafePathComponent(name) !== null) continue;
-      const file = yield* skillFile(dirs, name).pipe(Effect.orElseSucceed(() => null));
-      if (file !== null) found.set(name, file);
-    }
-    return found;
-  });
-
-  /**
-   * What this role is, as the persona Markdown for it says — the project's, then this
-   * machine's, then the installation's. A role nobody wrote a persona for is still a role:
-   * it is stated in one line rather than left blank.
-   */
-  const personaOf = Effect.fn("Agents.personaOf")(function* (role: string) {
-    if (unsafePathComponent(role) !== null) return roleBody(role);
-    const fs = yield* FileSystem.FileSystem;
-    const where = yield* layers(host.env);
-    for (const layer of [...where.all].reverse()) {
-      const file = `${layer.dir}/personas/${role}.md`;
-      if (!(yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))) continue;
-      const markdown = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
-      const body = bodySections(markdown.replace(PERSONA_FRONT_MATTER, "")).preamble;
-      if (body.trim() === "") continue;
-      const unfilled = personaHoles(body);
-      if (unfilled.length > 0) {
-        return yield* new AgentParked({
-          operation: role,
-          reason: `the ${role} persona in ${file} names ${unfilled.join(", ")}, and a persona is told nothing but {{skill:name}}: fix it, then resume this Run`,
-        });
-      }
-      const named = yield* skills(skillsIn(body));
-      return renderTemplate(body, {}, { skill: skillMention(named) }).text;
-    }
-    return roleBody(role);
-  });
+  const skills = (names: ReadonlyArray<string>) => installedSkills(host.env, names);
+  const personaOf = (role: string) => personaText(host.env, role);
 
   const deps: dispatch.DispatcherDeps = {
     stateDir: host.env.stateDir,
@@ -2898,6 +2856,79 @@ const asUncertain = (operation: string, cause: unknown): AgentUncertain =>
 
 /** A persona's own front matter, which its definition reads and its agent is not told. */
 const PERSONA_FRONT_MATTER = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
+
+/**
+ * Where each named skill is installed. Resolved from the directories the operator's own
+ * skills live in, so a mention is the path a harness can actually read and one nobody
+ * installed is left out for `skillMention` to say so.
+ */
+export const installedSkills = Effect.fn("Agents.skills")(function* (
+  env: { readonly home: string; readonly cwd: string },
+  names: ReadonlyArray<string>,
+) {
+  const found = new Map<string, string>();
+  if (names.length === 0) return found;
+  const dirs = yield* skillDirs(env);
+  for (const name of names) {
+    if (unsafePathComponent(name) !== null) continue;
+    const file = yield* skillFile(dirs, name).pipe(Effect.orElseSucceed(() => null));
+    if (file !== null) found.set(name, file);
+  }
+  return found;
+});
+
+interface PersonaEnv {
+  readonly pluginRoot: string;
+  readonly userDir: string;
+  readonly home: string;
+  readonly cwd: string;
+}
+
+const EVERY_AGENT = "every-agent";
+
+/**
+ * What this role is, as the persona Markdown for it says — the project's, then this
+ * machine's, then the installation's — followed by the `every-agent` text. A role nobody
+ * wrote a persona for is still a role: it is stated in one line rather than left blank.
+ */
+export const personaText = Effect.fn("Agents.personaOf")(function* (env: PersonaEnv, role: string) {
+  const dirs = (yield* layers(env)).all.map((layer) => layer.dir).reverse();
+  const own = unsafePathComponent(role) === null ? yield* layeredPersona(env, role, dirs) : null;
+  const every = yield* layeredPersona(env, EVERY_AGENT, dirs);
+  return [own ?? roleBody(role), every].filter((part) => part !== null).join("\n\n");
+});
+
+/** The `every-agent` text for the Home chat, which belongs to no project. */
+export const everyAgentText = Effect.fn("Agents.everyAgentText")(function* (env: PersonaEnv) {
+  const where = yield* layers(env);
+  return yield* layeredPersona(env, EVERY_AGENT, [where.user.dir, where.baseline.dir]);
+});
+
+/** The named persona's text from the first of `dirs` that has one, or null. */
+const layeredPersona = Effect.fn("Agents.layeredPersona")(function* (
+  env: PersonaEnv,
+  role: string,
+  dirs: ReadonlyArray<string>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  for (const dir of dirs) {
+    const file = `${dir}/personas/${role}.md`;
+    if (!(yield* fs.exists(file).pipe(Effect.orElseSucceed(() => false)))) continue;
+    const markdown = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => ""));
+    const body = bodySections(markdown.replace(PERSONA_FRONT_MATTER, "")).preamble;
+    if (body.trim() === "") continue;
+    const unfilled = personaHoles(body);
+    if (unfilled.length > 0) {
+      return yield* new AgentParked({
+        operation: role,
+        reason: `the ${role} persona in ${file} names ${unfilled.join(", ")}, and a persona is told nothing but {{skill:name}}: fix it, then resume this Run`,
+      });
+    }
+    const named = yield* installedSkills(env, skillsIn(body));
+    return renderTemplate(body, {}, { skill: skillMention(named) }).text;
+  }
+  return null;
+});
 
 /** What the role is stated as, in the persona and in the prompt alike. */
 const roleBody = (role: string) => `You are the ${role}.`;

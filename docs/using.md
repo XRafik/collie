@@ -2568,6 +2568,12 @@ a stack it brings up to test — containers, compose projects, workloads in a lo
 done unless you asked to keep it, and say what it left running. Collie cannot see a stack
 in a cluster, so it neither records nor tears one down.
 
+Every agent Collie launches is given the `every-agent` persona after its own, and the Home
+chat is given it after its own prompt. It says that work which cannot be wrong, a
+**Tautology**, proves nothing: a builder makes none, and a reviewer or judge raises each one
+it finds. It also holds the code comment rules. Fork it like any persona to change what
+every agent is told; [authoring](authoring.md#every-agent) says how.
+
 ### What a Claude agent's auto mode is told
 
 Claude Code's auto mode judges each action an agent takes. So that it knows which session

@@ -15,6 +15,7 @@
 // else's conversation.
 
 import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
+import { everyAgentText } from "./agents";
 import { autoCompactWindowAsWritten, readConfig } from "./config";
 import { redact } from "./redact";
 import { NATIVE, newsPath } from "./news";
@@ -534,13 +535,15 @@ export interface PiTool {
 }
 
 /**
- * The three files one launch is wired with, written fresh each time into this Herd's own
+ * The files one launch is wired with, written fresh each time into this Herd's own
  * chat directory. Nothing is written to `~/.claude` or `~/.pi`: a conversation Collie
  * opened must not change the harness the human uses for everything else.
  */
 export const writeLaunchFiles = Effect.fn("Chat.writeLaunchFiles")(function* (opts: {
   readonly dir: string;
   readonly pluginRoot: string;
+  readonly userDir: string;
+  readonly home: string;
   /** How this binary re-invokes itself, which is what both adapters shell back into. */
   readonly self: ReadonlyArray<string>;
   readonly serverEnv: Readonly<Record<string, string>>;
@@ -555,6 +558,15 @@ export const writeLaunchFiles = Effect.fn("Chat.writeLaunchFiles")(function* (op
   const mcpConfig = path.join(opts.dir, "mcp.json");
   const extension = path.join(opts.dir, "collie.ts");
   const settings = path.join(opts.dir, "settings.json");
+  const systemPrompt = path.join(opts.dir, "system-prompt.md");
+  const chat = yield* fs
+    .readFileString(path.join(opts.pluginRoot, "prompts", "collie-chat.md"))
+    .pipe(Effect.orElseSucceed(() => ""));
+  const every = yield* everyAgentText({ ...opts, cwd: opts.dir });
+  yield* fs.writeFileString(
+    systemPrompt,
+    `${[chat.trim(), every].filter((part) => part !== null && part !== "").join("\n\n")}\n`,
+  );
   yield* fs.writeFileString(mcpConfig, opts.mcpConfig);
   yield* fs.writeFileString(settings, claudeSettings(opts.self, opts.serverEnv));
   yield* fs.writeFileString(
@@ -568,7 +580,7 @@ export const writeLaunchFiles = Effect.fn("Chat.writeLaunchFiles")(function* (op
     ),
   );
   return {
-    systemPrompt: path.join(opts.pluginRoot, "prompts", "collie-chat.md"),
+    systemPrompt,
     mcpConfig,
     extension,
     settings,
@@ -685,6 +697,8 @@ export const ensureChatFor = Effect.fn("Chat.ensureFor")(function* (
       const files = yield* writeLaunchFiles({
         dir: yield* chatDir(env.stateDir, key),
         pluginRoot: env.pluginRoot,
+        userDir: env.userDir,
+        home: env.home,
         self,
         serverEnv,
         tools: TOOLS.map((tool) => ({

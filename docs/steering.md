@@ -428,11 +428,16 @@ A finished run's status is history, so `finish` settles rather than acts:
 - One of the run's checks that a `command_exit` rule names and nobody ran is
   run by Collie first — bounded at ten minutes, so a command that hangs cannot hold the
   ending for ever.
+- The run's semantic constraints are judged one last time. A run with none makes no
+  judgement call: only a semantic constraint can be reported against, and the goal is never
+  judged on its own.
 - The run gets an **alignment** verdict. `true` is the strong claim and needs everything
   actually checked: every rule passing, every semantic constraint judged against evidence
-  that was not truncated, no open report, and the goal judged where there is one. `false`
-  is the other strong claim: something blocking is open. Everything else is `unverified`,
-  which is not a hedge — it is the accurate answer when nobody looked, or looked at part.
+  that was not truncated, and no open report. A run whose Intent has no constraint, with a
+  goal or without one, had nothing judged, so it is `unverified` with the why `nothing was
+  judged`. `false` is the other strong claim: something blocking is open. Everything else
+  is `unverified`, which is not a hedge — it is the accurate answer when nobody looked, or
+  looked at part.
 - With a blocking constraint still open, Collie records a **pending proposal** for a
   follow-up child run. It does not start one, and it does not re-prompt anybody.
 

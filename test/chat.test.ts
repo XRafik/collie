@@ -273,6 +273,8 @@ test("both adapters are told about the same Collie, in one place", () =>
       const files = yield* writeLaunchFiles({
         dir,
         pluginRoot: "/plugin",
+        userDir: dir,
+        home: dir,
         self: ["/bin/collie"],
         serverEnv,
         news: "/state/herd/abc/news.jsonl",
@@ -316,6 +318,43 @@ test("both adapters are told about the same Collie, in one place", () =>
       }
     }),
   ));
+
+test.each([
+  { user: true, rule: "The user's rule." },
+  { user: false, rule: "The installation's rule." },
+])(
+  "the chat's system prompt is collie-chat.md then the every-agent text (user Layer: $user)",
+  ({ user, rule }) =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "hw-chat-prompt-" });
+        const write = (file: string, text: string) =>
+          Effect.gen(function* () {
+            yield* fs.makeDirectory(file.slice(0, file.lastIndexOf("/")), { recursive: true });
+            yield* fs.writeFileString(file, text);
+          });
+        yield* write(`${root}/plugin/prompts/collie-chat.md`, "You are Collie's chat.\n");
+        yield* write(`${root}/plugin/personas/every-agent.md`, "The installation's rule.\n");
+        if (user) yield* write(`${root}/user/personas/every-agent.md`, "The user's rule.\n");
+        const files = yield* writeLaunchFiles({
+          dir: `${root}/chat`,
+          pluginRoot: `${root}/plugin`,
+          userDir: `${root}/user`,
+          home: `${root}/home`,
+          self: ["/bin/collie"],
+          serverEnv: {},
+          news: `${root}/news.jsonl`,
+          tools: [],
+          mcpConfig: "{}",
+        });
+
+        expect(yield* fs.readFileString(files.systemPrompt)).toBe(
+          `You are Collie's chat.\n\n${rule}\n`,
+        );
+      }).pipe(Effect.scoped),
+    ),
+);
 
 test("the shipped prompt has chat choose by description, with ad-hoc work as general", () =>
   runEffect(

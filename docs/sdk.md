@@ -1233,8 +1233,8 @@ is no flag to ask for it.
 work will be held to — `renderApproved` writes it out — and
 `renderEvidence(host.evidence(...))` is what was actually collected and by whom, for a
 merge request to say what it proved. `renderRecordedChecks` writes the same journal for a
-reviewer — the latest of each check, by whom, whether on the tree in front of it, when, and
-the baseline — so a review reads what was run rather than running it again. The list can grow while the Run works, since an
+reviewer — the latest of each check, by whom, whether on the tree in front of it, when,
+whether the same command was seen failing on an earlier tree, and the baseline — so a review reads what was run rather than running it again. The list can grow while the Run works, since an
 agent may name a check, so read it again where you need it — at each gate pass, inside the
 Activity that runs it, so a replay sees what that pass saw — rather than once at the start.
 An empty list stops nothing: where your Run's kind of result needs checks,

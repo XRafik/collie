@@ -1,0 +1,114 @@
+[
+  {
+    "id": "test-restates",
+    "kind": "a test that restates the implementation",
+    "tautology": true,
+    "file": "repo/test/duration.test.ts",
+    "lines": [12, 14]
+  },
+  {
+    "id": "test-asserts-mock",
+    "kind": "a test that asserts a mock returns what it was told",
+    "tautology": true,
+    "file": "repo/test/timeout.test.ts",
+    "lines": [4, 8]
+  },
+  {
+    "id": "test-cannot-fail",
+    "kind": "a test that cannot fail",
+    "tautology": true,
+    "file": "repo/test/duration.test.ts",
+    "lines": [33, 36]
+  },
+  {
+    "id": "check-text-search",
+    "kind": "a recorded check that is a text search for code the change wrote",
+    "tautology": true,
+    "file": "plan/issues/01-hours.md",
+    "lines": [10, 10]
+  },
+  {
+    "id": "comment-restates",
+    "kind": "a comment that says what its line says",
+    "tautology": true,
+    "file": "repo/src/duration.ts",
+    "lines": [17, 17]
+  },
+  {
+    "id": "doc-restates",
+    "kind": "a doc that restates the code",
+    "tautology": true,
+    "file": "repo/README.md",
+    "lines": [5, 8]
+  },
+  {
+    "id": "criterion-base-meets",
+    "kind": "a ticket criterion the base already meets",
+    "tautology": true,
+    "file": "plan/issues/01-hours.md",
+    "lines": [15, 15]
+  },
+  {
+    "id": "handoff-repeats-diff",
+    "kind": "a hand-off that only repeats the diff",
+    "tautology": true,
+    "file": "run/handoffs/build.md",
+    "lines": [1, 8]
+  },
+  {
+    "id": "test-compound",
+    "kind": "honest test",
+    "tautology": false,
+    "file": "repo/test/duration.test.ts",
+    "lines": [16, 18]
+  },
+  {
+    "id": "test-refuses",
+    "kind": "honest test",
+    "tautology": false,
+    "file": "repo/test/duration.test.ts",
+    "lines": [20, 24]
+  },
+  {
+    "id": "test-formats",
+    "kind": "honest test",
+    "tautology": false,
+    "file": "repo/test/duration.test.ts",
+    "lines": [26, 31]
+  },
+  {
+    "id": "test-deadline",
+    "kind": "honest test",
+    "tautology": false,
+    "file": "repo/test/timeout.test.ts",
+    "lines": [10, 12]
+  },
+  {
+    "id": "comment-why",
+    "kind": "honest comment",
+    "tautology": false,
+    "file": "repo/src/duration.ts",
+    "lines": [11, 11]
+  },
+  {
+    "id": "criterion-compound",
+    "kind": "honest criterion",
+    "tautology": false,
+    "file": "plan/issues/01-hours.md",
+    "lines": [14, 14]
+  },
+  {
+    "id": "criterion-format",
+    "kind": "honest criterion",
+    "tautology": false,
+    "file": "plan/issues/01-hours.md",
+    "lines": [16, 16]
+  },
+  {
+    "id": "criterion-deadline",
+    "kind": "honest criterion",
+    "tautology": false,
+    "file": "plan/issues/01-hours.md",
+    "lines": [17, 17]
+  }
+]

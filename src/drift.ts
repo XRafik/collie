@@ -421,14 +421,12 @@ export interface Judged {
   readonly semantic: boolean;
   /** The evidence it saw was cut to the cap, so it judged whatever fitted. */
   readonly truncated: boolean;
-  /** The goal was judged, where there is one. */
-  readonly goal: boolean;
   /** When a judgement last answered; it answers every skip before it. */
   readonly at?: string;
 }
 
 /** Nothing was judged. The honest default, and what every refusal answers with. */
-export const NOT_JUDGED: Judged = { semantic: false, truncated: false, goal: false };
+export const NOT_JUDGED: Judged = { semantic: false, truncated: false };
 
 /** How far a judgement got, and what it found. */
 export interface Judgement {
@@ -486,7 +484,6 @@ export function judgementPack(
     ...semantic.map(
       (constraint) => `- ${constraint.id} (${constraint.severity}): ${constraint.text}`,
     ),
-    semantic.length === 0 ? "- (none; judge the goal only)" : "",
     "",
     evidence.truncated
       ? "evidence (TRUNCATED to the cap; judge only what is here):"
@@ -618,9 +615,8 @@ export const judge = Effect.fn("Drift.judge")(function* (
   },
 ) {
   const semantic = intent.constraints.filter((constraint) => constraint.kind === "semantic");
-  // Nothing to judge is not a judgement that happened: with no semantic constraint and no
-  // goal, `alignment` never asks, and paying for a call to hear so would be the only cost.
-  if (semantic.length === 0 && intent.goal === null) return NOTHING;
+  // Only a semantic constraint can be reported against, so without one a call buys nothing.
+  if (semantic.length === 0) return NOTHING;
 
   const read = yield* evidenceFor(what.worktree, judgementPaths(intent), what.base).pipe(
     Effect.result,
@@ -669,7 +665,7 @@ export const judge = Effect.fn("Drift.judge")(function* (
     }`,
   );
   return {
-    judged: { semantic: true, truncated: evidence.truncated, goal: intent.goal !== null },
+    judged: { semantic: true, truncated: evidence.truncated },
     reports,
   };
 });
@@ -775,9 +771,10 @@ export function correctionsSent(
  *
  * `true` is the strong claim and is made only when everything was actually checked:
  * every rule passing, every semantic constraint judged against evidence that was not
- * truncated, no open report, and the goal judged where there is one. `false` is the other
- * strong claim — something is open and blocking. Everything else is `unverified`, which
- * is not a hedge: it is the accurate answer when nobody looked, or looked at only part.
+ * truncated, and no open report; with no constraint nothing was checked, so never `true`.
+ * `false` is the other strong claim — something is open and blocking. Everything else is
+ * `unverified`, which is not a hedge: it is the accurate answer when nobody looked, or
+ * looked at only part.
  */
 export interface Alignment {
   readonly aligned: "true" | "false" | "unverified";
@@ -803,6 +800,7 @@ export function alignment(
   judged: Judged,
 ): Alignment {
   if (intent === null) return { aligned: "unverified", why: "the Run has no Intent to compare to" };
+  if (intent.constraints.length === 0) return { aligned: "unverified", why: "nothing was judged" };
   const open = openReports(lines);
   if (open.some((report) => report.severity === "block"))
     return { aligned: "false", why: `${open.length} open report(s), at least one blocking` };
@@ -817,8 +815,6 @@ export function alignment(
     return { aligned: "unverified", why: "the semantic constraints were never judged" };
   if (judged.truncated)
     return { aligned: "unverified", why: "the evidence a judgement saw was truncated" };
-  if (intent.goal !== null && !judged.goal)
-    return { aligned: "unverified", why: "the goal was never judged" };
   if (open.length > 0) return { aligned: "unverified", why: `${open.length} open warning(s)` };
   return { aligned: "true", why: "every constraint was checked and none is open" };
 }

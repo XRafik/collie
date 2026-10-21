@@ -47,6 +47,10 @@ Every finding has one of three severities: `blocker` (wrong, unsafe, or breaks a
 contract), `major` (will bite us), `minor` (worth fixing, not worth blocking). Only `minor`
 lets a change ship without another fix, and a severity outside the three blocks.
 
+A Tautology is a finding. It is a `blocker` where it is the only proof of a criterion or a
+promised check, which is then unproved, and a `minor` otherwise, with comments grouped as
+your comment rules say.
+
 Where a finding is one instance of a class of bug, list every instance of it in the diff
 in that finding, or say there is no other.
 
@@ -82,6 +86,9 @@ ran itself, `by agent` one an agent ran through the collector:
 
 Read these rather than running them again. Run only targeted checks — the test file or
 command that confirms or refutes a finding — and never the whole suite.
+
+Each check says whether a failing run of the same command was recorded on an earlier tree.
+A new test that was never seen failing is a finding: nothing shows it can fail.
 
 Where you run something to check a finding, run it through the collector so the result
 is bound to the tree you checked it on: `collie verify -- <command>`; Collie records the result
@@ -145,6 +152,8 @@ The human is watching a rally, not a new list every time.
 - Every finding has one of the three severities. Anything else is treated as blocking.
 - Where they disagree, settle it against the diff. A finding only one of them raised
   survives only if you can defend it from the diff yourself.
+- A finding that only repeats the goal or the diff is dropped: it tells the human nothing
+  they cannot read for themselves.
 - Everything you do not carry goes in `dropped` with a one-line `reason`. Nothing is
   dropped silently.
 - Order the findings `blocker`, then `major`, then `minor`.

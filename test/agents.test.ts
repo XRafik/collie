@@ -1724,6 +1724,56 @@ test("the agent is started on the operator's harness, model and permissions, wit
     }),
   ));
 
+const writePersona = (layer: string, name: string, text: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* fs.makeDirectory(`${layer}/personas`, { recursive: true });
+    yield* fs.writeFileString(`${layer}/personas/${name}.md`, text);
+  });
+
+/** The persona file the review agent was started with. */
+const personaFileText = Effect.gen(function* () {
+  const args = launchArgs(yield* rig.calls());
+  return yield* read(args[args.indexOf("--append-system-prompt-file") + 1] ?? "");
+});
+
+test("a persona from the user Layer is followed by the every-agent text", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* writePersona(rig.userDir, "reviewer", "You review closely.\n");
+      yield* writePersona(rig.userDir, "every-agent", "Make no Tautology.\n");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      expect(yield* personaFileText).toBe("You review closely.\n\nMake no Tautology.\n");
+    }),
+  ));
+
+test("a role with no persona is its one line, then the every-agent text", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* writePersona(rig.userDir, "every-agent", "Make no Tautology.\n");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      expect(yield* personaFileText).toBe("You are the reviewer.\n\nMake no Tautology.\n");
+    }),
+  ));
+
+test.each(["user", "project"] as const)("a %s every-agent replaces the installation's", (layer) =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* writePersona(rig.baselineDir, "every-agent", "The installation's rule.\n");
+      const dir = layer === "user" ? rig.userDir : `${rig.projectDir}/.collie`;
+      yield* writePersona(dir, "every-agent", `The ${layer}'s rule.\n`);
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"));
+
+      expect(yield* personaFileText).toBe(`You are the reviewer.\n\nThe ${layer}'s rule.\n`);
+    }),
+  ),
+);
+
 test("an operator who opts into bypass has the agent started past its prompts", () =>
   runEffect(
     Effect.gen(function* () {
@@ -2000,6 +2050,20 @@ test("work whose Subscription is Exhausted starts on the first chain entry with 
       expect(launched.why).toMatch(/^session 100%, resets .+$/);
       expect(yield* read(`${dir}/agents/r1/agents.log`)).toContain(
         "review: fell back from claude/opus to codex/default: session 100%",
+      );
+    }),
+  ));
+
+test("on a harness with no persona flag, the first prompt opens with the persona and the every-agent text", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* writePersona(rig.userDir, "every-agent", "Make no Tautology.\n");
+      yield* rig.queueOutputs([{ verdict: "clean", note: "done" }]);
+      yield* session(started("r1"), { ...claudeOut, fallbacks: Effect.succeed(["codex"]) });
+
+      expect(harnessesStarted(yield* rig.calls())).toEqual(["codex"]);
+      expect(yield* read(promptPath("r1"))).toContain(
+        "\n\nYou are the reviewer.\n\nMake no Tautology.\n\n",
       );
     }),
   ));

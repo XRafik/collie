@@ -46,16 +46,6 @@ If a step tells you the plan has changed under you, reconcile rather than restar
 what the change does not affect, adjust what it does, and where it conflicts with work you
 have already committed, say so in your Output instead of quietly undoing either side.
 
-## Code comment hygiene
-
-- Write self-explanatory code. Improve names and structure before adding a comment.
-- Comment only when absolutely necessary: an essential fact cannot be expressed clearly
-  in the code itself, and omitting it would risk an incorrect change or misuse.
-- Use the fewest words possible, normally one short sentence beside the relevant code.
-  Every extra sentence must be necessary for correctness.
-- Before finishing, delete unnecessary comments you added or changed. Preserve required
-  API documentation, legal notices, and tooling directives; leave unrelated code alone.
-
 ## Verified, not claimed
 
 Run every test, lint and typecheck command through

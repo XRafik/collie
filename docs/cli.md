@@ -1188,11 +1188,19 @@ What kind of result a run has to prove, and so what evidence closes it:
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | _(empty)_       | nothing more. Unclassified work is not a feature by default.                                                                                                |
 | `feature`       | the tickets it built are named, every check a ticket's `**Checks:**` line promised has a passing verification, and the review says the agreed scope was met |
-| `bug`           | a `regression` recorded with `--expect fail` before the fix, and passing after                                                                              |
+| `bug`           | one `regression` command, the same executable and arguments, recorded with `--expect fail` on a tree before the fix and passing after it                    |
 | `refactor`      | the review says behaviour was preserved                                                                                                                     |
 | `investigation` | a conclusion, references inside the run, and whether there is a patch at all                                                                                |
 | `docs`          | the documented commands, run as written, each with a passing verification                                                                                   |
 | `migration`     | `migrate-up` and `migrate-down` (or `rollback`) both passing                                                                                                |
+
+A text search proves none of the rows above: a pass of `grep`, `egrep`, `fgrep`, `rg`, `ag`,
+`ack` or `git grep`, also as the first word of a `sh -c` or `bash -c` script, shows the text
+is there, not that anything works. A promised check, `regression`, documented command or
+migration step whose only pass on the tree is a text search is a gap that says so. The record
+stays in the journal, an agent may still run one for its own use, and the run's own checks,
+which are the project's configured commands, are left alone. A bug reproduced by one command
+and fixed by another is a gap naming both, so a fix knows which one to run again.
 
 The gate runs before the merge request, which is where the claim is made. Collie runs the
 run's own checks itself at the tree as it stands, reading them again at every pass, then
