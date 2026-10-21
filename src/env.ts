@@ -185,6 +185,8 @@ const environmentKeys = [
   "CLAUDE_CONFIG_DIR",
   // A fake Helle, for tests only.
   "COLLIE_HELLE_URL",
+  // A fake proc directory to read memory from, for tests only.
+  "COLLIE_PROC",
   "HERDR_BIN_PATH",
   "HERDR_SOCKET_PATH",
   // Which config.toml herdr itself is reading, which is the one that says where a

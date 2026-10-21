@@ -1287,6 +1287,7 @@ test("a checkout an agent in another herdr session works in is kept", () =>
               foregroundCwd: null,
               tokens: {},
               terminalId: null,
+              agentSession: null,
             },
           ]);
         }

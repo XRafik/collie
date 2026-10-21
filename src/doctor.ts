@@ -32,6 +32,7 @@ import { anyRuns, cleanupListing, machineList } from "./lifecycle";
 import { peersOf } from "./peers";
 import { HERDLESS, herdOfHost } from "./host";
 import { tmpdir } from "node:os";
+import { machineMemory, memorySaid, type Memory } from "./memory";
 import {
   FETCH_LIMIT,
   answered,
@@ -483,6 +484,7 @@ export const doctor = Effect.fn("Doctor.doctor")(function* (
     });
   }
   checks.push({ name: "disk", ...(yield* diskSpace(env, run)) });
+  checks.push({ name: "memory", ...(yield* memoryCheck(env, run)) });
   checks.push({ name: "checks", ...(yield* leftoverChecks(env)) });
 
   const herd = yield* herdOfHost(env.stateDir);
@@ -550,6 +552,42 @@ const diskSpace = Effect.fn("Doctor.diskSpace")(function* (
       ? `; \`collie cleanup\` would free ${humanBytes(listing.value.bytes)}`
       : "";
   return warned(`${low.map(said).join("; ")}${frees}`, "collie cleanup --apply");
+});
+
+/**
+ * This Machine's memory reading. Short is a warning with the agents `collie cleanup` would
+ * close, `closing` null where that could not be asked.
+ */
+export const memoryOutcome = (
+  memory: Memory,
+  short: boolean,
+  closing: ReadonlyArray<string> | null,
+): Outcome => {
+  if (!memory.known) return warned(`memory could not be read from ${memory.from}`, "");
+  if (!short) return passed(memorySaid(memory));
+  const closes =
+    closing === null
+      ? ""
+      : `; \`collie cleanup\` would close ${closing.length === 0 ? "no agent" : closing.join(", ")}`;
+  return warned(`short of memory: ${memorySaid(memory)}${closes}`, "collie cleanup --apply");
+};
+
+const memoryCheck = Effect.fn("Doctor.memoryCheck")(function* (
+  env: PluginEnv,
+  run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
+) {
+  const { memory, short } = yield* machineMemory(env, run);
+  if (!short) return memoryOutcome(memory, short, null);
+  const listing = (yield* anyRuns(env)) ? yield* cleanupListing(env, "cli") : null;
+  const closing =
+    listing === null
+      ? []
+      : listing.ok
+        ? listing.value.remove
+            .filter((item) => item.kind === "idle-agent")
+            .map((item) => item.target)
+        : null;
+  return memoryOutcome(memory, short, closing);
 });
 
 /** Check processes no host is collecting, as `collie cleanup` lists them. */

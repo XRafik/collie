@@ -22,7 +22,8 @@
 //
 // A leaf with no row is what this file exists to fail on.
 
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Schema } from "effect";
+import { hostname } from "node:os";
 import { afterAll, expect, test } from "bun:test";
 import { app } from "../src/collie";
 import { ActionSchema, type Action, type ActionKind } from "../src/actions";
@@ -35,6 +36,7 @@ import { herdLines } from "../src/toolkit";
 import { boardLines, buildBoard } from "../src/board";
 import { SECTIONS, sortBoard } from "../src/board-model";
 import { encodeVerifying } from "../src/verify";
+import { memoryWaitOf, waitForMemory } from "../src/memory-wait";
 import { madeRun } from "./support/records";
 import { task } from "./support/task";
 import { runEffect } from "./support/effect";
@@ -516,5 +518,43 @@ test("collie_run gives a running check's last forty lines under the card's sente
         "Its last lines:",
       ]);
       expect(lines.slice(2)).toEqual(Array.from({ length: 40 }, (_, at) => `  line ${at + 6}`));
+    }),
+  ));
+
+test("the card, collie_run and collie_herd say the same of a Run waiting for memory", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const stateDir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-parity-memory-" });
+      const run = yield* madeRun(stateDir, { id: "r-memory" });
+      const proc = `${stateDir}/proc`;
+      yield* fs.makeDirectory(proc);
+      yield* fs.writeFileString(
+        `${proc}/meminfo`,
+        `MemTotal: ${62 * 1048576} kB\nMemAvailable: ${2 * 1048576} kB\n`,
+      );
+      const env = readEnv({
+        HERDR_PLUGIN_STATE_DIR: stateDir,
+        COLLIE_CWD: "/project",
+        COLLIE_PROC: proc,
+      });
+      const waiting = yield* Effect.forkChild(
+        waitForMemory({ env, stateDir, runId: run.id, what: "r-memory-build's launch" }),
+      );
+      while ((yield* memoryWaitOf(run.dir)) === null) yield* Effect.sleep("10 millis");
+      const now = epochMs("2026-09-14T10:12:00Z");
+      const [card] = yield* buildBoard({
+        env,
+        runs: [run],
+        tasks: [],
+        registered: [],
+        proposals: [],
+        mrStates: new Map(),
+        now,
+      });
+      expect(card!.sentence).toBe(`Waiting for memory on ${hostname()}: 2.0 of 62.0 GB available.`);
+      expect(yield* checkLines(run, [run], now)).toEqual([card!.sentence]);
+      expect(herdLines([card!], now)).toContain(card!.sentence);
+      yield* Fiber.interrupt(waiting);
     }),
   ));

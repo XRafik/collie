@@ -114,6 +114,58 @@ test("a workspace holding a pane Collie did not open is kept, naming the pane", 
     }),
   ));
 
+const SESSION = { kind: "pi", value: "/home/mk/.pi/sessions/fix.jsonl" };
+
+/** A pane herdr restored in the Task's workspace, resuming `session`, and the launch that recorded SESSION. */
+const restoredFixer = (session: typeof SESSION) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    yield* rig.addRestored({ paneId: "wT-p9", workspaceId: "wT", terminalId: "t-new", session });
+    yield* fs.writeFileString(
+      `${rig.stateDir}/agents/r1/fix.launch.json`,
+      Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+        agent: "fixer",
+        output: "out.json",
+        reused: false,
+        runId: "r1",
+        operation: "fix",
+        role: "implementer",
+        workflow: "implement",
+        harness: "pi",
+        terminalId: "t-old",
+        agentSession: SESSION,
+      }),
+    );
+  });
+
+test("a pane herdr restored resuming its agent's recorded session is Collie's, and the workspace closes", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      yield* restoredFixer(SESSION);
+      const judged = yield* sweep([sweeper(yield* seenAgo(2 * HOUR_MS))], rig.stateDir, "host");
+      expect(judged.remove.map((item) => item.target)).toEqual(["wT"]);
+      expect(yield* closes).toBe(1);
+      const fs = yield* FileSystem.FileSystem;
+      expect(yield* fs.readFileString(`${rig.stateDir}/agents/r1/agents.log`)).toContain(
+        "fixer ended: its Task's workspace closed",
+      );
+    }),
+  ));
+
+test("a restored pane on a session no launch recorded keeps the workspace, as a human's would", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* arranged();
+      yield* restoredFixer({ kind: "pi", value: "/elsewhere.jsonl" });
+      const judged = yield* sweep([sweeper(yield* seenAgo(2 * HOUR_MS))], rig.stateDir, "host");
+      expect(judged.keep).toEqual([
+        { kind: "workspace", target: "wT", reason: "holds a pane Collie did not open (wT-p9)" },
+      ]);
+      expect(yield* closes).toBe(0);
+    }),
+  ));
+
 test("a Task waiting on you is never closed, and stops counting its hour", () =>
   runEffect(
     Effect.gen(function* () {

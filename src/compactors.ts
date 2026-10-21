@@ -156,7 +156,7 @@ const EventSchema = Schema.Struct({
   items: Schema.optionalKey(Schema.Array(Schema.String)),
   /** On a Claude `usage`: its Subscription's windows, as the status line had them. */
   limits: Schema.optionalKey(StatusLineLimits),
-  /** On an `out`: where the harness keeps this conversation. */
+  /** On an `out` or a `usage`: where the harness keeps this conversation. */
   transcript: Schema.optionalKey(Schema.String),
 });
 interface TelemetryEvent extends Schema.Schema.Type<typeof EventSchema> {}
@@ -488,7 +488,7 @@ export default function (pi) {
     bind(ctx);
     const usage = ctx.getContextUsage();
     const tokens = usage && typeof usage.tokens === "number" ? usage.tokens : null;
-    write({ kind: "usage", tokens });
+    write({ kind: "usage", tokens, transcript: ctx.sessionManager.getSessionFile() ?? undefined });
   };
 
   pi.on("session_start", async (_event, ctx) => sample(ctx));
@@ -823,7 +823,13 @@ export const recordClaudeEvent = Effect.fn("Compactors.recordClaudeEvent")(funct
   }
 
   const limits = Option.getOrUndefined(decodeLimits(payload.rate_limits));
-  yield* writeEvent(dir, { session, kind: "usage", tokens, ...(limits && { limits }) });
+  yield* writeEvent(dir, {
+    session,
+    kind: "usage",
+    tokens,
+    ...(limits && { limits }),
+    ...(transcript && { transcript }),
+  });
   // Once a session: a status line is redrawn on every event, and its `out` must not crowd
   // the compaction records out of the telemetry's cap.
   const now = yield* Clock.currentTimeMillis;
@@ -947,6 +953,18 @@ export const ranOutSince = Effect.fn("Compactors.ranOutSince")(function* (
   return out === undefined
     ? null
     : { why: out.reason ?? "its usage ran out", transcript: out.transcript ?? null };
+});
+
+/** Where this agent's harness last said it keeps its conversation, or null where it never did. */
+export const transcriptOf = Effect.fn("Compactors.transcriptOf")(function* (
+  stateDir: string,
+  agent: string,
+) {
+  const path = yield* Path.Path;
+  const events = yield* readEvents(path.join(stateDir, CONTROL_DIR, agent)).pipe(
+    Effect.orElseSucceed(() => []),
+  );
+  return events.findLast((event) => event.transcript !== undefined)?.transcript ?? null;
 });
 
 const claude: CompactionPort = {

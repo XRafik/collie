@@ -36,4 +36,7 @@ ticket 03, also in ADR-0062. Neither changes the other:
 - This decision removes the commonest reason an agent does so mid-step.
 
 A running verify does not pause the budget. Two idle hours outlast any verify, and the
-agent is woken when the verify ends.
+agent is woken when the verify ends. A verify that waits for memory has not started, and
+its wait has no bound, so the budget does not run while it waits
+([ADR-draft-new-work-waits-while-its-machine-is-short-of-memory](draft-new-work-waits-while-its-machine-is-short-of-memory.md)
+D7).

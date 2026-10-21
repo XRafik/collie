@@ -4,6 +4,14 @@
 import { DateTime, Effect, FileSystem, Schema } from "effect";
 import { RanOn, type RunAgent, type RunStep } from "./board-model";
 
+export const AgentSession = Schema.Struct({ kind: Schema.String, value: Schema.String });
+export type AgentSession = typeof AgentSession.Type;
+
+export const sameSession = (
+  one: AgentSession | null | undefined,
+  other: AgentSession | null | undefined,
+) => one != null && other != null && one.kind === other.kind && one.value === other.value;
+
 /**
  * The agent this work is on. Recorded by the launch Activity, so every later attempt
  * reattaches to this agent rather than starting another.
@@ -34,6 +42,8 @@ export const Launched = Schema.Struct({
   why: Schema.optionalKey(Schema.String),
   /** herdr's id for the process given this work: the name alone is reused by the next one. */
   terminalId: Schema.optionalKey(Schema.String),
+  /** The harness session herdr reported for it, which a pane herdr restores resumes. */
+  agentSession: Schema.optionalKey(AgentSession),
 });
 export type Launched = typeof Launched.Type;
 

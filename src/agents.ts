@@ -116,6 +116,7 @@ import {
   scopeFor,
   verifyIncarnation,
   type AgentEntry,
+  type Incarnation,
 } from "./registry";
 import { steerTarget } from "./steer-target";
 import {
@@ -143,6 +144,7 @@ import {
 } from "./profile";
 import { isString } from "./schema";
 import { Collecting, collectingLayer, type CollectingApi } from "./collecting";
+import { holdsBudgetOf, waitForMemory } from "./memory-wait";
 import { causalKey, deliveriesOf, SENT_STATES, toldLine } from "./steering";
 import { readTask, withTaskLock, writeTask } from "./task";
 import { malformedIn, renderTemplate, skillMention, skillsIn } from "./template";
@@ -1928,7 +1930,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           found.entry,
           alive,
         );
-        return found.entry.incarnation?.terminalId;
+        return found.entry.incarnation;
       }),
     );
   });
@@ -1956,6 +1958,17 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
         }
         const live = listing.success.find((one) => one.name === agent);
         const alive = live !== undefined && !fresh;
+        const memory = alive
+          ? "free"
+          : yield* waitForMemory({
+              env: host.env,
+              stateDir: host.dir,
+              runId: ask.runId,
+              what: `${agent}'s launch`,
+              stopped: stoppedRun(ask.runId),
+            });
+        // Listed again: what herdr had before the wait may have changed during it.
+        if (memory === "waited") return yield* launch(ask, fresh, note);
         const fs = yield* FileSystem.FileSystem;
         // Work in the launch order already is this same work replayed, not new work for the agent.
         const replayed = (yield* fs
@@ -1963,7 +1976,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
           .pipe(Effect.orElseSucceed(() => "")))
           .split("\n")
           .includes(stemOf(ask));
-        const recorded = (terminalId: string | undefined) =>
+        const landedOn = (incarnation: Incarnation | undefined) =>
           Effect.gen(function* () {
             const landed: Types.Mutable<Launched> = {
               agent,
@@ -1980,15 +1993,29 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             if ((ask.sequence ?? 1) > 1) landed.sequence = ask.sequence;
             landed.at = yield* Clock.currentTimeMillis;
             fellBack(landed, ask.from, ask.why);
-            const launched = terminalId === undefined ? landed : { ...landed, terminalId };
+            if (incarnation !== undefined) {
+              landed.terminalId = incarnation.terminalId;
+              if (incarnation.agentSession !== null) landed.agentSession = incarnation.agentSession;
+            }
+            return landed;
+          });
+        // Stopped while it waited for memory: nothing started, and the caller sees the stop.
+        if (memory === "stopped") return yield* landedOn(undefined);
+        const recorded = (incarnation: Incarnation | undefined) =>
+          Effect.gen(function* () {
+            const landed = yield* landedOn(incarnation);
             // Beside it, the agent this work landed on, so a stop and a human steering this
             // run later reach the agent that has it rather than one derived from a name again.
-            yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(launched));
-            return launched;
+            yield* write(launchPath(ask.runId, stemOf(ask)), encodeLaunched(landed));
+            return landed;
           });
         // Started and recorded as one step, so a stop never misses an agent this started.
         const launched = alive
-          ? yield* recorded(live.terminalId ?? undefined)
+          ? yield* recorded(
+              live.terminalId === null
+                ? undefined
+                : { terminalId: live.terminalId, agentSession: live.agentSession },
+            )
           : yield* Effect.uninterruptible(
               start(ask, agent, { agents: listing.success, listedAt }).pipe(
                 Effect.flatMap(recorded),
@@ -2341,6 +2368,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               budgetMs: budgetMs ?? host.collectMs ?? DEFAULT_COLLECT_MS,
               counts: Effect.gen(function* () {
                 if (asking !== null && (yield* asking(null))) return false;
+                if (yield* holdsBudgetOf(host.dir, launched.runId, launched.agent)) return false;
                 return yield* turnOver;
               }),
               usable: usable ?? (() => true),

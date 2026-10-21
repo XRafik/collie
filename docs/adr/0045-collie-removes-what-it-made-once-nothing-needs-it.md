@@ -49,7 +49,10 @@ Collie knows, proved the way that kind is proved:
   it.
 - **A workspace:** proved by a Task's record. Never the Home, and never a workspace that
   is no Task's.
-- **A pane:** proved by a launch record.
+- **A pane:** proved by a launch record. Amended by
+  [ADR-draft-a-finished-runs-idle-agent-is-closed](draft-a-finished-runs-idle-agent-is-closed.md):
+  a pane herdr restored after a restart is proved by the harness session Collie recorded
+  for the agent it restores.
 - **A process:** proved by its lock or its control record. Amended by
   [ADR-draft-a-check-ends-with-the-host-that-runs-it](draft-a-check-ends-with-the-host-that-runs-it.md):
   a check's process is proved by its record or by the marker it runs with, and is ended
@@ -138,7 +141,9 @@ back as Waiting on you.
 
 **D6. Processes go with what owns them:**
 
-- A Task's agents close with its workspace.
+- A Task's agents close with its workspace. A finished Run's agents close earlier, once
+  idle for an hour after the Run finished. Added by
+  [ADR-draft-a-finished-runs-idle-agent-is-closed](draft-a-finished-runs-idle-agent-is-closed.md).
 - A compactor endpoint stops once herdr no longer lists its agent. Amended by
   [ADR-0059](0059-a-stopped-agent-is-stopped-where-its-turn-runs.md): a Codex App Server
   is stopped through its turns, and its record is kept until it is Quiet.

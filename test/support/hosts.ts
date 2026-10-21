@@ -54,6 +54,15 @@ process.env.BUN_INSTALL_CACHE_DIR = new URL(
   "../../.scratch/test-packages",
   import.meta.url,
 ).pathname;
+// Memory to spare, read in place of the real Machine's by everything a test runs.
+const proc = new URL("../../.scratch/test-proc", import.meta.url).pathname;
+mkdirSync(join(proc, "pressure"), { recursive: true });
+writeFileSync(join(proc, "meminfo"), "MemTotal: 104857600 kB\nMemAvailable: 52428800 kB\n");
+writeFileSync(
+  join(proc, "pressure", "memory"),
+  "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+);
+process.env.COLLIE_PROC = proc;
 
 // Bun.spawn's default environment is the one this process started with, not process.env.
 type Spawn = (first: unknown, options?: { env?: unknown }) => unknown;
