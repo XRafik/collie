@@ -17,6 +17,7 @@ import {
   type MachineUsage,
   UPGRADE_SAID,
   usageDue,
+  usageAccounts,
   usageEntries,
 } from "../desktop/src/shared/usage";
 import { suiteEnv } from "./support/effect";
@@ -54,6 +55,11 @@ const machine = (name: string, readings: ReadonlyArray<UsageReading>): MachineUs
   problem: null,
 });
 
+const chatgpt = (over: Partial<UsageReading>) =>
+  reading({ subscription: "chatgpt", account: "workspace", source: "codex-app-server", ...over });
+
+const LIVE = ["p-mk-pc", "p-vm-mk"];
+
 describe("the header", () => {
   test("two Machines on one account are one entry, showing the newer reading and its Machine", () => {
     const entries = usageEntries(
@@ -63,6 +69,7 @@ describe("the header", () => {
           reading({ windows: [window({ usedPercent: 72 })], at: "2026-10-08T07:59:00Z" }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text, level }) => [text, level])).toEqual([["Claude 72%", "ok"]]);
@@ -80,6 +87,7 @@ describe("the header", () => {
           reading({ subscription: "chatgpt", account: "c-1", accountLabel: "me@example.com" }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text }) => text)).toEqual([
@@ -97,6 +105,7 @@ describe("the header", () => {
           reading({ account: "org-team:acct", accountLabel: "me@example.com (Cego)" }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text }) => text)).toEqual([
@@ -107,7 +116,7 @@ describe("the header", () => {
 
   test("amber at 90%, red and out when Exhausted, naming a model whose own window is the busiest", () => {
     const at = (windows: ReadonlyArray<UsageWindow>) =>
-      usageEntries([machine("mk-pc", [reading({ windows })])], NOW).map(({ text, level }) => [
+      usageEntries([machine("mk-pc", [reading({ windows })])], LIVE, NOW).map(({ text, level }) => [
         text,
         level,
       ]);
@@ -133,9 +142,118 @@ describe("the header", () => {
           }),
         ]),
       ],
+      LIVE,
       NOW,
     );
     expect(entries.map(({ text }) => text)).toEqual(["Claude 31%"]);
+  });
+
+  test("two ChatGPT seats of one workspace are two entries, each named by its email", () => {
+    const entries = usageEntries(
+      [
+        machine("mk-pc", [chatgpt({ accountLabel: "me@example.com" })]),
+        machine("vm-mk", [chatgpt({ accountLabel: "ops@example.com" })]),
+      ],
+      LIVE,
+      NOW,
+    );
+    expect(entries.map(({ text }) => text)).toEqual([
+      "ChatGPT me@example.com 31%",
+      "ChatGPT ops@example.com 31%",
+    ]);
+  });
+
+  test("one ChatGPT seat on two Machines is one entry, showing the newer reading and its Machine", () => {
+    const entries = usageEntries(
+      [
+        machine("mk-pc", [
+          chatgpt({ windows: [window({ usedPercent: 72 })], at: "2026-10-08T07:59:00Z" }),
+        ]),
+        machine("vm-mk", [chatgpt({ windows: [window({ usedPercent: 40 })] })]),
+      ],
+      LIVE,
+      NOW,
+    );
+    expect(entries.map(({ text }) => text)).toEqual(["ChatGPT 72%"]);
+    expect(entries[0]?.title).toContain("mk-pc");
+  });
+
+  test("a reading with no account and windows is its own Machine's entry", () => {
+    const entries = usageEntries(
+      [
+        machine("mk-pc", [reading({ account: null, accountLabel: null })]),
+        machine("vm-mk", [
+          reading({ account: null, accountLabel: null, windows: [window({ usedPercent: 50 })] }),
+        ]),
+      ],
+      LIVE,
+      NOW,
+    );
+    expect(entries.map(({ text }) => text)).toEqual(["Claude 31%", "Claude 50%"]);
+    expect(entries[1]?.title).toContain("vm-mk");
+  });
+});
+
+describe("a Subscription account across Machines", () => {
+  test("a Machine that is not live adds nothing and takes nothing from another's reading", () => {
+    const machines = [
+      machine("mk-pc", [reading({})]),
+      machine("gone", [
+        reading({ windows: [window({ usedPercent: 90 })], at: "2026-10-08T07:59:00Z" }),
+        chatgpt({}),
+      ]),
+    ];
+    const accounts = usageAccounts(machines, ["p-mk-pc"]);
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.newest?.machine).toBe("mk-pc");
+    expect(accounts[0]?.machines.map(({ machine }) => machine)).toEqual(["mk-pc"]);
+    expect(usageEntries(machines, ["p-mk-pc"], NOW).map(({ text }) => text)).toEqual([
+      "Claude 31%",
+    ]);
+  });
+
+  test("lists every live Machine on the account with its own reading, in the Flock's order", () => {
+    const expired = reading({ windows: [], problem: "Claude Code's login expired" });
+    const accounts = usageAccounts(
+      [machine("mk-pc", [reading({})]), machine("vm-mk", [expired])],
+      ["p-vm-mk", "p-mk-pc"],
+    );
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0]?.newest?.machine).toBe("mk-pc");
+    expect(accounts[0]?.machines.map(({ machine, reading }) => [machine, reading.problem])).toEqual(
+      [
+        ["vm-mk", "Claude Code's login expired"],
+        ["mk-pc", null],
+      ],
+    );
+  });
+
+  test("an account read only with problems is a group with no newest reading", () => {
+    const accounts = usageAccounts(
+      [machine("mk-pc", [reading({ windows: [], problem: "Claude Code's login expired" })])],
+      ["p-mk-pc"],
+    );
+    expect(accounts.map(({ newest, machines }) => [newest, machines.length])).toEqual([[null, 1]]);
+  });
+
+  test("ordered by Subscription, then by account label with none last", () => {
+    const accounts = usageAccounts(
+      [
+        machine("mk-pc", [
+          chatgpt({ accountLabel: "me@example.com" }),
+          reading({ account: null, accountLabel: null }),
+          reading({ account: "org:z", accountLabel: "z@example.com" }),
+          reading({ account: "org:a", accountLabel: "a@example.com" }),
+        ]),
+      ],
+      ["p-mk-pc"],
+    );
+    expect(accounts.map(({ subscription, label }) => [subscription, label])).toEqual([
+      ["claude", "a@example.com"],
+      ["claude", "z@example.com"],
+      ["claude", null],
+      ["chatgpt", "me@example.com"],
+    ]);
   });
 });
 

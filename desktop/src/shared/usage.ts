@@ -54,31 +54,73 @@ export interface UsageEntry {
   readonly title: string;
 }
 
+export interface UsageAccount {
+  readonly key: string;
+  readonly subscription: Subscription;
+  readonly label: string | null;
+  /** Its newest reading that has windows, and the Machine that read it. */
+  readonly newest: { readonly reading: UsageReading; readonly machine: string } | null;
+  /** Each live Machine logged in to it, with its own reading, in the Flock's order. */
+  readonly machines: ReadonlyArray<{ readonly machine: string; readonly reading: UsageReading }>;
+}
+
+// ChatGPT's account id is its workspace's, shared by every seat, so its email tells seats apart.
+const accountKey = (reading: UsageReading, machine: string) =>
+  reading.account === null
+    ? `${reading.subscription}:on ${machine}`
+    : reading.subscription === "chatgpt"
+      ? `${reading.subscription}:${reading.account}:${reading.accountLabel ?? ""}`
+      : `${reading.subscription}:${reading.account}`;
+
+const byLabel = (a: string | null, b: string | null) =>
+  a === b ? 0 : a === null ? 1 : b === null ? -1 : a.localeCompare(b);
+
+/** The live Machines' readings, one group per Subscription account (ADR-0049). */
+export const usageAccounts = (
+  machines: ReadonlyArray<MachineUsage>,
+  live: ReadonlyArray<string>,
+): ReadonlyArray<UsageAccount> => {
+  const groups = new Map<string, UsageAccount>();
+  for (const profile of live)
+    for (const { name, readings } of machines.filter((machine) => machine.profile === profile))
+      for (const reading of readings) {
+        const key = accountKey(reading, name);
+        const held = groups.get(key);
+        const newest = held?.newest ?? null;
+        const newer =
+          reading.windows.length > 0 &&
+          (newest === null || epochMs(reading.at) > epochMs(newest.reading.at));
+        groups.set(key, {
+          key,
+          subscription: reading.subscription,
+          label: held?.label ?? reading.accountLabel,
+          newest: newer ? { reading, machine: name } : newest,
+          machines: [...(held?.machines ?? []), { machine: name, reading }],
+        });
+      }
+  return [...groups.values()].sort(
+    (a, b) =>
+      SUBSCRIPTIONS.indexOf(a.subscription) - SUBSCRIPTIONS.indexOf(b.subscription) ||
+      byLabel(a.label, b.label),
+  );
+};
+
 /**
- * One entry per Subscription and account across the Flock. The provider counts usage per
+ * One entry per Subscription account read with windows. The provider counts usage per
  * account, so of one account's readings the newest is shown.
  */
 export const usageEntries = (
   machines: ReadonlyArray<MachineUsage>,
+  live: ReadonlyArray<string>,
   now: number,
 ): ReadonlyArray<UsageEntry> => {
-  const newest = new Map<string, { reading: UsageReading; machine: string }>();
-  for (const { name, readings } of machines)
-    for (const reading of readings) {
-      if (reading.windows.length === 0) continue;
-      const key = `${reading.subscription}:${reading.account ?? `on ${name}`}`;
-      const held = newest.get(key);
-      if (held === undefined || epochMs(reading.at) > epochMs(held.reading.at))
-        newest.set(key, { reading, machine: name });
-    }
-  const shown = [...newest].sort(
-    ([, a], [, b]) =>
-      SUBSCRIPTIONS.indexOf(a.reading.subscription) - SUBSCRIPTIONS.indexOf(b.reading.subscription),
+  const shown = usageAccounts(machines, live).flatMap(({ key, newest }) =>
+    newest === null ? [] : [{ key, ...newest }],
   );
   const accounts = new Map<Subscription, number>();
-  for (const [, { reading }] of shown)
+  for (const { reading } of shown)
     accounts.set(reading.subscription, (accounts.get(reading.subscription) ?? 0) + 1);
-  return shown.flatMap(([key, { reading, machine }]) => {
+  return shown.flatMap(({ key, reading, machine }) => {
     const used = busiestWindow(reading, now);
     if (used === null) return [];
     const label =

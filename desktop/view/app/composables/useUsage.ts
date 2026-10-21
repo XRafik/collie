@@ -30,15 +30,13 @@ export const useUsage = () => {
   return {
     machines: readonly(machines),
     /** Of Machines live now, so one that left the Flock leaves the header at once. */
-    entries: computed(() => {
-      const live = new Set(
+    entries: computed(() =>
+      usageEntries(
+        machines.value,
         rows.value.filter(({ state }) => state === "live").map(({ profile }) => profile),
-      );
-      return usageEntries(
-        machines.value.filter(({ profile }) => live.has(profile)),
         now.value,
-      );
-    }),
+      ),
+    ),
     refresh,
     /** For the one component that lives as long as the window. */
     keepFresh: () => {

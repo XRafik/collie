@@ -1362,9 +1362,11 @@ Flock with its busiest window, as in `Claude 72% · ChatGPT 2%`, naming the mode
 a model's own (`Claude Opus out`): amber at 90% or above, red
 and "out" once it is **Exhausted**. Hovering an entry gives its account, when that window
 resets and which Machine read it how long ago, and clicking it opens Machines. Machines
-logged in to one account are one entry, matched by the account's id rather than its email,
-and two accounts are two, each named; the provider counts usage per account, so the entry
-shows the newest of its Machines' readings. On the Machines page each Machine has a
+logged in to one account are one entry, and two accounts are two, each named. A Claude
+account is matched by its organization and account, so one email in two organizations is
+two; a ChatGPT account by its id and the login's email, because its id is the workspace's
+and every seat in it shares it. The provider counts usage per account, so the entry shows
+the newest of its Machines' readings. On the Machines page each Machine has a
 **Usage** block: per Subscription its plan and account, each window as a meter with its
 percent and when it resets, as a clock time and "in 2h 10m", and how fresh the numbers are
 and where they came from ("as of 3 minutes ago · Claude's usage endpoint"), or the
