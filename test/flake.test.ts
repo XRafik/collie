@@ -182,18 +182,15 @@ const hookFailed = (named: ReadonlyArray<string>) =>
     "Ran 4 tests across 2 files. [10.00ms]",
   ].join("\n");
 
-test("a hook's failure is its file's: the check names that file's failed test, and none where the file has no other", () =>
+test("a check where a hook failed names no tests, even beside a named failure in its file", () =>
   runEffect(
     inHost((host) =>
       Effect.gen(function* () {
-        const withTest = yield* gateOn(host, hookFailed(["the slow one times out"]));
-        expect(withTest.result).toBe("fail");
-        expect(withTest.failed).toEqual([
-          { file: "test/one.test.ts", name: "the slow one times out" },
-        ]);
-        const alone = yield* gateOn(host, hookFailed([]));
-        expect(alone.result).toBe("fail");
-        expect(alone.failed).toBeUndefined();
+        for (const named of [["the slow one times out"], []]) {
+          const ran = yield* gateOn(host, hookFailed(named));
+          expect(ran.result).toBe("fail");
+          expect(ran.failed).toBeUndefined();
+        }
       }),
     ),
   ));

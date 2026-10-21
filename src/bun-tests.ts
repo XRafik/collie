@@ -17,16 +17,14 @@ const HOOK = "(unnamed)";
 /**
  * The failed tests bun's output names, each under the file whose header is nearest above it;
  * null where the output cannot be read whole: its fail count disagrees, it reports an error
- * outside any test, a failure has no file, or there are over `MAX_FAILED`. A hook's failure
- * is not a test to run alone: it is its file's, named by that file's failed tests, and the
- * output is null where its file has none.
+ * outside any test, a failure has no file or is a hook's, which no test run alone proves,
+ * or there are over `MAX_FAILED`.
  */
 export function failedTests(output: string): ReadonlyArray<FailedTest> | null {
   const lines = output.split("\n");
   const found = new Map<string, FailedTest>();
   let file: string | null = null;
   let listed = false;
-  const hooks = new Set<string>();
   let failCount: number | null = null;
   for (const line of lines) {
     if (ERROR_COUNT.test(line)) return null;
@@ -39,18 +37,11 @@ export function failedTests(output: string): ReadonlyArray<FailedTest> | null {
     if (header !== null) file = header[1]!;
     const failed = FAILED.exec(line);
     if (failed === null) continue;
-    if (file === null) return null;
-    if (failed[1] === HOOK) {
-      hooks.add(file);
-      continue;
-    }
+    if (file === null || failed[1] === HOOK) return null;
     found.set(`${file}\0${failed[1]}`, { file, name: failed[1]! });
   }
-  const tests = [...found.values()];
-  if (tests.length === 0 || failCount !== tests.length + hooks.size || tests.length > MAX_FAILED)
-    return null;
-  if ([...hooks].some((hooked) => !tests.some((one) => one.file === hooked))) return null;
-  return tests;
+  if (found.size === 0 || failCount !== found.size || found.size > MAX_FAILED) return null;
+  return [...found.values()];
 }
 
 /**
