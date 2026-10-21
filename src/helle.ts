@@ -182,8 +182,8 @@ export interface HelleGate<E, R> {
   ask: (question: string) => Effect.Effect<string | null, E, R>;
   /** Told this Run's place in the queue on every read of it, while it is not the holder. */
   queued?: (slug: string, position: number) => Effect.Effect<void, E, R>;
-  /** Told once the queue is behind it, or the wait fails; never when it is interrupted. */
-  dequeued?: (slug: string) => Effect.Effect<void, E, R>;
+  /** Told once the gate ends, however it ends, unless it is interrupted. */
+  ended?: () => Effect.Effect<void, E, R>;
   pollMs?: number;
 }
 
@@ -196,9 +196,14 @@ const AFFIRMATIVE = /^(y|yes)$/i;
  * unreachable API, a rejected token — fails, because "we could not ask" and "there is
  * nothing to ask about" must never come out the same way.
  */
-export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
-  gate: HelleGate<E, R>,
-) {
+export const waitForHelle = <E, R>(gate: HelleGate<E, R>) =>
+  gateOf(gate).pipe(
+    Effect.onExit((exit) =>
+      gate.ended === undefined || Exit.hasInterrupts(exit) ? Effect.void : gate.ended(),
+    ),
+  );
+
+const gateOf = Effect.fn("Helle.waitForHelle")(function* <E, R>(gate: HelleGate<E, R>) {
   const creds = yield* credentials(gate);
   const resolved = resolveProject(yield* helleProjects(creds), gate.repositoryPath, gate.repoName);
   if (resolved._tag === "Ambiguous") {
@@ -234,30 +239,20 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
 
   let said: number | null = null;
   let position = claimed.position;
-  let waited = false;
-  return yield* Effect.gen(function* () {
-    while (true) {
-      if (position !== said) {
-        yield* gate.out(
-          position === 0
-            ? `✓ this Run holds ${slug}`
-            : `⏳ waiting for ${slug} — position ${position}`,
-        );
-        said = position;
-      }
-      if (position === 0) return { slug };
-      waited = true;
-      if (gate.queued !== undefined) yield* gate.queued(slug, position);
-      yield* Effect.sleep(gate.pollMs ?? POLL_MS);
-      // A queue this Run is no longer in is not a turn it has taken: it keeps the last
-      // position it knew rather than reporting a place it does not have.
-      position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
+  while (true) {
+    if (position !== said) {
+      yield* gate.out(
+        position === 0
+          ? `✓ this Run holds ${slug}`
+          : `⏳ waiting for ${slug} — position ${position}`,
+      );
+      said = position;
     }
-  }).pipe(
-    Effect.onExit((exit) =>
-      !waited || gate.dequeued === undefined || Exit.hasInterrupts(exit)
-        ? Effect.void
-        : gate.dequeued(slug),
-    ),
-  );
+    if (position === 0) return { slug };
+    if (gate.queued !== undefined) yield* gate.queued(slug, position);
+    yield* Effect.sleep(gate.pollMs ?? POLL_MS);
+    // A queue this Run is no longer in is not a turn it has taken: it keeps the last
+    // position it knew rather than reporting a place it does not have.
+    position = positionOf(yield* helleProject(creds, slug), me.user_id) ?? position;
+  }
 });

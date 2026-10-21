@@ -3518,7 +3518,7 @@ export const hostLayer = (options: {
                   on: `its turn for the Helle claim on ${slug}, at ${position} in its queue`,
                   who: "whoever holds it",
                 }),
-              dequeued: () => waitOn(asked.runId, null),
+              ended: () => waitOn(asked.runId, null),
             });
           }).pipe(
             Effect.provide(FetchHttpClient.layer),

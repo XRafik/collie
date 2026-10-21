@@ -219,7 +219,7 @@ function gate(opts: {
   lines: string[];
   recorded: (HelleClaim | null)[];
   queued?: number[];
-  dequeued?: string[];
+  ended?: string[];
 }) {
   return waitForHelle({
     home: "/nowhere",
@@ -235,7 +235,7 @@ function gate(opts: {
     out: (line) => Effect.sync(() => void opts.lines.push(line)),
     ask: () => Effect.succeed(opts.answer ?? null),
     queued: (_slug, position) => Effect.sync(() => void opts.queued?.push(position)),
-    dequeued: (slug) => Effect.sync(() => void opts.dequeued?.push(slug)),
+    ended: () => Effect.sync(() => void opts.ended?.push("ended")),
     pollMs: 1,
   });
 }
@@ -246,15 +246,18 @@ test("a repository with no Helle project carries straight on", () =>
       fake.projects = [{ slug: "spilnu", group: "spilnu/frontend", queue: [] }];
       const lines: string[] = [];
       const recorded: (HelleClaim | null)[] = [];
+      const ended: string[] = [];
       const held = yield* gate({
         file: yield* envFile(),
         repositoryPath: "gitlab.cego.dk/cego/collie",
         repoName: "collie",
         lines,
         recorded,
+        ended,
       });
 
       expect(held).toBeNull();
+      expect(ended).toEqual(["ended"]);
       expect(recorded).toEqual([]);
       expect(lines.join("\n")).toContain("no Helle project");
       expect(fake.calls).not.toContain("POST /api/v1/projects/spilnu/claim");
@@ -296,9 +299,9 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         const lines: string[] = [];
         const recorded: (HelleClaim | null)[] = [];
         const queued: number[] = [];
-        const dequeued: string[] = [];
+        const ended: string[] = [];
         const fiber = yield* Effect.forkScoped(
-          gate({ file: yield* envFile(), lines, recorded, queued, dequeued }),
+          gate({ file: yield* envFile(), lines, recorded, queued, ended }),
         );
 
         // The queue moves up once the gate has said where it stands, and then the project
@@ -324,7 +327,7 @@ test("the gate claims, reports the queue as it moves, and returns once it is the
         expect(said).toContain("position 1");
         expect(said).toContain("holds spilnu");
         expect([...new Set(queued)]).toEqual([2, 1]);
-        expect(dequeued).toEqual(["spilnu"]);
+        expect(ended).toEqual(["ended"]);
       }),
     ),
   ));
@@ -343,15 +346,15 @@ test("a gate interrupted in the queue is not told its wait ended", () =>
         ];
         fake.claims = [{ position: 2, already_queued: false }];
         const queued: number[] = [];
-        const dequeued: string[] = [];
+        const ended: string[] = [];
         const fiber = yield* Effect.forkScoped(
-          gate({ file: yield* envFile(), lines: [], recorded: [], queued, dequeued }),
+          gate({ file: yield* envFile(), lines: [], recorded: [], queued, ended }),
         );
         yield* Effect.sync(() => queued.length).pipe(
           Effect.repeat({ until: (told) => told >= 1, schedule: Schedule.spaced("5 millis") }),
         );
         yield* Fiber.interrupt(fiber);
-        expect(dequeued).toEqual([]);
+        expect(ended).toEqual([]);
       }),
     ),
   ));
@@ -440,6 +443,32 @@ test("a resumed Run does not ask again, and waits rather than assuming it holds 
         expect(lines.join("\n")).toContain("position 1");
       }),
     ),
+  ));
+
+test("a resumed Run granted the claim while it was down is told its wait ended", () =>
+  runEffect(
+    Effect.gen(function* () {
+      fake.projects = [
+        {
+          slug: "spilnu",
+          group: "spilnu/frontend",
+          holder: { user_id: ME, display_name: "mk" },
+          queue: [],
+        },
+      ];
+      fake.claims = [{ position: 0, already_queued: true }];
+      const ended: string[] = [];
+      const held = yield* gate({
+        file: yield* envFile(),
+        claimed: { slug: "spilnu", claim: "mine" },
+        lines: [],
+        recorded: [],
+        ended,
+      });
+
+      expect(held).toEqual({ slug: "spilnu" });
+      expect(ended).toEqual(["ended"]);
+    }),
   ));
 
 test("releasing gives the claim back", () =>
