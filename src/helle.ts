@@ -338,28 +338,27 @@ export const waitForHelle = Effect.fn("Helle.waitForHelle")(function* <E, R>(
     }
   });
 
-  // One held earlier can be taken while a later one is waited for. Holding the later ones
-  // while waiting for it again would break the order, so they are given back first.
-  let from = 0;
-  while (from < needed.slugs.length) {
-    for (const slug of needed.slugs.slice(from)) yield* hold(slug);
+  // A claim on a later project is given back before an earlier one is waited for, whether
+  // this attempt is fresh, resumed or retried, or it lost the earlier one while it waited.
+  while (true) {
     const positions: (number | null)[] = [];
     for (const slug of needed.slugs)
       positions.push(positionOf(yield* helleProject(creds, slug), me.user_id));
-    from = positions.findIndex((position) => position !== 0);
+    const from = needed.slugs.findIndex((slug, i) => !recorded.has(slug) || positions[i] !== 0);
     if (from < 0) break;
-    const later = needed.slugs.filter((_, i) => i > from && positions[i] !== null);
-    yield* gate.out(
-      `⚠ this Run lost ${needed.slugs[from]}` +
-        (later.length > 0
-          ? `, so it gives back ${later.join(", ")} to take them again in order`
-          : ""),
+    const later = needed.slugs.filter(
+      (slug, i) => i > from && recorded.has(slug) && positions[i] !== null,
     );
+    if (later.length > 0)
+      yield* gate.out(
+        `⚠ this Run does not hold ${needed.slugs[from]}, so it gives back ${later.join(", ")} to take them again in order`,
+      );
     for (const slug of later) {
       yield* releaseClaim(creds, slug);
       yield* gate.forget(slug);
       recorded.delete(slug);
     }
+    for (const slug of needed.slugs.slice(from)) yield* hold(slug);
   }
   return { _tag: "Held", slugs: needed.slugs } satisfies Held;
 });

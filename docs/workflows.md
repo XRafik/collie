@@ -461,9 +461,10 @@ the assessment named a stage deploy of its merge request pipelines, **Merge, tag
 where it named one of its tag pipelines, and **Finish**, and says what each does. Anyone
 may answer, from any door, and the answer is recorded with who gave it. **Finish** ends the
 Run with the merge request left open. Any other answer claims, in Helle, every project the
-release deploys under, one at a time in a fixed order and each waited for — one lost while
-a later one was waited for gives the later ones back and takes them again in order, so two
-releases never each hold what the other waits for: the repository's own, and each
+release deploys under, one at a time in a fixed order and each waited for — before it waits
+for one it does not hold, whether it lost it, or is resumed or tried again, it gives back
+the later ones it holds and takes them again in order, so two releases never each hold what
+the other waits for: the repository's own, and each
 project of the repository's group that an application the assessment named, or a deploy
 job's name (`stage:spilnu`), names — a monorepo needs several. A repository's
 `.collie/helle.json`, `{"projects": [...]}`, names them instead, and `[]` declares none.

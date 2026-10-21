@@ -554,6 +554,94 @@ test("a claim lost while the gate waited for the next gives the later ones back 
     ),
   ));
 
+test("Runs resuming with each other's next claim give theirs back rather than deadlock", () =>
+  runEffect(
+    Effect.scoped(
+      Effect.gen(function* () {
+        // Helle as two users see it: a token is the user, and a release passes the project on.
+        const projects: {
+          slug: string;
+          holder?: { user_id: string };
+          queue: { user_id: string }[];
+        }[] = [
+          { slug: "alpha", holder: { user_id: "B" }, queue: [] },
+          { slug: "beta", holder: { user_id: "A" }, queue: [] },
+        ];
+        const helle = Bun.serve({
+          port: 0,
+          fetch: (request) => {
+            const user = request.headers.get("authorization")!.replace("Bearer ", "");
+            const path = new URL(request.url).pathname.replace("/api/v1", "");
+            if (path === "/me") return Response.json({ user_id: user });
+            if (path === "/projects") return Response.json(projects);
+            const one = /^\/projects\/([^/]+)(\/claim|\/release)?$/.exec(path);
+            const project = projects.find((p) => p.slug === one?.[1]);
+            if (!one || !project) return Response.json({}, { status: 404 });
+            if (one[2] === "/claim") {
+              const already =
+                project.holder?.user_id === user || project.queue.some((m) => m.user_id === user);
+              if (!already) {
+                if (project.holder) project.queue.push({ user_id: user });
+                else project.holder = { user_id: user };
+              }
+              const at = project.queue.findIndex((m) => m.user_id === user);
+              return Response.json({ position: at + 1, already_queued: already });
+            }
+            if (one[2] === "/release") {
+              if (project.holder?.user_id === user) project.holder = project.queue.shift();
+              else project.queue = project.queue.filter((m) => m.user_id !== user);
+              return Response.json({ released: true });
+            }
+            return Response.json(project);
+          },
+        });
+        yield* Effect.addFinalizer(() => Effect.sync(() => void helle.stop(true)));
+        const url = `http://127.0.0.1:${helle.port}`;
+        const lines: string[] = [];
+        const resume = (user: string, claimed: HelleClaim[]) =>
+          Effect.gen(function* () {
+            return yield* waitForHelle({
+              home: "/nowhere",
+              envFile: yield* envFile(user),
+              url,
+              repositoryPath: null,
+              repoName: "monorepo",
+              deploys: null,
+              declared: ["alpha", "beta"],
+              claimed,
+              record: () => Effect.void,
+              forget: () => Effect.void,
+              out: (line) => Effect.sync(() => void lines.push(`${user}: ${line}`)),
+              ask: () => Effect.die("every claim is already recorded"),
+              pollMs: 1,
+            });
+          });
+
+        const a = yield* Effect.forkScoped(
+          resume("A", [
+            { slug: "alpha", claim: "mine" },
+            { slug: "beta", claim: "mine" },
+          ]),
+        );
+        const b = yield* Effect.forkScoped(resume("B", [{ slug: "alpha", claim: "mine" }]));
+
+        expect(yield* Fiber.join(b).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+        expect(lines).toContain(
+          "A: ⚠ this Run does not hold alpha, so it gives back beta to take them again in order",
+        );
+        yield* releaseClaim({ url, token: "B" }, "alpha");
+        yield* releaseClaim({ url, token: "B" }, "beta");
+        expect(yield* Fiber.join(a).pipe(Effect.timeout("2 seconds"))).toEqual({
+          _tag: "Held",
+          slugs: ["alpha", "beta"],
+        });
+      }),
+    ),
+  ));
+
 test("a release whose projects cannot be resolved claims nothing", () =>
   runEffect(
     Effect.gen(function* () {
