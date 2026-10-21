@@ -358,7 +358,10 @@ function deployed<R>(
     const path = encodeURIComponent(ref.project.slice(host.length + 1));
     const api = (route: string) =>
       run("glab", ["api", "--hostname", host, `projects/${path}/${route}`], cwd);
-    const unread = { ok: false, reason: `glab could not read ${ref.project}'s deployments` } as const;
+    const unread = {
+      ok: false,
+      reason: `glab could not read ${ref.project}'s deployments`,
+    } as const;
     const environments = yield* api("environments");
     const listed = Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout);
     if (environments.code !== 0 || Option.isNone(listed)) return unread;
