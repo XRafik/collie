@@ -1,6 +1,4 @@
-// A wait that comes to an end without anyone repairing anything: CI finishing, a teammate's
-// approval, a claim's queue. It is the Run working, not the Run needing someone, until it has
-// gone on longer than such a wait takes.
+// A wait that ends without a repair; it needs someone only once overdue.
 
 import { Schema } from "effect";
 import { epochMs } from "./time";

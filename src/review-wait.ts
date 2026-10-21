@@ -149,10 +149,7 @@ export function settleAnswers(round: {
   return { replies, carried };
 }
 
-/**
- * A review not yet ready, as who it waits on: `Awaiting` what comes without anyone repairing
- * anything, naming the person who acts where one does; `Blocked` what a person has to repair.
- */
+/** A review not yet ready: `Awaiting` what ends by itself, `Blocked` what needs a repair. */
 export type ReviewWait =
   | { readonly _tag: "Awaiting"; readonly on: string; readonly who: string | null }
   | { readonly _tag: "Blocked"; readonly why: ReadonlyArray<string> };
