@@ -25,7 +25,8 @@ import { until } from "./support/host";
 const held = new URL("./fixtures/checks/held.sh", import.meta.url).pathname;
 const leaves = new URL("./fixtures/checks/leaves.sh", import.meta.url).pathname;
 const refuses = new URL("./fixtures/checks/refuses.sh", import.meta.url).pathname;
-const installation = "installation-under-test";
+// Its own, so no other file's checks, running beside these, are taken for leftovers.
+const installation = "check-processes-test-installation";
 
 /** A state directory, a directory the check notes its pids in, and the host's adapter. */
 const worldWith = (
@@ -439,25 +440,42 @@ test.skipIf(process.platform !== "linux")(
   30_000,
 );
 
-/** A FileSystem whose first read of a check's process's `stat` once `armed` waits for `release`. */
+interface Gate {
+  armed: string | null;
+  readonly reached: Deferred.Deferred<void>;
+  readonly release: Deferred.Deferred<void>;
+}
+
+/**
+ * A FileSystem whose first read of a check's process's `stat`, once `armed` with the directory
+ * the check is given, waits for `release`: never another check's, as the host's look before a
+ * spawn reads.
+ */
 const gatedStat = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const gate = {
-    armed: false,
+  const gate: Gate = {
+    armed: null,
     reached: yield* Deferred.make<void>(),
     release: yield* Deferred.make<void>(),
   };
   const gated: FileSystem.FileSystem = {
     ...fs,
     readFileString: (path, encoding) => {
-      if (!gate.armed || !/^\/proc\/\d+\/stat$/.test(path))
+      if (gate.armed === null || !/^\/proc\/\d+\/stat$/.test(path))
         return fs.readFileString(path, encoding);
-      return fs.readFileString(path.replace(/stat$/, "environ")).pipe(
-        Effect.orElseSucceed(() => ""),
-        Effect.flatMap((environ) => {
-          if (!gate.armed || !environ.includes(`${CHECK_INSTALLATION}=${installation}\0`))
+      const proc = path.replace(/stat$/, "");
+      return Effect.all([
+        fs.readFileString(`${proc}environ`).pipe(Effect.orElseSucceed(() => "")),
+        fs.readFileString(`${proc}cmdline`).pipe(Effect.orElseSucceed(() => "")),
+      ]).pipe(
+        Effect.flatMap(([environ, cmdline]) => {
+          if (
+            gate.armed === null ||
+            !environ.includes(`${CHECK_INSTALLATION}=${installation}\0`) ||
+            !cmdline.split("\0").includes(gate.armed)
+          )
             return fs.readFileString(path, encoding);
-          gate.armed = false;
+          gate.armed = null;
           return Deferred.succeed(gate.reached, undefined).pipe(
             Effect.andThen(Deferred.await(gate.release)),
             Effect.andThen(fs.readFileString(path, encoding)),
@@ -485,7 +503,7 @@ test.skipIf(process.platform !== "linux")(
       Effect.gen(function* () {
         const { gate, gated } = yield* gatedStat;
         const { state, notes, checks } = yield* worldWith({}, gated);
-        gate.armed = true;
+        gate.armed = notes;
         const running = yield* runHeld(checks, notes);
         yield* Deferred.await(gate.reached);
         const ones = yield* startedIn(notes);
@@ -527,7 +545,7 @@ test.skipIf(process.platform !== "linux")(
       Effect.gen(function* () {
         const { gate, gated } = yield* gatedStat;
         const { notes, checks } = yield* worldWith({}, gated);
-        gate.armed = true;
+        gate.armed = notes;
         const exit = yield* runHeld(checks, notes);
         yield* Deferred.await(gate.reached);
         const ones = yield* startedIn(notes);
@@ -555,7 +573,7 @@ test.skipIf(process.platform !== "linux")(
       Effect.gen(function* () {
         const { gate, gated } = yield* gatedStat;
         const { notes, checks } = yield* worldWith({}, gated);
-        gate.armed = true;
+        gate.armed = notes;
         yield* runHeld(checks, notes);
         yield* Deferred.await(gate.reached);
         const ones = yield* startedIn(notes);
@@ -580,7 +598,7 @@ test.skipIf(process.platform !== "linux")(
       Effect.gen(function* () {
         const { gate, gated } = yield* gatedStat;
         const { notes, checks } = yield* worldWith({}, gated);
-        gate.armed = true;
+        gate.armed = notes;
         yield* runHeld(checks, notes);
         // Before the check's own finalizer, which waits for it.
         yield* Effect.addFinalizer(() => Deferred.succeed(gate.release, undefined));
@@ -599,13 +617,23 @@ test.skipIf(process.platform !== "linux")(
 );
 
 test.skipIf(process.platform !== "linux")(
-  "a check whose spawn has not landed when its host's grace is up is ended by then",
+  "a check whose spawn has not landed when its host's grace is up is ended by then, beside another Run's",
   () =>
     runEffect(
       Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
         const { gate, gated } = yield* gatedStat;
-        const { notes, checks } = yield* worldWith({}, gated);
-        gate.armed = true;
+        const { root, notes, checks } = yield* worldWith({}, gated);
+        const others = `${root}/others`;
+        yield* fs.makeDirectory(others);
+        yield* leftBehind(others, { installation, id: "run-2@1-left" });
+        const another = yield* startedIn(others);
+        yield* Effect.addFinalizer(() =>
+          fs
+            .writeFileString(`${others}/release`, "")
+            .pipe(Effect.andThen(until(() => noneRunning(another), Boolean)), Effect.ignore),
+        );
+        gate.armed = notes;
         yield* runHeld(checks, notes);
         // Before the check's own finalizer, which waits for it.
         yield* Effect.addFinalizer(() => Deferred.succeed(gate.release, undefined));
