@@ -444,11 +444,16 @@ unusable one ends the Run with the reasons named.
 ### Tasks
 
 A **Task** is the work itself, and the Runs it takes: a plan, the implementation it chains
-into, the review of that. A fresh start about a branch an open Task's checkout has out —
-the branch it is placed on, or the one its diff target names; never merely the branch the
-caller is standing on — is that Task's, and opens in its workspace wherever it was started from. Any other fresh
-start is a new Task, and gets a herdr workspace of its own, created and never focused. The
-default branch names no one piece of work, so a start on it is always new. Chains,
+into, the review of that, the release of its merge request. A Task's work is what its Runs
+worked on, read from their records: each branch one was placed on, and each merge request
+one opened or was given. A fresh start about that work is that Task's, and opens in its
+workspace wherever it was started from: one whose diff target names one of the Task's merge
+requests, whatever state the Task is in, or one about a branch of an open Task's — the
+branch it is placed on, or the one its diff target names; never merely the branch the
+caller is standing on. Where several Tasks have it, the one whose Run had it first wins. A
+start that joins a Task this way has no parent. Any other fresh start is a new Task, and
+gets a herdr workspace of its own, created and never focused. The default branch names no
+one piece of work, so a start on it alone is always new. Chains,
 follow-ups and resumes stay in the Task they came from.
 
 Continuing anything else is explicit. `--task <id>` names one; `--continue-task` means the
@@ -1804,9 +1809,10 @@ again from its next occurrence after now, never catching up on what fell while i
 paused; resuming one that is not paused is `invalid_state`. `remove` removes it, and every
 Run it started stays. There is no edit: remove it and add it again.
 
-The host starts each occurrence as a fresh start is placed, in a Task of its own unless an
-open Task works its branch, under the request id `schedule:<name>:<occurrence>` and the
-Actor `schedule`, whose `schedule` field names the Schedule and the occurrence. It never
+The host starts each occurrence as a fresh start is placed, in a Task of its own unless it
+is about a Task's work — a merge request one of its Runs opened or was given, or a branch
+an open Task's Runs were placed on — under the request id `schedule:<name>:<occurrence>`
+and the Actor `schedule`, whose `schedule` field names the Schedule and the occurrence. It never
 starts a second Run while the last one it started is going, asking, parked or stalled; the
 occurrence that fell meanwhile starts as soon as that Run ends. Occurrences missed while no
 host ran start once, late, for the latest of them. While herdr does not answer, the start

@@ -2065,6 +2065,218 @@ test(
   120_000,
 );
 
+/** The incident's Task: rooted at the main checkout, its child building on a worktree. */
+const builtByAChild = (
+  registry: typeof Registry.Service,
+  chain: Generation,
+  task: string,
+  mr = "",
+) =>
+  Effect.gen(function* () {
+    const started = yield* start(chain, {
+      request: `built-${task}`,
+      task,
+      text: mr === "" ? {} : { mr },
+    });
+    if (started._tag === "Failure") return yield* Effect.die(started.failure);
+    yield* finished(started.success.runId);
+    return started.success.runId;
+  });
+
+const MR_URL = "https://gitlab.example.com/group/app/-/merge_requests/355";
+const MR_TARGET = "mr:gitlab.example.com/group/app!355";
+
+test(
+  "a fresh start on the branch an open Task's child built joins that Task, with no parent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const task = yield* aTask;
+        yield* rig.queueOutputs([{ verdict: "clean" }, { verdict: "clean" }]);
+        const review = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [chains, , targeted] = yield* loaded(registry, [
+              `${fixtures}/chains.workflow.ts`,
+              `${fixtures}/builds.workflow.ts`,
+              `${fixtures}/targeted.workflow.ts`,
+            ]);
+            yield* builtByAChild(registry, chains!, task.id);
+            const started = yield* start(targeted!, {
+              request: "r-review",
+              text: { target: `branch:master...${LOGIN}/add-a-picker` },
+              taskLabel: "Project | Review",
+            });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            return yield* finished(started.success.runId);
+          }),
+        );
+
+        expect(review).toMatchObject({ task: "task-1", parent: null });
+        expect(yield* rig.cmds()).not.toContain("workspace create");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a fresh start on the merge request an open Task's child opened joins that Task, with no parent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const task = yield* aTask;
+        const release = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [chains, , targeted] = yield* loaded(registry, [
+              `${fixtures}/chains-and-opens.workflow.ts`,
+              `${fixtures}/opens.workflow.ts`,
+              `${fixtures}/targeted.workflow.ts`,
+            ]);
+            yield* builtByAChild(registry, chains!, task.id, MR_URL);
+            const started = yield* start(targeted!, {
+              request: "r-release",
+              text: { target: MR_TARGET },
+              taskLabel: "Project | Release",
+            });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            return yield* finished(started.success.runId);
+          }),
+        );
+
+        expect(release).toMatchObject({ task: "task-1", parent: null });
+        expect(yield* rig.cmds()).not.toContain("workspace create");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a fresh start on a Finished Task's merge request joins it, and reopens its closed workspace",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const task = yield* aTask;
+        yield* rig.queueOutputs([{ verdict: "released" }]);
+        const release = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [chains, , releases] = yield* loaded(registry, [
+              `${fixtures}/chains-and-opens.workflow.ts`,
+              `${fixtures}/opens.workflow.ts`,
+              `${fixtures}/releases.workflow.ts`,
+            ]);
+            yield* builtByAChild(registry, chains!, task.id, MR_URL);
+            yield* rig.closeWorkspace("wT", []);
+            const started = yield* start(releases!, {
+              request: "r-release",
+              text: { mr: MR_TARGET },
+              taskLabel: "Project | Release",
+            });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            return yield* finished(started.success.runId);
+          }),
+        );
+
+        expect(release).toMatchObject({
+          task: "task-1",
+          parent: null,
+          status: { status: "complete" },
+        });
+        const created = (yield* rig.calls()).filter((call) => call.cmd === "workspace create");
+        expect(created.map((call) => call.argv)).toEqual([
+          expect.arrayContaining(["--cwd", rig.projectDir, "--label", "Project | Picker"]),
+        ]);
+        const reopened = (yield* readTask(env().stateDir, "task-1"))?.workspace;
+        expect(reopened).not.toBe("wT");
+        const agents = (yield* rig.calls()).filter((call) => call.cmd === "agent start");
+        expect(agents.at(-1)?.argv).toEqual(expect.arrayContaining(["--pane", `${reopened}-p1`]));
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a fresh start on a merge request two Tasks share joins the one whose Run had it first",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        // The older Task's Run comes second, so the Task's own age decides nothing.
+        for (const [id, created] of [
+          ["task-old", "2026-09-01T00:00:00.000Z"],
+          ["task-new", "2026-09-20T00:00:00.000Z"],
+        ] as const) {
+          yield* writeTask(env().stateDir, {
+            id,
+            workspace: `w-${id}`,
+            label: `Project | ${id}`,
+            cwd: rig.projectDir,
+            created_at: created,
+          });
+        }
+        const fresh = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [targeted] = yield* loaded(registry, [`${fixtures}/targeted.workflow.ts`]);
+            for (const task of ["task-new", "task-old"]) {
+              const named = yield* start(targeted!, {
+                request: `r-${task}`,
+                text: { target: MR_TARGET },
+                task,
+              });
+              if (named._tag === "Failure") return yield* Effect.die(named.failure);
+              yield* finished(named.success.runId);
+            }
+            const started = yield* start(targeted!, {
+              request: "r-fresh",
+              text: { target: MR_TARGET },
+              taskLabel: "Project | Release",
+            });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            return yield* finished(started.success.runId);
+          }),
+        );
+
+        expect(fresh?.task).toBe("task-new");
+      }),
+    ),
+  120_000,
+);
+
+test(
+  "a fresh start on the branch of a Task whose workspace has closed is a Task of its own",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const task = yield* aTask;
+        yield* rig.queueOutputs([{ verdict: "clean" }, { verdict: "clean" }]);
+        const review = yield* hosted(
+          Effect.gen(function* () {
+            const registry = yield* Registry;
+            const [chains, , targeted] = yield* loaded(registry, [
+              `${fixtures}/chains.workflow.ts`,
+              `${fixtures}/builds.workflow.ts`,
+              `${fixtures}/targeted.workflow.ts`,
+            ]);
+            yield* builtByAChild(registry, chains!, task.id);
+            yield* rig.closeWorkspace("wT", []);
+            const started = yield* start(targeted!, {
+              request: "r-review",
+              text: { target: `branch:master...${LOGIN}/add-a-picker` },
+              taskLabel: "Project | Review",
+            });
+            if (started._tag === "Failure") return yield* Effect.die(started.failure);
+            return yield* finished(started.success.runId);
+          }),
+        );
+
+        expect(review?.task).not.toBe("task-1");
+        expect(review?.task).not.toBeNull();
+      }),
+    ),
+  120_000,
+);
+
 test(
   "forgetting a Run removes its row and what the engine kept of it, and leaves a claim alone",
   () =>

@@ -2861,7 +2861,8 @@ by its id or label is saved as its checkout's path, because the workspace may be
 the time the Schedule fires.
 
 Each occurrence starts an ordinary Run, placed as a fresh start is — its own Task and
-workspace, unless an open Task already works its branch — and recorded as started by the
+workspace, unless it is about a Task's work: a merge request one of its Runs opened or
+was given, or a branch an open Task's Runs were placed on — and recorded as started by the
 Schedule. A Schedule fires only on the Machine it was added on, and only while that
 Machine's host runs: the host is a process a client starts, not a service, so a Machine
 that is off or whose host nothing has started fires nothing. When the host is next up, the
