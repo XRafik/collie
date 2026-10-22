@@ -50,6 +50,7 @@ import {
   scheduleListing,
   runProgress,
   reportFor,
+  showOffers,
   type Door,
 } from "./lifecycle";
 import { peersOf } from "./peers";
@@ -369,12 +370,19 @@ const runAnswer = Effect.fn("Tools.runAnswer")(function* (env: PluginEnv, run: R
           "",
           ...kept.map((one) => `- ${one.name} (${one.pass}) ${one.result}: ${one.log}`),
         ];
+  const offers = yield* showOffers(env, run.id);
+  const offered = [
+    "",
+    "### Offers, taken with take_offer",
+    "",
+    offers.ok ? offers.human : offers.error.message,
+  ];
   const progress = yield* runProgress(env, run.id);
   const ready =
     !progress.ok || progress.value === null
       ? []
       : ["", "### Ready to release", "", ...readyLines(progress.value.ready)];
-  return [...running, facts, ...done, ...ready].join("\n");
+  return [...running, facts, ...done, ...offered, ...ready].join("\n");
 });
 
 /** What `collie_herd` answers with: the board, so chat and board can never disagree about a card. */

@@ -284,8 +284,8 @@ answers a `--request-id` it already has a receipt for from that receipt, before 
 is asked, so there it is the first Run whatever is attached. They are not
 an Input, so the Workflow's own input, and with it the execution, is the same either way.
 The operation's line in the Run's `operations.jsonl` names each file under `asked`, by the
-name the Run keeps it under and the path it came from. Chat's `start`, `followup` and
-`deliver` actions take the same paths as `attachments`
+name the Run keeps it under and the path it came from. Chat's `start`, `followup`,
+`take_offer` and `deliver` actions take the same paths as `attachments`
 ([ADR-0046](adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md)).
 
 ### A workflow saved as a module
@@ -977,8 +977,11 @@ it is chat obstructing the person it serves. What Collie wants of its own accord
 comes through these: the evaluator's proposals wait on the board, and chat asks in words.
 
 `collie_do` takes the board's own actions on a named run — `stop`, `resume`, `release`,
-`answer`, `deliver`, `followup` and `start` — through the same closed union, the same
-last-moment admission check and the same executors a confirmation runs. It also takes the
+`answer`, `deliver`, `followup`, `take_offer` and `start` — through the same closed union, the same
+last-moment admission check and the same executors a confirmation runs. `take_offer` takes
+one of a run's offers by the id `collie_run` lists, with what its own arguments take as
+`inputs`, as `collie run action` does: the offer is decided again as it is taken, one the
+run no longer makes is refused with why, and the answer names the run it started. It also takes the
 board's decisions, which are not actions on a run: `confirm` a waiting proposal by its id
 and the hash `collie_receipts` lists beside it, `decline` one by the same two, and `disposition` to record
 what became of a finished run's work. It answers a line per action saying what each one
@@ -2255,7 +2258,7 @@ what became of a Run's work; `steerAbout`, which has the evaluator turn free wor
 Run into actions and carries them out; `followUp`, which starts the follow-up the Run's
 Workflow declares; `propose`, which records what chat was asked for as a proposal and
 carries it out; `act`, which carries out the board's own actions on a Run (`stop`, `resume`,
-`release`, `hold`, `answer`, `deliver`, `followup`, `start`) with no proposal, anything else
+`release`, `hold`, `answer`, `deliver`, `followup`, `take_offer`, `start`) with no proposal, anything else
 being refused as `propose`'s; `reconcile`, which settles a proposal step nobody can account
 for; `settleDelivery`, which does the same for a message to an agent; `focus`, which focuses
 a Run's newest live agent, or only the `agent` it names, else its workspace, on the host's

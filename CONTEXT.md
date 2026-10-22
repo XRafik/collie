@@ -560,7 +560,7 @@ second Go. A package is merged and tagged. Collie merges, and reads from the for
 decides on. The Run's agent fixes, stages, tags and plays the jobs. It works in the
 checkout of the merge request's source branch and is held to the **Checks** of the Run it
 was started from. It starts as a child from an implement Run's end menu, from a succeeded
-implement Run's `Release` offer, or on its own, and then it is still the **Task**'s whose
+implement Run's `Release` offer — on the card, from the CLI or from chat — or on its own, and then it is still the **Task**'s whose
 merge request it is (ADR-draft-a-merge-request-is-released-on-a-humans-go,
 ADR-draft-a-tasks-work-is-what-its-runs-worked-on).
 

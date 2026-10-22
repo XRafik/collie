@@ -934,6 +934,7 @@ export const ASKED_KINDS = [
   "answer",
   "deliver",
   "followup",
+  "take_offer",
   "start",
 ] as const;
 
