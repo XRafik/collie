@@ -375,3 +375,63 @@ export const chosen = (
 /** What the message box says of a choice the change check refused. */
 export const refusedChoice = (reason: string) =>
   `${reason}${reason.endsWith(".") ? "" : "."} Nothing was saved.`;
+
+/** What the window says above the message box of what a choice will do. */
+export type ChatNotice =
+  | { readonly kind: "switch"; readonly said: string; readonly stay: string }
+  | {
+      readonly kind: "reply";
+      readonly said: string;
+      readonly finishes: string;
+      readonly next: string;
+    };
+
+/** `resolved` by the labels its harness offers, as `Opus 5.5 · High`. */
+const resolvedLabel = ({ harness, model, effort }: Resolved, choices: ChatChoices) => {
+  const label = listedOn(harness, choices)?.models.find(({ id }) => id === model)?.label ?? model;
+  return effort === null ? label : `${label} · ${effortLabel(effort)}`;
+};
+
+/**
+ * A harness switch waiting for the next message, else, during a turn, a set choice that runs
+ * as something other than the reply; null where the next message runs on what runs now.
+ */
+export const chatNotice = (settings: DesktopSettings, choices: ChatChoices): ChatNotice | null => {
+  const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
+  if (harness !== choices.heldOn)
+    return {
+      kind: "switch",
+      said: `Your next message starts a new conversation on ${harnessLabel(harness)}.`,
+      stay: `Stay on ${harnessLabel(choices.heldOn)}`,
+    };
+  const { runsOn } = choices;
+  if (!choices.turning || runsOn === null) return null;
+  const next = runsAs({ harness, model: settings.chatModel, effort: settings.chatEffort }, choices);
+  if (next.model === runsOn.model && next.effort === runsOn.effort) return null;
+  const finishes = resolvedLabel(runsOn, choices);
+  const nextLabel = resolvedLabel(next, choices);
+  return {
+    kind: "reply",
+    said: `This reply finishes on ${finishes}. Your next message runs on ${nextLabel}.`,
+    finishes,
+    next: nextLabel,
+  };
+};
+
+/** The choice Stay puts back: the settings while their harness is held, else the last seen so. */
+export const heldChoice = (
+  previous: ChatSet | null,
+  settings: DesktopSettings,
+  heldOn: string,
+): ChatSet | null => {
+  const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
+  return harness === heldOn
+    ? { harness, model: settings.chatModel, effort: settings.chatEffort }
+    : previous;
+};
+
+/** What Stay saves: the held choice, unset where it was unset, or the held harness alone. */
+export const stayChange = (held: ChatSet | null, heldOn: string): DesktopSettingsChange =>
+  held === null
+    ? { chatHarness: heldOn }
+    : { chatHarness: held.harness, chatModel: held.model ?? "", chatEffort: held.effort ?? "" };

@@ -5,17 +5,21 @@ import { expect, test } from "bun:test";
 import { Effect, Stream, SubscriptionRef } from "effect";
 import { chatChoicesOf, chatChoicesStream } from "../desktop/src/bun/chat-choices";
 import type { Lists } from "../desktop/src/bun/harness-lists";
+import { changeSettings } from "../desktop/src/bun/settings";
 import {
   type ChatChoices,
   type ChatHeld,
+  chatNotice,
   chatSelects,
   chosen,
+  heldChoice,
   type ListedModel,
   type Offer,
   type Offered,
   type PiConfig,
   refusedChoice,
   resolveChat,
+  stayChange,
   tableOffer,
   typedModel,
 } from "../desktop/src/shared/chat-choices";
@@ -578,4 +582,96 @@ test("a refused choice is said with its reason, ending that nothing was saved", 
   ).toBe(
     '"gpt-5.5" is not a model pi takes. Write provider/model, for example openai-codex/gpt-6.1-sol. Nothing was saved.',
   );
+});
+
+/** The account with Claude Code's own list, as `held` says the chat holds and runs. */
+const heldAccount = (settings: DesktopSettings, held: ChatHeld) =>
+  chatChoicesOf(
+    held,
+    { claude: true, pi: true },
+    settings,
+    NO_FLOCK_SETTINGS,
+    {},
+    { claude: { from: "harness", models: CLAUDE_LISTED } },
+  );
+const IDLE: ChatHeld = { heldOn: "claude", runsOn: null, turning: false };
+
+test("while the set harness is not the one held, the window says the next message starts a new conversation on it, with Stay on the held one", () => {
+  const onPi = { proactive: true, chatHarness: "pi" };
+  expect(chatNotice(onPi, heldAccount(onPi, IDLE))).toEqual({
+    kind: "switch",
+    said: "Your next message starts a new conversation on Pi.",
+    stay: "Stay on Claude Code",
+  });
+  const turning = {
+    ...IDLE,
+    runsOn: { harness: "claude", model: "opus", effort: "high" },
+    turning: true,
+  };
+  expect(chatNotice(onPi, heldAccount(onPi, turning))?.kind).toBe("switch");
+  const held = { proactive: true, chatModel: "sonnet" };
+  expect(chatNotice(held, heldAccount(held, IDLE))).toBeNull();
+});
+
+test("Stay restores the harness, model and effort last seen while the set harness was held, through the same check as any choice", () => {
+  const set = { proactive: true, chatModel: "sonnet", chatEffort: "high" };
+  const seen = heldChoice(null, set, IDLE.heldOn);
+  const onPi = { proactive: true, chatHarness: "pi" };
+  expect(heldChoice(seen, onPi, IDLE.heldOn)).toEqual(seen);
+  const change = stayChange(heldChoice(seen, onPi, IDLE.heldOn), IDLE.heldOn);
+  expect(changeSettings(onPi, NO_FLOCK_SETTINGS, change)).toEqual({
+    proactive: true,
+    chatHarness: "claude",
+    chatModel: "sonnet",
+    chatEffort: "high",
+  });
+  // What was unset is put back unset.
+  const unset = heldChoice(null, { proactive: true }, IDLE.heldOn);
+  const piSet = { proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" };
+  expect(changeSettings(piSet, NO_FLOCK_SETTINGS, stayChange(unset, IDLE.heldOn))).toEqual({
+    proactive: true,
+    chatHarness: "claude",
+  });
+});
+
+test("a window that never saw the held harness set, as one opened after the switch, restores the harness alone", () => {
+  const onPi = { proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" };
+  const seen = heldChoice(null, onPi, "claude");
+  expect(seen).toBeNull();
+  expect(stayChange(seen, "claude")).toEqual({ chatHarness: "claude" });
+  expect(changeSettings(onPi, NO_FLOCK_SETTINGS, stayChange(seen, "claude"))).toEqual({
+    proactive: true,
+    chatHarness: "claude",
+  });
+});
+
+test("during a turn, a set choice that runs as something else says what the reply finishes on and what the next message runs on, by their offered labels", () => {
+  const set = { proactive: true, chatModel: "sonnet" };
+  const turning: ChatHeld = {
+    heldOn: "claude",
+    runsOn: { harness: "claude", model: "opus", effort: "high" },
+    turning: true,
+  };
+  expect(chatNotice(set, heldAccount(set, turning))).toEqual({
+    kind: "reply",
+    finishes: "Opus 5.5 · High",
+    next: "Sonnet 5.5 · Medium",
+    said: "This reply finishes on Opus 5.5 · High. Your next message runs on Sonnet 5.5 · Medium.",
+  });
+  const haiku = { proactive: true, chatModel: "claude-haiku-4-5-20251001" };
+  expect(chatNotice(haiku, heldAccount(haiku, turning))).toMatchObject({ next: "Haiku 4.5" });
+  // Once the turn is over, the next message runs on the set choice and nothing is said.
+  expect(chatNotice(set, heldAccount(set, { ...turning, turning: false }))).toBeNull();
+});
+
+test("no notice is shown during a turn when the set choice only resolves to what runs", () => {
+  const unset = { proactive: true };
+  const turning: ChatHeld = {
+    heldOn: "claude",
+    runsOn: { harness: "claude", model: "opus", effort: "medium" },
+    turning: true,
+  };
+  expect(chatNotice(unset, heldAccount(unset, turning))).toBeNull();
+  const same = { proactive: true, chatModel: "opus", chatEffort: "medium" };
+  expect(chatNotice(same, heldAccount(same, turning))).toBeNull();
 });

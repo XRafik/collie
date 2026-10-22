@@ -3,7 +3,7 @@
 
 import { Option, Schema } from "effect";
 import { isString } from "../../../src/schema";
-import { AttachmentPart } from "./attachments";
+import { AttachmentPart, attachedIn } from "./attachments";
 import { harnessLabel } from "./flock-settings";
 
 /** The board's card a message goes with, named as the chat's tools name it. */
@@ -150,3 +150,68 @@ const decodeQuestions = Schema.decodeUnknownOption(Schema.fromJsonString(Questio
 /** What an AskUserQuestion call asks, once its arguments have all arrived. */
 export const questionsOf = (args: string) =>
   Option.match(decodeQuestions(args), { onNone: () => [], onSome: ({ questions }) => questions });
+
+/** A message the chat client holds back while a reply streams, as TanStack AI's client keeps it. */
+export interface Queued {
+  readonly content:
+    | string
+    | {
+        readonly content:
+          | string
+          | ReadonlyArray<{ readonly type: string; readonly content?: unknown }>;
+        readonly metadata?: { readonly about?: unknown };
+      };
+}
+
+const decodeAbout = Schema.decodeUnknownOption(About);
+
+/**
+ * The message box once Stop has put the queue back, since the client discards it: the queued
+ * words first, a paragraph each, the files after those already attached, and the first queued
+ * card where the chip is empty.
+ */
+export const putBack = (queued: ReadonlyArray<Queued>, draft: string, chip: About | null) => {
+  const said = queued.map(({ content }) => (isString(content) ? { content } : content));
+  const words = said.flatMap(({ content }) =>
+    isString(content)
+      ? [content]
+      : content.flatMap((part) =>
+          part.type === "text" && isString(part.content) ? [part.content] : [],
+        ),
+  );
+  return {
+    draft: [...words, draft.trim()].filter((one) => one.trim() !== "").join("\n\n"),
+    files: said.flatMap(({ content }) =>
+      isString(content) ? [] : content.flatMap((part) => Option.toArray(attachedIn(part))),
+    ),
+    chip:
+      chip ??
+      said
+        .map((one) => ("metadata" in one ? decodeAbout(one.metadata?.about) : Option.none()))
+        .find(Option.isSome)?.value ??
+      null,
+  };
+};
+
+/** The message box's submit button: Stop while the human's reply is under way, else Send. */
+export const submitButton = (status: "ready" | "submitted" | "streaming" | "error") =>
+  status === "submitted" || status === "streaming"
+    ? { status, label: "Stop the reply" }
+    : { status: "ready" as const, label: "Send" };
+
+/** What the window's status region has to say about. */
+export interface Heard {
+  readonly replying: boolean;
+  readonly stopped: boolean;
+  readonly notice: string | null;
+}
+
+/** What the status region announces as `was` becomes `now`; a reply finishing is not said. */
+export const announcement = (was: Heard, now: Heard): string | null => {
+  const said = [
+    now.replying && !was.replying ? "Replying…" : null,
+    now.stopped && !was.stopped ? "Reply stopped" : null,
+    now.notice !== null && now.notice !== was.notice ? now.notice : null,
+  ].filter((one) => one !== null);
+  return said.length === 0 ? null : said.join(" ");
+};

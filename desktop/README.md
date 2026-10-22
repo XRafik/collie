@@ -36,7 +36,10 @@ decides nothing from it.
 
 [ADR-0011](../docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-05-a-herds-chat-per-home-and-one-flock-chat-per-desktop)
 and its [harness amendment](../docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-09-the-flock-chat-runs-on-the-harness-settings-names).
-The harness, model and effort are chosen in selects under the message box. A model change
+The message box, `view/app/components/FlockChat.vue`, is Nuxt UI's `UChatPrompt`: the card
+chip and attachments in its header, the harness, model and effort selects and Send or Stop in
+its footer, and the notices above it. It only renders what the shared modules below work
+out. A model change
 waits for the current turn and keeps the conversation; a harness change waits for the next
 message, which starts a new conversation on it. Tested in
 `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`, `test/flock-chat-turns.test.ts`,
@@ -64,8 +67,8 @@ message, which starts a new conversation on it. Tested in
 | `src/bun/harness-lists.ts`   | Each harness's own list of models: read when first needed, kept in memory until Desktop quits, read again after a failure                                                                                                                                                 |
 | `src/bun/claude-models.ts`   | Claude Code's own list, read through a short-lived Agent SDK session that starts no turn                                                                                                                                                                                  |
 | `src/bun/pi-models.ts`       | Pi's own list and each model's thinking levels, read from a Pi RPC process that loads none of the human's setup, keeps no session and runs offline                                                                                                                        |
-| `src/shared/chat-choices.ts` | The resolver of what an unset model and effort run as, which the session is opened on; what each harness offers from its own list or Collie's table; the harness, model and effort selects                                                                                |
-| `src/shared/chat-view.ts`    | What the window says of a tool call, the card a message is about, and the Earlier conversations menu                                                                                                                                                                      |
+| `src/shared/chat-choices.ts` | The resolver of what an unset model and effort run as, which the session is opened on; what each harness offers from its own list or Collie's table; the harness, model and effort selects; the notices above the message box and what Stay puts back                     |
+| `src/shared/chat-view.ts`    | What the window says of a tool call, the card a message is about, and the Earlier conversations menu; what Stop puts back into the message box, the submit button's state and what the status region announces                                                            |
 
 The Toolkit both chats share is the root's `src/toolkit.ts`.
 

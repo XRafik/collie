@@ -1803,8 +1803,10 @@ state directory, links followed, because a Run's state changes only through the 
 Machine whose Collie is too old for files is told to upgrade. There is no shell on a
 Machine.
 
-The Flock chat's harness, model and effort are chosen in three selects in a row under its
-message box, in both chat windows, and saved for this computer only; **Settings › Chat**
+The Flock chat's harness, model and effort are chosen in three selects on the left of the
+message box's footer, with the paperclip and Send on its right, in both chat windows, and
+saved for this computer only. In a narrow pane the selects take the footer's first line and
+the paperclip and Send move to the right of the next; **Settings › Chat**
 has no rows for them. The harness offers `claude` and `pi`, using your own install and login
 on this computer; one that is not installed is shown but disabled, marked "not installed on
 this computer". Claude runs through the Agent SDK with summarised thinking. None of your Claude settings, hooks, skills
@@ -1889,6 +1891,20 @@ conversation is held on, what the session runs on now or that none is warm, and 
 and efforts each installed harness offers, saying where a list is still being read or was
 taken from Collie's table, and why.
 
+Above the message box, the window says what a choice will do. While the harness set is not
+the one the conversation is held on, an information notice says "Your next message starts a
+new conversation on Pi." with **Stay on Claude Code**, which puts back the harness, model and
+effort this window last saw set while the held harness was, through the same check as any
+choice; a window that never saw that, such as one opened after the switch, puts back the
+harness alone. During a turn, when what is set runs as something other than the reply, a
+neutral notice says "This reply finishes on Opus 5.5 · High. Your next message runs on
+Sonnet 5.5 · Medium." An unset choice that runs as what is running already says nothing. A
+screen reader hears each notice as it appears, from one polite status region that also says
+"Replying…" when your reply starts and "Reply stopped" on Stop, but not when a reply
+finishes: the message list is a log, busy while a reply streams, so the finished reply is
+read once. A refusal is an alert. Every select, Stay and Stop is reached with Tab, and no
+state is shown by colour alone.
+
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or
 `~/.local/state/collie-desktop/`), so a restart resumes the same conversation. Claude Code
@@ -1905,7 +1921,13 @@ collapsed **Thinking** you can open. When the chat needs you to choose, it asks 
 buttons, and goes on when you click; any other permission it asks for is refused. Type
 while it is working and Enter queues your message as **Queued** until the turn ends, or
 drop it with its ✕. Ctrl+Enter sends it now instead: the turn under way, yours or one of
-Desktop's own, is interrupted and your message starts the next.
+Desktop's own, is interrupted and your message starts the next. Shift+Enter adds a line; the
+keys are the same as before the selects moved into the message box. While your own reply
+streams, Send is **Stop the reply**: it puts every queued message back into the message box
+first, their words in the order you queued them, a paragraph each, before anything you have
+typed since, their files with the attachments and, where no card is on the chip, the first
+card one of them was about. Then it stops the reply, and Desktop interrupts the turn. A turn
+of Desktop's own has no Stop. After an error the button still sends.
 
 Paste a screenshot with Ctrl+V, in the docked or the popped-out chat, and it goes with your
 next message: a chip above the input with its thumbnail, name and size, which its ✕ removes.

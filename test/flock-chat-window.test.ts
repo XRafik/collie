@@ -4,8 +4,11 @@ import { expect, test } from "bun:test";
 import {
   aboutLine,
   aboutNote,
+  announcement,
   earlierMenu,
   fromAboutNote,
+  putBack,
+  submitButton,
   toolRow,
 } from "../desktop/src/shared/chat-view";
 
@@ -93,4 +96,79 @@ test("Earlier conversations names each entry's harness, and says opening one on 
     "Opening a Claude Code conversation moves the chat to Claude Code.",
   );
   expect(earlierMenu({ current: "c-0", earlier: [claude] }, "claude").moves).toBeNull();
+});
+
+const CARD = { machine: "vm-mk", task: "t-1", run: "r-2", name: "Fix login redirect" };
+const OTHER = { machine: "vm-ci", task: "t-9", run: "r-9", name: "Nightly build" };
+const FILE = { id: "ab12/notes.md", name: "notes.md", size: 120, mediaType: "text/markdown" };
+const SHOT = { id: "cd34/shot.png", name: "shot.png", size: 4096, mediaType: "image/png" };
+const filePart = (file: typeof FILE) => ({
+  type: "document",
+  id: file.id,
+  source: { type: "file", value: file.id, mimeType: file.mediaType },
+  metadata: { name: file.name, size: file.size },
+});
+
+test("Stop puts the queued words back in the order they were queued, each a paragraph, before what is already typed", () => {
+  const queued = [
+    { content: "And what about vm-ci?" },
+    { content: { content: [{ type: "text", content: "Line one\nline two" }] } },
+    { content: "Then hold it." },
+  ];
+  expect(putBack(queued, "", null).draft).toBe(
+    "And what about vm-ci?\n\nLine one\nline two\n\nThen hold it.",
+  );
+  expect(putBack(queued, "  already typed ", null).draft).toBe(
+    "And what about vm-ci?\n\nLine one\nline two\n\nThen hold it.\n\nalready typed",
+  );
+});
+
+test("Stop puts the queued files back with the attachments, and a queued card on an empty chip", () => {
+  const queued = [
+    { content: { content: [filePart(FILE)] } },
+    { content: "plain" },
+    {
+      content: {
+        content: [{ type: "text", content: "and this" }, filePart(SHOT)],
+        metadata: { about: CARD },
+      },
+    },
+    { content: { content: "later", metadata: { about: OTHER } } },
+  ];
+  const back = putBack(queued, "", null);
+  expect(back.files).toEqual([FILE, SHOT]);
+  expect(back.draft).toBe("plain\n\nand this\n\nlater");
+  expect(back.chip).toEqual(CARD);
+  expect(putBack(queued, "", OTHER).chip).toEqual(OTHER);
+});
+
+test("Stop with nothing queued leaves the message box as it is", () => {
+  expect(putBack([], "half a thought", CARD)).toEqual({
+    draft: "half a thought",
+    files: [],
+    chip: CARD,
+  });
+});
+
+test("the submit button sends unless the human's reply is under way, when it stops it, and an error never makes it a retry", () => {
+  expect(submitButton("ready")).toEqual({ status: "ready", label: "Send" });
+  expect(submitButton("error")).toEqual({ status: "ready", label: "Send" });
+  expect(submitButton("submitted")).toEqual({ status: "submitted", label: "Stop the reply" });
+  expect(submitButton("streaming")).toEqual({ status: "streaming", label: "Stop the reply" });
+});
+
+test("the status region announces a reply starting, a Stop and each notice as it appears, and never a reply finishing", () => {
+  const quiet = { replying: false, stopped: false, notice: null };
+  const replying = { ...quiet, replying: true };
+  expect(announcement(quiet, replying)).toBe("Replying…");
+  expect(announcement(replying, { ...quiet, stopped: true })).toBe("Reply stopped");
+  expect(announcement(replying, quiet)).toBeNull();
+  const notice =
+    "This reply finishes on Opus 5.5 · High. Your next message runs on Sonnet 5.5 · Medium.";
+  expect(announcement(replying, { ...replying, notice })).toBe(notice);
+  expect(announcement({ ...replying, notice }, { ...replying, notice })).toBeNull();
+  expect(announcement({ ...replying, notice }, replying)).toBeNull();
+  const switched = "Your next message starts a new conversation on Pi.";
+  expect(announcement(quiet, { ...replying, notice: switched })).toBe(`Replying… ${switched}`);
+  expect(announcement({ ...quiet, stopped: true }, { ...quiet, stopped: true })).toBeNull();
 });

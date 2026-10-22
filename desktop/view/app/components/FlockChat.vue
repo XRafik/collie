@@ -4,7 +4,16 @@ import type { QueuedMessage } from "@tanstack/ai-client";
 import { DateTime, Option, type Schema } from "effect";
 import { isString } from "../../../../src/schema";
 import { attachedIn, dropKind, pastedImages, uriListPaths } from "../../../src/shared/attachments";
-import { aboutLine, DESKTOP_SAID, earlierMenu, questionsOf } from "../../../src/shared/chat-view";
+import {
+  aboutLine,
+  announcement,
+  DESKTOP_SAID,
+  earlierMenu,
+  type Heard,
+  putBack,
+  questionsOf,
+  submitButton,
+} from "../../../src/shared/chat-view";
 import { DEFAULT_CHAT_HARNESS } from "../../../src/shared/flock-settings";
 import type { ChatChoice } from "../composables/useChatChoices";
 
@@ -16,6 +25,8 @@ const {
   queue,
   cancelQueued,
   isLoading,
+  status,
+  stop,
   error,
   say,
   answer,
@@ -64,7 +75,7 @@ const { chip, choose } = useChip();
 const { popIn } = usePopOut();
 const draft = ref("");
 const input = ref<{ textareaRef?: HTMLTextAreaElement | null }>();
-const { selects, refused, dismiss, choose: save } = useChatChoices();
+const { selects, notice, refused, dismiss, choose: save, stay } = useChatChoices();
 // Hoisted, with UAlert's own color and variant: the close button's props type omits the
 // attributes Nuxt UI passes through.
 const DISMISS = {
@@ -73,9 +84,10 @@ const DISMISS = {
   "aria-label": "Dismiss",
   title: "Dismiss",
 };
+const backToInput = () => input.value?.textareaRef?.focus();
 /** Saves a choice at once, then puts the human back in the message box. */
-const chooseChat = (which: ChatChoice, value: string) =>
-  void save(which, value).then(() => input.value?.textareaRef?.focus());
+const chooseChat = (which: ChatChoice, value: string) => void save(which, value).then(backToInput);
+const stayHere = () => void stay().then(backToInput);
 onMounted(reload);
 const files = useAttachments();
 
@@ -126,6 +138,32 @@ const dropped = (event: DragEvent) => {
     void files.addPaths(paths, refused);
   } else for (const file of data.files) void files.add(file, false);
 };
+
+const button = computed(() => submitButton(status.value));
+const replying = computed(() => button.value.status !== "ready");
+const stopped = ref(false);
+watch(replying, (now) => {
+  if (now) stopped.value = false;
+});
+/** Puts the queue back into the message box, which the client discards on stop, then stops. */
+const stopReply = () => {
+  const back = putBack(queue.value, draft.value, chip.value);
+  draft.value = back.draft;
+  files.restore(back.files);
+  if (back.chip !== chip.value) choose(back.chip);
+  stopped.value = true;
+  stop();
+};
+const heard = computed((): Heard => ({
+  replying: replying.value,
+  stopped: stopped.value,
+  notice: notice.value?.said ?? null,
+}));
+const said = ref("");
+watch(heard, (now, was) => {
+  const told = announcement(was, now);
+  if (told !== null) said.value = told;
+});
 
 /** The files a message part is, where it is one. */
 const attachedOf = (part: { readonly type: string }) => Option.getOrNull(attachedIn(part));
@@ -262,6 +300,8 @@ const queuedText = ({ content }: QueuedMessage) => {
     </header>
     <ol
       ref="list"
+      role="log"
+      :aria-busy="replying"
       data-testid="chat-messages"
       class="flex flex-1 flex-col gap-3 overflow-y-auto px-6 py-4"
       @scroll="follow"
@@ -365,32 +405,6 @@ const queuedText = ({ content }: QueuedMessage) => {
       </li>
     </ol>
     <p v-if="error" class="px-6 text-sm text-error wrap-anywhere">{{ error.message }}</p>
-    <div v-if="chip !== null" class="px-6 pt-2">
-      <UBadge data-testid="chat-chip" color="primary" variant="subtle" class="max-w-full gap-1">
-        <span class="truncate">About: {{ aboutLine(chip) }}</span>
-        <UButton
-          icon="i-lucide-x"
-          color="primary"
-          variant="link"
-          size="xs"
-          aria-label="Clear"
-          data-testid="chat-chip-clear"
-          @click="choose(null)"
-        />
-      </UBadge>
-    </div>
-    <div v-if="files.pending.value.length > 0" class="flex flex-wrap gap-2 px-6 pt-2">
-      <AttachmentChip
-        v-for="file in files.pending.value"
-        :key="file.id"
-        :file="file"
-        removable
-        @remove="files.remove(file.id)"
-      />
-    </div>
-    <p v-if="files.refused.value" data-testid="chat-refused" class="px-6 pt-2 text-sm text-error">
-      {{ files.refused.value }}
-    </p>
     <UAlert
       v-if="refused !== null"
       role="alert"
@@ -403,40 +417,130 @@ const queuedText = ({ content }: QueuedMessage) => {
       :close="DISMISS"
       @update:open="dismiss()"
     />
-    <form class="flex flex-wrap gap-2 border-t border-default px-6 py-3" @submit.prevent="send()">
-      <UTextarea
+    <UAlert
+      v-if="notice?.kind === 'switch'"
+      data-testid="chat-switch-notice"
+      class="mx-6 mt-2 w-auto"
+      color="info"
+      variant="subtle"
+      icon="i-lucide-info"
+      orientation="horizontal"
+      :description="notice.said"
+      :actions="[
+        {
+          label: notice.stay,
+          icon: 'i-lucide-undo-2',
+          color: 'info',
+          variant: 'outline',
+          onClick: stayHere,
+        },
+      ]"
+    />
+    <UAlert
+      v-else-if="notice?.kind === 'reply'"
+      data-testid="chat-reply-notice"
+      class="mx-6 mt-2 w-auto"
+      color="neutral"
+      variant="subtle"
+      icon="i-lucide-clock"
+    >
+      <template #description>
+        This reply finishes on <strong>{{ notice.finishes }}</strong
+        >. Your next message runs on <strong>{{ notice.next }}</strong
+        >.
+      </template>
+    </UAlert>
+    <form class="px-6 py-3" @submit.prevent="send()">
+      <UChatPrompt
         ref="input"
         v-model="draft"
+        as="div"
+        variant="outline"
         data-testid="chat-input"
-        class="flex-1"
         :rows="2"
-        autoresize
+        :autofocus="false"
+        :submit-on-enter="false"
         :placeholder="
           isLoading ? 'Enter queues it, Ctrl+Enter sends it now' : 'Ask about the Flock'
         "
+        :ui="{ header: 'flex-wrap', footer: 'flex-wrap' }"
         @keydown.enter.exact.prevent="send()"
         @keydown.ctrl.enter.exact.prevent="send(true)"
         @paste="pasted"
-      />
-      <UButton
-        icon="i-lucide-paperclip"
-        color="neutral"
-        variant="ghost"
-        aria-label="Attach files"
-        title="Attach files"
-        data-testid="chat-attach"
-        @click="files.pick()"
-      />
-      <UButton type="submit" icon="i-lucide-send" aria-label="Send" />
-      <div
-        v-if="selects !== null"
-        data-testid="chat-choices"
-        class="flex w-full min-w-0 flex-wrap items-center gap-1"
       >
-        <ChatSelect :select="selects.harness" @choose="chooseChat('harness', $event)" />
-        <ChatModelSelect :select="selects.model" @choose="chooseChat('model', $event)" />
-        <ChatSelect :select="selects.effort" @choose="chooseChat('effort', $event)" />
-      </div>
+        <template
+          v-if="chip !== null || files.pending.value.length > 0 || files.refused.value"
+          #header
+        >
+          <UBadge
+            v-if="chip !== null"
+            data-testid="chat-chip"
+            color="primary"
+            variant="subtle"
+            class="max-w-full gap-1"
+          >
+            <span class="truncate">About: {{ aboutLine(chip) }}</span>
+            <UButton
+              icon="i-lucide-x"
+              color="primary"
+              variant="link"
+              size="xs"
+              aria-label="Clear"
+              data-testid="chat-chip-clear"
+              @click="choose(null)"
+            />
+          </UBadge>
+          <AttachmentChip
+            v-for="file in files.pending.value"
+            :key="file.id"
+            :file="file"
+            removable
+            @remove="files.remove(file.id)"
+          />
+          <p
+            v-if="files.refused.value"
+            role="alert"
+            data-testid="chat-refused"
+            class="w-full text-sm text-error"
+          >
+            {{ files.refused.value }}
+          </p>
+        </template>
+        <template #footer>
+          <div
+            v-if="selects !== null"
+            data-testid="chat-choices"
+            class="flex min-w-0 grow flex-wrap items-center gap-1"
+          >
+            <ChatSelect :select="selects.harness" @choose="chooseChat('harness', $event)" />
+            <ChatModelSelect :select="selects.model" @choose="chooseChat('model', $event)" />
+            <ChatSelect :select="selects.effort" @choose="chooseChat('effort', $event)" />
+          </div>
+          <div class="ml-auto flex items-center gap-1">
+            <UButton
+              icon="i-lucide-paperclip"
+              color="neutral"
+              variant="ghost"
+              aria-label="Attach files"
+              title="Attach files"
+              data-testid="chat-attach"
+              @click="files.pick()"
+            />
+            <UChatPromptSubmit
+              :status="button.status"
+              :aria-label="button.label"
+              :title="button.label"
+              icon="i-lucide-send"
+              streaming-icon="i-lucide-square"
+              submitted-icon="i-lucide-square"
+              data-testid="chat-submit"
+              :class="replying ? '' : 'bg-primary-700 text-white hover:bg-primary-800'"
+              @stop="stopReply"
+            />
+          </div>
+        </template>
+      </UChatPrompt>
     </form>
+    <p role="status" aria-live="polite" class="sr-only">{{ said }}</p>
   </aside>
 </template>
