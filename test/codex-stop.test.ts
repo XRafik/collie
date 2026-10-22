@@ -17,7 +17,7 @@ import { PARKED, controlPath, foundationLayer, pollStatus } from "../src/engine"
 import { compactionSweeper, sweep } from "../src/cleanup";
 import { Herdr } from "../src/herdr";
 import { recordClaudeEvent } from "../src/compactors";
-import { installControls } from "../src/compaction";
+import { installControls, withControlLock } from "../src/compaction";
 import { processOf } from "../src/processes";
 import { FakeHerdr } from "./support/recorder";
 import { agentName } from "../src/naming";
@@ -1032,6 +1032,25 @@ test("a stop of a start herdr never admitted that cannot remove its record says 
     }),
   ));
 
+test("a stop of a start herdr never admitted whose controls are held elsewhere says it was not stopped", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stranded = yield* neverAdmitted;
+      const halt = yield* withControlLock(
+        `${rig.root}/state`,
+        agent,
+        halted({ herdr: neverAdmits() }),
+      );
+      expect(halt.stopped).toEqual([]);
+      expect(halt.left).toHaveLength(1);
+      expect(halt.left[0]).toContain(`${agent} could not be stopped yet`);
+      expect(yield* signals()).toEqual([]);
+      expect(alive(stranded)).toBe(true);
+      expect(yield* recorded()).not.toBeNull();
+      kill(stranded);
+    }),
+  ));
+
 const unreadable: ReadonlyArray<
   readonly [string, Effect.Effect<() => Effect.Effect<void>, never, FileSystem.FileSystem>]
 > = [
@@ -1111,7 +1130,14 @@ test("a stop that lands in a start herdr then refuses stops that start's server 
         { herdr },
       );
       expect(first._tag).toBe("Failure");
-      expect(herdr.halts).toEqual([{ stopped: [], left: [] }]);
+      expect(herdr.halts).toEqual([
+        {
+          stopped: [],
+          left: [
+            `${agent} could not be stopped yet: a start, prune or stop still holds its controls`,
+          ],
+        },
+      ]);
       expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
       expect(alive(yield* serverPid())).toBe(false);
       expect(yield* agentsLog()).toContain(`${agent}: quiet`);

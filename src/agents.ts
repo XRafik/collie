@@ -2574,13 +2574,13 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             compactionDeps(host, runId),
             name,
             host.stopMs,
-          ).pipe(
-            // A start still holding the lock is halted by its launch, once it has ended.
-            Effect.catchTag("ControlsInUse", () => Effect.succeed(null)),
-            Effect.result,
-          );
+          ).pipe(Effect.result);
           if (reached._tag === "Failure")
-            left.push(`${name} could not be stopped (${reason(reached.failure)})`);
+            left.push(
+              reached.failure._tag === "ControlsInUse"
+                ? `${name} could not be stopped yet: a start, prune or stop still holds its controls`
+                : `${name} could not be stopped (${reason(reached.failure)})`,
+            );
           else if (reached.success?.state === "quiet") stopped.push(name);
           else if (reached.success !== null)
             left.push(notStopped(name, reached.success, reached.success.target));

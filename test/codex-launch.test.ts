@@ -104,7 +104,6 @@ const Started = Schema.Struct({
   env: Schema.Record(Schema.String, Schema.NullOr(Schema.String)),
 });
 const decodeStarted = Schema.decodeUnknownOption(Schema.fromJsonString(Started));
-/** What the stand-in recorded of itself when it started. */
 const started = () =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.readFileString(eventsFile())),
@@ -126,7 +125,6 @@ const kill = (pid: number) => {
   }
 };
 
-/** Each `-c` value naming an `mcp_servers` entry, in the order the arguments give them. */
 const mcpOverrides = (argv: ReadonlyArray<string>) =>
   argv.flatMap((arg, at) => (argv[at - 1] === "-c" && arg.startsWith("mcp_servers.") ? [arg] : []));
 const agentStartArgs = (calls: ReadonlyArray<Call>) =>

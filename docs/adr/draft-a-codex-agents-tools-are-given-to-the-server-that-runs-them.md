@@ -78,9 +78,10 @@ fails its conditions. ADR-0059 D4's proof of ownership is unchanged.
 **D5. A Run's stop reaches a start herdr never admitted.** Such a start has a control record
 naming its server and the Run's log, but no launch, because the launch is recorded only once
 `agent start` succeeds. A Run's stop stops each such server too, through the same `stopAgent`
-and ADR-0059 D4's proof of ownership, under the agent's control lock. A start still holding
-that lock is not stopped then: its launch halts the Run's agents once it has ended, whether
-it started or failed. A record the stop cannot read, or a records directory it cannot list,
+and ADR-0059 D4's proof of ownership, under the agent's control lock. A record whose lock
+another start, prune or stop still holds is named as not stopped yet, since none of them is
+sure to stop it. A start in flight then halts the Run's agents once it has ended, whether it
+started or failed. A record the stop cannot read, or a records directory it cannot list,
 is named as not stopped rather than taken as none. It never touches another Run's records.
 Its pane stays open, because Collie never learned which pane it was. The real canary found
 this: on the candidate, the stop of a failed control Run answered `applied` and stopped
