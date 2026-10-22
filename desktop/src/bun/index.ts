@@ -66,6 +66,7 @@ import { claudeCode, claudeModels } from "./claude";
 import { claudeDriver } from "./claude-driver";
 import { loopbackTools } from "./chat-endpoint";
 import { piDriver } from "./pi-driver";
+import { piModels } from "./pi-models";
 import { CHILD_CWD, childEnv, localShell, takeLoginEnv, which } from "./login-env";
 import { type ChatMachine, chatDoor } from "./flock-tools";
 import { heldSettings } from "./settings";
@@ -253,7 +254,7 @@ const main = Effect.gen(function* () {
   }).pipe(Effect.ignore);
   const logged = yield* actionsLog(own);
   const piConfig = readPiConfig(own).pipe(Effect.provide(BunServices.layer));
-  const lists = yield* harnessLists({ claude: claudeModels });
+  const lists = yield* harnessLists({ claude: claudeModels, pi: piModels });
   const desktop = yield* heldSettings(
     own,
     (): FlockSettings => SubscriptionRef.getUnsafe(flockSettings),

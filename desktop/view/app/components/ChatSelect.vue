@@ -29,7 +29,7 @@ const items = computed((): SelectItem[][] => [
     :class="select.disabled === null ? '' : 'border border-dashed border-accented ring-0'"
     :trailing-icon="select.disabled === null ? undefined : ''"
     class="max-w-full"
-    :content="{ class: 'min-w-60' }"
+    :ui="{ content: 'min-w-60' }"
     @update:model-value="(value: unknown) => emit('choose', String(value))"
   >
     {{ select.label }}

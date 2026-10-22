@@ -1844,10 +1844,18 @@ choices. While it is read, the menu says "Reading Claude Code's models… You ca
 model id." The first message's session waits for it, at most 20 seconds, then opens without
 it. Where it cannot be read, the menu opens with "Claude Code's list could not be read:
 <why>" and lists Collie's table instead, and the list is read again the next time it is
-needed. On Pi, the model select lists Collie's table: its models for the harness, the
-Flock's **More … models** for it, and the model set, each named by its id, each with every
-level the harness takes. Claude Code's own `default` entry and any model the check below
-would refuse are never listed. The menu can be searched, and an id
+needed. On Pi, the model select lists the models your own Pi offers, each as
+`provider/id` named as Pi names it, and only the thinking levels that model takes; a model
+that is no reasoning model, or whose only level is `off`, takes no effort. Desktop reads
+them from your own Pi, its install, login and `PI_CODING_AGENT_DIR`, offline and keeping no
+session (`pi --mode rpc --offline --no-session`), with none of your extensions, skills,
+prompt templates, context files, MCP servers, themes or tools, asking each reasoning model
+for its levels in turn; reading them runs no package check and changes none of your Pi
+settings. Pi's list is read, kept and
+waited for as Claude Code's is, and where it cannot be read the menu gives Pi's own words
+and lists Collie's table: its models for the harness, the Flock's **More … models** for it,
+and the model set, each named by its id, each with every level the harness takes. Claude
+Code's own `default` entry and any model the check below would refuse are never listed. The menu can be searched, and an id
 typed there is offered as **Use <id>**; a typed model is checked as a Run's model is, Pi's
 `provider/model` form included. The effort select lists the levels the model takes, as
 Claude Code lists them for its own models; from the table, `low`, `medium`, `high`, `xhigh`
@@ -1857,9 +1865,11 @@ effort for it is refused, and its session opens with no effort. Each select's fi
 · …**, unsets it and is named by what the chat runs with nothing set ("What the chat runs with
 no model set", and the same for effort): on Claude, `opus` at `medium`; on Pi, the
 provider/model Pi's own `settings.json` names as its default (Pi's own default where it names
-none) at the level it names for that model, else its default level, else `medium`. Pi's
-settings are read as each session opens, and Desktop passes the model and level to Pi
-explicitly, so a resumed conversation never gets back an older one. A choice saves at once
+none) at the level it names for that model, else its default level, else `medium`. An unset
+level the model does not take becomes the nearest one it does, as Pi's own clamp does: the
+next above, else the next below, so a configured `max` runs a model without `max` at its
+highest. Pi's settings are read as each session opens, and Desktop passes every model's
+level to Pi explicitly, so what the selects show is what runs. A choice saves at once
 and focus returns to the message box. A refused one, such as an effort the model does not
 take, shows its reason above the message box, ending "Nothing was saved.", with **Dismiss**.
 

@@ -14,6 +14,7 @@ import { childEnv } from "../desktop/src/bun/login-env";
 import { chatResolved, readPiConfig } from "../desktop/src/bun/chat-choices";
 import type { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
+import { type Lists, listsHeld } from "../desktop/src/bun/harness-lists";
 
 const withPi = <A, E>(
   body: (
@@ -194,7 +195,7 @@ interface HeldSettings {
 }
 
 /** The Flock chat on the Pi fixture, with Desktop's settings as `settings` has them at each message. */
-const piChat = (settings: HeldSettings) =>
+const piChat = (settings: HeldSettings, lists: Lists = {}) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const dir = yield* fs.makeTempDirectoryScoped({ prefix: "flock-pi-chat-" });
@@ -207,7 +208,7 @@ const piChat = (settings: HeldSettings) =>
       setMachineRule: () => Effect.void,
       inSync: () => Effect.succeed(""),
       resolve: () =>
-        chatResolved(settings.current, NO_FLOCK_SETTINGS, readPiConfig(dir)).pipe(
+        chatResolved(settings.current, NO_FLOCK_SETTINGS, readPiConfig(dir), listsHeld(lists)).pipe(
           Effect.provide(BunServices.layer),
         ),
       choicesOf: () => Effect.die("not read"),
@@ -273,6 +274,43 @@ test("Pi is opened at its configured level for the set model, read again as each
         "openai-codex/gpt-6.1-sol",
         "--thinking",
         "high",
+      ]);
+    }),
+  ));
+
+test("with Pi's own list, Pi is started at its configured level clamped to the levels the model takes", () =>
+  withPi(() =>
+    Effect.gen(function* () {
+      const lists: Lists = {
+        pi: {
+          from: "harness",
+          models: [
+            {
+              id: "openai-codex/gpt-6.1-sol",
+              label: "GPT-6.1 Sol",
+              efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+            },
+            {
+              id: "openai-codex/gpt-5.5",
+              label: "GPT-5.5",
+              efforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+            },
+          ],
+        },
+      };
+      const startedWith = (chatModel: string, level: string) =>
+        Effect.gen(function* () {
+          yield* writePi({ defaultThinkingLevel: level });
+          const { inspect } = yield* piChat(
+            { current: { proactive: false, chatHarness: "pi", chatModel } },
+            lists,
+          );
+          return (yield* inspect).args.slice(-2);
+        }).pipe(Effect.scoped);
+      expect(yield* startedWith("openai-codex/gpt-5.5", "max")).toEqual(["--thinking", "xhigh"]);
+      expect(yield* startedWith("openai-codex/gpt-6.1-sol", "off")).toEqual([
+        "--thinking",
+        "minimal",
       ]);
     }),
   ));

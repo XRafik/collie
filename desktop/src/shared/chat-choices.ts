@@ -93,10 +93,25 @@ const UNSET_EFFORT = "medium";
 export const effortsOf = (harness: string, model: string, models: ReadonlyArray<Offered>) =>
   models.find(({ id }) => id === model)?.efforts ?? tableEfforts(harness);
 
+const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** `level` where `takes` lists it, else the next above it, else the next below, as Pi clamps. */
+const clamped = (level: string, takes: ReadonlyArray<string>) => {
+  if (takes.includes(level)) return level;
+  const at = LEVELS.indexOf(level);
+  if (at < 0) return takes[0]!;
+  return (
+    LEVELS.slice(at).find((one) => takes.includes(one)) ??
+    LEVELS.slice(0, at).findLast((one) => takes.includes(one)) ??
+    takes[0]!
+  );
+};
+
 /**
  * What the chat runs on: the set model and effort, an unset model as the harness's default
  * (Pi's configured one, else its own) and an unset effort at medium (on Pi, its configured
- * level for that model), and no effort on a model that takes none.
+ * level for that model), clamped to the levels the model takes, and no effort on a model
+ * that takes none.
  */
 export const resolveChat = (
   set: ChatSet,
@@ -110,9 +125,11 @@ export const resolveChat = (
     (onPi && pi.defaultProvider && pi.defaultModel
       ? `${pi.defaultProvider}/${pi.defaultModel}`
       : (HARNESS_MODELS[harness]?.defaultModel ?? DEFAULT_MODEL));
-  if (effortsOf(harness, model, models).length === 0) return { harness, model, effort: null };
+  const takes = effortsOf(harness, model, models);
+  if (takes.length === 0) return { harness, model, effort: null };
+  if (set.effort !== undefined) return { harness, model, effort: set.effort };
   const level = onPi ? (pi.modelThinkingLevels?.[model] ?? pi.defaultThinkingLevel) : undefined;
-  return { harness, model, effort: set.effort ?? level ?? UNSET_EFFORT };
+  return { harness, model, effort: clamped(level ?? UNSET_EFFORT, takes) };
 };
 
 /** Whether the chat may offer `id` on `harness`: not the harness's own default, nor one the check refuses. */

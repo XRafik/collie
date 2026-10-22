@@ -13,6 +13,7 @@ import {
   type ListedModel,
   type Offer,
   type Offered,
+  type PiConfig,
   refusedChoice,
   resolveChat,
   tableOffer,
@@ -482,6 +483,79 @@ test("a list that could not be read opens the model menu with why, over Collie's
     "sonnet",
     "haiku",
     "opusplan",
+  ]);
+});
+
+/** Pi's own list as its reader gives it: levels differ by model. */
+const PI_LISTED: ReadonlyArray<ListedModel> = [
+  {
+    id: "openai-codex/gpt-6.1-sol",
+    label: "GPT-6.1 Sol",
+    efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+  },
+  {
+    id: "openai-codex/gpt-5.5",
+    label: "GPT-5.5",
+    efforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+  },
+  { id: "openai/gpt-4o-mini", label: "GPT-4o mini", efforts: [] },
+];
+
+test("on Pi, an unset effort runs at the configured level where the model takes it, else at the nearest it takes, as Pi clamps", () => {
+  const models = PI_LISTED.map((model) => ({ ...model, unsetEffort: null }));
+  const resolve = (model: string, pi: PiConfig) =>
+    resolveChat({ harness: "pi", model }, models, pi);
+  expect(resolve("openai-codex/gpt-5.5", { defaultThinkingLevel: "high" }).effort).toBe("high");
+  expect(resolve("openai-codex/gpt-5.5", { defaultThinkingLevel: "max" }).effort).toBe("xhigh");
+  expect(
+    resolve("openai-codex/gpt-6.1-sol", {
+      modelThinkingLevels: { "openai-codex/gpt-6.1-sol": "off" },
+    }).effort,
+  ).toBe("minimal");
+  expect(resolve("openai/gpt-4o-mini", { defaultThinkingLevel: "max" }).effort).toBeNull();
+  // A level the human set is theirs, not clamped.
+  expect(
+    resolveChat({ harness: "pi", model: "openai-codex/gpt-5.5", effort: "low" }, models, {
+      defaultThinkingLevel: "max",
+    }).effort,
+  ).toBe("low");
+});
+
+test("with Pi's own list, the selects offer each model only its own levels, and the unset level as Pi runs it", () => {
+  const set = { proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" };
+  const account = chatChoicesOf(
+    { heldOn: "pi", runsOn: null, turning: false },
+    { claude: true, pi: true },
+    set,
+    NO_FLOCK_SETTINGS,
+    { defaultThinkingLevel: "max" },
+    { pi: { from: "harness", models: PI_LISTED } },
+  );
+  const { model, effort } = chatSelects(set, account);
+  expect(model.note).toBe("Listed by Pi on this computer");
+  expect(model.options.slice(1)).toEqual([
+    { value: "openai-codex/gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    { value: "openai-codex/gpt-5.5", label: "GPT-5.5" },
+    { value: "openai/gpt-4o-mini", label: "GPT-4o mini", description: "takes no effort" },
+  ]);
+  expect(effort.options.map(({ label }) => label)).toEqual([
+    "Default · Extra high",
+    "Off",
+    "Minimal",
+    "Low",
+    "Medium",
+    "High",
+    "Extra high",
+  ]);
+  const sol = { ...set, chatModel: "openai-codex/gpt-6.1-sol" };
+  expect(chatSelects(sol, account).effort.options.map(({ value }) => value)).toEqual([
+    "default",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
   ]);
 });
 

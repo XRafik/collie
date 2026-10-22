@@ -41,8 +41,8 @@ waits for the current turn and keeps the conversation; a harness change waits fo
 message, which starts a new conversation on it. Tested in
 `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`, `test/flock-chat-turns.test.ts`,
 `test/flock-chat-window.test.ts`, `test/desktop-chat-choices.test.ts`,
-`test/desktop-claude-models.test.ts`, `test/desktop-harness-lists.test.ts`,
-`test/desktop-settings.test.ts` and `test/flock-tools.test.ts`.
+`test/desktop-claude-models.test.ts`, `test/desktop-pi-models.test.ts`,
+`test/desktop-harness-lists.test.ts`, `test/desktop-settings.test.ts` and `test/flock-tools.test.ts`.
 
 | File                         | What it owns                                                                                                                                                                                                                                                              |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -63,6 +63,7 @@ message, which starts a new conversation on it. Tested in
 | `src/bun/chat-choices.ts`    | What the chat runs on next, and the `ChatChoices` stream every chat window subscribes to: what it is held on, runs on and could run on                                                                                                                                    |
 | `src/bun/harness-lists.ts`   | Each harness's own list of models: read when first needed, kept in memory until Desktop quits, read again after a failure                                                                                                                                                 |
 | `src/bun/claude-models.ts`   | Claude Code's own list, read through a short-lived Agent SDK session that starts no turn                                                                                                                                                                                  |
+| `src/bun/pi-models.ts`       | Pi's own list and each model's thinking levels, read from a Pi RPC process that loads none of the human's setup, keeps no session and runs offline                                                                                                                        |
 | `src/shared/chat-choices.ts` | The resolver of what an unset model and effort run as, which the session is opened on; what each harness offers from its own list or Collie's table; the harness, model and effort selects                                                                                |
 | `src/shared/chat-view.ts`    | What the window says of a tool call, the card a message is about, and the Earlier conversations menu                                                                                                                                                                      |
 

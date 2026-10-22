@@ -13,6 +13,12 @@ const items = computed((): SelectMenuItem[][] => [
     ? []
     : [[{ type: "label" as const, label: props.select.note }]]),
 ]);
+
+// Hoisted: the props' types omit the attributes Nuxt UI passes through to the input.
+const SEARCH = {
+  placeholder: "Search or type a model id",
+  "aria-label": "Search or type a model id",
+};
 </script>
 
 <template>
@@ -21,16 +27,13 @@ const items = computed((): SelectMenuItem[][] => [
     :items="items"
     value-key="value"
     :aria-label="select.name"
-    :search-input="{
-      placeholder: 'Search or type a model id',
-      'aria-label': 'Search or type a model id',
-    }"
+    :search-input="SEARCH"
     create-item
     size="sm"
     color="neutral"
     variant="soft"
     class="max-w-full"
-    :content="{ class: 'min-w-72' }"
+    :ui="{ content: 'min-w-72' }"
     @update:model-value="(value: unknown) => emit('choose', String(value))"
     @create="(id: string) => emit('choose', id.trim())"
   >

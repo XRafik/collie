@@ -814,3 +814,51 @@ test("with Claude Code's own list held, an effort on Haiku 4.5 is refused, and c
       );
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));
+
+test("with Pi's own list held, an effort the model does not list is refused, and a model that drops the set level unsets it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
+      yield* writeSettings(dir, {
+        proactive: true,
+        chatHarness: "pi",
+        chatModel: "openai-codex/gpt-6.1-sol",
+        chatEffort: "max",
+      });
+      const held = yield* heldSettings(
+        dir,
+        () => NO_FLOCK_SETTINGS,
+        Effect.succeed({}),
+        (): Lists => ({
+          pi: {
+            from: "harness",
+            models: [
+              {
+                id: "openai-codex/gpt-6.1-sol",
+                label: "GPT-6.1 Sol",
+                efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+              },
+              {
+                id: "openai-codex/gpt-5.5",
+                label: "GPT-5.5",
+                efforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+              },
+            ],
+          },
+        }),
+      );
+      expect(yield* held.setChatHarness({ model: "openai-codex/gpt-5.5", effort: "max" })).toBe(
+        '"max" is not an effort openai-codex/gpt-5.5 takes (off, minimal, low, medium, high, xhigh)',
+      );
+      expect(yield* held.setChatHarness({ model: "openai-codex/gpt-5.5" })).toBeNull();
+      expect(held.current()).toEqual({
+        proactive: true,
+        chatHarness: "pi",
+        chatModel: "openai-codex/gpt-5.5",
+      });
+      expect(yield* held.setChatHarness({ effort: "off" })).toBeNull();
+      expect(yield* held.setChatHarness({ model: "openai-codex/gpt-6.1-sol" })).toBeNull();
+      expect(held.current().chatEffort).toBeUndefined();
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));

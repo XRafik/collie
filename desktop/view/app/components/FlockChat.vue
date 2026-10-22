@@ -65,6 +65,14 @@ const { popIn } = usePopOut();
 const draft = ref("");
 const input = ref<{ textareaRef?: HTMLTextAreaElement | null }>();
 const { selects, refused, dismiss, choose: save } = useChatChoices();
+// Hoisted, with UAlert's own color and variant: the close button's props type omits the
+// attributes Nuxt UI passes through.
+const DISMISS = {
+  color: "neutral" as const,
+  variant: "link" as const,
+  "aria-label": "Dismiss",
+  title: "Dismiss",
+};
 /** Saves a choice at once, then puts the human back in the message box. */
 const chooseChat = (which: ChatChoice, value: string) =>
   void save(which, value).then(() => input.value?.textareaRef?.focus());
@@ -392,7 +400,7 @@ const queuedText = ({ content }: QueuedMessage) => {
       variant="subtle"
       icon="i-lucide-circle-alert"
       :description="refused"
-      :close="{ 'aria-label': 'Dismiss', title: 'Dismiss' }"
+      :close="DISMISS"
       @update:open="dismiss()"
     />
     <form class="flex flex-wrap gap-2 border-t border-default px-6 py-3" @submit.prevent="send()">

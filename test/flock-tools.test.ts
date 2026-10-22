@@ -1086,6 +1086,53 @@ test("the chat's read lists Claude Code's own models by id and name, and says wh
     }).pipe(Effect.provide(BunServices.layer)),
   ));
 
+test("the chat's read lists Pi's own models, each with its own levels, and the unset level as Pi runs it", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      chat = { proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" };
+      const read = yield* callFlockTool(
+        {
+          ...flockOf([]),
+          chatHarness: () => ({ harness: "pi", model: "openai-codex/gpt-5.5" }),
+          chatChoices: Effect.sync(() =>
+            chatChoicesOf(
+              { heldOn: "pi", runsOn: null, turning: false },
+              { claude: false, pi: true },
+              chat,
+              NO_FLOCK_SETTINGS,
+              { defaultThinkingLevel: "max" },
+              {
+                pi: {
+                  from: "harness",
+                  models: [
+                    {
+                      id: "openai-codex/gpt-6.1-sol",
+                      label: "GPT-6.1 Sol",
+                      efforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+                    },
+                    {
+                      id: "openai-codex/gpt-5.5",
+                      label: "GPT-5.5",
+                      efforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+                    },
+                  ],
+                },
+              },
+            ),
+          ),
+        },
+        "collie_chat_harness",
+        {},
+      );
+      expect(read).toContain(
+        "The Flock chat is set to pi, model openai-codex/gpt-5.5, with no effort set: it runs at xhigh.",
+      );
+      expect(read).toContain(
+        "- pi, as Pi lists them: openai-codex/gpt-6.1-sol, GPT-6.1 Sol (minimal, low, medium, high, xhigh, max); openai-codex/gpt-5.5, GPT-5.5 (off, minimal, low, medium, high, xhigh)",
+      );
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
 test("a start that names no Machine while several are reachable is still refused, rule or no rule", () =>
   Effect.runPromise(
     Effect.gen(function* () {
