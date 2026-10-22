@@ -302,7 +302,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
     }),
     output: Schema.String,
     // The one agent every step continues, on Claude Code, whose auto mode it is started in.
-    agents: { harness: "claude", model: "default", effort: "medium" },
+    agents: { harness: "claude", model: "default", effort: "high" },
     hints: { repository: "repository" },
     // Detached at the default branch, so no branch of the repository is bound to this Run.
     checkout: "roaming",
