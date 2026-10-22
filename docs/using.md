@@ -1342,8 +1342,15 @@ nothing to remove says "Nothing to remove now". Every Machine that listed starts
 **All** and **None** change that, and a line under the list says what the chosen Machines
 would free together, sized as `collie cleanup` prints it. A Machine Desktop doesn't reach
 shows its state and why, and can't be chosen; one Out of reach or Waiting for SSO adds that
-its host still cleans up there every ten minutes. One whose listing failed, whose host did
-not answer in 15 seconds, or whose Collie is too old to list says so and can't be chosen.
+its host still cleans up there every ten minutes. Each connected Machine is read on its own,
+and its row fills as soon as that Machine answers, so a slow one holds back no other; until
+then it says how long it has waited, "Reading… 23 s", and can't be chosen. A listing is
+waited on as long as its Machine stays connected, and asked again over the new connection
+when its connection is renewed or breaks; it gives up 2 minutes after it was asked, saying
+its host did not answer within 2 minutes or its connection did not come back. One whose
+listing failed, or whose Collie is too old to list, says so and can't be chosen; so does one
+that wasn't connected when the dialog read. Each of those offers **Read again**, which asks
+that Machine alone for a fresh 2 minutes, until any Machine has been swept from the dialog.
 
 **Clean up 2 Machines** ("Clean up 1 Machine" for one) under that line sweeps every chosen
 Machine at once, each on its own, with no question first: its host does the same every ten
