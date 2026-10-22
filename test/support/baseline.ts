@@ -10059,7 +10059,192 @@ for (const name of ["gitlab", "github"] as const) {
           const model = yield* forge.model();
           yield* bin.restore();
           expect(outcomeText(status)).toBe(
-            `stage of ${mr} at ${head.slice(0, 8)} failed: \`e2e-stage\` has not passed on the merge request's pipeline at ${head.slice(0, 8)}: it is failed. Its rollback is not shown: stage still carries ${head.slice(0, 8)}`,
+            `stage of ${mr} at ${head.slice(0, 8)} failed: \`e2e-stage\` has not passed on the merge request's pipeline at ${head.slice(0, 8)}: it is failed. Its rollback is not shown: stage still carries ${head.slice(0, 8)} in \`stage\``,
+          );
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`]);
+          expect(yield* releaseAgainOffered(target)).toBe(true);
+        }),
+      ),
+    120_000,
+  );
+
+  const MONOREPO_JOBS = ["build", "deploy-stage-spilnu", "deploy-stage-happytiger"] as const;
+  const monorepoJob = (job: (typeof MONOREPO_JOBS)[number]) => {
+    const id = MONOREPO_JOBS.indexOf(job) + 1;
+    return name === "gitlab"
+      ? `https://${PROJECT.gitlab}/-/jobs/${id}`
+      : `https://github.com/owner/repo/runs/${id}`;
+  };
+  const MONOREPO_STAGED = {
+    ...MONOREPO_ASSESSED,
+    stage_jobs: { merge_request: ["deploy-stage-spilnu", "deploy-stage-happytiger"], tag: [] },
+  };
+  const live = (sha: string) => ({ sha, status: "success" as const });
+
+  /**
+   * A monorepo's merge request, ready, whose pipeline deploys `stage-spilnu` and
+   * `stage-happytiger`, both on the commit production carries. `stage-web`, which its pipeline
+   * never deploys to, is on a commit of its own and is listed first, as the newest deployment.
+   * `onStage` is the forge once the stage step deployed the head to both and `happytiger`'s
+   * deployments followed.
+   */
+  const perEnvironment = Effect.gen(function* () {
+    const made = yield* stageable(name);
+    type Deployments = ReadonlyArray<{
+      readonly sha: string;
+      readonly status: "success" | "failed";
+    }>;
+    const environments = (spilnu: Deployments, happytiger: Deployments) => [
+      { name: "stage-web", tier: "staging", deployments: [live("web-only")] },
+      { name: "stage-spilnu", tier: "staging", deployments: spilnu },
+      { name: "stage-happytiger", tier: "staging", deployments: happytiger },
+      { name: "production", tier: "production", deployments: [live(made.base)] },
+    ];
+    const model: ForgeModel = {
+      ...made.model,
+      environments: environments([live(made.base)], [live(made.base)]),
+      mrs: made.model.mrs.map((one) => ({
+        ...one,
+        jobs: MONOREPO_JOBS.map((job) => ({ name: job, state: "passed" as const })),
+      })),
+    };
+    yield* made.forge.set(model);
+    const staged = [live(made.head), live(made.base)];
+    const onStage = (happytiger: Deployments): ForgeModel => ({
+      ...model,
+      environments: environments(staged, happytiger),
+    });
+    const rolledBack = (happytiger: Deployments): ForgeModel => ({
+      ...model,
+      environments: environments([live(made.base), ...staged], happytiger),
+    });
+    return { ...made, model, staged, onStage, rolledBack };
+  });
+  const MONOREPO_STAGE = { verdict: "clean", stage_jobs: [] };
+  const monorepoJobs = `\`deploy-stage-spilnu\` at ${monorepoJob("deploy-stage-spilnu")}, \`deploy-stage-happytiger\` at ${monorepoJob("deploy-stage-happytiger")}`;
+
+  scenario(
+    `release on ${name}: per environment, a merge request staged on only one of its two stage environments merges nothing, and the fix round names the other`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, base, onStage, rolledBack } = yield* perEnvironment;
+          claimed.length = 0;
+          const runId = `r-env-one-${name}`;
+          const happytiger = [{ sha: head, status: "failed" as const }, live(base)];
+          yield* rig.queueOutputs([
+            MONOREPO_STAGED,
+            { writes: [forge.holding(onStage(happytiger))], output: MONOREPO_STAGE },
+            { writes: [forge.holding(rolledBack(happytiger))], output: UNSTAGED },
+            DISPUTED_FIX,
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Stage the merge request");
+              yield* goAsked(run.asked, "go-2");
+              expect((yield* run.asked).map((row) => row.decision)).not.toContain("production");
+              yield* run.answer("go-2", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(model.merges ?? []).toEqual([]);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          const finding = yield* asked(runId, "fix-1");
+          expect(finding).toContain(
+            `stage does not carry ${head.slice(0, 8)} in \`stage-happytiger\``,
+          );
+          expect(finding).not.toContain("`stage-spilnu`");
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: per environment, a merge request on both its stage environments asks the production go naming both stage jobs, whatever another environment carries`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, base, staged, onStage, rolledBack } = yield* perEnvironment;
+          claimed.length = 0;
+          const runId = `r-env-both-${name}`;
+          yield* rig.queueOutputs([
+            MONOREPO_STAGED,
+            { writes: [forge.holding(onStage(staged))], output: MONOREPO_STAGE },
+            { writes: [forge.holding(rolledBack([live(base), ...staged]))], output: UNSTAGED },
+          ]);
+          const prompt = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              const production = yield* tested(run);
+              yield* run.answer("production", "Finish");
+              yield* ended(run.status);
+              return production.prompt;
+            }),
+          );
+          yield* bin.restore();
+          expect(prompt).toContain(head.slice(0, 8));
+          expect(prompt).toContain(monorepoJobs);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: per environment, Finish rolls back only the stage environments the head reached, whatever another environment carries`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, staged, onStage, rolledBack, base } = yield* perEnvironment;
+          claimed.length = 0;
+          const runId = `r-env-finish-${name}`;
+          yield* rig.queueOutputs([
+            MONOREPO_STAGED,
+            { writes: [forge.holding(onStage(staged))], output: MONOREPO_STAGE },
+            { writes: [forge.holding(rolledBack([live(base), ...staged]))], output: UNSTAGED },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* tested(run);
+              yield* run.answer("production", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open, and stage rolled back`);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: per environment, a rollback that leaves one stage environment on the head fails the Run naming it, keeps the claim and offers Release again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, staged, onStage, rolledBack } = yield* perEnvironment;
+          claimed.length = 0;
+          const runId = `r-env-partial-${name}`;
+          yield* rig.queueOutputs([
+            MONOREPO_STAGED,
+            { writes: [forge.holding(onStage(staged))], output: MONOREPO_STAGE },
+            { writes: [forge.holding(rolledBack(staged))], output: UNSTAGED },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* tested(run);
+              yield* run.answer("production", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} was left open, but stage was not rolled back. Its rollback is not shown: stage still carries ${head.slice(0, 8)} in \`stage-happytiger\``,
           );
           expect(model.merges ?? []).toEqual([]);
           expect(claimed).toEqual([`claim ${runId}`]);

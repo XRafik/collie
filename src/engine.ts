@@ -768,18 +768,19 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly pipeline: string;
       readonly jobs: ReadonlyArray<string>;
     }) => Effect.Effect<ProductionRead>;
-    /** The merge request's head on stage: its \`jobs\` passed there, and stage carries it. Take it inside an Activity. */
+    /** The merge request's head on stage: its \`jobs\` passed there, and every stage environment its pipeline deployed to carries it. Take it inside an Activity. */
     readonly readStage: (options: {
       readonly runId: string;
       readonly cwd: string;
       readonly head: string;
       readonly jobs: ReadonlyArray<string>;
     }) => Effect.Effect<StageRead>;
-    /** Whether stage is shown back on what production carries, and off \`off\`. Take it inside an Activity. */
+    /** Whether stage is shown back on what production carries, and off \`off\`, in \`environments\` where named. Take it inside an Activity. */
     readonly readRollback: (options: {
       readonly runId: string;
       readonly cwd: string;
-      readonly off: string;
+      readonly off: ReadonlyArray<string>;
+      readonly environments?: ReadonlyArray<string>;
     }) => Effect.Effect<RollbackRead>;
     /** Takes over the landing of a merged merge request from the failed Run that made it. Take it inside an Activity. */
     readonly takeOverLanding: (options: {

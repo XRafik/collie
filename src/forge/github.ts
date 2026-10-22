@@ -16,6 +16,8 @@ import { epochMs } from "../time";
 import type {
   DeployTier,
   DeployedRead,
+  StagingEnvironment,
+  StagingRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -1108,6 +1110,84 @@ function deployed<R>(
   });
 }
 
+const EnvironmentsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({ environments: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+  ),
+);
+const EnvironmentDeploymentsJson = Schema.fromJsonString(
+  Schema.Array(Schema.Array(Schema.Struct({ id: Schema.Number, sha: Schema.String }))),
+);
+
+/** GitHub's environments have no tier, so a staging one is named for it: `stage-web`, `web_staging`. */
+const isStaging = (name: string) => /^(?:.+[-_/ ])?(?:stage|staging)(?:[-_/ ].+)?$/i.test(name);
+
+/**
+ * Each staging environment: its deployments newest first, the first whose latest status is
+ * `success` live; and whether any deployment there is of `commit`. GitHub links a deployment
+ * to no job, so it is matched by environment and commit.
+ */
+function stagingEnvironments<R>(
+  ref: MrRef,
+  commit: string | null,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<StagingRead, never, R> {
+  return Effect.gen(function* () {
+    if (ref.project === null) return { ok: false, reason: "no repository to read deployments of" };
+    const repo = `repos/${mrPath(ref)}`;
+    const unread = {
+      ok: false,
+      reason: `gh could not read ${ref.project}'s stage environments`,
+    } as const;
+    const pages = (route: string) =>
+      run("gh", ["api", `${repo}/${route}`, "--paginate", "--slurp"], cwd);
+    const listed = yield* pages("environments?per_page=100");
+    const named = Schema.decodeUnknownOption(EnvironmentsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(named)) return unread;
+    const environments: StagingEnvironment[] = [];
+    for (const { name } of named.value.flatMap((page) => page.environments)) {
+      if (!isStaging(name)) continue;
+      const env = encodeURIComponent(name);
+      const deployments = (route: string) =>
+        Effect.map(pages(route), (answer) =>
+          answer.code === 0
+            ? Option.map(
+                Schema.decodeUnknownOption(EnvironmentDeploymentsJson)(answer.stdout),
+                (all) => all.flat(),
+              )
+            : Option.none(),
+        );
+      const all = yield* deployments(`deployments?environment=${env}&per_page=100`);
+      if (Option.isNone(all)) return unread;
+      let live: string | null = null;
+      for (const deployment of all.value) {
+        const statuses = yield* run(
+          "gh",
+          ["api", `${repo}/deployments/${deployment.id}/statuses?per_page=1`],
+          cwd,
+        );
+        const latest = Schema.decodeUnknownOption(StatusesJson)(statuses.stdout);
+        if (statuses.code !== 0 || Option.isNone(latest)) return unread;
+        if (latest.value[0]?.state === "success") {
+          live = deployment.sha;
+          break;
+        }
+      }
+      let hasCommit = false;
+      if (commit !== null) {
+        const ofCommit = yield* deployments(
+          `deployments?environment=${env}&sha=${commit}&per_page=100`,
+        );
+        if (Option.isNone(ofCommit)) return unread;
+        hasCommit = ofCommit.value.length > 0;
+      }
+      environments.push({ name, live, hasCommit });
+    }
+    return { ok: true, environments };
+  });
+}
+
 /** `https://github.com/<o>/<r>/actions/runs/<id>`'s conclusion, or its status while it runs. */
 function runStatus<R>(
   url: string,
@@ -1345,6 +1425,7 @@ export const github: Forge = {
   details,
   liveTier,
   deployed,
+  stagingEnvironments,
   runStatus,
   pipeline,
   tagPipeline,

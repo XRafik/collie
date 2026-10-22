@@ -17,6 +17,8 @@ import { shellQuote } from "../script";
 import type {
   DeployTier,
   DeployedRead,
+  StagingEnvironment,
+  StagingRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -382,6 +384,57 @@ function deployed<R>(
       if (found !== undefined) return { ok: true, sha: found.sha };
       if (newest.value.length < 100) return { ok: true, sha: null };
     }
+  });
+}
+
+const EnvironmentDeploymentsJson = Schema.fromJsonString(
+  Schema.Array(Schema.Struct({ sha: Schema.String, status: Schema.String })),
+);
+
+/** Each environment of the staging tier, its deployments read newest first. */
+function stagingEnvironments<R>(
+  ref: MrRef,
+  commit: string | null,
+  cwd: string,
+  run: Runner<R>,
+): Effect.Effect<StagingRead, never, R> {
+  return Effect.gen(function* () {
+    const host = hostOf(ref.project);
+    if (!host || !ref.project) return { ok: false, reason: `${ref.project} is not on GitLab` };
+    const path = encodeURIComponent(ref.project.slice(host.length + 1));
+    const api = (route: string) =>
+      run("glab", ["api", "--hostname", host, `projects/${path}/${route}`], cwd);
+    const unread = {
+      ok: false,
+      reason: `glab could not read ${ref.project}'s stage environments`,
+    } as const;
+    const names: string[] = [];
+    for (let page = 1; ; page++) {
+      const environments = yield* api(`environments?per_page=100&page=${page}`);
+      const listed = Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout);
+      if (environments.code !== 0 || Option.isNone(listed)) return unread;
+      for (const env of listed.value) if (env.tier === "staging") names.push(env.name);
+      if (listed.value.length < 100) break;
+    }
+    const environments: StagingEnvironment[] = [];
+    for (const name of names) {
+      let live: string | null = null;
+      let hasCommit = false;
+      for (let page = 1; live === null || (commit !== null && !hasCommit); page++) {
+        const deployments = yield* api(
+          `deployments?environment=${encodeURIComponent(name)}&order_by=created_at&sort=desc&per_page=100&page=${page}`,
+        );
+        const newest = Schema.decodeUnknownOption(EnvironmentDeploymentsJson)(deployments.stdout);
+        if (deployments.code !== 0 || Option.isNone(newest)) return unread;
+        for (const one of newest.value) {
+          if (live === null && one.status === "success") live = one.sha;
+          if (one.sha === commit) hasCommit = true;
+        }
+        if (newest.value.length < 100) break;
+      }
+      environments.push({ name, live, hasCommit });
+    }
+    return { ok: true, environments };
   });
 }
 
@@ -1250,6 +1303,7 @@ export const gitlab: Forge = {
   details: mrDetails,
   liveTier,
   deployed,
+  stagingEnvironments,
   readReview,
   reply,
   merge,

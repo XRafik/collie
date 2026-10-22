@@ -161,6 +161,15 @@ export const ForgeModel = Schema.Struct({
         deployed: Schema.optionalKey(Schema.String),
         /** A newer deployment there that failed, which is not what is live. */
         failed: Schema.optionalKey(Schema.String),
+        /** Every deployment there, newest first; `deployed` and `failed` are not read where set. */
+        deployments: Schema.optionalKey(
+          Schema.Array(
+            Schema.Struct({
+              sha: Schema.String,
+              status: Schema.Literals(["success", "failed", "running"]),
+            }),
+          ),
+        ),
       }),
     ),
   ),
@@ -640,11 +649,11 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(
         pageOf(
           route,
-          environments.flatMap((env) =>
-            env.deployed === undefined
-              ? []
-              : [{ sha: env.deployed, environment: { name: env.name } }],
-          ),
+          deploymentsAsked(model, route).map(({ sha, status, environment }) => ({
+            sha,
+            status,
+            environment: { name: environment },
+          })),
         ),
       );
     const onMr = /^projects\/([^/]+)\/merge_requests\/(\d+)(?:\/(.+))?$/.exec(route);
@@ -895,16 +904,39 @@ function ghGraphql(model: ForgeModel, args: ReadonlyArray<string>): Answer | und
   return undefined;
 }
 
-/** Each environment's deployments, newest first: a failed newer one, then what is live. */
+/** Each environment's deployments, newest first: by default a failed newer one, then what is live. */
 const deploymentsOf = (model: ForgeModel) =>
-  (model.environments ?? []).flatMap((env, at) => [
-    ...(env.failed === undefined || env.failed === ""
-      ? []
-      : [{ id: at * 10 + 1, sha: env.failed, environment: env.name, state: "failure" }]),
-    ...(env.deployed === undefined
-      ? []
-      : [{ id: at * 10 + 2, sha: env.deployed, environment: env.name, state: "success" }]),
-  ]);
+  (model.environments ?? []).flatMap((env, at) =>
+    (
+      env.deployments ?? [
+        ...(env.failed === undefined || env.failed === ""
+          ? []
+          : [{ sha: env.failed, status: "failed" as const }]),
+        ...(env.deployed === undefined ? [] : [{ sha: env.deployed, status: "success" as const }]),
+      ]
+    ).map((one, n) => ({
+      id: at * 1000 + n + 1,
+      sha: one.sha,
+      environment: env.name,
+      state:
+        one.status === "failed" ? "failure" : one.status === "running" ? "in_progress" : one.status,
+      status: one.status,
+    })),
+  );
+
+/** The deployments a deployment list route asks for, by its `environment`, `sha` and `status`. */
+const deploymentsAsked = (model: ForgeModel, route: string) => {
+  const query = new URLSearchParams(route.split("?")[1] ?? "");
+  const environment = query.get("environment");
+  const sha = query.get("sha");
+  const status = query.get("status");
+  return deploymentsOf(model).filter(
+    (one) =>
+      (environment === null || one.environment === environment) &&
+      (sha === null || one.sha === sha) &&
+      (status === null || one.status === status),
+  );
+};
 
 /** `gh api repos/<o>/<r>/…`, for deployments, compare and Actions runs. */
 function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): Answer {
@@ -958,8 +990,13 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   if (model.deploysDown === true) return no();
   const tierOf = (name: string) =>
     (model.environments ?? []).find((env) => env.name === name)?.tier;
+  if (/\/environments\?/.test(route)) {
+    const environments = (model.environments ?? []).map((env) => ({ name: env.name }));
+    const page = { total_count: environments.length, environments };
+    return json(args.includes("--slurp") ? [page] : page);
+  }
   if (/\/deployments\?/.test(route)) {
-    const deployments = deploymentsOf(model).map(({ id, sha, environment }) => ({
+    const deployments = deploymentsAsked(model, route).map(({ id, sha, environment }) => ({
       id,
       sha,
       environment,

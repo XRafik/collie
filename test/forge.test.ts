@@ -557,6 +557,96 @@ for (const name of ["gitlab", "github"] as const) {
       ));
   });
 
+  describe(`the ${name} forge's stage per environment`, () => {
+    const stages = (environments: ForgeModel["environments"], over: Partial<ForgeModel> = {}) =>
+      fakeForge(name, model(name, { environments, ...over })).run;
+    const read = (
+      commit: string | null,
+      environments: ForgeModel["environments"],
+      over: Partial<ForgeModel> = {},
+    ) => forge.stagingEnvironments(ref(name), commit, "/w", stages(environments, over));
+    const success = (sha: string) => ({ sha, status: "success" as const });
+    const failed = (sha: string) => ({ sha, status: "failed" as const });
+
+    test("per environment: each stage environment's newest successful deployment is read, even where another's is newer", () =>
+      runEffect(
+        Effect.gen(function* () {
+          expect(
+            yield* read(null, [
+              { name: "stage-spilnu", tier: "staging", deployments: [success("newer")] },
+              { name: "production", tier: "production", deployments: [success("prod")] },
+              { name: "stage-happytiger", tier: "staging", deployments: [success("older")] },
+              { name: "review-7", tier: "development", deployments: [success("preview")] },
+            ]),
+          ).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-spilnu", live: "newer", hasCommit: false },
+              { name: "stage-happytiger", live: "older", hasCommit: false },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: a newer failed deployment is not what is live, and none at all is null", () =>
+      runEffect(
+        Effect.gen(function* () {
+          expect(
+            yield* read(null, [
+              {
+                name: "stage-spilnu",
+                tier: "staging",
+                deployments: [failed("broken"), success("good")],
+              },
+              { name: "stage-happytiger", tier: "staging", deployments: [failed("broken")] },
+            ]),
+          ).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-spilnu", live: "good", hasCommit: false },
+              { name: "stage-happytiger", live: null, hasCommit: false },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: the environments with a deployment of a commit, whatever its status, are listed", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const read1 = yield* read(HEAD, [
+            {
+              name: "stage-spilnu",
+              tier: "staging",
+              deployments: [success("other"), failed(HEAD), success("older")],
+            },
+            { name: "stage-happytiger", tier: "staging", deployments: [success("older")] },
+            { name: "stage-web", tier: "staging", deployments: [success(HEAD)] },
+          ]);
+          expect(read1).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-spilnu", live: "other", hasCommit: true },
+              { name: "stage-happytiger", live: "older", hasCommit: false },
+              { name: "stage-web", live: HEAD, hasCommit: true },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: a read the forge does not answer is a refusal naming the project, not none", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const refused = yield* read(
+            HEAD,
+            [{ name: "stage-spilnu", tier: "staging", deployments: [success(HEAD)] }],
+            { deploysDown: true },
+          );
+          expect(refused.ok).toBe(false);
+          expect(refused.ok ? "" : refused.reason).toContain(PROJECT[name]);
+        }),
+      ));
+  });
+
   test(`the ${name} forge says how its own pipeline or Actions run went, and nothing of the other's`, () =>
     runEffect(
       Effect.gen(function* () {
@@ -683,6 +773,33 @@ test("GitHub finds a tag's newest run whatever event started it, a release's amo
         ok: true,
         url: URLS.github.run.replace(/7$/, "9"),
       });
+    }),
+  ));
+
+test("GitLab reads a stage environment per environment beyond a page of its deployments", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "gitlab",
+        model("gitlab", {
+          environments: [
+            {
+              name: "stage-spilnu",
+              tier: "staging",
+              deployments: [
+                ...Array.from({ length: 120 }, () => ({
+                  sha: "failing",
+                  status: "failed" as const,
+                })),
+                { sha: HEAD, status: "success" as const },
+              ],
+            },
+          ],
+        }),
+      );
+      expect(yield* FORGES.gitlab.stagingEnvironments(ref("gitlab"), HEAD, "/w", fake.run)).toEqual(
+        { ok: true, environments: [{ name: "stage-spilnu", live: HEAD, hasCommit: true }] },
+      );
     }),
   ));
 

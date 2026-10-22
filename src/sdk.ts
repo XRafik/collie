@@ -927,9 +927,12 @@ export interface HostApi {
   }) => Effect.Effect<ProductionRead>;
   /**
    * Reads the recorded merge request's head on stage from the forge, rather than from an
-   * Output: `Staged` where each of `jobs`, one at least, passed on its head's pipeline and
-   * stage's newest successful deployment carries `head`, with each job's address; `Moved`
-   * where its head is no longer `head`; else `Failed` with why. Take it inside an Activity.
+   * Output, one stage environment at a time: `Staged` where each of `jobs`, one at least,
+   * passed on its head's pipeline, and the newest successful deployment of every stage
+   * environment that pipeline deployed to, one at least, carries `head`, with each job's
+   * address and those environments; `Moved` where its head is no longer `head`; else `Failed`
+   * with why, and the environments the pipeline reached where they could be read. Take it
+   * inside an Activity.
    */
   readonly readStage: (options: {
     readonly runId: string;
@@ -938,13 +941,16 @@ export interface HostApi {
     readonly jobs: ReadonlyArray<string>;
   }) => Effect.Effect<StageRead>;
   /**
-   * Whether the forge shows stage rolled back: its newest successful deployment no longer
-   * carries `off` and carries what production's has. Take it inside an Activity.
+   * Whether the forge shows stage rolled back: the newest successful deployment of each of
+   * `environments` carries none of `off` and carries what production's has. Where
+   * `environments` is not given, stage's newest successful deployment is read instead. Take
+   * it inside an Activity.
    */
   readonly readRollback: (options: {
     readonly runId: string;
     readonly cwd: string;
-    readonly off: string;
+    readonly off: ReadonlyArray<string>;
+    readonly environments?: ReadonlyArray<string>;
   }) => Effect.Effect<RollbackRead>;
   /**
    * For a merged merge request this Run recorded: takes over the landing of the newest Run

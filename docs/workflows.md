@@ -515,7 +515,9 @@ watches the tag pipeline's stage deploy and the repository's own stage checks
 (`e2e-stage`, smoke or the like), until the only jobs left are production jobs waiting
 for somebody to start them: a manual job on GitLab, which blocks the pipeline, or a job
 waiting on its environment's approval on GitHub. Collie then reads from the forge that
-the tag carries the merged commit, that stage's newest successful deployment carries it,
+the tag carries the merged commit, that stage's newest successful deployment carries it
+(this tag path still reads stage's newest deployment across the project, not each
+environment),
 that each named stage job passed, that every other job passed and none is still running or
 waiting to run, and that at least
 one production job waits to be started by hand. The pipeline's own state is not read: it
@@ -529,10 +531,16 @@ and keeps the claim.
 **Staging the merge request** tests it before anything is merged. The Run claims the
 repository and its `stage` step deploys the merge request's own pipeline at the go's head
 to stage, then runs the repository's stage checks there. Collie reads each stage job back
-on the merge request's head pipeline: every one passed, the head is still the go's, and
-stage's newest successful deployment carries that head. Where any of that does not hold,
-the `unstage` step rolls stage back to the newest release production carries; once the
-forge shows it there, the claim is given back, the failure is the finding of a fix round,
+on the merge request's head pipeline: every one passed and the head is still the go's. It
+then reads stage one environment at a time, as a monorepo deploys one stage environment per
+application: at least one staging environment has a deployment of the commit that pipeline
+ran on (its merge commit, for a merged-results pipeline), and the newest successful
+deployment of every such environment carries the head. A stage environment the pipeline
+never deployed to is not read. Where any of that does not hold, the failure names each
+environment that does not carry the head, and the `unstage` step rolls stage back to the
+newest release production carries; the rollback is read in exactly the environments the
+head reached, each of which must no longer carry the head and must carry production's
+newest. Once the forge shows that, the claim is given back, the failure is the finding of a fix round,
 and the Run goes back to the wait, so go 1 is asked again on the fixed head. A head that
 moved instead goes back to the wait with no fix round.
 
@@ -548,6 +556,9 @@ agent tags (where the tag's pipeline deploys stage too, it plays and checks thos
 production** then plays production with no further question, and **Leave production to
 me** plays nothing; either waits until the forge shows production carries the merge.
 **Finish** merges nothing, rolls stage back and ends with the merge request left open.
+Every rollback after staging the merge request is read in the stage environments the head
+reached; one that leaves any of them on the head, or off production's newest, fails
+the Run naming that environment and keeps the claim, so **Release again** takes it over.
 
 Choose **Stage the merge request** where you want to test the change on stage before it is
 on the default branch; choose **Merge, tag and stage** where reviewing it was enough and

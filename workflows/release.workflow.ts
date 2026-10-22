@@ -751,6 +751,12 @@ export default defineWorkflow({
           if (answer === GO.test) {
             stagings += 1;
             const n = stagings;
+            // The stage environments the head reached, which every rollback is read in; unknown until read.
+            let reached: ReadonlyArray<string> | undefined;
+            const reach = (read: typeof StageReadSchema.Type) => {
+              const named = read._tag === "Moved" ? undefined : read.environments;
+              if (named !== undefined) reached = [...new Set([...(reached ?? []), ...named])];
+            };
             /** Takes stage off `head` and gives the claim back, or fails keeping it where the forge cannot show that. */
             const unstage = (failure: string, failing: string) =>
               Effect.gen(function* () {
@@ -764,7 +770,7 @@ export default defineWorkflow({
                 const back = yield* Activity.make({
                   name: `${nth("unstage", n)}.read`,
                   success: RollbackReadSchema,
-                  execute: host.readRollback({ runId, cwd, off: head }),
+                  execute: host.readRollback({ runId, cwd, off: [head], environments: reached }),
                 });
                 if (back._tag === "Unshown")
                   return yield* fail(`${failing}. Its rollback is not shown: ${back.why}`);
@@ -784,6 +790,7 @@ export default defineWorkflow({
               success: StageReadSchema,
               execute: readStage,
             });
+            reach(onStage);
             if (onStage._tag === "Moved") {
               const moved = `its head moved to ${short(onStage.head)}`;
               yield* unstage(moved, `stage of ${mr} at ${short(head)} no longer holds: ${moved}`);
@@ -944,7 +951,7 @@ export default defineWorkflow({
         const back = yield* Activity.make({
           name: "read-rollback",
           success: RollbackReadSchema,
-          execute: host.readRollback({ runId, cwd, off: landed.sha }),
+          execute: host.readRollback({ runId, cwd, off: [landed.sha] }),
         });
         // Only a stage the forge shows back on production's release is safe to give back.
         if (back._tag === "Unshown")
