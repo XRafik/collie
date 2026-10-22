@@ -84,7 +84,7 @@ export default defineWorkflow({
   // The checkout it was started in is shared and may be dirty or behind its remote.
   checkout: "roaming",
   output: Schema.String,
-  agents: { harness: "claude", model: "opus", effort: "xhigh" },
+  agents: { harness: "claude", model: "opus", effort: "high" },
   run: ({ input }) =>
     Effect.gen(function* () {
       const host = yield* Host;
