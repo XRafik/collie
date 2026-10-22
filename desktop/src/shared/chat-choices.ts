@@ -37,6 +37,8 @@ export const Listed = Schema.Struct({
   why: Schema.optionalKey(Schema.String),
   unset: Resolved,
   models: Schema.Array(Offered),
+  /** The set model, where `models` lacks it. */
+  typed: Schema.optionalKey(Offered),
 });
 export type Listed = typeof Listed.Type;
 
@@ -136,19 +138,31 @@ export const resolveChat = (
 const offerable = (harness: string, extras: ReadonlyArray<string>) => (id: string) =>
   id !== DEFAULT_MODEL && resolveChoice([{ harness, model: id }], { [harness]: extras }).ok;
 
-/** `listed` offered from `from`, each with what it runs at unset. */
+/** `listed` offered from `from`, and `setModel` where it lacks it, each with what it runs at unset. */
 const offerOf = (
   from: Listed["from"],
   harness: string,
   listed: ReadonlyArray<ListedModel>,
   pi: PiConfig,
+  setModel?: string,
 ): Listed => {
   const unresolved = listed.map((model) => ({ ...model, unsetEffort: null }));
-  const models = unresolved.map((model) => ({
+  const offered = (model: ListedModel): Offered => ({
     ...model,
     unsetEffort: resolveChat({ harness, model: model.id }, unresolved, pi).effort,
-  }));
-  return { from, unset: resolveChat({ harness }, models, pi), models };
+  });
+  const models = listed.map(offered);
+  const offer: Listed = { from, unset: resolveChat({ harness }, models, pi), models };
+  return setModel === undefined || listed.some(({ id }) => id === setModel)
+    ? offer
+    : {
+        ...offer,
+        typed: offered({
+          id: setModel,
+          label: setModel,
+          efforts: effortsOf(harness, setModel, []),
+        }),
+      };
 };
 
 /**
@@ -169,7 +183,7 @@ export const tableOffer = (
     ]),
   ].filter(offerable(harness, extras));
   const listed = ids.map((id) => ({ id, label: id, efforts: tableEfforts(harness) }));
-  return offerOf("table", harness, listed, pi);
+  return offerOf("table", harness, listed, pi, setModel);
 };
 
 /** What `harness`'s own list offers: every model it lists but those the change check would refuse. */
@@ -178,12 +192,14 @@ export const harnessOffer = (
   listed: ReadonlyArray<ListedModel>,
   extras: ReadonlyArray<string>,
   pi: PiConfig,
+  setModel?: string,
 ): Listed =>
   offerOf(
     "harness",
     harness,
     listed.filter(({ id }) => offerable(harness, extras)(id)),
     pi,
+    setModel,
   );
 
 /** What `set` runs as, by the account: each unset choice as its harness resolved it. */
@@ -198,7 +214,9 @@ export const runsAs = (set: ChatSet, choices: ChatChoices): Resolved => {
       ? UNSET_EFFORT
       : set.model === undefined
         ? offer.unset.effort
-        : (models.find(({ id }) => id === model)?.unsetEffort ?? offer.unset.effort);
+        : ([...models, ...(offer.typed === undefined ? [] : [offer.typed])].find(
+            ({ id }) => id === model,
+          )?.unsetEffort ?? offer.unset.effort);
   return { harness, model, effort: set.effort ?? level ?? null };
 };
 

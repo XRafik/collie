@@ -52,13 +52,10 @@ export const offersOf =
   (harness: string): Listed => {
     const extras = extraModels(flock)[harness] ?? [];
     const list = lists[harness];
-    if (list?.from === "harness") return harnessOffer(harness, list.models, extras, pi);
-    const table = tableOffer(
-      harness,
-      harness === (settings.chatHarness ?? DEFAULT_CHAT_HARNESS) ? settings.chatModel : undefined,
-      extras,
-      pi,
-    );
+    const setModel =
+      harness === (settings.chatHarness ?? DEFAULT_CHAT_HARNESS) ? settings.chatModel : undefined;
+    if (list?.from === "harness") return harnessOffer(harness, list.models, extras, pi, setModel);
+    const table = tableOffer(harness, setModel, extras, pi);
     return list?.from === "table" ? { ...table, why: list.why } : table;
   };
 

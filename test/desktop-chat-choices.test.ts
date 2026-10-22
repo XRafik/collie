@@ -563,6 +563,24 @@ test("with Pi's own list, the selects offer each model only its own levels, and 
   ]);
 });
 
+test("a typed model Pi's list lacks says the level Pi has configured for it, not the default model's", () => {
+  const set = { proactive: true, chatHarness: "pi", chatModel: "ollama/typed" };
+  const account = chatChoicesOf(
+    { heldOn: "pi", runsOn: null, turning: false },
+    { claude: true, pi: true },
+    set,
+    NO_FLOCK_SETTINGS,
+    {
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.5",
+      defaultThinkingLevel: "low",
+      modelThinkingLevels: { "ollama/typed": "high" },
+    },
+    { pi: { from: "harness", models: PI_LISTED } },
+  );
+  expect(chatSelects(set, account).effort.label).toBe("Default · High");
+});
+
 test("choosing a select's default unsets it, and any other entry sets it", () => {
   expect(chosen("model", "default")).toEqual({ chatModel: "" });
   expect(chosen("effort", "default")).toEqual({ chatEffort: "" });
