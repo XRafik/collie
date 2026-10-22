@@ -8,6 +8,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcSerialization from "effect/rpc/RpcSerialization";
 import * as RpcServer from "effect/rpc/RpcServer";
+import { OfferView } from "../src/board-model";
 import { RunView } from "../src/engine";
 import { readEnv } from "../src/env";
 import { BUILD, socketOf } from "../src/host";
@@ -28,6 +29,7 @@ const Asked = RpcGroup.make(
     success: Schema.Array(RunView),
   }),
   Rpc.make("progress", { payload: { runId: Schema.String }, success: Schema.Null }),
+  Rpc.make("offers", { payload: { runId: Schema.String }, success: Schema.Array(OfferView) }),
 );
 
 const view = (runId: string, parent: string | null = null): RunView => ({
@@ -73,6 +75,7 @@ const hostOf = (dir: string, views: ReadonlyArray<RunView>, build = BUILD) =>
               count("run").pipe(Effect.as(views.find((one) => one.runId === runId) ?? null)),
             runs: () => count("runs").pipe(Effect.as(views)),
             progress: () => Effect.succeed(null),
+            offers: () => Effect.succeed([]),
           }),
         ),
         Layer.provide(RpcServer.layerProtocolSocketServer),

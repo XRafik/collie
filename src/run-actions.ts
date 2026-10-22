@@ -24,6 +24,7 @@ import {
   controlRun,
   followUpRun,
   grantRun,
+  invokeTypedOffer,
   rememberChecks,
   moduleFor,
   startRun,
@@ -319,6 +320,18 @@ export const registerRunExecutors = Effect.fn("runActions.register")(function* (
         door: by,
         runId: action.run,
         text: action.text,
+        request: by.requestId,
+        attachments: action.attachments,
+      }),
+    ),
+  );
+  registerExecutor("take_offer", (action, by, env) =>
+    carry(
+      invokeTypedOffer(env, {
+        door: by,
+        runId: action.run,
+        offer: action.offer,
+        input: action.inputs ?? {},
         request: by.requestId,
         attachments: action.attachments,
       }),

@@ -338,15 +338,20 @@ follow-up (see **Reopened**, ADR-0041).
 **Run** — One execution of a Workflow: its Inputs, its operations' Outputs and its status, kept as an audit trail. The host holds it. A restart or a resume re-enters the Workflow's current code and reuses every Activity already done, so finished work is not done again and a pending question is still pending; a Run whose code has since changed shape has no such promise, and one whose module is missing waits, naming the file. Nothing the previous engine recorded is carried over (ADR-0027). Its **slug** — `<workflow>-<what it is named after>` — names its agents, its tab and its row on the board, and for a mutating Run it is named after the task half of the Worktree's branch — the branch without the login it is namespaced under — so two Runs on different work can never read as the same row.
 
 **Task** — One piece of work a human is doing, and the Runs it takes: a plan, the
-implementation it chains into, the review of that. Recorded on every Run at creation and
-inherited by chains, follow-ups and resumes, so membership is a fact rather than a reading
-of a label — two Tasks may share a project prefix, and a workspace renamed by hand is
-still its Task's. A Run started fresh is a new Task, unless it is about a branch an open
-Task's checkout has out — the branch it is placed on, or the one its diff target names —
-and then it is that Task's: one workspace per Task. Anything else joins a Task only by an
-explicit **Continue task**. A child Run is its parent's Task's, unless it was started as work of
-its own (`ownTask`): then it is placed as a fresh start is, and is still its parent's
-child.
+implementation it chains into, the review of that, the release of its merge request.
+Recorded on every Run at creation and inherited by chains, follow-ups and resumes, so
+membership is a fact rather than a reading of a label — two Tasks may share a project
+prefix, and a workspace renamed by hand is still its Task's. A Task's **work** is what its
+Runs worked on: each branch one was placed on, other than the default branch, and each
+merge request one opened or was given — read from their records, never from the checkout
+the Task was rooted at. A Run started fresh is a new Task, unless it is about that work —
+the merge request its diff target names is one of a Task's, whatever state that Task is
+in, or the branch it is placed on or its diff target names is one of an open Task's, one
+whose workspace herdr has — and then it is the Task's that had it first: one workspace per
+Task. Joining is membership, not **Lineage**: a Run that joins has no parent. Anything
+else joins a Task only by an explicit **Continue task**. A child Run is its parent's
+Task's, unless it was started as work of its own (`ownTask`): then it is placed as a fresh
+start is, and is still its parent's child (ADR-draft-a-tasks-work-is-what-its-runs-worked-on).
 
 **Task workspace** — The herdr workspace a Task's Runs, tabs and agents live in. One per
 Task, made when its first Run is admitted, on the checkout that Run is given. It is never
@@ -555,8 +560,9 @@ second Go. A package is merged and tagged. Collie merges, and reads from the for
 decides on. The Run's agent fixes, stages, tags and plays the jobs. It works in the
 checkout of the merge request's source branch and is held to the **Checks** of the Run it
 was started from. It starts as a child from an implement Run's end menu, from a succeeded
-implement Run's `Release` offer, or on its own
-(ADR-draft-a-merge-request-is-released-on-a-humans-go).
+implement Run's `Release` offer — on the card, from the CLI or from chat — or on its own, and then it is still the **Task**'s whose
+merge request it is (ADR-draft-a-merge-request-is-released-on-a-humans-go,
+ADR-draft-a-tasks-work-is-what-its-runs-worked-on).
 
 **Stage Run** — One execution of the `stage` Workflow: one open merge request's head put
 on stage for testing, unmerged. It is not a release. It asks for no approval, answered or

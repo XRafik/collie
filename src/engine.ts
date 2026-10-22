@@ -4194,6 +4194,12 @@ const pointedAt = (
 
 const isText = Schema.is(Schema.String);
 
+/** A merge request as the forge names it, or null for anything that names no project's. */
+const mrKeyOf = (said: string | null) => {
+  const ref = mrRefOf(said);
+  return ref === null || ref.project === null ? null : `${ref.project}!${ref.iid}`;
+};
+
 /** The field a module gives this strategy, if it gives it to one. */
 const fieldWith = (hints: Readonly<Record<string, InputStrategy>>, strategy: InputStrategy) =>
   Object.entries(hints).find(([, hint]) => hint === strategy)?.[0];
@@ -5467,8 +5473,8 @@ const makeRegistry: (
       yield* ask.record({ checkout: { placed, opened } });
     }
     if (ask.taskLabel === undefined) return { placed, task: ask.task };
-    // One workspace per Task: a start on a branch an open Task already works — a review
-    // of its merge request, a fix of that review — is that Task's, wherever it came from.
+    // One workspace per Task: a start about a Task's work — a release of its merge request,
+    // a review of it, a fix of that review — is that Task's, wherever it came from.
     if (ask.workspace === undefined && opened === null) {
       const joined = yield* taskWorking(generation, ask, placed);
       if (joined !== null) return { placed, task: joined.id };
@@ -5518,7 +5524,11 @@ const makeRegistry: (
     return { placed, task: task.id };
   }, Effect.provideContext(bun));
 
-  /** The open Task already working the branch this Run is about, or null. */
+  /**
+   * The Task whose work this Run is about, or null: one whose Runs opened or were given the
+   * merge request its diff target names, or, while herdr has its workspace, were placed on
+   * its branch. Where several are, the one whose matching Run came first.
+   */
   const taskWorking = Effect.fn("Engine.taskWorking")(function* (
     generation: Generation,
     ask: {
@@ -5531,7 +5541,7 @@ const makeRegistry: (
   ) {
     const about = (ask: Parameters<typeof workOf>[0]) =>
       workOf(ask, runShell).pipe(Effect.orElseSucceed(() => null));
-    const work = yield* about({
+    const branch = yield* about({
       cwd: placed.cwd,
       branch: placed.branch,
       name: ask.runId,
@@ -5539,18 +5549,38 @@ const makeRegistry: (
       strategies: generation.hints,
       sources: ask.provenance,
     });
-    if (work === null) return null;
-    const open = yield* placing.herdr
-      .workspaceList()
-      .pipe(Effect.orElseSucceed((): ReadonlyArray<{ workspaceId: string }> => []));
-    const tasks = yield* listTasks(placing.env.stateDir).pipe(Effect.orElseSucceed(() => []));
-    for (const task of tasks) {
-      if (!open.some((one) => one.workspaceId === task.workspace)) continue;
-      // A Task's own work is the branch its checkout has out.
-      if (
-        (yield* about({ cwd: task.cwd, branch: null, name: task.id, inputs: {}, task: true })) ===
-        work
-      )
+    const mr = mrKeyOf(pointedAt(generation, ask.input));
+    if (branch === null && mr === null) return null;
+    const open = new Set(
+      branch === null
+        ? []
+        : (yield* placing.herdr
+            .workspaceList()
+            .pipe(Effect.orElseSucceed((): ReadonlyArray<{ workspaceId: string }> => []))).map(
+            (one) => one.workspaceId,
+          ),
+    );
+    const tasks = new Map(
+      (yield* listTasks(placing.env.stateDir).pipe(Effect.orElseSucceed(() => []))).map(
+        (task) => [task.id, task] as const,
+      ),
+    );
+    for (const row of yield* store.runs) {
+      const task = row.task === null || row.run === ask.runId ? undefined : tasks.get(row.task);
+      if (task === undefined) continue;
+      if (mr !== null) {
+        const recorded = live.get(row.generation);
+        const given = yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({})));
+        const mrs = [
+          yield* mergeRequestOf(fs, dir, row.run),
+          recorded === undefined ? null : pointedAt(recorded, given),
+        ].map(mrKeyOf);
+        if (mrs.includes(mr)) return task;
+      }
+      if (branch === null || !open.has(task.workspace) || unplaced(row)) continue;
+      const at = placedOf(row, {});
+      if (at.branch === null) continue;
+      if ((yield* about({ cwd: at.cwd, branch: at.branch, name: row.run, inputs: {} })) === branch)
         return task;
     }
     return null;

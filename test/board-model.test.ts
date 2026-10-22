@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 import { Effect, Schema } from "effect";
 import {
   cardActions,
+  givenOfferInput,
   mrUrlOf,
   mrWords,
   openMrLabel,
@@ -367,4 +368,21 @@ test("one Run is ready only where it leads its card, and a Run on no card says w
   });
   expect(readinessOfRun("r3", undefined, false).missing.map((one) => one.settling)).toEqual([true]);
   expect(readinessOfRun("r3", undefined, true).missing.map((one) => one.settling)).toEqual([false]);
+});
+
+test("an offer's text arguments are read as it declares them, null included, and none is added", () => {
+  const drawn = {
+    type: "object",
+    properties: {
+      note: { type: "string" },
+      count: { anyOf: [{ type: "integer" }, { type: "null" }] },
+      flag: { type: "boolean" },
+    },
+    required: ["note", "count", "flag"],
+  };
+  expect(givenOfferInput(drawn, { note: "null", count: "null" })).toEqual({
+    note: "null",
+    count: null,
+  });
+  expect(givenOfferInput(drawn, { count: "2", extra: "7" })).toEqual({ count: 2, extra: "7" });
 });

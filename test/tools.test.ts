@@ -981,6 +981,124 @@ test("collie_do records what became of the work, and starts a Run when asked to"
     }),
   ));
 
+/** A finished Run of a module that offers `grade-it`, which starts `graded`. */
+const offeringRun = Effect.fn("test.offeringRun")(function* () {
+  yield* save(world.user, [
+    "offered.workflow.ts",
+    "graded.workflow.ts",
+    "capability.ts",
+    "house.ts",
+  ]);
+  return yield* startedRun(
+    "offered",
+    { note: "the diff" },
+    (view) => view.status.status === "complete",
+    undefined,
+    "task-offering",
+  );
+});
+
+test("collie_run names what a finished Run offers, and why one it declares cannot be made now", () =>
+  inWorld(
+    Effect.gen(function* () {
+      const run = yield* offeringRun();
+
+      const offered = yield* call("collie_run", { run: run.id });
+      expect(offered).toContain("grade-it  Grade what this found (graded)");
+      expect(offered).toContain("look-again  Look again (offered)");
+
+      yield* call("collie_do", {
+        actions: [{ kind: "disposition", run: run.id, became: "abandoned" }],
+      });
+      expect(yield* call("collie_run", { run: run.id })).toContain(
+        "grade-it  Grade what this found (graded) — unavailable: its conditions are not met",
+      );
+    }),
+  ));
+
+test("collie_do takes a Run's offer, and what it starts is that Run's child in its Task", () =>
+  inWorld(
+    Effect.gen(function* () {
+      const run = yield* offeringRun();
+
+      const said = yield* call("collie_do", {
+        actions: [
+          {
+            kind: "take_offer",
+            run: run.id,
+            offer: "grade-it",
+            inputs: { note: "the diff", grade: "pass" },
+          },
+        ],
+      });
+      expect(said).toContain("take_offer: applied");
+      const started = /Started run (\S+) from/.exec(said)?.[1] ?? "";
+      const client = yield* connect(stateDir).pipe(Effect.orDie);
+      const child = yield* client.run({ runId: started }).pipe(Effect.orDie);
+      expect(child?.workflow).toBe("graded");
+      expect(child?.parent).toBe(run.id);
+      expect(child?.task).toBe("task-offering");
+    }),
+  ));
+
+test("an offer's argument that is not text is taken from the text chat gives it", () =>
+  inWorld(
+    Effect.gen(function* () {
+      yield* save(world.user, ["echo.workflow.ts"]);
+      const run = yield* startedRun("echo", { text: "hi", times: 1 }, asking("keep"));
+      yield* call("collie_do", {
+        actions: [{ kind: "answer", run: run.id, choiceId: "keep", answer: "yes" }],
+      });
+      const client = yield* connect(stateDir).pipe(Effect.orDie);
+      yield* until(
+        () => client.run({ runId: run.id }).pipe(Effect.orDie),
+        (view) => view?.status.status === "complete",
+      );
+
+      const said = yield* call("collie_do", {
+        actions: [
+          {
+            kind: "take_offer",
+            run: run.id,
+            offer: "echo-louder",
+            inputs: { text: "again", times: "2" },
+          },
+        ],
+      });
+      expect(said).toContain("take_offer: applied");
+      const started = /Started run (\S+) from/.exec(said)?.[1] ?? "";
+      const child = yield* until(
+        () => client.run({ runId: started }).pipe(Effect.orDie),
+        (view) => view !== null && view.waiting.length > 0,
+      );
+      expect(child?.input).toEqual({ text: "again", times: 2 });
+    }),
+  ));
+
+test("an offer the Run does not make, or cannot make now, starts nothing and says why", () =>
+  inWorld(
+    Effect.gen(function* () {
+      const run = yield* offeringRun();
+      const take = (offer: string) =>
+        call("collie_do", {
+          actions: [
+            { kind: "take_offer", run: run.id, offer, inputs: { note: "x", grade: "pass" } },
+          ],
+        });
+
+      expect(yield* take("deploy-it")).toContain(
+        `take_offer: failed — run "${run.id}" does not offer "deploy-it" now`,
+      );
+      yield* call("collie_do", {
+        actions: [{ kind: "disposition", run: run.id, became: "abandoned" }],
+      });
+      expect(yield* take("grade-it")).toContain(
+        `take_offer: failed — run "${run.id}" does not offer "grade-it": its conditions are not met`,
+      );
+      expect((yield* listRuns(env)).map((one) => one.id)).toEqual([run.id]);
+    }),
+  ));
+
 test("the definitions tool answers with the module an id runs, not the file below it", () =>
   inWorld(
     Effect.gen(function* () {
@@ -1303,6 +1421,7 @@ const startedRun = Effect.fn("test.startedRun")(function* (
   input: JsonObject,
   ready: (view: RunView) => boolean,
   parent?: string,
+  task?: string,
 ) {
   const client = yield* connect(stateDir).pipe(Effect.orDie);
   const { runId } = yield* client
@@ -1312,6 +1431,7 @@ const startedRun = Effect.fn("test.startedRun")(function* (
       request: yield* (yield* Crypto.Crypto).randomUUIDv4,
       input,
       parent,
+      task,
     })
     .pipe(Effect.orDie);
   yield* until(

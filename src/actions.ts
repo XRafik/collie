@@ -102,6 +102,16 @@ export const ActionSchema = Schema.Union([
     text: Schema.String,
     attachments: Schema.optionalKey(Attachments),
   }),
+  /** One of a finished Run's offers, decided again as it is taken. */
+  Schema.Struct({
+    kind: Schema.Literal("take_offer"),
+    run: Schema.String,
+    /** The offer's id, as `collie_run` lists it. */
+    offer: Schema.String,
+    /** What the offer's own arguments take; Collie fills in the rest from the Run. */
+    inputs: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+    attachments: Schema.optionalKey(Attachments),
+  }),
   Schema.Struct({
     kind: Schema.Literal("navigate"),
     run: Schema.String,
