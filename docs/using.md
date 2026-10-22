@@ -1834,12 +1834,26 @@ endpoint remains until Desktop quits. Its
 24-hour tool timeout leaves time for a question click or a slow Machine read. A question
 in a turn Desktop starts is answered at once that the human is not in that turn.
 
-The model select lists Collie's table of models for the harness, the Flock's **More …
-models** for it, and the model set, each named by its id. It can be searched, and an id
+On Claude, the model select lists the models your own Claude Code install offers, as it
+names and describes them, and the menu's last line says "Listed by Claude Code on this
+computer". Desktop reads that list from your install and login once per Desktop start,
+through an Agent SDK session that loads none of your settings, may use no tool, is kept
+nowhere and never sends a message, so reading it spends no tokens. It is read when a chat
+window first opens, or for another harness when you choose it or the chat's tool reads the
+choices. While it is read, the menu says "Reading Claude Code's models… You can still type a
+model id." The first message's session waits for it, at most 20 seconds, then opens without
+it. Where it cannot be read, the menu opens with "Claude Code's list could not be read:
+<why>" and lists Collie's table instead, and the list is read again the next time it is
+needed. On Pi, the model select lists Collie's table: its models for the harness, the
+Flock's **More … models** for it, and the model set, each named by its id, each with every
+level the harness takes. Claude Code's own `default` entry and any model the check below
+would refuse are never listed. The menu can be searched, and an id
 typed there is offered as **Use <id>**; a typed model is checked as a Run's model is, Pi's
-`provider/model` form included. The effort select lists the levels the model takes: on
-Claude `low`, `medium`, `high`, `xhigh` and `max`, on Pi those and `off` and `minimal`. For
-a model that takes no effort, it is disabled and says so. Each select's first entry, **Default
+`provider/model` form included. The effort select lists the levels the model takes, as
+Claude Code lists them for its own models; from the table, `low`, `medium`, `high`, `xhigh`
+and `max` on Claude, and on Pi those and `off` and `minimal`. A model that takes no effort,
+such as Haiku 4.5, says so in the model menu; its effort select is disabled and says so, an
+effort for it is refused, and its session opens with no effort. Each select's first entry, **Default
 · …**, unsets it and is named by what the chat runs with nothing set ("What the chat runs with
 no model set", and the same for effort): on Claude, `opus` at `medium`; on Pi, the
 provider/model Pi's own `settings.json` names as its default (Pi's own default where it names
@@ -1862,7 +1876,8 @@ conversation; the menu's last line says so. **Start fresh** stays on the harness
 can ask the chat to read or change these settings through `collie_chat_harness`, with the
 same checks as the selects. Its read says what each unset choice runs as, the harness the
 conversation is held on, what the session runs on now or that none is warm, and the models
-and efforts each installed harness offers.
+and efforts each installed harness offers, saying where a list is still being read or was
+taken from Collie's table, and why.
 
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or

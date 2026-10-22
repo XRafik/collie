@@ -1084,18 +1084,28 @@ const chatHarness = (
       const choices = yield* flock.chatChoices;
       const offers = choices.harnesses
         .filter(({ installed }) => installed)
-        .map(
-          ({ harness, offered }) =>
-            `- ${harness}: ${
-              offered.models.length === 0
-                ? "none listed"
-                : offered.models
-                    .map(({ id, efforts }) =>
-                      efforts.length === 0 ? `${id} (no effort)` : `${id} (${efforts.join(", ")})`,
-                    )
-                    .join("; ")
-            }`,
-        );
+        .map(({ harness, label, offered }) => {
+          if (offered.from === "reading")
+            return `- ${harness}: ${label}'s list is still being read; any model id it takes can be set meanwhile`;
+          const from =
+            offered.from === "harness"
+              ? `, as ${label} lists them`
+              : offered.why === undefined
+                ? ""
+                : `, from Collie's table, as ${label}'s list could not be read (${offered.why})`;
+          return `- ${harness}${from}: ${
+            offered.models.length === 0
+              ? "none listed"
+              : offered.models
+                  .map(({ id, label: name, efforts }) => {
+                    const named = name === id ? id : `${id}, ${name}`;
+                    return efforts.length === 0
+                      ? `${named} (no effort)`
+                      : `${named} (${efforts.join(", ")})`;
+                  })
+                  .join("; ")
+          }`;
+        });
       return [
         `The Flock chat is set to ${setTo(choices)}.`,
         `This conversation is held on ${choices.heldOn}; ${

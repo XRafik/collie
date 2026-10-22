@@ -3,7 +3,13 @@
 import { Effect, FileSystem, Path, Schema, Semaphore, SubscriptionRef } from "effect";
 import { resolveChoice } from "../../../src/harness-choice";
 import { isString } from "../../../src/schema";
-import { effortsOf, type Offer, type PiConfig, tableOffer } from "../shared/chat-choices";
+import {
+  effortsOf,
+  harnessOffer,
+  type Listed,
+  type PiConfig,
+  tableOffer,
+} from "../shared/chat-choices";
 import { ActionFailed, DesktopSettings, type DesktopSettingsChange } from "../shared/flock";
 import {
   CHAT_HARNESSES,
@@ -11,6 +17,7 @@ import {
   type FlockSettings,
   NO_FLOCK_SETTINGS,
 } from "../shared/flock-settings";
+import type { Lists } from "./harness-lists";
 
 const SettingsFile = Schema.fromJsonString(DesktopSettings);
 const FILE = "settings.json";
@@ -36,16 +43,24 @@ export const writeSettings = Effect.fn("Settings.write")(function* (
   );
 });
 
-/** What each harness offers, from Collie's table, with the set model on the set harness. */
-export const tableOffers =
-  (settings: DesktopSettings, flock: FlockSettings, pi: PiConfig) =>
-  (harness: string): Offer =>
-    tableOffer(
+/**
+ * What each harness offers: its own list once read, else Collie's table with the set model on
+ * the set harness, saying why where its own list could not be read.
+ */
+export const offersOf =
+  (settings: DesktopSettings, flock: FlockSettings, pi: PiConfig, lists: Lists = {}) =>
+  (harness: string): Listed => {
+    const extras = extraModels(flock)[harness] ?? [];
+    const list = lists[harness];
+    if (list?.from === "harness") return harnessOffer(harness, list.models, extras, pi);
+    const table = tableOffer(
       harness,
       harness === (settings.chatHarness ?? DEFAULT_CHAT_HARNESS) ? settings.chatModel : undefined,
-      extraModels(flock)[harness] ?? [],
+      extras,
       pi,
     );
+    return list?.from === "table" ? { ...table, why: list.why } : table;
+  };
 
 /**
  * `change` over `settings`. Another harness unsets a model and effort chosen for the one
@@ -55,7 +70,7 @@ export const tableOffers =
 export const applyChange = (
   settings: DesktopSettings,
   change: DesktopSettingsChange,
-  offers: (harness: string) => Offer = tableOffers(settings, NO_FLOCK_SETTINGS, {}),
+  offers: (harness: string) => Listed = offersOf(settings, NO_FLOCK_SETTINGS, {}),
 ): DesktopSettings => {
   const { chatModel, chatEffort, ...rest } = { ...settings, ...change };
   let applied: DesktopSettings = rest;
@@ -116,7 +131,7 @@ export const changeSettings = (
   settings: DesktopSettings,
   flock: FlockSettings,
   change: DesktopSettingsChange,
-  offers: (harness: string) => Offer = tableOffers(settings, flock, {}),
+  offers: (harness: string) => Listed = offersOf(settings, flock, {}),
 ): DesktopSettings | { readonly refused: string } => {
   const changed = applyChange(settings, change, offers);
   if (
@@ -147,6 +162,7 @@ export const heldSettings = Effect.fn("Settings.held")(function* (
   dir: string,
   flock: () => FlockSettings,
   pi: Effect.Effect<PiConfig, never, FileSystem.FileSystem | Path.Path>,
+  lists: () => Lists = () => ({}),
 ) {
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
   const held = yield* SubscriptionRef.make(yield* readSettings(dir));
@@ -158,7 +174,7 @@ export const heldSettings = Effect.fn("Settings.held")(function* (
         before,
         flock(),
         change,
-        tableOffers(before, flock(), yield* pi),
+        offersOf(before, flock(), yield* pi, lists()),
       );
       if ("refused" in merged) return yield* new ActionFailed({ reason: merged.refused });
       yield* writeSettings(dir, merged).pipe(

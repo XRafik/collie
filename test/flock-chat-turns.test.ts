@@ -14,6 +14,8 @@ import type { TurnCost } from "../desktop/src/bun/driver";
 import type { ChatDriver, DriverContext } from "../desktop/src/bun/driver";
 import { changeSettings } from "../desktop/src/bun/settings";
 import { chatChoicesOf, chatResolved } from "../desktop/src/bun/chat-choices";
+import { harnessLists } from "../desktop/src/bun/harness-lists";
+import type { ListedModel } from "../desktop/src/shared/chat-choices";
 import { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import type { SdkMessage } from "../desktop/src/bun/agui";
@@ -246,6 +248,8 @@ const withChat = <A, E>(
     /** The current conversation's file, as an earlier Desktop left it. */
     readonly savedFile?: string;
     readonly transcripts?: Transcripts;
+    /** Each harness's own list, read as Desktop reads it. */
+    readonly readers?: Readonly<Record<string, Effect.Effect<ReadonlyArray<ListedModel>, string>>>;
   },
   reply: (text: string) => ReadonlyArray<SdkMessage>,
   body: (chat: {
@@ -276,6 +280,7 @@ const withChat = <A, E>(
       if (opts.savedFile !== undefined)
         yield* fs.writeFileString(`${dir}/flock-chat.json`, opts.savedFile);
       const settings = opts.settings ?? { current: { proactive: opts.proactive } };
+      const lists = yield* harnessLists(opts.readers ?? {});
       const conversation = yield* openFlockChat({
         drivers: (context) => {
           if (opts.drivers !== undefined) return opts.drivers;
@@ -295,7 +300,7 @@ const withChat = <A, E>(
         machineRule: () => opts.rule ?? "Everything is on the vm",
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed(""),
-        resolve: () => chatResolved(settings.current, NO_FLOCK_SETTINGS, Effect.succeed({})),
+        resolve: () => chatResolved(settings.current, NO_FLOCK_SETTINGS, Effect.succeed({}), lists),
         choicesOf: (held, installed) =>
           Effect.succeed(chatChoicesOf(held, installed, settings.current, NO_FLOCK_SETTINGS, {})),
         chatHarness: () => ({
@@ -1286,5 +1291,57 @@ test("Desktop's own turn on Pi records its harness, model and token counts", () 
             cache_creation_input_tokens: 0,
           },
         });
+      }),
+  ));
+
+const HAIKU = "claude-haiku-4-5-20251001";
+
+test("the first message's session waits for Claude Code's list, and opens on what it says", () => {
+  const listed = Deferred.makeUnsafe<ReadonlyArray<ListedModel>, string>();
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings: { current: { proactive: false, chatModel: HAIKU } },
+      readers: { claude: Deferred.await(listed) },
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        const turn = yield* Stream.runDrain(conversation.send("hello", null, false)).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("10 seconds");
+        yield* TestClock.withLive(Effect.sleep("50 millis"));
+        expect(seen.sessions).toEqual([]);
+        yield* Deferred.succeed(listed, [{ id: HAIKU, label: "Haiku 4.5", efforts: [] }]);
+        yield* Fiber.join(turn);
+        expect(seen.sessions.map(({ model }) => model)).toEqual([HAIKU]);
+        expect(seen.efforts).toEqual([undefined]);
+      }),
+  );
+});
+
+test("a list slower than 20 seconds lets the first session open on Collie's table", () =>
+  withChat(
+    {
+      items: [],
+      proactive: false,
+      settings: { current: { proactive: false, chatModel: HAIKU } },
+      readers: { claude: Effect.never },
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        const turn = yield* Stream.runDrain(conversation.send("hello", null, false)).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("19 seconds");
+        yield* TestClock.withLive(Effect.sleep("50 millis"));
+        expect(seen.sessions).toEqual([]);
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(turn);
+        // Off the table's list, Haiku 4.5 takes the table's efforts, so it runs at medium.
+        expect(seen.efforts).toEqual(["medium"]);
       }),
   ));

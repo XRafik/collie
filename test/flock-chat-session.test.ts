@@ -5,6 +5,7 @@ import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver"
 import type { FlockChat } from "../desktop/src/bun/flock-tools";
 import { sessionOptions, userMcpServers } from "../desktop/src/bun/session";
 import { chatResolved } from "../desktop/src/bun/chat-choices";
+import { listsHeld } from "../desktop/src/bun/harness-lists";
 import type { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 let noticed: string | undefined;
@@ -45,12 +46,12 @@ test("the session is on the model it is given at medium effort, resumed, on the 
   });
 });
 
-/** The effort the Claude Code session is opened at, given `effort`, empty for none. */
-const openedAt = (effort: string) => {
-  const efforts: unknown[] = [];
+/** The options each Claude Code session is opened with, given `effort`, empty for none. */
+const openedWith = (effort: string) => {
+  const opened: Array<ReturnType<typeof sessionOptions<string>>> = [];
   const claude: ClaudeCode<string> = {
     query: ({ options }) => {
-      efforts.push(options.effort);
+      opened.push(options);
       return Object.assign(Stream.toAsyncIterable(Stream.empty), {
         interrupt: () => Promise.resolve(),
         close: () => {},
@@ -74,8 +75,12 @@ const openedAt = (effort: string) => {
   });
   return driver
     .open("5c1e6c8e-0000-4000-8000-000000000000", "opus", effort)
-    .pipe(Effect.scoped, Effect.as(efforts));
+    .pipe(Effect.scoped, Effect.as(opened));
 };
+
+/** The effort the Claude Code session is opened at, given `effort`, empty for none. */
+const openedAt = (effort: string) =>
+  openedWith(effort).pipe(Effect.map((opened) => opened.map((options) => options.effort)));
 
 /** The effort Desktop's settings resolve to, as the chat opens its session with it. */
 const resolvedEffort = (settings: DesktopSettings) =>
@@ -91,6 +96,33 @@ test("the session is opened at the effort Desktop's settings set, at medium with
       ).toEqual(["high"]);
       expect(yield* openedAt(yield* resolvedEffort({ proactive: true }))).toEqual(["medium"]);
       expect(yield* openedAt("")).toEqual([undefined]);
+    }),
+  ));
+
+test("with Claude Code's own list, Haiku 4.5 runs at no effort, and its session is opened with no effort option", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const haiku = "claude-haiku-4-5-20251001";
+      const resolved = yield* chatResolved(
+        { proactive: true, chatModel: haiku },
+        NO_FLOCK_SETTINGS,
+        Effect.succeed({}),
+        listsHeld({
+          claude: {
+            from: "harness",
+            models: [
+              { id: "opus", label: "Opus 5.5", efforts: ["low", "medium", "high"] },
+              { id: haiku, label: "Haiku 4.5", efforts: [] },
+            ],
+          },
+        }),
+      );
+      expect(resolved).toEqual({
+        ok: true,
+        choice: { harness: "claude", model: haiku, effort: null },
+      });
+      const [options] = yield* openedWith(resolved.ok ? (resolved.choice.effort ?? "") : "");
+      expect(options).not.toHaveProperty("effort");
     }),
   ));
 

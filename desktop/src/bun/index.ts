@@ -62,7 +62,7 @@ import { clipboardPaths } from "../shared/attachments";
 import { readAttachment, stageAttachment, stagePath } from "./attachments";
 import { actionsLog } from "./sent";
 import { type FlockConversation, openFlockChat, refusal, untilStarted } from "./chat";
-import { claudeCode } from "./claude";
+import { claudeCode, claudeModels } from "./claude";
 import { claudeDriver } from "./claude-driver";
 import { loopbackTools } from "./chat-endpoint";
 import { piDriver } from "./pi-driver";
@@ -70,6 +70,7 @@ import { CHILD_CWD, childEnv, localShell, takeLoginEnv, which } from "./login-en
 import { type ChatMachine, chatDoor } from "./flock-tools";
 import { heldSettings } from "./settings";
 import { chatChoicesOf, chatChoicesStream, chatResolved, readPiConfig } from "./chat-choices";
+import { harnessLists } from "./harness-lists";
 import { followWindow, zoomWindow } from "./scale";
 import type { Drawn } from "../shared/scale";
 import {
@@ -252,10 +253,12 @@ const main = Effect.gen(function* () {
   }).pipe(Effect.ignore);
   const logged = yield* actionsLog(own);
   const piConfig = readPiConfig(own).pipe(Effect.provide(BunServices.layer));
+  const lists = yield* harnessLists({ claude: claudeModels });
   const desktop = yield* heldSettings(
     own,
     (): FlockSettings => SubscriptionRef.getUnsafe(flockSettings),
     piConfig,
+    lists.now,
   );
   const settings = desktop.current;
   const saved = yield* readFlockSettings(own);
@@ -720,11 +723,25 @@ const main = Effect.gen(function* () {
         Effect.orDie,
         Effect.provide(BunServices.layer),
       ),
-    resolve: () => chatResolved(settings(), SubscriptionRef.getUnsafe(flockSettings), piConfig),
+    resolve: () =>
+      chatResolved(settings(), SubscriptionRef.getUnsafe(flockSettings), piConfig, lists),
+    // The chat's tool reads every installed harness's list.
     choicesOf: (held, installed) =>
-      Effect.map(piConfig, (pi) =>
-        chatChoicesOf(held, installed, settings(), SubscriptionRef.getUnsafe(flockSettings), pi),
-      ),
+      Effect.gen(function* () {
+        const harnesses = Object.keys(installed).filter((harness) => installed[harness]);
+        yield* Effect.forEach(harnesses, lists.settled, {
+          concurrency: "unbounded",
+          discard: true,
+        });
+        return chatChoicesOf(
+          held,
+          installed,
+          settings(),
+          SubscriptionRef.getUnsafe(flockSettings),
+          yield* piConfig,
+          lists.now(),
+        );
+      }),
     chatHarness: () => ({
       harness: settings().chatHarness ?? DEFAULT_CHAT_HARNESS,
       model: settings().chatModel,
@@ -1207,6 +1224,7 @@ const main = Effect.gen(function* () {
                 flock: SubscriptionRef.changes(flockSettings),
                 installed: opened.installed,
                 pi: piConfig,
+                lists,
               }),
             ),
           Stream.empty,

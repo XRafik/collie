@@ -21,6 +21,7 @@ import type { ChatBoard, DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS, takeFrom } from "../desktop/src/shared/flock-settings";
 import type { ChatHeld } from "../desktop/src/shared/chat-choices";
 import { chatChoicesOf } from "../desktop/src/bun/chat-choices";
+import type { Lists } from "../desktop/src/bun/harness-lists";
 import type { Attempted } from "../desktop/src/bun/sent";
 import { changeSettings } from "../desktop/src/bun/settings";
 import { fastForward } from "./support/effect";
@@ -1037,6 +1038,51 @@ ${CLAUDE_OFFERS}
 - pi: openai-codex/gpt-5.5 (off, minimal, low, medium, high, xhigh, max)`,
       );
       chatHeld = held;
+    }).pipe(Effect.provide(BunServices.layer)),
+  ));
+
+test("the chat's read lists Claude Code's own models by id and name, and says when a list is still read or could not be", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      chat = { proactive: true };
+      const read = (lists: Lists) =>
+        callFlockTool(
+          {
+            ...flockOf([]),
+            chatChoices: Effect.sync(() =>
+              chatChoicesOf(
+                chatHeld,
+                { claude: true, pi: false },
+                chat,
+                NO_FLOCK_SETTINGS,
+                {},
+                lists,
+              ),
+            ),
+          },
+          "collie_chat_harness",
+          {},
+        );
+      const listed = yield* read({
+        claude: {
+          from: "harness",
+          models: [
+            { id: "opus", label: "Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"] },
+            { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", efforts: [] },
+          ],
+        },
+      });
+      expect(listed).toContain(
+        "- claude, as Claude Code lists them: opus, Opus 5.5 (low, medium, high, xhigh, max); claude-haiku-4-5-20251001, Haiku 4.5 (no effort)",
+      );
+      expect(yield* read({ claude: { from: "reading" } })).toContain(
+        "- claude: Claude Code's list is still being read; any model id it takes can be set meanwhile",
+      );
+      expect(
+        yield* read({ claude: { from: "table", why: "Claude Code is not logged in" } }),
+      ).toContain(
+        "- claude, from Collie's table, as Claude Code's list could not be read (Claude Code is not logged in): fable (low, medium, high, xhigh, max);",
+      );
     }).pipe(Effect.provide(BunServices.layer)),
   ));
 

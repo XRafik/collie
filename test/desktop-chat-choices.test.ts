@@ -4,11 +4,14 @@
 import { expect, test } from "bun:test";
 import { Effect, Stream, SubscriptionRef } from "effect";
 import { chatChoicesOf, chatChoicesStream } from "../desktop/src/bun/chat-choices";
+import type { Lists } from "../desktop/src/bun/harness-lists";
 import {
   type ChatChoices,
   type ChatHeld,
   chatSelects,
   chosen,
+  type ListedModel,
+  type Offer,
   type Offered,
   refusedChoice,
   resolveChat,
@@ -23,6 +26,7 @@ import {
 } from "../desktop/src/shared/flock-settings";
 
 const LEVELS = ["low", "medium", "high", "xhigh", "max"];
+const ids = (offer: Offer) => (offer.from === "reading" ? [] : offer.models.map(({ id }) => id));
 const offered = (id: string, efforts: ReadonlyArray<string> = LEVELS): Offered => ({
   id,
   label: id,
@@ -160,7 +164,7 @@ test("the account names each harness, whether it is installed, and what it offer
       harness,
       label,
       installed,
-      models: offered.models.map(({ id }) => id),
+      models: ids(offered),
     })),
   ).toEqual([
     {
@@ -222,9 +226,7 @@ test("the account is sent when subscribed, and again on every change to what the
       });
       yield* told(5);
       const pi = (choices: ChatChoices) =>
-        choices.harnesses
-          .find(({ harness }) => harness === "pi")!
-          .offered.models.map(({ id }) => id);
+        ids(choices.harnesses.find(({ harness }) => harness === "pi")!.offered);
       expect(sent.map(({ turning }) => turning)).toEqual([false, true, true, true, false]);
       expect(sent.map(pi)).toEqual([
         [],
@@ -233,7 +235,7 @@ test("the account is sent when subscribed, and again on every change to what the
         ["openai-codex/gpt-5.5"],
         ["openai-codex/gpt-5.5"],
       ]);
-      expect(sent[2]!.harnesses[0]!.offered.models.map(({ id }) => id)).toContain("sonnet");
+      expect(ids(sent[2]!.harnesses[0]!.offered)).toContain("sonnet");
       expect(sent[4]!.runsOn).toEqual({ harness: "claude", model: "sonnet", effort: "medium" });
     }).pipe(Effect.scoped),
   ));
@@ -385,6 +387,102 @@ test("for a model that lists no effort, the effort select is disabled and says t
   expect(effort.label).toBe("Haiku 4.5 takes no effort");
   expect(effort.name).toBe("Effort: none. Haiku 4.5 takes no effort");
   expect(effort.options).toEqual([]);
+});
+
+/** Claude Code's own list, as its reader gives it. */
+const CLAUDE_LISTED: ReadonlyArray<ListedModel> = [
+  {
+    id: "opus",
+    label: "Opus 5.5",
+    description: "For complex work and everyday tasks",
+    efforts: LEVELS,
+  },
+  {
+    id: "sonnet",
+    label: "Sonnet 5.5",
+    description: "Most efficient for simpler tasks",
+    efforts: LEVELS,
+  },
+  {
+    id: "claude-haiku-4-5-20251001",
+    label: "Haiku 4.5",
+    description: "Fastest for quick answers",
+    efforts: [],
+  },
+];
+
+/** The account with Claude Code's list as `lists` hold it. */
+const listedAccount = (settings: DesktopSettings, lists: Lists) =>
+  chatChoicesOf(
+    { heldOn: "claude", runsOn: null, turning: false },
+    { claude: true, pi: true },
+    settings,
+    NO_FLOCK_SETTINGS,
+    {},
+    lists,
+  );
+
+test("with Claude Code's own list, the selects show its labels and descriptions, and say Claude Code listed them", () => {
+  const unset = { proactive: true };
+  const lists: Lists = { claude: { from: "harness", models: CLAUDE_LISTED } };
+  const { model, effort } = chatSelects(unset, listedAccount(unset, lists));
+  expect(model.label).toBe("Default · Opus 5.5");
+  expect(model.options).toEqual([
+    {
+      value: "default",
+      label: "Default · Opus 5.5",
+      description: "What the chat runs with no model set",
+    },
+    { value: "opus", label: "Opus 5.5", description: "For complex work and everyday tasks" },
+    { value: "sonnet", label: "Sonnet 5.5", description: "Most efficient for simpler tasks" },
+    {
+      value: "claude-haiku-4-5-20251001",
+      label: "Haiku 4.5",
+      description: "Fastest for quick answers · takes no effort",
+    },
+  ]);
+  expect(model.note).toBe("Listed by Claude Code on this computer");
+  expect(model.warning).toBeNull();
+  expect(model.reading).toBe(false);
+  expect(effort.label).toBe("Default · Medium");
+
+  const haiku = { proactive: true, chatModel: "claude-haiku-4-5-20251001" };
+  const none = chatSelects(haiku, listedAccount(haiku, lists)).effort;
+  expect(none.disabled).toBe("Haiku 4.5 takes no effort");
+  expect(none.name).toBe("Effort: none. Haiku 4.5 takes no effort");
+});
+
+test("while Claude Code's list is read, the model menu says so and still offers the set model", () => {
+  const set = { proactive: true, chatModel: "claude-opus-5" };
+  const reading = listedAccount(set, { claude: { from: "reading" } });
+  expect(reading.harnesses[0]!.offered).toEqual({ from: "reading" });
+  const { model, effort } = chatSelects(set, reading);
+  expect(model.reading).toBe(true);
+  expect(model.note).toBe("Reading Claude Code's models… You can still type a model id.");
+  expect(model.options.map(({ value }) => value)).toEqual(["default", "claude-opus-5"]);
+  expect(model.label).toBe("claude-opus-5");
+  expect(effort.label).toBe("Default · Medium");
+});
+
+test("a list that could not be read opens the model menu with why, over Collie's table", () => {
+  const unset = { proactive: true };
+  const table = listedAccount(unset, {
+    claude: { from: "table", why: "Claude Code is not logged in" },
+  });
+  const offer = table.harnesses[0]!.offered;
+  expect(offer.from === "table" && offer.why).toBe("Claude Code is not logged in");
+  const { model } = chatSelects(unset, table);
+  expect(model.warning).toBe(
+    "Claude Code's list could not be read: Claude Code is not logged in. Showing Collie's table, so models are named by id.",
+  );
+  expect(model.reading).toBe(false);
+  expect(model.options.slice(1).map(({ label }) => label)).toEqual([
+    "fable",
+    "opus",
+    "sonnet",
+    "haiku",
+    "opusplan",
+  ]);
 });
 
 test("choosing a select's default unsets it, and any other entry sets it", () => {

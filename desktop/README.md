@@ -41,6 +41,7 @@ waits for the current turn and keeps the conversation; a harness change waits fo
 message, which starts a new conversation on it. Tested in
 `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`, `test/flock-chat-turns.test.ts`,
 `test/flock-chat-window.test.ts`, `test/desktop-chat-choices.test.ts`,
+`test/desktop-claude-models.test.ts`, `test/desktop-harness-lists.test.ts`,
 `test/desktop-settings.test.ts` and `test/flock-tools.test.ts`.
 
 | File                         | What it owns                                                                                                                                                                                                                                                              |
@@ -60,7 +61,9 @@ message, which starts a new conversation on it. Tested in
 | `src/bun/flock-tools.ts`     | The Toolkit over each Machine's `chat` channel                                                                                                                                                                                                                            |
 | `src/bun/settings.ts`        | Desktop's own switches, the proactive one, the Machine rule and the Flock chat's harness, model and effort among them; model and effort checks through `src/harness-choice.ts`, the same as a Run's; held in one place and published to every window on each saved change |
 | `src/bun/chat-choices.ts`    | What the chat runs on next, and the `ChatChoices` stream every chat window subscribes to: what it is held on, runs on and could run on                                                                                                                                    |
-| `src/shared/chat-choices.ts` | The resolver of what an unset model and effort run as, which the session is opened on; what each harness offers from Collie's table; the harness, model and effort selects                                                                                                |
+| `src/bun/harness-lists.ts`   | Each harness's own list of models: read when first needed, kept in memory until Desktop quits, read again after a failure                                                                                                                                                 |
+| `src/bun/claude-models.ts`   | Claude Code's own list, read through a short-lived Agent SDK session that starts no turn                                                                                                                                                                                  |
+| `src/shared/chat-choices.ts` | The resolver of what an unset model and effort run as, which the session is opened on; what each harness offers from its own list or Collie's table; the harness, model and effort selects                                                                                |
 | `src/shared/chat-view.ts`    | What the window says of a tool call, the card a message is about, and the Earlier conversations menu                                                                                                                                                                      |
 
 The Toolkit both chats share is the root's `src/toolkit.ts`.

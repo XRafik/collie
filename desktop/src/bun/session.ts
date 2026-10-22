@@ -68,6 +68,10 @@ export const NO_HUMAN =
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 type Effort = (typeof EFFORTS)[number];
+/** No effort is passed for a model that takes none. */
+interface EffortOption {
+  effort?: Effort;
+}
 export const isEffort = (effort: string): effort is Effort => EFFORTS.some((one) => one === effort);
 
 /** Claude Code's own tools for this computer's files and shell, none of which asks first. */
@@ -181,11 +185,13 @@ export const sessionOptions = <Server>(opts: {
   const prefixes = [...Object.keys(opts.userServers).map(toolPrefix), CONNECTOR_PREFIX];
   const ofUserServer = (name: string) =>
     prefixes.some((prefix) => name.startsWith(prefix) && name.length > prefix.length);
+  const effort: EffortOption = {};
+  if (opts.effort !== undefined) effort.effort = opts.effort;
   return {
     ...opts.session,
     cwd: opts.cwd,
     model: opts.model,
-    effort: opts.effort,
+    ...effort,
     thinking: { type: "adaptive" as const, display: "summarized" as const },
     systemPrompt: systemPrompt(hostname()),
     tools: ["AskUserQuestion", ...BUILT_IN],

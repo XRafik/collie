@@ -28,7 +28,8 @@ import {
   readSettings,
   writeSettings,
 } from "../desktop/src/bun/settings";
-import type { Offer } from "../desktop/src/shared/chat-choices";
+import type { Listed } from "../desktop/src/shared/chat-choices";
+import type { Lists } from "../desktop/src/bun/harness-lists";
 
 const at = (hour: number) => `2026-10-07T${String(hour).padStart(2, "0")}:00:00.000Z`;
 const set = (key: string, value: SharedSetting["value"], hour: number): SharedSetting => ({
@@ -681,7 +682,7 @@ test("Desktop's settings are held in one place: a change saved as the chat's too
 /** What Claude Code offers in these tests: Haiku takes no effort, and Sonnet only two. */
 const claudeOffers =
   (unsetModel = "opus") =>
-  (): Offer => ({
+  (): Listed => ({
     from: "table",
     unset: { harness: "claude", model: unsetModel, effort: "medium" },
     models: [
@@ -775,3 +776,41 @@ test("a model off the offered list can still be typed in, is checked as a Run's 
     changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatModel: "gpt-6.1-sol" }, offers),
   ).toEqual({ refused: expect.stringContaining('"gpt-6.1-sol" is not a model claude takes') });
 });
+
+/** Claude Code's own list, as Desktop holds it once read. */
+const CLAUDE_LISTED: Lists = {
+  claude: {
+    from: "harness",
+    models: [
+      { id: "opus", label: "Opus 5.5", efforts: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "sonnet", label: "Sonnet 5.5", efforts: ["low", "medium", "high", "xhigh", "max"] },
+      { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5", efforts: [] },
+    ],
+  },
+};
+
+test("with Claude Code's own list held, an effort on Haiku 4.5 is refused, and choosing it unsets the effort", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
+      yield* writeSettings(dir, { proactive: true, chatModel: "sonnet", chatEffort: "high" });
+      const held = yield* heldSettings(
+        dir,
+        () => NO_FLOCK_SETTINGS,
+        Effect.succeed({}),
+        () => CLAUDE_LISTED,
+      );
+      expect(
+        yield* held.setChatHarness({ model: "claude-haiku-4-5-20251001", effort: "low" }),
+      ).toBe('claude-haiku-4-5-20251001 takes no effort, so "low" cannot be asked of it');
+      expect(yield* held.setChatHarness({ model: "claude-haiku-4-5-20251001" })).toBeNull();
+      expect(held.current()).toEqual({
+        proactive: true,
+        chatModel: "claude-haiku-4-5-20251001",
+      });
+      expect(yield* held.setChatHarness({ effort: "high" })).toBe(
+        'claude-haiku-4-5-20251001 takes no effort, so "high" cannot be asked of it',
+      );
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));

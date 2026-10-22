@@ -25,12 +25,23 @@ export const Offered = Schema.Struct({
 });
 export type Offered = typeof Offered.Type;
 
-/** What a harness offers, and what it runs on with no model or effort set. */
-export const Offer = Schema.Struct({
-  from: Schema.Literal("table"),
+/** A model as a harness lists it, before what it runs at unset is resolved. */
+export type ListedModel = Omit<Offered, "unsetEffort">;
+
+/**
+ * What a harness offers, from its own list or Collie's table, and what it runs on with no
+ * model or effort set; why its own list could not be read, where it could not.
+ */
+export const Listed = Schema.Struct({
+  from: Schema.Literals(["harness", "table"]),
+  why: Schema.optionalKey(Schema.String),
   unset: Resolved,
   models: Schema.Array(Offered),
 });
+export type Listed = typeof Listed.Type;
+
+/** What a harness offers, or that its own list is still being read. */
+export const Offer = Schema.Union([Schema.Struct({ from: Schema.Literal("reading") }), Listed]);
 export type Offer = typeof Offer.Type;
 
 /** What the chat module knows: the harness its conversation is held on, its warm session and turn. */
@@ -75,6 +86,9 @@ export interface ChatSet {
 
 const tableEfforts = (harness: string) => HARNESS_MODELS[harness]?.efforts ?? [];
 
+/** What an unset effort runs at when nothing else decides it. */
+const UNSET_EFFORT = "medium";
+
 /** The efforts `model` takes: its own where it is offered, else the table's for its harness. */
 export const effortsOf = (harness: string, model: string, models: ReadonlyArray<Offered>) =>
   models.find(({ id }) => id === model)?.efforts ?? tableEfforts(harness);
@@ -98,7 +112,26 @@ export const resolveChat = (
       : (HARNESS_MODELS[harness]?.defaultModel ?? DEFAULT_MODEL));
   if (effortsOf(harness, model, models).length === 0) return { harness, model, effort: null };
   const level = onPi ? (pi.modelThinkingLevels?.[model] ?? pi.defaultThinkingLevel) : undefined;
-  return { harness, model, effort: set.effort ?? level ?? "medium" };
+  return { harness, model, effort: set.effort ?? level ?? UNSET_EFFORT };
+};
+
+/** Whether the chat may offer `id` on `harness`: not the harness's own default, nor one the check refuses. */
+const offerable = (harness: string, extras: ReadonlyArray<string>) => (id: string) =>
+  id !== DEFAULT_MODEL && resolveChoice([{ harness, model: id }], { [harness]: extras }).ok;
+
+/** `listed` offered from `from`, each with what it runs at unset. */
+const offerOf = (
+  from: Listed["from"],
+  harness: string,
+  listed: ReadonlyArray<ListedModel>,
+  pi: PiConfig,
+): Listed => {
+  const unresolved = listed.map((model) => ({ ...model, unsetEffort: null }));
+  const models = unresolved.map((model) => ({
+    ...model,
+    unsetEffort: resolveChat({ harness, model: model.id }, unresolved, pi).effort,
+  }));
+  return { from, unset: resolveChat({ harness }, models, pi), models };
 };
 
 /**
@@ -110,42 +143,52 @@ export const tableOffer = (
   setModel: string | undefined,
   extras: ReadonlyArray<string>,
   pi: PiConfig,
-): Offer => {
+): Listed => {
   const ids = [
     ...new Set([
       ...(HARNESS_MODELS[harness]?.models ?? []),
       ...extras,
       ...(setModel === undefined ? [] : [setModel]),
     ]),
-  ].filter(
-    (id) =>
-      id !== DEFAULT_MODEL && resolveChoice([{ harness, model: id }], { [harness]: extras }).ok,
-  );
-  const listed = ids.map((id) => ({
-    id,
-    label: id,
-    efforts: tableEfforts(harness),
-    unsetEffort: null,
-  }));
-  const models = listed.map((model) => ({
-    ...model,
-    unsetEffort: resolveChat({ harness, model: model.id }, listed, pi).effort,
-  }));
-  return { from: "table", unset: resolveChat({ harness }, models, pi), models };
+  ].filter(offerable(harness, extras));
+  const listed = ids.map((id) => ({ id, label: id, efforts: tableEfforts(harness) }));
+  return offerOf("table", harness, listed, pi);
 };
+
+/** What `harness`'s own list offers: every model it lists but those the change check would refuse. */
+export const harnessOffer = (
+  harness: string,
+  listed: ReadonlyArray<ListedModel>,
+  extras: ReadonlyArray<string>,
+  pi: PiConfig,
+): Listed =>
+  offerOf(
+    "harness",
+    harness,
+    listed.filter(({ id }) => offerable(harness, extras)(id)),
+    pi,
+  );
 
 /** What `set` runs as, by the account: each unset choice as its harness resolved it. */
 export const runsAs = (set: ChatSet, choices: ChatChoices): Resolved => {
   const { harness } = set;
-  const offer = choices.harnesses.find((one) => one.harness === harness)?.offered;
+  const offer = listedOn(harness, choices);
   const models = offer?.models ?? [];
   const model = set.model ?? offer?.unset.model ?? DEFAULT_MODEL;
   if (effortsOf(harness, model, models).length === 0) return { harness, model, effort: null };
   const level =
-    set.model === undefined
-      ? offer?.unset.effort
-      : (models.find(({ id }) => id === model)?.unsetEffort ?? offer?.unset.effort);
+    offer === undefined
+      ? UNSET_EFFORT
+      : set.model === undefined
+        ? offer.unset.effort
+        : (models.find(({ id }) => id === model)?.unsetEffort ?? offer.unset.effort);
   return { harness, model, effort: set.effort ?? level ?? null };
+};
+
+/** What `harness` offers, unless its own list is still being read. */
+const listedOn = (harness: string, choices: ChatChoices): Listed | undefined => {
+  const offer = choices.harnesses.find((one) => one.harness === harness)?.offered;
+  return offer?.from === "reading" ? undefined : offer;
 };
 
 /** The value of a select's `Default · …` entry, which unsets it. */
@@ -168,6 +211,10 @@ export interface ChoiceSelect {
   readonly options: ReadonlyArray<ChoiceOption>;
   /** The menu's last line. */
   readonly note: string | null;
+  /** What the menu opens with, above its entries. */
+  readonly warning: string | null;
+  /** Its entries are still being read, which the note says. */
+  readonly reading: boolean;
   /** Why it cannot be opened. */
   readonly disabled: string | null;
 }
@@ -186,22 +233,26 @@ const effortLabel = (effort: string) => EFFORT_LABELS.get(effort) ?? effort;
 /** The harness, model and effort selects, as the settings and the account have them. */
 export const chatSelects = (settings: DesktopSettings, choices: ChatChoices) => {
   const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
-  const entry = choices.harnesses.find((one) => one.harness === harness);
-  const models = entry?.offered.models ?? [];
-  const unset = entry?.offered.unset ?? { harness, model: DEFAULT_MODEL, effort: null };
+  const offer = listedOn(harness, choices);
+  const models = offer?.models ?? [];
+  const unset = offer?.unset ?? { harness, model: DEFAULT_MODEL, effort: null };
+  const harnessName = harnessLabel(harness);
   const named = (model: string) =>
     models.find(({ id }) => id === model)?.label ??
-    (model === DEFAULT_MODEL ? `${harnessLabel(harness)}'s own default` : model);
+    (model === DEFAULT_MODEL ? `${harnessName}'s own default` : model);
   const select = (
     value: string | undefined,
     label: string,
     title: string,
-    rest: Pick<ChoiceSelect, "options" | "note">,
+    rest: Pick<ChoiceSelect, "options" | "note"> &
+      Partial<Pick<ChoiceSelect, "warning" | "reading">>,
   ): ChoiceSelect => ({
     value: value ?? DEFAULT_ENTRY,
     label,
     name: `${title}: ${label}`,
     disabled: null,
+    warning: null,
+    reading: false,
     ...rest,
   });
 
@@ -217,14 +268,29 @@ export const chatSelects = (settings: DesktopSettings, choices: ChatChoices) => 
           label: unsetModel,
           description: "What the chat runs with no model set",
         },
-        ...models.map(({ id, label, description }) =>
-          description === undefined ? { value: id, label } : { value: id, label, description },
-        ),
+        ...models.map(({ id, label, description, efforts }) => {
+          const said = [description, efforts.length === 0 ? "takes no effort" : undefined]
+            .filter((part): part is string => part !== undefined)
+            .join(" · ");
+          return said === "" ? { value: id, label } : { value: id, label, description: said };
+        }),
         ...(settings.chatModel === undefined || models.some(({ id }) => id === settings.chatModel)
           ? []
           : [{ value: settings.chatModel, label: settings.chatModel }]),
       ],
-      note: "Collie's table lists these, so each model is named by its id.",
+      ...(offer === undefined
+        ? {
+            note: `Reading ${harnessName}'s models… You can still type a model id.`,
+            reading: true,
+          }
+        : offer.from === "harness"
+          ? { note: `Listed by ${harnessName} on this computer` }
+          : offer.why === undefined
+            ? { note: "Collie's table lists these, so each model is named by its id." }
+            : {
+                note: null,
+                warning: `${harnessName}'s list could not be read: ${offer.why}. Showing Collie's table, so models are named by id.`,
+              }),
     },
   );
 
@@ -241,6 +307,8 @@ export const chatSelects = (settings: DesktopSettings, choices: ChatChoices) => 
           name: `Effort: none. ${noEffort}`,
           options: [],
           note: null,
+          warning: null,
+          reading: false,
           disabled: noEffort,
         }
       : select(

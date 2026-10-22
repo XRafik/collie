@@ -18,7 +18,8 @@ import {
   harnessLabel,
 } from "../shared/flock-settings";
 import { childEnv } from "./login-env";
-import { chatChoice, extraModels, tableOffers } from "./settings";
+import { type HarnessLists, type Lists, NO_LISTS } from "./harness-lists";
+import { chatChoice, extraModels, offersOf } from "./settings";
 
 const PiSettings = Schema.fromJsonString(PiConfig);
 
@@ -36,22 +37,24 @@ export const readPiConfig = (dir: string) =>
 
 /**
  * What the next session runs on, each unset choice resolved, or why the settings cannot run.
- * Pi's own settings are read only for Pi.
+ * Waits for the harness's own list while it is read. Pi's own settings are read only for Pi.
  */
 export const chatResolved = <R>(
   settings: DesktopSettings,
   flock: FlockSettings,
   pi: Effect.Effect<PiConfig, never, R>,
+  lists: HarnessLists = NO_LISTS,
 ) =>
   Effect.gen(function* () {
     const checked = chatChoice(settings, flock);
     if (!checked.ok) return checked;
     const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
+    const listed = yield* lists.settled(harness);
     const config = harness === "pi" ? yield* pi : {};
     const set = { harness, model: settings.chatModel, effort: settings.chatEffort };
     const choice: Resolved = resolveChat(
       set,
-      tableOffers(settings, flock, config)(harness).models,
+      offersOf(settings, flock, config, listed)(harness).models,
       config,
     );
     return { ok: true as const, choice };
@@ -64,15 +67,16 @@ export const chatChoicesOf = (
   settings: DesktopSettings,
   flock: FlockSettings,
   pi: PiConfig,
+  lists: Lists = {},
 ): ChatChoices => {
-  const offers = tableOffers(settings, flock, pi);
+  const offers = offersOf(settings, flock, pi, lists);
   return {
     ...held,
     harnesses: CHAT_HARNESSES.map((harness) => ({
       harness,
       label: harnessLabel(harness),
       installed: installed[harness] ?? false,
-      offered: offers(harness),
+      offered: lists[harness]?.from === "reading" ? { from: "reading" } : offers(harness),
     })),
   };
 };
@@ -82,8 +86,8 @@ const sameExtras = (one: FlockSettings, other: FlockSettings) =>
   Schema.encodeSync(Schema.fromJsonString(Schema.Json))(extraModels(other));
 
 /**
- * The account, when subscribed and again whenever what the chat holds, Desktop's settings or
- * the Flock's extra models change.
+ * The account, when subscribed and again whenever what the chat holds, Desktop's settings,
+ * the Flock's extra models or a harness's own list change. The set harness's list is read.
  */
 export const chatChoicesStream = (opts: {
   readonly held: Stream.Stream<ChatHeld>;
@@ -91,13 +95,19 @@ export const chatChoicesStream = (opts: {
   readonly flock: Stream.Stream<FlockSettings>;
   readonly installed: Readonly<Record<string, boolean>>;
   readonly pi: Effect.Effect<PiConfig>;
-}) =>
-  Stream.zipLatestAll(
+  readonly lists?: HarnessLists;
+}) => {
+  const lists = opts.lists ?? NO_LISTS;
+  return Stream.zipLatestAll(
     opts.held,
-    opts.settings,
+    opts.settings.pipe(
+      Stream.tap((settings) => lists.need(settings.chatHarness ?? DEFAULT_CHAT_HARNESS)),
+    ),
     opts.flock.pipe(Stream.changesWith(sameExtras)),
+    lists.changes,
   ).pipe(
-    Stream.mapEffect(([held, settings, flock]) =>
-      Effect.map(opts.pi, (pi) => chatChoicesOf(held, opts.installed, settings, flock, pi)),
+    Stream.mapEffect(([held, settings, flock, listed]) =>
+      Effect.map(opts.pi, (pi) => chatChoicesOf(held, opts.installed, settings, flock, pi, listed)),
     ),
   );
+};
