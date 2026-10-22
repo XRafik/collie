@@ -99,7 +99,9 @@ The first repair's premise that current Codex creates its thread only after the 
 
 The comment that initialization can block on optional remote MCP setup is not established by the upstream 0.162.1 initialization implementation. It must not be treated as a proven explanation of these failed Runs. [Codex 0.162.1 initialize implementation](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/initialize_processor.rs#L56)
 
-### 6. The real canary found that a failed Run's stop never reached its start's server
+### 6. Implementation follow-up: the real canary found that a failed Run's stop never reached its start's server
+
+Added during implementation, after the research phase. The canary evidence is kept in the implementing Run's handoffs, tied to the commit each one tested.
 
 On mk-laptop, control Run `run-94cd763f` timed out at `agent start` under the installed 0.85.0. After `collie host restart --dir` onto the candidate (d9727839, which already carried finding 4's fix), `collie run stop` answered `applied` with `closed: []` and `left: []`. It sent no SIGTERM, and Codex 0.163.0's App Server and its whole session stayed up. The cause was in Collie, not Codex. A Run's stop halted only the agents in its launch records, and a launch is recorded only once `agent start` succeeds. The start's control record already named the server, its endpoint and pid, and the Run's log, so nothing was missing except a stop that looked there. [`Agents.halt`](../../src/agents.ts), [control records](../../src/compaction.ts)
 
@@ -133,4 +135,4 @@ The fix plan should require all of the following:
 
 The interactive shell's `codex --version` returned `codex-cli 0.163.0`; the inspected failed TUI panes show **0.162.1**. The VM login shell also resolves **0.162.1**. Both hosts report Collie **0.85.0**. Those are different environments; testing only the investigator's PATH would miss the release actually producing the failure. Collie's baseline gate accepts Codex 0.162.0 and later. [`VERIFIED_VERSIONS`](../../src/compactors.ts#L104), parent live pane/process/version observations.
 
-No implementation, host restart, persistent configuration edit, run-state edit, or deployed-repair claim is part of this research. Controlled probes changed only temporary process arguments and were cleaned. Causal A/B evidence is complete on both machines. Full Collie workflow acceptance and verification of the eventual recovery fix remain implementation work.
+No implementation, host restart, persistent configuration edit, run-state edit, or deployed-repair claim was part of the original research phase. Finding 6 came later, from implementation. Controlled probes changed only temporary process arguments and were cleaned. Causal A/B evidence is complete on both machines. Full Collie workflow acceptance and verification of the eventual recovery fix remain implementation work.
