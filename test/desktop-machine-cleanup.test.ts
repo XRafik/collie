@@ -5,16 +5,17 @@ import { describe, expect, test } from "bun:test";
 import { Deferred, Effect, Fiber } from "effect";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcClient from "effect/rpc/RpcClient";
+import { RpcClientDefect, RpcClientError } from "effect/rpc/RpcClientError";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import type * as RpcMessage from "effect/rpc/RpcMessage";
 import * as RpcServer from "effect/rpc/RpcServer";
 import { TestClock } from "effect/testing";
-import { cleanupsOn } from "../desktop/src/bun/machine";
+import { cleanupOn, type Door, DoorMap, type Reached } from "../desktop/src/bun/machine";
 import {
   CLEANUP_UPGRADE_SAID,
+  type CleanupRead,
   choose,
   cleanupView,
-  type MachineCleanup,
   sweptToast,
 } from "../desktop/src/shared/machine-cleanup";
 import { cleanupLines } from "../src/cleanup";
@@ -59,27 +60,48 @@ const fakeHost = (answer: Effect.Effect<CleanupReport, HostRefused> | "older") =
       },
     });
     toClient = client.write;
-    return { desktop: client.client, asked };
+    return { door: reachedOver(client.client), asked };
   });
 
-const machine = (name: string) => ({ installation: `i-${name}`, profile: `p-${name}`, name });
+const vm = { profile: "p-vm", name: "vm" };
+const reachedOver = (desktop: Partial<Door>): Reached => ({
+  machine: vm,
+  // SAFETY: each test calls only what its door answers.
+  desktop: desktop as Door,
+});
+/** A door whose call is cut off once `closed` is done: interrupted as a closing door is, or broken. */
+const cutOff = (closed: Deferred.Deferred<void>, how: "closed" | "broken") =>
+  reachedOver({
+    // SAFETY: answered as the client answers a call not asked to discard its reply.
+    cleanup: (() =>
+      Deferred.await(closed).pipe(
+        Effect.andThen(
+          how === "closed"
+            ? Effect.interrupt
+            : Effect.fail(
+                new RpcClientError({
+                  reason: new RpcClientDefect({ message: "socket closed", cause: null }),
+                }),
+              ),
+        ),
+      )) as Door["cleanup"],
+  });
+const doorsWith = (door: Reached) => {
+  const doors = new DoorMap<Reached>();
+  doors.set("i-vm", door);
+  return doors;
+};
 
-describe("the main process reads what each Machine's sweep would remove", () => {
+describe("the main process reads one Machine's cleanup listing over its door", () => {
   test("a host that answers gives its report, and is asked only for its listing", () =>
     Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const host = yield* fakeHost(Effect.succeed(report(2048)));
-          const read = yield* cleanupsOn([[machine("vm"), host.desktop]]);
-          expect(read).toEqual([
-            {
-              installation: "i-vm",
-              profile: "p-vm",
-              name: "vm",
-              report: report(2048),
-              problem: null,
-            },
-          ]);
+          expect(yield* cleanupOn(doorsWith(host.door), "p-vm")).toEqual({
+            installation: "i-vm",
+            report: report(2048),
+          });
           expect(host.asked).toEqual(["cleanup"]);
         }),
       ),
@@ -92,31 +114,88 @@ describe("the main process reads what each Machine's sweep would remove", () => 
           const host = yield* fakeHost(
             Effect.fail(new HostRefused({ reason: "the disk is gone" })),
           );
-          const [read] = yield* cleanupsOn([[machine("vm"), host.desktop]]);
-          expect(read).toMatchObject({ report: null, problem: "the disk is gone" });
+          const failed = yield* Effect.flip(cleanupOn(doorsWith(host.door), "p-vm"));
+          expect(failed.reason).toBe("the disk is gone");
         }),
       ),
     ));
 
-  test("a host that does not answer in 15 s holds back no other Machine's report", () =>
+  test("a host that answers at 40 s gives its report", () =>
     Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
-          const silent = yield* fakeHost(Effect.never);
-          const answers = yield* fakeHost(Effect.succeed(report(10)));
-          const reading = yield* cleanupsOn([
-            [machine("slow"), silent.desktop],
-            [machine("vm"), answers.desktop],
-          ]).pipe(Effect.forkChild);
-          yield* TestClock.adjust("15 seconds");
-          const read = yield* Fiber.join(reading);
-          expect(read.map(({ name, report, problem }) => [name, report, problem])).toEqual([
-            ["slow", null, "its host did not answer in time"],
-            ["vm", report(10), null],
-          ]);
-          expect([...silent.asked, ...answers.asked]).toEqual(["cleanup", "cleanup"]);
+          const host = yield* fakeHost(Effect.sleep("40 seconds").pipe(Effect.as(report(4096))));
+          const reading = yield* cleanupOn(doorsWith(host.door), "p-vm").pipe(Effect.forkChild);
+          yield* TestClock.adjust("40 seconds");
+          expect(yield* Fiber.join(reading)).toEqual({
+            installation: "i-vm",
+            report: report(4096),
+          });
         }),
       ).pipe(Effect.provide(TestClock.layer())),
+    ));
+
+  for (const how of ["closed", "broken"] as const)
+    test(`a door ${how} under the call is followed to the Machine's next door, whose host answers`, () =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const closed = yield* Deferred.make<void>();
+            const doors = doorsWith(cutOff(closed, how));
+            const next = yield* fakeHost(Effect.succeed(report(77)));
+            const reading = yield* cleanupOn(doors, "p-vm").pipe(Effect.forkChild);
+            yield* Effect.yieldNow;
+            doors.delete("i-vm");
+            yield* Deferred.succeed(closed, undefined);
+            yield* Effect.yieldNow;
+            expect(next.asked).toEqual([]);
+            doors.set("i-vm", next.door);
+            expect(yield* Fiber.join(reading)).toEqual({
+              installation: "i-vm",
+              report: report(77),
+            });
+            expect(next.asked).toEqual(["cleanup"]);
+          }),
+        ),
+      ));
+
+  test("a host that never answers is waited on for 2 minutes, then said so", () =>
+    Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const host = yield* fakeHost(Effect.never);
+          const reading = yield* cleanupOn(doorsWith(host.door), "p-vm").pipe(Effect.forkChild);
+          yield* TestClock.adjust("119 seconds");
+          expect(reading.pollUnsafe()).toBeUndefined();
+          yield* TestClock.adjust("1 second");
+          const failed = yield* Effect.flip(Fiber.join(reading));
+          expect(failed.reason).toBe("its host did not answer within 2 minutes");
+        }),
+      ).pipe(Effect.provide(TestClock.layer())),
+    ));
+
+  test("a door that closes and gets no successor says its connection did not come back", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const closed = yield* Deferred.make<void>();
+        const doors = doorsWith(cutOff(closed, "closed"));
+        const reading = yield* cleanupOn(doors, "p-vm").pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        doors.delete("i-vm");
+        yield* Deferred.succeed(closed, undefined);
+        yield* TestClock.adjust("2 minutes");
+        const failed = yield* Effect.flip(Fiber.join(reading));
+        expect(failed.reason).toBe("its connection did not come back within 2 minutes");
+      }).pipe(Effect.provide(TestClock.layer())),
+    ));
+
+  test("a Machine with no door when asked is said not to be connected, at once", () =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const doors = doorsWith(reachedOver({}));
+        const failed = yield* Effect.flip(cleanupOn(doors, "p-elsewhere"));
+        expect(failed.reason).toBe("That Machine isn't connected.");
+      }),
     ));
 
   test("a host without the call asks for an upgrade", () =>
@@ -124,47 +203,26 @@ describe("the main process reads what each Machine's sweep would remove", () => 
       Effect.scoped(
         Effect.gen(function* () {
           const host = yield* fakeHost("older");
-          const [read] = yield* cleanupsOn([[machine("old"), host.desktop]]);
-          expect(read).toMatchObject({ report: null, problem: CLEANUP_UPGRADE_SAID });
+          const failed = yield* Effect.flip(cleanupOn(doorsWith(host.door), "p-vm"));
+          expect(failed.reason).toBe(CLEANUP_UPGRADE_SAID);
           expect(CLEANUP_UPGRADE_SAID).toBe(
             "Can't list what it would clean up; upgrade this Machine.",
           );
         }),
       ),
     ));
-
-  test("a connection renewed under the read says so", () =>
-    Effect.runPromise(
-      Effect.gen(function* () {
-        const closed = yield* Deferred.make<void>();
-        const reading = yield* cleanupsOn([
-          [
-            machine("vm"),
-            { cleanup: () => Deferred.await(closed).pipe(Effect.andThen(Effect.interrupt)) },
-          ],
-        ]).pipe(Effect.forkChild);
-        yield* Deferred.succeed(closed, undefined);
-        const [read] = yield* Fiber.join(reading);
-        expect(read).toMatchObject({
-          report: null,
-          problem: "its connection was renewed before it answered",
-        });
-      }),
-    ));
 });
 
 type Shown = Parameters<typeof cleanupView>[0][number];
 const live = (name: string): Shown => ({ profile: `p-${name}`, name, state: "live", reason: null });
-const listed = (name: string, report: CleanupReport): MachineCleanup => ({
-  ...machine(name),
-  report,
-  problem: null,
-});
-const failed = (name: string, problem: string): MachineCleanup => ({
-  ...machine(name),
-  report: null,
-  problem,
-});
+type Read = readonly [string, CleanupRead];
+const listed = (name: string, report: CleanupReport): Read => [
+  `p-${name}`,
+  { state: "listed", installation: `i-${name}`, report },
+];
+const failed = (name: string, problem: string): Read => [`p-${name}`, { state: "failed", problem }];
+const reading = (name: string, since: number): Read => [`p-${name}`, { state: "reading", since }];
+const reads = (...each: ReadonlyArray<Read>) => new Map(each);
 const item = (kind: string, target: string, bytes: number) => ({
   kind,
   target,
@@ -183,7 +241,11 @@ describe("the Cleanup dialog", () => {
       item("staged-blob", "/s/x", 5),
     ];
     const bytes = remove.reduce((sum, { bytes }) => sum + bytes, 0);
-    const [row] = cleanupView([live("vm")], [listed("vm", { remove, keep: [], bytes })], null).rows;
+    const [row] = cleanupView(
+      [live("vm")],
+      reads(listed("vm", { remove, keep: [], bytes })),
+      null,
+    ).rows;
     expect(row!.said).toBe("Would free 3.0 GiB");
     expect(row!.groups).toEqual([
       {
@@ -217,7 +279,7 @@ describe("the Cleanup dialog", () => {
   test("its sizes read as `collie cleanup` prints them", () => {
     const remove = [item("worktree", "/w/a", 1_288_490_189)];
     const report = { remove, keep: [], bytes: 1_288_490_189 };
-    const [row] = cleanupView([live("vm")], [listed("vm", report)], null).rows;
+    const [row] = cleanupView([live("vm")], reads(listed("vm", report)), null).rows;
     expect(cleanupLines(report, false)).toBe(
       "would remove\tworktree\t/w/a\t1.2 GiB\t/w/a is done\nwould free\t1.2 GiB",
     );
@@ -232,7 +294,7 @@ describe("the Cleanup dialog", () => {
     ];
     const [row] = cleanupView(
       [live("vm")],
-      [listed("vm", { remove: [item("worktree", "/w/a", 10)], keep, bytes: 10 })],
+      reads(listed("vm", { remove: [item("worktree", "/w/a", 10)], keep, bytes: 10 })),
       null,
     ).rows;
     expect(row!.kept).toEqual({ said: "Kept 2", items: keep });
@@ -241,7 +303,7 @@ describe("the Cleanup dialog", () => {
   test("a Machine with nothing to remove says so and can still be chosen", () => {
     const view = cleanupView(
       [live("vm")],
-      [listed("vm", { remove: [], keep: [], bytes: 0 })],
+      reads(listed("vm", { remove: [], keep: [], bytes: 0 })),
       null,
     );
     expect(view.rows[0]).toMatchObject({
@@ -262,7 +324,7 @@ describe("the Cleanup dialog", () => {
     ] as const;
     const view = cleanupView(
       states.map(([state]) => ({ profile: `p-${state}`, name: state, state, reason: "why" })),
-      [],
+      reads(),
       null,
     );
     expect(view.rows.map(({ said, note, choosable }) => [said, note, choosable])).toEqual([
@@ -275,39 +337,103 @@ describe("the Cleanup dialog", () => {
     expect(view.chosen).toBe("0 Machines chosen · would free 0 B");
   });
 
-  test("a Machine whose listing failed, or that connected after the read, says why and can't be chosen", () => {
+  test("a live Machine being read says how long it has waited and can't be chosen, while one listed already can", () => {
     const view = cleanupView(
-      [live("old"), live("late")],
-      [failed("old", CLEANUP_UPGRADE_SAID)],
+      [live("slow"), live("vm")],
+      reads(reading("slow", 1_000), listed("vm", { remove: [], keep: [], bytes: 0 })),
       null,
+      new Map(),
+      24_500,
     );
-    expect(view.rows.map(({ said, choosable }) => [said, choosable])).toEqual([
-      [CLEANUP_UPGRADE_SAID, false],
-      ["It wasn't connected when Cleanup read.", false],
+    expect(
+      view.rows.map(({ said, choosable, chosen, readAgain }) => [
+        said,
+        choosable,
+        chosen,
+        readAgain,
+      ]),
+    ).toEqual([
+      ["Reading… 23 s", false, false, false],
+      ["Nothing to remove now", true, true, false],
     ]);
   });
 
-  test("every row says Reading… while the read is out, and none can be chosen", () => {
+  test("a Machine that isn't live shows its state and reason while its listing is out", () => {
     const view = cleanupView(
-      [live("vm"), { profile: "p-off", name: "off", state: "unreachable", reason: "down" }],
+      [{ profile: "p-off", name: "off", state: "unreachable", reason: "down" }],
+      reads(reading("off", 0)),
       null,
-      null,
+      new Map(),
+      5_000,
     );
-    expect(view.rows.map(({ said, choosable }) => [said, choosable])).toEqual([
-      ["Reading…", false],
-      ["Reading…", false],
+    expect(view.rows[0]).toMatchObject({
+      said: "Out of reach: down",
+      choosable: false,
+      readAgain: false,
+    });
+  });
+
+  test("a live Machine whose read failed says why and offers Read again", () => {
+    const [row] = cleanupView([live("old")], reads(failed("old", CLEANUP_UPGRADE_SAID)), null).rows;
+    expect(row).toMatchObject({
+      said: CLEANUP_UPGRADE_SAID,
+      choosable: false,
+      warn: true,
+      readAgain: true,
+    });
+  });
+
+  test("a live Machine never asked says it wasn't connected when Cleanup read, and offers Read again", () => {
+    const [row] = cleanupView([live("late")], reads(), null).rows;
+    expect(row).toMatchObject({
+      said: "It wasn't connected when Cleanup read.",
+      choosable: false,
+      readAgain: true,
+    });
+  });
+
+  test("a listed Machine offers no Read again, and once any Machine is swept no row does", () => {
+    const rows = [live("vm"), live("old"), live("late")];
+    const read = reads(
+      listed("vm", { remove: [], keep: [], bytes: 0 }),
+      failed("old", "the disk is gone"),
+    );
+    expect(cleanupView(rows, read, null).rows.map(({ readAgain }) => readAgain)).toEqual([
+      false,
+      true,
+      true,
     ]);
+    const swept = cleanupView(
+      rows,
+      read,
+      null,
+      new Map([["p-vm", { state: "running", request: "s-1" }]]),
+    );
+    expect(swept.rows.map(({ readAgain }) => readAgain)).toEqual([false, false, false]);
+  });
+
+  test("a listing that arrives after the choice was changed starts unchosen, and with no change chosen", () => {
+    const rows = [live("a"), live("late")];
+    const nothing = { remove: [], keep: [], bytes: 0 };
+    const before = cleanupView(rows, reads(listed("a", nothing), reading("late", 0)), null);
+    const changed = choose(before, "all");
+    const after = reads(listed("a", nothing), listed("late", nothing));
+    expect(cleanupView(rows, after, changed).rows.map(({ chosen }) => chosen)).toEqual([
+      true,
+      false,
+    ]);
+    expect(cleanupView(rows, after, null).rows.map(({ chosen }) => chosen)).toEqual([true, true]);
   });
 
   test("every Machine that can be chosen starts chosen; All and None act on those", () => {
     const rows = [live("a"), live("b"), live("old"), live("off")].map((row, i) =>
       i === 3 ? { ...row, state: "unreachable" as const } : row,
     );
-    const read = [
+    const read = reads(
       listed("a", { remove: [item("worktree", "/w", GiB)], keep: [], bytes: GiB }),
       listed("b", { remove: [], keep: [], bytes: 0 }),
       failed("old", "the disk is gone"),
-    ];
+    );
     const atStart = cleanupView(rows, read, null);
     expect(atStart.rows.map(({ chosen }) => chosen)).toEqual([true, true, false, false]);
     expect(atStart.chosen).toBe("2 Machines chosen · would free 1.0 GiB");
@@ -320,10 +446,10 @@ describe("the Cleanup dialog", () => {
 
   test("the chosen line counts the chosen Machines and adds what they would free", () => {
     const rows = [live("a"), live("b")];
-    const read = [
+    const read = reads(
       listed("a", { remove: [item("worktree", "/w", 3 * GiB)], keep: [], bytes: 3 * GiB }),
       listed("b", { remove: [item("worktree", "/v", 1.1 * GiB)], keep: [], bytes: 1.1 * GiB }),
-    ];
+    );
     expect(cleanupView(rows, read, null).chosen).toBe("2 Machines chosen · would free 4.1 GiB");
     expect(cleanupView(rows, read, new Set(["p-b"])).chosen).toBe(
       "1 Machine chosen · would free 1.1 GiB",
@@ -333,11 +459,11 @@ describe("the Cleanup dialog", () => {
 
 describe("the Cleanup dialog while and after it sweeps", () => {
   const rows = [live("a"), live("b"), live("c")];
-  const read = [
+  const read = reads(
     listed("a", { remove: [item("worktree", "/w", 3 * GiB)], keep: [], bytes: 3 * GiB }),
     listed("b", { remove: [item("worktree", "/v", GiB)], keep: [], bytes: GiB }),
     listed("c", { remove: [item("generation", "/g", 1024)], keep: [], bytes: 1024 }),
-  ];
+  );
   const chosen = new Set(["p-a", "p-b"]);
 
   test("the button counts the chosen Machines and is disabled when none is", () => {
@@ -350,7 +476,9 @@ describe("the Cleanup dialog while and after it sweeps", () => {
       disabled: false,
     });
     expect(cleanupView(rows, read, new Set()).button).toMatchObject({ disabled: true });
-    expect(cleanupView(rows, null, null).button).toMatchObject({ disabled: true });
+    expect(cleanupView(rows, reads(reading("a", 0)), new Set()).button).toMatchObject({
+      disabled: true,
+    });
   });
 
   test("a sweeping Machine says Cleaning…, the choice is fixed, and the button is disabled", () => {
@@ -373,6 +501,20 @@ describe("the Cleanup dialog while and after it sweeps", () => {
     expect(view.rows[2]!.groups).toHaveLength(1);
     expect(view.choosable).toEqual([]);
     expect(view.button).toEqual({ said: "Clean up 2 Machines", disabled: true });
+  });
+
+  test("a sweeping Machine that isn't live says it waits for it to reconnect, then Cleaning… again", () => {
+    const sweeping = new Map([["p-vm-mk", { state: "running" as const, request: "s-1" }]]);
+    const read = reads(listed("vm-mk", { remove: [], keep: [], bytes: 0 }));
+    const [away] = cleanupView(
+      [{ ...live("vm-mk"), state: "unreachable", reason: "down" }],
+      read,
+      null,
+      sweeping,
+    ).rows;
+    expect([away!.said, away!.warn]).toEqual(["Cleaning… waiting for vm-mk to reconnect", false]);
+    const [back] = cleanupView([live("vm-mk")], read, null, sweeping).rows;
+    expect(back!.said).toBe("Cleaning…");
   });
 
   test("a done sweep says what it freed, its removals by kind, and what it kept and why", () => {

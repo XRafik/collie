@@ -11,14 +11,19 @@ const SLOW_BUILD_MS = 2_000;
 /**
  * One board for everything that reads it: built at once and again whenever `changed` says
  * something may have moved, one build at a time, with the changes that arrive during a
- * build folded into the next. It keeps building for as long as `Scope` lasts. Its stream
- * is the latest board that covers every change seen before it was read, then each one
- * built after it, so a reader reads its own writes.
+ * build folded into the next. It keeps building for as long as `Scope` lasts. Its `boards`
+ * are the latest board that covers every change seen before it was read, then each one
+ * built after it, so a reader reads its own writes. `latest` is the last board built, or
+ * the first once it is, never waiting for a newer one.
  */
 export const shareBoard = <A, E, R, R2>(options: {
   readonly build: Effect.Effect<A, E, R>;
   readonly changed: Stream.Stream<unknown, never, R2>;
-}): Effect.Effect<Stream.Stream<A>, never, Scope.Scope | R | R2> =>
+}): Effect.Effect<
+  { readonly boards: Stream.Stream<A>; readonly latest: Effect.Effect<A> },
+  never,
+  Scope.Scope | R | R2
+> =>
   Effect.gen(function* () {
     let seen = 0;
     const latest = yield* SubscriptionRef.make(
@@ -52,7 +57,7 @@ export const shareBoard = <A, E, R, R2>(options: {
       ),
       Effect.forkScoped,
     );
-    return Stream.unwrap(
+    const boards = Stream.unwrap(
       Effect.sync(() => {
         const since = seen;
         return SubscriptionRef.changes(latest).pipe(
@@ -65,6 +70,15 @@ export const shareBoard = <A, E, R, R2>(options: {
         );
       }),
     );
+    const latestBoard = SubscriptionRef.changes(latest).pipe(
+      Stream.filter(Option.isSome),
+      Stream.map((built) => built.value.board),
+      Stream.runHead,
+      Effect.flatMap((board) =>
+        Option.isSome(board) ? Effect.succeed(board.value) : Effect.never,
+      ),
+    );
+    return { boards, latest: latestBoard };
   });
 
 /**

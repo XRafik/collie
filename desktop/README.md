@@ -17,9 +17,9 @@ root's `test/desktop-*.test.ts` and `test/flock-*.test.ts`; the view's logic in 
 | `src/shared/in-sync.ts`                 | Whether a Machine is In sync (`test/desktop-view.test.ts`)                                                                                                                                                                                             |
 | `src/shared/flock-settings.ts`          | The Settings rows, shared with each host's settings ([ADR-0043](../docs/adr/0043-a-shared-setting-is-its-latest-edit.md); `test/desktop-settings.test.ts`)                                                                                             |
 | `src/shared/usage.ts`                   | The header's Usage entries and the Usage page, one per Subscription account across the live Machines (`test/desktop-usage.test.ts`)                                                                                                                    |
-| `src/shared/machine-cleanup.ts`         | The Cleanup dialog's rows: what a sweep would remove on each Machine, or why it can't be cleaned, which are chosen, and each chosen one's sweep and toast (`test/desktop-machine-cleanup.test.ts`, with `cleanupsOn` in `src/bun/machine.ts`)          |
-| `src/bun/machine.ts`'s `sweepOn`        | Sweeps one chosen Machine: sent once and waited on for 10 minutes, not the 30 s writes are resent at, and kept in `actions.log` (`test/desktop-machine-sweep.test.ts`)                                                                                 |
-| `view/app/components/CleanupDialog.vue` | The Cleanup dialog the Machines page's **Clean up…** opens, drawn from it; `useCleanup.ts` reads each Machine's listing whenever it opens with no sweep running, and keeps the sweeps past the dialog                                                  |
+| `src/shared/machine-cleanup.ts`         | The Cleanup dialog's rows: what a sweep would remove on each Machine, or why it can't be cleaned, which are chosen, and each chosen one's sweep and toast (`test/desktop-machine-cleanup.test.ts`, with `cleanupOn` in `src/bun/machine.ts`)           |
+| `src/bun/machine.ts`'s `sweepOn`        | Sweeps one chosen Machine: resent under its request only over a renewed connection, 10 minutes in all, and kept in `actions.log` (`test/desktop-machine-sweep.test.ts`)                                                                                |
+| `view/app/components/CleanupDialog.vue` | The Cleanup dialog the Machines page's **Clean up…** opens, drawn from it; `useCleanup.ts` reads each Machine's listing on its own whenever it opens with no sweep running, and keeps the sweeps past the dialog                                       |
 
 ## Go to pane
 
@@ -89,11 +89,11 @@ The Toolkit both chats share is the root's `src/toolkit.ts`.
 Done only on the host's reply, and kept in `actions.log`. Tested in
 `test/desktop-confirm.test.ts` and `test/desktop-pending-answer.test.ts`.
 
-| File                           | What it owns                                                                                                                                                                            |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/bun/sent.ts`              | The 30 s wait, 3 tries under one request, and `actions.log`; a Cleanup sweep alone is sent once and waited on 10 minutes, since a resend's reply holds only what it removed (`sweepOn`) |
-| `src/shared/actions.ts`        | One request per gesture, which **Try again** sends again                                                                                                                                |
-| `src/shared/pending-answer.ts` | What a card shows of an answer until the board no longer asks                                                                                                                           |
+| File                           | What it owns                                                                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/bun/sent.ts`              | The 30 s wait, 3 tries under one request, and `actions.log`; a Cleanup sweep alone is resent only over a renewed connection, within 10 minutes (`sweepOn`) |
+| `src/shared/actions.ts`        | One request per gesture, which **Try again** sends again                                                                                                   |
+| `src/shared/pending-answer.ts` | What a card shows of an answer until the board no longer asks                                                                                              |
 
 ## Review comments and the Diff tab
 

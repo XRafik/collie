@@ -188,6 +188,7 @@ test("a sweep asked again under its request while it runs waits for it and answe
       let sweeps = 0;
       let left = 3;
       const slow: Sweeper = {
+        kind: "generation",
         judge: Effect.gen(function* () {
           sweeps += 1;
           yield* Deferred.succeed(started, undefined);
@@ -239,6 +240,7 @@ test("a sweep whose caller goes away still finishes and keeps its report for the
       let sweeps = 0;
       let left = 1;
       const slow: Sweeper = {
+        kind: "generation",
         judge: Effect.sync(() => {
           sweeps += 1;
           return {

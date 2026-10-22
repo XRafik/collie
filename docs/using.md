@@ -1342,8 +1342,15 @@ nothing to remove says "Nothing to remove now". Every Machine that listed starts
 **All** and **None** change that, and a line under the list says what the chosen Machines
 would free together, sized as `collie cleanup` prints it. A Machine Desktop doesn't reach
 shows its state and why, and can't be chosen; one Out of reach or Waiting for SSO adds that
-its host still cleans up there every ten minutes. One whose listing failed, whose host did
-not answer in 15 seconds, or whose Collie is too old to list says so and can't be chosen.
+its host still cleans up there every ten minutes. Each connected Machine is read on its own,
+and its row fills as soon as that Machine answers, so a slow one holds back no other; until
+then it says how long it has waited, "Reading… 23 s", and can't be chosen. A listing is
+waited on as long as its Machine stays connected, and asked again over the new connection
+when its connection is renewed or breaks; it gives up 2 minutes after it was asked, saying
+its host did not answer within 2 minutes or its connection did not come back. One whose
+listing failed, or whose Collie is too old to list, says so and can't be chosen; so does one
+that wasn't connected when the dialog read. Each of those offers **Read again**, which asks
+that Machine alone for a fresh 2 minutes, until any Machine has been swept from the dialog.
 
 **Clean up 2 Machines** ("Clean up 1 Machine" for one) under that line sweeps every chosen
 Machine at once, each on its own, with no question first: its host does the same every ten
@@ -1354,11 +1361,15 @@ with each kept item's reason, including anything the listing offered that the sw
 again and kept. A sweep that failed says "Not cleaned" with the reason, and **Try again**
 sends that Machine's sweep again under the same request: if the first sweep finished, or
 is still running, its host answers with that sweep's report rather than sweeping twice.
-A sweep is sent once and waited on for up to 10 minutes, not
-sent again at 30 s as other writes are: one that deletes gigabytes can take longer, and a
-resend's reply would hold only what the last attempt removed. With no reply by then the row
-says "vm-mk did not finish cleaning up within 10 minutes. It may still be sweeping; Try
-again asks for the same sweep." Each send is a line in `actions.log`, of kind `cleanup`.
+A sweep is waited on for up to 10 minutes, not resent at 30 s as other writes are: one that
+deletes gigabytes can take longer. It is sent again only when its Machine's connection is
+renewed or breaks under it, under the same request and within the same 10 minutes, so the
+host answers with the first sweep's report. While the Machine has no connection its row says
+"Cleaning… waiting for vm-mk to reconnect". With no reply by then the row says "vm-mk did
+not finish cleaning up within 10 minutes. It may still be sweeping; Try again asks for the
+same sweep." Each send is a line in `actions.log`, of kind `cleanup`, with its attempt
+number and how it ended; one the 10 minutes ran out waiting to send ends `not-sent`, "it
+did not reconnect within 10 minutes".
 Each outcome is also told in a toast, "Cleaned up vm-mk: freed 3.2 GiB" or "vm-mk not
 cleaned: …". Closing the dialog stops nothing and the toasts still come; opened again while
 a sweep runs, it shows the sweeps as they stand, and opened once none runs, it reads fresh
@@ -3127,7 +3138,9 @@ An entry of the state directory that is no kind Collie knows is listed as kept a
 removed. [Schedules](#schedules) under `schedules/` are the host's own: listed as kept, and never swept.
 
 `collie cleanup` lists what a sweep would remove now, with each item's size and the total,
-and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.
+and what Collie keeps and why. A listing is judged against the latest board the host has
+built; a sweep builds its own and judges every item again, so a listing can overstate what
+is left but never removes anything. `collie cleanup --apply` sweeps now; chat can do the same.
 The Flock chat sweeps the Machine a `cleanup` names in its `machine` field, and refuses one
 that names none while several Machines are reachable; Native chat sweeps its own Machine.
 `collie --machine <machine> cleanup` lists another Machine's, and Desktop's **Clean up…** on

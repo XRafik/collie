@@ -128,12 +128,7 @@ export const sweepEvery = <E, R>(
   sweepers: Effect.Effect<ReadonlyArray<Sweeper>, E, R>,
 ) =>
   Effect.sleep(SWEEP_EVERY).pipe(
-    Effect.andThen(
-      every(
-        SWEEP_EVERY,
-        sweeping.withPermit(Effect.flatMap(sweepers, (all) => sweep(all, stateDir, "host"))),
-      ),
-    ),
+    Effect.andThen(every(SWEEP_EVERY, sweeping.withPermit(sweep(sweepers, stateDir, "host")))),
   );
 
 /** Each live Herd's proven Home kept tokened; one Herd's failure skips only that Herd. */
