@@ -1361,11 +1361,15 @@ with each kept item's reason, including anything the listing offered that the sw
 again and kept. A sweep that failed says "Not cleaned" with the reason, and **Try again**
 sends that Machine's sweep again under the same request: if the first sweep finished, or
 is still running, its host answers with that sweep's report rather than sweeping twice.
-A sweep is sent once and waited on for up to 10 minutes, not
-sent again at 30 s as other writes are: one that deletes gigabytes can take longer, and a
-resend's reply would hold only what the last attempt removed. With no reply by then the row
-says "vm-mk did not finish cleaning up within 10 minutes. It may still be sweeping; Try
-again asks for the same sweep." Each send is a line in `actions.log`, of kind `cleanup`.
+A sweep is waited on for up to 10 minutes, not resent at 30 s as other writes are: one that
+deletes gigabytes can take longer. It is sent again only when its Machine's connection is
+renewed or breaks under it, under the same request and within the same 10 minutes, so the
+host answers with the first sweep's report. While the Machine has no connection its row says
+"Cleaning… waiting for vm-mk to reconnect". With no reply by then the row says "vm-mk did
+not finish cleaning up within 10 minutes. It may still be sweeping; Try again asks for the
+same sweep." Each send is a line in `actions.log`, of kind `cleanup`, with its attempt
+number and how it ended; one the 10 minutes ran out waiting to send ends `not-sent`, "it
+did not reconnect within 10 minutes".
 Each outcome is also told in a toast, "Cleaned up vm-mk: freed 3.2 GiB" or "vm-mk not
 cleaned: …". Closing the dialog stops nothing and the toasts still come; opened again while
 a sweep runs, it shows the sweeps as they stand, and opened once none runs, it reads fresh

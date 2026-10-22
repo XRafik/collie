@@ -118,7 +118,11 @@ const rowOf = (
     warn: true,
     ...over,
   });
-  if (sweep?.state === "running") return row("Cleaning…", { warn: false });
+  if (sweep?.state === "running")
+    return row(
+      shown.state === "live" ? "Cleaning…" : `Cleaning… waiting for ${shown.name} to reconnect`,
+      { warn: false },
+    );
   if (sweep?.state === "failed")
     return row("Not cleaned", { reason: sweep.reason, tryAgain: true });
   if (sweep?.state === "done") {

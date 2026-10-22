@@ -504,6 +504,20 @@ describe("the Cleanup dialog while and after it sweeps", () => {
     expect(view.button).toEqual({ said: "Clean up 2 Machines", disabled: true });
   });
 
+  test("a sweeping Machine that isn't live says it waits for it to reconnect, then Cleaning… again", () => {
+    const sweeping = new Map([["p-vm-mk", { state: "running" as const, request: "s-1" }]]);
+    const read = reads(listed("vm-mk", { remove: [], keep: [], bytes: 0 }));
+    const [away] = cleanupView(
+      [{ ...live("vm-mk"), state: "unreachable", reason: "down" }],
+      read,
+      null,
+      sweeping,
+    ).rows;
+    expect([away!.said, away!.warn]).toEqual(["Cleaning… waiting for vm-mk to reconnect", false]);
+    const [back] = cleanupView([live("vm-mk")], read, null, sweeping).rows;
+    expect(back!.said).toBe("Cleaning…");
+  });
+
   test("a done sweep says what it freed, its removals by kind, and what it kept and why", () => {
     const swept = {
       remove: [item("worktree", "/w/a", 2 * GiB), item("worktree", "/w/b", 1.2 * GiB)],
