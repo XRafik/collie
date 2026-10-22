@@ -161,8 +161,7 @@ const heard = computed((): Heard => ({
 }));
 const said = ref("");
 watch(heard, (now, was) => {
-  const told = announcement(was, now);
-  if (told !== null) said.value = told;
+  said.value = announcement(was, now) ?? said.value;
 });
 
 /** The files a message part is, where it is one. */

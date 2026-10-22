@@ -206,12 +206,18 @@ export interface Heard {
   readonly notice: string | null;
 }
 
-/** What the status region announces as `was` becomes `now`; a reply finishing is not said. */
+/**
+ * What the status region holds as `was` becomes `now`: what to announce, else empty, so the
+ * same words announce again later; null where nothing changed. A reply finishing is not said.
+ */
 export const announcement = (was: Heard, now: Heard): string | null => {
-  const said = [
+  if (was.replying === now.replying && was.stopped === now.stopped && was.notice === now.notice)
+    return null;
+  return [
     now.replying && !was.replying ? "Replying…" : null,
     now.stopped && !was.stopped ? "Reply stopped" : null,
     now.notice !== null && now.notice !== was.notice ? now.notice : null,
-  ].filter((one) => one !== null);
-  return said.length === 0 ? null : said.join(" ");
+  ]
+    .filter((one) => one !== null)
+    .join(" ");
 };

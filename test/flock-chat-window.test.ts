@@ -5,6 +5,7 @@ import {
   aboutLine,
   aboutNote,
   announcement,
+  type Heard,
   earlierMenu,
   fromAboutNote,
   putBack,
@@ -160,15 +161,46 @@ test("the submit button sends unless the human's reply is under way, when it sto
 test("the status region announces a reply starting, a Stop and each notice as it appears, and never a reply finishing", () => {
   const quiet = { replying: false, stopped: false, notice: null };
   const replying = { ...quiet, replying: true };
-  expect(announcement(quiet, replying)).toBe("Replying…");
-  expect(announcement(replying, { ...quiet, stopped: true })).toBe("Reply stopped");
-  expect(announcement(replying, quiet)).toBeNull();
   const notice =
     "This reply finishes on Opus 5.5 · High. Your next message runs on Sonnet 5.5 · Medium.";
-  expect(announcement(replying, { ...replying, notice })).toBe(notice);
-  expect(announcement({ ...replying, notice }, { ...replying, notice })).toBeNull();
-  expect(announcement({ ...replying, notice }, replying)).toBeNull();
   const switched = "Your next message starts a new conversation on Pi.";
-  expect(announcement(quiet, { ...replying, notice: switched })).toBe(`Replying… ${switched}`);
-  expect(announcement({ ...quiet, stopped: true }, { ...quiet, stopped: true })).toBeNull();
+  /** What the region reads after each state in turn, as the window's watcher sets it. */
+  const region = (states: ReadonlyArray<Heard>) => {
+    let shown = "";
+    const read: string[] = [];
+    states.slice(1).forEach((now, at) => {
+      shown = announcement(states[at]!, now) ?? shown;
+      read.push(shown);
+    });
+    return read;
+  };
+  expect(
+    region([
+      quiet,
+      replying,
+      { ...replying, notice },
+      { ...replying, notice },
+      replying,
+      { ...quiet, stopped: true },
+      { ...quiet, stopped: true },
+      { ...replying, notice: switched },
+      quiet,
+    ]),
+  ).toEqual([
+    "Replying…",
+    notice,
+    notice,
+    "",
+    "Reply stopped",
+    "Reply stopped",
+    `Replying… ${switched}`,
+    "",
+  ]);
+  // Each start and each notice that comes back is a change the region announces again.
+  expect(region([quiet, replying, quiet, replying])).toEqual(["Replying…", "", "Replying…"]);
+  expect(region([replying, { ...replying, notice }, replying, { ...replying, notice }])).toEqual([
+    notice,
+    "",
+    notice,
+  ]);
 });
