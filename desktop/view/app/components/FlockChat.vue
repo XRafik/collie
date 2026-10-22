@@ -6,6 +6,7 @@ import { isString } from "../../../../src/schema";
 import { attachedIn, dropKind, pastedImages, uriListPaths } from "../../../src/shared/attachments";
 import { aboutLine, DESKTOP_SAID, earlierMenu, questionsOf } from "../../../src/shared/chat-view";
 import { DEFAULT_CHAT_HARNESS } from "../../../src/shared/flock-settings";
+import type { ChatChoice } from "../composables/useChatChoices";
 
 defineProps<{ alone?: boolean }>();
 const emit = defineEmits<{ popOut: []; collapse: [] }>();
@@ -62,6 +63,11 @@ onBeforeUnmount(() => arrived.disconnect());
 const { chip, choose } = useChip();
 const { popIn } = usePopOut();
 const draft = ref("");
+const input = ref<{ textareaRef?: HTMLTextAreaElement | null }>();
+const { selects, refused, dismiss, choose: save } = useChatChoices();
+/** Saves a choice at once, then puts the human back in the message box. */
+const chooseChat = (which: ChatChoice, value: string) =>
+  void save(which, value).then(() => input.value?.textareaRef?.focus());
 onMounted(reload);
 const files = useAttachments();
 
@@ -377,8 +383,21 @@ const queuedText = ({ content }: QueuedMessage) => {
     <p v-if="files.refused.value" data-testid="chat-refused" class="px-6 pt-2 text-sm text-error">
       {{ files.refused.value }}
     </p>
-    <form class="flex gap-2 border-t border-default px-6 py-3" @submit.prevent="send()">
+    <UAlert
+      v-if="refused !== null"
+      role="alert"
+      data-testid="chat-choice-refused"
+      class="mx-6 mt-2 w-auto"
+      color="error"
+      variant="subtle"
+      icon="i-lucide-circle-alert"
+      :description="refused"
+      :close="{ 'aria-label': 'Dismiss', title: 'Dismiss' }"
+      @update:open="dismiss()"
+    />
+    <form class="flex flex-wrap gap-2 border-t border-default px-6 py-3" @submit.prevent="send()">
       <UTextarea
+        ref="input"
         v-model="draft"
         data-testid="chat-input"
         class="flex-1"
@@ -401,6 +420,15 @@ const queuedText = ({ content }: QueuedMessage) => {
         @click="files.pick()"
       />
       <UButton type="submit" icon="i-lucide-send" aria-label="Send" />
+      <div
+        v-if="selects !== null"
+        data-testid="chat-choices"
+        class="flex w-full min-w-0 flex-wrap items-center gap-1"
+      >
+        <ChatSelect :select="selects.harness" @choose="chooseChat('harness', $event)" />
+        <ChatModelSelect :select="selects.model" @choose="chooseChat('model', $event)" />
+        <ChatSelect :select="selects.effort" @choose="chooseChat('effort', $event)" />
+      </div>
     </form>
   </aside>
 </template>

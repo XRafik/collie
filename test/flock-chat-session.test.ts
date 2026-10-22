@@ -4,7 +4,7 @@ import { Effect, Stream } from "effect";
 import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver";
 import type { FlockChat } from "../desktop/src/bun/flock-tools";
 import { sessionOptions, userMcpServers } from "../desktop/src/bun/session";
-import { chatChoice } from "../desktop/src/bun/settings";
+import { chatResolved } from "../desktop/src/bun/chat-choices";
 import type { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 let noticed: string | undefined;
@@ -45,8 +45,8 @@ test("the session is on the model it is given at medium effort, resumed, on the 
   });
 });
 
-/** The effort the Claude Code session is opened at, with Desktop's settings as given. */
-const openedAt = (settings: DesktopSettings) => {
+/** The effort the Claude Code session is opened at, given `effort`, empty for none. */
+const openedAt = (effort: string) => {
   const efforts: unknown[] = [];
   const claude: ClaudeCode<string> = {
     query: ({ options }) => {
@@ -62,8 +62,6 @@ const openedAt = (settings: DesktopSettings) => {
     server: () => "collie",
     userServers: () => Promise.resolve({}),
   };
-  const resolved = chatChoice(settings, NO_FLOCK_SETTINGS);
-  if (!resolved.ok) throw new Error(resolved.problem);
   // SAFETY: opening a session reaches the Flock only through the faked server.
   const flock = {} as FlockChat;
   const driver = claudeDriver(claude, {
@@ -75,15 +73,24 @@ const openedAt = (settings: DesktopSettings) => {
     placement: () => undefined,
   });
   return driver
-    .open("5c1e6c8e-0000-4000-8000-000000000000", "opus", resolved.choice.effort ?? "")
+    .open("5c1e6c8e-0000-4000-8000-000000000000", "opus", effort)
     .pipe(Effect.scoped, Effect.as(efforts));
 };
 
-test("the session is opened at the effort Desktop's settings set, and at medium with none set", () =>
+/** The effort Desktop's settings resolve to, as the chat opens its session with it. */
+const resolvedEffort = (settings: DesktopSettings) =>
+  chatResolved(settings, NO_FLOCK_SETTINGS, Effect.succeed({})).pipe(
+    Effect.map((resolved) => (resolved.ok ? (resolved.choice.effort ?? "") : resolved.problem)),
+  );
+
+test("the session is opened at the effort Desktop's settings set, at medium with none set, and with none for a model that takes none", () =>
   Effect.runPromise(
     Effect.gen(function* () {
-      expect(yield* openedAt({ proactive: true, chatEffort: "high" })).toEqual(["high"]);
-      expect(yield* openedAt({ proactive: true })).toEqual(["medium"]);
+      expect(
+        yield* openedAt(yield* resolvedEffort({ proactive: true, chatEffort: "high" })),
+      ).toEqual(["high"]);
+      expect(yield* openedAt(yield* resolvedEffort({ proactive: true }))).toEqual(["medium"]);
+      expect(yield* openedAt("")).toEqual([undefined]);
     }),
   ));
 

@@ -12,7 +12,8 @@ import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver"
 import type { AguiEvent } from "../desktop/src/shared/agui";
 import type { TurnCost } from "../desktop/src/bun/driver";
 import type { ChatDriver, DriverContext } from "../desktop/src/bun/driver";
-import { changeSettings, chatChoice } from "../desktop/src/bun/settings";
+import { changeSettings } from "../desktop/src/bun/settings";
+import { chatChoicesOf, chatResolved } from "../desktop/src/bun/chat-choices";
 import { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import type { SdkMessage } from "../desktop/src/bun/agui";
@@ -85,7 +86,7 @@ interface Seen {
   /** Each session's MCP servers, by name. */
   readonly servers: string[][];
   /** Each session's effort. */
-  readonly efforts: string[];
+  readonly efforts: Array<string | undefined>;
 }
 
 const SAID = { type: "stream_event", parent_tool_use_id: null };
@@ -294,7 +295,9 @@ const withChat = <A, E>(
         machineRule: () => opts.rule ?? "Everything is on the vm",
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed(""),
-        choice: () => chatChoice(settings.current, NO_FLOCK_SETTINGS),
+        resolve: () => chatResolved(settings.current, NO_FLOCK_SETTINGS, Effect.succeed({})),
+        choicesOf: (held, installed) =>
+          Effect.succeed(chatChoicesOf(held, installed, settings.current, NO_FLOCK_SETTINGS, {})),
         chatHarness: () => ({
           harness: settings.current.chatHarness ?? "claude",
           model: settings.current.chatModel,
@@ -744,9 +747,94 @@ test("the chat reports the model its conversation actually runs on, including th
     Effect.gen(function* () {
       yield* Stream.runDrain(conversation.send("hello", null, false));
       const said = yield* callFlockTool(seen.flock!, "collie_chat_harness", {});
-      expect(said).toContain("This conversation runs on claude/opus now.");
+      expect(said).toContain("its session runs on claude/opus at medium now.");
     }),
   ));
+
+/** What the chat module holds now, as the account is told it. */
+const heldNow = (conversation: Effect.Success<ReturnType<typeof openFlockChat>>) =>
+  conversation.held.pipe(
+    Stream.take(1),
+    Stream.runCollect,
+    Effect.map((told) => told[0]!),
+  );
+
+test("the chat holds a turn only while one is under way, a turn of Desktop's own included", () => {
+  const gate = Deferred.makeUnsafe<void>();
+  return withChat(
+    {
+      items: [item("r1:asking", "decision")],
+      proactive: true,
+      holds: (text) => text.startsWith(DESKTOP_SAID),
+      gate,
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        expect((yield* heldNow(conversation)).turning).toBe(false);
+        yield* TestClock.adjust("3 seconds");
+        yield* eventually(() => seen.prompts.length === 1);
+        expect((yield* heldNow(conversation)).turning).toBe(true);
+        yield* Stream.runDrain(conversation.send("now", null, true));
+        expect((yield* heldNow(conversation)).turning).toBe(false);
+
+        const slow = yield* Stream.runDrain(conversation.send("slow", null, false)).pipe(
+          Effect.forkChild,
+        );
+        yield* eventually(() => seen.prompts.includes("slow"));
+        expect((yield* heldNow(conversation)).turning).toBe(true);
+        Deferred.doneUnsafe(gate, Effect.void);
+        yield* Fiber.join(slow);
+        expect((yield* heldNow(conversation)).turning).toBe(false);
+      }),
+  );
+});
+
+test("the chat runs on nothing until a session opens, then on exactly what it opened, each unset choice resolved", () => {
+  const settings: HeldSettings = { current: { proactive: false } };
+  return withChat({ items: [], proactive: false, settings }, answered, ({ conversation, seen }) =>
+    Effect.gen(function* () {
+      expect((yield* heldNow(conversation)).runsOn).toBeNull();
+      yield* Stream.runDrain(conversation.send("hello", null, false));
+      expect((yield* heldNow(conversation)).runsOn).toEqual({
+        harness: "claude",
+        model: "opus",
+        effort: "medium",
+      });
+      expect(seen.sessions.map(({ model }) => model)).toEqual(["opus"]);
+      expect(seen.efforts).toEqual(["medium"]);
+
+      settings.current = { proactive: false, chatModel: "sonnet", chatEffort: "max" };
+      yield* Stream.runDrain(conversation.send("again", null, false));
+      expect((yield* heldNow(conversation)).runsOn).toEqual({
+        harness: "claude",
+        model: "sonnet",
+        effort: "max",
+      });
+      expect(seen.efforts).toEqual(["medium", "max"]);
+    }),
+  );
+});
+
+test("the harness the chat is held on changes with the next message after a harness change, not when it is saved", () => {
+  const settings: HeldSettings = { current: { proactive: false, chatHarness: "claude" } };
+  return withChat(
+    { items: [], proactive: false, settings, pi: fakePi([]) },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        expect((yield* heldNow(conversation)).heldOn).toBe("claude");
+        yield* callFlockTool(seen.flock!, "collie_chat_harness", { harness: "pi" });
+        expect((yield* heldNow(conversation)).heldOn).toBe("claude");
+        yield* Stream.runDrain(conversation.send("Pi turn", null, false));
+        expect(yield* heldNow(conversation)).toMatchObject({
+          heldOn: "pi",
+          runsOn: { harness: "pi", model: "default", effort: "medium" },
+        });
+      }),
+  );
+});
 
 test("a conversation file from before harnesses is claude's, resumed as before, and kept with its harness", () =>
   withChat(

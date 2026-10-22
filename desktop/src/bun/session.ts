@@ -167,7 +167,8 @@ export const sessionOptions = <Server>(opts: {
   readonly cwd: string;
   readonly session: { readonly resume: string } | { readonly sessionId: string };
   readonly model: string;
-  readonly effort: Effort;
+  /** None for a model that takes no effort. */
+  readonly effort: Effort | undefined;
   readonly server: Server;
   readonly claude: string | null;
   readonly userServers: UserMcpServers;

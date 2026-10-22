@@ -3,8 +3,14 @@
 import { Effect, FileSystem, Path, Schema, Semaphore, SubscriptionRef } from "effect";
 import { resolveChoice } from "../../../src/harness-choice";
 import { isString } from "../../../src/schema";
+import { effortsOf, type Offer, type PiConfig, tableOffer } from "../shared/chat-choices";
 import { ActionFailed, DesktopSettings, type DesktopSettingsChange } from "../shared/flock";
-import { CHAT_HARNESSES, DEFAULT_CHAT_HARNESS, type FlockSettings } from "../shared/flock-settings";
+import {
+  CHAT_HARNESSES,
+  DEFAULT_CHAT_HARNESS,
+  type FlockSettings,
+  NO_FLOCK_SETTINGS,
+} from "../shared/flock-settings";
 
 const SettingsFile = Schema.fromJsonString(DesktopSettings);
 const FILE = "settings.json";
@@ -30,18 +36,38 @@ export const writeSettings = Effect.fn("Settings.write")(function* (
   );
 });
 
-/** `change` over `settings`; another harness unsets a model and effort chosen for the one before. */
+/** What each harness offers, from Collie's table, with the set model on the set harness. */
+export const tableOffers =
+  (settings: DesktopSettings, flock: FlockSettings, pi: PiConfig) =>
+  (harness: string): Offer =>
+    tableOffer(
+      harness,
+      harness === (settings.chatHarness ?? DEFAULT_CHAT_HARNESS) ? settings.chatModel : undefined,
+      extraModels(flock)[harness] ?? [],
+      pi,
+    );
+
+/**
+ * `change` over `settings`. Another harness unsets a model and effort chosen for the one
+ * before; another model, unset counting as the one it runs as, keeps the effort only where
+ * it takes it.
+ */
 export const applyChange = (
   settings: DesktopSettings,
   change: DesktopSettingsChange,
+  offers: (harness: string) => Offer = tableOffers(settings, NO_FLOCK_SETTINGS, {}),
 ): DesktopSettings => {
   const { chatModel, chatEffort, ...rest } = { ...settings, ...change };
   let applied: DesktopSettings = rest;
-  const otherHarness =
-    change.chatHarness !== undefined &&
-    change.chatHarness !== (settings.chatHarness ?? DEFAULT_CHAT_HARNESS);
+  const harness = change.chatHarness ?? settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
+  const otherHarness = harness !== (settings.chatHarness ?? DEFAULT_CHAT_HARNESS);
   const model = change.chatModel ?? (otherHarness ? undefined : chatModel);
-  const effort = change.chatEffort ?? (otherHarness ? undefined : chatEffort);
+  let effort = change.chatEffort ?? (otherHarness ? undefined : chatEffort);
+  if (change.chatModel !== undefined && change.chatEffort === undefined && effort !== undefined) {
+    const offer = offers(harness);
+    const runs = model === undefined || model === "" ? offer.unset.model : model;
+    if (!effortsOf(harness, runs, offer.models).includes(effort)) effort = undefined;
+  }
   if (model !== undefined && model !== "") applied = { ...applied, chatModel: model };
   if (effort !== undefined && effort !== "") applied = { ...applied, chatEffort: effort };
   return applied;
@@ -82,13 +108,17 @@ export const chatChoice = (settings: DesktopSettings, flock: FlockSettings) => {
   return resolved;
 };
 
-/** The settings `change` makes, or why it is refused; a change that leaves the chat alone is not checked. */
+/**
+ * The settings `change` makes, or why it is refused; a change that leaves the chat alone is
+ * not checked. An effort is checked against the efforts its model takes.
+ */
 export const changeSettings = (
   settings: DesktopSettings,
   flock: FlockSettings,
   change: DesktopSettingsChange,
+  offers: (harness: string) => Offer = tableOffers(settings, flock, {}),
 ): DesktopSettings | { readonly refused: string } => {
-  const changed = applyChange(settings, change);
+  const changed = applyChange(settings, change, offers);
   if (
     change.chatHarness === undefined &&
     change.chatModel === undefined &&
@@ -96,7 +126,17 @@ export const changeSettings = (
   )
     return changed;
   const checked = chatChoice(changed, flock);
-  return checked.ok ? changed : { refused: checked.problem };
+  if (!checked.ok) return { refused: checked.problem };
+  const { harness, effort } = checked.choice;
+  if (effort === null) return changed;
+  const offer = offers(harness);
+  const model = changed.chatModel ?? offer.unset.model;
+  const takes = effortsOf(harness, model, offer.models);
+  if (takes.length === 0)
+    return { refused: `${model} takes no effort, so "${effort}" cannot be asked of it` };
+  if (!takes.includes(effort))
+    return { refused: `"${effort}" is not an effort ${model} takes (${takes.join(", ")})` };
+  return changed;
 };
 
 /**
@@ -106,13 +146,20 @@ export const changeSettings = (
 export const heldSettings = Effect.fn("Settings.held")(function* (
   dir: string,
   flock: () => FlockSettings,
+  pi: Effect.Effect<PiConfig, never, FileSystem.FileSystem | Path.Path>,
 ) {
   const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
   const held = yield* SubscriptionRef.make(yield* readSettings(dir));
   const one = Semaphore.makeUnsafe(1);
   const save = (change: DesktopSettingsChange) =>
     Effect.gen(function* () {
-      const merged = changeSettings(SubscriptionRef.getUnsafe(held), flock(), change);
+      const before = SubscriptionRef.getUnsafe(held);
+      const merged = changeSettings(
+        before,
+        flock(),
+        change,
+        tableOffers(before, flock(), yield* pi),
+      );
       if ("refused" in merged) return yield* new ActionFailed({ reason: merged.refused });
       yield* writeSettings(dir, merged).pipe(
         Effect.mapError((error) => new ActionFailed({ reason: error.message })),

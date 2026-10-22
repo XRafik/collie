@@ -28,6 +28,7 @@ import {
   readSettings,
   writeSettings,
 } from "../desktop/src/bun/settings";
+import type { Offer } from "../desktop/src/shared/chat-choices";
 
 const at = (hour: number) => `2026-10-07T${String(hour).padStart(2, "0")}:00:00.000Z`;
 const set = (key: string, value: SharedSetting["value"], hour: number): SharedSetting => ({
@@ -182,23 +183,13 @@ test("Settings shows every setting with its control, its value and its default",
     defaultSaid: "Unset: no rule",
     multiline: true,
   });
-  expect(row("chatHarness", false)).toMatchObject({
-    group: "Chat",
-    label: "Flock chat harness",
-    kind: "choice",
-    choices: ["claude", "pi"],
-    value: "claude",
-    set: false,
-  });
-  expect(row("chatModel", false)).toMatchObject({
-    group: "Chat",
-    label: "Flock chat model",
-    kind: "text",
-    value: "",
-    set: false,
-    multiline: false,
-    defaultSaid: "Unset: opus",
-  });
+  // The chat's harness, model and effort are chosen beside its message box, not here.
+  expect(
+    sections
+      .find((section) => section.group === "Chat")!
+      .rows.filter(({ shared }) => !shared)
+      .map(({ label }) => label),
+  ).toEqual(["Flock chat speaks first", "Machine rule"]);
   // The GitLab host is shared too, but beside the tokens made for it.
   expect(rows.map((one) => one.key)).not.toContain("gitlab_host");
 });
@@ -662,7 +653,7 @@ test("Desktop's settings are held in one place: a change saved as the chat's too
       const fs = yield* FileSystem.FileSystem;
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
       yield* writeSettings(dir, { proactive: true, chatModel: "sonnet" });
-      const held = yield* heldSettings(dir, () => NO_FLOCK_SETTINGS);
+      const held = yield* heldSettings(dir, () => NO_FLOCK_SETTINGS, Effect.succeed({}));
       const told = (count: number) =>
         held.changes.pipe(Stream.take(count), Stream.runCollect, Effect.forkChild);
       const board = yield* told(3);
@@ -686,3 +677,101 @@ test("Desktop's settings are held in one place: a change saved as the chat's too
       expect(yield* readSettings(dir)).toEqual(last);
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));
+
+/** What Claude Code offers in these tests: Haiku takes no effort, and Sonnet only two. */
+const claudeOffers =
+  (unsetModel = "opus") =>
+  (): Offer => ({
+    from: "table",
+    unset: { harness: "claude", model: unsetModel, effort: "medium" },
+    models: [
+      {
+        id: "opus",
+        label: "Opus",
+        efforts: ["low", "medium", "high", "max"],
+        unsetEffort: "medium",
+      },
+      { id: "sonnet", label: "Sonnet", efforts: ["low", "high"], unsetEffort: "low" },
+      { id: "claude-haiku-4-5", label: "Haiku 4.5", efforts: [], unsetEffort: null },
+    ],
+  });
+
+test("an effort the chosen model does not take is refused, and any effort on a model that takes none", () => {
+  const offers = claudeOffers();
+  expect(
+    changeSettings(
+      { proactive: true, chatModel: "sonnet" },
+      NO_FLOCK_SETTINGS,
+      { chatEffort: "max" },
+      offers,
+    ),
+  ).toEqual({ refused: '"max" is not an effort sonnet takes (low, high)' });
+  expect(
+    changeSettings(
+      { proactive: true },
+      NO_FLOCK_SETTINGS,
+      { chatModel: "claude-haiku-4-5", chatEffort: "low" },
+      offers,
+    ),
+  ).toEqual({ refused: 'claude-haiku-4-5 takes no effort, so "low" cannot be asked of it' });
+  // Unset, the model is the one it runs as.
+  expect(
+    changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatEffort: "max" }, offers),
+  ).toEqual({ proactive: true, chatEffort: "max" });
+  expect(
+    changeSettings(
+      { proactive: true },
+      NO_FLOCK_SETTINGS,
+      { chatEffort: "max" },
+      claudeOffers("sonnet"),
+    ),
+  ).toEqual({ refused: '"max" is not an effort sonnet takes (low, high)' });
+});
+
+test("another model keeps the effort only where it takes it, and unsetting the model counts as the model it runs as", () => {
+  const offers = claudeOffers();
+  const atHigh = { proactive: true, chatModel: "opus", chatEffort: "high" };
+  expect(changeSettings(atHigh, NO_FLOCK_SETTINGS, { chatModel: "sonnet" }, offers)).toEqual({
+    proactive: true,
+    chatModel: "sonnet",
+    chatEffort: "high",
+  });
+  const atMax = { proactive: true, chatModel: "opus", chatEffort: "max" };
+  expect(changeSettings(atMax, NO_FLOCK_SETTINGS, { chatModel: "sonnet" }, offers)).toEqual({
+    proactive: true,
+    chatModel: "sonnet",
+  });
+  expect(
+    changeSettings(atHigh, NO_FLOCK_SETTINGS, { chatModel: "claude-haiku-4-5" }, offers),
+  ).toEqual({ proactive: true, chatModel: "claude-haiku-4-5" });
+  expect(changeSettings(atMax, NO_FLOCK_SETTINGS, { chatModel: "" }, offers)).toEqual({
+    proactive: true,
+    chatEffort: "max",
+  });
+  expect(
+    changeSettings(atMax, NO_FLOCK_SETTINGS, { chatModel: "" }, claudeOffers("sonnet")),
+  ).toEqual({ proactive: true });
+});
+
+test("a model off the offered list can still be typed in, is checked as a Run's is, and takes the table's efforts", () => {
+  const offers = claudeOffers();
+  expect(
+    changeSettings(
+      { proactive: true },
+      NO_FLOCK_SETTINGS,
+      { chatModel: "claude-opus-5", chatEffort: "xhigh" },
+      offers,
+    ),
+  ).toEqual({ proactive: true, chatModel: "claude-opus-5", chatEffort: "xhigh" });
+  expect(
+    changeSettings(
+      { proactive: true },
+      NO_FLOCK_SETTINGS,
+      { chatModel: "claude-opus-5", chatEffort: "off" },
+      offers,
+    ),
+  ).toEqual({ refused: expect.stringContaining('"off" is not an effort claude takes') });
+  expect(
+    changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatModel: "gpt-6.1-sol" }, offers),
+  ).toEqual({ refused: expect.stringContaining('"gpt-6.1-sol" is not a model claude takes') });
+});

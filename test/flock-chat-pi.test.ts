@@ -11,7 +11,7 @@ import { FILE_TOOLS } from "../desktop/src/bun/file-tools";
 import { piPrompt } from "../desktop/src/bun/pi-transcript";
 import { ends } from "../desktop/src/shared/agui";
 import { childEnv } from "../desktop/src/bun/login-env";
-import { chatChoice } from "../desktop/src/bun/settings";
+import { chatResolved, readPiConfig } from "../desktop/src/bun/chat-choices";
 import type { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 
@@ -19,7 +19,7 @@ const withPi = <A, E>(
   body: (
     driver: ReturnType<typeof piDriver>,
     context: DriverContext,
-  ) => Effect.Effect<A, E, Scope.Scope | FileSystem.FileSystem | Path.Path>,
+  ) => Effect.Effect<A, E, Scope.Scope | Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -49,7 +49,8 @@ const withPi = <A, E>(
           machineRule: () => "",
           setMachineRule: () => Effect.void,
           inSync: () => Effect.succeed(""),
-          chatHarness: () => ({ harness: "pi", model: undefined, runsOn: null }),
+          chatHarness: () => ({ harness: "pi", model: undefined }),
+          chatChoices: Effect.die("not read"),
           setChatHarness: () => Effect.succeed(null),
         },
         ask: () => Promise.resolve(null),
@@ -179,73 +180,118 @@ test("Pi's start isolates resources, keeps the token in its environment and send
     }),
   ));
 
-test("resetting Pi's model resumes the conversation on its configured default and thinking level", () =>
+const writePi = (settings: Schema.Json) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.writeFileString(
+      `${childEnv().PI_CODING_AGENT_DIR}/settings.json`,
+      Schema.encodeSync(Schema.fromJsonString(Schema.Json))(settings),
+    ),
+  );
+
+/** Desktop's settings, which a test may change between messages. */
+interface HeldSettings {
+  current: DesktopSettings;
+}
+
+/** The Flock chat on the Pi fixture, with Desktop's settings as `settings` has them at each message. */
+const piChat = (settings: HeldSettings) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "flock-pi-chat-" });
+    const conversation = yield* openFlockChat({
+      dir,
+      conversation: "flock@test",
+      machines: () => [],
+      proactive: () => false,
+      machineRule: () => "",
+      setMachineRule: () => Effect.void,
+      inSync: () => Effect.succeed(""),
+      resolve: () =>
+        chatResolved(settings.current, NO_FLOCK_SETTINGS, readPiConfig(dir)).pipe(
+          Effect.provide(BunServices.layer),
+        ),
+      choicesOf: () => Effect.die("not read"),
+      chatHarness: () => ({
+        harness: "pi",
+        model: settings.current.chatModel,
+        effort: settings.current.chatEffort,
+      }),
+      setChatHarness: () => Effect.succeed(null),
+      drivers: (context) =>
+        loopbackTools(context).pipe(
+          Effect.map((endpoint) => ({
+            pi: piDriver(context, endpoint, ["bun", `${import.meta.dir}/fixtures/pi-chat.ts`]),
+          })),
+        ),
+    });
+    /** What Pi was started with and runs on, as the fixture reports it. */
+    const inspect = Effect.gen(function* () {
+      const events = yield* Stream.runCollect(conversation.send("inspect", null, false));
+      const text = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT");
+      if (text?.type !== "TEXT_MESSAGE_CONTENT") throw new Error("No reply");
+      return Schema.decodeUnknownSync(
+        Schema.fromJsonString(
+          Schema.Struct({
+            args: Schema.Array(Schema.String),
+            model: Schema.String,
+            thinking: Schema.String,
+          }),
+        ),
+      )(text.delta);
+    });
+    return { conversation, inspect };
+  });
+
+test("Pi is opened at its configured level for the set model, read again as each session opens", () =>
+  withPi(() =>
+    Effect.gen(function* () {
+      yield* writePi({
+        defaultProvider: "openai-codex",
+        defaultModel: "gpt-6.1-sol",
+        defaultThinkingLevel: "high",
+        modelThinkingLevels: { "openai-codex/gpt-5.5": "low" },
+      });
+      const settings: HeldSettings = {
+        current: { proactive: false, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" },
+      };
+      const { inspect } = yield* piChat(settings);
+      expect(yield* inspect).toMatchObject({ model: "openai-codex/gpt-5.5", thinking: "low" });
+
+      yield* writePi({
+        defaultProvider: "openai-codex",
+        defaultModel: "gpt-6.1-sol",
+        defaultThinkingLevel: "high",
+        modelThinkingLevels: { "openai-codex/gpt-5.5": "xhigh" },
+      });
+      expect(yield* inspect).toMatchObject({ model: "openai-codex/gpt-5.5", thinking: "xhigh" });
+
+      settings.current = { proactive: false, chatHarness: "pi" };
+      const unset = yield* inspect;
+      expect(unset).toMatchObject({ model: "openai-codex/gpt-6.1-sol", thinking: "high" });
+      expect(unset.args.slice(-4)).toEqual([
+        "--model",
+        "openai-codex/gpt-6.1-sol",
+        "--thinking",
+        "high",
+      ]);
+    }),
+  ));
+
+test("Pi's driver reads none of Pi's settings: Pi's own default is opened with no --model", () =>
   withPi((driver) =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const settings = `${childEnv().PI_CODING_AGENT_DIR}/settings.json`;
-      yield* fs.writeFileString(
-        settings,
-        Schema.encodeSync(Schema.fromJsonString(Schema.Json))({
-          defaultProvider: "openai-codex",
-          defaultModel: "gpt-6.1-sol",
-          defaultThinkingLevel: "high",
-        }),
-      );
-      const first = yield* driver.open("pi-reset", "openai-codex/gpt-5.3-codex-spark", "low");
-      yield* Effect.addFinalizer(() => first.close);
-      const inspect = (session: typeof first) =>
-        session.offer("inspect").pipe(
-          Effect.andThen(Stream.runCollect(session.events.pipe(Stream.takeUntil(ends)))),
-          Effect.map((events) => {
-            const text = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT");
-            if (text?.type !== "TEXT_MESSAGE_CONTENT") throw new Error("No reply");
-            return Schema.decodeUnknownSync(
-              Schema.fromJsonString(
-                Schema.Struct({
-                  model: Schema.String,
-                  thinking: Schema.String,
-                }),
-              ),
-            )(text.delta);
-          }),
-        );
-      expect(yield* inspect(first)).toEqual({
-        model: "openai-codex/gpt-5.3-codex-spark",
-        thinking: "low",
-      });
-      yield* first.close;
-      yield* fs.writeFileString(
-        settings,
-        Schema.encodeSync(Schema.fromJsonString(Schema.Json))({
-          defaultProvider: "openai-codex",
-          defaultModel: "gpt-5.6-terra",
-          defaultThinkingLevel: "xhigh",
-        }),
-      );
-      const reset = yield* driver.open("pi-reset", "default", "");
-      yield* Effect.addFinalizer(() => reset.close);
-      expect(reset.conversation()).toBe("pi-reset");
-      expect(yield* inspect(reset)).toEqual({
-        model: "openai-codex/gpt-5.6-terra",
-        thinking: "xhigh",
-      });
-      yield* reset.close;
-      yield* fs.writeFileString(
-        settings,
-        Schema.encodeSync(Schema.fromJsonString(Schema.Json))({
-          defaultProvider: "openai-codex",
-          defaultModel: "gpt-5.6-terra",
-          defaultThinkingLevel: "low",
-          modelThinkingLevels: { "openai-codex/gpt-5.6-terra": "max" },
-        }),
-      );
-      const perModel = yield* driver.open("pi-reset", "default", "");
-      yield* Effect.addFinalizer(() => perModel.close);
-      expect(yield* inspect(perModel)).toEqual({
-        model: "openai-codex/gpt-5.6-terra",
-        thinking: "max",
-      });
+      yield* writePi({ defaultProvider: "openai-codex", defaultModel: "gpt-6.1-sol" });
+      const session = yield* driver.open("pi-own", "default", "medium");
+      yield* Effect.addFinalizer(() => session.close);
+      yield* session.offer("inspect");
+      const events = yield* Stream.runCollect(session.events.pipe(Stream.takeUntil(ends)));
+      const text = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT");
+      if (text?.type !== "TEXT_MESSAGE_CONTENT") throw new Error("No reply");
+      const { args } = Schema.decodeUnknownSync(
+        Schema.fromJsonString(Schema.Struct({ args: Schema.Array(Schema.String) })),
+      )(text.delta);
+      expect(args).not.toContain("--model");
+      expect(args.slice(-2)).toEqual(["--thinking", "medium"]);
     }),
   ));
 
@@ -380,7 +426,9 @@ test("a question's buttons can be clicked before Pi's HTTP call reaches Desktop"
         machineRule: () => "",
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed(""),
-        choice: () => ({ ok: true, choice: { harness: "pi", model: "default", effort: null } }),
+        resolve: () =>
+          Effect.succeed({ ok: true, choice: { harness: "pi", model: "default", effort: null } }),
+        choicesOf: () => Effect.die("not read"),
         chatHarness: () => ({ harness: "pi", model: undefined }),
         setChatHarness: () => Effect.succeed(null),
         drivers: (context) =>
@@ -407,48 +455,26 @@ test("a question's buttons can be clicked before Pi's HTTP call reaches Desktop"
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));
 
-test("Pi is started with the effort Desktop's settings set, and as before with none set", () =>
+test("Pi is started with the effort Desktop's settings set, and with none set at the level it resolves to", () =>
   withPi(() =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const startedWith = (settings: DesktopSettings) =>
-        Effect.gen(function* () {
-          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "flock-pi-effort-" });
-          const conversation = yield* openFlockChat({
-            dir,
-            conversation: "flock@test",
-            machines: () => [],
-            proactive: () => false,
-            machineRule: () => "",
-            setMachineRule: () => Effect.void,
-            inSync: () => Effect.succeed(""),
-            choice: () => chatChoice(settings, NO_FLOCK_SETTINGS),
-            chatHarness: () => ({ harness: "pi", model: settings.chatModel }),
-            setChatHarness: () => Effect.succeed(null),
-            drivers: (context) =>
-              loopbackTools(context).pipe(
-                Effect.map((endpoint) => ({
-                  pi: piDriver(context, endpoint, [
-                    "bun",
-                    `${import.meta.dir}/fixtures/pi-chat.ts`,
-                  ]),
-                })),
-              ),
-          });
-          const events = yield* Stream.runCollect(conversation.send("inspect", null, false));
-          const text = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT");
-          if (text?.type !== "TEXT_MESSAGE_CONTENT") throw new Error("No reply");
-          return Schema.decodeUnknownSync(
-            Schema.fromJsonString(Schema.Struct({ args: Schema.Array(Schema.String) })),
-          )(text.delta).args;
-        }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
+      const startedWith = (current: DesktopSettings) =>
+        Effect.flatMap(piChat({ current }), ({ inspect }) => inspect).pipe(
+          Effect.map(({ args }) => args.slice(-4)),
+          Effect.scoped,
+        );
       const pi = { proactive: false, chatHarness: "pi", chatModel: "openai-codex/gpt-6.1-sol" };
-      expect((yield* startedWith({ ...pi, chatEffort: "off" })).slice(-4)).toEqual([
+      expect(yield* startedWith({ ...pi, chatEffort: "off" })).toEqual([
         "--model",
         "openai-codex/gpt-6.1-sol",
         "--thinking",
         "off",
       ]);
-      expect(yield* startedWith(pi)).not.toContain("--thinking");
+      expect(yield* startedWith(pi)).toEqual([
+        "--model",
+        "openai-codex/gpt-6.1-sol",
+        "--thinking",
+        "medium",
+      ]);
     }),
   ));

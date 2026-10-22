@@ -68,7 +68,8 @@ import { loopbackTools } from "./chat-endpoint";
 import { piDriver } from "./pi-driver";
 import { CHILD_CWD, childEnv, localShell, takeLoginEnv, which } from "./login-env";
 import { type ChatMachine, chatDoor } from "./flock-tools";
-import { chatChoice, heldSettings } from "./settings";
+import { heldSettings } from "./settings";
+import { chatChoicesOf, chatChoicesStream, chatResolved, readPiConfig } from "./chat-choices";
 import { followWindow, zoomWindow } from "./scale";
 import type { Drawn } from "../shared/scale";
 import {
@@ -250,8 +251,11 @@ const main = Effect.gen(function* () {
     version: manifest.version,
   }).pipe(Effect.ignore);
   const logged = yield* actionsLog(own);
-  const desktop = yield* heldSettings(own, (): FlockSettings =>
-    SubscriptionRef.getUnsafe(flockSettings),
+  const piConfig = readPiConfig(own).pipe(Effect.provide(BunServices.layer));
+  const desktop = yield* heldSettings(
+    own,
+    (): FlockSettings => SubscriptionRef.getUnsafe(flockSettings),
+    piConfig,
   );
   const settings = desktop.current;
   const saved = yield* readFlockSettings(own);
@@ -716,7 +720,11 @@ const main = Effect.gen(function* () {
         Effect.orDie,
         Effect.provide(BunServices.layer),
       ),
-    choice: () => chatChoice(settings(), SubscriptionRef.getUnsafe(flockSettings)),
+    resolve: () => chatResolved(settings(), SubscriptionRef.getUnsafe(flockSettings), piConfig),
+    choicesOf: (held, installed) =>
+      Effect.map(piConfig, (pi) =>
+        chatChoicesOf(held, installed, settings(), SubscriptionRef.getUnsafe(flockSettings), pi),
+      ),
     chatHarness: () => ({
       harness: settings().chatHarness ?? DEFAULT_CHAT_HARNESS,
       model: settings().chatModel,
@@ -1188,6 +1196,22 @@ const main = Effect.gen(function* () {
     desktopTurns: () =>
       Stream.unwrap(withChat((opened) => Effect.succeed(opened.desktopTurns), Stream.empty)),
     settings: () => desktop.changes,
+    chatChoices: () =>
+      Stream.unwrap(
+        withChat(
+          (opened) =>
+            Effect.succeed(
+              chatChoicesStream({
+                held: opened.held,
+                settings: desktop.changes,
+                flock: SubscriptionRef.changes(flockSettings),
+                installed: opened.installed,
+                pi: piConfig,
+              }),
+            ),
+          Stream.empty,
+        ),
+      ),
     drawn: () => SubscriptionRef.changes(drawn).pipe(Stream.filter((now) => now !== null)),
     setSettings: saveSettings,
   });
