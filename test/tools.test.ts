@@ -1041,6 +1041,40 @@ test("collie_do takes a Run's offer, and what it starts is that Run's child in i
     }),
   ));
 
+test("an offer's argument that is not text is taken from the text chat gives it", () =>
+  inWorld(
+    Effect.gen(function* () {
+      yield* save(world.user, ["echo.workflow.ts"]);
+      const run = yield* startedRun("echo", { text: "hi", times: 1 }, asking("keep"));
+      yield* call("collie_do", {
+        actions: [{ kind: "answer", run: run.id, choiceId: "keep", answer: "yes" }],
+      });
+      const client = yield* connect(stateDir).pipe(Effect.orDie);
+      yield* until(
+        () => client.run({ runId: run.id }).pipe(Effect.orDie),
+        (view) => view?.status.status === "complete",
+      );
+
+      const said = yield* call("collie_do", {
+        actions: [
+          {
+            kind: "take_offer",
+            run: run.id,
+            offer: "echo-louder",
+            inputs: { text: "again", times: "2" },
+          },
+        ],
+      });
+      expect(said).toContain("take_offer: applied");
+      const started = /Started run (\S+) from/.exec(said)?.[1] ?? "";
+      const child = yield* until(
+        () => client.run({ runId: started }).pipe(Effect.orDie),
+        (view) => view !== null && view.waiting.length > 0,
+      );
+      expect(child?.input).toEqual({ text: "again", times: 2 });
+    }),
+  ));
+
 test("an offer the Run does not make, or cannot make now, starts nothing and says why", () =>
   inWorld(
     Effect.gen(function* () {

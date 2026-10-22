@@ -66,6 +66,7 @@ import {
   type TaskView,
   type NewsReceipt,
   type Metrics,
+  offerInput,
 } from "./board-model";
 import type { Action } from "./actions";
 import { NEEDS_INPUT, REFUSED_INPUT, runDir, type Given, type RunView } from "./engine";
@@ -1263,6 +1264,24 @@ export const invokeOffer = (
         : answered,
     ),
   );
+
+/** An offer taken with its arguments as text, each read as the offer declares it. */
+export const invokeTypedOffer = (
+  env: PluginEnv,
+  options: Omit<Parameters<typeof invokeOffer>[1], "input"> & {
+    readonly input: Readonly<Record<string, string>>;
+  },
+): Effect.Effect<OpResult, never, Client> =>
+  Effect.flatMap(offersOf(env, options.runId), (listed) => {
+    const offer = "ok" in listed ? undefined : listed.find((one) => one.id === options.offer);
+    const typed = offer === undefined ? {} : offerInput(offer.arguments, options.input);
+    return invokeOffer(env, {
+      ...options,
+      input: Object.fromEntries(
+        Object.entries(options.input).map(([name, text]) => [name, typed[name] ?? text]),
+      ),
+    });
+  });
 
 /** A yes to a proposal, carried out by the host under the front door asking. */
 export const confirmProposed = (
