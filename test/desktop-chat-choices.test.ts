@@ -21,6 +21,7 @@ import {
   resolveChat,
   stayChange,
   tableOffer,
+  typedEntry,
   typedModel,
 } from "../desktop/src/shared/chat-choices";
 import type { DesktopSettings } from "../desktop/src/shared/flock";
@@ -319,6 +320,25 @@ test("the model select starts with the default, named by what it runs as, then t
   ]);
   expect(shown.name).toBe("Model: sonnet");
   expect(typedModel("openai-codex/gpt-5.5")).toBe("Use openai-codex/gpt-5.5");
+});
+
+test("the model menu offers to use a typed id it does not offer, even one part of another's name, and nothing else", () => {
+  const unset = { proactive: true };
+  const { model } = chatSelects(unset, {
+    ...account(unset),
+    harnesses: [
+      {
+        harness: "claude",
+        label: "Claude Code",
+        installed: true,
+        offered: tableOffer("claude", undefined, ["claude-opus-5-20261001"], {}),
+      },
+    ],
+  });
+  expect(typedEntry(model, " claude-opus-5 ")).toBe("claude-opus-5");
+  expect(typedEntry(model, "claude-opus-5-20261001")).toBeNull();
+  expect(typedEntry(model, "default")).toBeNull();
+  expect(typedEntry(model, "  ")).toBeNull();
 });
 
 test("the effort select starts with the default level, then the levels the set model takes", () => {

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import type { SelectMenuItem } from "@nuxt/ui";
-import { type ChoiceSelect, typedModel } from "../../../src/shared/chat-choices";
+import { type ChoiceSelect, typedEntry, typedModel } from "../../../src/shared/chat-choices";
 
 const props = defineProps<{ select: ChoiceSelect }>();
 const emit = defineEmits<{ choose: [value: string] }>();
+const search = ref("");
 
 const items = computed((): SelectMenuItem[][] => [
   props.select.options.map(({ value, label, description }) =>
@@ -28,7 +29,8 @@ const SEARCH = {
     value-key="value"
     :aria-label="select.name"
     :search-input="SEARCH"
-    create-item
+    v-model:search-term="search"
+    :create-item="typedEntry(select, search) === null ? false : 'always'"
     size="sm"
     color="neutral"
     variant="soft"

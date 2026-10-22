@@ -380,6 +380,12 @@ export const chatSelects = (settings: DesktopSettings, choices: ChatChoices) => 
 /** The model menu's entry for an id typed into its search. */
 export const typedModel = (id: string) => `Use ${id}`;
 
+/** The id the model menu offers to use for `search`, unless it offers that id already. */
+export const typedEntry = (select: ChoiceSelect, search: string): string | null => {
+  const id = search.trim();
+  return id === "" || select.options.some(({ value }) => value === id) ? null : id;
+};
+
 /** What choosing `value` in a select saves. */
 export const chosen = (
   which: "harness" | "model" | "effort",
