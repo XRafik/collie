@@ -1,6 +1,7 @@
 // What the Flock chat's window says of a tool call and of the card a message is about.
 
 import { expect, test } from "bun:test";
+import { Stream } from "effect";
 import {
   aboutLine,
   aboutNote,
@@ -11,6 +12,7 @@ import {
   putBack,
   submitButton,
   toolRow,
+  untilAborted,
 } from "../desktop/src/shared/chat-view";
 
 test("a tool call is its tool, the Machine it reached and what it was asked", () => {
@@ -203,4 +205,11 @@ test("the status region announces a reply starting, a Stop and each notice as it
     "",
     notice,
   ]);
+});
+
+test("a reply stopped before it starts never asks for the turn", () => {
+  const stop = new AbortController();
+  stop.abort();
+  const asked = untilAborted(Stream.die("asked for the turn"), stop.signal);
+  return expect(Array.fromAsync(Stream.toAsyncIterable(asked))).resolves.toEqual([]);
 });

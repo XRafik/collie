@@ -1,7 +1,7 @@
 // What the Flock chat's window says of a tool call and of the card a message is about. No
 // Bun-only import: the view bundles this.
 
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
 import { isString } from "../../../src/schema";
 import { AttachmentPart, attachedIn } from "./attachments";
 import { harnessLabel } from "./flock-settings";
@@ -221,3 +221,22 @@ export const announcement = (was: Heard, now: Heard): string | null => {
     .filter((one) => one !== null)
     .join(" ");
 };
+
+/** `stream` until `signal` aborts, when it is interrupted and its finalizers run. */
+export const untilAborted = <A, E, R>(
+  stream: Stream.Stream<A, E, R>,
+  signal?: AbortSignal,
+): Stream.Stream<A, E, R> =>
+  signal === undefined
+    ? stream
+    : signal.aborted
+      ? Stream.empty
+      : stream.pipe(
+          Stream.interruptWhen(
+            Effect.callback<void>((resume) => {
+              const aborted = () => resume(Effect.void);
+              signal.addEventListener("abort", aborted, { once: true });
+              return Effect.sync(() => signal.removeEventListener("abort", aborted));
+            }),
+          ),
+        );

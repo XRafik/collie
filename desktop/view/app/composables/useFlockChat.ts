@@ -9,7 +9,7 @@ import { useChat } from "@tanstack/ai-vue";
 import { Effect, Exit, Option, Schema, Stream } from "effect";
 import { isString } from "../../../../src/schema";
 import { type Attached, attachedIn, attachmentPart } from "../../../src/shared/attachments";
-import { About, type Answers } from "../../../src/shared/chat-view";
+import { About, type Answers, untilAborted } from "../../../src/shared/chat-view";
 import { conversationChangesAtom, desktopTurnsAtom, FlockClient } from "../flock";
 import { failureOf } from "./useActions";
 
@@ -62,9 +62,9 @@ export const useFlockChat = () => {
   const chat = useChat({
     connection: {
       // SAFETY: AG-UI's event types are string enums whose values are these events' `type`s.
-      connect: (messages, body) =>
+      connect: (messages, body, stopped) =>
         Stream.toAsyncIterable(
-          turn(lastSaid(messages), body?.now === true),
+          untilAborted(turn(lastSaid(messages), body?.now === true), stopped),
         ) as AsyncIterable<StreamChunk>,
     },
   });
