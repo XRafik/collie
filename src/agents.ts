@@ -1802,6 +1802,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             runLog: `${host.dir}/agents/${ask.runId}/agents.log`,
           },
           env,
+          mcp.args,
         ).pipe(
           Effect.catchIf(isNotQuiet, (refused) =>
             Effect.fail(

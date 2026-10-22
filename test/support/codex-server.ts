@@ -1,8 +1,8 @@
 // A stand-in `codex app-server`, run as a real process in its place: `bun codex-server.ts
 // <config.json> --listen ws://127.0.0.1:0`. It answers the protocol shapes the installed
 // release's schema declares (checked in `test/compaction-codex.test.ts`), drains on its
-// first SIGTERM the way 0.162.0 does on a websocket, and records every request and signal
-// it receives as a JSON line in `config.events`.
+// first SIGTERM the way 0.162.0 does on a websocket, and records its own argv, every request
+// and every signal it receives as a JSON line in `config.events`.
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 
@@ -27,6 +27,8 @@ export interface StandIn {
   continuation?: boolean;
   /** A process of this server's session: one that ends on SIGTERM, or one that ignores it. */
   child?: "ends" | "ignores";
+  /** Environment variables whose values it records when it starts. */
+  env?: ReadonlyArray<string>;
 }
 
 const config: StandIn = JSON.parse(readFileSync(process.argv[2]!, "utf8"));
@@ -38,7 +40,11 @@ interface Turn {
   status: string;
   timer?: ReturnType<typeof setInterval>;
 }
-record({ pid: process.pid });
+record({
+  pid: process.pid,
+  argv: process.argv.slice(2),
+  env: Object.fromEntries((config.env ?? []).map((name) => [name, process.env[name] ?? null])),
+});
 const turns = new Map<string, Turn[]>();
 const running = () => [...turns.values()].flat().filter((turn) => turn.status === "inProgress");
 let draining = false;

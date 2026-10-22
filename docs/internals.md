@@ -694,7 +694,7 @@ after that, with the pointer already typed into a pane that was not yet its prom
 first prompt to a newly started agent waits for the harness's own sign, through the
 controls Collie installed (`ready` on its port in `compactors.ts`): Claude's first
 status-line call and Pi's `session_start` sample, both in the agent's control directory;
-the thread Codex's TUI binds on its App Server as it starts; OpenCode's TUI, which is its
+Codex's App Server accepting a connection; OpenCode's TUI, which is its
 own server, answering for the session Collie made. An agent launched without controls —
 compaction off, or a harness Collie has no port for — has no such sign, and herdr's word
 is all there is. The wait is two minutes past herdr's own; running out parks the step,

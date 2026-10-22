@@ -82,6 +82,8 @@ export interface LaunchContext {
   dir: string;
   /** Shell lines setting the operator's environment, for a server the port starts. */
   env?: ReadonlyArray<string>;
+  /** The agent's MCP launch arguments, as its harness is given them. */
+  mcp?: ReadonlyArray<string>;
 }
 
 export interface AgentContext extends LaunchContext {
@@ -410,6 +412,7 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
   deps: Pick<CompactionDeps, "ports" | "stateDir" | "configured" | "log" | "herdr" | "stopMs">,
   agent: { agent: string; harness: string; cwd: string; runLog: string },
   env: ReadonlyArray<string> = [],
+  mcp: ReadonlyArray<string> = [],
 ) {
   const limit = yield* enabled(deps.configured);
   const fs = yield* FileSystem.FileSystem;
@@ -449,6 +452,7 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
     cwd: agent.cwd,
     dir,
     env,
+    mcp,
   });
   const started =
     installed.pid === undefined ? null : ((yield* processOf(installed.pid))?.started ?? null);

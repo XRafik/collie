@@ -1097,7 +1097,7 @@ const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (
   const served = yield* servedEndpoint({
     cwd: ctx.cwd,
     log: path.join(ctx.dir, CODEX_LOG),
-    command: `${server} --listen ws://127.0.0.1:0`,
+    command: [`${server} --listen ws://127.0.0.1:0`, ...(ctx.mcp ?? []).map(shellQuote)].join(" "),
     listening: CODEX_LISTENING,
     startMs: CODEX_START_MS,
     what: "codex app-server",
@@ -1296,10 +1296,6 @@ const survivors = (
 /** Codex's port, over the App Server `server` starts: `codex app-server`, or a test's stand-in. */
 export const codexPort = (server: string): CompactionPort => ({
   gate: () => gateVersion("codex"),
-  // A reachable App Server is enough to type Codex its first prompt. A thread is created
-  // by that first prompt on current Codex versions, so waiting for `boundThread` here
-  // circularly parked a blank pane and prevented Collie from ever injecting its work.
-  // `boundThread` remains the stricter check for context, compaction and usage below.
   ready: (ctx) =>
     ctx.endpoint === null
       ? Effect.succeed(false)
