@@ -11,6 +11,9 @@ import { FILE_TOOLS } from "../desktop/src/bun/file-tools";
 import { piPrompt } from "../desktop/src/bun/pi-transcript";
 import { ends } from "../desktop/src/shared/agui";
 import { childEnv } from "../desktop/src/bun/login-env";
+import { chatChoice } from "../desktop/src/bun/settings";
+import type { DesktopSettings } from "../desktop/src/shared/flock";
+import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 
 const withPi = <A, E>(
   body: (
@@ -402,4 +405,50 @@ test("a question's buttons can be clicked before Pi's HTTP call reaches Desktop"
         content: expect.stringContaining("Here"),
       });
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+test("Pi is started with the effort Desktop's settings set, and as before with none set", () =>
+  withPi(() =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const startedWith = (settings: DesktopSettings) =>
+        Effect.gen(function* () {
+          const dir = yield* fs.makeTempDirectoryScoped({ prefix: "flock-pi-effort-" });
+          const conversation = yield* openFlockChat({
+            dir,
+            conversation: "flock@test",
+            machines: () => [],
+            proactive: () => false,
+            machineRule: () => "",
+            setMachineRule: () => Effect.void,
+            inSync: () => Effect.succeed(""),
+            choice: () => chatChoice(settings, NO_FLOCK_SETTINGS),
+            chatHarness: () => ({ harness: "pi", model: settings.chatModel }),
+            setChatHarness: () => Effect.succeed(null),
+            drivers: (context) =>
+              loopbackTools(context).pipe(
+                Effect.map((endpoint) => ({
+                  pi: piDriver(context, endpoint, [
+                    "bun",
+                    `${import.meta.dir}/fixtures/pi-chat.ts`,
+                  ]),
+                })),
+              ),
+          });
+          const events = yield* Stream.runCollect(conversation.send("inspect", null, false));
+          const text = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT");
+          if (text?.type !== "TEXT_MESSAGE_CONTENT") throw new Error("No reply");
+          return Schema.decodeUnknownSync(
+            Schema.fromJsonString(Schema.Struct({ args: Schema.Array(Schema.String) })),
+          )(text.delta).args;
+        }).pipe(Effect.scoped, Effect.provide(BunServices.layer));
+      const pi = { proactive: false, chatHarness: "pi", chatModel: "openai-codex/gpt-6.1-sol" };
+      expect((yield* startedWith({ ...pi, chatEffort: "off" })).slice(-4)).toEqual([
+        "--model",
+        "openai-codex/gpt-6.1-sol",
+        "--thinking",
+        "off",
+      ]);
+      expect(yield* startedWith(pi)).not.toContain("--thinking");
+    }),
   ));

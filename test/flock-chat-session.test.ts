@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { BunServices } from "@effect/platform-bun";
+import { Effect, Stream } from "effect";
+import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver";
+import type { FlockChat } from "../desktop/src/bun/flock-tools";
 import { sessionOptions, userMcpServers } from "../desktop/src/bun/session";
+import { chatChoice } from "../desktop/src/bun/settings";
+import type { DesktopSettings } from "../desktop/src/shared/flock";
+import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 let noticed: string | undefined;
 let rule: string | undefined;
 const machines = [
@@ -38,6 +44,48 @@ test("the session is on the model it is given at medium effort, resumed, on the 
     cwd: "/state/collie-desktop",
   });
 });
+
+/** The effort the Claude Code session is opened at, with Desktop's settings as given. */
+const openedAt = (settings: DesktopSettings) => {
+  const efforts: unknown[] = [];
+  const claude: ClaudeCode<string> = {
+    query: ({ options }) => {
+      efforts.push(options.effort);
+      return Object.assign(Stream.toAsyncIterable(Stream.empty), {
+        interrupt: () => Promise.resolve(),
+        close: () => {},
+      });
+    },
+    getSessionInfo: () => Promise.resolve(undefined),
+    getSessionMessages: () => Promise.resolve([]),
+    listSessions: () => Promise.resolve([]),
+    server: () => "collie",
+    userServers: () => Promise.resolve({}),
+  };
+  const resolved = chatChoice(settings, NO_FLOCK_SETTINGS);
+  if (!resolved.ok) throw new Error(resolved.problem);
+  // SAFETY: opening a session reaches the Flock only through the faked server.
+  const flock = {} as FlockChat;
+  const driver = claudeDriver(claude, {
+    dir: "/state/collie-desktop",
+    flock,
+    run: (effect) => Effect.runPromise(effect.pipe(Effect.provide(BunServices.layer))),
+    ask: () => Promise.resolve(null),
+    noticed: () => undefined,
+    placement: () => undefined,
+  });
+  return driver
+    .open("5c1e6c8e-0000-4000-8000-000000000000", "opus", resolved.choice.effort ?? "")
+    .pipe(Effect.scoped, Effect.as(efforts));
+};
+
+test("the session is opened at the effort Desktop's settings set, and at medium with none set", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(yield* openedAt({ proactive: true, chatEffort: "high" })).toEqual(["high"]);
+      expect(yield* openedAt({ proactive: true })).toEqual(["medium"]);
+    }),
+  ));
 
 const BUILT_IN = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
 

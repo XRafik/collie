@@ -84,6 +84,8 @@ interface Seen {
   }>;
   /** Each session's MCP servers, by name. */
   readonly servers: string[][];
+  /** Each session's effort. */
+  readonly efforts: string[];
 }
 
 const SAID = { type: "stream_event", parent_tool_use_id: null };
@@ -101,6 +103,7 @@ const scripted = (
   query: ({ prompt, options }) => {
     const id = "resume" in options ? options.resume : options.sessionId;
     seen.servers.push(Object.keys(options.mcpServers));
+    seen.efforts.push(options.effort);
     seen.sessions.push({
       model: options.model,
       ...("resume" in options ? { resume: options.resume } : { sessionId: options.sessionId }),
@@ -255,6 +258,7 @@ const withChat = <A, E>(
         interrupts: [],
         sessions: [],
         servers: [],
+        efforts: [],
         transcripts: new Map(opts.transcripts),
       };
       const read: string[] = [];
@@ -657,6 +661,36 @@ test("unset, the chat runs opus; a model changed mid-turn waits for it, then the
         ]);
         yield* Stream.runDrain(conversation.send("again", null, false));
         expect(seen.sessions).toHaveLength(2);
+      }),
+  );
+});
+
+test("an effort changed mid-turn waits for it, then the same conversation goes on at the new effort", () => {
+  const settings = { current: Schema.decodeUnknownSync(DesktopSettings)({ proactive: false }) };
+  const gate = Deferred.makeUnsafe<void>();
+  return withChat(
+    { items: [], proactive: false, settings, gate },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        const current = (yield* conversation.conversations).current;
+        const slow = yield* Stream.runCollect(conversation.send("slow", null, false)).pipe(
+          Effect.forkChild,
+        );
+        yield* eventually(() => seen.prompts.length === 1);
+        settings.current = { proactive: false, chatEffort: "max" };
+        yield* TestClock.withLive(Effect.sleep("50 millis"));
+        expect(seen.interrupts).toEqual([]);
+        expect(seen.efforts).toEqual(["medium"]);
+        Deferred.doneUnsafe(gate, Effect.void);
+        expect((yield* Fiber.join(slow)).at(-1)).toMatchObject({ type: "RUN_FINISHED" });
+
+        yield* Stream.runDrain(conversation.send("next", null, false));
+        expect(seen.efforts).toEqual(["medium", "max"]);
+        expect(seen.sessions).toEqual([
+          { model: "opus", sessionId: current },
+          { model: "opus", resume: current },
+        ]);
       }),
   );
 });

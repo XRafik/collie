@@ -1836,12 +1836,18 @@ endpoint remains until Desktop quits. Its
 24-hour tool timeout leaves time for a question click or a slow Machine read. A question
 in a turn Desktop starts is answered at once that the human is not in that turn.
 
-A model change waits for the turn under way to end, then the next message continues the
-same conversation on the new model. A harness change waits too, then starts a fresh
-conversation and clears its model; both chat windows reload it. Earlier conversations
-lists the current harness's history. Switching back to Claude shows its own conversations
-again. You can ask the chat to read or change these settings through `collie_chat_harness`,
-with the same checks as Settings.
+The chat's effort has no Settings row: ask the chat to set it, and it saves it for this
+computer beside the harness and model. Claude takes `low`, `medium`, `high`, `xhigh` and
+`max`; Pi takes those and `off` and `minimal`. Any other effort is refused with the ones the
+harness takes, and nothing is saved. Unset, Claude runs at `medium`, and Pi at its
+configured thinking level when its model is unset too, else at Pi's own default.
+
+A model or effort change waits for the turn under way to end, then the next message
+continues the same conversation on it. A model change keeps the effort. A harness change
+waits too, then starts a fresh conversation and clears its model and effort; both chat
+windows reload it. Earlier conversations lists the current harness's history. Switching
+back to Claude shows its own conversations again. You can ask the chat to read or change
+these settings through `collie_chat_harness`, with the same checks as Settings.
 
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or

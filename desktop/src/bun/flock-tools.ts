@@ -109,16 +109,18 @@ export interface FlockChat {
   readonly inSync: (sync: string | undefined) => Effect.Effect<string>;
   /** Helle with the token Desktop holds, or null without one; none where absent. */
   readonly helle?: Effect.Effect<HelleCredentials | null, string>;
-  /** The chat's harness and model as set, and `harness/model` of the session warm now. */
+  /** The chat's harness, model and effort as set, and `harness/model` of the session warm now. */
   readonly chatHarness: () => {
     readonly harness: string;
     readonly model: string | undefined;
+    readonly effort?: string | undefined;
     readonly runsOn: string | null;
   };
   /** Saved with Settings' checks; why not, where it is refused. */
   readonly setChatHarness: (change: {
     readonly harness?: string;
     readonly model?: string;
+    readonly effort?: string;
   }) => Effect.Effect<string | null>;
 }
 
@@ -170,14 +172,15 @@ const SchedulesTool = Tool.make("collie_schedules", {
 /** Desktop's own: a Herd's chat runs on the Home's harness. */
 const ChatHarnessTool = Tool.make("collie_chat_harness", {
   description:
-    "The harness and model this conversation runs on, from Desktop's Settings. Without " +
-    "arguments it is read back, with what the conversation runs on now; with `harness` or " +
-    "`model` they are replaced, checked as Settings checks them, and an empty `model` unsets " +
-    "it. Another harness unsets the model. A change applies once this turn has ended. Change " +
-    "them only when the human asks.",
+    "The harness, model and effort this conversation runs on, from Desktop's settings. " +
+    "Without arguments they are read back, with what the conversation runs on now; with " +
+    "`harness`, `model` or `effort` they are replaced, checked as Settings checks them, and " +
+    "an empty `model` or `effort` unsets it. Another harness unsets the model and the " +
+    "effort. A change applies once this turn has ended. Change them only when the human asks.",
   parameters: Schema.Struct({
     harness: Schema.optionalKey(Schema.String),
     model: Schema.optionalKey(Schema.String),
+    effort: Schema.optionalKey(Schema.String),
   }),
   success: Schema.String,
   failureMode: "return",
@@ -1056,15 +1059,22 @@ const machineRule = (flock: FlockChat, asked: string | undefined) => {
   );
 };
 
-const chatHarness = (flock: FlockChat, change: { harness?: string; model?: string }) =>
+const chatHarness = (
+  flock: FlockChat,
+  change: { harness?: string; model?: string; effort?: string },
+) =>
   Effect.gen(function* () {
     const setTo = () => {
-      const { harness, model } = flock.chatHarness();
-      return model === undefined
-        ? `${harness}, with no model set: the harness's own default`
-        : `${harness}, model ${model}`;
+      const { harness, model, effort } = flock.chatHarness();
+      return `${harness}, ${
+        model === undefined ? "with no model set: the harness's own default" : `model ${model}`
+      }, ${
+        effort === undefined
+          ? "with no effort set: the harness's own default"
+          : `at effort ${effort}`
+      }`;
     };
-    if (change.harness === undefined && change.model === undefined) {
+    if (change.harness === undefined && change.model === undefined && change.effort === undefined) {
       const { runsOn } = flock.chatHarness();
       return `The Flock chat is set to ${setTo()}. ${
         runsOn === null

@@ -592,3 +592,65 @@ test("Pi is offered for the Flock chat and checks a provider-qualified model", (
     }),
   ).toEqual({ refused: expect.stringContaining("provider/model") });
 });
+
+test("the Flock chat's effort is kept with its harness and model, an empty one unsets it, and a file from before it reads unset", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
+      const set = changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatEffort: "high" });
+      expect(set).toEqual({ proactive: true, chatEffort: "high" });
+      if ("refused" in set) return;
+      yield* writeSettings(dir, set);
+      expect((yield* readSettings(dir)).chatEffort).toBe("high");
+      expect(changeSettings(set, NO_FLOCK_SETTINGS, { chatEffort: "" })).toEqual({
+        proactive: true,
+      });
+      yield* fs.writeFileString(`${dir}/settings.json`, '{"proactive":true,"chatModel":"sonnet"}');
+      expect(yield* readSettings(dir)).toEqual({ proactive: true, chatModel: "sonnet" });
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+test("choosing another harness for the Flock chat unsets its effort too, unless the change sets one", () => {
+  const before = {
+    proactive: true,
+    chatHarness: "claude",
+    chatModel: "sonnet",
+    chatEffort: "high",
+  };
+  expect(changeSettings(before, NO_FLOCK_SETTINGS, { chatHarness: "pi" })).toEqual({
+    proactive: true,
+    chatHarness: "pi",
+  });
+  expect(
+    changeSettings(before, NO_FLOCK_SETTINGS, { chatHarness: "pi", chatEffort: "off" }),
+  ).toEqual({ proactive: true, chatHarness: "pi", chatEffort: "off" });
+  expect(changeSettings(before, NO_FLOCK_SETTINGS, { chatHarness: "claude" })).toEqual(before);
+});
+
+test("an effort the Flock chat's harness does not take is refused, naming the ones it takes", () => {
+  const refused = changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatEffort: "off" });
+  expect(refused).toEqual({
+    refused: expect.stringContaining('"off" is not an effort claude takes'),
+  });
+  expect("refused" in refused && refused.refused).toContain("low, medium, high, xhigh, max");
+  expect(
+    changeSettings({ proactive: true, chatHarness: "claude" }, NO_FLOCK_SETTINGS, {
+      chatModel: "sonnet",
+      chatEffort: "minimal",
+    }),
+  ).toEqual({ refused: expect.stringContaining('"minimal"') });
+});
+
+test("a change of the Flock chat's model keeps its effort", () => {
+  expect(
+    changeSettings({ proactive: true, chatModel: "opus", chatEffort: "max" }, NO_FLOCK_SETTINGS, {
+      chatModel: "sonnet",
+    }),
+  ).toEqual({ proactive: true, chatModel: "sonnet", chatEffort: "max" });
+  expect(
+    changeSettings({ proactive: true, chatModel: "opus", chatEffort: "max" }, NO_FLOCK_SETTINGS, {
+      chatModel: "",
+    }),
+  ).toEqual({ proactive: true, chatEffort: "max" });
+});

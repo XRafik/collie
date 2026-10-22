@@ -30,17 +30,21 @@ export const writeSettings = Effect.fn("Settings.write")(function* (
   );
 });
 
-/** `change` over `settings`; another harness unsets a model chosen for the one before. */
+/** `change` over `settings`; another harness unsets a model and effort chosen for the one before. */
 export const applyChange = (
   settings: DesktopSettings,
   change: DesktopSettingsChange,
 ): DesktopSettings => {
-  const { chatModel, ...rest } = { ...settings, ...change };
+  const { chatModel, chatEffort, ...rest } = { ...settings, ...change };
+  let applied: DesktopSettings = rest;
   const otherHarness =
     change.chatHarness !== undefined &&
     change.chatHarness !== (settings.chatHarness ?? DEFAULT_CHAT_HARNESS);
   const model = change.chatModel ?? (otherHarness ? undefined : chatModel);
-  return model === undefined || model === "" ? rest : { ...rest, chatModel: model };
+  const effort = change.chatEffort ?? (otherHarness ? undefined : chatEffort);
+  if (model !== undefined && model !== "") applied = { ...applied, chatModel: model };
+  if (effort !== undefined && effort !== "") applied = { ...applied, chatEffort: effort };
+  return applied;
 };
 
 /** Extra models per harness, from the Flock's `models.<harness>`. */
@@ -53,7 +57,7 @@ export const extraModels = (flock: FlockSettings) =>
     ),
   );
 
-/** The harness and model the Flock chat is set to, checked as a Run's are. */
+/** The harness, model and effort the Flock chat is set to, checked as a Run's are. */
 export const chatChoice = (settings: DesktopSettings, flock: FlockSettings) => {
   const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
   if (!CHAT_HARNESSES.includes(harness))
@@ -61,7 +65,10 @@ export const chatChoice = (settings: DesktopSettings, flock: FlockSettings) => {
       ok: false as const,
       problem: `the Flock chat has no harness called "${harness}" (${CHAT_HARNESSES.join(", ")})`,
     };
-  const resolved = resolveChoice([{ harness, model: settings.chatModel }], extraModels(flock));
+  const resolved = resolveChoice(
+    [{ harness, model: settings.chatModel, effort: settings.chatEffort }],
+    extraModels(flock),
+  );
   if (
     !resolved.ok &&
     harness === "pi" &&
@@ -82,7 +89,12 @@ export const changeSettings = (
   change: DesktopSettingsChange,
 ): DesktopSettings | { readonly refused: string } => {
   const changed = applyChange(settings, change);
-  if (change.chatHarness === undefined && change.chatModel === undefined) return changed;
+  if (
+    change.chatHarness === undefined &&
+    change.chatModel === undefined &&
+    change.chatEffort === undefined
+  )
+    return changed;
   const checked = chatChoice(changed, flock);
   return checked.ok ? changed : { refused: checked.problem };
 };
