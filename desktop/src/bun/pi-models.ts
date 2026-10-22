@@ -82,12 +82,16 @@ export const readPiModels = (command: ReadonlyArray<string> | null) =>
       Effect.gen(function* () {
         const id = `models-${++sent}`;
         // A Pi that has exited takes no command; its answer then says why.
-        yield* Effect.tryPromise(async () => {
-          await child.stdin.write(
-            `${Schema.encodeSync(Schema.fromJsonString(Schema.Json))({ id, ...request })}\n`,
-          );
-          await child.stdin.flush();
-        }).pipe(Effect.ignore);
+        yield* Effect.tryPromise(() =>
+          Promise.resolve(
+            child.stdin.write(
+              `${Schema.encodeSync(Schema.fromJsonString(Schema.Json))({ id, ...request })}\n`,
+            ),
+          ),
+        ).pipe(
+          Effect.andThen(Effect.tryPromise(() => Promise.resolve(child.stdin.flush()))),
+          Effect.ignore,
+        );
         let answer: Answer;
         do
           answer = yield* Queue.take(answers).pipe(
