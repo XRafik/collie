@@ -130,10 +130,17 @@ export const cleanupLines = (report: CleanupReport, applied: boolean) =>
 /** How long a listing or sweep may take before the host log says where its time went. */
 const SLOW_CLEANUP_MS = 2_000;
 
-/** `body`, given each sweeper's judgement, and over 2 s one warning naming each kind's time. */
-const timedJudging = <A, E, R>(
+/** Sweepers already in hand, or how to gather them, which is then timed too. */
+type Sweepers<E, R> = ReadonlyArray<Sweeper> | Effect.Effect<ReadonlyArray<Sweeper>, E, R>;
+
+/** `body` over the sweepers, and over 2 s in all one warning naming where the time went. */
+const timedJudging = <A, E, R, F, Q>(
   what: "listing" | "sweep",
-  body: (judgeOf: (sweeper: Sweeper) => Sweeper["judge"]) => Effect.Effect<A, E, R>,
+  sweepers: Sweepers<F, Q>,
+  body: (
+    sweepers: ReadonlyArray<Sweeper>,
+    judgeOf: (sweeper: Sweeper) => Sweeper["judge"],
+  ) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
     const spent = new Map<string, number>();
@@ -144,21 +151,35 @@ const timedJudging = <A, E, R>(
           return judged;
         }),
       );
-    const [duration, result] = yield* Effect.timed(body(judgeOf));
+    let gathering: number | undefined;
+    const gathered = Effect.isEffect(sweepers)
+      ? Effect.timed(sweepers).pipe(
+          Effect.map(([duration, all]) => {
+            gathering = Duration.toMillis(duration);
+            return all;
+          }),
+        )
+      : Effect.succeed(sweepers);
+    const [duration, result] = yield* Effect.timed(
+      Effect.flatMap(gathered, (all) => body(all, judgeOf)),
+    );
     const total = Duration.toMillis(duration);
     if (total > SLOW_CLEANUP_MS) {
       const kinds = [...spent]
         .sort(([, a], [, b]) => b - a)
         .map(([kind, ms]) => `${kind} ${ms} ms`)
         .join(", ");
-      yield* Effect.logWarning(`the cleanup ${what} took ${total} ms; judging took ${kinds}`);
+      const gatheringSaid = gathering === undefined ? "" : `gathering took ${gathering} ms; `;
+      yield* Effect.logWarning(
+        `the cleanup ${what} took ${total} ms; ${gatheringSaid}judging took ${kinds}`,
+      );
     }
     return result;
   });
 
 /** The listing: every sweeper's judgement, and what the removable items come to. */
-export const judge = (sweepers: ReadonlyArray<Sweeper>) =>
-  timedJudging("listing", (judgeOf) =>
+export const judge = <E = never, R = never>(sweepers: Sweepers<E, R>) =>
+  timedJudging("listing", sweepers, (sweepers, judgeOf) =>
     Effect.gen(function* () {
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
@@ -198,8 +219,12 @@ const JournalLine = Schema.Struct({
 const JournalJson = Schema.fromJsonString(JournalLine);
 
 /** A sweep: every judge, then every removal, each journaled with who asked. */
-export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: SweptBy) =>
-  timedJudging("sweep", (judgeOf) =>
+export const sweep = <E = never, R = never>(
+  sweepers: Sweepers<E, R>,
+  stateDir: string,
+  by: SweptBy,
+) =>
+  timedJudging("sweep", sweepers, (sweepers, judgeOf) =>
     Effect.gen(function* () {
       const path = yield* Path.Path;
       const journal = path.join(stateDir, JOURNAL);
@@ -240,11 +265,7 @@ export const sweepAsked = <E, R>(
 ) =>
   sweeping.withPermit(
     Effect.uninterruptible(
-      once(
-        trail,
-        { ...line, result: CleanupReport },
-        Effect.flatMap(sweepers, (all) => sweep(all, stateDir, by)),
-      ),
+      once(trail, { ...line, result: CleanupReport }, sweep(sweepers, stateDir, by)),
     ),
   );
 

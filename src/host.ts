@@ -1681,7 +1681,7 @@ const frontDoorHandlers = (
               return readings;
             }),
           ),
-        cleanup: () => plainly(Effect.flatMap(listed, judge)),
+        cleanup: () => plainly(judge(listed)),
         schedules: () => schedules.list,
         changeSchedule: ({ change, request }, { client }) =>
           schedules.change(change, request, whoOf(client)),

@@ -1,5 +1,5 @@
-// A listing or sweep slower than the host's slow-call threshold says how long each kind
-// took to judge, so its host log shows where the time went.
+// A listing or sweep slower than the host's slow-call threshold says how long gathering its
+// sweepers and judging each kind took, so its host log shows where the time went.
 
 import { expect, test } from "bun:test";
 import { Duration, Effect, Fiber, FileSystem, Logger } from "effect";
@@ -7,14 +7,12 @@ import { TestClock } from "effect/testing";
 import { judge, sweep, type Sweeper } from "../src/cleanup";
 import { runEffect } from "./support/effect";
 
-/** A sweeper of `kind` whose judgement takes `took` and finds nothing. */
 const judgedIn = (kind: string, took: Duration.Input): Sweeper => ({
   kind,
   judge: Effect.sleep(took).pipe(Effect.as({ remove: [], keep: [] })),
   remove: () => Effect.succeed({ kept: "never asked" }),
 });
 
-/** The warnings `effect` logs, with the test clock moved on by the time it needs. */
 const warnedOver = <A, E, R>(effect: Effect.Effect<A, E, R>, passes: Duration.Input) =>
   Effect.gen(function* () {
     const warned: string[] = [];
@@ -52,5 +50,22 @@ test("a sweep over 2 s says the same of itself", () =>
       ]);
       const quick = [judgedIn("worktree", "500 millis"), judgedIn("task", "1 second")];
       expect(yield* warnedOver(sweep(quick, dir, "host"), "2 seconds")).toEqual([]);
+    }),
+  ));
+
+test("the time spent gathering the sweepers counts, and is named", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "sweep-timed-" });
+      const gathered = Effect.sleep("3 seconds").pipe(
+        Effect.as([judgedIn("worktree", "500 millis")]),
+      );
+      expect(yield* warnedOver(judge(gathered), "3500 millis")).toEqual([
+        "the cleanup listing took 3500 ms; gathering took 3000 ms; judging took worktree 500 ms",
+      ]);
+      expect(yield* warnedOver(sweep(gathered, dir, "host"), "3500 millis")).toEqual([
+        "the cleanup sweep took 3500 ms; gathering took 3000 ms; judging took worktree 500 ms",
+      ]);
     }),
   ));
