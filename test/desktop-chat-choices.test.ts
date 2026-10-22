@@ -19,6 +19,7 @@ import {
   type PiConfig,
   refusedChoice,
   resolveChat,
+  searched,
   stayChange,
   tableOffer,
   typedEntry,
@@ -543,6 +544,28 @@ test("on Pi, an unset effort runs at the configured level where the model takes 
       defaultThinkingLevel: "max",
     }).effort,
   ).toBe("low");
+});
+
+test("the model menu finds a model by its id as well as its name, and a found id is not offered again to type", () => {
+  const set = { proactive: true, chatHarness: "pi" };
+  const { model } = chatSelects(
+    set,
+    chatChoicesOf(
+      { heldOn: "pi", runsOn: null, turning: false },
+      { claude: true, pi: true },
+      set,
+      NO_FLOCK_SETTINGS,
+      {},
+      { pi: { from: "harness", models: PI_LISTED } },
+    ),
+  );
+  const found = (search: string) => searched(model, search).map(({ value }) => value);
+  expect(found("openai-codex/gpt-5.5")).toEqual(["openai-codex/gpt-5.5"]);
+  expect(found("Sol")).toEqual(["openai-codex/gpt-6.1-sol"]);
+  expect(found("4O-MINI")).toEqual(["openai/gpt-4o-mini"]);
+  expect(found("anthropic/")).toEqual([]);
+  expect(found("")).toEqual(model.options.map(({ value }) => value));
+  expect(typedEntry(model, "openai-codex/gpt-5.5")).toBeNull();
 });
 
 test("with Pi's own list, the selects offer each model only its own levels, and the unset level as Pi runs it", () => {

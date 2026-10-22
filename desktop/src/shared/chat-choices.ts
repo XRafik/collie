@@ -381,6 +381,14 @@ export const chatSelects = (settings: DesktopSettings, choices: ChatChoices) => 
 export const typedModel = (id: string) => `Use ${id}`;
 
 /** The id the model menu offers to use for `search`, unless it offers that id already. */
+/** The options a search in a select finds, by name or by id. */
+export const searched = (select: ChoiceSelect, search: string): ChoiceSelect["options"] => {
+  const term = search.trim().toLowerCase();
+  return select.options.filter(({ value, label }) =>
+    [value, label].some((field) => field.toLowerCase().includes(term)),
+  );
+};
+
 export const typedEntry = (select: ChoiceSelect, search: string): string | null => {
   const id = search.trim();
   return id === "" || select.options.some(({ value }) => value === id) ? null : id;
