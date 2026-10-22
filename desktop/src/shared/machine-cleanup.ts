@@ -7,15 +7,18 @@ import { humanBytes } from "../../../src/bytes";
 import type { MachineRow } from "./flock";
 import { NOT_LIVE_SAID } from "./in-sync";
 
-/** What one Machine's host listed, or why it listed nothing. */
-export const MachineCleanup = Schema.Struct({
+/** What one Machine's host listed, and the installation it listed on. */
+export const CleanupListing = Schema.Struct({
   installation: Schema.String,
-  profile: Schema.String,
-  name: Schema.String,
-  report: Schema.NullOr(CleanupReport),
-  problem: Schema.NullOr(Schema.String),
+  report: CleanupReport,
 });
-export type MachineCleanup = typeof MachineCleanup.Type;
+export type CleanupListing = typeof CleanupListing.Type;
+
+/** One Machine's listing in the dialog: out since a time in milliseconds, listed, or failed. */
+export type CleanupRead =
+  | { readonly state: "reading"; readonly since: number }
+  | ({ readonly state: "listed" } & CleanupListing)
+  | { readonly state: "failed"; readonly problem: string };
 
 export const CLEANUP_UPGRADE_SAID = "Can't list what it would clean up; upgrade this Machine.";
 
@@ -46,6 +49,7 @@ export interface CleanupRowView {
   /** Why its sweep failed. */
   readonly reason: string | null;
   readonly tryAgain: boolean;
+  readonly readAgain: boolean;
   /** That `said` is why it can't be chosen or wasn't cleaned. */
   readonly warn: boolean;
   readonly choosable: boolean;
@@ -94,8 +98,10 @@ const keptOf = (keep: ReadonlyArray<CleanupKept>) =>
 
 const rowOf = (
   shown: CleanupShown,
-  read: ReadonlyArray<MachineCleanup> | null,
+  read: CleanupRead | undefined,
   sweep: CleanupSweep | undefined,
+  now: number,
+  readable: boolean,
 ): Omit<CleanupRowView, "chosen"> => {
   const row = (said: string, over: Partial<CleanupRowView> = {}) => ({
     profile: shown.profile,
@@ -104,6 +110,7 @@ const rowOf = (
     note: null,
     reason: null,
     tryAgain: false,
+    readAgain: false,
     choosable: false,
     groups: [],
     kept: null,
@@ -111,7 +118,11 @@ const rowOf = (
     warn: true,
     ...over,
   });
-  if (sweep?.state === "running") return row("Cleaning…", { warn: false });
+  if (sweep?.state === "running")
+    return row(
+      shown.state === "live" ? "Cleaning…" : `Cleaning… waiting for ${shown.name} to reconnect`,
+      { warn: false },
+    );
   if (sweep?.state === "failed")
     return row("Not cleaned", { reason: sweep.reason, tryAgain: true });
   if (sweep?.state === "done") {
@@ -122,17 +133,18 @@ const rowOf = (
       warn: false,
     });
   }
-  if (read === null) return row("Reading…");
   if (shown.state !== "live") {
     const word = shown.state === "connecting" ? "Connecting" : NOT_LIVE_SAID[shown.state];
     return row(shown.reason === null ? word : `${word}: ${shown.reason}`, {
       note: shown.state === "unreachable" || shown.state === "sso" ? STILL_SWEPT : null,
     });
   }
-  const listing = read.find(({ profile }) => profile === shown.profile);
-  if (listing === undefined) return row("It wasn't connected when Cleanup read.");
-  if (listing.report === null) return row(listing.problem ?? "");
-  const { remove, keep, bytes } = listing.report;
+  if (read?.state === "reading")
+    return row(`Reading… ${Math.max(0, Math.floor((now - read.since) / 1000))} s`);
+  if (read === undefined)
+    return row("It wasn't connected when Cleanup read.", { readAgain: readable });
+  if (read.state === "failed") return row(read.problem, { readAgain: readable });
+  const { remove, keep, bytes } = read.report;
   return row(remove.length === 0 ? "Nothing to remove now" : `Would free ${humanBytes(bytes)}`, {
     choosable: true,
     warn: false,
@@ -143,20 +155,22 @@ const rowOf = (
 };
 
 /**
- * The dialog over the Machines page's rows, in their order, joined to the listings and sweeps
- * by profile. `read` is null while it is out; `chosen` null chooses every Machine that can be.
- * Once any Machine is swept, the choice is fixed.
+ * The dialog over the Machines page's rows, in their order, joined to their reads and sweeps
+ * by profile, at `now` in milliseconds. `chosen` null chooses every Machine that can be.
+ * Once any Machine is swept, the choice is fixed and none is read again.
  */
 export const cleanupView = (
   shown: ReadonlyArray<CleanupShown>,
-  read: ReadonlyArray<MachineCleanup> | null,
+  reads: ReadonlyMap<string, CleanupRead>,
   chosen: ReadonlySet<string> | null,
   sweeps: ReadonlyMap<string, CleanupSweep> = new Map(),
+  now = 0,
 ): CleanupView => {
   const swept = sweeps.size > 0;
   const rows = shown.map((one) => {
-    const listed = rowOf(one, read, undefined);
-    const row = rowOf(one, read, sweeps.get(one.profile));
+    const read = reads.get(one.profile);
+    const listed = rowOf(one, read, undefined, now, !swept);
+    const row = rowOf(one, read, sweeps.get(one.profile), now, !swept);
     const picked = swept
       ? sweeps.has(one.profile)
       : listed.choosable && (chosen?.has(one.profile) ?? true);

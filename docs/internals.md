@@ -66,7 +66,10 @@ nor anything it starts preloads CEF. Without Desktop's `bin` to match, a host ke
 
 The host writes what it does to `host.log` in its state directory — its start, a stop and
 whether the grace ran out, every warning the engine and the registry log, and a board build
-or an RPC answer that took over 2 s, with which RPC and how long it took. A stream, such as
+or an RPC answer that took over 2 s, with which RPC and how long it took. A cleanup listing
+or sweep over 2 s in all, counting the time spent gathering what its sweepers judge, also
+says that time and how long each kind took to judge, slowest first:
+`the cleanup listing took 4000 ms; gathering took 500 ms; judging took task 3000 ms, worktree 500 ms`. A stream, such as
 the board's, is never timed: it is meant to stay open. Lines are flushed
 every 100 ms, so a host killed outright can lose its last few. Past 1 MiB the file starts
 again and the previous one is kept as `host.log.1`. Look there first when a host stops
