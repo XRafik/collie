@@ -1,5 +1,3 @@
-// A start about a merge request that has an agent work on it, where its Run was placed.
-
 import { Host, Run, agentWork, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 

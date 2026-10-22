@@ -1,5 +1,3 @@
-// Builds on a branch of its own and records the merge request it opened there.
-
 import { Host, Run, defineWorkflow } from "collie";
 import { Effect, Schema } from "effect";
 
