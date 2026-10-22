@@ -85,7 +85,6 @@ const doorsWith = (door: Reached) => {
 const broken = new RpcClientError({
   reason: new RpcClientDefect({ message: "socket closed", cause: null }),
 });
-/** vm-mk's door whose send fails as a broken connection does. */
 const brokenDoor: Reached = {
   machine: { profile: "p-vm-mk", name: "vm-mk" },
   // SAFETY: a sweep calls only `sweep` over its door, answered as the client answers it.

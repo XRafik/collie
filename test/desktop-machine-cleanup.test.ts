@@ -64,7 +64,6 @@ const fakeHost = (answer: Effect.Effect<CleanupReport, HostRefused> | "older") =
   });
 
 const vm = { profile: "p-vm", name: "vm" };
-/** The vm Machine's door over `desktop`, which answers only what each test asks of it. */
 const reachedOver = (desktop: Partial<Door>): Reached => ({
   machine: vm,
   // SAFETY: each test calls only what its door answers.
