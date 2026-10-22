@@ -41,6 +41,10 @@ import { madeRun } from "./support/records";
 import { task } from "./support/task";
 import { runEffect } from "./support/effect";
 import { epochMs } from "../src/time";
+import { connect } from "../src/host";
+import { hosted } from "./support/hosted";
+import { until } from "./support/host";
+import { save } from "./support/world";
 
 const encodeJson = Schema.encodeUnknownSync(Schema.fromJsonString(Schema.Any));
 
@@ -73,6 +77,8 @@ type Route =
   | { readonly route: "read"; readonly tool: string; readonly input?: JsonObject }
   | { readonly route: "propose"; readonly kind: ActionKind; readonly action: JsonObject }
   | { readonly route: "write"; readonly tool: string }
+  /** Called on a finished Run that offers `grade-it`, in a Herd with a host. */
+  | { readonly route: "offer"; readonly tool: string; readonly input: (run: string) => JsonObject }
   | { readonly route: "shell" };
 
 const RUN = "r-does-not-exist";
@@ -131,8 +137,24 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["run report", { route: "read", tool: "collie_report", input: { since: "2026-01-01" } }],
   ["run drift", { route: "read", tool: "collie_run", input: { run: RUN } }],
   ["run cards", { route: "read", tool: "collie_run", input: { run: RUN } }],
-  ["run actions", { route: "read", tool: "collie_run", input: { run: RUN } }],
-  ["run action", { route: "write", tool: "collie_do" }],
+  ["run actions", { route: "offer", tool: "collie_run", input: (run) => ({ run }) }],
+  [
+    "run action",
+    {
+      route: "offer",
+      tool: "collie_do",
+      input: (run) => ({
+        actions: [
+          {
+            kind: "take_offer",
+            run,
+            offer: "grade-it",
+            inputs: { note: "the diff", grade: "pass" },
+          },
+        ],
+      }),
+    },
+  ],
   ["run intent show", { route: "read", tool: "collie_run", input: { run: RUN } }],
   [
     "run intent set-goal",
@@ -388,6 +410,7 @@ test(
             expect([operation, carried.has(route.kind)]).toEqual([operation, true]);
             continue;
           }
+          // offer: called in the next test, on a Run that has one.
           // shell: the leaf is the command tree's own, which the first test holds.
         }
 
@@ -405,6 +428,52 @@ test(
   // `collie_installation` runs the installation checks, and one of them reaches a remote
   // with its own timeout. Calling the routes for real is the point of this test.
   120_000,
+);
+
+test(
+  "chat lists a finished Run's offers and takes one, as run actions and run action do",
+  () =>
+    hosted("hw-parity-offer-", ({ world, env }) =>
+      Effect.gen(function* () {
+        yield* save(world.user, [
+          "offered.workflow.ts",
+          "graded.workflow.ts",
+          "capability.ts",
+          "house.ts",
+        ]);
+        const client = yield* connect(world.state).pipe(Effect.orDie);
+        const { runId } = yield* client
+          .start({
+            project: world.project,
+            id: "offered",
+            request: "req-offered",
+            input: { note: "the diff" },
+            task: "task-offering",
+          })
+          .pipe(Effect.orDie);
+        yield* until(
+          () => client.run({ runId }).pipe(Effect.orDie),
+          (view) => view?.status.status === "complete",
+        );
+        const said = (operation: string) => {
+          const route = INVENTORY.find(([one]) => one === operation)?.[1];
+          if (route?.route !== "offer") throw new Error(`${operation} is not an offer row`);
+          return toolNamed(route.tool)!.call(env, route.input(runId));
+        };
+
+        expect(yield* said("run actions")).toContain("grade-it  Grade what this found (graded)");
+
+        const taken = yield* said("run action");
+        expect(taken).toContain("take_offer: applied");
+        const child = yield* client
+          .run({ runId: /Started run (\S+) from/.exec(taken)?.[1] ?? "" })
+          .pipe(Effect.orDie);
+        expect(child?.parent).toBe(runId);
+        expect(child?.task).toBe("task-offering");
+      }),
+    ),
+  // A host, and a Run of it that finishes, then one it starts.
+  60_000,
 );
 
 test("nothing this build cannot carry out is offered as something to ask for", () =>
@@ -427,7 +496,7 @@ test("every tool chat is given is a route somebody named", () => {
   // The other direction: a tool that no operation routes to is reach nobody asked for.
   const routed = new Set(
     INVENTORY.flatMap((entry) =>
-      entry[1].route === "read" || entry[1].route === "write" ? [entry[1].tool] : [],
+      entry[1].route === "shell" || entry[1].route === "propose" ? [] : [entry[1].tool],
     ),
   );
   expect(TOOLS.map((tool) => tool.name).filter((name) => !routed.has(name))).toEqual([

@@ -898,8 +898,9 @@ purpose: the file decides, and no lookup happens at all.
   to whatever client asked for your Run — that can go, and neither of you notices.
 - **It prefers the agents you do** where you start it, unless its options say otherwise.
 - **`ownTask: true` makes it work of its own.** It is admitted as a fresh start is: its
-  Task's name is inferred from its work, it joins the open Task already working its
-  branch, or a Task workspace is opened on its checkout. So it has its own card and is
+  Task's name is inferred from its work, it joins the Task whose work it is about — one
+  whose Runs opened or were given its merge request, or an open one whose Runs were placed
+  on its branch — or a Task workspace is opened on its checkout. So it has its own card and is
   released on its own merge request. It is still yours: its parent is your Run, you wait
   on it, a stop of yours reaches it, a replay reuses it, and it is in your Lineage. Your
   card does not list it.

@@ -46,7 +46,7 @@ the shell. "I have no access" is never an answer here; find the way.
 - `collie_installation` — what Collie needs and whether it is there, the Home, leftover
   panes, each workspace's defaults, which harness this is, and this Machine's Schedules.
 - `collie_hold`, `collie_do`, `collie_propose` — act: hold, stop, resume, release,
-  answer a Choice, deliver a message to an agent, follow up, start a workflow, confirm or
+  answer a Choice, deliver a message to an agent, follow up, take a Run's offer, start a workflow, confirm or
   decline a waiting proposal, record a disposition, amend an Intent, fork a definition,
   change a workspace's defaults, clean up, upgrade, onboard this Machine. All of it runs at once. Pass the same
   `request_id` on a retry.
@@ -81,6 +81,12 @@ When a Run fails or halts, read why (`collie_run`, its logs, its pane) and fix w
 can: a wrong Input is a fresh start with the right one, a stale worktree is cleaned up, a
 blocked claim is checked in Helle. Leftovers from earlier attempts — duplicate
 workspaces, idle agents, stopped Runs — are dispositioned and closed as part of the job.
+
+When the human asks for what a Run offers — "release it", "stage it", "fix the
+findings" — read its offers in `collie_run` and take the matching one with `take_offer`,
+rather than start that offer's Workflow fresh: then it is that Run's Follow-up Run, in its
+Task and held to its Checks. The `release` kind lifts a hold; it does not release a merge
+request.
 
 Work a Run owns stays in the Run, because that is what reviews it again. Findings are
 fixed through the review's own answers — "Fix findings", or "Fix findings in a full

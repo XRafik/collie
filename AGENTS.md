@@ -17,7 +17,8 @@ here are in [`src/README.md`](src/README.md).
 - **Go to pane** → [ADR-0044](docs/adr/0044-go-to-pane-opens-the-pane-in-desktop.md),
   `desktop/src/bun/terminal.ts`, `test/desktop-terminal.test.ts`, `desktop/test/terminal-input.test.ts`.
 - **Placement** of a start → [ADR-0033](docs/adr/0033-a-run-started-from-the-home-is-placed-not-asked.md),
-  `src/flows.ts`, `src/route.ts`, `src/projects.ts`, `src/agent-start.ts`.
+  joining a Task: [ADR-draft-a-tasks-work-is-what-its-runs-worked-on](docs/adr/draft-a-tasks-work-is-what-its-runs-worked-on.md),
+  `taskWorking` in `src/engine.ts`, `test/placement.test.ts`, `src/flows.ts`, `src/route.ts`, `src/projects.ts`, `src/agent-start.ts`.
 - **CLI surface, error codes, `--json`** → [`docs/cli.md`](docs/cli.md), `src/envelope.ts`, `src/operations.ts`.
 - **herdr calls, red `contract`** → [`docs/internals.md`](docs/internals.md#checking-the-boundary-against-herdr),
   `herdr-pin.json`, `test/herdr-contract.test.ts`.
@@ -199,5 +200,6 @@ of the view is covered by testing the logic it renders.
    [ADR-0009](docs/adr/0009-the-collie-tab-is-the-herds.md) (one board per Herd, in the
    Home). ADR-0009 supersedes only ADR-0006's sentence about where the Collie tab is
    created. A Run no longer stays in the workspace it was started from: it belongs to its
-   Task, and a fresh start opens one of its own unless it is about an open Task's branch
-   ([`CONTEXT.md`](CONTEXT.md), Task).
+   Task, and a fresh start opens one of its own unless it is about a Task's work: a merge
+   request one of its Runs opened or was given, or a branch one of an open Task's Runs was
+   placed on ([`CONTEXT.md`](CONTEXT.md), Task).
