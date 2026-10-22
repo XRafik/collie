@@ -523,7 +523,6 @@ test("a judgement whose diff git cannot read is skipped in git's words, never ju
     }),
   ));
 
-/** Judges with an evaluator ready to answer, and expects it never to be asked. */
 const judgedWithNoCall = Effect.fn("DriftTest.judgedWithNoCall")(function* (
   dir: string,
   intent: Intent,
