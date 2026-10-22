@@ -104,6 +104,7 @@ const UNRELATED = {
   investigate: "find-the-cause",
   general: "odd-job",
   "self-improve": "look-back",
+  stage: "try-it-out",
 } as const;
 type Shipped = keyof typeof UNRELATED;
 
@@ -383,6 +384,13 @@ const checkoutBranch = (runId: string, operation = "mr") =>
 const asked = (runId: string, operation: string) =>
   FileSystem.FileSystem.pipe(
     Effect.flatMap((fs) => fs.readFileString(`${dir}/agents/${runId}/${operation}.prompt.md`)),
+    Effect.orDie,
+  );
+
+/** Whether an operation was asked anything at all. */
+const wasAsked = (runId: string, operation: string) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) => fs.exists(`${dir}/agents/${runId}/${operation}.prompt.md`)),
     Effect.orDie,
   );
 
@@ -8999,9 +9007,10 @@ for (const name of ["gitlab", "github"] as const) {
 }
 
 /** Whether a failed Release Run on `target` offers Release again. */
-const releaseAgainOffered = (target: string) =>
+/** Whether a failed Run of `name` on `target` is offered its followUp `id`. */
+const followUpOffered = (name: Shipped, id: string, target: string) =>
   Effect.gen(function* () {
-    const declared = yield* loadEntry(shipped("release")).pipe(
+    const declared = yield* loadEntry(shipped(name)).pipe(
       Effect.map((described) => declaredByModule(described.metadata)),
       Effect.orDie,
     );
@@ -9016,10 +9025,10 @@ const releaseAgainOffered = (target: string) =>
       diffTarget: target,
       claim: "project",
     };
-    return offersFrom(declared, facts, { self: idOf("release") }).some(
-      (offer) => offer.id === "release-again",
-    );
+    return offersFrom(declared, facts, { self: idOf(name) }).some((offer) => offer.id === id);
   });
+
+const releaseAgainOffered = (target: string) => followUpOffered("release", "release-again", target);
 
 /** The jobs of an application's tag pipeline, in the order each forge's job read numbers them. */
 const TAG_JOBS = ["build", "deploy-stage", "e2e-stage", "deploy-production"] as const;
@@ -9349,6 +9358,7 @@ for (const name of ["gitlab", "github"] as const) {
               expect(production.prompt).toContain(`stage carries \`${merged.slice(0, 8)}\``);
               expect(production.prompt).toContain(waiting(name));
               expect(claimed).toEqual([`claim ${runId}`]);
+              expect(yield* wasAsked(runId, "production")).toBe(false);
               const played = yield* now({ environments: deploys(merged, merged) });
               yield* rig.queueOutputs([
                 APP_ASSESSED,
@@ -10292,6 +10302,383 @@ for (const name of ["gitlab", "github"] as const) {
             `${mr} is an application with no stage deploy that Collie can prove, on its merge request's pipeline or its tags', so nothing was released: a stage and a production environment`,
           );
           expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+}
+
+/** The tags on origin, which a Stage Run never pushes. */
+const originTags = () =>
+  exec(["git", "ls-remote", "--tags", "origin"], { cwd: rig.projectDir }).pipe(
+    Effect.map((ran) => ran.stdout.trim()),
+  );
+
+for (const name of ["gitlab", "github"] as const) {
+  const { mr, url, target } = RELEASING[name];
+  const options = (runId: string, host = releaseHost()) => ({
+    entry: shipped("stage"),
+    runId,
+    input: { mr: target },
+    host,
+  });
+  const stageJobs = `\`deploy-stage\` at ${mrJob(name, "deploy-stage")}, \`e2e-stage\` at ${mrJob(name, "e2e-stage")}`;
+  const unresolved = {
+    id: 90,
+    author: "bob",
+    at: "2026-10-20T11:00:00Z",
+    body: "why this?",
+    thread: name === "gitlab" ? "t-90" : "90",
+    file: "src/app.ts",
+    line: 3,
+  };
+
+  /**
+   * An application's open merge request, approved by nobody, with an unresolved thread and
+   * its stage check at `e2e`, its head untagged, and stage and production on the commit the
+   * merge request starts from. `staging` is the stage step's stand-in, which leaves stage on
+   * `head` with every stage job passed; `unstaging` puts stage back.
+   */
+  const stageOn = (e2e: "running" | "failed" = "running", over: Partial<FakeMr> = {}) =>
+    Effect.gen(function* () {
+      const made = yield* releasable(
+        name,
+        { ...UNAPPROVED[name], comments: [unresolved], ...over },
+        false,
+      );
+      const withJobs = (on: ForgeModel, head: string, e2eNow: "running" | "failed" | "passed") =>
+        ({
+          ...on,
+          mrs: on.mrs.map((one) => ({
+            ...one,
+            head,
+            jobs: MR_JOBS.map((job) => ({
+              name: job,
+              state: job === "e2e-stage" ? e2eNow : ("passed" as const),
+            })),
+          })),
+        }) satisfies ForgeModel;
+      const model: ForgeModel = {
+        ...withJobs(yield* made.forge.model(), made.head, e2e),
+        environments: deploys(made.base, made.base),
+      };
+      yield* made.forge.set(model);
+      /** The forge once the stage step put `head` on stage, its stage check at `e2eNow`. */
+      const onStage = (head = made.head, e2eNow: "failed" | "passed" = "passed") => ({
+        ...withJobs(model, head, e2eNow),
+        environments: deploys(head, made.base),
+      });
+      const staging = (head = made.head, e2eNow: "failed" | "passed" = "passed") => ({
+        writes: [made.forge.holding(onStage(head, e2eNow))],
+        output: STAGED_MR,
+      });
+      /** The stage step put `head` on stage while the merge request's head moved to `later`. */
+      const moving = (head: string, later: string) => ({
+        writes: [made.forge.holding({ ...onStage(head), mrs: onStage(later).mrs })],
+        output: STAGED_MR,
+      });
+      /** Stage back on what production carries, the merge request at `head`. */
+      const unstaging = (head = made.head) => ({
+        writes: [
+          made.forge.holding({ ...onStage(head), environments: deploys(made.base, made.base) }),
+        ],
+        output: UNSTAGED,
+      });
+      return { ...made, model, onStage, staging, moving, unstaging };
+    });
+
+  /** Nothing a Stage Run must never do happened on the forge or origin. */
+  const touchedNothing = (model: ForgeModel) =>
+    Effect.gen(function* () {
+      expect(model.merges ?? []).toEqual([]);
+      expect(model.notes ?? {}).toEqual({});
+      expect(repliesOf(model)).toEqual([]);
+      expect(model.approved ?? []).toEqual([]);
+      expect(yield* originTags()).toBe("");
+    });
+
+  scenario(
+    `stage on ${name}: an open merge request with no approval, an unresolved thread and its stage check running is staged, asked about and rolled back on Done, under the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, staging, unstaging } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging(), unstaging()]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              const question = yield* goAsked(run.asked, "staged-1");
+              expect(optionsOf([question], "staged-1")).toEqual([
+                "Done",
+                "Stage again",
+                "Leave it on stage",
+              ]);
+              expect(question.prompt).toContain(mr);
+              expect(question.prompt).toContain(head.slice(0, 8));
+              expect(question.prompt).toContain(stageJobs);
+              expect(question.prompt).toContain("project");
+              expect(question.prompt).toContain("for testing, unmerged");
+              const card = `${yield* awaitingOn(runId)} ${yield* parkedWhy(runId)}`;
+              expect(card).not.toMatch(/approv|thread/i);
+              expect(claimed).toEqual([`claim ${runId}`]);
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* touchedNothing(model);
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} was staged at ${head.slice(0, 8)} for testing; stage is rolled back`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* clearance(runId, "stage")).toContain("never a production job");
+          expect(yield* clearance(runId, "stage")).toContain(
+            `\`deploy-stage\` of ${url}'s merge request pipeline`,
+          );
+          expect(yield* wasAsked(runId, "production")).toBe(false);
+          const log = yield* runLog(runId);
+          expect(log).not.toMatch(/\b(release[sd]?|approv\w*|go \d)\b/i);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: a merged, closed, package or stage-less merge request fails before any claim or stage step`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, model } = yield* stageOn();
+          claimed.length = 0;
+          const refused = (runId: string, state: FakeMr["state"]) =>
+            Effect.gen(function* () {
+              yield* forge.set({
+                ...model,
+                mrs: model.mrs.map((one) => ({ ...one, state })),
+              });
+              const result = yield* ran(options(runId));
+              expect(yield* wasAsked(runId, "stage")).toBe(false);
+              return reasonOf(result);
+            });
+          expect(yield* refused(`r-stage-merged-${name}`, "merged")).toBe(
+            `${mr} is merged, so its stage is its release's: nothing was staged`,
+          );
+          expect(yield* refused(`r-stage-closed-${name}`, "closed")).toBe(
+            `${mr} is closed, so nothing was staged`,
+          );
+          yield* rig.queueOutputs([PACKAGED, APP_ASSESSED]);
+          expect(yield* refused(`r-stage-package-${name}`, "open")).toBe(
+            `${mr} is a package, so there is nothing to stage: a publish job on tags, and no deploy`,
+          );
+          expect(yield* refused(`r-stage-stageless-${name}`, "open")).toBe(
+            `${mr} is an application with no stage deploy job on its merge request's pipeline, so nothing was staged: a stage and a production environment`,
+          );
+          yield* bin.restore();
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: a head that moves before stage is proved is staged in its turn, and the question names it`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, staging, moving, unstaging } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-moved-${name}`;
+          const later = yield* pushedBySomebody(head);
+          yield* rig.queueOutputs([
+            MR_STAGED,
+            moving(head, later),
+            staging(later),
+            unstaging(later),
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              const question = yield* goAsked(run.asked, "staged-1");
+              expect(question.prompt).toContain(later.slice(0, 8));
+              expect(question.prompt).not.toContain(head.slice(0, 8));
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} was staged at ${later.slice(0, 8)} for testing; stage is rolled back`,
+          );
+          expect(yield* asked(runId, "stage-2")).toContain(later);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: a failed stage check is rolled back, its claim given back, and the Run fails naming the job and offers Stage again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, staging, unstaging } = yield* stageOn("failed");
+          claimed.length = 0;
+          const runId = `r-stage-failed-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging(head, "failed"), unstaging()]);
+          const status = yield* driven(options(runId), (run) => ended(run.status));
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `stage of ${mr} at ${head.slice(0, 8)} failed: \`e2e-stage\` has not passed on the merge request's pipeline at ${head.slice(0, 8)}: it is failed; stage is back on what production carries`,
+          );
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+          expect(yield* asked(runId, "unstage")).toContain("`e2e-stage`");
+          expect(yield* followUpOffered("stage", "stage-again", target)).toBe(true);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: a rollback the forge cannot show fails the Run and keeps the claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, staging } = yield* stageOn("failed");
+          claimed.length = 0;
+          const runId = `r-stage-unshown-${name}`;
+          yield* rig.queueOutputs([MR_STAGED, staging(head, "failed"), UNSTAGED]);
+          const status = yield* driven(options(runId), (run) => ended(run.status));
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `stage of ${mr} at ${head.slice(0, 8)} failed: \`e2e-stage\` has not passed on the merge request's pipeline at ${head.slice(0, 8)}: it is failed. Its rollback is not shown: stage still carries ${head.slice(0, 8)} in \`stage\``,
+          );
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: Leave it on stage gives the claim back without unstaging, though the Run's Check fails`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, onStage, staging } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-leave-${name}`;
+          yield* checkedBy(runId, "test", "false");
+          yield* rig.queueOutputs([MR_STAGED, staging()]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "staged-1");
+              yield* run.answer("staged-1", "Leave it on stage");
+              return yield* ended(run.status);
+            }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`stage carries ${mr} at ${head.slice(0, 8)}, unmerged`);
+          expect(model.environments).toEqual(onStage().environments);
+          expect(yield* wasAsked(runId, "unstage")).toBe(false);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: Stage again stages the head as it is now, keeping the claim, and asks again naming it`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, staging, onStage, unstaging } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-again-${name}`;
+          const later = yield* pushedBySomebody(head);
+          yield* rig.queueOutputs([MR_STAGED, staging(), staging(later), unstaging(later)]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "staged-1");
+              yield* forge.set({ ...(yield* forge.model()), mrs: onStage(later).mrs });
+              yield* run.answer("staged-1", "Stage again");
+              const again = yield* goAsked(run.asked, "staged-2");
+              expect(again.prompt).toContain(later.slice(0, 8));
+              expect(claimed).toEqual([`claim ${runId}`]);
+              yield* run.answer("staged-2", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(
+            `${mr} was staged at ${later.slice(0, 8)} for testing; stage is rolled back`,
+          );
+          expect(yield* asked(runId, "stage-2")).toContain(later);
+          expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: a head the checkout does not fast-forward to parks the Run before any claim`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, base, onStage } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-forced-${name}`;
+          const forced = yield* pushedBySomebody(base, true);
+          yield* forge.set({ ...(yield* forge.model()), mrs: onStage(forced).mrs });
+          yield* rig.queueOutputs([MR_STAGED]);
+          const why = yield* driven(options(runId), () =>
+            until(
+              () => parkedWhy(runId),
+              (said) => said !== "",
+            ),
+          );
+          yield* bin.restore();
+          expect(why).toContain("does not fast-forward");
+          expect(claimed).toEqual([]);
+          expect(yield* wasAsked(runId, "stage")).toBe(false);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: Helle projects that cannot be resolved are asked about in staging words, and Finish stages nothing`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-unclaimed-${name}`;
+          yield* rig.queueOutputs([MR_STAGED]);
+          const why = "no Helle project in group's group for the application newapp";
+          const status = yield* driven(
+            options(
+              runId,
+              releaseHost({}, Effect.void, Infinity, () => ({ held: { unresolved: why } })),
+            ),
+            (run) =>
+              Effect.gen(function* () {
+                const unclaimed = yield* goAsked(run.asked, "claim.unclaimed");
+                expect(unclaimed.prompt).toContain(why);
+                expect(unclaimed.prompt).not.toMatch(/\b(release[sd]?|merged?)\b/i);
+                expect(optionsOf([unclaimed], "claim.unclaimed")).toEqual([
+                  "Try again",
+                  "Stage without a Helle claim",
+                  "Finish",
+                ]);
+                yield* run.answer("claim.unclaimed", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was not staged`);
+          expect(yield* wasAsked(runId, "stage")).toBe(false);
+          expect(claimed).toEqual([`release ${runId}`]);
         }),
       ),
     120_000,

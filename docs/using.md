@@ -2383,6 +2383,32 @@ application whose pipelines deploy nothing to stage is refused at the start. If 
 it merged, **Release again** tags what it merged rather than merging anything again, and
 asks the second go afresh ([`release`](workflows.md#release)).
 
+## Staging a merge request for testing
+
+`collie run start stage --input mr=<target>` — or **stage** from the board's start menu, or
+"put !355 on stage" in chat — puts one open merge request's head on stage for you to test,
+unmerged, and nothing more. It does not wait for an approval, answered or resolved
+comments, a green pipeline or mergeability, asks for no go and runs none of the Run's
+checks: the stage checks of a merge request's pipeline run after its stage deploy anyway.
+It never merges, tags, pushes, posts or plays a production job. The target is the same as a
+review's, and the Run joins that merge request's Task.
+
+A merged merge request is refused, because its stage is its release's, and so is a closed
+one, a package, or an application whose merge request pipeline deploys nothing to stage.
+Otherwise it claims in Helle every project the stage deploys under, as a release does,
+plays the merge request pipeline's stage jobs at the head, and reads from the forge that
+every stage environment the pipeline deployed to carries it. Then it asks **`staged-1`**,
+naming the head, the stage jobs at their addresses and the claims it holds, while stage is
+yours to test:
+
+- **Done** rolls stage back, proves it off and gives the claims back.
+- **Stage again** stages the merge request's head as it is now, keeping the claims.
+- **Leave it on stage** gives the claims back and leaves stage as it is.
+
+A stage that fails is rolled back and its claims are given back; the Run fails saying what
+failed and offers **Stage again**. A rollback the forge cannot show fails the Run and keeps
+the claims ([`stage`](workflows.md#stage)).
+
 ## Your defaults
 
 `~/.collie/user/config.json`, beside your own workflows and personas, all keys optional:

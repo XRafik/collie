@@ -1,6 +1,6 @@
 # Workflows
 
-Collie ships nine workflows. This page is the "which one do I want" level: what each is
+Collie ships ten workflows. This page is the "which one do I want" level: what each is
 for, what it needs from you, and how they chain. The files under
 [`workflows/`](../workflows) are canonical for step-by-step behavior: each is a TypeScript
 module with its Markdown beside it as content ([the SDK](sdk.md)). Any of them is a fork
@@ -11,7 +11,7 @@ For what a Workflow, an operation, a Choice or a Run _is_, see [`CONTEXT.md`](..
 ## Choosing one
 
 A task that is not planning, building a change to a merge request, reviewing, releasing
-one, renovating or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
+or staging one, renovating or an architecture survey is `general`'s, never `implement` or `plan` stretched to fit.
 
 ## How inputs reach a run
 
@@ -592,6 +592,57 @@ content in [`workflows/release.gitlab.md`](../workflows/release.gitlab.md) and
 [`workflows/release.github.md`](../workflows/release.github.md). Why it is shaped this way:
 [ADR-draft-a-merge-request-is-released-on-a-humans-go](adr/draft-a-merge-request-is-released-on-a-humans-go.md).
 
+## `stage`
+
+**For:** one open merge request's head put on stage for you to test, unmerged, and nothing
+more. It asks for no approval, answered or resolved comments, passed pipeline,
+mergeability or go, and runs none of the Run's checks: it changes nothing, and what it
+deploys is what the forge's own pipeline built. It never merges, tags, pushes, posts or
+plays a production job. A merge request you want released after testing is `release`'s
+**Stage the merge request**; one you only want to test is this.
+
+**Inputs:** `mr`, the merge request or pull request, as `release` takes it. A Stage Run on a
+merge request joins that merge request's Task.
+
+**Checkout:** the merge request's source branch, as `release`'s, only ever fast-forwarded. A
+refusal parks the Run with why.
+
+**What happens:** it reads the merge request once: a merged one fails, saying its stage is
+its release's, and a closed one fails. One agent assesses, read only and by release's own
+rule, whether the repository is a package or an application, and names the stage deploy
+jobs of its merge request pipelines: a package fails, and so does an application with
+none. Collie fast-forwards the checkout to the head, and then claims in Helle every project
+the stage deploys under, as a Release Run claims them: in Helle's order, each waited for at
+no token cost, asking first to take over any already the operator's. Where they cannot be
+settled it asks **`claim.unclaimed`** with **Try again**, **Stage without a Helle claim**,
+recorded on its log as the human's say, and **Finish**, which stages nothing.
+
+Holding them, it reads the head again and fast-forwards to it, as the claims may have
+waited, and the agent's `stage` step plays, retries and watches those jobs of the merge
+request's pipeline, and the stage checks after them. Collie reads stage back from the
+forge, one environment at a time, as `release` does: each stage job passed on the head's
+pipeline, and every stage environment it deployed to carries the head. Where the head moved
+first, that head is staged in its turn. Then it asks **`staged-<n>`**, in Needs you, naming
+the merge request, the head, each stage job at its address and the claims it holds:
+
+- **Done** rolls stage back, proves it off in each environment the head reached, and gives
+  the claims back.
+- **Stage again** stages the merge request's head as it is then, keeping the claims, and
+  asks again.
+- **Leave it on stage** gives the claims back and leaves stage as it is.
+
+**Ends:** with `<mr> was staged at <head> for testing; stage is rolled back`, or `stage
+carries <mr> at <head>, unmerged`. A stage that fails is rolled back and proved off, its
+claims are given back, and the Run fails with `stage of <mr> at <head> failed: <why>; stage
+is back on what production carries`. A rollback the forge cannot show fails the Run and
+keeps the claims. A failed Run offers **Stage again** of the same merge request.
+
+Module: [`workflows/stage.workflow.ts`](../workflows/stage.workflow.ts), with its content in
+[`workflows/stage.gitlab.md`](../workflows/stage.gitlab.md) and
+[`workflows/stage.github.md`](../workflows/stage.github.md); the claims and the staging are
+[`workflows/staging.ts`](../workflows/staging.ts), shared with `release`. Why:
+[ADR-draft-an-open-merge-request-is-staged-by-a-run-of-its-own](adr/draft-an-open-merge-request-is-staged-by-a-run-of-its-own.md).
+
 ## `architecture`
 
 **For:** looking at what a project already has and improving the parts whose cost you can
@@ -683,6 +734,12 @@ Each names only what that step's content tells the agent to do:
   production carries, never a production job.
 - **`release`'s `production`**: playing exactly the production jobs the go named, at their
   addresses, and no other job.
+- **`stage`'s `stage`**: playing, retrying and watching the stage deploy jobs the assessment
+  named, by name, and the stage check jobs that follow them in the merge request's pipeline,
+  and rolling back only the stage environments those jobs deploy to — never a production
+  job.
+- **`stage`'s `unstage`**: rolling back only the stage environments those jobs deployed to,
+  to the newest release production carries, never a production job.
 
 Every other shipped step clears nothing.
 
@@ -702,6 +759,7 @@ Every other shipped step clears nothing.
 - `general` chains into nothing.
 - `release` chains into nothing; a failed one offers **Release again** of the same merge
   request.
+- `stage` chains into nothing; a failed one offers **Stage again** of the same merge request.
 - `self-improve` → `plan` with `then=implement`, once per Improvement, each its own card.
 - `implement` → `release`, on its merge request, from **Release** at its end, `then=release`,
   or the **Release** offer on a succeeded Run's card.
