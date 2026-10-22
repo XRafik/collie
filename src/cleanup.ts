@@ -1,7 +1,7 @@
 // Cleanup (ADR-0045): one sweeper per kind of thing Collie made. A listing is every judge; a
 // sweep is every judge, then each removal judged again and written to `cleanup.jsonl`.
 
-import { Clock, Effect, FileSystem, Option, Path, Schema, Semaphore } from "effect";
+import { Clock, Duration, Effect, FileSystem, Option, Path, Schema, Semaphore } from "effect";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import {
   FrontDoor,
@@ -66,6 +66,8 @@ import { once } from "./audit";
 
 /** One kind of thing Collie cleans. */
 export interface Sweeper {
+  /** What `collie cleanup` calls each of its items. */
+  readonly kind: string;
   readonly judge: Effect.Effect<
     {
       remove: ReadonlyArray<CleanupItem>;
@@ -125,18 +127,70 @@ export const cleanupLines = (report: CleanupReport, applied: boolean) =>
     `${applied ? "freed" : "would free"}\t${humanBytes(report.bytes)}`,
   ].join("\n");
 
-/** The listing: every sweeper's judgement, and what the removable items come to. */
-export const judge = (sweepers: ReadonlyArray<Sweeper>) =>
+/** How long a listing or sweep may take before the host log says where its time went. */
+const SLOW_CLEANUP_MS = 2_000;
+
+/** Sweepers already in hand, or how to gather them, which is then timed too. */
+type Sweepers<E, R> = ReadonlyArray<Sweeper> | Effect.Effect<ReadonlyArray<Sweeper>, E, R>;
+
+/** `body` over the sweepers, and over 2 s in all one warning naming where the time went. */
+const timedJudging = <A, E, R, F, Q>(
+  what: "listing" | "sweep",
+  sweepers: Sweepers<F, Q>,
+  body: (
+    sweepers: ReadonlyArray<Sweeper>,
+    judgeOf: (sweeper: Sweeper) => Sweeper["judge"],
+  ) => Effect.Effect<A, E, R>,
+) =>
   Effect.gen(function* () {
-    const remove: CleanupItem[] = [];
-    const keep: CleanupKept[] = [];
-    for (const sweeper of sweepers) {
-      const judged = yield* sweeper.judge;
-      remove.push(...judged.remove);
-      keep.push(...judged.keep);
+    const spent = new Map<string, number>();
+    const judgeOf = (sweeper: Sweeper) =>
+      Effect.timed(sweeper.judge).pipe(
+        Effect.map(([duration, judged]) => {
+          spent.set(sweeper.kind, (spent.get(sweeper.kind) ?? 0) + Duration.toMillis(duration));
+          return judged;
+        }),
+      );
+    let gathering: number | undefined;
+    const gathered = Effect.isEffect(sweepers)
+      ? Effect.timed(sweepers).pipe(
+          Effect.map(([duration, all]) => {
+            gathering = Duration.toMillis(duration);
+            return all;
+          }),
+        )
+      : Effect.succeed(sweepers);
+    const [duration, result] = yield* Effect.timed(
+      Effect.flatMap(gathered, (all) => body(all, judgeOf)),
+    );
+    const total = Duration.toMillis(duration);
+    if (total > SLOW_CLEANUP_MS) {
+      const kinds = [...spent]
+        .sort(([, a], [, b]) => b - a)
+        .map(([kind, ms]) => `${kind} ${ms} ms`)
+        .join(", ");
+      const gatheringSaid = gathering === undefined ? "" : `gathering took ${gathering} ms; `;
+      yield* Effect.logWarning(
+        `the cleanup ${what} took ${total} ms; ${gatheringSaid}judging took ${kinds}`,
+      );
     }
-    return { remove, keep, bytes: total(remove) } satisfies CleanupReport;
+    return result;
   });
+
+/** The listing: every sweeper's judgement, and what the removable items come to. */
+export const judge = <E = never, R = never>(sweepers: Sweepers<E, R>) =>
+  timedJudging("listing", sweepers, (sweepers, judgeOf) =>
+    Effect.gen(function* () {
+      const remove: CleanupItem[] = [];
+      const keep: CleanupKept[] = [];
+      for (const sweeper of sweepers) {
+        const judged = yield* judgeOf(sweeper);
+        remove.push(...judged.remove);
+        keep.push(...judged.keep);
+      }
+      return { remove, keep, bytes: total(remove) } satisfies CleanupReport;
+    }),
+  );
 
 const total = (items: ReadonlyArray<CleanupItem>) =>
   items.reduce((sum, item) => sum + item.bytes, 0);
@@ -165,32 +219,38 @@ const JournalLine = Schema.Struct({
 const JournalJson = Schema.fromJsonString(JournalLine);
 
 /** A sweep: every judge, then every removal, each journaled with who asked. */
-export const sweep = (sweepers: ReadonlyArray<Sweeper>, stateDir: string, by: SweptBy) =>
-  Effect.gen(function* () {
-    const path = yield* Path.Path;
-    const journal = path.join(stateDir, JOURNAL);
-    const removed: CleanupItem[] = [];
-    const keep: CleanupKept[] = [];
-    for (const sweeper of sweepers) {
-      const judged = yield* sweeper.judge;
-      const retried = new Set((judged.retry ?? []).map((item) => item.target));
-      keep.push(...judged.keep.filter((one) => !retried.has(one.target)));
-      for (const item of [...judged.remove, ...(judged.retry ?? [])]) {
-        const outcome = yield* sweeper.remove(item);
-        if ("kept" in outcome) {
-          keep.push({ kind: item.kind, target: item.target, reason: outcome.kept });
-          continue;
+export const sweep = <E = never, R = never>(
+  sweepers: Sweepers<E, R>,
+  stateDir: string,
+  by: SweptBy,
+) =>
+  timedJudging("sweep", sweepers, (sweepers, judgeOf) =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const journal = path.join(stateDir, JOURNAL);
+      const removed: CleanupItem[] = [];
+      const keep: CleanupKept[] = [];
+      for (const sweeper of sweepers) {
+        const judged = yield* judgeOf(sweeper);
+        const retried = new Set((judged.retry ?? []).map((item) => item.target));
+        keep.push(...judged.keep.filter((one) => !retried.has(one.target)));
+        for (const item of [...judged.remove, ...(judged.retry ?? [])]) {
+          const outcome = yield* sweeper.remove(item);
+          if ("kept" in outcome) {
+            keep.push({ kind: item.kind, target: item.target, reason: outcome.kept });
+            continue;
+          }
+          const gone = { ...item, bytes: outcome.freed };
+          removed.push(gone);
+          yield* appendJournal(journal, JournalJson, { at: yield* nowIso(), by, ...gone }).pipe(
+            Effect.ignore,
+          );
         }
-        const gone = { ...item, bytes: outcome.freed };
-        removed.push(gone);
-        yield* appendJournal(journal, JournalJson, { at: yield* nowIso(), by, ...gone }).pipe(
-          Effect.ignore,
-        );
       }
-    }
-    yield* trimJournal(journal);
-    return { remove: removed, keep, bytes: total(removed) } satisfies CleanupReport;
-  });
+      yield* trimJournal(journal);
+      return { remove: removed, keep, bytes: total(removed) } satisfies CleanupReport;
+    }),
+  );
 
 /**
  * A front door's sweep, once per request: asked again, even while it runs, it answers with its
@@ -205,11 +265,7 @@ export const sweepAsked = <E, R>(
 ) =>
   sweeping.withPermit(
     Effect.uninterruptible(
-      once(
-        trail,
-        { ...line, result: CleanupReport },
-        Effect.flatMap(sweepers, (all) => sweep(all, stateDir, by)),
-      ),
+      once(trail, { ...line, result: CleanupReport }, sweep(sweepers, stateDir, by)),
     ),
   );
 
@@ -251,6 +307,7 @@ export const generationsSweeper = (dir: string): Sweeper => {
     });
   const days = (ms: number) => Math.floor(ms / DAY_MS);
   return {
+    kind,
     judge: Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const names = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => []));
@@ -364,6 +421,7 @@ export const worktreesSweeper = (opts: {
 }): Sweeper => {
   const kind = "worktree";
   return {
+    kind,
     judge: Effect.gen(function* () {
       const settling = opts.settling === undefined ? undefined : yield* opts.settling;
       const round = yield* judgeWorktrees({ ...opts, settling, dryRun: true });
@@ -514,6 +572,7 @@ export const stateSweeper = (stateDir: string, rows: ReadonlySet<string>): Sweep
   });
 
   return {
+    kind,
     judge: Effect.gen(function* () {
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
@@ -545,6 +604,7 @@ export const uploadsSweeper = (stateDir: string): Sweeper => {
         : null;
     });
   return {
+    kind,
     judge: Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const remove: CleanupItem[] = [];
@@ -602,6 +662,7 @@ export const compactionSweeper = (
     return names;
   });
   return {
+    kind,
     judge: Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const names = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
@@ -670,6 +731,7 @@ export const runnersSweeper = (dir: string, running: string): Sweeper => {
     });
   });
   return {
+    kind,
     judge: Effect.gen(function* () {
       const all = yield* verdicts;
       const remove = all.flatMap((one) =>
@@ -858,6 +920,7 @@ export const taskWorkspacesSweeper = (opts: {
   const taskAt = (target: string) => opts.tasks.find((task) => task.workspace === target);
 
   return {
+    kind,
     judge: Effect.gen(function* () {
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
@@ -1183,6 +1246,7 @@ export const idleAgentsSweeper = (opts: {
     });
 
   return {
+    kind,
     judge: Effect.gen(function* () {
       // Run even when closing is off: it records the sessions herdr reports.
       const found = yield* candidates;
@@ -1278,6 +1342,7 @@ export const renovateClonesSweeper = (stateDir: string, runs: ReadonlyArray<RunF
       return { remove: "no Run uses it and no checkout of it is left" };
     });
   return {
+    kind,
     judge: Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const names = yield* fs.readDirectory(root).pipe(Effect.orElseSucceed(() => []));
@@ -1344,9 +1409,24 @@ export const retentionSweeper = (opts: {
       return newest === 0 ? yield* Clock.currentTimeMillis : newest;
     });
 
+  /** Every session's workspaces and panes, or null where one could not be asked. */
+  const openNow = Effect.gen(function* () {
+    const workspaces: string[] = [];
+    const panes: PaneInfo[] = [];
+    for (const session of opts.sessions) {
+      const listed = yield* session.workspaceList().pipe(Effect.option);
+      const listedPanes = yield* session.paneList().pipe(Effect.option);
+      if (Option.isNone(listed) || Option.isNone(listedPanes)) return null;
+      workspaces.push(...listed.value.map((one) => one.workspaceId));
+      panes.push(...listedPanes.value);
+    }
+    return { workspaces, panes };
+  });
+
   const verdict = (
     task: TaskRecord,
     facts: RetentionFacts,
+    open: typeof openNow,
   ): Effect.Effect<
     { keep: string } | { remove: string; ids: ReadonlyArray<string> } | null,
     never,
@@ -1358,21 +1438,13 @@ export const retentionSweeper = (opts: {
       if (view === undefined) return null;
       const section = sectionOf(view);
       if (section !== "finished") return { keep: SECTION_SAID[section] };
-      const workspaces: string[] = [];
-      const open: PaneInfo[] = [];
-      for (const session of opts.sessions) {
-        const listed = yield* session.workspaceList().pipe(Effect.option);
-        const panes = yield* session.paneList().pipe(Effect.option);
-        if (Option.isNone(listed) || Option.isNone(panes))
-          return { keep: "could not ask herdr what is open" };
-        workspaces.push(...listed.value.map((one) => one.workspaceId));
-        open.push(...panes.value);
-      }
-      if (workspaces.includes(task.workspace)) return { keep: "its workspace is open" };
+      const seen = yield* open;
+      if (seen === null) return { keep: "could not ask herdr what is open" };
+      if (seen.workspaces.includes(task.workspace)) return { keep: "its workspace is open" };
       const mine = facts.runs.filter((run) => run.task === task.id);
       const ids = mine.map((run) => run.id);
       const launched = yield* launchedPanes(opts.stateDir, ids);
-      if (open.some((pane) => isLaunched(launched, pane)))
+      if (seen.panes.some((pane) => isLaunched(launched, pane)))
         return { keep: "an agent of it is alive" };
       for (const run of mine)
         if (
@@ -1414,12 +1486,14 @@ export const retentionSweeper = (opts: {
     });
 
   return {
+    kind,
     judge: Effect.gen(function* () {
       const remove: CleanupItem[] = [];
       const keep: CleanupKept[] = [];
       const facts = yield* opts.facts;
+      const open = yield* Effect.cached(openNow);
       for (const task of facts.tasks) {
-        const judged = yield* verdict(task, facts);
+        const judged = yield* verdict(task, facts, open);
         if (judged === null) continue;
         if ("keep" in judged) {
           keep.push({ kind, target: task.id, reason: judged.keep });
@@ -1444,7 +1518,7 @@ export const retentionSweeper = (opts: {
             const facts = yield* opts.facts;
             const task = facts.tasks.find((one) => one.id === item.target);
             if (task === undefined) return { kept: "no such Task any more" };
-            const judged = yield* verdict(task, facts);
+            const judged = yield* verdict(task, facts, openNow);
             if (judged === null) return { kept: "nothing to forget any more" };
             if ("keep" in judged) return { kept: judged.keep };
             const fs = yield* FileSystem.FileSystem;
@@ -1493,6 +1567,7 @@ export const desktopSweeper = (root: string, state: string, installedPath: strin
     Effect.orElseSucceed(() => ({ remove: [], keep: [], usage: null })),
   );
   return {
+    kind,
     judge: Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       if (!(yield* fs.exists(root).pipe(Effect.orElseSucceed(() => false))))
@@ -1537,6 +1612,7 @@ export const checksSweeper = (checks: CheckProcessesApi): Sweeper => {
       return `${named}, running ${took(ran)}; no host is collecting it`;
     });
   return {
+    kind,
     judge: Effect.gen(function* () {
       const remove = yield* Effect.forEach(yield* checks.left, (leftover) =>
         Effect.map(reasonOf(leftover), (reason) => ({

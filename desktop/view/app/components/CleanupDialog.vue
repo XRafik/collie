@@ -3,15 +3,23 @@ import { choose, cleanupView } from "../../../src/shared/machine-cleanup";
 
 const open = defineModel<boolean>("open", { required: true });
 const { machines } = useInSync();
-const { read, chosen, sweeps, opened, clean, tryAgain } = useCleanup();
-watch(open, (now) => now && void opened());
+const { reads, now, chosen, sweeps, opened, readAgain, clean, tryAgain } = useCleanup();
+watch(
+  open,
+  (shown) =>
+    shown &&
+    void opened(
+      machines.value.filter(({ row }) => row.state === "live").map(({ row }) => row.profile),
+    ),
+);
 
 const view = computed(() =>
   cleanupView(
     machines.value.map(({ row }) => row),
-    read.value,
+    reads.value,
     chosen.value,
     sweeps.value,
+    now.value,
   ),
 );
 const toggle = (profile: string, on: boolean) => {
@@ -81,9 +89,19 @@ const toggle = (profile: string, on: boolean) => {
               label="Try again"
               class="ml-auto"
               data-testid="cleanup-try-again"
-              @click="tryAgain(row.profile)"
+              @click="tryAgain(row)"
             />
           </div>
+          <UButton
+            v-if="row.readAgain"
+            size="xs"
+            color="neutral"
+            variant="outline"
+            label="Read again"
+            class="self-end"
+            data-testid="cleanup-read-again"
+            @click="readAgain(row.profile)"
+          />
           <details v-for="group in row.groups" :key="group.kind" data-testid="cleanup-kind">
             <summary class="cursor-pointer">
               {{ group.kind }} · {{ group.count }} · {{ group.size }}

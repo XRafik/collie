@@ -3,6 +3,7 @@
 
 import { expect, test } from "bun:test";
 import {
+  Clock,
   Deferred,
   type Duration,
   Effect,
@@ -24,6 +25,7 @@ import { BUILD, frontDoor, socketOf } from "../src/host";
 import { foundationLayer } from "../src/engine";
 import { Store } from "../src/store";
 import { readTask, writeTask } from "../src/task";
+import { TestClock } from "effect/testing";
 import { fastForward, runEffect } from "./support/effect";
 import { stopHost } from "./support/host";
 import { task } from "./support/task";
@@ -231,7 +233,7 @@ const handBuilt = Effect.gen(function* () {
   }).pipe(
     Effect.flatMap((next) => (next === "fails" ? Effect.fail("unreadable") : Effect.succeed(next))),
   );
-  const boards = yield* shareBoard({ build, changed: Stream.fromQueue(changed) });
+  const { boards } = yield* shareBoard({ build, changed: Stream.fromQueue(changed) });
   const follow = (count: number) =>
     boardMessages({ head: HEAD, boards }).pipe(
       Stream.take(count),
@@ -363,6 +365,38 @@ test("the board is built with nobody subscribed, and every reader of one interva
     ),
   ));
 
+test("the latest board is read at once while a newer one builds, and the first is waited for", () =>
+  Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const changed = yield* Queue.unbounded<void>();
+        let builds = 0;
+        const build = Effect.suspend(() => {
+          const board = [task({ id: `built-${++builds}` })];
+          return Effect.sleep("10 seconds").pipe(Effect.as(board));
+        });
+        const { latest } = yield* shareBoard({ build, changed: Stream.fromQueue(changed) });
+
+        const first = yield* Effect.forkChild(latest);
+        yield* Effect.yieldNow;
+        expect(first.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust("10 seconds");
+        expect((yield* Fiber.join(first)).map((view) => view.id)).toEqual(["built-1"]);
+
+        yield* Queue.offer(changed, undefined);
+        while (builds < 2) yield* Effect.yieldNow;
+        const asked = yield* Clock.currentTimeMillis;
+        const read = yield* Effect.forkChild(latest);
+        for (let turn = 0; turn < 100 && read.pollUnsafe() === undefined; turn++)
+          yield* Effect.yieldNow;
+        expect(read.pollUnsafe()).toBeDefined();
+        expect((yield* Fiber.join(read)).map((view) => view.id)).toEqual(["built-1"]);
+        expect(yield* Clock.currentTimeMillis).toBe(asked);
+        expect(builds).toBe(2);
+      }),
+    ).pipe(Effect.provide(TestClock.layer())),
+  ));
+
 const warnedDuring = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const warned: string[] = [];
@@ -377,7 +411,7 @@ const builtIn = (took: Duration.Input) =>
   warnedDuring(
     Effect.scoped(
       Effect.gen(function* () {
-        const boards = yield* shareBoard({
+        const { boards } = yield* shareBoard({
           build: Effect.sleep(took).pipe(Effect.as([one])),
           changed: Stream.never,
         });
@@ -403,7 +437,7 @@ test("a Run recorded in the store is on the board at once, with no tick and no f
       const dir = yield* fs.makeTempDirectoryScoped({ prefix: "collie-board-commit-" });
       yield* Effect.gen(function* () {
         const store = yield* Store;
-        const boards = yield* shareBoard({
+        const { boards } = yield* shareBoard({
           build: store.runs.pipe(Effect.map((rows) => rows.map((row) => task({ id: row.run })))),
           changed: store.changes,
         });
@@ -507,7 +541,7 @@ test("a reader that arrives after a change reads a board built after it, not the
       Effect.gen(function* () {
         let runs = 0;
         const changed = yield* Queue.unbounded<void>();
-        const boards = yield* shareBoard({
+        const { boards } = yield* shareBoard({
           build: Effect.sleep("1 second").pipe(Effect.map(() => runs)),
           changed: Stream.fromQueue(changed),
         });
