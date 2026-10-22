@@ -206,7 +206,8 @@ export const CollieTools = Toolkit.make(
       "answered with who answered it and when, what it ended with, the Runs it started, " +
       "its merge request with the state and checks the merge watch last recorded and its " +
       "branch, where its plan is, its findings, disposition and outcome to prove, the last " +
-      "lines it recorded, the work it has handed over with the evidence and the gaps in it, " +
+      "lines it recorded, the offers it makes now and why any is unavailable, " +
+      "the work it has handed over with the evidence and the gaps in it, " +
       "and any drift nobody has settled. Use it when a question is about a particular Run " +
       "rather than the flock. " +
       "Name the Run; with no `run` it answers about whatever the board has selected, and " +
@@ -323,7 +324,11 @@ export const CollieTools = Toolkit.make(
       `on a named Run (${ASKED_KINDS.join(", ")}), and its decisions — ` +
       "`confirm` a waiting proposal by its id and the hash `collie_receipts` lists beside " +
       "it, `decline` one by the same two, and `disposition` to record what became of a finished Run's " +
-      "work. This is not a proposal: it is done, and the board shows the result. Do not " +
+      "work. `take_offer` takes one of a Run's offers by the id `collie_run` lists, with " +
+      "what its own arguments take as `inputs`: when the human asks for what a Run offers " +
+      '("release it", "stage it", "fix the findings"), take the matching offer rather than ' +
+      "start its Workflow fresh. `release` lifts a hold; it does not release a merge " +
+      "request. This is not a proposal: it is done, and the board shows the result. Do not " +
       "send the human to the board for one of these. Name a Run by the id " +
       "`collie_herd` lists, or leave `run` out to act on the card the board has open, " +
       "which the answer then names. What is not here is what you would be asking for yourself — " +

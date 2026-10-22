@@ -532,14 +532,13 @@ const reviewedBranch = Effect.fn("worktree.reviewedBranch")(function* (
 });
 
 /**
- * The piece of work a Run or Task is about: its repository and branch. A Run's is the
- * branch it was placed on or its diff target names — never the caller's HEAD, which says
- * where it was typed, not what it is about. A Task's (`task: true`) is the branch its
- * checkout has out. Null on the default branch, which names no one piece of work, and
- * wherever git or glab will not say.
+ * The piece of work a Run is about: its repository and branch. That is the branch it was
+ * placed on or its diff target names — never the caller's HEAD, which says where it was
+ * typed, not what it is about. Null on the default branch, which names no one piece of
+ * work, and wherever git or glab will not say.
  */
 export const workOf = Effect.fn("worktree.workOf")(function* (
-  opts: BranchAsk & { readonly branch: string | null; readonly task?: boolean },
+  opts: BranchAsk & { readonly branch: string | null },
   run: Runner<ChildProcessSpawner.ChildProcessSpawner>,
 ) {
   const listing = yield* gitWorktrees(run, opts.cwd);
@@ -549,10 +548,8 @@ export const workOf = Effect.fn("worktree.workOf")(function* (
       ? yield* reviewedBranch(opts.cwd, opts, run)
       : null;
   if (reviewed !== null && !("branch" in reviewed)) return null;
-  if (opts.branch === null && reviewed === null && opts.task !== true) return null;
-  const out = yield* run("git", ["rev-parse", "--abbrev-ref", "HEAD"], opts.cwd);
-  const branch = opts.branch ?? reviewed?.branch ?? (out.code === 0 ? out.stdout.trim() : "");
-  if (branch === "" || branch === "HEAD") return null;
+  const branch = opts.branch ?? reviewed?.branch ?? null;
+  if (branch === null || branch === "" || branch === "HEAD") return null;
   const origin = yield* run("git", ["rev-parse", "--abbrev-ref", "origin/HEAD"], opts.cwd);
   const base = origin.code === 0 ? origin.stdout.trim().replace(/^origin\//, "") : "";
   if (base === "" ? branch === "main" || branch === "master" : branch === base) return null;

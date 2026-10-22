@@ -284,8 +284,8 @@ answers a `--request-id` it already has a receipt for from that receipt, before 
 is asked, so there it is the first Run whatever is attached. They are not
 an Input, so the Workflow's own input, and with it the execution, is the same either way.
 The operation's line in the Run's `operations.jsonl` names each file under `asked`, by the
-name the Run keeps it under and the path it came from. Chat's `start`, `followup` and
-`deliver` actions take the same paths as `attachments`
+name the Run keeps it under and the path it came from. Chat's `start`, `followup`,
+`take_offer` and `deliver` actions take the same paths as `attachments`
 ([ADR-0046](adr/0046-an-attachment-is-uploaded-once-and-belongs-to-the-run.md)).
 
 ### A workflow saved as a module
@@ -444,11 +444,16 @@ unusable one ends the Run with the reasons named.
 ### Tasks
 
 A **Task** is the work itself, and the Runs it takes: a plan, the implementation it chains
-into, the review of that. A fresh start about a branch an open Task's checkout has out —
-the branch it is placed on, or the one its diff target names; never merely the branch the
-caller is standing on — is that Task's, and opens in its workspace wherever it was started from. Any other fresh
-start is a new Task, and gets a herdr workspace of its own, created and never focused. The
-default branch names no one piece of work, so a start on it is always new. Chains,
+into, the review of that, the release of its merge request. A Task's work is what its Runs
+worked on, read from their records: each branch one was placed on, and each merge request
+one opened or was given. A fresh start about that work is that Task's, and opens in its
+workspace wherever it was started from: one whose diff target names one of the Task's merge
+requests, whatever state the Task is in, or one about a branch of an open Task's — the
+branch it is placed on, or the one its diff target names; never merely the branch the
+caller is standing on. Where several Tasks have it, the one whose Run had it first wins. A
+start that joins a Task this way has no parent. Any other fresh start is a new Task, and
+gets a herdr workspace of its own, created and never focused. The default branch names no
+one piece of work, so a start on it alone is always new. Chains,
 follow-ups and resumes stay in the Task they came from.
 
 Continuing anything else is explicit. `--task <id>` names one; `--continue-task` means the
@@ -972,8 +977,11 @@ it is chat obstructing the person it serves. What Collie wants of its own accord
 comes through these: the evaluator's proposals wait on the board, and chat asks in words.
 
 `collie_do` takes the board's own actions on a named run — `stop`, `resume`, `release`,
-`answer`, `deliver`, `followup` and `start` — through the same closed union, the same
-last-moment admission check and the same executors a confirmation runs. It also takes the
+`answer`, `deliver`, `followup`, `take_offer` and `start` — through the same closed union, the same
+last-moment admission check and the same executors a confirmation runs. `take_offer` takes
+one of a run's offers by the id `collie_run` lists, with what its own arguments take as
+`inputs`, as `collie run action` does: the offer is decided again as it is taken, one the
+run no longer makes is refused with why, and the answer names the run it started. It also takes the
 board's decisions, which are not actions on a run: `confirm` a waiting proposal by its id
 and the hash `collie_receipts` lists beside it, `decline` one by the same two, and `disposition` to record
 what became of a finished run's work. It answers a line per action saying what each one
@@ -1807,9 +1815,10 @@ again from its next occurrence after now, never catching up on what fell while i
 paused; resuming one that is not paused is `invalid_state`. `remove` removes it, and every
 Run it started stays. There is no edit: remove it and add it again.
 
-The host starts each occurrence as a fresh start is placed, in a Task of its own unless an
-open Task works its branch, under the request id `schedule:<name>:<occurrence>` and the
-Actor `schedule`, whose `schedule` field names the Schedule and the occurrence. It never
+The host starts each occurrence as a fresh start is placed, in a Task of its own unless it
+is about a Task's work — a merge request one of its Runs opened or was given, or a branch
+an open Task's Runs were placed on — under the request id `schedule:<name>:<occurrence>`
+and the Actor `schedule`, whose `schedule` field names the Schedule and the occurrence. It never
 starts a second Run while the last one it started is going, asking, parked or stalled; the
 occurrence that fell meanwhile starts as soon as that Run ends. Occurrences missed while no
 host ran start once, late, for the latest of them. While herdr does not answer, the start
@@ -2252,7 +2261,7 @@ what became of a Run's work; `steerAbout`, which has the evaluator turn free wor
 Run into actions and carries them out; `followUp`, which starts the follow-up the Run's
 Workflow declares; `propose`, which records what chat was asked for as a proposal and
 carries it out; `act`, which carries out the board's own actions on a Run (`stop`, `resume`,
-`release`, `hold`, `answer`, `deliver`, `followup`, `start`) with no proposal, anything else
+`release`, `hold`, `answer`, `deliver`, `followup`, `take_offer`, `start`) with no proposal, anything else
 being refused as `propose`'s; `reconcile`, which settles a proposal step nobody can account
 for; `settleDelivery`, which does the same for a message to an agent; `focus`, which focuses
 a Run's newest live agent, or only the `agent` it names, else its workspace, on the host's

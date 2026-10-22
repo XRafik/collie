@@ -1226,6 +1226,31 @@ test("a start carries the turn's files, uploaded to its Machine once and handed 
     }),
   ));
 
+test("an offer taken on a Run named with its Machine goes to that Machine's host with the bare id and the turn's files", () =>
+  withShot((dir) =>
+    Effect.gen(function* () {
+      const asked: Asked[] = [];
+      yield* callFlockTool(carrying(asked, dir), "collie_do", {
+        actions: [{ kind: "take_offer", run: "vm-mk:r-2", offer: "release" }],
+      }).pipe(Effect.provide(BunServices.layer));
+      expect(asked.find(({ op }) => op === "act")).toEqual({
+        machine: "vm-mk",
+        op: "act",
+        payload: {
+          actions: [
+            {
+              kind: "take_offer",
+              run: "r-2",
+              offer: "release",
+              attachments: [`/state/uploads/${shotSha}/shot.png`],
+            },
+          ],
+          request: expect.any(String),
+        },
+      });
+    }),
+  ));
+
 test("a file over 100 MB, here or on another Machine, is refused before it is read whole", () =>
   withShot((dir) =>
     Effect.gen(function* () {

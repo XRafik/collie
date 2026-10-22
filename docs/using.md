@@ -2108,7 +2108,7 @@ chosen for next time. When Pi does open it opens a new conversation on fresh Her
 there is no handoff, no generated switch summary and no transcript conversion.
 
 **What chat can do.** Ask it to hold a run, answer a Choice, steer an agent, stop or resume
-one, follow up a finished run, amend an Intent, start a workflow, fork a Workflow or a
+one, follow up a finished run, take one of a run's offers, amend an Intent, start a workflow, fork a Workflow or a
 Persona, change what every new Run begins with, close the panes an older release left, or
 upgrade this installation — it has the same set the CLI and the board have, through the
 same validation and the same executors.
@@ -2120,7 +2120,7 @@ Which of two things it does with one depends on **who wanted it**
   until you release it. Chat may do what you could do on the board yourself;
   pointing you at the UI for something it can plainly do is chat obstructing you. A hold
   is `collie_hold`; stopping, resuming, releasing, answering a question, steering an agent,
-  following up a finished run and starting one are `collie_do`, and so are the board's
+  following up a finished run, taking one of its offers and starting one are `collie_do`, and so are the board's
   decisions — saying yes or no to a proposal, and marking what became of finished work.
   Each says what it came to. Steering reaches a finished run's live agent too — "have
   builder merge and tag it" is a `deliver`, with a receipt, and comes back `applied` only
@@ -2408,8 +2408,8 @@ An `implement` Run starts one for you. Once its merge request is open, it asks *
 next?**: answer **Release** from the card's answer menu, Desktop, chat or `collie run answer
 <run> Release --decision next`, and the release runs as its child, in its checkout and held
 to its Checks, or **Finish** to end there. To release it later, a succeeded implement Run
-whose merge request is still open offers **Release** in the card's Actions, and through
-`collie run action`.
+whose merge request is still open offers **Release** in the card's Actions, through
+`collie run action`, and in chat: "release it" takes that offer.
 
 A reviewer's comment is taken up as it comes: the Run's agent fixes what holds and
 pushes, or disputes it, and Collie replies on the forge with the commit or the reason. An
@@ -2940,7 +2940,8 @@ by its id or label is saved as its checkout's path, because the workspace may be
 the time the Schedule fires.
 
 Each occurrence starts an ordinary Run, placed as a fresh start is — its own Task and
-workspace, unless an open Task already works its branch — and recorded as started by the
+workspace, unless it is about a Task's work: a merge request one of its Runs opened or
+was given, or a branch an open Task's Runs were placed on — and recorded as started by the
 Schedule. A Schedule fires only on the Machine it was added on, and only while that
 Machine's host runs: the host is a process a client starts, not a service, so a Machine
 that is off or whose host nothing has started fires nothing. When the host is next up, the

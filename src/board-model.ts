@@ -934,6 +934,7 @@ export const ASKED_KINDS = [
   "answer",
   "deliver",
   "followup",
+  "take_offer",
   "start",
 ] as const;
 
@@ -1618,6 +1619,20 @@ export const offerInput = (drawn: Schema.Json | null, typed: Readonly<Record<str
     input[name] = Option.isSome(parsed) ? parsed.value : text;
   }
   return input;
+};
+
+/** What was given an offer as text, each value read as `offerInput` reads it; nothing added. */
+export const givenOfferInput = (
+  drawn: Schema.Json | null,
+  given: Readonly<Record<string, string>>,
+): { [name: string]: Schema.Json } => {
+  const typed = offerInput(drawn, given);
+  return Object.fromEntries(
+    Object.entries(given).map(([name, text]) => [
+      name,
+      Object.hasOwn(typed, name) ? typed[name]! : text,
+    ]),
+  );
 };
 
 /** The fields an offer's arguments name, and whether each must be given. */

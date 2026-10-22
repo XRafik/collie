@@ -903,7 +903,7 @@ const carryOut = Effect.fn("FlockTools.do")(function* (flock: FlockChat, input: 
 });
 
 /** The kinds of action that carry files to the work they start or steer. */
-const CARRIES = new Set(["start", "followup", "deliver"]);
+const CARRIES = new Set(["start", "followup", "take_offer", "deliver"]);
 
 /** The action with the files it carries as paths on its Machine. */
 const withFiles = (flock: FlockChat, machine: Reached, action: JsonObject) => {
