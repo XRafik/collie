@@ -1322,6 +1322,35 @@ test("the first message's session waits for Claude Code's list, and opens on wha
   );
 });
 
+test("a harness chosen while a session waits for its list holds the conversation on the harness that opens", () => {
+  const listed = Deferred.makeUnsafe<ReadonlyArray<ListedModel>, string>();
+  const settings: HeldSettings = { current: { proactive: false, chatHarness: "claude" } };
+  const opened: string[] = [];
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings,
+      pi: fakePi(opened),
+      readers: { claude: Deferred.await(listed) },
+    },
+    answered,
+    ({ conversation, seen, dir }) =>
+      Effect.gen(function* () {
+        const turn = yield* Stream.runDrain(conversation.send("hello", null, false)).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.withLive(Effect.sleep("50 millis"));
+        settings.current = { ...settings.current, chatHarness: "pi" };
+        yield* Deferred.succeed(listed, []);
+        yield* Fiber.join(turn);
+        expect(seen.sessions).toHaveLength(1);
+        expect(opened).toEqual([]);
+        expect(yield* heldIn(dir)).toMatchObject({ harness: "claude" });
+      }),
+  );
+});
+
 test("a list slower than 20 seconds lets the first session open on Collie's table", () =>
   withChat(
     {

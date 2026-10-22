@@ -392,7 +392,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
       live.choice.effort === choice.effort
     )
       return live.running;
-    yield* switchHarness;
+    yield* switchHarness(choice.harness);
     yield* end;
     const scope = yield* Scope.make();
     live = { running: yield* start(driver, id, choice).pipe(Scope.provide(scope)), scope, choice };
@@ -409,15 +409,14 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   yield* Effect.addFinalizer(() => end);
 
   const turns = yield* Semaphore.make(1);
-  /** A new conversation on the set harness, where it is not the one the conversation is held on. */
-  const switchHarness = Effect.gen(function* () {
-    const harness = opts.chatHarness().harness;
+  /** A new conversation on `harness`, where it is not the one the conversation is held on. */
+  const switchHarness = Effect.fnUntraced(function* (harness: string) {
     if (harness === heldOn) return;
     yield* end;
     id = yield* crypto.randomUUIDv4;
     heldOn = harness;
     yield* remember;
-  }).pipe(Effect.orDie);
+  }, Effect.orDie);
 
   /** The session a turn is under way on, if one is. */
   let turning: Live | undefined;
