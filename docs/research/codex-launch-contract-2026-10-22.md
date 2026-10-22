@@ -99,6 +99,19 @@ The first repair's premise that current Codex creates its thread only after the 
 
 The comment that initialization can block on optional remote MCP setup is not established by the upstream 0.162.1 initialization implementation. It must not be treated as a proven explanation of these failed Runs. [Codex 0.162.1 initialize implementation](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/initialize_processor.rs#L56)
 
+### 6. The real canary found that a failed Run's stop never reached its start's server
+
+On mk-laptop, control Run `run-94cd763f` timed out at `agent start` under the installed 0.85.0. After `collie host restart --dir` onto the candidate (d9727839, which already carried finding 4's fix), `collie run stop` answered `applied` with `closed: []` and `left: []`. It sent no SIGTERM, and Codex 0.163.0's App Server and its whole session stayed up. The cause was in Collie, not Codex. A Run's stop halted only the agents in its launch records, and a launch is recorded only once `agent start` succeeds. The start's control record already named the server, its endpoint and pid, and the Run's log, so nothing was missing except a stop that looked there. [`Agents.halt`](../../src/agents.ts), [control records](../../src/compaction.ts)
+
+The stop now also reaches each control record that names the Run's log and a server, with no launch. It goes through the same proof of ownership, under the control lock. Four cases are covered against the stand-in:
+
+- A start still holding the lock when the stop lands is left to its launch.
+- A launch that then fails halts the Run's agents if a stop was requested, so that server is stopped too.
+- A record that cannot be read or parsed, and a records directory that cannot be listed, leave the stop unproven rather than empty.
+- Another Run's record is never touched.
+
+Codex 0.163.0's not-materialized refusal has the same text as 0.162.1's.
+
 ## Test gaps and required proof
 
 The current launch tests use a fake herdr boundary. The Codex control tests use a fake WebSocket server; the installed-harness checks are opt-in and inspect help and generated schemas. Those checks can remain green while the TUI and execution server receive different MCP configurations and herdr never finishes startup. [`test/agents.test.ts`](../../test/agents.test.ts#L1), [`test/compaction-codex.test.ts`](../../test/compaction-codex.test.ts#L406), [`test/support/codex-server.ts`](../../test/support/codex-server.ts#L1), [opt-in switch](../../test/support/live.ts#L12)

@@ -927,6 +927,148 @@ test("a start herdr never admits fails naming its agent, and the next launch und
     }),
   ));
 
+/** r1's start, which herdr never admits, leaving its server up with no launch recorded. */
+const neverAdmitted = Effect.gen(function* () {
+  yield* serve(unmaterialized());
+  const first = yield* session(
+    work.execute({ runId: "r1", input: { skip: false } }).pipe(Effect.result),
+    { herdr: neverAdmits() },
+  );
+  expect(first._tag).toBe("Failure");
+  return yield* serverPid();
+});
+
+test("the stop of a Run whose start herdr never admitted stops that start's server to quiet", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stranded = yield* neverAdmitted;
+      expect(yield* halted({ herdr: neverAdmits() })).toEqual({ stopped: [agent], left: [] });
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(stranded)).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
+    }),
+  ));
+
+test("another Run's stop leaves alone a start herdr never admitted", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stranded = yield* neverAdmitted;
+      const other = yield* session(Agents.pipe(Effect.flatMap((agents) => agents.halt("r2"))), {
+        herdr: neverAdmits(),
+      });
+      expect(other).toEqual({ stopped: [], left: [] });
+      expect(yield* signals()).toEqual([]);
+      expect(alive(stranded)).toBe(true);
+      expect(yield* recorded()).not.toBeNull();
+      kill(stranded);
+    }),
+  ));
+
+test("a stop of a start herdr never admitted that cannot remove its record says so, and keeps it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* neverAdmitted;
+      const records = `${rig.root}/state/compaction`;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.chmod(records, 0o555).pipe(Effect.orDie);
+      const halt = yield* halted({ herdr: neverAdmits() }).pipe(
+        Effect.ensuring(fs.chmod(records, 0o755).pipe(Effect.orDie)),
+      );
+      expect(halt.stopped).toEqual([]);
+      expect(halt.left).toHaveLength(1);
+      expect(halt.left[0]).toContain(`${agent} could not be stopped`);
+      expect(yield* recorded()).not.toBeNull();
+    }),
+  ));
+
+const unreadable: ReadonlyArray<
+  readonly [string, Effect.Effect<() => Effect.Effect<void>, never, FileSystem.FileSystem>]
+> = [
+  [
+    "a record of this Run's that no longer parses",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const text = yield* fs.readFileString(control()).pipe(Effect.orDie);
+      yield* fs
+        .writeFileString(control(), text.slice(0, text.indexOf('"stop"')))
+        .pipe(Effect.orDie);
+      return () => Effect.void;
+    }),
+  ],
+  [
+    "a record that cannot be read",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.chmod(control(), 0o000).pipe(Effect.orDie);
+      return () => fs.chmod(control(), 0o644).pipe(Effect.orDie);
+    }),
+  ],
+  [
+    "a directory of records that cannot be read",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const records = `${rig.root}/state/compaction`;
+      yield* fs.chmod(records, 0o000).pipe(Effect.orDie);
+      return () => fs.chmod(records, 0o755).pipe(Effect.orDie);
+    }),
+  ],
+];
+for (const [what, spoil] of unreadable)
+  test(`a stop that meets ${what} does not say it stopped everything`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const stranded = yield* neverAdmitted;
+        const restore = yield* spoil;
+        const halt = yield* halted({ herdr: neverAdmits() }).pipe(
+          Effect.ensuring(Effect.suspend(restore)),
+        );
+        expect(halt.stopped).toEqual([]);
+        expect(halt.left).toHaveLength(1);
+        expect(yield* signals()).toEqual([]);
+        expect(alive(stranded)).toBe(true);
+        kill(stranded);
+      }),
+    ));
+
+/** herdr refusing a start that a Run's stop lands in, as that stop reaches the Run's agents. */
+class StoppedWhileStarting extends FakeHerdr {
+  halts: Array<{ readonly stopped: ReadonlyArray<string>; readonly left: ReadonlyArray<string> }> =
+    [];
+  constructor() {
+    super(
+      rig.pluginEnv({
+        FAKE_HERDR_FAIL: asJson({ "agent start": "timed out waiting for agent startup" }),
+      }),
+    );
+  }
+  override agentStart(options: Parameters<FakeHerdr["agentStart"]>[0]) {
+    return stopFlag(true).pipe(
+      Effect.andThen(halted({ herdr: neverAdmits() })),
+      Effect.tap((halt) => Effect.sync(() => this.halts.push(halt))),
+      Effect.andThen(super.agentStart(options)),
+    );
+  }
+}
+
+test("a stop that lands in a start herdr then refuses stops that start's server once it fails", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* serve(unmaterialized());
+      const herdr = new StoppedWhileStarting();
+      const first = yield* session(
+        work.execute({ runId: "r1", input: { skip: false } }).pipe(Effect.result),
+        { herdr },
+      );
+      expect(first._tag).toBe("Failure");
+      expect(herdr.halts).toEqual([{ stopped: [], left: [] }]);
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(yield* serverPid())).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
+    }),
+  ));
+
 test("a Codex agent that never got a user message stops to quiet", () =>
   runEffect(
     Effect.gen(function* () {

@@ -42,7 +42,10 @@ import {
   controlDir,
   installControls,
   NotQuiet,
+  notStopped,
+  serversOfRun,
   STOP_WAIT_MS,
+  stopUnlaunched,
   withControlLock,
   type CompactionDeps,
   type CompactionPorts,
@@ -790,6 +793,13 @@ export const agentWork = <
           agents.launch(next, (why) => host.parked(work.runId, why)),
           host,
           work.runId,
+        ).pipe(
+          // A stop that landed while a start failed still reaches the server it left.
+          Effect.tapError(() =>
+            Effect.gen(function* () {
+              if (yield* host.stopRequested(runId)) yield* haltLate;
+            }),
+          ),
         );
         // A stop that landed while it started: that agent is stopped too, and the work waits.
         if (yield* host.stopRequested(runId)) {
@@ -1799,7 +1809,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             agent,
             harness: adapter.id,
             cwd: ask.cwd,
-            runLog: `${host.dir}/agents/${ask.runId}/agents.log`,
+            runLog: `${dirFor(ask.runId)}/agents.log`,
           },
           env,
           mcp.args,
@@ -2546,17 +2556,42 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
   const halt = (runId: string, why = "its Run was stopped") =>
     under(
       Effect.gen(function* () {
-        const launches = yield* launchesOf(runId);
-        if (launches.length === 0) return { stopped: [], left: [] };
-        const listing = yield* host.herdr.agentList().pipe(Effect.result);
-        if (listing._tag === "Failure") {
-          return {
-            stopped: [],
-            left: [`herdr cannot say which agents it has (${reason(listing.failure)})`],
-          };
-        }
         const stopped: string[] = [];
         const left: string[] = [];
+        // A start herdr never admitted has a server but no launch.
+        const launchedBefore = new Set((yield* launchesOf(runId)).map((one) => one.agent));
+        const found = yield* serversOfRun(host.env.stateDir, `${dirFor(runId)}/agents.log`).pipe(
+          Effect.catch((cause) =>
+            Effect.succeed({
+              servers: [],
+              unread: [`its agents' control records cannot be listed (${reason(cause)})`],
+            }),
+          ),
+        );
+        left.push(...found.unread);
+        for (const name of found.servers.filter((one) => !launchedBefore.has(one))) {
+          const reached = yield* stopUnlaunched(
+            compactionDeps(host, runId),
+            name,
+            host.stopMs,
+          ).pipe(
+            // A start still holding the lock is halted by its launch, once it has ended.
+            Effect.catchTag("ControlsInUse", () => Effect.succeed(null)),
+            Effect.result,
+          );
+          if (reached._tag === "Failure")
+            left.push(`${name} could not be stopped (${reason(reached.failure)})`);
+          else if (reached.success?.state === "quiet") stopped.push(name);
+          else if (reached.success !== null)
+            left.push(notStopped(name, reached.success, reached.success.target));
+        }
+        const launches = yield* launchesOf(runId);
+        if (launches.length === 0) return yield* reported(runId, stopped, left);
+        const listing = yield* host.herdr.agentList().pipe(Effect.result);
+        if (listing._tag === "Failure") {
+          left.push(`herdr cannot say which agents it has (${reason(listing.failure)})`);
+          return yield* reported(runId, stopped, left);
+        }
         // Every agent it launched, listed or not: a closed pane is not a stopped server.
         for (const name of new Set(launches.map((launched) => launched.agent))) {
           const ours = launches.findLast((launched) => launched.agent === name)!;
@@ -2574,11 +2609,16 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             if (ended.success.ended) stopped.push(name);
           } else left.push(ended.success.reason);
         }
-        if (stopped.length > 0) yield* log(runId, `stopped ${stopped.join(", ")}`);
-        if (left.length > 0) yield* log(runId, `not stopped: ${left.join("; ")}`);
-        return { stopped, left };
+        return yield* reported(runId, stopped, left);
       }),
     );
+
+  const reported = (runId: string, stopped: string[], left: string[]) =>
+    Effect.gen(function* () {
+      if (stopped.length > 0) yield* log(runId, `stopped ${stopped.join(", ")}`);
+      if (left.length > 0) yield* log(runId, `not stopped: ${left.join("; ")}`);
+      return { stopped, left };
+    });
 
   /** Each launch, and whether its Output is written yet: which step is active. */
   const candidatesOf = (runId: string) =>
