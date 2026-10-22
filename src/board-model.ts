@@ -1621,6 +1621,20 @@ export const offerInput = (drawn: Schema.Json | null, typed: Readonly<Record<str
   return input;
 };
 
+/** What was given an offer as text, each value read as `offerInput` reads it; nothing added. */
+export const givenOfferInput = (
+  drawn: Schema.Json | null,
+  given: Readonly<Record<string, string>>,
+): { [name: string]: Schema.Json } => {
+  const typed = offerInput(drawn, given);
+  return Object.fromEntries(
+    Object.entries(given).map(([name, text]) => [
+      name,
+      Object.hasOwn(typed, name) ? typed[name]! : text,
+    ]),
+  );
+};
+
 /** The fields an offer's arguments name, and whether each must be given. */
 export const offerFields = (drawn: Schema.Json | null) => {
   const takes = decodeArguments(drawn);

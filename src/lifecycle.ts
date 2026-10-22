@@ -66,7 +66,7 @@ import {
   type TaskView,
   type NewsReceipt,
   type Metrics,
-  offerInput,
+  givenOfferInput,
 } from "./board-model";
 import type { Action } from "./actions";
 import { NEEDS_INPUT, REFUSED_INPUT, runDir, type Given, type RunView } from "./engine";
@@ -1274,12 +1274,9 @@ export const invokeTypedOffer = (
 ): Effect.Effect<OpResult, never, Client> =>
   Effect.flatMap(offersOf(env, options.runId), (listed) => {
     const offer = "ok" in listed ? undefined : listed.find((one) => one.id === options.offer);
-    const typed = offer === undefined ? {} : offerInput(offer.arguments, options.input);
     return invokeOffer(env, {
       ...options,
-      input: Object.fromEntries(
-        Object.entries(options.input).map(([name, text]) => [name, typed[name] ?? text]),
-      ),
+      input: givenOfferInput(offer?.arguments ?? null, options.input),
     });
   });
 
