@@ -632,8 +632,16 @@ export const DesktopRpcs = RpcGroup.make(
   /** The current conversation, as far as it has gone. */
   Rpc.make("transcript", { success: Schema.Array(ChatMessage) }),
   Rpc.make("conversations", { success: Conversations }),
-  /** Makes that conversation the current one, or a fresh one; the one before it ends. */
-  Rpc.make("reopen", { payload: { session: Schema.NullOr(Schema.String) } }),
+  /**
+   * Makes that earlier conversation the current one, or a fresh one; the one before it ends.
+   * One on another harness sets that harness, or is refused and changes nothing.
+   */
+  Rpc.make("reopen", {
+    payload: {
+      earlier: Schema.NullOr(Schema.Struct({ session: Schema.String, harness: Schema.String })),
+    },
+    error: ActionFailed,
+  }),
   /** Opens the chat in its own window, and succeeds when that window is closed. */
   Rpc.make("popOut"),
   /** Closes the chat's own window, which puts the chat back beside the board. */
@@ -641,7 +649,8 @@ export const DesktopRpcs = RpcGroup.make(
   /** When the Flock chat starts and ends a turn of Desktop's own. */
   Rpc.make("conversationChanges", { success: Schema.String, stream: true }),
   Rpc.make("desktopTurns", { success: DesktopTurn, stream: true }),
-  Rpc.make("settings", { success: DesktopSettings }),
+  /** Desktop's own settings, and again after every saved change. */
+  Rpc.make("settings", { success: DesktopSettings, stream: true }),
   /** How the board's window is drawn, again whenever its zoom is decided again. */
   Rpc.make("drawn", { success: Drawn, stream: true }),
   /** What the settings are now, or why the change was refused and nothing kept. */

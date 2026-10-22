@@ -1,9 +1,9 @@
 // What the human set in Desktop, kept on this computer beside the Flock chat's session.
 
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema, Semaphore, SubscriptionRef } from "effect";
 import { resolveChoice } from "../../../src/harness-choice";
 import { isString } from "../../../src/schema";
-import { DesktopSettings, type DesktopSettingsChange } from "../shared/flock";
+import { ActionFailed, DesktopSettings, type DesktopSettingsChange } from "../shared/flock";
 import { CHAT_HARNESSES, DEFAULT_CHAT_HARNESS, type FlockSettings } from "../shared/flock-settings";
 
 const SettingsFile = Schema.fromJsonString(DesktopSettings);
@@ -98,3 +98,42 @@ export const changeSettings = (
   const checked = chatChoice(changed, flock);
   return checked.ok ? changed : { refused: checked.problem };
 };
+
+/**
+ * Desktop's settings, read once and changed only here: each change is checked, saved, then
+ * published to every window and to the chat.
+ */
+export const heldSettings = Effect.fn("Settings.held")(function* (
+  dir: string,
+  flock: () => FlockSettings,
+) {
+  const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+  const held = yield* SubscriptionRef.make(yield* readSettings(dir));
+  const one = Semaphore.makeUnsafe(1);
+  const save = (change: DesktopSettingsChange) =>
+    Effect.gen(function* () {
+      const merged = changeSettings(SubscriptionRef.getUnsafe(held), flock(), change);
+      if ("refused" in merged) return yield* new ActionFailed({ reason: merged.refused });
+      yield* writeSettings(dir, merged).pipe(
+        Effect.mapError((error) => new ActionFailed({ reason: error.message })),
+      );
+      yield* SubscriptionRef.set(held, merged);
+      return merged;
+    }).pipe(one.withPermits(1), Effect.provideContext(services));
+  return {
+    current: () => SubscriptionRef.getUnsafe(held),
+    changes: SubscriptionRef.changes(held),
+    save,
+    /** The chat's harness, model or effort, trimmed; why it was refused, or null once saved. */
+    setChatHarness: (set: { harness?: string; model?: string; effort?: string }) => {
+      const change: Partial<Record<"chatHarness" | "chatModel" | "chatEffort", string>> = {};
+      if (set.harness !== undefined) change.chatHarness = set.harness;
+      if (set.model !== undefined) change.chatModel = set.model.trim();
+      if (set.effort !== undefined) change.chatEffort = set.effort.trim();
+      return save(change).pipe(
+        Effect.as(null),
+        Effect.catch(({ reason }) => Effect.succeed(reason)),
+      );
+    },
+  };
+});

@@ -4,7 +4,8 @@ import type { QueuedMessage } from "@tanstack/ai-client";
 import { DateTime, Option, type Schema } from "effect";
 import { isString } from "../../../../src/schema";
 import { attachedIn, dropKind, pastedImages, uriListPaths } from "../../../src/shared/attachments";
-import { aboutLine, DESKTOP_SAID, questionsOf } from "../../../src/shared/chat-view";
+import { aboutLine, DESKTOP_SAID, earlierMenu, questionsOf } from "../../../src/shared/chat-view";
+import { DEFAULT_CHAT_HARNESS } from "../../../src/shared/flock-settings";
 
 defineProps<{ alone?: boolean }>();
 const emit = defineEmits<{ popOut: []; collapse: [] }>();
@@ -115,21 +116,36 @@ const dropped = (event: DragEvent) => {
 /** The files a message part is, where it is one. */
 const attachedOf = (part: { readonly type: string }) => Option.getOrNull(attachedIn(part));
 
-const earlier = ref<DropdownMenuItem[]>([]);
-const listEarlier = async (open: boolean) => {
-  if (!open) return;
+const { desktopSettings } = useDesktopSettings();
+/** Makes that conversation current, or a fresh one; a refusal is told, and nothing changes. */
+const open = async (earlier: { session: string; harness: string } | null) => {
+  const refused = await reopen(earlier);
+  if (refused !== null) toast.add({ title: refused, color: "error" });
+};
+const earlier = ref<DropdownMenuItem[][]>([]);
+const listEarlier = async (opened: boolean) => {
+  if (!opened) return;
   const listed = await conversations();
-  earlier.value =
-    listed === null || listed.earlier.length === 0
-      ? [{ label: "No earlier conversations", disabled: true }]
-      : listed.earlier.map(({ session, title, at }) => ({
-          label: title,
-          description: DateTime.format(DateTime.makeUnsafe(at), {
-            dateStyle: "medium",
-            timeStyle: "short",
-          }),
-          onSelect: () => void reopen(session),
-        }));
+  if (listed === null || listed.earlier.length === 0) {
+    earlier.value = [[{ label: "No earlier conversations", disabled: true }]];
+    return;
+  }
+  const { entries, moves } = earlierMenu(
+    listed,
+    desktopSettings.value.chatHarness ?? DEFAULT_CHAT_HARNESS,
+  );
+  earlier.value = [
+    entries.map(({ session, harness, title, at, label }) => ({
+      label: title,
+      description: DateTime.format(DateTime.makeUnsafe(at), {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }),
+      harness: label,
+      onSelect: () => void open({ session, harness }),
+    })),
+    ...(moves === null ? [] : [[{ type: "label" as const, label: moves }]]),
+  ];
 };
 
 const outputOf = (output: Schema.Json | undefined) =>
@@ -160,7 +176,7 @@ const queuedText = ({ content }: QueuedMessage) => {
         aria-label="Start fresh"
         title="Start fresh"
         data-testid="chat-fresh"
-        @click="reopen(null)"
+        @click="open(null)"
       />
       <UButton
         :icon="proactive ? 'i-lucide-bell' : 'i-lucide-bell-off'"
@@ -173,6 +189,18 @@ const queuedText = ({ content }: QueuedMessage) => {
         @click="setProactive(!proactive)"
       />
       <UDropdownMenu :items="earlier" :content="{ align: 'end' }" @update:open="listEarlier">
+        <template #item-description="{ item }">
+          <span class="flex items-center gap-1.5">
+            {{ item.description }}
+            <UBadge
+              v-if="item.harness"
+              size="sm"
+              color="neutral"
+              variant="outline"
+              :label="item.harness"
+            />
+          </span>
+        </template>
         <UButton
           icon="i-lucide-history"
           color="neutral"

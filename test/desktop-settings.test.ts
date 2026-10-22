@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import { Effect, FileSystem, SubscriptionRef } from "effect";
+import { Effect, Fiber, FileSystem, Stream, SubscriptionRef } from "effect";
 import { HostRefused, type SharedSetting, type SharedSettings } from "../src/board-model";
 import {
   desktopChange,
@@ -24,6 +24,7 @@ import { settingStored } from "../src/settings";
 import {
   applyChange,
   changeSettings,
+  heldSettings,
   readSettings,
   writeSettings,
 } from "../desktop/src/bun/settings";
@@ -654,3 +655,34 @@ test("a change of the Flock chat's model keeps its effort", () => {
     }),
   ).toEqual({ proactive: true, chatEffort: "max" });
 });
+
+test("Desktop's settings are held in one place: a change saved as the chat's tool saves it reaches every subscriber, and a refused one reaches none", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
+      yield* writeSettings(dir, { proactive: true, chatModel: "sonnet" });
+      const held = yield* heldSettings(dir, () => NO_FLOCK_SETTINGS);
+      const told = (count: number) =>
+        held.changes.pipe(Stream.take(count), Stream.runCollect, Effect.forkChild);
+      const board = yield* told(3);
+      const chat = yield* told(3);
+      yield* Effect.yieldNow;
+
+      const refused = yield* held.setChatHarness({ effort: "off" });
+      expect(refused).toContain('"off" is not an effort claude takes');
+      expect(yield* held.setChatHarness({ harness: "pi", effort: " off " })).toBeNull();
+      yield* held.save({ proactive: false });
+
+      const last = { proactive: false, chatHarness: "pi", chatEffort: "off" };
+      const published = [
+        { proactive: true, chatModel: "sonnet" },
+        { proactive: true, chatHarness: "pi", chatEffort: "off" },
+        last,
+      ];
+      expect(yield* Fiber.join(board)).toEqual(published);
+      expect(yield* Fiber.join(chat)).toEqual(published);
+      expect(held.current()).toEqual(last);
+      expect(yield* readSettings(dir)).toEqual(last);
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));

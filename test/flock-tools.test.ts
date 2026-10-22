@@ -939,7 +939,7 @@ test("the Machine rule is read back as saved, and replaced with what the human a
     }),
   ));
 
-test("the chat reads what it runs on, and changes its model with Settings' checks, after this turn", () =>
+test("the chat reads what it runs on, and changes its model with Settings' checks, from the next message", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       chat = { proactive: true };
@@ -947,7 +947,7 @@ test("the chat reads what it runs on, and changes its model with Settings' check
         "The Flock chat is set to claude, with no model set: the harness's own default, with no effort set: the harness's own default. This conversation runs on claude/opus now.",
       );
       expect(yield* call([], "collie_chat_harness", { model: "sonnet" })).toBe(
-        "The Flock chat is now set to claude, model sonnet, with no effort set: the harness's own default. It applies once this turn has ended.",
+        "The Flock chat is now set to claude, model sonnet, with no effort set: the harness's own default. It applies with the next message.",
       );
       expect(chat.chatModel).toBe("sonnet");
       const refused = yield* call([], "collie_chat_harness", { model: "gpt-6.1-sol" });
@@ -958,7 +958,7 @@ test("the chat reads what it runs on, and changes its model with Settings' check
       );
       expect(chat).toEqual({ proactive: true, chatModel: "sonnet" });
       expect(yield* call([], "collie_chat_harness", { model: "" })).toBe(
-        "The Flock chat is now set to claude, with no model set: the harness's own default, with no effort set: the harness's own default. It applies once this turn has ended.",
+        "The Flock chat is now set to claude, with no model set: the harness's own default, with no effort set: the harness's own default. It applies with the next message.",
       );
       expect(chat).toEqual({ proactive: true });
     }),
@@ -972,7 +972,7 @@ test("the chat reads, sets and unsets its effort with Settings' checks, and a re
         "claude, model sonnet, with no effort set: the harness's own default.",
       );
       expect(yield* call([], "collie_chat_harness", { effort: "high" })).toBe(
-        "The Flock chat is now set to claude, model sonnet, at effort high. It applies once this turn has ended.",
+        "The Flock chat is now set to claude, model sonnet, at effort high. It applies with the next message.",
       );
       expect(chat).toEqual({ proactive: true, chatModel: "sonnet", chatEffort: "high" });
       expect(yield* call([], "collie_chat_harness", {})).toContain(
@@ -985,7 +985,7 @@ test("the chat reads, sets and unsets its effort with Settings' checks, and a re
       expect(refused).toContain("Nothing was changed.");
       expect(chat).toEqual({ proactive: true, chatModel: "sonnet", chatEffort: "high" });
       expect(yield* call([], "collie_chat_harness", { effort: "" })).toContain(
-        "with no effort set: the harness's own default. It applies once this turn has ended.",
+        "with no effort set: the harness's own default. It applies with the next message.",
       );
       expect(chat).toEqual({ proactive: true, chatModel: "sonnet" });
     }),

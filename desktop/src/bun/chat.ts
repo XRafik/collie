@@ -87,14 +87,19 @@ export interface FlockConversation {
   readonly answer: (toolCallId: string, answers: Answers) => Effect.Effect<void>;
   readonly transcript: Effect.Effect<ReadonlyArray<ChatMessage>>;
   readonly conversations: Effect.Effect<Conversations>;
-  /** Ends the current session and makes that one current, or a fresh one. */
-  readonly reopen: (session: string | null) => Effect.Effect<void>;
+  /**
+   * Ends the current session and makes that earlier conversation current, or a fresh one on
+   * the set harness. One on another harness sets that harness first: why that was refused,
+   * leaving the current conversation, or null.
+   */
+  readonly reopen: (
+    earlier: { readonly session: string; readonly harness: string } | null,
+  ) => Effect.Effect<string | null>;
   /** Something changed on a board: News may be waiting, worth a turn of Desktop's own. */
   readonly nudge: Effect.Effect<void>;
   /** When a turn of Desktop's own starts and ends. */
   readonly desktopTurns: Stream.Stream<DesktopTurn>;
   readonly changed: Stream.Stream<string>;
-  readonly refresh: Effect.Effect<void>;
 }
 
 /** A turn of Desktop's own, recorded as usage on this computer: data, never a limit. */
@@ -212,7 +217,8 @@ export const untilStarted = <A, E, R>(start: Effect.Effect<A, E, R>) =>
 /**
  * The current conversation's session, started by its first message and warm from then
  * until the scope closes, and never more than one. A message after the chat's model changed
- * ends the warm session and resumes the same conversation on the new model.
+ * ends the warm session and resumes the same conversation on the new model; one after its
+ * harness changed starts a new conversation on that harness.
  */
 export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   readonly drivers: (
@@ -384,6 +390,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   yield* Effect.addFinalizer(() => end);
 
   const turns = yield* Semaphore.make(1);
+  /** A new conversation on the set harness, where it is not the one the conversation is held on. */
   const switchHarness = Effect.gen(function* () {
     const harness = opts.chatHarness().harness;
     if (harness === heldOn) return;
@@ -392,7 +399,6 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
     heldOn = harness;
     yield* remember;
   }).pipe(Effect.orDie);
-  const refresh = turns.withPermits(1)(switchHarness).pipe(Effect.orDie);
 
   /** The session a turn is under way on, if one is. */
   let turning: Live | undefined;
@@ -553,31 +559,46 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
       }),
     transcript: Effect.suspend(() => drivers[heldOn]?.transcript(id) ?? Effect.succeed([])),
     conversations: Effect.suspend(() =>
-      (drivers[heldOn]?.earlier(HISTORY + 1) ?? Effect.succeed([])).pipe(
-        Effect.map((sessions) => ({
+      Effect.forEach(
+        Object.entries(drivers).filter(([, driver]) => driver.installed),
+        ([harness, driver]) =>
+          driver
+            .earlier(HISTORY + 1)
+            .pipe(Effect.map((sessions) => sessions.map((one) => ({ ...one, harness })))),
+        { concurrency: "unbounded" },
+      ).pipe(
+        Effect.map((histories) => ({
           current: id,
-          earlier: sessions.filter(({ session }) => session !== id).slice(0, HISTORY),
+          earlier: histories
+            .flat()
+            .filter(({ session }) => session !== id)
+            .sort((a, b) => b.at - a.at)
+            .slice(0, HISTORY),
         })),
       ),
     ),
     // A turn under way is interrupted, and the session it ran on ends before the next starts.
-    reopen: (session) =>
+    reopen: (earlier) =>
       Effect.gen(function* () {
         if (turning !== undefined) yield* turning.session.interrupt;
-        yield* turns.withPermits(1)(
+        return yield* turns.withPermits(1)(
           Effect.gen(function* () {
+            const set = opts.chatHarness().harness;
+            if (earlier !== null && earlier.harness !== set) {
+              const refused = yield* opts.setChatHarness({ harness: earlier.harness });
+              if (refused !== null) return refused;
+            }
             yield* end;
-            id = session ?? (yield* crypto.randomUUIDv4);
-            heldOn = opts.chatHarness().harness;
+            id = earlier?.session ?? (yield* crypto.randomUUIDv4);
+            heldOn = earlier?.harness ?? set;
             yield* remember;
+            return null;
           }),
         );
       }).pipe(Effect.orDie),
     nudge,
     desktopTurns: SubscriptionRef.changes(desktopTurns),
     changed: SubscriptionRef.changes(changed),
-    refresh,
   };
-  yield* refresh;
   return conversation;
 });

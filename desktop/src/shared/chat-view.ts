@@ -4,6 +4,7 @@
 import { Option, Schema } from "effect";
 import { isString } from "../../../src/schema";
 import { AttachmentPart } from "./attachments";
+import { harnessLabel } from "./flock-settings";
 
 /** The board's card a message goes with, named as the chat's tools name it. */
 export const About = Schema.Struct({
@@ -43,14 +44,37 @@ export type DesktopTurn = typeof DesktopTurn.Type;
 export const Answers = Schema.Record(Schema.String, Schema.String);
 export type Answers = typeof Answers.Type;
 
-/** The current conversation and the earlier ones that can be reopened, newest first. */
+/** A conversation one harness had before the current one. */
+export const Earlier = Schema.Struct({
+  session: Schema.String,
+  title: Schema.String,
+  at: Schema.Number,
+});
+export type Earlier = typeof Earlier.Type;
+
+/** The current conversation and the earlier ones of every harness, newest first. */
 export const Conversations = Schema.Struct({
   current: Schema.String,
-  earlier: Schema.Array(
-    Schema.Struct({ session: Schema.String, title: Schema.String, at: Schema.Number }),
-  ),
+  earlier: Schema.Array(Schema.Struct({ ...Earlier.fields, harness: Schema.String })),
 });
 export type Conversations = typeof Conversations.Type;
+
+/** The Earlier conversations menu: each entry with its harness's name, and where opening one moves the chat. */
+export const earlierMenu = ({ earlier }: Conversations, set: string) => {
+  const others = [...new Set(earlier.map(({ harness }) => harness))].filter(
+    (harness) => harness !== set,
+  );
+  return {
+    entries: earlier.map((entry) => ({ ...entry, label: harnessLabel(entry.harness) })),
+    moves:
+      others.length === 0
+        ? null
+        : others
+            .map(harnessLabel)
+            .map((label) => `Opening a ${label} conversation moves the chat to ${label}.`)
+            .join(" "),
+  };
+};
 
 const Named = Schema.Struct({
   run: Schema.optionalKey(Schema.String),

@@ -1,7 +1,13 @@
 // What the Flock chat's window says of a tool call and of the card a message is about.
 
 import { expect, test } from "bun:test";
-import { aboutLine, aboutNote, fromAboutNote, toolRow } from "../desktop/src/shared/chat-view";
+import {
+  aboutLine,
+  aboutNote,
+  earlierMenu,
+  fromAboutNote,
+  toolRow,
+} from "../desktop/src/shared/chat-view";
 
 test("a tool call is its tool, the Machine it reached and what it was asked", () => {
   expect(
@@ -71,4 +77,20 @@ test("Desktop's note of the card a message is about reads back as that card, and
   expect(fromAboutNote(`${note}\nand more`)).toBeNull();
   expect(fromAboutNote(note.replace('"t-1"', "1"))).toBeNull();
   expect(fromAboutNote(note.split("\n")[1]!)).toBeNull();
+});
+
+test("Earlier conversations names each entry's harness, and says opening one on another harness moves the chat there", () => {
+  const claude = { session: "c-1", title: "Release blockers", at: 2, harness: "claude" };
+  const pi = { session: "p-1", title: "Why did renovate fail?", at: 1, harness: "pi" };
+  expect(earlierMenu({ current: "c-0", earlier: [claude, pi] }, "claude")).toEqual({
+    entries: [
+      { ...claude, label: "Claude Code" },
+      { ...pi, label: "Pi" },
+    ],
+    moves: "Opening a Pi conversation moves the chat to Pi.",
+  });
+  expect(earlierMenu({ current: "c-0", earlier: [claude, pi] }, "pi").moves).toBe(
+    "Opening a Claude Code conversation moves the chat to Claude Code.",
+  );
+  expect(earlierMenu({ current: "c-0", earlier: [claude] }, "claude").moves).toBeNull();
 });

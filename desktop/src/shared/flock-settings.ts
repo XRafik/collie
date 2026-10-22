@@ -64,6 +64,12 @@ interface DesktopSetting extends Setting {
 /** The harnesses the Flock chat has a driver for. */
 export const CHAT_HARNESSES = ["claude", "pi"];
 export const DEFAULT_CHAT_HARNESS = "claude";
+const HARNESS_LABELS = new Map([
+  ["claude", "Claude Code"],
+  ["pi", "Pi"],
+]);
+/** A harness as the human reads it. */
+export const harnessLabel = (harness: string) => HARNESS_LABELS.get(harness) ?? harness;
 
 const DESKTOP_SETTINGS: ReadonlyArray<DesktopSetting> = [
   {

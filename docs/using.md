@@ -1490,6 +1490,8 @@ first** are this computer's, like the bell in the chat's header. The harness off
 `claude` and `pi`; the model is a one-line field, with **Unset: opus** for Claude and
 **Unset: pi's own default** for Pi. It is checked as a Run's model is, including
 **More Claude Code models** and Pi's `provider/model` form, and a refusal saves nothing.
+A change to this computer's settings reaches every window at once, wherever it was made:
+Settings, the bell and both chat windows show it as soon as it is saved.
 The groups, names, descriptions and
 units live with each key in the one list of settings (`src/settings.ts`) that the TUI's
 Settings reads too, so a new setting shows up in both, except those for this computer only,
@@ -1844,10 +1846,15 @@ configured thinking level when its model is unset too, else at Pi's own default.
 
 A model or effort change waits for the turn under way to end, then the next message
 continues the same conversation on it. A model change keeps the effort. A harness change
-waits too, then starts a fresh conversation and clears its model and effort; both chat
-windows reload it. Earlier conversations lists the current harness's history. Switching
-back to Claude shows its own conversations again. You can ask the chat to read or change
-these settings through `collie_chat_harness`, with the same checks as Settings.
+clears the model and effort and waits for the next message: the conversation, its
+transcript and the reply under way stay on screen, on the harness they started on, until
+you or Desktop, about News, send one. That message starts a new conversation on the new
+harness. Earlier conversations lists every installed harness's history, newest first, each
+entry named with its harness. Opening one from another harness than the one set switches
+the chat to that harness, clearing the model and effort, and continues that very
+conversation; the menu's last line says so. **Start fresh** stays on the harness set. You
+can ask the chat to read or change these settings through `collie_chat_harness`, with the
+same checks as Settings.
 
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or

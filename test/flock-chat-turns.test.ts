@@ -12,7 +12,7 @@ import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver"
 import type { AguiEvent } from "../desktop/src/shared/agui";
 import type { TurnCost } from "../desktop/src/bun/driver";
 import type { ChatDriver, DriverContext } from "../desktop/src/bun/driver";
-import { chatChoice } from "../desktop/src/bun/settings";
+import { changeSettings, chatChoice } from "../desktop/src/bun/settings";
 import { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import type { SdkMessage } from "../desktop/src/bun/agui";
@@ -23,7 +23,7 @@ import {
   type FlockChat,
 } from "../desktop/src/bun/flock-tools";
 import { listing } from "../desktop/src/shared/attachments";
-import { aboutNote, DESKTOP_SAID } from "../desktop/src/shared/chat-view";
+import { aboutNote, DESKTOP_SAID, type Earlier } from "../desktop/src/shared/chat-view";
 import { isString } from "../src/schema";
 
 type Item = (typeof NewsBatch.Type)["items"][number];
@@ -220,6 +220,14 @@ const failingFirst = (claude: ClaudeCode<string>, failed: number): ClaudeCode<st
   };
 };
 
+/** What Desktop's Settings have, which a test may change between turns. */
+interface HeldSettings {
+  current: DesktopSettings;
+}
+
+/** Each conversation Claude Code has, by id. */
+type Transcripts = ReadonlyArray<readonly [string, unknown[]]>;
+
 const withChat = <A, E>(
   opts: {
     readonly items: ReadonlyArray<Item>;
@@ -229,12 +237,14 @@ const withChat = <A, E>(
     readonly declared?: Declaration[];
     readonly failedStarts?: number;
     /** What Desktop's Settings have, which a test may change between turns. */
-    readonly settings?: { current: DesktopSettings };
+    readonly settings?: HeldSettings;
     readonly pi?: (context: DriverContext) => ChatDriver;
+    /** Every driver, in place of the scripted Claude Code and `pi`. */
+    readonly drivers?: ScriptedDrivers;
     readonly gate?: Deferred.Deferred<void>;
     /** The current conversation's file, as an earlier Desktop left it. */
     readonly savedFile?: string;
-    readonly transcripts?: ReadonlyArray<readonly [string, unknown[]]>;
+    readonly transcripts?: Transcripts;
   },
   reply: (text: string) => ReadonlyArray<SdkMessage>,
   body: (chat: {
@@ -267,6 +277,7 @@ const withChat = <A, E>(
       const settings = opts.settings ?? { current: { proactive: opts.proactive } };
       const conversation = yield* openFlockChat({
         drivers: (context) => {
+          if (opts.drivers !== undefined) return opts.drivers;
           const drivers: ScriptedDrivers = {
             claude: claudeDriver(
               failingFirst(scripted(seen, reply, opts.holds, opts.gate), opts.failedStarts ?? 0),
@@ -287,8 +298,20 @@ const withChat = <A, E>(
         chatHarness: () => ({
           harness: settings.current.chatHarness ?? "claude",
           model: settings.current.chatModel,
+          effort: settings.current.chatEffort,
         }),
-        setChatHarness: () => Effect.succeed(null),
+        // Saved as Desktop saves it, with Settings' checks.
+        setChatHarness: ({ harness, model, effort }) =>
+          Effect.sync(() => {
+            const changed: Partial<Record<"chatHarness" | "chatModel" | "chatEffort", string>> = {};
+            if (harness !== undefined) changed.chatHarness = harness;
+            if (model !== undefined) changed.chatModel = model;
+            if (effort !== undefined) changed.chatEffort = effort;
+            const next = changeSettings(settings.current, NO_FLOCK_SETTINGS, changed);
+            if ("refused" in next) return next.refused;
+            settings.current = next;
+            return null;
+          }),
       });
       return yield* body({ conversation, seen, read, dir });
     }).pipe(Effect.scoped, Effect.provide([BunServices.layer, TestClock.layer()])),
@@ -760,7 +783,10 @@ test("a conversation file from before harnesses is claude's, resumed as before, 
           [{ type: "text", content: "before the change" }],
           [{ type: "text", content: "hello" }],
         ]);
-        yield* conversation.reopen("5c1e6c8e-0000-4000-8000-000000000000");
+        yield* conversation.reopen({
+          session: "5c1e6c8e-0000-4000-8000-000000000000",
+          harness: "claude",
+        });
         const fs = yield* FileSystem.FileSystem;
         expect(
           Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json))(
@@ -773,23 +799,28 @@ test("a conversation file from before harnesses is claude's, resumed as before, 
       }),
   ));
 
-test("a harness change waits for the current turn, tells both windows, and keeps each harness's history", () => {
-  const settings = { current: { proactive: false, chatHarness: "claude" } };
-  const gate = Deferred.makeUnsafe<void>();
-  const history = {
-    id: "pi-earlier",
-    role: "user" as const,
-    parts: [{ type: "text" as const, content: "Pi before" }],
-  };
-  const pi = (_context: DriverContext): ChatDriver => ({
+const PI_BEFORE = {
+  id: "pi-earlier",
+  role: "user" as const,
+  parts: [{ type: "text" as const, content: "Pi before" }],
+};
+
+/** Pi with one earlier conversation, recording each conversation it opens and each message. */
+const fakePi =
+  (opened: string[], offered: unknown[] = []) =>
+  (_context: DriverContext): ChatDriver => ({
     installed: true,
     open: (id) =>
       Effect.gen(function* () {
+        opened.push(id);
         const events = yield* Queue.unbounded<AguiEvent>();
         return {
           conversation: () => id,
-          offer: () =>
-            Queue.offer(events, { type: "RUN_FINISHED" as const, threadId: id, runId: id }).pipe(
+          offer: (content) =>
+            Effect.sync(() => offered.push(content)).pipe(
+              Effect.andThen(
+                Queue.offer(events, { type: "RUN_FINISHED" as const, threadId: id, runId: id }),
+              ),
               Effect.asVoid,
             ),
           events: Stream.fromQueue(events),
@@ -799,56 +830,270 @@ test("a harness change waits for the current turn, tells both windows, and keeps
           limited: () => false,
         };
       }),
-    transcript: (id) => Effect.succeed(id === "pi-earlier" ? [history] : []),
+    transcript: (id) => Effect.succeed(id === "pi-earlier" ? [PI_BEFORE] : []),
     earlier: () => Effect.succeed([{ session: "pi-earlier", title: "Pi before", at: 1 }]),
     transcriptPath: () => Effect.succeed(null),
   });
+
+const heldIn = (dir: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    return Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Json))(
+      yield* fs.readFileString(`${dir}/flock-chat.json`),
+    );
+  });
+
+const CLAUDE_HELD = "5c1e6c8e-0000-4000-8000-000000000000";
+const claudeTranscripts: Transcripts = [
+  [
+    CLAUDE_HELD,
+    [
+      {
+        type: "user",
+        uuid: "old",
+        parent_tool_use_id: null,
+        message: { role: "user", content: "on Claude Code" },
+      },
+    ],
+  ],
+];
+/** Desktop as it was left with a conversation held on Claude Code. */
+const claudeHeld = {
+  savedFile: JSON.stringify({ session: CLAUDE_HELD, harness: "claude" }),
+  transcripts: claudeTranscripts,
+};
+
+test("a harness change saved while a turn runs leaves that turn, its conversation and its history on Claude Code", () => {
+  const settings = { current: { proactive: false, chatHarness: "claude" } };
+  const gate = Deferred.makeUnsafe<void>();
+  const opened: string[] = [];
   return withChat(
-    { items: [], proactive: false, settings, gate, pi },
+    { items: [], proactive: false, settings, gate, pi: fakePi(opened) },
     answered,
-    ({ conversation, seen }) =>
+    ({ conversation, seen, dir }) =>
       Effect.gen(function* () {
         const first = (yield* conversation.conversations).current;
         const slow = yield* Stream.runCollect(conversation.send("slow", null, false)).pipe(
           Effect.forkChild,
         );
         yield* eventually(() => seen.prompts.length === 1);
-        const docked = yield* conversation.changed.pipe(
-          Stream.drop(1),
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.forkChild,
-        );
-        const popped = yield* conversation.changed.pipe(
-          Stream.drop(1),
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.forkChild,
-        );
-        settings.current = { proactive: false, chatHarness: "pi" };
-        const refreshing = yield* conversation.refresh.pipe(Effect.forkChild);
-        yield* Effect.yieldNow;
-        expect((yield* conversation.conversations).current).toBe(first);
-        expect(seen.interrupts).toEqual([]);
+        expect(
+          yield* callFlockTool(seen.flock!, "collie_chat_harness", { harness: "pi" }),
+        ).toContain("It applies with the next message.");
         yield* Deferred.succeed(gate, undefined);
-        yield* Fiber.join(slow);
-        yield* Fiber.join(refreshing);
+        expect((yield* Fiber.join(slow)).at(-1)).toMatchObject({ type: "RUN_FINISHED" });
+        yield* TestClock.withLive(Effect.sleep("50 millis"));
+
+        expect(seen.interrupts).toEqual([]);
+        expect(opened).toEqual([]);
+        expect(yield* conversation.conversations).toEqual({
+          current: first,
+          earlier: [{ session: "pi-earlier", title: "Pi before", at: 1, harness: "pi" }],
+        });
+        expect((yield* conversation.transcript).map(({ parts }) => parts)).toEqual([
+          [{ type: "text", content: "slow" }],
+        ]);
+        expect(yield* heldIn(dir)).toEqual({ session: first, harness: "claude" });
+      }),
+  );
+});
+
+test("the next message after a harness change opens Pi on a new conversation, and the chat is then held on Pi", () => {
+  const settings = { current: { proactive: false, chatHarness: "claude" } };
+  const opened: string[] = [];
+  return withChat(
+    { items: [], proactive: false, settings, pi: fakePi(opened) },
+    answered,
+    ({ conversation, seen, dir }) =>
+      Effect.gen(function* () {
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        const first = (yield* conversation.conversations).current;
+        yield* callFlockTool(seen.flock!, "collie_chat_harness", { harness: "pi" });
+
+        expect(
+          (yield* Stream.runCollect(conversation.send("Pi turn", null, false))).at(-1),
+        ).toMatchObject({ type: "RUN_FINISHED" });
         const second = (yield* conversation.conversations).current;
         expect(second).not.toBe(first);
-        expect(yield* Fiber.join(docked)).toEqual([second]);
-        expect(yield* Fiber.join(popped)).toEqual([second]);
+        expect(opened).toEqual([second]);
+        expect(yield* heldIn(dir)).toEqual({ session: second, harness: "pi" });
         expect(yield* conversation.transcript).toEqual([]);
-        yield* Stream.runDrain(conversation.send("Pi turn", null, false));
-        expect((yield* conversation.conversations).earlier).toEqual([
-          { session: "pi-earlier", title: "Pi before", at: 1 },
-        ]);
-        yield* conversation.reopen("pi-earlier");
-        expect(yield* conversation.transcript).toEqual([history]);
-        settings.current = { proactive: false, chatHarness: "claude" };
-        yield* conversation.refresh;
-        expect((yield* conversation.conversations).earlier.map(({ session }) => session)).toContain(
-          first,
+        expect((yield* conversation.conversations).earlier).toContainEqual(
+          expect.objectContaining({ session: first, harness: "claude" }),
         );
+      }),
+  );
+});
+
+test("opened with a conversation held on Claude Code while the settings name Pi, the chat keeps it until the next message", () => {
+  const opened: string[] = [];
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings: { current: { proactive: false, chatHarness: "pi" } },
+      pi: fakePi(opened),
+      ...claudeHeld,
+    },
+    answered,
+    ({ conversation, dir }) =>
+      Effect.gen(function* () {
+        expect((yield* conversation.conversations).current).toBe(CLAUDE_HELD);
+        expect((yield* conversation.transcript).map(({ parts }) => parts)).toEqual([
+          [{ type: "text", content: "on Claude Code" }],
+        ]);
+        expect(yield* heldIn(dir)).toEqual({ session: CLAUDE_HELD, harness: "claude" });
+
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        const now = (yield* conversation.conversations).current;
+        expect(now).not.toBe(CLAUDE_HELD);
+        expect(opened).toEqual([now]);
+      }),
+  );
+});
+
+test("a turn of Desktop's own about News, while a harness change waits, starts the new conversation as the human's message would", () => {
+  const opened: string[] = [];
+  const offered: unknown[] = [];
+  return withChat(
+    {
+      items: [item("r1:asking", "decision")],
+      proactive: true,
+      settings: { current: { proactive: true, chatHarness: "pi" } },
+      pi: fakePi(opened, offered),
+      ...claudeHeld,
+    },
+    answered,
+    ({ conversation, seen, dir }) =>
+      Effect.gen(function* () {
+        expect((yield* conversation.conversations).current).toBe(CLAUDE_HELD);
+        yield* TestClock.adjust("3 seconds");
+        yield* eventually(() => offered.length === 1);
+
+        const now = (yield* conversation.conversations).current;
+        expect(now).not.toBe(CLAUDE_HELD);
+        expect(opened).toEqual([now]);
+        expect(offered[0]).toStartWith(DESKTOP_SAID);
+        expect(seen.sessions).toEqual([]);
+        expect(yield* heldIn(dir)).toEqual({ session: now, harness: "pi" });
+      }),
+  );
+});
+
+/** A driver whose history is `earlier`, and that refuses to be asked when not installed. */
+const historyOf = (earlier: ReadonlyArray<Earlier>, installed = true): ChatDriver => ({
+  installed,
+  open: () => Effect.die("not opened"),
+  transcript: () => Effect.succeed([]),
+  earlier: (limit) =>
+    installed ? Effect.succeed(earlier.slice(0, limit)) : Effect.die("not installed, not asked"),
+  transcriptPath: () => Effect.succeed(null),
+});
+
+test("Earlier conversations merges every installed harness's history, newest first, ten at most, without the current one", () => {
+  const entries = (prefix: string, ats: ReadonlyArray<number>) =>
+    ats.map((at) => ({ session: `${prefix}-${at}`, title: `${prefix} ${at}`, at }));
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      savedFile: JSON.stringify({ session: "c-14", harness: "claude" }),
+      drivers: {
+        claude: historyOf(entries("c", [14, 12, 10, 8, 6, 4, 2])),
+        pi: historyOf(entries("p", [13, 11, 9, 7, 5, 3, 1])),
+        codex: historyOf(entries("x", [15]), false),
+      },
+    },
+    answered,
+    ({ conversation }) =>
+      Effect.gen(function* () {
+        const { current, earlier } = yield* conversation.conversations;
+        expect(current).toBe("c-14");
+        expect(earlier.map(({ session, harness }) => `${harness}:${session}`)).toEqual([
+          "pi:p-13",
+          "claude:c-12",
+          "pi:p-11",
+          "claude:c-10",
+          "pi:p-9",
+          "claude:c-8",
+          "pi:p-7",
+          "claude:c-6",
+          "pi:p-5",
+          "claude:c-4",
+        ]);
+      }),
+  );
+});
+
+test("reopening a conversation on the set harness holds it there and resumes it with the next message", () => {
+  const settings: HeldSettings = {
+    current: { proactive: false, chatHarness: "claude", chatModel: "sonnet" },
+  };
+  return withChat(
+    { items: [], proactive: false, settings, ...claudeHeld },
+    answered,
+    ({ conversation, seen, dir }) =>
+      Effect.gen(function* () {
+        yield* conversation.reopen(null);
+        expect(yield* conversation.reopen({ session: CLAUDE_HELD, harness: "claude" })).toBeNull();
+        expect(settings.current).toEqual({
+          proactive: false,
+          chatHarness: "claude",
+          chatModel: "sonnet",
+        });
+        expect((yield* conversation.conversations).current).toBe(CLAUDE_HELD);
+        expect(yield* heldIn(dir)).toEqual({ session: CLAUDE_HELD, harness: "claude" });
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        expect(seen.sessions).toEqual([{ model: "sonnet", resume: CLAUDE_HELD }]);
+      }),
+  );
+});
+
+test("reopening a conversation on another harness sets that harness, unsetting the model and effort, and holds that very conversation", () => {
+  const settings: HeldSettings = {
+    current: { proactive: false, chatHarness: "claude", chatModel: "sonnet", chatEffort: "high" },
+  };
+  const opened: string[] = [];
+  return withChat(
+    { items: [], proactive: false, settings, pi: fakePi(opened) },
+    answered,
+    ({ conversation, seen, dir }) =>
+      Effect.gen(function* () {
+        expect(yield* conversation.reopen({ session: "pi-earlier", harness: "pi" })).toBeNull();
+        expect(settings.current).toEqual({ proactive: false, chatHarness: "pi" });
+        expect((yield* conversation.conversations).current).toBe("pi-earlier");
+        expect(yield* conversation.transcript).toEqual([PI_BEFORE]);
+        expect(yield* heldIn(dir)).toEqual({ session: "pi-earlier", harness: "pi" });
+
+        yield* Stream.runDrain(conversation.send("next", null, false));
+        expect(opened).toEqual(["pi-earlier"]);
+        expect((yield* conversation.conversations).current).toBe("pi-earlier");
+        expect(seen.sessions).toEqual([]);
+      }),
+  );
+});
+
+test("Start fresh, while a harness change waits, starts a new conversation on the set harness", () => {
+  const opened: string[] = [];
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings: { current: { proactive: false, chatHarness: "pi" } },
+      pi: fakePi(opened),
+      ...claudeHeld,
+    },
+    answered,
+    ({ conversation, dir }) =>
+      Effect.gen(function* () {
+        expect((yield* conversation.conversations).current).toBe(CLAUDE_HELD);
+        expect(yield* conversation.reopen(null)).toBeNull();
+        const fresh = (yield* conversation.conversations).current;
+        expect(fresh).not.toBe(CLAUDE_HELD);
+        expect(yield* heldIn(dir)).toEqual({ session: fresh, harness: "pi" });
+        expect(yield* conversation.transcript).toEqual([]);
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        expect(opened).toEqual([fresh]);
       }),
   );
 });
