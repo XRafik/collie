@@ -395,7 +395,11 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
     yield* switchHarness(choice.harness);
     yield* end;
     const scope = yield* Scope.make();
-    live = { running: yield* start(driver, id, choice).pipe(Scope.provide(scope)), scope, choice };
+    const running = yield* start(driver, id, choice).pipe(
+      Scope.provide(scope),
+      Effect.onExit((exit) => (Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit))),
+    );
+    live = { running, scope, choice };
     yield* tell({ runsOn: choice });
     return live.running;
   });

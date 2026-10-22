@@ -1351,6 +1351,39 @@ test("a harness chosen while a session waits for its list holds the conversation
   );
 });
 
+test("a reply stopped while its session opens releases what the opening had taken", () => {
+  const opening = Deferred.makeUnsafe<void>();
+  const released: string[] = [];
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings: { current: { proactive: false, chatHarness: "pi" } },
+      pi: () => ({
+        installed: true,
+        open: (id) =>
+          Effect.addFinalizer(() => Effect.sync(() => released.push(id))).pipe(
+            Effect.andThen(Deferred.succeed(opening, undefined)),
+            Effect.andThen(Effect.never),
+          ),
+        transcript: () => Effect.succeed([]),
+        earlier: () => Effect.succeed([]),
+        transcriptPath: () => Effect.succeed(null),
+      }),
+    },
+    answered,
+    ({ conversation }) =>
+      Effect.gen(function* () {
+        const turn = yield* Stream.runDrain(conversation.send("hello", null, false)).pipe(
+          Effect.forkChild,
+        );
+        yield* Deferred.await(opening);
+        yield* Fiber.interrupt(turn);
+        expect(released).toHaveLength(1);
+      }),
+  );
+});
+
 test("a list slower than 20 seconds lets the first session open on Collie's table", () =>
   withChat(
     {
