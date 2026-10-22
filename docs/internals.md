@@ -969,8 +969,11 @@ turn; waits for it to exit; and gives each noted process of its session still ru
 SIGTERM. A thread no user message has materialized has no in-progress turn: its turns are
 read as none only when `thread/read` reports it `idle` with no turns and
 `thread/turns/list` refuses it with JSON-RPC `-32600` and Codex's "not materialized yet"
-text, after its directory has been checked. Any other refusal, or that one on a thread that
-is not idle, fails the stop before any signal is sent. Nothing gets a second signal: the record keeps what was signalled and what was
+text, after its directory has been checked. Codex has also refused such a thread with
+`-32601`, "list_turns is not supported yet", while `thread/read` reported it paginated: its
+turns are read as none only when `thread/read` reports it `idle` with no turns,
+history mode `paginated` and an empty preview, after the same check. Any other refusal, or
+either one on a thread that fails its conditions, fails the stop before any signal is sent. Nothing gets a second signal: the record keeps what was signalled and what was
 noted of the server's session, and a later stop of the same record interrupts again and
 signals only what it has not, proving survivors from that note after the server has gone.
 Every sweep stops a kept record again. The record is removed only once the agent is

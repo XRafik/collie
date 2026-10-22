@@ -185,6 +185,9 @@ const ThreadRead = Schema.Struct({
     /** Where the thread's rollout, its transcript, is written. */
     path: Schema.optionalKey(Schema.NullOr(Schema.String)),
     status: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
+    historyMode: Schema.optionalKey(Schema.String),
+    /** Usually the first user message. */
+    preview: Schema.optionalKey(Schema.String),
     /** Empty unless asked for with `includeTurns`, which a thread with no user message refuses. */
     turns: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   }),
@@ -395,12 +398,13 @@ export const agentThreads = Effect.fn("Codex.agentThreads")(function* (
     if (own && thread.cwd !== undefined && thread.cwd !== cwd)
       return yield* Effect.fail(failed(`thread ${threadId} works in ${thread.cwd}, not ${cwd}`));
     const idle = thread.status?.type === "idle" && thread.turns?.length === 0;
+    const unlistable = idle && thread.historyMode === "paginated" && thread.preview === "";
     threads.push({
       id: threadId,
       transcript: thread.path ?? null,
       running: yield* runningTurns(client, threadId).pipe(
         Effect.catchIf(
-          (cause) => idle && unmaterialized(threadId, cause),
+          (cause) => (idle && unmaterialized(threadId, cause)) || (unlistable && unlisted(cause)),
           () => Effect.succeed([]),
         ),
       ),
@@ -414,6 +418,10 @@ const unmaterialized = (threadId: string, cause: CodexError) =>
   cause.code === -32600 &&
   cause.message ===
     `thread/turns/list: thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`;
+
+/** How Codex 0.162.1 refused to list an idle paginated thread with no user message. */
+const unlisted = (cause: CodexError) =>
+  cause.code === -32601 && cause.message === "thread/turns/list: list_turns is not supported yet";
 
 /** The ids of this thread's in-progress turns. */
 export const runningTurns = Effect.fn("Codex.runningTurns")(function* (

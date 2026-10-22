@@ -67,9 +67,13 @@ servers answer `thread/read` with status `idle`, no turns and a rollout path tha
 They answer `thread/turns/list` with JSON-RPC `-32600`, "thread … is not materialized yet;
 thread/turns/list is unavailable before first user message". The stop treats that thread
 as having no in-progress turn only when both answers are true. It then drains the server as
-ADR-0059 D2 says. A rollout path is not evidence either way. Any other refusal still fails
-the stop, and so does that refusal on a thread that is not `idle`. ADR-0059 D4's proof of
-ownership is unchanged.
+ADR-0059 D2 says. A rollout path is not evidence either way. vm-mk's Codex gave such a
+thread a second answer: `thread/read` reported history mode `paginated`, and
+`thread/turns/list` refused with `-32601`, "list_turns is not supported yet". The same
+thread later listed no turns, still with no user message, so this answer is not known to
+last until the first one. That thread counts too, but only when `thread/read` reports it
+`idle`, with no turns, history mode `paginated` and an empty preview. Any other refusal still fails the stop, and so does either refusal on a thread that
+fails its conditions. ADR-0059 D4's proof of ownership is unchanged.
 
 **D5. A Run's stop reaches a start herdr never admitted.** Such a start has a control record
 naming its server and the Run's log, but no launch, because the launch is recorded only once

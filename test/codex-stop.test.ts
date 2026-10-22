@@ -430,6 +430,45 @@ for (const [what, over, edit, why] of [
     /works in \/somewhere\/else/,
   ],
   [
+    "an unlistable thread that is not idle",
+    () => unlistable({ status: "active" }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread that has turns",
+    () => unlistable({ readTurns: [{ id: TURN }] }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread with a preview",
+    () => unlistable({ preview: "a first message" }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread whose history is not paginated",
+    () => unlistable({ historyMode: "legacy" }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread in another directory",
+    () => unlistable({ cwd: "/somewhere/else" }),
+    null,
+    /works in \/somewhere\/else/,
+  ],
+  [
+    "an idle thread whose turns are refused as unsupported for another reason",
+    () =>
+      unlistable({
+        turnsRefusal: { code: -32601, message: "thread/items/list is not supported yet" },
+      }),
+    null,
+    /thread\/items\/list is not supported yet/,
+  ],
+  [
     "a pid whose start time does not match the record",
     () => ({}),
     (record: JsonObject) => ({ ...record, started: "1" }),
@@ -868,6 +907,17 @@ const unmaterialized = (over: Partial<StandIn["threads"][number]> = {}) => ({
     },
   ],
 });
+const unlistable = (over: Partial<StandIn["threads"][number]> = {}) => ({
+  threads: [
+    {
+      id: THREAD,
+      cwd: rig.projectDir,
+      path: `${rig.root}/rollout-${THREAD}.jsonl`,
+      unlistable: true,
+      ...over,
+    },
+  ],
+});
 const neverAdmits = () =>
   new FakeHerdr(
     rig.pluginEnv({
@@ -1073,6 +1123,18 @@ test("a Codex agent that never got a user message stops to quiet", () =>
   runEffect(
     Effect.gen(function* () {
       yield* working(unmaterialized());
+      expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(yield* serverPid())).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
+    }),
+  ));
+
+test("a Codex agent whose paginated thread with no user message cannot list its turns stops to quiet", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working(unlistable());
       expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
       expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
       expect(alive(yield* serverPid())).toBe(false);

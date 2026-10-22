@@ -18,6 +18,12 @@ export interface StandIn {
     turn?: { id: string; writes?: string };
     /** Loaded with no user message yet, which `thread/turns/list` refuses as 0.162.1 does. */
     unmaterialized?: boolean;
+    /** Loaded idle and paginated with no user message, whose turns 0.162.1 refused to list on vm-mk. */
+    unlistable?: boolean;
+    /** What `thread/read` reports in place of the mode's own. */
+    historyMode?: "legacy" | "paginated";
+    preview?: string;
+    readTurns?: ReadonlyArray<unknown>;
     /** The status `thread/read` reports in place of the one its turns give it. */
     status?: "idle" | "active";
     /** A refusal `thread/turns/list` answers with in place of its turns. */
@@ -140,7 +146,9 @@ function answer(ws: import("bun").ServerWebSocket<undefined>, raw: string | Buff
               parentThreadId: thread.parent ?? null,
               path: thread.path ?? null,
               status: statusOf(thread),
-              turns: [],
+              historyMode: thread.historyMode ?? (thread.unlistable ? "paginated" : "legacy"),
+              preview: thread.preview ?? "",
+              turns: thread.readTurns ?? [],
             },
           })
         : refuse("no such thread");
@@ -152,7 +160,9 @@ function answer(ws: import("bun").ServerWebSocket<undefined>, raw: string | Buff
               code: -32600,
               message: `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
             }
-          : undefined);
+          : thread?.unlistable
+            ? { code: -32601, message: "list_turns is not supported yet" }
+            : undefined);
       if (refusal) return refuse(refusal.message, refusal.code);
       return reply({
         data: [...(turns.get(params.threadId) ?? [])]
