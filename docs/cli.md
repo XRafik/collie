@@ -1673,9 +1673,12 @@ collie cleanup
 collie cleanup --apply [--request-id <id>]
 ```
 
-`cleanup` lists exactly what the host's sweep would remove now: one line per item with its
+`cleanup` lists what the host's sweep would remove now: one line per item with its
 kind, what it is, its size and why it goes, then one line per thing Collie made and keeps,
-with the one condition that keeps it, then the total a sweep would free. `--apply` sweeps
+with the one condition that keeps it, then the total a sweep would free. The listing is
+judged against the latest board the host has built, so it answers at once on a busy host
+but can name an item that has gone since; a sweep builds its own board and judges every
+item again, so the listing never causes a removal. `--apply` sweeps
 now, through the host, and prints what it removed and what it freed. There is no
 confirmation: the host sweeps the same way on its own every ten minutes. What each kind
 keeps, and why, is [ADR-0045](adr/0045-collie-removes-what-it-made-once-nothing-needs-it.md);

@@ -295,7 +295,7 @@ test("News and the merge watch read the host's latest board, and list no Runs of
       });
       let listings = 0;
       let reads = 0;
-      const boards = yield* shareBoard({
+      const { boards } = yield* shareBoard({
         build: Effect.sync(() => {
           listings++;
           return { runs: [], views: [] };

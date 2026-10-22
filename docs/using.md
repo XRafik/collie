@@ -3059,7 +3059,9 @@ An entry of the state directory that is no kind Collie knows is listed as kept a
 removed. [Schedules](#schedules) under `schedules/` are the host's own: listed as kept, and never swept.
 
 `collie cleanup` lists what a sweep would remove now, with each item's size and the total,
-and what Collie keeps and why. `collie cleanup --apply` sweeps now; chat can do the same.
+and what Collie keeps and why. A listing is judged against the latest board the host has
+built; a sweep builds its own and judges every item again, so a listing can overstate what
+is left but never removes anything. `collie cleanup --apply` sweeps now; chat can do the same.
 The Flock chat sweeps the Machine a `cleanup` names in its `machine` field, and refuses one
 that names none while several Machines are reachable; Native chat sweeps its own Machine.
 `collie --machine <machine> cleanup` lists another Machine's, and Desktop's **Clean up…** on

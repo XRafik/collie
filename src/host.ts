@@ -856,6 +856,14 @@ const servingEnv = (dir: string) =>
   );
 
 /** Every Run the host knows, and the board built from them, for this host's own env. */
+/** The Runs and Task views a set of sweepers judges against. */
+interface BoardSource<E, F> {
+  readonly runs: Effect.Effect<ReadonlyArray<RunFacts>, E>;
+  readonly views: (
+    herds: Effect.Success<ReturnType<typeof liveHerds>>,
+  ) => Effect.Effect<ReadonlyArray<TaskView>, F>;
+}
+
 const hostBoard = (dir: string) =>
   Effect.gen(function* () {
     const registry = yield* Registry;
@@ -900,78 +908,88 @@ const hostBoard = (dir: string) =>
     /** When each Task was first seen Finished, for as long as this host runs. */
     const seen = new Map<string, number>();
     const storage = yield* Effect.context<MessageStorage.MessageStorage>();
-    /** Every kind of thing Collie cleans, judged against the Runs as they are now. */
+    /** Every kind of thing Collie cleans, judged against `board`'s Runs and Task views. */
     // Fresh, never the board's cached sessions: a session opened since would look gone.
-    const sweepers = Effect.gen(function* () {
-      const herds = yield* liveHerds(herdr, env);
-      const sessions = herds.map((session) => session.herdr);
-      const build = Effect.map(listingOf(Effect.succeed(herds)), (built) => built.views);
-      const all = yield* runs;
-      const tasks = yield* listTasks(env.stateDir);
-      return [
-        // Before the worktrees: a checkout goes only once its Task's workspace has closed.
-        taskWorkspacesSweeper({
-          stateDir: env.stateDir,
-          sessions: herds,
-          tasks,
-          // No board, no Task judged Finished, so nothing closed.
-          views: yield* build.pipe(Effect.orElseSucceed(() => [])),
-          runs: all,
-          seen,
-        }),
-        idleAgentsSweeper({
-          stateDir: env.stateDir,
-          sessions: herds,
-          runs: all,
-          idle,
-          finishedSince,
-          // A config that cannot be read closes nothing.
-          idleCloseMs: yield* loadDefaults(env.userDir).pipe(
-            Effect.map((defaults) => defaults.idleCloseMs),
-            Effect.orElseSucceed(() => 0),
-          ),
-        }),
-        worktreesSweeper({
-          herdr,
-          sessions,
-          stateDir: env.stateDir,
-          runs: all,
-          registered: yield* everyRegistered(env.stateDir),
-          cwd: env.cwd,
-          settling: settlingOf({
+    const sweepersOver = <E, F>(board: BoardSource<E, F>) =>
+      Effect.gen(function* () {
+        const herds = yield* liveHerds(herdr, env);
+        const sessions = herds.map((session) => session.herdr);
+        const build = board.views(herds);
+        const all = yield* board.runs;
+        const tasks = yield* listTasks(env.stateDir);
+        return [
+          // Before the worktrees: a checkout goes only once its Task's workspace has closed.
+          taskWorkspacesSweeper({
+            stateDir: env.stateDir,
+            sessions: herds,
+            tasks,
+            // No board, no Task judged Finished, so nothing closed.
+            views: yield* build.pipe(Effect.orElseSucceed(() => [])),
+            runs: all,
+            seen,
+          }),
+          idleAgentsSweeper({
+            stateDir: env.stateDir,
+            sessions: herds,
+            runs: all,
+            idle,
+            finishedSince,
+            // A config that cannot be read closes nothing.
+            idleCloseMs: yield* loadDefaults(env.userDir).pipe(
+              Effect.map((defaults) => defaults.idleCloseMs),
+              Effect.orElseSucceed(() => 0),
+            ),
+          }),
+          worktreesSweeper({
+            herdr,
+            sessions,
             stateDir: env.stateDir,
             runs: all,
-            tasks,
-            sessions,
-            protect: [env.pluginRoot],
+            registered: yield* everyRegistered(env.stateDir),
+            cwd: env.cwd,
+            settling: settlingOf({
+              stateDir: env.stateDir,
+              runs: all,
+              tasks,
+              sessions,
+              protect: [env.pluginRoot],
+            }),
           }),
-        }),
-        generationsSweeper(generationsDir()),
-        stateSweeper(env.stateDir, new Set(all.map((run) => run.id))),
-        uploadsSweeper(env.stateDir),
-        compactionSweeper(env.stateDir, sessions),
-        runnersSweeper(`${collieCache()}/runners`, BUILD),
-        checksSweeper(checks),
-        renovateClonesSweeper(env.stateDir, all),
-        desktopSweeper(
-          desktopRootOf(dataHomeOf(env.home, env.raw["XDG_DATA_HOME"])),
-          `${env.raw["XDG_STATE_HOME"] || `${env.home}/.local/state`}/collie-desktop`,
-          process.platform === "darwin"
-            ? `${env.home}/Applications/collie-desktop.app/Contents/Resources/version.json`
-            : `${desktopRootOf(dataHomeOf(env.home, env.raw["XDG_DATA_HOME"]))}/app/Resources/version.json`,
-        ),
-        // Last: a Task is kept while a workspace or a checkout of it is still there.
-        retentionSweeper({
-          stateDir: env.stateDir,
-          sessions,
-          // Every read or none: a Task judged without its Runs would look forgettable.
-          facts: Effect.all({ tasks: listTasks(env.stateDir), views: build, runs }).pipe(
-            Effect.orElseSucceed(() => ({ tasks: [], views: [], runs: [] })),
-            Effect.provideContext(bun),
+          generationsSweeper(generationsDir()),
+          stateSweeper(env.stateDir, new Set(all.map((run) => run.id))),
+          uploadsSweeper(env.stateDir),
+          compactionSweeper(env.stateDir, sessions),
+          runnersSweeper(`${collieCache()}/runners`, BUILD),
+          checksSweeper(checks),
+          renovateClonesSweeper(env.stateDir, all),
+          desktopSweeper(
+            desktopRootOf(dataHomeOf(env.home, env.raw["XDG_DATA_HOME"])),
+            `${env.raw["XDG_STATE_HOME"] || `${env.home}/.local/state`}/collie-desktop`,
+            process.platform === "darwin"
+              ? `${env.home}/Applications/collie-desktop.app/Contents/Resources/version.json`
+              : `${desktopRootOf(dataHomeOf(env.home, env.raw["XDG_DATA_HOME"]))}/app/Resources/version.json`,
           ),
-          retire: (ids) => registry.retire(ids).pipe(Effect.provideContext(storage)),
-        }),
-      ];
+          // Last: a Task is kept while a workspace or a checkout of it is still there.
+          retentionSweeper({
+            stateDir: env.stateDir,
+            sessions,
+            // Every read or none: a Task judged without its Runs would look forgettable.
+            facts: Effect.all({
+              tasks: listTasks(env.stateDir),
+              views: board.views(herds),
+              runs: board.runs,
+            }).pipe(
+              Effect.orElseSucceed(() => ({ tasks: [], views: [], runs: [] })),
+              Effect.provideContext(bun),
+            ),
+            retire: (ids) => registry.retire(ids).pipe(Effect.provideContext(storage)),
+          }),
+        ];
+      });
+    /** A sweep's sweepers, each judging against a board built as it judges. */
+    const sweepers = sweepersOver({
+      runs,
+      views: (herds) => Effect.map(listingOf(Effect.succeed(herds)), (built) => built.views),
     });
     /** The host's own stop, audited as the host's and asked once per Run. */
     const stop = (runId: string, reason: string) =>
@@ -991,7 +1009,16 @@ const hostBoard = (dir: string) =>
         Effect.provideContext(bun),
         Effect.catchCause((cause) => Effect.logWarning(`could not stop ${runId}`, cause)),
       );
-    return { env, herdr, bun, listing, sweepers, record: registry.mergeRequest, stop };
+    return {
+      env,
+      herdr,
+      bun,
+      listing,
+      sweepers,
+      sweepersOver,
+      record: registry.mergeRequest,
+      stop,
+    };
   });
 
 /** The board built once for this host's clients and side jobs, from when the host starts. */
@@ -1004,6 +1031,8 @@ class SharedBoard extends Context.Service<
       readonly runs: ReadonlyArray<RunFacts>;
       readonly views: ReadonlyArray<TaskView>;
     }>;
+    /** A listing's sweepers, judging against the latest board built. */
+    readonly listed: Effect.Success<ReturnType<typeof hostBoard>>["sweepers"];
   }
 >()("collie/SharedBoard") {}
 
@@ -1035,7 +1064,12 @@ const sharedBoardLayer = (dir: string) =>
         ],
         { concurrency: "unbounded" },
       ).pipe(Stream.share({ capacity: 1, strategy: "sliding" }));
-      return { ...board, changed, boards: yield* shareBoard({ build: listing, changed }) };
+      const { boards, latest } = yield* shareBoard({ build: listing, changed });
+      const listed = board.sweepersOver({
+        runs: Effect.map(latest, (built) => built.runs),
+        views: () => Effect.map(latest, (built) => built.views),
+      });
+      return { ...board, changed, boards, listed };
     }),
   );
 
@@ -1107,7 +1141,7 @@ const frontDoorHandlers = (
       const registry = yield* Registry;
       const hosted = yield* Effect.context<HostServices>();
       const reliance = yield* Reliance;
-      const { env, herdr, bun, sweepers, changed, ...shared } = yield* SharedBoard;
+      const { env, herdr, bun, sweepers, listed, changed, ...shared } = yield* SharedBoard;
       const collecting = yield* Collecting;
       const boards = shared.boards.pipe(Stream.map((built) => built.views));
       const usage = yield* Usage;
@@ -1647,7 +1681,7 @@ const frontDoorHandlers = (
               return readings;
             }),
           ),
-        cleanup: () => plainly(Effect.flatMap(sweepers, judge)),
+        cleanup: () => plainly(Effect.flatMap(listed, judge)),
         schedules: () => schedules.list,
         changeSchedule: ({ change, request }, { client }) =>
           schedules.change(change, request, whoOf(client)),
