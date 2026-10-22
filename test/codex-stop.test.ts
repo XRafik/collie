@@ -400,6 +400,36 @@ for (const [what, over, edit, why] of [
     /works in \/somewhere\/else/,
   ],
   [
+    "a thread with no user message that is not idle",
+    () => unmaterialized({ status: "active" }),
+    null,
+    /is not materialized yet/,
+  ],
+  [
+    "an idle thread whose turns are refused for another reason",
+    () => unmaterialized({ turnsRefusal: { code: -32600, message: "rollout is unreadable" } }),
+    null,
+    /rollout is unreadable/,
+  ],
+  [
+    "an idle thread whose turns are refused with that text under another code",
+    () =>
+      unmaterialized({
+        turnsRefusal: {
+          code: -32603,
+          message: `thread ${THREAD} is not materialized yet; thread/turns/list is unavailable before first user message`,
+        },
+      }),
+    null,
+    /is not materialized yet/,
+  ],
+  [
+    "a thread with no user message in another directory",
+    () => unmaterialized({ cwd: "/somewhere/else" }),
+    null,
+    /works in \/somewhere\/else/,
+  ],
+  [
     "a pid whose start time does not match the record",
     () => ({}),
     (record: JsonObject) => ({ ...record, started: "1" }),
@@ -824,5 +854,87 @@ test("a launch beside an unlisted agent whose server is not Quiet keeps that rec
       );
       expect(installed.length).toBeGreaterThan(0);
       expect(yield* recorded()).toMatchObject({ stop: { state: "acknowledged" } });
+    }),
+  ));
+
+const unmaterialized = (over: Partial<StandIn["threads"][number]> = {}) => ({
+  threads: [
+    {
+      id: THREAD,
+      cwd: rig.projectDir,
+      path: `${rig.root}/rollout-${THREAD}.jsonl`,
+      unmaterialized: true,
+      ...over,
+    },
+  ],
+});
+const neverAdmits = () =>
+  new FakeHerdr(
+    rig.pluginEnv({
+      FAKE_HERDR_FAIL: asJson({ "agent start": "timed out waiting for agent startup" }),
+    }),
+  );
+
+test("a start herdr never admits fails naming its agent, and the next launch under that name stops its server first", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* serve(unmaterialized());
+      const first = yield* session(
+        work.execute({ runId: "r1", input: { skip: false } }).pipe(Effect.result),
+        { herdr: neverAdmits() },
+      );
+      const why = first._tag === "Failure" ? first.failure.reason : "";
+      expect(why).toContain(agent);
+      expect(why).toContain("agent start failed");
+      expect(why).toContain("timed out waiting for agent startup");
+      expect(yield* rig.cmds()).not.toContain("agent prompt");
+      const stranded = yield* serverPid();
+
+      const relaunched = yield* session(
+        Agents.pipe(
+          Effect.flatMap((agents) =>
+            agents.launch({
+              runId: "r1",
+              operation: "build",
+              role: "implementer",
+              workflow: "agent-work",
+              task: null,
+              agent: null,
+              cwd: rig.projectDir,
+              prompt: "Build it.",
+              output: `${dir}/output.json`,
+              skill: null,
+              harness: "codex",
+              model: null,
+              effort: null,
+              permissions: null,
+            }),
+          ),
+        ),
+      );
+      expect(relaunched.agent).toBe(agent);
+      expect(alive(stranded)).toBe(false);
+      const all = yield* events();
+      const servers = all.flatMap((one, at) => (one.pid === undefined ? [] : [at]));
+      const signalled = all.flatMap((one, at) => (one.signal === undefined ? [] : [at]));
+      expect(servers).toHaveLength(2);
+      expect(signalled).toHaveLength(1);
+      expect(signalled[0]).toBeLessThan(servers[1]!);
+      expect(yield* agentStarts()).toEqual(["codex", "codex"]);
+      const log = yield* agentsLog();
+      expect(log.indexOf(`${agent}: quiet`)).toBeGreaterThan(-1);
+      expect(log.indexOf(`${agent}: quiet`)).toBeLessThan(log.lastIndexOf(`${agent}: codex in`));
+    }),
+  ));
+
+test("a Codex agent that never got a user message stops to quiet", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working(unmaterialized());
+      expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(yield* serverPid())).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
     }),
   ));

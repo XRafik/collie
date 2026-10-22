@@ -966,7 +966,11 @@ start time (`/proc/<pid>/stat`, or `ps -o lstart=`) and command, and by its thre
 in the agent's directory; notes its running turns and its session (or, without `/proc`,
 its descendants); sends it one SIGTERM, which drains it; sends `turn/interrupt` for each
 turn; waits for it to exit; and gives each noted process of its session still running one
-SIGTERM. Nothing gets a second signal: the record keeps what was signalled and what was
+SIGTERM. A thread no user message has materialized has no in-progress turn: its turns are
+read as none only when `thread/read` reports it `idle` with no turns and
+`thread/turns/list` refuses it with JSON-RPC `-32600` and Codex's "not materialized yet"
+text, after its directory has been checked. Any other refusal, or that one on a thread that
+is not idle, fails the stop before any signal is sent. Nothing gets a second signal: the record keeps what was signalled and what was
 noted of the server's session, and a later stop of the same record interrupts again and
 signals only what it has not, proving survivors from that note after the server has gone.
 Every sweep stops a kept record again. The record is removed only once the agent is

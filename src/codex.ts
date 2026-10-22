@@ -26,16 +26,21 @@ const REPLAY_MS = 3_000;
 
 export class CodexError extends Data.TaggedError("CodexError")<{
   readonly message: string;
+  /** The JSON-RPC error code, where the server refused with one. */
+  readonly code?: number;
 }> {}
 
-const failed = (message: string) => new CodexError({ message });
+const failed = (message: string, code?: number) =>
+  new CodexError(code === undefined ? { message } : { message, code });
 
 const Reply = Schema.Struct({
   id: Schema.optionalKey(Schema.Number),
   method: Schema.optionalKey(Schema.String),
   result: Schema.optionalKey(Schema.Unknown),
   params: Schema.optionalKey(Schema.Unknown),
-  error: Schema.optionalKey(Schema.Struct({ message: Schema.String })),
+  error: Schema.optionalKey(
+    Schema.Struct({ message: Schema.String, code: Schema.optionalKey(Schema.Number) }),
+  ),
 });
 interface Reply extends Schema.Schema.Type<typeof Reply> {}
 const decodeReply = Schema.decodeUnknownOption(Schema.fromJsonString(Reply));
@@ -117,7 +122,7 @@ const open = (url: string) =>
           pending.set(id, (reply) =>
             answer(
               reply.error
-                ? Effect.fail(failed(`${method}: ${reply.error.message}`))
+                ? Effect.fail(failed(`${method}: ${reply.error.message}`, reply.error.code))
                 : Effect.succeed(reply.result),
             ),
           );
@@ -179,6 +184,9 @@ const ThreadRead = Schema.Struct({
     parentThreadId: Schema.optionalKey(Schema.NullOr(Schema.String)),
     /** Where the thread's rollout, its transcript, is written. */
     path: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    status: Schema.optionalKey(Schema.Struct({ type: Schema.String })),
+    /** Empty unless asked for with `includeTurns`, which a thread with no user message refuses. */
+    turns: Schema.optionalKey(Schema.Array(Schema.Unknown)),
   }),
 });
 const ItemsList = Schema.Struct({
@@ -386,14 +394,26 @@ export const agentThreads = Effect.fn("Codex.agentThreads")(function* (
     const own = thread.ephemeral !== true && !thread.parentThreadId;
     if (own && thread.cwd !== undefined && thread.cwd !== cwd)
       return yield* Effect.fail(failed(`thread ${threadId} works in ${thread.cwd}, not ${cwd}`));
+    const idle = thread.status?.type === "idle" && thread.turns?.length === 0;
     threads.push({
       id: threadId,
       transcript: thread.path ?? null,
-      running: yield* runningTurns(client, threadId),
+      running: yield* runningTurns(client, threadId).pipe(
+        Effect.catchIf(
+          (cause) => idle && unmaterialized(threadId, cause),
+          () => Effect.succeed([]),
+        ),
+      ),
     });
   }
   return threads;
 });
+
+/** How Codex 0.162.1 refuses the turns of a thread no user message has materialized. */
+const unmaterialized = (threadId: string, cause: CodexError) =>
+  cause.code === -32600 &&
+  cause.message ===
+    `thread/turns/list: thread ${threadId} is not materialized yet; thread/turns/list is unavailable before first user message`;
 
 /** The ids of this thread's in-progress turns. */
 export const runningTurns = Effect.fn("Codex.runningTurns")(function* (

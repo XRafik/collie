@@ -1874,6 +1874,13 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
             Effect.catchIf(blockedAtStartup, () =>
               log(ask.runId, `${agent}: blocked during startup in ${tab.paneId}; its prompt waits`),
             ),
+            Effect.mapError(
+              (cause) =>
+                new AgentUncertain({
+                  operation: ask.operation,
+                  reason: `${agent} did not start in ${tab.paneId}: ${herdrFailureReason(cause)}`,
+                }),
+            ),
           );
         yield* log(
           ask.runId,

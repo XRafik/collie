@@ -16,6 +16,12 @@ export interface StandIn {
     path?: string;
     /** A turn in progress from the start, appending to `writes` until it ends. */
     turn?: { id: string; writes?: string };
+    /** Loaded with no user message yet, which `thread/turns/list` refuses as 0.162.1 does. */
+    unmaterialized?: boolean;
+    /** The status `thread/read` reports in place of the one its turns give it. */
+    status?: "idle" | "active";
+    /** A refusal `thread/turns/list` answers with in place of its turns. */
+    turnsRefusal?: { code: number; message: string };
   }>;
   /** Answer `turn/interrupt` and keep the turn running. */
   ignoreInterrupt?: boolean;
@@ -101,13 +107,20 @@ const server = Bun.serve({
   },
 });
 
+function statusOf(thread: StandIn["threads"][number]) {
+  const active = running().some((turn) => turns.get(thread.id)?.includes(turn));
+  return (thread.status ?? (active ? "active" : "idle")) === "idle"
+    ? { type: "idle" }
+    : { type: "active", activeFlags: [] };
+}
+
 function answer(ws: import("bun").ServerWebSocket<undefined>, raw: string | Buffer) {
   const { id, method, params = {} } = JSON.parse(String(raw));
   record({ method, params });
   if (method === config.dropOn) return ws.close();
   const reply = (result: unknown) => ws.send(JSON.stringify({ id, result }));
-  const refuse = (message: string) =>
-    ws.send(JSON.stringify({ id, error: { code: -32600, message } }));
+  const refuse = (message: string, code = -32600) =>
+    ws.send(JSON.stringify({ id, error: { code, message } }));
   const thread = config.threads.find((one) => one.id === params.threadId);
   switch (method) {
     case "initialize":
@@ -126,16 +139,28 @@ function answer(ws: import("bun").ServerWebSocket<undefined>, raw: string | Buff
               ephemeral: false,
               parentThreadId: thread.parent ?? null,
               path: thread.path ?? null,
+              status: statusOf(thread),
+              turns: [],
             },
           })
         : refuse("no such thread");
-    case "thread/turns/list":
+    case "thread/turns/list": {
+      const refusal =
+        thread?.turnsRefusal ??
+        (thread?.unmaterialized
+          ? {
+              code: -32600,
+              message: `thread ${thread.id} is not materialized yet; thread/turns/list is unavailable before first user message`,
+            }
+          : undefined);
+      if (refusal) return refuse(refusal.message, refusal.code);
       return reply({
         data: [...(turns.get(params.threadId) ?? [])]
           .reverse()
           .map((turn) => ({ id: turn.id, status: turn.status })),
         nextCursor: null,
       });
+    }
     case "turn/interrupt": {
       const turn = running().find(
         (one) => (turns.get(params.threadId) ?? []).includes(one) && one.id === params.turnId,
