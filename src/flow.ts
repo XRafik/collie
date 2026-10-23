@@ -416,7 +416,7 @@ export function laneOf(facts: LaneFacts): FlowLane {
       log: current.log,
       why: whyFor(state, current),
       evidence: (facts.verifications ?? []).filter((proof) => proof.step === id).length,
-      runs: [...(calls.length > 1 || listed.length > 0 ? all : []), ...fan],
+      runs: fan.length > 0 ? fan : calls.length > 1 || listed.length > 0 ? all : [],
       link: calls.length === 1 && listed.length === 0 ? link : undefined,
     };
   };

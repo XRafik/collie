@@ -3213,7 +3213,7 @@ test("a card's strip is its leading Run's Steps, then the Release row, and where
     }),
   ));
 
-test("a fan-out's Repo runs are its Step's runs, by Wave, with what each merge request became", () =>
+test.each([false, true])("a fan-out's Repo runs appear once, by Wave (item calls: %s)", (items) =>
   runEffect(
     Effect.gen(function* () {
       const { dir, env } = yield* scratch();
@@ -3233,15 +3233,35 @@ test("a fan-out's Repo runs are its Step's runs, by Wave, with what each merge r
         );
       }
       const fan = declared("fan", { kind: "workflow" });
-      yield* stepsRecorded(parent, [fan], [{ step: fan, left: false }]);
-      const startedIn = [
-        { kind: "child" as const, key: "fan", run: "r-a", at: "2026-09-14T10:01:10.000Z" },
-        { kind: "child" as const, key: "fan", run: "r-b", at: "2026-09-14T10:01:20.000Z" },
-      ];
+      const startedIn: StepLine[] = items
+        ? [
+            { kind: "forecast", steps: [fan], at: "2026-09-14T10:00:00.000Z" },
+            {
+              kind: "enter",
+              key: "fan@a",
+              step: fan,
+              place: { item: "a", items: ["a", "b", "c"] },
+              at: "2026-09-14T10:01:00.000Z",
+            },
+            { kind: "child", key: "fan@a", run: "r-a", at: "2026-09-14T10:01:10.000Z" },
+            {
+              kind: "enter",
+              key: "fan@b",
+              step: fan,
+              place: { item: "b", items: ["a", "b", "c"] },
+              at: "2026-09-14T10:01:15.000Z",
+            },
+            { kind: "child", key: "fan@b", run: "r-b", at: "2026-09-14T10:01:20.000Z" },
+          ]
+        : [
+            { kind: "forecast", steps: [fan], at: "2026-09-14T10:00:00.000Z" },
+            { kind: "enter", key: "fan", step: fan, place: null, at: "2026-09-14T10:01:00.000Z" },
+            { kind: "child", key: "fan", run: "r-a", at: "2026-09-14T10:01:10.000Z" },
+            { kind: "child", key: "fan", run: "r-b", at: "2026-09-14T10:01:20.000Z" },
+          ];
       yield* fs.writeFileString(
         `${parent.dir}/${STEPS_FILE}`,
         startedIn.map((line) => `${encodeStepLine(line)}\n`).join(""),
-        { flag: "a" },
       );
       const repoRun = (id: string, repo: string, over: Partial<RunFacts> = {}) =>
         madeRun(dir, { id, task: "task-1", parent: "r-fan", repo, ...over });
@@ -3276,4 +3296,5 @@ test("a fan-out's Repo runs are its Step's runs, by Wave, with what each merge r
       );
       expect(merged.flow("task-1").lanes[0]!.nodes[0]!.runs[0]!.said).toBe("!12 merged");
     }),
-  ));
+  ),
+);
