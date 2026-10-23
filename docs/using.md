@@ -1827,7 +1827,8 @@ back to the message box. Settings › Chat has no rows for them.
 - **Model** starts with **Default · …**, named by the model an unset choice runs as and
   described "What the chat runs with no model set"; choosing it unsets the model. Then come
   Claude Code's own models with their names and descriptions, or Pi's with its own names. It can be searched,
-  and an id that is not listed is offered as **Use <id>**. A typed model is checked as a
+  and an id that is not listed is offered as **Use <id>**, ignoring surrounding whitespace
+  when you paste or type it. A typed model is checked as a
   Run's model is.
 - **Effort** starts with **Default · …**, named by the level an unset effort runs at and
   described "What the chat runs with no effort set", then the levels the model takes. For a

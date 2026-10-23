@@ -299,6 +299,22 @@ export const typedEntry = (search: string, model: ChoiceSelect): ChoiceOption | 
     : { value: id, label: `Use ${id}` };
 };
 
+/** The model menu's groups and the search query that filters them. */
+export const modelMenu = (search: string, model: ChoiceSelect) => {
+  const query = search.trim();
+  const [first, ...rest] = model.options;
+  const typed = typedEntry(query, model);
+  const groups: Array<Array<ChoiceOption & { readonly typed?: string }>> = [
+    ...(first === undefined ? [] : [[first]]),
+    rest,
+    ...(typed === null ? [] : [[{ ...typed, typed: typed.value }]]),
+  ];
+  return {
+    query,
+    groups,
+  };
+};
+
 /** A refused choice, as the alert above the message box says it. */
 export const refusalSaid = (reason: string) => `${reason.replace(/\.$/, "")}. Nothing was saved.`;
 

@@ -2,6 +2,7 @@
 
 import { expect, test } from "bun:test";
 import { Effect, Stream } from "effect";
+import { useFilter } from "../desktop/node_modules/@nuxt/ui/dist/runtime/composables/useFilter.js";
 import { retelling, tableOffer } from "../desktop/src/bun/chat-choices";
 import { changeSettings } from "../desktop/src/bun/settings";
 import { attachmentPart } from "../desktop/src/shared/attachments";
@@ -18,6 +19,7 @@ import {
   refusalSaid,
   runsAs,
   typedEntry,
+  modelMenu,
 } from "../desktop/src/shared/chat-choices";
 import { NO_FLOCK_SETTINGS, takeFrom } from "../desktop/src/shared/flock-settings";
 
@@ -512,6 +514,25 @@ test("a typed id that is no option is offered to save as Use <id>", () => {
   });
   expect(typedEntry("sonnet", model)).toBeNull();
   expect(typedEntry(" ", model)).toBeNull();
+});
+
+test("model menu filtering keeps a pasted typed id with surrounding whitespace visible", () => {
+  const { model } = chatSelects({ proactive: true }, ACCOUNT);
+  const { filterGroups } = useFilter();
+  for (const pasted of ["claude-opus-5 ", "  claude-opus-5\t", "\nclaude-opus-5\n"]) {
+    const menu = modelMenu(pasted, model);
+    expect(filterGroups(menu.groups, menu.query, { fields: ["label", "value"] }).flat()).toEqual([
+      { value: "claude-opus-5", label: "Use claude-opus-5", typed: "claude-opus-5" },
+    ]);
+  }
+  const known = modelMenu(" sonnet ", model);
+  expect(filterGroups(known.groups, known.query, { fields: ["label", "value"] }).flat()).toEqual([
+    { value: "sonnet", label: "Sonnet 5.5" },
+  ]);
+  const empty = modelMenu(" \t ", model);
+  expect(filterGroups(empty.groups, empty.query, { fields: ["label", "value"] }).flat()).toEqual([
+    ...model.options,
+  ]);
 });
 
 test("a refused choice says nothing was saved after its reason", () => {

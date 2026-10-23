@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { type ChoiceSelect, typedEntry } from "../../../src/shared/chat-choices";
+import { useFilter } from "@nuxt/ui/composables/useFilter";
+import { type ChoiceSelect, modelMenu } from "../../../src/shared/chat-choices";
 
 const props = defineProps<{ select: ChoiceSelect }>();
 const emit = defineEmits<{ choose: [value: string] }>();
@@ -7,29 +8,17 @@ const emit = defineEmits<{ choose: [value: string] }>();
 // Reka requires a nonempty option value.
 const UNSET = "(default)";
 const search = ref("");
+const { filterGroups } = useFilter();
 const items = computed(() => {
-  const [first, ...rest] = props.select.options.map((option) => ({
-    ...option,
-    value: option.value || UNSET,
-    onSelect: () => emit("choose", option.value),
-  }));
-  const typed = typedEntry(search.value, props.select);
-  return [
-    ...(first === undefined ? [] : [[first]]),
-    rest,
-    ...(typed === null
-      ? []
-      : [
-          [
-            {
-              ...typed,
-              icon: "i-lucide-plus",
-              typed: typed.value,
-              onSelect: () => emit("choose", typed.value),
-            },
-          ],
-        ]),
-  ];
+  const menu = modelMenu(search.value, props.select);
+  return filterGroups(menu.groups, menu.query, { fields: ["label", "value"] }).map((group) =>
+    group.map((option) => ({
+      ...option,
+      value: option.value || UNSET,
+      ...("typed" in option && { icon: "i-lucide-plus" }),
+      onSelect: () => emit("choose", option.value),
+    })),
+  );
 });
 </script>
 
@@ -41,7 +30,7 @@ const items = computed(() => {
     value-key="value"
     :aria-label="select.name"
     :search-input="{ placeholder: 'Search or type a model id' }"
-    :filter-fields="['label', 'value']"
+    ignore-filter
     color="neutral"
     variant="soft"
     size="sm"
