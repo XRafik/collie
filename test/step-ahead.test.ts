@@ -9,6 +9,17 @@ import { until } from "./support/host";
 const encode = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const runIdOf = Schema.decodeUnknownSync(Schema.Struct({ runId: Schema.String }));
 
+// A launch is recorded before its prompt is written, so the prompt is what is waited on.
+const promptOf = (state: string, runId: string, operation: string) =>
+  until(
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        return yield* fs.readFileString(`${state}/agents/${runId}/${operation}.prompt.md`);
+      }).pipe(Effect.orElseSucceed(() => null)),
+    (prompt) => prompt !== null,
+  ).pipe(Effect.map((prompt) => prompt!));
+
 test(
   "a pause before B holds at entry, before its agent, until Continue",
   () =>
@@ -122,13 +133,9 @@ test(
           ).toBe(true);
           yield* fs.writeFileString(`${world.home}/pass`, "");
           expect((yield* collie(world, ["run", "resume", runId])).envelope.ok).toBe(true);
-          yield* until(
-            () => readLaunches(world.state, runId),
-            (rows) => rows.length > 0,
+          expect(yield* promptOf(world.state, runId, "b")).toStartWith(
+            "Check the failed assertion.\n\n",
           );
-          expect(
-            yield* fs.readFileString(`${world.state}/agents/${runId}/b.prompt.md`),
-          ).toStartWith("Check the failed assertion.\n\n");
         }),
       ["step-retry-note.workflow.ts"],
     ),
@@ -206,11 +213,7 @@ test(
           expect(question.envelope.ok).toBe(false);
           expect(question.envelope.error?.message).toContain("question");
           yield* fs.writeFileString(first.output, encode("done"));
-          yield* until(
-            () => readLaunches(world.state, runId),
-            (rows) => rows.some((one) => one.operation === "b"),
-          );
-          const prompt = yield* fs.readFileString(`${world.state}/agents/${runId}/b.prompt.md`);
+          const prompt = yield* promptOf(world.state, runId, "b");
           expect(prompt).toStartWith("Check the race first.\n\n");
           expect(prompt).not.toContain("Ignore the race.");
           const after = (yield* detail())!.flow!.lanes[0]!.nodes.find((one) => one.id === "b")!;
