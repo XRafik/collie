@@ -975,6 +975,35 @@ const reasonOf = (result: { readonly _tag: string; readonly failure?: unknown })
   result._tag === "Failure" && isReasoned(result.failure) ? result.failure.reason : "";
 
 scenario(
+  "a hold before Repo runs suspends the parent and continues every repository after release",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-fan-held";
+        yield* repositories(runId, THREE_REPOS);
+        const options = {
+          entry: shipped("implement"),
+          runId,
+          input: { plan: `${runDir(dir, runId)}/plan`, ...FINISH },
+        };
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(controlPath(dir, HOLD, runId), "");
+        const status = yield* stalled(options).pipe(Effect.timeout("5 seconds"));
+        expect(status).toBe("suspended");
+        expect(started).toEqual([]);
+        yield* fs.remove(controlPath(dir, HOLD, runId));
+        expect(said(yield* resumed(options))).toContain("3 repositories built in 2 wave(s)");
+        expect(started.map((one) => one.invocation)).toEqual([
+          "implement-api",
+          "implement-docs",
+          "implement-web",
+        ]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "implement on a plan that spans repositories is one Run of itself per repository, in waves",
   () =>
     runEffect(

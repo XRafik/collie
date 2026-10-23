@@ -1303,8 +1303,9 @@ const buildEach = (fan: {
             Effect.catch((failure) => Effect.succeed({ repo, built: null, why: failure.reason })),
           );
         });
-        running.push(yield* Effect.forkChild(repoRuns(share, { item: repo, items: repos })));
-        yield* Deferred.await(begun);
+        const building = yield* Effect.forkChild(repoRuns(share, { item: repo, items: repos }));
+        running.push(building);
+        yield* Effect.raceFirst(Deferred.await(begun), Fiber.join(building));
       }
       const ended = yield* Fiber.joinAll(running);
       for (const one of ended) {
