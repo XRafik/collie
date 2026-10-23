@@ -677,6 +677,13 @@ leading Run's work is at, `null` once the Task has settled; and `release`, the m
 request's CI, Merged and furthest deploy, `null` until there is one
 ([ADR-draft-a-step-is-declared-where-its-work-is-written](adr/draft-a-step-is-declared-where-its-work-is-written.md)).
 A Step's `links` are Runs its agents started, without expanding those Runs' Steps.
+Each node's `usual` is a duration in milliseconds or null until three completed
+calls exist on this Machine for the same Workflow and Step. The median uses the
+last ten calls, counting each item and round separately. `long` is true while a
+running call exceeds twice its usual time. `data.flow.notice` names that current
+Step and its elapsed and usual times; it is null otherwise. These are observations
+and do not change the card's section or sentence.
+
 `pause` records who armed a pause and when, or is null. `notes` holds ids, authors,
 times, text and read times (null until read). Chat and CLI can arm a hold with
 `before`, deliver a note with `step`, or `withdraw_note` before it is read. A

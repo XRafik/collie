@@ -26,6 +26,7 @@ import type { RunState } from "./runs";
 import type { StepLine, StepMeta, StepPlace } from "./steps";
 import type { Verification } from "./verify-model";
 import { clockTime, epochMs, minutes } from "./time";
+import { stepElapsed } from "./flow-timing";
 import type { readStepSteering } from "./step-steering";
 import type { Effect } from "effect";
 
@@ -44,6 +45,7 @@ export interface AskedFact {
 
 /** Everything one Run's row is built from. */
 export interface LaneFacts {
+  readonly usual?: ReadonlyMap<string, number>;
   readonly steering?: Effect.Success<ReturnType<typeof readStepSteering>>;
   readonly verifications?: ReadonlyArray<Verification>;
   readonly run: {
@@ -444,10 +446,16 @@ export function laneOf(facts: LaneFacts): FlowLane {
   withWait(nodes, facts.wait);
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i]!;
+    const usual = facts.usual?.get(node.id) ?? null;
+    const timing = (one: FlowRun) => {
+      const long = one.state === "running" && usual !== null && stepElapsed(one, now) > usual * 2;
+      return { ...one, usual, long, said: long ? "Longer than usual" : one.said };
+    };
     const pause = facts.steering?.pauses.find((one) => one.step === node.id) ?? null;
     const reached = facts.steering?.reached;
     nodes[i] = {
-      ...node,
+      ...timing(node),
+      runs: node.runs.map(timing),
       pause,
       notes: facts.steering?.notes.filter((one) => one.step === node.id) ?? [],
       said:
@@ -455,7 +463,7 @@ export function laneOf(facts: LaneFacts): FlowLane {
           ? `Paused here, as ${reached.by} asked`
           : pause !== null && node.state === "expected"
             ? "Pauses before it"
-            : node.said,
+            : timing(node).said,
     };
   }
   withReadiness(nodes, facts.readiness);
@@ -472,6 +480,15 @@ export function laneOf(facts: LaneFacts): FlowLane {
     nodes,
   };
 }
+
+export const flowNotice = (flow: Flow, now: number): string | null => {
+  const node = flow.lanes
+    .find((one) => one.run === flow.current?.run)
+    ?.nodes.find((one) => one.id === flow.current?.node);
+  return node?.long === true && node.usual != null
+    ? `${node.title} is taking longer than usual: ${minutes(stepElapsed(node, now))}, usually ${minutes(node.usual).replace(/ min$/, "")}.`
+    : null;
+};
 
 /**
  * The path's nodes in its order, and each node off it after the one that happened before it:

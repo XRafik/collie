@@ -122,7 +122,7 @@ test("the inspector folds completed Slices and scopes its header to a picked Sli
   const now = epochMs("2026-10-23T09:09:00.000Z");
   const whole = inspectorOf(flow, selection, now)!;
   expect(whole.lines).toContain("builder · claude/opus");
-  expect(whole.lines).toContain("9 min so far");
+  expect(whole.lines).toContain("4 min so far");
   expect(whole.description).toBe("Work on the current Slice.");
   expect(whole.entries.map((entry) => entry.title)).toEqual(["3 done", "04", "05", "06"]);
   const picked = inspectorOf(flow, { ...selection, item: "build@04" }, now)!;

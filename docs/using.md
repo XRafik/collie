@@ -1109,6 +1109,12 @@ of reach is faded and says **as of** its last notice's time. A Run absent from t
 board is named **not on the board** and opens nothing. A host without a Flow keeps
 the record's earlier tabs and opens on Summary.
 
+Each Step's inspector and hover show its usual time once this Machine has three
+completed calls of that Step in the same Workflow. It is the median of the last
+ten calls, with each item or round counted separately. Past twice that time, a
+running Step says **Longer than usual**, and the line above the Flow offers its
+current action beside the warning. The warning changes no card sentence or section.
+
 **Pause before Review** arms a pause on the edge before Review; **Don't pause**
 takes it back. Reaching it holds every kind of Step before its work, and
 **Continue** releases it. The pause records who asked. **Note for Review…** leaves

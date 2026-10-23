@@ -205,6 +205,7 @@ import {
   StepNote as SteeringNote,
 } from "./step-steering";
 import { readLaunches } from "./launches";
+import { ensureStepDurations, rememberStepDurations } from "./step-durations";
 import {
   CurrentStep,
   encodeStepLine,
@@ -2892,6 +2893,7 @@ export const hostLayer = (options: {
       const set = (control: string, runId: string) =>
         fs.exists(controlPath(dir, control, runId)).pipe(Effect.orElseSucceed(() => false));
       yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.orDie);
+      yield* ensureStepDurations(dir, yield* store.runs);
       const toast = options.toast;
       const notify: Notifier["Service"]["notify"] = (runId, kind, body, about = {}) =>
         toast === undefined
@@ -3498,6 +3500,11 @@ export const hostLayer = (options: {
               note.cause === "restarted" &&
               !(yield* readStepLines(where)).some((line) => line.kind === "entry");
             yield* noteStep(where, first ? { kind: "entry", cause: null } : note);
+            if (note.kind === "leave") {
+              const row = yield* store.run(runId);
+              if (row !== null)
+                yield* rememberStepDurations(dir, runId, row.workflow, yield* readStepLines(where));
+            }
           }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
         record: (runId, event) =>
           // A replay writes its records again, as it re-enters every step: the log is what

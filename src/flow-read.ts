@@ -9,6 +9,7 @@ import { readAudit, whoActed } from "./audit";
 import type { PluginEnv } from "./env";
 import {
   currentOf,
+  flowNotice,
   laneOf,
   linkSaid,
   linkState,
@@ -23,6 +24,7 @@ import { machineName } from "./peers";
 import type { RunFacts, RunState } from "./runs";
 import { readStepLines } from "./steps";
 import { readStepSteering } from "./step-steering";
+import { usualStepTimes } from "./step-durations";
 import { readRunLinks } from "./run-links";
 import { epochMs } from "./time";
 import { readVerifications } from "./verify";
@@ -120,6 +122,7 @@ export const laneFor = Effect.fn("Flow.lane")(function* (
     machine: machineOf(env),
     lines: yield* readStepLines(run.dir),
     steering: yield* readStepSteering(run.dir),
+    usual: yield* usualStepTimes(env.stateDir, run.workflow),
     launches,
     questions: run.engine?.questions ?? [],
     verifications: yield* readVerifications(run.evidence).pipe(Effect.orElseSucceed(() => [])),
@@ -295,7 +298,7 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
     );
   }
   const leading = lanes.find((lane) => lane.run === task.leader.id);
-  return {
+  const flow: Flow = {
     lanes,
     current: task.settled || leading === undefined ? null : currentOf(leading),
     release:
@@ -307,4 +310,5 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
             mrUrl: mrRefOf(task.mr) === null ? null : mrUrlOf(mrRefOf(task.mr)!),
           }),
   } satisfies Flow;
+  return { ...flow, notice: flowNotice(flow, yield* Clock.currentTimeMillis) };
 });

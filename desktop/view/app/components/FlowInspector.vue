@@ -28,7 +28,8 @@ const labels: Record<string, string> = {
           <FlowGlyph :state="info.state" />{{ info.title }}
           <span class="text-sm font-normal text-muted">{{ info.state.replaceAll("-", " ") }}</span>
         </h3>
-        <p v-if="info.said" class="text-sm">{{ info.said }}</p>
+        <p v-if="info.timing || info.said" class="text-sm">{{ info.timing ?? info.said }}</p>
+        <p v-if="info.node.long" class="text-sm text-warning">Longer than usual</p>
       </div>
       <UButton
         color="neutral"
@@ -40,7 +41,13 @@ const labels: Record<string, string> = {
     </header>
     <slot name="why" />
     <slot name="actions" />
-    <p v-for="line in info.lines" :key="line" class="text-xs text-muted">{{ line }}</p>
+    <p
+      v-for="line in info.lines.filter((line) => line !== info.timing)"
+      :key="line"
+      class="text-xs text-muted"
+    >
+      {{ line }}
+    </p>
     <p v-if="info.description" class="text-sm">{{ info.description }}</p>
     <slot name="decision" />
     <UButton

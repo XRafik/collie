@@ -724,6 +724,8 @@ const FlowNodeFields = {
   log: Schema.optional(Schema.NullOr(Schema.Int)),
   why: Schema.optional(Schema.NullOr(Schema.String)),
   evidence: Schema.optional(Schema.Int),
+  usual: Schema.optional(Schema.NullOr(Schema.Number)),
+  long: Schema.optional(Schema.Boolean),
   pauseTarget: Schema.optional(Schema.String),
   notes: Schema.optional(
     Schema.Array(
@@ -771,6 +773,7 @@ export type FlowLane = typeof FlowLane.Type;
 
 /** A Task drawn as the Steps its Runs took (ADR-draft-a-step-is-declared-where-its-work-is-written). */
 export const Flow = Schema.Struct({
+  notice: Schema.optional(Schema.NullOr(Schema.String)),
   lanes: Schema.Array(FlowLane),
   /** The Run and node the work is at, or null once it has settled. */
   current: Schema.NullOr(Schema.Struct({ run: Schema.String, node: Schema.String })),

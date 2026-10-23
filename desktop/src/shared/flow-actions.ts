@@ -255,5 +255,5 @@ export const nextMove = (flow: Flow) => {
   const node = lane?.nodes.find((one) => one.id === flow.current!.node);
   return node?.primary == null || lane === undefined
     ? null
-    : { run: lane.run, lane, node, action: node.primary };
+    : { run: lane.run, lane, node, action: node.primary, notice: flow.notice ?? null };
 };

@@ -1,5 +1,5 @@
 import type { Flow, FlowNode, FlowRun } from "../../../src/board-model";
-import { epochMs, minutes } from "../../../src/time";
+import { stepTiming } from "./step-timing";
 export interface FlowSpot {
   readonly run: string;
   readonly node: string;
@@ -131,12 +131,9 @@ export const inspectorOf = (flow: Flow, selection: FlowSelection, now: number) =
   if (node.ranOn !== null) lines.push([node.role, node.ranOn].filter(Boolean).join(" · "));
   if (node.started !== null) {
     lines.push(`Started ${node.started}`);
-    lines.push(
-      node.ended === null
-        ? `${minutes(now - epochMs(node.started))} so far`
-        : `${minutes(epochMs(node.ended) - epochMs(node.started))} total`,
-    );
   }
+  const timing = stepTiming(node, now);
+  if (timing !== null) lines.push(timing);
   if (node.ended !== null) lines.push(`Ended ${node.ended}`);
   node.attempts
     .slice(1)
@@ -156,6 +153,7 @@ export const inspectorOf = (flow: Flow, selection: FlowSelection, now: number) =
     entries.push({ title: one.title, nodes: [one], folded: false });
   return {
     title: node.title,
+    timing,
     state: node.state,
     said: node.said,
     description: node.description,

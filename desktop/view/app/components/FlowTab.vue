@@ -219,8 +219,11 @@ watch(
     :class="{ 'opacity-50': placed.asOf !== null }"
     @keydown="key"
   >
-    <div class="flex items-center justify-between gap-3">
-      <p class="text-sm">{{ placed.task.sentence }}</p>
+    <div
+      class="flex items-center justify-between gap-3"
+      :class="flow.notice ? 'rounded bg-warning/10 p-3 text-warning' : ''"
+    >
+      <p class="text-sm">{{ flow.notice ?? placed.task.sentence }}</p>
       <UButton
         v-if="moveAction !== null && flow.current !== null"
         :label="moveAction.label"
