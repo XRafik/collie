@@ -613,6 +613,8 @@ function withWait(nodes: FlowNode[], wait: LaneWait | null) {
   const node = nodes[at];
   // A question open on it is already what it waits on.
   if (node === undefined || (node.state === "needs-you" && node.wait === null)) return;
+  // A Step that failed already says why its Run parked.
+  if (wait.wait === "parked" && nodes.some((one) => one.state === "failed")) return;
   nodes[at] = {
     ...node,
     state: wait.needsYou ? "needs-you" : "waiting",

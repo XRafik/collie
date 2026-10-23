@@ -1287,6 +1287,17 @@ const failureOf = (cause: Cause.Cause<unknown>): string => {
   return "reason" in said.value ? said.value.reason : said.value.message;
 };
 
+/**
+ * Records that the Step the work is in failed, where the Run parks to be resumed rather than
+ * ending: the Step is drawn failed, saying why, until a resume enters it again.
+ */
+export const stepFailed = (why: string): Effect.Effect<void, never, Run | Host> =>
+  Effect.gen(function* () {
+    const at = yield* CurrentStep;
+    if (at === null) return;
+    yield* (yield* Host).step((yield* Run).id, { kind: "fail", key: at.key, why });
+  });
+
 /** Calls of `forecast`, per execution, so each forecast is an Activity of its own. */
 const forecasts = new WeakMap<object, number>();
 

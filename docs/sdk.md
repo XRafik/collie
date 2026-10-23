@@ -1119,6 +1119,10 @@ drawn after the Step that ran before it, and a path Step the Run never reached e
 The records are Activities, so a replay records nothing twice, and the host is their only
 writer ([ADR-draft-a-step-is-declared-where-its-work-is-written](adr/draft-a-step-is-declared-where-its-work-is-written.md)).
 
+Work that fails in a way a resume can retry parks the Run rather than failing it. Call
+`stepFailed(why)` before parking, and the Step it is in is drawn failed, saying why, until
+the resume enters it again.
+
 A module that declares no Steps still runs. Its Run's Flow is what happened — its Operations,
 questions and children, titled by their names — and forecasts nothing.
 

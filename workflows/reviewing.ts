@@ -25,6 +25,7 @@ import {
   renderRecordedChecks,
   repoArgs,
   riskLine,
+  step,
   targetKind,
   type Finding,
   type SynthesisReport,
@@ -93,6 +94,16 @@ export const REVIEWER = { harness: "claude", model: "opus", effort: "high" };
 
 /** The implementer's seat: implement's builder, and whoever fixes what a review found. */
 export const IMPLEMENTER = { harness: "claude", model: "opus", effort: "high" };
+
+/** A round of review and the fix after it, which every Workflow that reviews makes the same way. */
+export const reviewRound = step({
+  id: "review",
+  title: "Review",
+  description: "Reviewers read the change, and what blocks goes back to be fixed.",
+  kind: "agent",
+  role: "reviewer",
+  produces: "review",
+});
 
 /** What one pass is about, and where in a rally it stands. */
 export interface ReviewAsk {

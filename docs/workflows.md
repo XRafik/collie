@@ -66,6 +66,12 @@ by construction, a guard not labelled as one, and one whose only proof is a text
 - **Refine** — another planner round, as often as you like.
 - **Finish planning** — finish without starting implementation or another planning round.
 
+**Its [Flow](../CONTEXT.md)** forecasts **Grill**, **Spec**, **Tickets** and **End menu**,
+the menu a run per round. Unbuildable, Second opinion and its Revise, Offload to Linear and
+Refine are drawn off the path, each after the Step before it. Started with `then=implement`,
+End menu is never asked and ends not run. The implement or architecture Run it starts is a
+row of its own.
+
 Module: [`workflows/plan.workflow.ts`](../workflows/plan.workflow.ts), with its prompts in
 [`workflows/plan.md`](../workflows/plan.md).
 
@@ -212,6 +218,13 @@ after the last, a job still failing parks the run unproved, naming the check, th
 the commit. The CI fix loop is kept apart from the gate's: what fails, how it is read
 again and the steps a replay depends on all differ, and only the round limit and the
 dispute rule are shared.
+
+**Its [Flow](../CONTEXT.md)** forecasts **Build**, a run per ticket, then **Review**, a run
+per review-and-fix round, **Checks**, the gate with its fix rounds, **Merge request** and
+**What next**. A CI fix round is drawn off the path. A plan that spans repositories forecasts
+again once it is read, to **Repo runs** alone, a run per repository. The release Run it starts
+is a row of its own. Checks still unproved after the gate's fixes park the Run with **Checks** failed,
+and a resume runs them again.
 
 Module: [`workflows/implement.workflow.ts`](../workflows/implement.workflow.ts), with its
 content in [`workflows/implement.md`](../workflows/implement.md).
@@ -575,6 +588,13 @@ release; after it, the new Run takes over the failed Run's landing — never a m
 made outside a Release Run — and only tags, asking to adopt the claim the failed Run kept. For an application it
 finishes the tag that already carries the merge, stage included, and asks `production`
 afresh; where production already carries the merge it asks nothing and ends.
+
+**Its [Flow](../CONTEXT.md)** forecasts **Assess**, **Prove the head**, **Review wait**,
+**Merge go**, **Helle claim** and **Merge**, then for an application **Stage**, **Production
+go** and **Production**. Once the assessment finds a package, the path ends at **Tag**
+instead. A comment round and staging the merge request are drawn off the path, and the fix
+rounds belong to the Step that proved the head they fix. Proved checks that still fail park
+the Run with that Step failed, and a resume runs them again.
 
 Module: [`workflows/release.workflow.ts`](../workflows/release.workflow.ts), with its
 content in [`workflows/release.gitlab.md`](../workflows/release.gitlab.md) and

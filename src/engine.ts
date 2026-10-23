@@ -1128,6 +1128,9 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     path: ReadonlyArray<Step>,
   ): Effect.Effect<void, never, Run | Host | WorkflowEngine | WorkflowInstance>;
 
+  /** Records that the Step the work is in failed, for a Run that parks to be resumed. */
+  export function stepFailed(why: string): Effect.Effect<void, never, Run | Host>;
+
 
   /** A schema that decodes an agent's Output without services of its own. */
   export type OutputContract = Schema.Codec<unknown, unknown, never, never>;
