@@ -706,6 +706,17 @@ test("a window that never saw the held harness set, as one opened after the swit
   });
 });
 
+test("a choice last seen on another harness than the one now held is not put back, so Stay keeps the held harness", () => {
+  const onClaude = { proactive: true, chatModel: "sonnet", chatEffort: "high" };
+  const seen = heldChoice(null, onClaude, "claude");
+  const heldOnPi = heldChoice(seen, onClaude, "pi");
+  expect(heldOnPi).toBeNull();
+  expect(changeSettings(onClaude, NO_FLOCK_SETTINGS, stayChange(heldOnPi, "pi"))).toEqual({
+    proactive: true,
+    chatHarness: "pi",
+  });
+});
+
 test("during a turn, a set choice that runs as something else says what the reply finishes on and what the next message runs on, by their offered labels", () => {
   const set = { proactive: true, chatModel: "sonnet" };
   const turning: ChatHeld = {

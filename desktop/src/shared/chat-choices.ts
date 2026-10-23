@@ -449,16 +449,16 @@ export const chatNotice = (settings: DesktopSettings, choices: ChatChoices): Cha
   };
 };
 
-/** The choice Stay puts back: the settings while their harness is held, else the last seen so. */
+/** The choice Stay puts back: the settings while their harness is held, else the last seen while it was held. */
 export const heldChoice = (
   previous: ChatSet | null,
   settings: DesktopSettings,
   heldOn: string,
 ): ChatSet | null => {
   const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
-  return harness === heldOn
-    ? { harness, model: settings.chatModel, effort: settings.chatEffort }
-    : previous;
+  if (harness === heldOn)
+    return { harness, model: settings.chatModel, effort: settings.chatEffort };
+  return previous?.harness === heldOn ? previous : null;
 };
 
 /** What Stay saves: the held choice, unset where it was unset, or the held harness alone. */
