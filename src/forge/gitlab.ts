@@ -388,7 +388,13 @@ function deployed<R>(
 }
 
 const EnvironmentDeploymentsJson = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ sha: Schema.String, status: Schema.String })),
+  Schema.Array(
+    Schema.Struct({
+      sha: Schema.String,
+      status: Schema.String,
+      deployable: Schema.optionalKey(Schema.NullOr(Schema.Struct({ name: Schema.String }))),
+    }),
+  ),
 );
 
 /** Each environment of the staging tier, its deployments read newest first. */
@@ -397,6 +403,7 @@ function stagingEnvironments<R>(
   commit: string | null,
   cwd: string,
   run: Runner<R>,
+  jobs?: ReadonlyArray<string>,
 ): Effect.Effect<StagingRead, never, R> {
   return Effect.gen(function* () {
     const host = hostOf(ref.project);
@@ -428,7 +435,11 @@ function stagingEnvironments<R>(
         if (deployments.code !== 0 || Option.isNone(newest)) return unread;
         for (const one of newest.value) {
           if (live === null && one.status === "success") live = one.sha;
-          if (one.sha === commit) hasCommit = true;
+          if (
+            one.sha === commit &&
+            (jobs === undefined || jobs.includes(one.deployable?.name ?? ""))
+          )
+            hasCommit = true;
         }
         if (newest.value.length < 100) break;
       }

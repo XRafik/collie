@@ -568,6 +568,64 @@ for (const name of ["gitlab", "github"] as const) {
     const success = (sha: string) => ({ sha, status: "success" as const });
     const failed = (sha: string) => ({ sha, status: "failed" as const });
 
+    test("attribution: only selected jobs' deployments count, including a selected job's earlier attempt", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(
+            name,
+            model(name, {
+              mrs: [
+                mr(name, {
+                  jobs: [
+                    { name: "stage:playground", state: "passed", id: 23 },
+                    { name: "stage:playground", state: "failed", id: 17 },
+                    { name: "stage:spilnu", state: "passed", id: 9 },
+                  ],
+                }),
+              ],
+              environments: [
+                {
+                  name: "stage-playground",
+                  tier: "staging",
+                  deployments: [
+                    { sha: HEAD, status: "success", job: "stage:playground", jobId: 17 },
+                  ],
+                },
+                {
+                  name: "stage-spilnu",
+                  tier: "staging",
+                  deployments: [{ sha: HEAD, status: "success", job: "stage:spilnu", jobId: 9 }],
+                },
+                {
+                  name: "stage-manual",
+                  tier: "staging",
+                  deployments: [{ sha: HEAD, status: "success", logUrl: "" }],
+                },
+                {
+                  name: "stage-bot",
+                  tier: "staging",
+                  deployments: [
+                    { sha: HEAD, status: "success", logUrl: "https://bot.example/log/17" },
+                  ],
+                },
+              ],
+            }),
+          );
+          const read = yield* forge.stagingEnvironments(ref(name), HEAD, "/w", fake.run, [
+            "stage:playground",
+          ]);
+          expect(read).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-playground", live: HEAD, hasCommit: true },
+              { name: "stage-spilnu", live: HEAD, hasCommit: false },
+              { name: "stage-manual", live: HEAD, hasCommit: false },
+              { name: "stage-bot", live: HEAD, hasCommit: false },
+            ],
+          });
+        }),
+      ));
+
     test("per environment: each stage environment's newest successful deployment is read, even where another's is newer", () =>
       runEffect(
         Effect.gen(function* () {

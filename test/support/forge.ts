@@ -161,12 +161,16 @@ export const ForgeModel = Schema.Struct({
         deployed: Schema.optionalKey(Schema.String),
         /** A newer deployment there that failed, which is not what is live. */
         failed: Schema.optionalKey(Schema.String),
+        job: Schema.optionalKey(Schema.String),
         /** Every deployment there, newest first; `deployed` and `failed` are not read where set. */
         deployments: Schema.optionalKey(
           Schema.Array(
             Schema.Struct({
               sha: Schema.String,
               status: Schema.Literals(["success", "failed", "running"]),
+              job: Schema.optionalKey(Schema.String),
+              jobId: Schema.optionalKey(Schema.Number),
+              logUrl: Schema.optionalKey(Schema.String),
             }),
           ),
         ),
@@ -649,10 +653,11 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(
         pageOf(
           route,
-          deploymentsAsked(model, route).map(({ sha, status, environment }) => ({
+          deploymentsAsked(model, route).map(({ sha, status, environment, job }) => ({
             sha,
             status,
             environment: { name: environment },
+            deployable: job === undefined ? null : { name: job },
           })),
         ),
       );
@@ -921,6 +926,9 @@ const deploymentsOf = (model: ForgeModel) =>
       state:
         one.status === "failed" ? "failure" : one.status === "running" ? "in_progress" : one.status,
       status: one.status,
+      job: "job" in one ? one.job : env.job,
+      jobId: "jobId" in one ? one.jobId : undefined,
+      logUrl: "logUrl" in one ? one.logUrl : undefined,
     })),
   );
 
@@ -1011,7 +1019,19 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   const statuses = /\/deployments\/(\d+)\/statuses/.exec(route);
   if (statuses) {
     const one = deploymentsOf(model).find((deployment) => deployment.id === Number(statuses[1]));
-    return one === undefined ? no() : json([{ state: one.state }]);
+    if (one === undefined) return no();
+    const mr = model.mrs[0];
+    const jobId =
+      one.jobId ??
+      (mr?.jobs ?? []).find((job) => job.name === one.job)?.id ??
+      (mr?.jobs ?? []).findIndex((job) => job.name === one.job) + 1;
+    return json([
+      {
+        state: one.state,
+        log_url:
+          one.logUrl ?? (jobId > 0 ? `https://${mr?.project}/actions/runs/7/job/${jobId}` : ""),
+      },
+    ]);
   }
   const compare = /\/compare\/([^.]+)\.\.\.(.+)$/.exec(route);
   if (compare) {
@@ -1029,7 +1049,9 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
     });
   }
   const checkRuns =
-    /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?(?:check_name=(.+)|per_page=1)$/.exec(route);
+    /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?(?:check_name=([^&]+)(?:&.*)?|per_page=1)$/.exec(
+      route,
+    );
   if (checkRuns) {
     const [, repo = "", sha = "", name] = checkRuns;
     const ofRepo = model.mrs.filter((one) => one.project === `github.com/${repo}`);
@@ -1044,21 +1066,27 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
           : target !== undefined
             ? [jobsOf(target.target!.jobs, 2000), target.target!.at]
             : [[], sha];
-    return json({
-      check_runs: jobs.flatMap((job) =>
-        name === undefined || job.name === decodeURIComponent(name)
-          ? [
-              {
-                id: job.id,
-                name: job.name,
-                head_sha: at,
-                ...GITHUB_RUN[job.state],
-                html_url: `https://github.com/${repo}/runs/${job.id}`,
-              },
-            ]
-          : [],
-      ),
-    });
+    const page = {
+      check_runs: jobs
+        .filter(
+          (job, at) =>
+            route.includes("filter=all") || jobs.findIndex((one) => one.name === job.name) === at,
+        )
+        .flatMap((job) =>
+          name === undefined || job.name === decodeURIComponent(name)
+            ? [
+                {
+                  id: job.id,
+                  name: job.name,
+                  head_sha: at,
+                  ...GITHUB_RUN[job.state],
+                  html_url: `https://github.com/${repo}/runs/${job.id}`,
+                },
+              ]
+            : [],
+        ),
+    };
+    return args.includes("--slurp") ? json([page]) : json(page);
   }
   const rerun = /^repos\/(.+)\/actions\/jobs\/(\d+)\/rerun$/.exec(route);
   if (rerun && args.includes("POST")) {

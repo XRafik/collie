@@ -376,9 +376,8 @@ const named = (names: ReadonlyArray<string>) => names.map((one) => `\`${one}\``)
 
 /**
  * A merge request's head on stage: each of `jobs`, one at least, passed on the pipeline of its
- * head, and that head is `head`; at least one stage environment has a deployment of the commit
- * that pipeline ran on (its merge commit where it is a merged-results pipeline); and every such
- * environment's newest successful deployment carries `head`.
+ * head, and that head is `head`; at least one stage environment was deployed by those jobs
+ * at that pipeline's commit; and every such environment's newest successful deployment carries `head`.
  */
 export const readStage = Effect.fn("Releasing.readStage")(function* <R>(opts: {
   readonly cwd: string;
@@ -408,6 +407,7 @@ export const readStage = Effect.fn("Releasing.readStage")(function* <R>(opts: {
     commit,
     opts.cwd,
     opts.run,
+    opts.jobs,
   );
   if (!staging.ok) return failed(unpassed ?? `stage could not be read: ${staging.reason}`);
   const reached = staging.environments.filter((env) => env.hasCommit);
@@ -415,7 +415,7 @@ export const readStage = Effect.fn("Releasing.readStage")(function* <R>(opts: {
   if (unpassed !== null) return failed(unpassed, environments);
   if (reached.length === 0)
     return failed(
-      `stage does not carry ${short(opts.head)}: no stage environment has a deployment of ${short(commit)}`,
+      `stage does not carry ${short(opts.head)}: no stage environment has a deployment of ${short(commit)} by ${named(opts.jobs)}`,
       environments,
     );
   const uncarried: string[] = [];

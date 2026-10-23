@@ -102,7 +102,7 @@ export type DeployedRead =
   | { readonly ok: true; readonly sha: string | null }
   | { readonly ok: false; readonly reason: string };
 
-/** A staging environment: the commit its newest successful deployment has, and whether it has any deployment of the commit asked about. */
+/** A staging environment's live commit, and whether the requested commit was deployed by the selected jobs, or by any job where none were selected. */
 export interface StagingEnvironment {
   readonly name: string;
   readonly live: string | null;
@@ -202,6 +202,7 @@ export interface Forge {
     commit: string | null,
     cwd: string,
     run: Runner<R>,
+    jobs?: ReadonlyArray<string>,
   ) => Effect.Effect<StagingRead, never, R>;
   /** The open merge request whose source branch is `branch`, if any. */
   readonly forBranch: <R>(

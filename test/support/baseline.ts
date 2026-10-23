@@ -9192,7 +9192,7 @@ const stagedTag = (name: MrForge) => ({
 
 /** Where stage and production are, by the commit each one's newest successful deployment has. */
 const deploys = (stage: string, production: string) => [
-  { name: "stage", tier: "staging", deployed: stage },
+  { name: "stage", tier: "staging", deployed: stage, job: "deploy-stage" },
   { name: "production", tier: "production", deployed: production },
 ];
 
@@ -10247,8 +10247,13 @@ for (const name of ["gitlab", "github"] as const) {
     }>;
     const environments = (spilnu: Deployments, happytiger: Deployments) => [
       { name: "stage-web", tier: "staging", deployments: [live("web-only")] },
-      { name: "stage-spilnu", tier: "staging", deployments: spilnu },
-      { name: "stage-happytiger", tier: "staging", deployments: happytiger },
+      { name: "stage-spilnu", tier: "staging", job: "deploy-stage-spilnu", deployments: spilnu },
+      {
+        name: "stage-happytiger",
+        tier: "staging",
+        job: "deploy-stage-happytiger",
+        deployments: happytiger,
+      },
       { name: "production", tier: "production", deployments: [live(made.base)] },
     ];
     const model: ForgeModel = {
@@ -10824,6 +10829,37 @@ for (const name of ["gitlab", "github"] as const) {
     120_000,
   );
 
+  scenario(
+    `stage on ${name}: attribution with no environment belonging to a selected job leaves stage unproved and names the jobs`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, onStage, unstaging } = yield* stageOn();
+          const runId = `r-stage-unowned-${name}`;
+          const model = onStage();
+          yield* rig.queueOutputs([
+            MR_STAGED,
+            {
+              writes: [
+                forge.holding({
+                  ...model,
+                  environments: model.environments.map((env) => ({ ...env, job: "teammate-job" })),
+                }),
+              ],
+              output: STAGED_MR,
+            },
+            unstaging(),
+          ]);
+          const result = yield* ran(options(runId));
+          yield* bin.restore();
+          expect(reasonOf(result)).toContain("no stage environment");
+          expect(reasonOf(result)).toContain("by `deploy-stage`, `e2e-stage`");
+          expect(yield* wasAsked(runId, "staged-1")).toBe(false);
+        }),
+      ),
+    120_000,
+  );
+
   for (const ending of ["Done", "Leave it on stage", "failed stage"])
     scenario(
       `stage on ${name}: a refused claim give-back parks on ${ending} and retries it on resume`,
@@ -10950,11 +10986,12 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     );
 
-  const busyStage = (busy: ReadonlyArray<string>) =>
+  const busyStage = (busy: ReadonlyArray<string>, sameHead = false) =>
     Effect.gen(function* () {
       const made = yield* releasable(name, UNAPPROVED[name], false);
       const success = (sha: string) => ({ sha, status: "success" as const });
-      const start = (app: string) => (busy.includes(app) ? [TEAMMATE] : [made.base]);
+      const start = (app: string) =>
+        busy.includes(app) ? [sameHead ? made.head : TEAMMATE] : [made.base];
       const before = yield* made.forge.model();
       const at = (deployed: Partial<Record<string, ReadonlyArray<string>>>): ForgeModel => ({
         ...before,
@@ -10967,6 +11004,7 @@ for (const name of ["gitlab", "github"] as const) {
           ...APPS.map((app) => ({
             name: `stage-${app}`,
             tier: "staging",
+            job: appJob(app),
             deployments: (deployed[app] ?? start(app)).map(success),
           })),
           { name: "production", tier: "production", deployments: [success(made.base)] },
@@ -11030,11 +11068,11 @@ for (const name of ["gitlab", "github"] as const) {
   });
 
   scenario(
-    `stage on ${name}: busy claims: six of seven projects held by Dann, Stage what is free stages only the free application, names the six left off, rolls back only its environment and gives back only its project`,
+    `stage on ${name}: busy claims: attribution leaves Dann's six deployments of the same head untouched, stages only the free application, names the six left off, rolls back only its environment and gives back only its project`,
     () =>
       runEffect(
         Effect.gen(function* () {
-          const { bin, forge, model, staged, unstaged } = yield* busyStage(DANNS);
+          const { bin, forge, model, staged, unstaged } = yield* busyStage(DANNS, true);
           claimed.length = 0;
           const runId = `r-busy-355-${name}`;
           yield* rig.queueOutputs([

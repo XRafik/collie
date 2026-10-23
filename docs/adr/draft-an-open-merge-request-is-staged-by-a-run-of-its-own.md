@@ -89,6 +89,14 @@ Output:
 - **Off stage:** every stage environment the Run deployed to has a newest successful
   deployment that no longer carries the head and carries what production's does.
 
+A stage environment is the Run's only where a job the Run played deployed to it: on
+GitLab, by the deployment's job; on GitHub, by the job its status's log points to. A
+deployment of the same commit by anything else, such as a teammate's stage of the same
+head, is not the Run's. It is never proved on and never rolled back, and it fails nothing.
+Where the head moved before stage was proved, the environments the earlier head's jobs
+reached stay the Run's to roll back. Stage is unproved where no environment is the
+Run's.
+
 This replaces reading only the newest stage deployment of the whole project, for the
 Release Run's staging of a merge request too. A monorepo deploys one environment per
 application, and the newest stage deployment showed only one of them.
