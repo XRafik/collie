@@ -59,6 +59,7 @@ import {
   findingsIn,
   settleRound,
   splitDisputed,
+  TOO_LARGE,
   unmetCriteria,
   wholeRunsOwed,
   type Criterion,
@@ -618,7 +619,9 @@ export default defineWorkflow({
           assumptions.push(...(answered.assumptions ?? []));
           commits.push(...(answered.commits ?? []));
           blockers =
-            after.head === before.head && after.fingerprint === before.fingerprint
+            after.head === before.head &&
+            after.fingerprint === before.fingerprint &&
+            after.fingerprint !== TOO_LARGE
               ? (answered.findings ?? []).filter(isBlocking)
               : [];
           tries += 1;

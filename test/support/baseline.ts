@@ -85,7 +85,7 @@ import {
 } from "../../src/engine";
 import { VerifySpecSchema } from "../../src/verify-spec";
 import { findingsIn } from "../../src/output";
-import { collect, fingerprint, readVerifications } from "../../src/verify";
+import { FINGERPRINT_MAX_BYTES, collect, fingerprint, readVerifications } from "../../src/verify";
 import { inputsFor, offersFrom } from "../../src/offers";
 import { Store } from "../../src/store";
 import { everyRegistered, registerAgent, registryPath, scopeFor } from "../../src/registry";
@@ -3038,6 +3038,42 @@ scenario(
           "acceptance criterion not answered: **Named.** Each one is named in the log.",
         );
         expect((yield* prompts()).join("\n")).not.toContain("01-first.md.criteria-3.prompt.md");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "a blocked criteria hand-back on a tree too large to fingerprint is handed back again, not asked about",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const bin = yield* FakeBin.make(`${rig.root}/bin`);
+        yield* bin.add("glab", `[ "$1" = "api" ] && echo '{"username":"tester"}'; exit 0`);
+        yield* repository();
+        const big = `${rig.projectDir}/big.bin`;
+        yield* fs.writeFileString(big, "");
+        yield* fs.truncate(big, FINGERPRINT_MAX_BYTES + 1);
+        const plan = yield* planOf([
+          { file: "01-first.md", title: "the first one", checks: "unit", body: CRITERIA },
+          { file: "02-second.md", title: "the second one", checks: "unit" },
+        ]);
+        yield* approve("r-unmeasured", ["unit"]);
+        yield* rig.queueOutputs([COUNTED_ONLY, BLOCKED, BLOCKED]);
+        const status = yield* driven(
+          { entry: shipped("implement"), runId: "r-unmeasured", input: { plan, ...FINISH } },
+          (run) =>
+            Effect.gen(function* () {
+              expect(yield* stallAsked(run, "01-first.md.criteria-stalled-1")).toHaveLength(0);
+              return yield* ended(run.status);
+            }),
+        );
+        yield* bin.restore();
+
+        expect(status.status).toBe("failed");
+        expect(outcomeText(status)).toContain("after 2 hand-backs");
+        expect((yield* prompts()).join("\n")).toContain("01-first.md.criteria-2.prompt.md");
       }),
     ),
   120_000,
