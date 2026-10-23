@@ -12,6 +12,7 @@
 import type { Asker } from "./proposals";
 import { actorOf, readAudit, whoActed, type ScheduledBy } from "./audit";
 import { LinkDelivery, readLinkDeliveries } from "./run-links";
+import { appendLogLine } from "./run-log";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
@@ -3451,6 +3452,25 @@ export const hostLayer = (options: {
         step: (runId, note) =>
           Effect.gen(function* () {
             const where = runDir(dir, runId);
+            if (note.kind === "enter") {
+              if (
+                (yield* readStepLines(where)).some(
+                  (one) => one.kind === "enter" && one.key === note.key,
+                )
+              )
+                return;
+              const place =
+                note.place === null
+                  ? null
+                  : "item" in note.place
+                    ? note.place.item
+                    : `Round ${note.place.round}`;
+              const log = yield* appendLogLine(
+                where,
+                `── ${note.step.title}${place === null ? "" : ` · ${place}`} ──`,
+              ).pipe(Effect.orDie);
+              return yield* noteStep(where, { ...note, log });
+            }
             const first =
               note.kind === "entry" &&
               note.cause === "restarted" &&

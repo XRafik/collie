@@ -38,6 +38,7 @@ const labels: Record<string, string> = {
         @click="emit('close')"
       />
     </header>
+    <slot name="why" />
     <slot name="actions" />
     <p v-for="line in info.lines" :key="line" class="text-xs text-muted">{{ line }}</p>
     <p v-if="info.description" class="text-sm">{{ info.description }}</p>
@@ -74,7 +75,9 @@ const labels: Record<string, string> = {
         </component>
       </li>
     </ol>
+    <slot name="work" />
     <UButton
+      v-if="info.open.tab === 'plan' || info.open.tab === 'review' || info.open.tab === 'mr'"
       variant="link"
       class="self-start px-0"
       :label="`Open in ${labels[info.open.tab] ?? info.open.tab}`"

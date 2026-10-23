@@ -1120,6 +1120,16 @@ focused node's first action; Shift+F10, the menu key and a right-click open its 
 The line above the map carries the current node's action too. Saved Flows offer no
 actions until their Machine is reached again.
 
+The inspector shows the selected Step's own **Terminal**, **Log** and **Evidence**,
+or the Slice or round picked in its list. Its terminal is the same live herdr pane
+as the Terminal tab: typing reaches that agent. Switching away releases the pane.
+The Log is bounded by Step start markers; where its beginning is older than the
+tail shown, it says so and links to the full Log. Evidence lists only that Step's
+Verifications, narrowed to the picked Slice or round. Each part shows its count.
+A working agent opens on Terminal; a failed Step shows its failing command and the
+last output above Retry; a check opens on Evidence; other recorded work opens on
+Log. **Full Terminal**, **Full Log** and **Full Evidence** open the Run's whole tab.
+
 Desktop is released with Collie, under the same tag and version. Install it for your user,
 on Linux with a desktop entry and on a Mac into `~/Applications`:
 
@@ -1686,17 +1696,18 @@ and while focus is elsewhere in the window, such as the Flock chat.
 
 Until its details arrive, a record shows a row of placeholder tabs and a placeholder body;
 a Run whose details are not on its Machine says so, and a Machine out of reach shows its
-banner. A record opens on **Summary**, unless the board asked for a tab or a jump chose one: the
+banner. A record opens on **Flow** where the host supplies one, unless the board asked
+for a tab or a jump chose one. **Summary** gives the
 Run's status; why it needs attention, in the board's words, unless nothing needs it; its
 outcome — what kind it is, what it still has to prove, what is in its way, what to do next
-and what it delivered; its steps, each with its status, note, how long it took and its
-agents; and the Inputs it was given, each with whether it was given or inferred. A section
+and what it delivered; and the Inputs it was given, each with whether it was given or inferred. A section
 with nothing to say is left out. Each tab keeps its place while the record is open: switching
 back to one brings it back as you left it, with what you had opened or searched for, and
 scrolled where you left it, waiting for it to grow if it is still filling in; a tab's first
 visit starts at the top. A video on Evidence plays only while the tab is shown: it pauses when
 you leave, and one still being read then waits for Play. A jump to a finding lands on its
-target instead. Closing the record, or opening another Run's, forgets every place.
+target instead. Closing the record, or opening another Task's, forgets every place.
+Switching Runs in the same Task resets those tabs but keeps the Flow and its selection.
 
 The record's **Plan** tab renders the spec, read whole from the host where it is longer than the
 details carry, and lists the tickets, each expanding
@@ -1760,7 +1771,9 @@ has none of the rest. A report that keeps its attachments in files beside
 it shows without them. **Log**
 follows the end of the Run's log as it is written, with a search that keeps only the lines
 that match; it says "The log is empty so far." before the Run has logged anything, and "No
-line matches <search>." when the search keeps none. **Merge request** (**Pull request** for one on GitHub) shows what the host's
+line matches <search>." when the search keeps none. **Full log** reads the whole file
+on request. Each Step run starts with `── <title> ──`, with its item or round after
+the title where present; recovery does not write that start again. **Merge request** (**Pull request** for one on GitHub) shows what the host's
 merge watch last read — title, state, pipeline or checks, approvals and comments — with
 Open in browser. **Facts** shows the files the Run was
 given, when it was given any (an image as a thumbnail, any other file by its name, type and

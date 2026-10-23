@@ -24,6 +24,7 @@ import {
 import type { Launched } from "./launches";
 import type { RunState } from "./runs";
 import type { StepLine, StepMeta, StepPlace } from "./steps";
+import type { Verification } from "./verify-model";
 import { clockTime, epochMs, minutes } from "./time";
 
 export type Execution = FlowLane["execution"];
@@ -41,6 +42,7 @@ export interface AskedFact {
 
 /** Everything one Run's row is built from. */
 export interface LaneFacts {
+  readonly verifications?: ReadonlyArray<Verification>;
   readonly run: {
     readonly id: string;
     readonly workflow: string;
@@ -97,6 +99,7 @@ interface StepRun {
   readonly meta: StepMeta;
   readonly place: StepPlace | null;
   readonly entered: string;
+  readonly log: number | null;
   left: string | null;
   failed: { readonly at: string; readonly why: string } | null;
   attempts: FlowAttempt[];
@@ -165,6 +168,7 @@ export function laneOf(facts: LaneFacts): FlowLane {
             meta: line.step,
             place: line.place,
             entered: line.at,
+            log: line.log ?? null,
             left: null,
             failed: null,
             attempts: [{ at: line.at, cause: null }],
@@ -216,6 +220,29 @@ export function laneOf(facts: LaneFacts): FlowLane {
     facts.launches.findLast(({ launch }) => launch.step?.key === key)?.launch.agent ?? null;
   const questionsFor = (key: string) =>
     facts.questions.filter((one) => questionKey(one.name) === key);
+  const placeKey = (place: StepPlace | null | undefined) =>
+    place == null ? null : "item" in place ? place.item : `Round ${place.round}`;
+  const proofsFor = (one: StepRun) =>
+    (facts.verifications ?? []).filter(
+      (proof) =>
+        proof.step === one.meta.id &&
+        placeKey(proof.place) === placeKey(one.place) &&
+        proof.at >= one.entered &&
+        (one.left === null || proof.at <= one.left),
+    );
+  const whyFor = (state: FlowState, one: StepRun) => {
+    if (state !== "failed") return null;
+    const last = proofsFor(one).findLast((proof) => proof.at >= one.attempts.at(-1)!.at);
+    if (last?.result === "fail") {
+      const command = [last.executable, ...last.argv].join(" ").replaceAll("\n", "\\n");
+      const output = [last.tail.stdout.trimEnd(), last.tail.stderr.trimEnd()]
+        .filter(Boolean)
+        .join("\n")
+        .split("\n");
+      return [command, ...output.slice(-19)].join("\n");
+    }
+    return (one.failed?.why ?? run.note ?? "Failed").split("\n").slice(0, 20).join("\n");
+  };
 
   const stateOfRun = (one: StepRun): FlowState => {
     if (one.left !== null) return "done";
@@ -276,6 +303,9 @@ export function laneOf(facts: LaneFacts): FlowLane {
       ranOn: ranOnFor(one.key),
       agent: agentFor(one.key),
       questions: questionsFor(one.key).map(flowQuestion),
+      log: one.log,
+      why: whyFor(state, one),
+      evidence: proofsFor(one).length,
       link: facts.children.find((child) => childIn.get(child.id) === one.key && child.wave === null)
         ?.link,
     };
@@ -378,6 +408,9 @@ export function laneOf(facts: LaneFacts): FlowLane {
       ranOn: ranOnFor(current.key),
       agent: agentFor(current.key),
       questions: calls.flatMap((one) => questionsFor(one.key)).map(flowQuestion),
+      log: current.log,
+      why: whyFor(state, current),
+      evidence: (facts.verifications ?? []).filter((proof) => proof.step === id).length,
       runs: [...(calls.length > 1 || listed.length > 0 ? all : []), ...fan],
       link: calls.length === 1 && listed.length === 0 ? link : undefined,
     };

@@ -16,6 +16,9 @@ one; RunRecord can keep that map while subscribing to an earlier Run of its Task
 icons and existing Desktop routes; `nextMove` and `retryCaption` supply their context.
 `useFlowActions` dispatches those routes, and `FlowActions` and `FlowDecision` render
 the inspector's controls without deriving capabilities themselves.
+`src/shared/step-inspector.ts` scopes log lines and Verifications and chooses the
+initial part and available parts. `StepWork` reuses TerminalTab, LogTab and EvidenceTab;
+only the visible terminal holds its pane.
 
 | File                                    | What it owns                                                                                                                                                                                                                                           |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

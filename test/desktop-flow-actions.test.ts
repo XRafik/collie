@@ -68,6 +68,8 @@ test.each([
   ["terminal", "Watch the builder", { kind: "terminal", run: "build-run", agent: "builder-1" }],
   ["open", "Open MR", { kind: "url", url: "https://forge/mr/1" }],
   ["start", "Build", { kind: "offer", run: "build-run", offer: "build" }],
+  ["log", "Log", { kind: "part", run: "build-run", part: "log" }],
+  ["evidence", "Evidence", { kind: "part", run: "build-run", part: "evidence" }],
 ] as const)("%s has its label and route on the lane's installation", (kind, label, effect) => {
   const shown = desktopFlowAction(kind, node(kind), lane, "vm-id", true)!;
   expect(shown.label).toBe(label);

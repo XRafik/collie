@@ -218,6 +218,12 @@ test(
             ["b", "running"],
             ["c", "expected"],
           ]);
+          expect(slice.runs[1]!.log).toBeGreaterThan(0);
+          const itemLog = (yield* (yield* FileSystem.FileSystem).readFileString(
+            `${runDir(world.state, items)}/log.txt`,
+          )).split("\n");
+          expect(itemLog[slice.runs[1]!.log! - 1]).toBe("── Build a slice · b ──");
+          expect(slice.runs[0]!.log).not.toBe(slice.runs[1]!.log);
 
           const rounds = yield* stepped(world, "rounds");
           const reviewed = yield* until_(
@@ -310,6 +316,10 @@ test(
             .split("\n")
             .filter((line) => line.includes('"kind":"enter"') && line.includes('"key":"build"'));
           expect(lines).toHaveLength(1);
+          const log = yield* (yield* FileSystem.FileSystem)
+            .readFileString(`${runDir(world.state, runId)}/log.txt`)
+            .pipe(Effect.orElseSucceed(() => ""));
+          expect(log.split("\n").filter((line) => line === "── Build it ──")).toHaveLength(1);
         }),
       0,
     ),

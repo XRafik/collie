@@ -169,6 +169,14 @@ test("a terminal workflow error cannot retry a Step through resume", () => {
   ).toBeNull();
 });
 
+test("a Step's reused agent stays addressable under another Run of the Task", () => {
+  const offered = acting(
+    { state: "running", agent: "builder" },
+    { agents: [{ name: "builder", run: "another-run", status: "working", now: null }] },
+  );
+  expect(offered.lanes[0]!.nodes[0]!).toMatchObject({ primary: "terminal", actions: ["tell"] });
+});
+
 const MODULE = new URL("../src/board-model.ts", import.meta.url).pathname;
 const RUNTIME_ONLY = /^(bun(:|$)|node:|@effect\/platform-bun|@opentui\/)/;
 

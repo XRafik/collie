@@ -24,6 +24,7 @@ import type { RunFacts, RunState } from "./runs";
 import { readStepLines } from "./steps";
 import { readRunLinks } from "./run-links";
 import { epochMs } from "./time";
+import { readVerifications } from "./verify";
 
 const executionOfState = (state: RunState): Execution => {
   switch (state) {
@@ -119,6 +120,7 @@ export const laneFor = Effect.fn("Flow.lane")(function* (
     lines: yield* readStepLines(run.dir),
     launches,
     questions: run.engine?.questions ?? [],
+    verifications: yield* readVerifications(run.evidence).pipe(Effect.orElseSucceed(() => [])),
     ...context,
     wakes: run.engine?.wakes ?? null,
     stoppedBy: run.state === "stopped" && stop !== undefined ? whoActed(stop.actor) : null,

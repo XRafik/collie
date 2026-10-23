@@ -40,6 +40,7 @@ import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
 import { orderedTickets, REPO_LINE } from "./plan";
 import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
+import { readLogTail } from "./run-log";
 import { readAudit, startedBy } from "./audit";
 
 /** Long enough to answer "what did I do here", short enough to stay one read. */
@@ -468,6 +469,9 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
     ({ _tag: "None", reason: `this run wrote no ${REVIEW_FILE}` } satisfies Panel);
 
   const attention = yield* attentionFor(run);
+  const log = opts.tail
+    ? yield* readLogTail(run.dir, TAIL_CAP).pipe(Effect.orElseSucceed(() => null))
+    : null;
   return {
     id: run.id,
     requestedBy: run.requestedBy,
@@ -506,9 +510,9 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
       metrics: metricsOf(yield* readMetrics(run.evidence), run.created),
     },
     tail: opts.tail
-      ? ((yield* tailed(path.join(run.dir, "log.txt"), TAIL_CAP)) ??
-        ({ _tag: "None", reason: "this run wrote no log" } satisfies Panel))
+      ? (log?.panel ?? ({ _tag: "None", reason: "this run wrote no log" } satisfies Panel))
       : null,
+    logStart: log?.firstLine,
     finishedAt: run.finished ? epochMs(run.finished) : 0,
     mr: opts.mr,
     findings: (yield* findingsIn(run.dir)).map((finding) => ({
@@ -520,7 +524,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
     })),
     verifications: (yield* readVerifications(run.evidence).pipe(
       Effect.orElseSucceed(() => []),
-    )).map(({ id, name, result, expect, exit, at, by }) => ({
+    )).map(({ id, name, result, expect, exit, at, by, step, place }) => ({
       id,
       name,
       result,
@@ -528,6 +532,8 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
       exit,
       at,
       by,
+      step,
+      place,
     })),
     steering: newest(yield* readCards(run.dir).pipe(Effect.orElseSucceed(() => []))).map(
       (card) => ({

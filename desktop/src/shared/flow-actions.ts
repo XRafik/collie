@@ -30,6 +30,7 @@ export type FlowEffect =
       readonly decline: Extract<DesktopAction, { _tag: "Decline" }>;
     }
   | { readonly kind: "terminal"; readonly run: string; readonly agent: string }
+  | { readonly kind: "part"; readonly run: string; readonly part: "log" | "evidence" }
   | { readonly kind: "url"; readonly url: string }
   | { readonly kind: "run"; readonly run: string; readonly machine: string | null }
   | { readonly kind: "offer"; readonly run: string; readonly offer: string };
@@ -68,6 +69,10 @@ export const desktopFlowAction = (
   const runId = lane.run;
   const role = node.role ?? "agent";
   switch (kind) {
+    case "log":
+      return shown("Log", "scroll-text", { kind: "part", run: runId, part: "log" });
+    case "evidence":
+      return shown("Evidence", "file-check", { kind: "part", run: runId, part: "evidence" });
     case "retry":
       return shown(
         `Retry ${node.title}`,

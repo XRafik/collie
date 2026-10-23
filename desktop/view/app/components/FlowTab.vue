@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { Flow, FlowAction } from "../../../../src/board-model";
+import type { Flow, FlowAction, RunDetail } from "../../../../src/board-model";
+import type { InspectorPart } from "../../../src/shared/step-inspector";
 import { desktopFlowAction, nextMove, type FlowActionView } from "../../../src/shared/flow-actions";
 import type { PlacedTask } from "../../../src/shared/flock";
 import type { Gesture } from "../../../src/shared/board-clicks";
@@ -17,7 +18,12 @@ import {
   type FlowSelection,
   type FlowSpot,
 } from "../../../src/shared/flow";
-const props = defineProps<{ flow: Flow; placed: PlacedTask; shown: boolean }>();
+const props = defineProps<{
+  flow: Flow;
+  placed: PlacedTask;
+  shown: boolean;
+  detail: RunDetail | null;
+}>();
 const emit = defineEmits<{
   run: [run: string];
   open: [run: string, tab: string, agent?: string];
@@ -51,11 +57,18 @@ const map = ref<{
 const page = usePage();
 const gesture = inject<(done: Gesture, tab?: string) => void>("gesture")!;
 const offering = ref<{ run: string; offer: string } | null>(null);
+let partSerial = 0;
+const requestedPart = ref<{ part: InspectorPart; serial: number } | null>(null);
 const controls = useFlowActions(
   () => props.placed,
   (effect) => {
-    if (effect.kind === "terminal") emit("open", effect.run, "terminal", effect.agent);
-    else if (effect.kind === "run") origin(effect.run, effect.machine ?? props.placed.machine);
+    if (effect.kind === "terminal" || effect.kind === "part") {
+      requestedPart.value = {
+        part: effect.kind === "terminal" ? "terminal" : effect.part,
+        serial: ++partSerial,
+      };
+      emit("run", effect.run);
+    } else if (effect.kind === "run") origin(effect.run, effect.machine ?? props.placed.machine);
     else if (effect.kind === "offer") offering.value = { run: effect.run, offer: effect.offer };
   },
 );
@@ -92,6 +105,7 @@ const decision = computed(() => {
 const press = (action: FlowActionView, spot?: FlowSpot) =>
   controls.press(action, () => {
     if (spot !== undefined) {
+      requestedPart.value = null;
       selected.value = { ...spot, item: null };
       emit("run", spot.run);
     }
@@ -112,6 +126,7 @@ const actNode = (kind: FlowAction, spot: FlowSpot) => {
 const close = () => {
   const spot = selected.value;
   selected.value = null;
+  requestedPart.value = null;
   if (spot !== null) {
     focused.value = spot;
     void nextTick(() => map.value?.focus(spot));
@@ -120,6 +135,7 @@ const close = () => {
 const take = (picked: FlowPick) => {
   switch (picked.kind) {
     case "inspect":
+      requestedPart.value = null;
       selected.value = picked.selection;
       emit("run", picked.run);
       break;
@@ -239,6 +255,14 @@ watch(
       @item="chooseItem"
       @open="(run, tab) => emit('open', run, tab)"
     >
+      <template #why
+        ><section v-if="info.state === 'failed'" class="flex flex-col gap-2">
+          <h4 class="text-sm font-semibold">Why it failed</h4>
+          <pre class="max-h-64 overflow-auto whitespace-pre-wrap rounded bg-elevated p-3 text-xs">{{
+            info.node.why ?? info.said
+          }}</pre>
+        </section></template
+      >
       <template #actions
         ><FlowActions
           v-if="lane !== undefined"
@@ -254,6 +278,17 @@ watch(
           :effect="decision"
           :machine="placed.machine"
           :perform="controls.perform"
+      /></template>
+      <template #work
+        ><StepWork
+          :flow="flow"
+          :node="info.node"
+          :selected="selected"
+          :detail="detail"
+          :placed="placed"
+          :shown="shown"
+          :asked="requestedPart"
+          @open="(run, tab, agent) => emit('open', run, tab, agent)"
       /></template>
       <template #default
         ><UButton

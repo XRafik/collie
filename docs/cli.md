@@ -698,11 +698,19 @@ Desktop draws, recomputed on every read. Their state-changing routes are:
 | `start`               | `run action <run> <offer-id>`                                                              |
 | `follow-up`           | `run actions <run>`, then `run action <run> <follow-up-offer> --input <work-field>=<text>` |
 
-`terminal` addresses `agent` in the record's live Terminal, through the bridge's
+`terminal` addresses `agent` in the inspector's live Terminal, through the bridge's
 existing `focus` route and herdr's pane controller. `open` follows `url`, or opens
 the record named by `link`. A terminal Workflow error has no retry: the engine
 cannot resume it. A resumable failed Step records its failure and parks, keeping
 the completed work before it.
+
+`log` and `evidence` open those inspector parts. A node's `log` is the one-based
+line of its latest run's start marker in `log.txt`; each item or round carries its
+own. `why` holds at most twenty lines of the failing command and output, or the
+failure reason. `evidence` counts the Step's Verifications. Verification records and
+RunDetail's verification list carry optional `step` and `place`, so another Step's
+checks are never presented as this Step's proof. `RunDetail.logStart` is the first
+absolute line in its bounded log tail.
 
 Its `run` object carries:
 

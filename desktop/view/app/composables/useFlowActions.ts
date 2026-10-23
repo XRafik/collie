@@ -30,6 +30,11 @@ export const useFlowActions = (placed: () => PlacedTask, follow: (effect: FlowEf
       case "url":
         void openLink(effect.url);
         break;
+      case "terminal":
+      case "part":
+        inspect?.();
+        follow(effect);
+        break;
       case "answer":
       case "proposal":
         inspect?.();

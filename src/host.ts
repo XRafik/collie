@@ -2065,6 +2065,12 @@ const frontDoorHandlers = (
                     const echo = (stream: "stdout" | "stderr") => (text: string) =>
                       Queue.offer(queue, { _tag: "Output", stream, text }).pipe(Effect.asVoid);
                     const from = whoOf(client).from;
+                    const step =
+                      from?.run === runId
+                        ? (yield* readLaunches(env.stateDir, runId)).findLast(
+                            (one) => one.agent === from.agent,
+                          )?.step
+                        : undefined;
                     const fs = yield* FileSystem.FileSystem;
                     const memory = yield* waitForMemory({
                       env,
@@ -2093,7 +2099,18 @@ const frontDoorHandlers = (
                     const log = `${evidenceDir(env.stateDir, runId)}/verify/${started}-${name.replace(/[^\w.-]/g, "_")}.log`;
                     const collected = yield* collect(
                       evidenceDir(env.stateDir, runId),
-                      { run: runId, name, executable, argv, cwd: where, by: "agent", expect, log },
+                      {
+                        run: runId,
+                        name,
+                        executable,
+                        argv,
+                        cwd: where,
+                        by: "agent",
+                        expect,
+                        log,
+                        step: step?.step,
+                        place: step?.place,
+                      },
                       { stdout: echo("stdout"), stderr: echo("stderr") },
                     ).pipe(
                       Effect.mapError(

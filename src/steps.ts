@@ -56,6 +56,7 @@ export const StepLine = Schema.Union([
     key: Schema.String,
     step: StepMeta,
     place: Schema.NullOr(StepPlace),
+    log: Schema.optional(Schema.Int),
   }),
   Line({ kind: Schema.Literal("leave"), key: Schema.String }),
   Line({ kind: Schema.Literal("fail"), key: Schema.String, why: Schema.String }),

@@ -278,6 +278,7 @@ const locationOf = (file: string, line: number | null) =>
           v-if="flow !== null && kept.has('flow')"
           v-show="tab === 'flow'"
           :flow="flow"
+          :detail="detail"
           :placed="placed"
           :shown="tab === 'flow'"
           @run="shownRun = $event"
@@ -358,6 +359,8 @@ const locationOf = (file: string, line: number | null) =>
             v-model:place="logPlace"
             v-model:search="logSearch"
             :tail="detail.tail"
+            :installation="placed.installation"
+            :run-id="detail.id"
           />
           <MrPanel v-if="kept.has('mr') && detail.mr" v-show="tab === 'mr'" :mr="detail.mr" />
           <DiffTab

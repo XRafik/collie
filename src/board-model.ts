@@ -7,7 +7,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import { IntentSeedSchema } from "./intent-model";
 import { ScheduleChange, ScheduleChanged, ScheduleListing } from "./schedule-model";
-import { VerifyEvent, Pass } from "./verify-model";
+import { VerifyEvent, Pass, VerificationSchema } from "./verify-model";
 export { PASSES, Pass } from "./verify-model";
 import { IntentChangeSchema, ChangedIntent } from "./intent-model";
 import { UsageReading } from "./usage-model";
@@ -57,6 +57,8 @@ export const FlowAction = Schema.Literals([
   "continue",
   "open",
   "start",
+  "log",
+  "evidence",
 ]);
 export type FlowAction = typeof FlowAction.Type;
 export const FlowLaneAction = Schema.Literals(["hold", "release", "stop", "resume", "follow-up"]);
@@ -509,6 +511,8 @@ export type RunDiff = typeof RunDiff.Type;
 
 /** One verification as the drawer lists it; its output is fetched as `verification:<id>`. */
 export const VerificationView = Schema.Struct({
+  step: VerificationSchema.fields.step,
+  place: VerificationSchema.fields.place,
   id: Schema.String,
   name: Schema.String,
   result: Schema.Literals(["pass", "fail", "unstable"]),
@@ -714,6 +718,9 @@ const FlowNodeFields = {
   actions: Schema.optionalKey(Schema.Array(FlowAction)),
   url: Schema.optional(Schema.String),
   proposal: Schema.optional(Proposal),
+  log: Schema.optional(Schema.NullOr(Schema.Int)),
+  why: Schema.optional(Schema.NullOr(Schema.String)),
+  evidence: Schema.optional(Schema.Int),
 };
 
 /** One round or item of a Step. */
@@ -798,6 +805,7 @@ export const RunDetail = Schema.Struct({
   outputs: Schema.Array(OutputPanel),
   /** The end of the run's log while the panel's tail is toggled on; `null` while it is off. */
   tail: Schema.NullOr(Panel),
+  logStart: Schema.optional(Schema.Int),
   /**
    * Why the Run is where it is, and what is safe to do about it — the same value the
    * CLI's `run show` and attention wait return. One classification, so the board and an
@@ -1854,9 +1862,7 @@ export function flowActions(
   const offered = (node: FlowRun, lane: FlowLane, facts: FlowActionFacts): FlowRun => {
     let primary: FlowAction | null = null;
     const actions: FlowAction[] = [];
-    const live =
-      node.agent != null &&
-      view.agents.some((one) => one.name === node.agent && one.run === lane.run);
+    const live = node.agent != null && view.agents.some((one) => one.name === node.agent);
     const proposal = node.proposal ?? facts.proposal ?? undefined;
     if (node.link !== undefined) {
       if (node.link.run !== null) primary = "open";
@@ -1887,6 +1893,9 @@ export function flowActions(
       primary = "terminal";
       actions.push("tell");
     }
+    if (node.log != null) actions.push("log");
+    if (node.kind === "check" || node.produces === "evidence" || (node.evidence ?? 0) > 0)
+      actions.push("evidence");
     return { ...node, primary, actions, proposal: node.wait === "proposal" ? proposal : undefined };
   };
   const lanes = flow.lanes.map((lane): FlowLane => {
