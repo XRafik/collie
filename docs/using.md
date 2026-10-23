@@ -1109,6 +1109,15 @@ of reach is faded and says **as of** its last notice's time. A Run absent from t
 board is named **not on the board** and opens nothing. A host without a Flow keeps
 the record's earlier tabs and opens on Summary.
 
+**Pause before Review** arms a pause on the edge before Review; **Don't pause**
+takes it back. Reaching it holds every kind of Step before its work, and
+**Continue** releases it. The pause records who asked. **Note for Review…** leaves
+words for that Step's next prompt. Its unread count appears on the node, and the
+inspector lists authors, times and read status with Edit and Remove while unread.
+**Retry with a note…** starts with why the Step failed; **Send and retry** leaves
+the note and resumes the Run. The next prompt reads it, and a Step that makes no
+prompt keeps it unread.
+
 Each Flow node offers only what can work now. Its round button takes its first
 action: Watch the agent, Retry a resumable failed Step, Answer a question, Review a
 proposal, Continue a hold, Open the merge request or pipeline, or Start an offer.

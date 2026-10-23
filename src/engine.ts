@@ -195,6 +195,17 @@ import { WorktreeRecordSchema, type WorktreeRecord } from "./run";
 import { listTasks, newTask, readTask, taskOfWorkspace, writeTask } from "./task";
 import { nowIso, epochMs } from "./time";
 import {
+  pauseBefore,
+  reachPause,
+  clearReachedPause,
+  stepTarget,
+  leaveStepNote,
+  readStepNote,
+  readStepSteering,
+  StepNote as SteeringNote,
+} from "./step-steering";
+import { readLaunches } from "./launches";
+import {
   CurrentStep,
   encodeStepLine,
   readStepLines,
@@ -3469,7 +3480,18 @@ export const hostLayer = (options: {
                 where,
                 `── ${note.step.title}${place === null ? "" : ` · ${place}`} ──`,
               ).pipe(Effect.orDie);
-              return yield* noteStep(where, { ...note, log });
+              yield* noteStep(where, { ...note, log });
+              const pause = yield* reachPause(where, note.step.id);
+              if (pause !== null) {
+                yield* fs
+                  .writeFileString(
+                    controlPath(dir, HOLD, runId),
+                    `Paused before ${note.step.title}, as ${pause.by} asked`,
+                  )
+                  .pipe(Effect.orDie);
+                yield* store.announce;
+              }
+              return;
             }
             const first =
               note.kind === "entry" &&
@@ -4823,6 +4845,7 @@ export type OpenDecision = typeof OpenDecision.Type;
 
 /** What became of one delivery to a run's agent. */
 export const Steered = Schema.Struct({
+  note: Schema.optional(Schema.String),
   agent: Schema.String,
   /** What could be got out of herdr about it, never "it was accepted for sending". */
   delivered: Schema.Boolean,
@@ -4846,6 +4869,7 @@ export const RunView = Schema.Struct({
   requestedBy: Schema.optional(RequestedBy),
   report: Schema.optional(RunReport),
   linkNotices: Schema.optional(Schema.Array(LinkDelivery)),
+  stepNotes: Schema.optional(Schema.Array(SteeringNote)),
   closes: Schema.optional(Schema.Literal("reported")),
   runId: Schema.String,
   workflow: Schema.String,
@@ -5024,6 +5048,8 @@ export interface RegistryApi {
     readonly runId: string;
     readonly control: string;
     readonly set: boolean;
+    readonly before?: string;
+    readonly by?: string;
     /** A stop of this Run without the children it started. */
     readonly alone?: boolean;
     /** Why a stop ends the Run's agents, for its log. */
@@ -5044,6 +5070,7 @@ export interface RegistryApi {
     readonly text: string;
     /** The caller's claim on the delivery, so the same message twice is one message. */
     readonly request: string;
+    readonly step?: string;
     readonly to?: string;
     readonly operation?: string;
     readonly agent?: string;
@@ -6179,6 +6206,9 @@ const makeRegistry: (
       closes: placing?.closes,
       report,
       linkNotices: linkNotices.length === 0 ? undefined : linkNotices,
+      stepNotes: (yield* readStepSteering(runDir(dir, row.run)).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+      )).notes,
       runId: row.run,
       workflow: row.workflow,
       project: row.project,
@@ -7040,9 +7070,36 @@ const makeRegistry: (
       readonly runId: string;
       readonly control: string;
       readonly set: boolean;
+      readonly before?: string;
+      readonly by?: string;
       readonly alone?: boolean;
       readonly reason?: string;
     }) {
+      if (options.before !== undefined) {
+        const target = yield* stepTarget(runDir(dir, options.runId), options.before);
+        if (target.refused !== undefined) return yield* new HostRefused({ reason: target.refused });
+        if (yield* hasEnded(options.runId))
+          return yield* new HostRefused({
+            reason: `Step ${options.before} has no work left in this finished Run`,
+          });
+        yield* pauseBefore(
+          runDir(dir, options.runId),
+          options.before,
+          options.by ?? "the CLI",
+          options.set,
+        );
+        yield* store.announce;
+        return {
+          runId: options.runId,
+          control: HOLD,
+          set: options.set,
+          left: [],
+          applied: true,
+          detail: "",
+        };
+      }
+      if (options.control === HOLD && !options.set)
+        yield* clearReachedPause(runDir(dir, options.runId));
       if (options.control === HOLD && (yield* hasEnded(options.runId)))
         return yield* new HostRefused({
           reason: "a finished Run has no step left to hold; stop closes its agents",
@@ -7111,6 +7168,7 @@ const makeRegistry: (
       readonly runId: string;
       readonly text: string;
       readonly request: string;
+      readonly step?: string;
       readonly to?: string;
       readonly operation?: string;
       readonly agent?: string;
@@ -7120,6 +7178,54 @@ const makeRegistry: (
       // A row is enough: a finished Run's agents need its launch journal, not its module.
       if ((yield* store.run(options.runId)) === null) {
         return yield* new HostRefused({ reason: `no run "${options.runId}" was started here` });
+      }
+      if (options.step !== undefined) {
+        if (
+          options.agent !== undefined ||
+          options.to !== undefined ||
+          options.operation !== undefined
+        )
+          return yield* new HostRefused({
+            reason: "A Step note takes --step alone, without an agent, role or operation",
+          });
+        const where = runDir(dir, options.runId);
+        const target = yield* stepTarget(where, options.step);
+        if (target.refused !== undefined) return yield* new HostRefused({ reason: target.refused });
+        if (target.step.kind === "question")
+          return yield* new HostRefused({
+            reason: `Step ${options.step} is a question; answer it rather than leave a note`,
+          });
+        if (yield* workflowEnded(options.runId))
+          return yield* new HostRefused({
+            reason: `Step ${options.step} has no next prompt in this finished Run`,
+          });
+        yield* leaveStepNote(where, {
+          id: options.request,
+          step: options.step,
+          by:
+            options.actor === undefined
+              ? "the CLI"
+              : whoActed(actorOf(options.actor, options.request)),
+          text: options.text,
+        });
+        const launch = (yield* readLaunches(dir, options.runId)).findLast(
+          (one) => one.step?.step === options.step,
+        );
+        if (launch !== undefined && !(yield* fs.exists(launch.output).pipe(Effect.orDie))) {
+          const sent = yield* (yield* Agents).steer({
+            ...options,
+            agent: launch.agent,
+            mode: "boundary",
+          });
+          if (sent.delivered) yield* readStepNote(where, options.request);
+        }
+        yield* store.announce;
+        return {
+          agent: launch?.agent ?? "",
+          delivered: true,
+          detail: "Note kept for the Step's next prompt",
+          note: options.request,
+        };
       }
       const sent = yield* (yield* Agents).steer(options);
       return sent.gone === true ? { ...sent, finished: yield* hasEnded(options.runId) } : sent;

@@ -22,6 +22,7 @@ import { runTitle } from "./naming";
 import { machineName } from "./peers";
 import type { RunFacts, RunState } from "./runs";
 import { readStepLines } from "./steps";
+import { readStepSteering } from "./step-steering";
 import { readRunLinks } from "./run-links";
 import { epochMs } from "./time";
 import { readVerifications } from "./verify";
@@ -118,6 +119,7 @@ export const laneFor = Effect.fn("Flow.lane")(function* (
     },
     machine: machineOf(env),
     lines: yield* readStepLines(run.dir),
+    steering: yield* readStepSteering(run.dir),
     launches,
     questions: run.engine?.questions ?? [],
     verifications: yield* readVerifications(run.evidence).pipe(Effect.orElseSucceed(() => [])),

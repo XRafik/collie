@@ -31,6 +31,7 @@ import * as Activity from "effect/workflow/Activity";
 import { attachmentsDir, listAttachments, type Attachment } from "./attachments";
 import { Launched, LAUNCH_ORDER, LAUNCH_SUFFIX, launchDir, readLaunches, stemOf } from "./launches";
 import { CurrentStep, type At } from "./steps";
+import { takeStepNotes } from "./step-steering";
 export { Launched } from "./launches";
 import * as Workflow from "effect/workflow/Workflow";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
@@ -2015,12 +2016,16 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
         const adapter = adapterFor(launched.harness);
         const prefix = personaPrefix(adapter, yield* personaOf(ask.persona ?? ask.role));
         const file = promptFile(ask);
+        const notes =
+          ask.step === undefined
+            ? ""
+            : yield* takeStepNotes(`${host.dir}/runs/${ask.runId}`, ask.step.step, file);
         // Written before it goes out and never rewritten: what a human reads to see what
         // was actually asked, rather than what a prompt would be built as now.
         const address = `You are ${agent} of ${ask.runId} on ${machineName()}. Message another Run's agent with collie_do deliver to its Run and agent, or collie run steer <run> --operation <agent> "<words>"; push your branch before starting work on another Machine. ${READING_DELIVERIES} ${SHELL_HABITS}`;
         yield* write(
           file,
-          `${address}\n\n${prefix === "" ? ask.prompt : `${prefix}\n\n${ask.prompt}`}`,
+          `${notes === "" ? "" : `${notes}\n\n`}${address}\n\n${prefix === "" ? ask.prompt : `${prefix}\n\n${ask.prompt}`}`,
         );
         if (!alive || !replayed) {
           const late = yield* awaitReady(

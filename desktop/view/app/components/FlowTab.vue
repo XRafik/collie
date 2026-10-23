@@ -279,8 +279,14 @@ watch(
           :machine="placed.machine"
           :perform="controls.perform"
       /></template>
-      <template #work
-        ><StepWork
+      <template #work>
+        <FlowNotes
+          :node="lane?.nodes.find((node) => node.id === selected?.node) ?? info.node"
+          :run="selected.run"
+          :installation="placed.installation"
+          :live="placed.asOf === null"
+          @act="press" />
+        <StepWork
           :flow="flow"
           :node="info.node"
           :selected="selected"
@@ -312,6 +318,8 @@ watch(
     <TextDialog
       :open="asking !== null"
       :title="asking?.title ?? ''"
+      :initial="asking?.initial"
+      :send-label="asking?.retry === undefined ? 'Send' : 'Send and retry'"
       @update:open="(open: boolean) => !open && (asking = null)"
       @send="controls.send"
     />

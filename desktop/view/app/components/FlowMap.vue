@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Flow, FlowRun } from "../../../../src/board-model";
+import { stepSteering } from "../../../src/shared/step-steering";
 import {
   desktopFlowAction,
   desktopLaneAction,
@@ -74,11 +75,17 @@ const laneMenu = (run: string) => {
   });
 };
 const name = (run: string, node: FlowRun) =>
-  nodeName(node, {
-    missing: node.link !== undefined && cardForLink(node, props.cards) === undefined,
-    notLive: node.link?.machine != null && props.away.has(node.link.machine),
-    action: primary(run, node)?.label,
-  });
+  [
+    nodeName(node, {
+      missing: node.link !== undefined && cardForLink(node, props.cards) === undefined,
+      notLive: node.link?.machine != null && props.away.has(node.link.machine),
+      action: primary(run, node)?.label,
+    }),
+    stepSteering(node).pause,
+    stepSteering(node).badge,
+  ]
+    .filter(Boolean)
+    .join(". ");
 const hover = (run: string, node: string) => {
   const info = inspectorOf(props.flow, { run, node, item: null }, props.now);
   return info === null
@@ -163,6 +170,12 @@ defineExpose({
       </div>
       <ol class="flex items-center">
         <li v-for="(node, at) in row.nodes" :key="node.id" class="flex items-center">
+          <UIcon
+            v-if="stepSteering(node).pause !== null"
+            name="i-lucide-pause"
+            class="mx-1 shrink-0 text-highlighted"
+            aria-hidden="true"
+          />
           <span
             v-if="at > 0"
             aria-hidden="true"
@@ -208,7 +221,11 @@ defineExpose({
                   <span class="min-w-0"
                     ><span class="block text-sm font-semibold">{{ node.title }}</span
                     ><span
-                      v-if="node.state !== 'expected' && node.said"
+                      v-if="stepSteering(node).badge !== null"
+                      class="mt-1 inline-block rounded-full bg-elevated px-2 text-xs"
+                      >{{ stepSteering(node).badge }}</span
+                    ><span
+                      v-if="node.said && (node.state !== 'expected' || node.pause != null)"
                       class="block text-xs text-muted"
                       >{{ node.said }}</span
                     ><span

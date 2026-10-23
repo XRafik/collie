@@ -49,6 +49,9 @@ export const FlowState = Schema.Literals([
 export type FlowState = typeof FlowState.Type;
 
 export const FlowAction = Schema.Literals([
+  "pause",
+  "note",
+  "retry-noted",
   "terminal",
   "tell",
   "retry",
@@ -721,6 +724,19 @@ const FlowNodeFields = {
   log: Schema.optional(Schema.NullOr(Schema.Int)),
   why: Schema.optional(Schema.NullOr(Schema.String)),
   evidence: Schema.optional(Schema.Int),
+  pauseTarget: Schema.optional(Schema.String),
+  notes: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        id: Schema.String,
+        by: Schema.String,
+        at: Schema.String,
+        text: Schema.String,
+        read: Schema.NullOr(Schema.String),
+      }),
+    ),
+  ),
+  pause: Schema.optional(Schema.NullOr(Schema.Struct({ by: Schema.String, at: Schema.String }))),
 };
 
 /** One round or item of a Step. */
@@ -1343,11 +1359,17 @@ export const FrontDoorRpcs = RpcGroup.make(
       request: Schema.String,
       /** Why, in the asker's own words: what a held card's drawer says beside who held it. */
       reason: Schema.optional(Schema.String),
+      before: Schema.optional(Schema.String),
     },
     success: Controlled,
     error: Schema.Union([HostRefused, RequestConflict]),
   }),
   /** Picks a Run up again: what current files allow is registered, then its stop cleared. */
+  Rpc.make("withdrawNote", {
+    payload: { runId: Schema.String, note: Schema.String, request: Schema.String },
+    success: Schema.Boolean,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
   Rpc.make("resume", {
     payload: { runId: Schema.String, request: Schema.String },
     success: Controlled,
@@ -1894,9 +1916,36 @@ export function flowActions(
       actions.push("tell");
     }
     if (node.log != null) actions.push("log");
+    const running = ["running", "suspended"].includes(lane.execution) || facts.canResume;
+    const step = node.declared && ["agent", "check", "question", "workflow"].includes(node.kind);
+    const target =
+      node.state === "expected"
+        ? node
+        : flow.current?.run === lane.run && flow.current.node === node.id
+          ? lane.nodes
+              .slice(lane.nodes.findIndex((one) => one.id === node.id) + 1)
+              .find((one) => one.declared && !one.offPath && one.state === "expected")
+          : undefined;
+    if (running && step && target?.declared && !target.offPath) actions.push("pause");
+    if (
+      running &&
+      step &&
+      node.state !== "not-run" &&
+      node.kind !== "question" &&
+      (node.state !== "done" ||
+        lane.nodes.find((one) => one.id === node.id)?.runs.some((one) => one.state === "expected"))
+    )
+      actions.push("note");
+    if (primary === "retry" && step) actions.push("retry-noted");
     if (node.kind === "check" || node.produces === "evidence" || (node.evidence ?? 0) > 0)
       actions.push("evidence");
-    return { ...node, primary, actions, proposal: node.wait === "proposal" ? proposal : undefined };
+    return {
+      ...node,
+      primary,
+      actions,
+      pauseTarget: target?.id,
+      proposal: node.wait === "proposal" ? proposal : undefined,
+    };
   };
   const lanes = flow.lanes.map((lane): FlowLane => {
     const facts = factsOf(lane);

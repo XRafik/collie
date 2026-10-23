@@ -45,7 +45,20 @@ export const useFlowActions = (placed: () => PlacedTask, follow: (effect: FlowEf
   };
   const send = (text: string) => {
     const target = asking.value;
-    if (target !== null) void perform(target.installation, { ...target.write, text });
+    if (target === null) return;
+    const deliver = () =>
+      perform(target.installation, { ...target.write, text }).then((sent) =>
+        sent && target.retry !== undefined
+          ? perform(target.installation, { _tag: "Resume", runId: target.retry })
+          : sent,
+      );
+    return target.withdraw === undefined
+      ? deliver()
+      : perform(target.installation, {
+          _tag: "WithdrawNote",
+          runId: target.write.runId,
+          note: target.withdraw,
+        }).then((removed) => (removed ? deliver() : false));
   };
   return { asking, perform, press, send };
 };

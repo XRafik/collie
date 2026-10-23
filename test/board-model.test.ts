@@ -45,10 +45,10 @@ test.each([
     { kind: "agent", state: "running", agent: "builder" },
     {},
     "terminal",
-    ["tell"],
+    ["tell", "note"],
   ],
-  ["failed Step", { state: "failed" }, { state: "failed" }, "retry", []],
-  ["stopped Step", { state: "stopped" }, { state: "stopped" }, "retry", []],
+  ["failed Step", { state: "failed" }, { state: "failed" }, "retry", ["note", "retry-noted"]],
+  ["stopped Step", { state: "stopped" }, { state: "stopped" }, "retry", ["note", "retry-noted"]],
   [
     "open question",
     {
@@ -66,26 +66,32 @@ test.each([
     { state: "needs-you", wait: "proposal" },
     { decision: { kind: "proposal", id: "p", hash: "h", text: "Proposed", actions: [] } },
     "proposal",
-    [],
+    ["note"],
   ],
   [
     "stalled agent",
     { state: "needs-you", wait: "stalled", agent: "builder" },
     {},
     "terminal",
-    ["tell"],
+    ["tell", "note"],
   ],
   [
     "parked agent",
     { state: "waiting", wait: "parked", agent: "builder" },
     {},
     "terminal",
-    ["tell"],
+    ["tell", "note"],
   ],
-  ["held Step", { state: "waiting", wait: "hold" }, { held: "Held" }, "continue", []],
+  ["held Step", { state: "waiting", wait: "hold" }, { held: "Held" }, "continue", ["note"]],
   ["done with agent open", { state: "done", agent: "builder" }, { state: "done" }, null, ["tell"]],
   ["release", { kind: "release", url: "https://forge/pipeline/1" }, {}, "open", []],
-  ["merge request", { produces: "merge-request", url: "https://forge/mr/1" }, {}, "open", []],
+  [
+    "merge request",
+    { produces: "merge-request", url: "https://forge/mr/1" },
+    {},
+    "open",
+    ["pause", "note"],
+  ],
   [
     "linked Run",
     {
@@ -110,9 +116,9 @@ test.each([
 });
 
 test.each([
-  ["running cannot retry", { state: "failed" }, {}],
-  ["agent gone", { state: "running", agent: "gone" }, {}],
-  ["no hold", { state: "waiting", wait: "hold" }, {}],
+  ["running cannot retry", { state: "failed" }, {}, ["note"]],
+  ["agent gone", { state: "running", agent: "gone" }, {}, ["note"]],
+  ["no hold", { state: "waiting", wait: "hold" }, {}, ["note"]],
   [
     "answered question",
     {
@@ -121,15 +127,19 @@ test.each([
       questions: [{ name: "go", id: "go", open: false, asked: null, answered: "then", by: "mk" }],
     },
     {},
+    [],
   ],
-  ["memory", { state: "waiting", wait: "memory", agent: "builder" }, {}],
-  ["usage", { state: "waiting", wait: "usage", agent: "builder" }, {}],
-  ["timer", { state: "waiting", wait: "timer" }, {}],
-  ["check", { state: "waiting", wait: "check" }, {}],
-  ["expected", { state: "expected", agent: "builder" }, {}],
-  ["not run", { state: "not-run" }, {}],
-] as const)("the Flow takes away actions when %s", (_title, node, over) => {
-  expect(acting(node, over).lanes[0]!.nodes[0]!).toMatchObject({ primary: null, actions: [] });
+  ["memory", { state: "waiting", wait: "memory", agent: "builder" }, {}, ["note"]],
+  ["usage", { state: "waiting", wait: "usage", agent: "builder" }, {}, ["note"]],
+  ["timer", { state: "waiting", wait: "timer" }, {}, ["note"]],
+  ["check", { state: "waiting", wait: "check" }, {}, ["note"]],
+  ["expected", { state: "expected", agent: "builder" }, {}, ["pause", "note"]],
+  ["not run", { state: "not-run" }, {}, []],
+] as const)("the Flow takes away actions when %s", (_title, node, over, actions) => {
+  expect(acting(node, over).lanes[0]!.nodes[0]!).toMatchObject({
+    primary: null,
+    actions: [...actions],
+  });
 });
 
 test("a Flow lane offers controls for its own state, and follow-up only on its leader", () => {
@@ -174,7 +184,10 @@ test("a Step's reused agent stays addressable under another Run of the Task", ()
     { state: "running", agent: "builder" },
     { agents: [{ name: "builder", run: "another-run", status: "working", now: null }] },
   );
-  expect(offered.lanes[0]!.nodes[0]!).toMatchObject({ primary: "terminal", actions: ["tell"] });
+  expect(offered.lanes[0]!.nodes[0]!).toMatchObject({
+    primary: "terminal",
+    actions: ["tell", "note"],
+  });
 });
 
 const MODULE = new URL("../src/board-model.ts", import.meta.url).pathname;

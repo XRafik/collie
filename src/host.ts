@@ -15,6 +15,7 @@
 // is the way it is.
 
 import { createConnection, type Socket as NetSocket } from "node:net";
+import { withdrawStepNote } from "./step-steering";
 import * as BunSocket from "@effect/platform-bun/BunSocket";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import * as BunSocketServer from "@effect/platform-bun/BunSocketServer";
@@ -144,7 +145,7 @@ import {
   type SweptBy,
 } from "./cleanup";
 import { startedOf } from "./automode";
-import { once, readAudit, recordAudit, startedBy, trimAudit } from "./audit";
+import { once, readAudit, recordAudit, startedBy, trimAudit, whoActed, actorOf } from "./audit";
 import { usagePhrase } from "./usage-model";
 import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
@@ -479,6 +480,7 @@ export const HostRpcs = RpcGroup.make(
       runId: Schema.String,
       text: Schema.String,
       request: Schema.String,
+      step: Schema.optional(Schema.String),
       /** A role (`builder`, `reviewer`, `planner`), an agent or an operation. */
       to: Schema.optional(Schema.String),
       operation: Schema.optional(Schema.String),
@@ -809,7 +811,7 @@ const handlers = (
             registry.grant({ runId, name, command }),
           ).pipe(Effect.provideContext(bun)),
         steer: (
-          { runId, text: given, request, to, operation, agent, mode, attachments },
+          { runId, text: given, request, to, operation, agent, mode, attachments, step },
           { client },
         ) => {
           const { text, removed } = scrub(given);
@@ -839,6 +841,7 @@ const handlers = (
               if (attached !== undefined) asked.attachments = attached;
               // Only where given, so a request recorded before `to` existed still matches.
               if (to !== undefined) asked.to = to;
+              if (step !== undefined) asked.step = step;
               return once(
                 runDir(dir, runId),
                 {
@@ -865,6 +868,7 @@ const handlers = (
                       agent,
                       mode,
                       actor,
+                      step,
                     }),
                   ),
                   Effect.map(saying(removed)),
@@ -880,6 +884,7 @@ const handlers = (
 
 /** What a steer's request has to ask again, as `AskedFor` is a start's. */
 type SteerAsked = {
+  step?: string;
   readonly text: string;
   to?: string;
   readonly operation: string | null;
@@ -1592,14 +1597,44 @@ const frontDoorHandlers = (
               .pipe(Effect.map(saying(removed))),
           );
         },
-        control: ({ runId, control, set, request, reason }, { client }) =>
+        control: ({ runId, control, set, request, reason, before }, { client }) =>
           auditedControl(
             runId,
-            `${set ? "" : "un"}${control}`,
+            `${set ? "" : "un"}${control}${before === undefined ? "" : `:before:${before}`}`,
             request,
             whoOf(client),
             reason,
-          )(registry.control({ runId, control, set })),
+          )(
+            registry.control({
+              runId,
+              control,
+              set,
+              before,
+              by: whoActed(actorOf(whoOf(client), request)),
+            }),
+          ),
+        withdrawNote: ({ runId, note, request }, { client }) =>
+          once(
+            runDir(dir, runId),
+            {
+              operation: "withdraw_note",
+              request,
+              ...whoOf(client),
+              asked: { note },
+              result: Schema.Boolean,
+            },
+            Effect.andThen(known(runId), withdrawStepNote(runDir(dir, runId), note)).pipe(
+              Effect.flatMap((removed) =>
+                removed
+                  ? Effect.succeed(true)
+                  : Effect.fail(
+                      new HostRefused({
+                        reason: `Note ${note} has already been read or is absent`,
+                      }),
+                    ),
+              ),
+            ),
+          ).pipe(Effect.provideContext(hosted)),
         resume: ({ runId, request }, { client }) =>
           auditedControl(runId, "resume", request, whoOf(client))(takeUp(runId)),
         offers: ({ runId }) => registry.offers(runId),

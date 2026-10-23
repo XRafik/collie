@@ -677,6 +677,10 @@ leading Run's work is at, `null` once the Task has settled; and `release`, the m
 request's CI, Merged and furthest deploy, `null` until there is one
 ([ADR-draft-a-step-is-declared-where-its-work-is-written](adr/draft-a-step-is-declared-where-its-work-is-written.md)).
 A Step's `links` are Runs its agents started, without expanding those Runs' Steps.
+`pause` records who armed a pause and when, or is null. `notes` holds ids, authors,
+times, text and read times (null until read). Chat and CLI can arm a hold with
+`before`, deliver a note with `step`, or `withdraw_note` before it is read. A
+failed resumable Step also offers `retry-noted`, a note followed by resume.
 Their `link.asOf` is null for live local state, or the last admission or settlement
 notice from a paired Machine. `run.linkNotices` records those deliveries on the started
 Run; human output names undelivered notices. A missed notice is not retried or polled.
@@ -1587,6 +1591,10 @@ to change the set, or delete it to withdraw it.
 
 ```sh
 collie --json run hold <run-id> [--request-id <id>]
+collie --json run hold <run-id> --before <step-id>
+collie --json run release <run-id> --before <step-id>
+collie --json run steer <run-id> --step <step-id> "check the race first"
+collie --json run withdraw-note <run-id> <note-id>
 collie --json run hold --workspace <workspace-id> [--request-id <id>]
 collie --json run release <run-id> [--request-id <id>]
 ```

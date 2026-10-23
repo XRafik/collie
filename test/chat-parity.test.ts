@@ -123,6 +123,14 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
   ["run release", { route: "write", tool: "collie_do" }],
   ["run steer", { route: "shell" }],
   [
+    "run withdraw-note",
+    {
+      route: "propose",
+      kind: "withdraw_note",
+      action: { kind: "withdraw_note", run: RUN, note: "n1" },
+    },
+  ],
+  [
     "run clear-override",
     {
       route: "propose",
@@ -324,6 +332,22 @@ const INVENTORY: ReadonlyArray<readonly [string, Route]> = [
     },
   ],
   ["run deliveries --reconcile", { route: "shell" }],
+  [
+    "run hold --before",
+    { route: "propose", kind: "hold", action: { kind: "hold", run: RUN, before: "review" } },
+  ],
+  [
+    "run release --before",
+    { route: "propose", kind: "release", action: { kind: "release", run: RUN, before: "review" } },
+  ],
+  [
+    "run steer --step",
+    {
+      route: "propose",
+      kind: "deliver",
+      action: { kind: "deliver", run: RUN, step: "review", text: "Check ordering" },
+    },
+  ],
   [
     "run steer --to",
     {

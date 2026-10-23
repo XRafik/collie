@@ -26,6 +26,8 @@ import type { RunState } from "./runs";
 import type { StepLine, StepMeta, StepPlace } from "./steps";
 import type { Verification } from "./verify-model";
 import { clockTime, epochMs, minutes } from "./time";
+import type { readStepSteering } from "./step-steering";
+import type { Effect } from "effect";
 
 export type Execution = FlowLane["execution"];
 
@@ -42,6 +44,7 @@ export interface AskedFact {
 
 /** Everything one Run's row is built from. */
 export interface LaneFacts {
+  readonly steering?: Effect.Success<ReturnType<typeof readStepSteering>>;
   readonly verifications?: ReadonlyArray<Verification>;
   readonly run: {
     readonly id: string;
@@ -439,6 +442,22 @@ export function laneOf(facts: LaneFacts): FlowLane {
     ),
   );
   withWait(nodes, facts.wait);
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i]!;
+    const pause = facts.steering?.pauses.find((one) => one.step === node.id) ?? null;
+    const reached = facts.steering?.reached;
+    nodes[i] = {
+      ...node,
+      pause,
+      notes: facts.steering?.notes.filter((one) => one.step === node.id) ?? [],
+      said:
+        reached?.step === node.id && node.wait === "hold"
+          ? `Paused here, as ${reached.by} asked`
+          : pause !== null && node.state === "expected"
+            ? "Pauses before it"
+            : node.said,
+    };
+  }
   withReadiness(nodes, facts.readiness);
   if (facts.offer !== null) nodes.push(offerNode(facts.offer));
 

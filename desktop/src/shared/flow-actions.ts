@@ -15,6 +15,9 @@ export type FlowEffect =
       readonly kind: "text";
       readonly installation: string;
       readonly write: Extract<DesktopAction, { _tag: "Deliver" | "FollowUp" }>;
+      readonly initial?: string;
+      readonly retry?: string;
+      readonly withdraw?: string;
     }
   | {
       readonly kind: "answer";
@@ -67,8 +70,43 @@ export const desktopFlowAction = (
 ): FlowActionView | null => {
   if (!live || (node.primary !== kind && !node.actions?.includes(kind))) return null;
   const runId = lane.run;
+  const stepId =
+    lane.nodes.find((one) => one.id === node.id || one.runs.some((run) => run.id === node.id))
+      ?.id ?? node.id;
   const role = node.role ?? "agent";
   switch (kind) {
+    case "pause": {
+      const target =
+        lane.nodes.find(
+          (one) =>
+            one.id === (node.pauseTarget ?? stepId) ||
+            one.runs.some((run) => run.id === node.pauseTarget),
+        ) ?? node;
+      return shown(target.pause == null ? `Pause before ${target.title}` : "Don't pause", "pause", {
+        kind: "write",
+        installation,
+        write: {
+          _tag: "Control",
+          runId,
+          control: "hold",
+          set: target.pause == null,
+          before: target.id,
+        },
+      });
+    }
+    case "note":
+    case "retry-noted":
+      return shown(
+        kind === "note" ? `Note for ${node.title}…` : "Retry with a note…",
+        "message-square-plus",
+        {
+          kind: "text",
+          installation,
+          write: { _tag: "Deliver", runId, step: stepId, text: "" },
+          initial: kind === "retry-noted" ? (node.why ?? "") : undefined,
+          retry: kind === "retry-noted" ? runId : undefined,
+        },
+      );
     case "log":
       return shown("Log", "scroll-text", { kind: "part", run: runId, part: "log" });
     case "evidence":
