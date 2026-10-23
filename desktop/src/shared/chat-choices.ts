@@ -1,9 +1,12 @@
 // Chat defaults and the account each window renders beside its message box.
 
-import { Schema } from "effect";
+import type { QueuedMessage } from "@tanstack/ai-client";
+import { Option, Schema } from "effect";
 import { DEFAULT_MODEL, HARNESS_MODELS } from "../../../src/harness-choice";
-import { harnessName } from "./chat-view";
-import type { DesktopSettings } from "./flock";
+import { isString } from "../../../src/schema";
+import { type Attached, attachedIn } from "./attachments";
+import { About, harnessName } from "./chat-view";
+import type { DesktopSettings, DesktopSettingsChange } from "./flock";
 import { DEFAULT_CHAT_HARNESS } from "./flock-settings";
 
 /** A harness, model and effort as a session is opened on them; `default` is the harness's own model. */
@@ -295,3 +298,141 @@ export const typedEntry = (search: string, model: ChoiceSelect): ChoiceOption | 
 
 /** A refused choice, as the alert above the message box says it. */
 export const refusalSaid = (reason: string) => `${reason.replace(/\.$/, "")}. Nothing was saved.`;
+
+const setChoice = (settings: DesktopSettings): SetChoice => ({
+  harness: settings.chatHarness ?? DEFAULT_CHAT_HARNESS,
+  model: settings.chatModel,
+  effort: settings.chatEffort,
+});
+
+/** The last choice this window saw set on the conversation's harness. */
+export const rememberChoice = (
+  remembered: SetChoice | null,
+  settings: DesktopSettings,
+  choices: ChatChoices | null,
+): SetChoice | null => {
+  if (choices === null) return remembered;
+  const set = setChoice(settings);
+  return set.harness === choices.heldOn
+    ? set
+    : remembered?.harness === choices.heldOn
+      ? remembered
+      : null;
+};
+
+/** The ordinary settings change Stay sends through the choice check. */
+export const stayOn = (
+  choices: ChatChoices,
+  remembered: SetChoice | null,
+): DesktopSettingsChange => ({
+  chatHarness: choices.heldOn,
+  ...(remembered?.harness === choices.heldOn && {
+    chatModel: remembered.model ?? "",
+    chatEffort: remembered.effort ?? "",
+  }),
+});
+
+const resolvedLabel = (runs: Resolved, choices: ChatChoices) => {
+  const entry = choices.harnesses.find(({ harness }) => harness === runs.harness);
+  const offer = entry?.offered;
+  const fallback =
+    runs.model === DEFAULT_MODEL
+      ? `${entry?.label ?? harnessName(runs.harness)}'s own`
+      : runs.model;
+  const model =
+    offer === undefined || offer.from === "reading"
+      ? fallback
+      : (offer.models.find(({ id }) => id === runs.model)?.label ?? fallback);
+  return runs.effort === null ? model : `${model} · ${effortLabel(runs.effort)}`;
+};
+
+/** What a choice will do before the next message. */
+export const choiceNotices = (settings: DesktopSettings, choices: ChatChoices | null) => {
+  const set = setChoice(settings);
+  const waiting =
+    choices === null || set.harness === choices.heldOn
+      ? null
+      : {
+          text: `Your next message starts a new conversation on ${harnessName(set.harness)}.`,
+          stayLabel: `Stay on ${harnessName(choices.heldOn)}`,
+        };
+  const offer = choices?.harnesses.find(({ harness }) => harness === set.harness)?.offered;
+  if (
+    !choices?.turning ||
+    choices.runsOn === null ||
+    offer === undefined ||
+    offer.from === "reading"
+  )
+    return { waiting, reply: null };
+  const next = runsAsOffered(set, offer);
+  const runs = choices.runsOn;
+  if (runs.harness === next.harness && runs.model === next.model && runs.effort === next.effort)
+    return { waiting, reply: null };
+  const current = resolvedLabel(runs, choices);
+  const label = resolvedLabel(next, choices);
+  return {
+    waiting,
+    reply: {
+      current,
+      next: label,
+      text: `This reply finishes on ${current}. Your next message runs on ${label}.`,
+    },
+  };
+};
+
+/** Errors leave Send available; only the human's active reply offers Stop. */
+export const replyButton = (status: string, desktopSpeaking = false) =>
+  !desktopSpeaking && (status === "submitted" || status === "streaming")
+    ? { status, name: "Stop the reply" }
+    : { status: "ready" as const, name: "Send" };
+
+export interface ChatStatus {
+  readonly replying: boolean;
+  readonly notices: ReadonlyArray<string>;
+}
+
+/** A status change spoken once, without a completion message over the finished reply. */
+export const chatAnnouncement = (before: ChatStatus | null, after: ChatStatus, stopped = false) =>
+  [
+    ...(stopped ? ["Reply stopped"] : after.replying && !before?.replying ? ["Replying…"] : []),
+    ...after.notices.filter((notice) => !before?.notices.includes(notice)),
+  ].join(" ");
+
+export interface ChatDraft {
+  readonly text: string;
+  readonly files: ReadonlyArray<Attached>;
+  readonly about: About | null;
+}
+
+const decodeAbout = Schema.decodeUnknownOption(About);
+
+/** What Stop recovers before the chat client discards its queue. */
+export const stopDraft = (
+  queue: ReadonlyArray<Pick<QueuedMessage, "content">>,
+  draft: ChatDraft,
+): ChatDraft => {
+  const words: string[] = [];
+  const files: Attached[] = [];
+  let about = draft.about;
+  for (const { content } of queue) {
+    const said = isString(content) ? content : content.content;
+    const text = isString(said)
+      ? said
+      : said.flatMap((part) => (part.type === "text" ? [part.content] : [])).join("\n");
+    if (text !== "") words.push(text);
+    if (!isString(said)) files.push(...said.flatMap((part) => Option.toArray(attachedIn(part))));
+    if (about === null && !isString(content))
+      about = Option.getOrNull(decodeAbout(content.metadata?.about));
+  }
+  if (draft.text !== "") words.push(draft.text);
+  const seen = new Set<string>();
+  return {
+    text: words.join("\n\n"),
+    files: [...files, ...draft.files].filter(({ id }) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    }),
+    about,
+  };
+};

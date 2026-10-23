@@ -10,6 +10,7 @@ import { Effect, Exit, Option, Schema, Stream } from "effect";
 import { isString } from "../../../../src/schema";
 import { type Attached, attachedIn, attachmentPart } from "../../../src/shared/attachments";
 import { About, type Answers, type HeldConversation } from "../../../src/shared/chat-view";
+import { replyEvents } from "../../../src/shared/chat-stream";
 import { conversationChangesAtom, desktopTurnsAtom, FlockClient } from "../flock";
 import { failureOf } from "./useActions";
 
@@ -62,9 +63,10 @@ export const useFlockChat = () => {
   const chat = useChat({
     connection: {
       // SAFETY: AG-UI's event types are string enums whose values are these events' `type`s.
-      connect: (messages, body) =>
-        Stream.toAsyncIterable(
+      connect: (messages, body, signal) =>
+        replyEvents(
           turn(lastSaid(messages), body?.now === true),
+          signal,
         ) as AsyncIterable<StreamChunk>,
     },
   });

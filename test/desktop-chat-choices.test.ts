@@ -3,9 +3,17 @@
 import { expect, test } from "bun:test";
 import { Effect, Stream } from "effect";
 import { retelling, tableOffer } from "../desktop/src/bun/chat-choices";
+import { changeSettings } from "../desktop/src/bun/settings";
+import { attachmentPart } from "../desktop/src/shared/attachments";
 import {
   type ChatChoices,
   chatSelects,
+  choiceNotices,
+  rememberChoice,
+  stayOn,
+  replyButton,
+  chatAnnouncement,
+  stopDraft,
   type Offered,
   refusalSaid,
   runsAs,
@@ -208,6 +216,181 @@ const ACCOUNT: ChatChoices = {
     },
   ],
 };
+
+test("a waiting harness switch offers Stay with this window's last matching choice, checked like any choice", () => {
+  const settings = { proactive: true, chatModel: "sonnet", chatEffort: "high" };
+  const remembered = rememberChoice(null, settings, ACCOUNT);
+  const switched = { proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" };
+  expect(choiceNotices(switched, ACCOUNT).waiting).toEqual({
+    text: "Your next message starts a new conversation on Pi.",
+    stayLabel: "Stay on Claude Code",
+  });
+  expect(rememberChoice(remembered, switched, ACCOUNT)).toEqual(remembered);
+  const change = stayOn(ACCOUNT, remembered);
+  expect(change).toEqual({ chatHarness: "claude", chatModel: "sonnet", chatEffort: "high" });
+  expect(changeSettings(switched, NO_FLOCK_SETTINGS, change)).toEqual({
+    ...settings,
+    chatHarness: "claude",
+  });
+  expect(
+    changeSettings(switched, NO_FLOCK_SETTINGS, change, {
+      claude: {
+        from: "harness",
+        unset: { harness: "claude", model: "opus", effort: "medium" },
+        models: [{ ...CLAUDE[1]!, efforts: ["low"] }],
+      },
+    }),
+  ).toEqual({ refused: '"high" is not an effort Sonnet 5.5 takes (low)' });
+  expect(stayOn(ACCOUNT, rememberChoice(null, switched, ACCOUNT))).toEqual({
+    chatHarness: "claude",
+  });
+  const unset = rememberChoice(remembered, { proactive: true }, ACCOUNT);
+  expect(stayOn(ACCOUNT, unset)).toEqual({ chatHarness: "claude", chatModel: "", chatEffort: "" });
+  const onPi = { ...ACCOUNT, heldOn: "pi" };
+  expect(rememberChoice(remembered, settings, onPi)).toBeNull();
+  expect(stayOn(onPi, remembered)).toEqual({ chatHarness: "pi" });
+  expect(choiceNotices(settings, ACCOUNT).waiting).toBeNull();
+});
+
+test("a choice during a reply names both resolved choices with offered labels and suppresses equivalent defaults", () => {
+  const running: ChatChoices = {
+    ...ACCOUNT,
+    turning: true,
+    runsOn: { harness: "claude", model: "opus", effort: "high" },
+  };
+  expect(choiceNotices({ proactive: true, chatModel: "sonnet" }, running).reply).toEqual({
+    current: "Opus 5.5 · High",
+    next: "Sonnet 5.5 · Medium",
+    text: "This reply finishes on Opus 5.5 · High. Your next message runs on Sonnet 5.5 · Medium.",
+  });
+  expect(choiceNotices({ proactive: true, chatEffort: "high" }, running)).toEqual({
+    waiting: null,
+    reply: null,
+  });
+  expect(
+    choiceNotices(
+      { proactive: true, chatModel: "default" },
+      { ...running, runsOn: { harness: "claude", model: "opus", effort: "medium" } },
+    ).reply,
+  ).toBeNull();
+  expect(choiceNotices({ proactive: true }, { ...running, turning: false }).reply).toBeNull();
+  expect(choiceNotices({ proactive: true }, { ...running, runsOn: null }).reply).toBeNull();
+  expect(choiceNotices({ proactive: true }, null)).toEqual({ waiting: null, reply: null });
+  expect(
+    choiceNotices({ proactive: true, chatModel: "claude-haiku-4-5" }, running).reply?.next,
+  ).toBe("Haiku 4.5");
+  const pi: ChatChoices = {
+    ...running,
+    harnesses: [
+      ACCOUNT.harnesses[0]!,
+      {
+        harness: "pi",
+        label: "Pi",
+        installed: true,
+        offered: {
+          from: "harness",
+          unset: { harness: "pi", model: "openai-codex/gpt-6.1-sol", effort: "minimal" },
+          models: [
+            {
+              id: "openai-codex/gpt-6.1-sol",
+              label: "GPT-6.1 Sol",
+              efforts: ["minimal", "high"],
+              unsetEffort: "minimal",
+            },
+          ],
+        },
+      },
+    ],
+  };
+  expect(choiceNotices({ proactive: true, chatHarness: "pi" }, pi).reply?.next).toBe(
+    "GPT-6.1 Sol · Minimal",
+  );
+  expect(
+    choiceNotices(
+      { proactive: true, chatHarness: "pi" },
+      {
+        ...running,
+        harnesses: [
+          {
+            ...ACCOUNT.harnesses[1]!,
+            offered: tableOffer("pi", { proactive: true }, NO_FLOCK_SETTINGS, {}),
+          },
+        ],
+      },
+    ).reply?.next,
+  ).toBe("Pi's own · Medium");
+  expect(
+    choiceNotices(
+      { proactive: true },
+      {
+        ...running,
+        harnesses: [{ ...ACCOUNT.harnesses[0]!, offered: { from: "reading" } }],
+      },
+    ).reply,
+  ).toBeNull();
+});
+
+test("the submit state and one polite announcement follow the human's reply, Stop and new notices without announcing completion", () => {
+  expect(replyButton("ready")).toEqual({ status: "ready", name: "Send" });
+  expect(replyButton("error")).toEqual({ status: "ready", name: "Send" });
+  expect(replyButton("submitted")).toEqual({ status: "submitted", name: "Stop the reply" });
+  expect(replyButton("streaming")).toEqual({ status: "streaming", name: "Stop the reply" });
+  expect(replyButton("streaming", true)).toEqual({ status: "ready", name: "Send" });
+  const ready = { replying: false, notices: [] };
+  const replying = { replying: true, notices: [] };
+  const waiting = "Your next message starts a new conversation on Pi.";
+  const change =
+    "This reply finishes on Opus 5.5 · High. Your next message runs on Sonnet 5.5 · Medium.";
+  expect(chatAnnouncement(null, ready)).toBe("");
+  expect(chatAnnouncement(ready, replying)).toBe("Replying…");
+  expect(chatAnnouncement(replying, replying)).toBe("");
+  expect(chatAnnouncement(replying, ready)).toBe("");
+  expect(chatAnnouncement(replying, ready, true)).toBe("Reply stopped");
+  const switched = { replying: true, notices: [waiting, change] };
+  expect(chatAnnouncement(replying, switched)).toBe(`${waiting} ${change}`);
+  expect(chatAnnouncement(switched, switched)).toBe("");
+  expect(chatAnnouncement(switched, { replying: true, notices: [] })).toBe("");
+  expect(chatAnnouncement(null, { replying: false, notices: [waiting] })).toBe(waiting);
+  expect(chatAnnouncement(ready, switched)).toBe(`Replying… ${waiting} ${change}`);
+});
+
+test("Stop returns queued words in order before the draft, all files once, and the earliest card only when the chip is empty", () => {
+  const first = { id: "a", name: "notes.txt", mediaType: "text/plain", size: 10 };
+  const second = { id: "b", name: "screen.png", mediaType: "image/png", size: 20 };
+  const held = { id: "c", name: "draft.txt", mediaType: "text/plain", size: 5 };
+  const about = { machine: "vm-mk", task: "t-1", run: "r-2", name: "Fix board bugs" };
+  const later = { ...about, task: "t-3", name: "Later card" };
+  const queue = [
+    { content: "First question" },
+    {
+      content: {
+        content: [{ type: "text" as const, content: "Second\nquestion" }, attachmentPart(first)],
+        metadata: { about },
+      },
+    },
+    {
+      content: {
+        content: [attachmentPart(second), attachmentPart(first)],
+        metadata: { about: later },
+      },
+    },
+  ];
+  const draft = { text: "Still typing…", files: [first, held], about: null };
+  expect(stopDraft(queue, draft)).toEqual({
+    text: "First question\n\nSecond\nquestion\n\nStill typing…",
+    files: [first, second, held],
+    about,
+  });
+  expect(stopDraft(queue, { ...draft, about: later }).about).toEqual(later);
+  expect(stopDraft([], draft)).toEqual(draft);
+  expect(
+    stopDraft([{ content: { content: "Only question", metadata: { about: "invalid" } } }], {
+      text: "",
+      files: [],
+      about: null,
+    }),
+  ).toEqual({ text: "Only question", files: [], about: null });
+});
 
 test("the harness select names each harness, and one not installed is disabled, saying so", () => {
   const { harness } = chatSelects({ proactive: true }, ACCOUNT);

@@ -1815,8 +1815,9 @@ state directory, links followed, because a Run's state changes only through the 
 Machine whose Collie is too old for files is told to upgrade. There is no shell on a
 Machine.
 
-Three selects in a row under the message box, in both chat windows, choose the chat's
-harness, model and effort for this computer only; the row wraps when the pane is narrow.
+Three selects in the message box's footer, in both chat windows, choose the chat's
+harness, model and effort for this computer only. When the pane is narrow, they take the
+first line, with Attach and Send on the right of the next.
 A choice is saved at once, through the same checks as `collie_chat_harness`, and focus goes
 back to the message box. Settings › Chat has no rows for them.
 
@@ -1901,8 +1902,16 @@ in a turn Desktop starts is answered at once that the human is not in that turn.
 A change applies with the next message, yours or one of Desktop's own about News, and never
 to the turn under way. A new model continues the same conversation on it. A new harness
 unsets the model and the effort, and the conversation stays on screen, with its transcript,
-until the next message, which starts a new conversation on that harness. Earlier
-conversations lists every installed harness's history, ten at most, newest first, each
+until the next message, which starts a new conversation on that harness.
+Above the message box, "Your next message starts a new conversation on <harness>." offers
+**Stay on <held harness>**. Stay restores the harness, model and effort this window last
+saw set on the conversation's harness; a window opened after the switch restores just the
+harness. Stay goes through the same checks as choosing. During a reply, a changed choice
+is named in "This reply finishes on <model · effort>. Your next message runs on
+<model · effort>." Default choices that resolve to what is already answering show no
+change notice.
+
+Earlier conversations lists every installed harness's history, ten at most, newest first, each
 marked **Claude Code** or **Pi** beside its date. Reopening one from another harness moves
 the chat to that harness, unsetting the model and the effort, and shows that conversation,
 never a new one; the menu's last line says so whenever it lists one. **Start fresh** stays on
@@ -1929,6 +1938,13 @@ buttons, and goes on when you click; any other permission it asks for is refused
 while it is working and Enter queues your message as **Queued** until the turn ends, or
 drop it with its ✕. Ctrl+Enter sends it now instead: the turn under way, yours or one of
 Desktop's own, is interrupted and your message starts the next.
+The keys are unchanged: Enter sends or queues, Shift+Enter adds a line, and Ctrl+Enter
+sends now. While your own reply is submitted or streaming, Send becomes **Stop the reply**.
+Stop returns queued words to the message box, in queue order separated by blank lines,
+before anything already typed. Their files return to the attachments; an empty About chip
+gets the earliest queued message's card. Then the reply is interrupted. Desktop's own turn
+has no Stop. The message list is a busy log while a reply is under way; a polite status
+announces "Replying…", "Reply stopped" and new choice notices, and refusals are alerts.
 
 Paste a screenshot with Ctrl+V, in the docked or the popped-out chat, and it goes with your
 next message: a chip above the input with its thumbnail, name and size, which its ✕ removes.

@@ -21,6 +21,7 @@ export const useDesktopSettings = () => {
     );
   return {
     desktopSettings: computed(() => value.value ?? UNREAD),
+    loaded: computed(() => value.value !== undefined),
     change,
     /** Lets the Flock chat speak first about News that matters, or not. */
     setProactive: (proactive: boolean) => change({ proactive }),
