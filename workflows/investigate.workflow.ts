@@ -14,6 +14,7 @@ export default defineWorkflow({
   description: "One agent investigates a goal, reports its evidence and closes after reporting.",
   input: Schema.Struct({ goal: Schema.String }),
   output: Findings,
+  agents: { effort: "high" },
   hints: { goal: "goal" },
   checkout: "branch",
   closes: "reported",

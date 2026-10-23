@@ -19,6 +19,7 @@ import {
   startCompaction,
   turnOutcome,
   withCodex,
+  codexReachable,
 } from "./codex";
 import {
   compactionAfter,
@@ -1096,7 +1097,7 @@ const codexEndpoint = Effect.fn("Compactors.codexEndpoint")(function* (
   const served = yield* servedEndpoint({
     cwd: ctx.cwd,
     log: path.join(ctx.dir, CODEX_LOG),
-    command: `${server} --listen ws://127.0.0.1:0`,
+    command: [`${server} --listen ws://127.0.0.1:0`, ...(ctx.mcp ?? []).map(shellQuote)].join(" "),
     listening: CODEX_LISTENING,
     startMs: CODEX_START_MS,
     what: "codex app-server",
@@ -1295,13 +1296,10 @@ const survivors = (
 /** Codex's port, over the App Server `server` starts: `codex app-server`, or a test's stand-in. */
 export const codexPort = (server: string): CompactionPort => ({
   gate: () => gateVersion("codex"),
-  // The TUI binds a thread on the App Server as it starts, before any prompt.
   ready: (ctx) =>
     ctx.endpoint === null
       ? Effect.succeed(false)
-      : withCodex(ctx.endpoint, (client) => boundThread(client, ctx.cwd)).pipe(
-          Effect.map((thread) => thread !== null),
-        ),
+      : codexReachable(ctx.endpoint).pipe(Effect.as(true)),
   install: (ctx) =>
     codexEndpoint(ctx, server).pipe(
       Effect.map(({ endpoint, pid, command }) => ({

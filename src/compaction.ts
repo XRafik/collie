@@ -82,6 +82,8 @@ export interface LaunchContext {
   dir: string;
   /** Shell lines setting the operator's environment, for a server the port starts. */
   env?: ReadonlyArray<string>;
+  /** The agent's MCP launch arguments, as its harness is given them. */
+  mcp?: ReadonlyArray<string>;
 }
 
 export interface AgentContext extends LaunchContext {
@@ -299,6 +301,11 @@ export const controlDir = Effect.fn("Compaction.controlDir")(function* (
   return path.join(stateDir, CONTROL_DIR, agent);
 });
 
+/** An agent's control lock is held: by a start in flight, a prune or another stop. */
+export class ControlsInUse extends Data.TaggedError("ControlsInUse")<{
+  readonly message: string;
+}> {}
+
 /** Protect installation through agent startup, and use the same claim when pruning. */
 export const withControlLock = <A, E, R>(
   stateDir: string,
@@ -314,7 +321,7 @@ export const withControlLock = <A, E, R>(
     yield* ensureLockDir(lock);
     return yield* withLock(
       lock,
-      Effect.fail(new Error(`${agent}: compaction controls are in use`)),
+      Effect.fail(new ControlsInUse({ message: `${agent}: compaction controls are in use` })),
       effect,
       waitMs === undefined ? undefined : Math.ceil(waitMs / LOCK_CLAIM_SPACING_MS),
     );
@@ -410,6 +417,7 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
   deps: Pick<CompactionDeps, "ports" | "stateDir" | "configured" | "log" | "herdr" | "stopMs">,
   agent: { agent: string; harness: string; cwd: string; runLog: string },
   env: ReadonlyArray<string> = [],
+  mcp: ReadonlyArray<string> = [],
 ) {
   const limit = yield* enabled(deps.configured);
   const fs = yield* FileSystem.FileSystem;
@@ -449,6 +457,7 @@ export const installControls = Effect.fn("Compaction.installControls")(function*
     cwd: agent.cwd,
     dir,
     env,
+    mcp,
   });
   const started =
     installed.pid === undefined ? null : ((yield* processOf(installed.pid))?.started ?? null);
@@ -595,6 +604,61 @@ export const stopAgent = Effect.fn("Compaction.stopAgent")(function* (
     }),
     // Another stop of the same agent may hold it for its whole budget.
     budgetMs + STOP_WAIT_MS,
+  );
+});
+
+/**
+ * The agents whose control records name this Run's log and a server of their own, and why
+ * any record that may be this Run's could not be read. No records directory is none.
+ */
+export const serversOfRun = Effect.fn("Compaction.serversOfRun")(function* (
+  stateDir: string,
+  runLog: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const servers: string[] = [];
+  const unread: string[] = [];
+  const root = path.join(stateDir, CONTROL_DIR);
+  const names = yield* fs.readDirectory(root).pipe(
+    Effect.map((found): ReadonlyArray<string> => found),
+    Effect.catchTag("PlatformError", (error) =>
+      error.reason._tag === "NotFound" ? Effect.succeed([]) : Effect.fail(error),
+    ),
+  );
+  for (const name of names) {
+    const text = yield* fs.readFileString(path.join(root, name, CONTROL_FILE)).pipe(Effect.result);
+    if (text._tag === "Failure") {
+      // A start writes its record last, under its lock.
+      if (text.failure.reason._tag !== "NotFound")
+        unread.push(`${name}'s control record cannot be read (${reason(text.failure)})`);
+      continue;
+    }
+    const record = yield* decodeControl(text.success).pipe(Effect.option);
+    if (record._tag === "None") {
+      if (text.success.includes(runLog)) unread.push(`${name}'s control record does not parse`);
+    } else if (record.value.runLog === runLog && targetOf(record.value) !== null)
+      servers.push(name);
+  }
+  return { servers, unread };
+});
+
+/**
+ * Stops the server of an agent whose start was never launched, without waiting for its
+ * control lock, which a start still in flight holds. Null where there is nothing to stop.
+ */
+export const stopUnlaunched = Effect.fn("Compaction.stopUnlaunched")(function* (
+  deps: Pick<CompactionDeps, "ports" | "stateDir" | "log">,
+  agent: string,
+  budgetMs: number = STOP_WAIT_MS,
+) {
+  return yield* withControlLock(
+    deps.stateDir,
+    agent,
+    Effect.gen(function* () {
+      const record = yield* readControl(deps.stateDir, agent);
+      return record === null ? null : yield* stopRecord(deps, record, budgetMs);
+    }),
   );
 });
 

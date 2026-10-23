@@ -396,6 +396,8 @@ collie --json run steer <run-id> "check the migration too" [--to builder] [--req
   that has not stopped parks instead, with `parked` naming the agent's thread, turn and
   server, and starts nothing; resume again once that server has stopped. A stop that lands
   while an agent is being started stops that agent too, so the stop leaves none running.
+  It also reaches an agent whose start herdr never admitted: its App Server is stopped to
+  Quiet the same way, though its pane, which Collie never learned, stays open.
   On a Run that has already finished, a stop only stops its live agents: no control is
   set, the status stays what it finished with, and with nothing alive it says nothing was
   running.

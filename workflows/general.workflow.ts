@@ -28,7 +28,7 @@ export default defineWorkflow({
   input: Schema.Struct({ goal: Schema.String }),
   hints: { goal: "goal" },
   output: Schema.String,
-  agents: { harness: "claude", model: "opus", effort: "medium" },
+  agents: { harness: "claude", model: "opus", effort: "high" },
   run: ({ input: asked }) =>
     Effect.gen(function* () {
       const host = yield* Host;

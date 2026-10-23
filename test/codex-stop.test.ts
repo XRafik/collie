@@ -17,7 +17,7 @@ import { PARKED, controlPath, foundationLayer, pollStatus } from "../src/engine"
 import { compactionSweeper, sweep } from "../src/cleanup";
 import { Herdr } from "../src/herdr";
 import { recordClaudeEvent } from "../src/compactors";
-import { installControls } from "../src/compaction";
+import { installControls, withControlLock } from "../src/compaction";
 import { processOf } from "../src/processes";
 import { FakeHerdr } from "./support/recorder";
 import { agentName } from "../src/naming";
@@ -398,6 +398,75 @@ for (const [what, over, edit, why] of [
     }),
     null,
     /works in \/somewhere\/else/,
+  ],
+  [
+    "a thread with no user message that is not idle",
+    () => unmaterialized({ status: "active" }),
+    null,
+    /is not materialized yet/,
+  ],
+  [
+    "an idle thread whose turns are refused for another reason",
+    () => unmaterialized({ turnsRefusal: { code: -32600, message: "rollout is unreadable" } }),
+    null,
+    /rollout is unreadable/,
+  ],
+  [
+    "an idle thread whose turns are refused with that text under another code",
+    () =>
+      unmaterialized({
+        turnsRefusal: {
+          code: -32603,
+          message: `thread ${THREAD} is not materialized yet; thread/turns/list is unavailable before first user message`,
+        },
+      }),
+    null,
+    /is not materialized yet/,
+  ],
+  [
+    "a thread with no user message in another directory",
+    () => unmaterialized({ cwd: "/somewhere/else" }),
+    null,
+    /works in \/somewhere\/else/,
+  ],
+  [
+    "an unlistable thread that is not idle",
+    () => unlistable({ status: "active" }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread that has turns",
+    () => unlistable({ readTurns: [{ id: TURN }] }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread with a preview",
+    () => unlistable({ preview: "a first message" }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread whose history is not paginated",
+    () => unlistable({ historyMode: "legacy" }),
+    null,
+    /list_turns is not supported yet/,
+  ],
+  [
+    "an unlistable thread in another directory",
+    () => unlistable({ cwd: "/somewhere/else" }),
+    null,
+    /works in \/somewhere\/else/,
+  ],
+  [
+    "an idle thread whose turns are refused as unsupported for another reason",
+    () =>
+      unlistable({
+        turnsRefusal: { code: -32601, message: "thread/items/list is not supported yet" },
+      }),
+    null,
+    /thread\/items\/list is not supported yet/,
   ],
   [
     "a pid whose start time does not match the record",
@@ -824,5 +893,278 @@ test("a launch beside an unlisted agent whose server is not Quiet keeps that rec
       );
       expect(installed.length).toBeGreaterThan(0);
       expect(yield* recorded()).toMatchObject({ stop: { state: "acknowledged" } });
+    }),
+  ));
+
+const unmaterialized = (over: Partial<StandIn["threads"][number]> = {}) => ({
+  threads: [
+    {
+      id: THREAD,
+      cwd: rig.projectDir,
+      path: `${rig.root}/rollout-${THREAD}.jsonl`,
+      unmaterialized: true,
+      ...over,
+    },
+  ],
+});
+const unlistable = (over: Partial<StandIn["threads"][number]> = {}) => ({
+  threads: [
+    {
+      id: THREAD,
+      cwd: rig.projectDir,
+      path: `${rig.root}/rollout-${THREAD}.jsonl`,
+      unlistable: true,
+      ...over,
+    },
+  ],
+});
+const neverAdmits = () =>
+  new FakeHerdr(
+    rig.pluginEnv({
+      FAKE_HERDR_FAIL: asJson({ "agent start": "timed out waiting for agent startup" }),
+    }),
+  );
+
+test("a start herdr never admits fails naming its agent, and the next launch under that name stops its server first", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* serve(unmaterialized());
+      const first = yield* session(
+        work.execute({ runId: "r1", input: { skip: false } }).pipe(Effect.result),
+        { herdr: neverAdmits() },
+      );
+      const why = first._tag === "Failure" ? first.failure.reason : "";
+      expect(why).toContain(agent);
+      expect(why).toContain("agent start failed");
+      expect(why).toContain("timed out waiting for agent startup");
+      expect(yield* rig.cmds()).not.toContain("agent prompt");
+      const stranded = yield* serverPid();
+
+      const relaunched = yield* session(
+        Agents.pipe(
+          Effect.flatMap((agents) =>
+            agents.launch({
+              runId: "r1",
+              operation: "build",
+              role: "implementer",
+              workflow: "agent-work",
+              task: null,
+              agent: null,
+              cwd: rig.projectDir,
+              prompt: "Build it.",
+              output: `${dir}/output.json`,
+              skill: null,
+              harness: "codex",
+              model: null,
+              effort: null,
+              permissions: null,
+            }),
+          ),
+        ),
+      );
+      expect(relaunched.agent).toBe(agent);
+      expect(alive(stranded)).toBe(false);
+      const all = yield* events();
+      const servers = all.flatMap((one, at) => (one.pid === undefined ? [] : [at]));
+      const signalled = all.flatMap((one, at) => (one.signal === undefined ? [] : [at]));
+      expect(servers).toHaveLength(2);
+      expect(signalled).toHaveLength(1);
+      expect(signalled[0]).toBeLessThan(servers[1]!);
+      expect(yield* agentStarts()).toEqual(["codex", "codex"]);
+      const log = yield* agentsLog();
+      expect(log.indexOf(`${agent}: quiet`)).toBeGreaterThan(-1);
+      expect(log.indexOf(`${agent}: quiet`)).toBeLessThan(log.lastIndexOf(`${agent}: codex in`));
+    }),
+  ));
+
+/** r1's start, which herdr never admits, leaving its server up with no launch recorded. */
+const neverAdmitted = Effect.gen(function* () {
+  yield* serve(unmaterialized());
+  const first = yield* session(
+    work.execute({ runId: "r1", input: { skip: false } }).pipe(Effect.result),
+    { herdr: neverAdmits() },
+  );
+  expect(first._tag).toBe("Failure");
+  return yield* serverPid();
+});
+
+test("the stop of a Run whose start herdr never admitted stops that start's server to quiet", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stranded = yield* neverAdmitted;
+      expect(yield* halted({ herdr: neverAdmits() })).toEqual({ stopped: [agent], left: [] });
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(stranded)).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
+    }),
+  ));
+
+test("another Run's stop leaves alone a start herdr never admitted", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stranded = yield* neverAdmitted;
+      const other = yield* session(Agents.pipe(Effect.flatMap((agents) => agents.halt("r2"))), {
+        herdr: neverAdmits(),
+      });
+      expect(other).toEqual({ stopped: [], left: [] });
+      expect(yield* signals()).toEqual([]);
+      expect(alive(stranded)).toBe(true);
+      expect(yield* recorded()).not.toBeNull();
+      kill(stranded);
+    }),
+  ));
+
+test("a stop of a start herdr never admitted that cannot remove its record says so, and keeps it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* neverAdmitted;
+      const records = `${rig.root}/state/compaction`;
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.chmod(records, 0o555).pipe(Effect.orDie);
+      const halt = yield* halted({ herdr: neverAdmits() }).pipe(
+        Effect.ensuring(fs.chmod(records, 0o755).pipe(Effect.orDie)),
+      );
+      expect(halt.stopped).toEqual([]);
+      expect(halt.left).toHaveLength(1);
+      expect(halt.left[0]).toContain(`${agent} could not be stopped`);
+      expect(yield* recorded()).not.toBeNull();
+    }),
+  ));
+
+test("a stop of a start herdr never admitted whose controls are held elsewhere says it was not stopped", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const stranded = yield* neverAdmitted;
+      const halt = yield* withControlLock(
+        `${rig.root}/state`,
+        agent,
+        halted({ herdr: neverAdmits() }),
+      );
+      expect(halt.stopped).toEqual([]);
+      expect(halt.left).toHaveLength(1);
+      expect(halt.left[0]).toContain(`${agent} could not be stopped yet`);
+      expect(yield* signals()).toEqual([]);
+      expect(alive(stranded)).toBe(true);
+      expect(yield* recorded()).not.toBeNull();
+      kill(stranded);
+    }),
+  ));
+
+const unreadable: ReadonlyArray<
+  readonly [string, Effect.Effect<() => Effect.Effect<void>, never, FileSystem.FileSystem>]
+> = [
+  [
+    "a record of this Run's that no longer parses",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const text = yield* fs.readFileString(control()).pipe(Effect.orDie);
+      yield* fs
+        .writeFileString(control(), text.slice(0, text.indexOf('"stop"')))
+        .pipe(Effect.orDie);
+      return () => Effect.void;
+    }),
+  ],
+  [
+    "a record that cannot be read",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.chmod(control(), 0o000).pipe(Effect.orDie);
+      return () => fs.chmod(control(), 0o644).pipe(Effect.orDie);
+    }),
+  ],
+  [
+    "a directory of records that cannot be read",
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const records = `${rig.root}/state/compaction`;
+      yield* fs.chmod(records, 0o000).pipe(Effect.orDie);
+      return () => fs.chmod(records, 0o755).pipe(Effect.orDie);
+    }),
+  ],
+];
+for (const [what, spoil] of unreadable)
+  test(`a stop that meets ${what} does not say it stopped everything`, () =>
+    runEffect(
+      Effect.gen(function* () {
+        const stranded = yield* neverAdmitted;
+        const restore = yield* spoil;
+        const halt = yield* halted({ herdr: neverAdmits() }).pipe(
+          Effect.ensuring(Effect.suspend(restore)),
+        );
+        expect(halt.stopped).toEqual([]);
+        expect(halt.left).toHaveLength(1);
+        expect(yield* signals()).toEqual([]);
+        expect(alive(stranded)).toBe(true);
+        kill(stranded);
+      }),
+    ));
+
+/** herdr refusing a start that a Run's stop lands in, as that stop reaches the Run's agents. */
+class StoppedWhileStarting extends FakeHerdr {
+  halts: Array<{ readonly stopped: ReadonlyArray<string>; readonly left: ReadonlyArray<string> }> =
+    [];
+  constructor() {
+    super(
+      rig.pluginEnv({
+        FAKE_HERDR_FAIL: asJson({ "agent start": "timed out waiting for agent startup" }),
+      }),
+    );
+  }
+  override agentStart(options: Parameters<FakeHerdr["agentStart"]>[0]) {
+    return stopFlag(true).pipe(
+      Effect.andThen(halted({ herdr: neverAdmits() })),
+      Effect.tap((halt) => Effect.sync(() => this.halts.push(halt))),
+      Effect.andThen(super.agentStart(options)),
+    );
+  }
+}
+
+test("a stop that lands in a start herdr then refuses stops that start's server once it fails", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* serve(unmaterialized());
+      const herdr = new StoppedWhileStarting();
+      const first = yield* session(
+        work.execute({ runId: "r1", input: { skip: false } }).pipe(Effect.result),
+        { herdr },
+      );
+      expect(first._tag).toBe("Failure");
+      expect(herdr.halts).toEqual([
+        {
+          stopped: [],
+          left: [
+            `${agent} could not be stopped yet: a start, prune or stop still holds its controls`,
+          ],
+        },
+      ]);
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(yield* serverPid())).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
+    }),
+  ));
+
+test("a Codex agent that never got a user message stops to quiet", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working(unmaterialized());
+      expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(yield* serverPid())).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
+    }),
+  ));
+
+test("a Codex agent whose paginated thread with no user message cannot list its turns stops to quiet", () =>
+  runEffect(
+    Effect.gen(function* () {
+      yield* working(unlistable());
+      expect(yield* halted()).toEqual({ stopped: [agent], left: [] });
+      expect((yield* signals()).map((one) => one.signal)).toEqual(["SIGTERM"]);
+      expect(alive(yield* serverPid())).toBe(false);
+      expect(yield* agentsLog()).toContain(`${agent}: quiet`);
+      expect(yield* recorded()).toBeNull();
     }),
   ));

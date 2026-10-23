@@ -89,10 +89,10 @@ export const FIX_PROMPT = content.template("fix", {
  * synthesis. A second reviewer is what a specialist axis or a fork is for, not what every
  * change gets.
  */
-export const REVIEWER = { harness: "claude", model: "opus", effort: "xhigh" };
+export const REVIEWER = { harness: "claude", model: "opus", effort: "high" };
 
 /** The implementer's seat: implement's builder, and whoever fixes what a review found. */
-export const IMPLEMENTER = { harness: "claude", model: "opus", effort: "medium" };
+export const IMPLEMENTER = { harness: "claude", model: "opus", effort: "high" };
 
 /** What one pass is about, and where in a rally it stands. */
 export interface ReviewAsk {
