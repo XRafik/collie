@@ -172,6 +172,9 @@ export const ForgeModel = Schema.Struct({
               job: Schema.optionalKey(Schema.String),
               jobId: Schema.optionalKey(Schema.Number),
               logUrl: Schema.optionalKey(Schema.String),
+              pipeline: Schema.optionalKey(
+                Schema.Struct({ ref: Schema.String, sha: Schema.String }),
+              ),
             }),
           ),
         ),
@@ -654,11 +657,11 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(
         pageOf(
           route,
-          deploymentsAsked(model, route).map(({ sha, status, environment, job }) => ({
+          deploymentsAsked(model, route).map(({ sha, status, environment, job, pipeline }) => ({
             sha,
             status,
             environment: { name: environment },
-            deployable: job === undefined ? null : { name: job },
+            deployable: job === undefined ? null : { name: job, pipeline: pipeline ?? null },
           })),
         ),
       );
@@ -932,6 +935,7 @@ const deploymentsOf = (model: ForgeModel) =>
       job: "job" in one ? one.job : env.job,
       jobId: "jobId" in one ? one.jobId : undefined,
       logUrl: "logUrl" in one ? one.logUrl : undefined,
+      pipeline: "pipeline" in one ? one.pipeline : undefined,
     })),
   );
 

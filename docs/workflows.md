@@ -649,6 +649,9 @@ forge, one environment at a time, as `release` does: each stage job passed on th
 pipeline, and every stage environment those jobs deployed to carries the head. Other jobs'
 deployments of the same commit are left untouched. Where the head moved first, that head
 is staged in its turn, keeping the earlier head's environments in the rollback proof.
+On GitLab, a deployment at a different commit counts for an earlier head only when its
+job's pipeline ran at that deployment's commit on this merge request's merged-results
+ref and the head is a parent of that commit. An ordinary descendant does not count.
 Then it asks **`staged-<n>`**, in Needs you, naming
 the merge request, the head, each stage job at its address, each application left off with
 who holds its projects, and the claims it holds:

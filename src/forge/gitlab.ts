@@ -392,7 +392,16 @@ const EnvironmentDeploymentsJson = Schema.fromJsonString(
     Schema.Struct({
       sha: Schema.String,
       status: Schema.String,
-      deployable: Schema.optionalKey(Schema.NullOr(Schema.Struct({ name: Schema.String }))),
+      deployable: Schema.optionalKey(
+        Schema.NullOr(
+          Schema.Struct({
+            name: Schema.String,
+            pipeline: Schema.optionalKey(
+              Schema.NullOr(Schema.Struct({ ref: Schema.String, sha: Schema.String })),
+            ),
+          }),
+        ),
+      ),
     }),
   ),
 );
@@ -440,7 +449,11 @@ function stagingEnvironments<R>(
           if (jobs !== undefined && !jobs.includes(one.deployable?.name ?? "")) continue;
           if (one.sha === commit) {
             hasCommit = true;
-          } else if (jobs !== undefined) {
+          } else if (
+            jobs !== undefined &&
+            one.deployable?.pipeline?.ref === `refs/merge-requests/${ref.iid}/merge` &&
+            one.deployable.pipeline.sha === one.sha
+          ) {
             let matches = builtFrom.get(one.sha);
             if (matches === undefined) {
               const answer = yield* api(`repository/commits/${one.sha}`);

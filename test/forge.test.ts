@@ -834,15 +834,63 @@ test("GitHub finds a tag's newest run whatever event started it, a release's amo
     }),
   ));
 
-test("attribution: GitLab retains a merged-results deployment when asked about its earlier source head", () =>
+test("attribution: GitLab retains its earlier merged-results deployment without attributing descendants or another MR's merge", () =>
   runEffect(
     Effect.gen(function* () {
       const fake = fakeForge(
         "gitlab",
         model("gitlab", {
-          ancestry: { [MERGED]: [HEAD] },
+          mrs: [mr("gitlab", { head: "new-head" })],
+          ancestry: { [MERGED]: ["target", HEAD], "next-commit": [HEAD] },
           environments: [
-            { name: "stage-spilnu", tier: "staging", job: "deploy-stage", deployed: MERGED },
+            {
+              name: "stage-spilnu",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: MERGED,
+                  status: "success",
+                  pipeline: { ref: "refs/merge-requests/30/merge", sha: MERGED },
+                },
+              ],
+            },
+            {
+              name: "stage-teammate",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: "next-commit",
+                  status: "success",
+                  pipeline: { ref: "feature", sha: "next-commit" },
+                },
+              ],
+            },
+            {
+              name: "stage-branch-merge",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: MERGED,
+                  status: "success",
+                  pipeline: { ref: "feature", sha: MERGED },
+                },
+              ],
+            },
+            {
+              name: "stage-other-mr",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: MERGED,
+                  status: "success",
+                  pipeline: { ref: "refs/merge-requests/31/merge", sha: MERGED },
+                },
+              ],
+            },
           ],
         }),
       );
@@ -852,7 +900,12 @@ test("attribution: GitLab retains a merged-results deployment when asked about i
         ]),
       ).toEqual({
         ok: true,
-        environments: [{ name: "stage-spilnu", live: MERGED, hasCommit: true }],
+        environments: [
+          { name: "stage-spilnu", live: MERGED, hasCommit: true },
+          { name: "stage-teammate", live: "next-commit", hasCommit: false },
+          { name: "stage-branch-merge", live: MERGED, hasCommit: false },
+          { name: "stage-other-mr", live: MERGED, hasCommit: false },
+        ],
       });
     }),
   ));
