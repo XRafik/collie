@@ -126,6 +126,32 @@ test("with Claude Code's own list, Haiku 4.5 runs at no effort, and its session 
     }),
   ));
 
+test("an effort saved while Claude Code's list was read, which the listed model does not take, keeps the session from opening", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const haiku = "claude-haiku-4-5-20251001";
+      const lists = listsHeld({
+        claude: {
+          from: "harness",
+          models: [
+            { id: "opus", label: "Opus 5.5", efforts: ["low", "medium", "high"] },
+            { id: haiku, label: "Haiku 4.5", efforts: [] },
+          ],
+        },
+      });
+      const resolve = (settings: DesktopSettings) =>
+        chatResolved(settings, NO_FLOCK_SETTINGS, Effect.succeed({}), lists);
+      expect(yield* resolve({ proactive: true, chatModel: "opus", chatEffort: "max" })).toEqual({
+        ok: false,
+        problem: '"max" is not an effort opus takes (low, medium, high)',
+      });
+      expect(yield* resolve({ proactive: true, chatModel: haiku, chatEffort: "high" })).toEqual({
+        ok: false,
+        problem: `${haiku} takes no effort, so "high" cannot be asked of it`,
+      });
+    }),
+  ));
+
 const BUILT_IN = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
 
 test("this computer's file tools and Bash are on and allowed, no setting source is read, and the human's own MCP servers load beside Collie's", () => {

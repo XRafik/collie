@@ -141,14 +141,23 @@ export const changeSettings = (
   if (!checked.ok) return { refused: checked.problem };
   const { harness, effort } = checked.choice;
   if (effort === null) return changed;
-  const offer = offers(harness);
-  const model = changed.chatModel ?? offer.unset.model;
-  const takes = effortsOf(harness, model, offer.models);
-  if (takes.length === 0)
-    return { refused: `${model} takes no effort, so "${effort}" cannot be asked of it` };
+  const refused = effortRefused(harness, changed.chatModel, effort, offers(harness));
+  return refused === null ? changed : { refused };
+};
+
+/** Why `model`, unset counting as the one it runs as, cannot be asked `effort`; null where it can. */
+export const effortRefused = (
+  harness: string,
+  model: string | undefined,
+  effort: string,
+  offer: Listed,
+) => {
+  const runs = model ?? offer.unset.model;
+  const takes = effortsOf(harness, runs, offer.models);
+  if (takes.length === 0) return `${runs} takes no effort, so "${effort}" cannot be asked of it`;
   if (!takes.includes(effort))
-    return { refused: `"${effort}" is not an effort ${model} takes (${takes.join(", ")})` };
-  return changed;
+    return `"${effort}" is not an effort ${runs} takes (${takes.join(", ")})`;
+  return null;
 };
 
 /**

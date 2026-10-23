@@ -19,7 +19,7 @@ import {
 } from "../shared/flock-settings";
 import { childEnv } from "./login-env";
 import { type HarnessLists, type Lists, NO_LISTS } from "./harness-lists";
-import { chatChoice, extraModels, offersOf } from "./settings";
+import { chatChoice, effortRefused, extraModels, offersOf } from "./settings";
 
 const PiSettings = Schema.fromJsonString(PiConfig);
 
@@ -37,7 +37,7 @@ export const readPiConfig = (dir: string) =>
 
 /**
  * What the next session runs on, each unset choice resolved, or why the settings cannot run.
- * Waits for the harness's own list while it is read. Pi's own settings are read only for Pi.
+ * Waits for the harness's own list while it is read, and checks the set effort against it. Pi's own settings are read only for Pi.
  */
 export const chatResolved = <R>(
   settings: DesktopSettings,
@@ -51,12 +51,14 @@ export const chatResolved = <R>(
     const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
     const listed = yield* lists.settled(harness);
     const config = harness === "pi" ? yield* pi : {};
+    const offer = offersOf(settings, flock, config, listed)(harness);
+    const refused =
+      settings.chatEffort === undefined
+        ? null
+        : effortRefused(harness, settings.chatModel, settings.chatEffort, offer);
+    if (refused !== null) return { ok: false as const, problem: refused };
     const set = { harness, model: settings.chatModel, effort: settings.chatEffort };
-    const choice: Resolved = resolveChat(
-      set,
-      offersOf(settings, flock, config, listed)(harness).models,
-      config,
-    );
+    const choice: Resolved = resolveChat(set, offer.models, config);
     return { ok: true as const, choice };
   });
 
