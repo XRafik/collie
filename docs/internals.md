@@ -802,9 +802,14 @@ pinned to one exact version, rather than through `gh` or `glab`
   `commentIssue`, `post`, `mine` and `login`. These use the library's modelled thread and
   user operations. A review posts one note, then an approval only where asked. Lists are
   read to the end; GitHub's issues exclude pull requests.
+- Review reads, replies, merging and release reads: `readReview`, `reply`, `merge`,
+  `deployed`, `tagPipeline` and `pipeline`. They keep their REST routes; GitHub reads the
+  pull request, review threads and default merge method through GraphQL. Comments,
+  reviews, threads, deployments and pipeline jobs are read to the end. A failed merge is
+  read back to distinguish one that landed, a moved head and a refusal; a timeout,
+  network failure or 5xx never resends the merge.
 
-`readReview`, `reply`, `merge`, `deployed`, `tagPipeline` and `pipeline` still run the CLI
-until the next transport slice. The CLI also keeps readiness and the doctor's checks,
+The CLI keeps readiness and the doctor's checks,
 cloning, the credential helper, opening a browser, and commands an agent or reviewer is
 told to run, including job logs: the Machine still needs its CLI logged in. Only
 `src/forge/` imports `forges`, and
@@ -833,7 +838,8 @@ a 5xx may have been applied. A failure is an answer, never a defect: its reason 
 forge, the HTTP status and the forge's message, and a rate limit's reset. Interrupting a
 call aborts its request.
 
-`runStatus` takes its address from agent text. GitLab's is asked only where glab's own
+`runStatus` and `pipeline` take their addresses from agent text. GitHub accepts only
+github.com. GitLab's is asked only where glab's own
 config or keyring holds a token for that host, read with `env -u GITLAB_TOKEN -u
 GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN glab config get token`: glab hands an environment token
 to every host, and that token is never sent to a host an agent named.

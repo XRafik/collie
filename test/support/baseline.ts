@@ -46,6 +46,7 @@ import {
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { readLanding, takeOver, writeLanding } from "../../src/landing";
 import { shell } from "../../src/mr";
+import type { ForgeHttp } from "../../src/forge/http";
 import { readCheckpoints } from "../../src/cards";
 import { mrLabel, mrTarget, type MrForge } from "../../src/board-model";
 import { AwaitingJson } from "../../src/awaiting";
@@ -175,7 +176,7 @@ const children = Layer.succeed(Children)(
 );
 
 /** A host layer a test may wrap, for the one capability it has no service to answer with. */
-type HostOverride = Layer.Layer<Host, never, Host | BunServices.BunServices>;
+type HostOverride = Layer.Layer<Host, never, Host | BunServices.BunServices | ForgeHttp>;
 
 /** The host's own layers, placing checkouts through the rig's herdr. */
 const foundation = () => ({
@@ -3465,7 +3466,13 @@ scenario(
 const delivering = (runId: string) =>
   Effect.gen(function* () {
     const bin = yield* FakeBin.make(`${rig.root}/bin`);
-    yield* bin.add("glab", `exit 0`);
+    const forge = yield* forgeOnPath(bin, "gitlab", {
+      installed: true,
+      loggedIn: [FORGE_HOST.gitlab],
+      login: "tester",
+      mrs: [],
+    });
+    forgeApi = yield* serveForges(forge);
     yield* repository();
     const plan = yield* planOf([{ file: "01-only.md", title: "the only one", checks: "unit" }]);
     yield* approve(runId, ["unit"]);
@@ -7848,7 +7855,7 @@ const releaseHost = (
   Layer.effect(Host)(
     Effect.gen(function* () {
       const host = yield* Host;
-      const services = yield* Effect.context<BunServices.BunServices>();
+      const services = yield* Effect.context<BunServices.BunServices | ForgeHttp>();
       let replies = 0;
       return Host.of({
         ...host,

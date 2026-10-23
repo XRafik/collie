@@ -5271,6 +5271,7 @@ const makeRegistry: (
       run: runShell,
     }).pipe(
       Effect.catchTag("PlatformError", (cause) => Effect.die(cause)),
+      Effect.provideService(ForgeHttp, Context.get(hostServices, ForgeHttp)),
       Effect.provideContext(bun),
     );
   });

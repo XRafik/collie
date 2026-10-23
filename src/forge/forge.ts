@@ -184,7 +184,7 @@ export interface Forge {
     tier: DeployTier,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<DeployedRead, never, R>;
+  ) => Effect.Effect<DeployedRead, never, R | ForgeHttp>;
   /** The open merge request whose source branch is `branch`, if any. */
   readonly forBranch: <R>(
     project: string,
@@ -257,14 +257,14 @@ export interface Forge {
     url: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<PipelineRead, never, R>;
+  ) => Effect.Effect<PipelineRead, never, R | ForgeHttp>;
   /** The newest pipeline or Actions run `tag` started in `ref`'s project. */
   readonly tagPipeline: <R>(
     ref: MrRef,
     tag: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<TagPipelineRead, never, R>;
+  ) => Effect.Effect<TagPipelineRead, never, R | ForgeHttp>;
   /** Clones `project` (`host/path`) into `into`, or says why it could not. */
   readonly clone: <R>(
     project: string,
@@ -302,7 +302,7 @@ export interface Forge {
     ref: MrRef,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<ReviewRead, never, R>;
+  ) => Effect.Effect<ReviewRead, never, R | ForgeHttp>;
   /** Posts `body` as it is, in the comment's thread where it has one; never resolves it. */
   readonly reply: <R>(
     ref: MrRef,
@@ -310,14 +310,14 @@ export interface Forge {
     body: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<Readiness, never, R>;
+  ) => Effect.Effect<Readiness, never, R | ForgeHttp>;
   /** Merges through the forge's REST merge at `head`: never admin, never auto-merge. */
   readonly merge: <R>(
     ref: MrRef,
     head: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<MergeAnswer, never, R>;
+  ) => Effect.Effect<MergeAnswer, never, R | ForgeHttp>;
   /** My open merge requests in `project`, as assignee or author, for a menu. */
   readonly mine: <R>(
     project: string | null,

@@ -59,43 +59,6 @@ const optionalText = Schema.optionalKey(Schema.NullOr(Schema.String));
 const optionalFlag = Schema.optionalKey(Schema.NullOr(Schema.Boolean));
 const Login = Schema.Struct({ login: optionalText });
 
-const PullJson = Schema.fromJsonString(
-  Schema.Struct({
-    title: optionalText,
-    state: Schema.String,
-    isDraft: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
-    author: Schema.optionalKey(Schema.NullOr(Login)),
-    assignees: Schema.optionalKey(Schema.NullOr(Schema.Array(Login))),
-    headRefName: optionalText,
-    isCrossRepository: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
-    baseRefName: optionalText,
-    headRefOid: optionalText,
-    mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
-    mergedAt: optionalText,
-    mergedBy: Schema.optionalKey(Schema.NullOr(Login)),
-    statusCheckRollup: Schema.optionalKey(
-      Schema.NullOr(
-        Schema.Array(
-          Schema.Struct({
-            name: optionalText,
-            context: optionalText,
-            status: optionalText,
-            conclusion: optionalText,
-            state: optionalText,
-          }),
-        ),
-      ),
-    ),
-    reviewDecision: optionalText,
-    comments: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Unknown))),
-    updatedAt: optionalText,
-    url: optionalText,
-    autoMergeRequest: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
-    mergeable: optionalText,
-    mergeStateStatus: optionalText,
-  }),
-);
-
 /** GitHub's merge states it would merge in; the rest say why not, or that it is still deciding. */
 const MERGES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 
@@ -113,7 +76,7 @@ function mergeabilityOf(
   if (MERGES.has(status)) return { state: "mergeable", said: "mergeable" };
   return { state: "blocked", said: status.toLowerCase().replaceAll("_", " ") };
 }
-type Pull = typeof PullJson.Type;
+type Pull = PanelPull;
 
 const RED = new Set([
   "FAILURE",
@@ -171,6 +134,7 @@ const PanelData = Schema.Struct({
           headRefOid: optionalText,
           mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
           mergedAt: optionalText,
+          mergedBy: Schema.optionalKey(Schema.NullOr(Login)),
           reviewDecision: optionalText,
           comments: Schema.optionalKey(Schema.NullOr(Schema.Struct({ totalCount: Schema.Number }))),
           updatedAt: optionalText,
@@ -208,7 +172,7 @@ const PANEL = `query($owner: String!, $name: String!, $number: Int!, $after: Str
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       title state isDraft author { login } assignees(first: 100) { nodes { login } }
-      headRefName isCrossRepository baseRefName headRefOid mergeCommit { oid } mergedAt
+      headRefName isCrossRepository baseRefName headRefOid mergeCommit { oid } mergedAt mergedBy { login }
       reviewDecision comments { totalCount } updatedAt url autoMergeRequest { enabledAt }
       mergeable mergeStateStatus
       commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100, after: $after) {
@@ -304,7 +268,6 @@ function details(ref: MrRef, cwd: string): Effect.Effect<MrPanel, never, ForgeHt
 }
 
 const RepoJson = Schema.fromJsonString(Schema.Struct({ nameWithOwner: Schema.String }));
-const UserJson = Schema.fromJsonString(Schema.Struct({ login: Schema.String }));
 
 /** gh installed, logged in to github.com, and — where a repository is named — able to read it. */
 function ready<R>(
@@ -332,17 +295,6 @@ function ready<R>(
 }
 
 const login = (cwd: string) => viewerLogin(LOGIN, cwd);
-
-function reviewLogin<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, never, R> {
-  return Effect.gen(function* () {
-    const me = yield* run("gh", ["api", "user", "--hostname", HOST], cwd);
-    if (me.code !== 0) return null;
-    return Option.match(Schema.decodeUnknownOption(UserJson)(me.stdout), {
-      onNone: () => null,
-      onSome: (user) => (user.login.trim() === "" ? null : user.login),
-    });
-  });
-}
 
 const BranchPull = Schema.Struct({
   number: Schema.Number,
@@ -598,141 +550,100 @@ function baseJob(
   });
 }
 
-const REVIEW_FIELDS =
-  "state,headRefOid,baseRefName,mergeCommit,mergedAt,mergedBy,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
 const User = Schema.Struct({ login: Schema.String, type: optionalText });
-/** `gh api --paginate --slurp`'s pages. */
-const pagesOf = <S extends Schema.Top>(item: S) =>
-  Schema.fromJsonString(Schema.Array(Schema.Array(item)));
-const IssueCommentsJson = pagesOf(
-  Schema.Struct({
-    id: Schema.Number,
-    html_url: Schema.String,
-    user: Schema.NullOr(User),
-    created_at: Schema.String,
-    body: optionalText,
-  }),
-);
-const ReviewCommentsJson = pagesOf(
-  Schema.Struct({
-    id: Schema.Number,
-    html_url: Schema.String,
-    user: Schema.NullOr(User),
-    created_at: Schema.String,
-    body: optionalText,
-    path: optionalText,
-    line: Schema.optionalKey(Schema.NullOr(Schema.Number)),
-    original_line: Schema.optionalKey(Schema.NullOr(Schema.Number)),
-    in_reply_to_id: Schema.optionalKey(Schema.NullOr(Schema.Number)),
-  }),
-);
-const ReviewsJson = pagesOf(
-  Schema.Struct({
-    id: Schema.Number,
-    html_url: Schema.String,
-    user: Schema.NullOr(User),
-    state: Schema.String,
-    body: optionalText,
-    submitted_at: optionalText,
-  }),
-);
-const ThreadsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      data: Schema.Struct({
-        repository: Schema.Struct({
-          pullRequest: Schema.Struct({
-            reviewThreads: Schema.Struct({
-              nodes: Schema.Array(
-                Schema.Struct({
-                  isResolved: Schema.Boolean,
-                  comments: Schema.Struct({
-                    nodes: Schema.Array(
-                      Schema.Struct({ databaseId: Schema.NullOr(Schema.Number) }),
-                    ),
-                  }),
-                }),
-              ),
+const IssueComment = Schema.Struct({
+  id: Schema.Number,
+  html_url: Schema.String,
+  user: Schema.NullOr(User),
+  created_at: Schema.String,
+  body: optionalText,
+});
+const ReviewComment = Schema.Struct({
+  id: Schema.Number,
+  html_url: Schema.String,
+  user: Schema.NullOr(User),
+  created_at: Schema.String,
+  body: optionalText,
+  path: optionalText,
+  line: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  original_line: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+  in_reply_to_id: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+});
+const Review = Schema.Struct({
+  id: Schema.Number,
+  html_url: Schema.String,
+  user: Schema.NullOr(User),
+  state: Schema.String,
+  body: optionalText,
+  submitted_at: optionalText,
+});
+const Threads = Schema.Struct({
+  repository: Schema.Struct({
+    pullRequest: Schema.Struct({
+      reviewThreads: Schema.Struct({
+        nodes: Schema.Array(
+          Schema.Struct({
+            isResolved: Schema.Boolean,
+            comments: Schema.Struct({
+              nodes: Schema.Array(Schema.Struct({ databaseId: Schema.NullOr(Schema.Number) })),
             }),
           }),
-        }),
+        ),
+        pageInfo: Schema.Struct({ hasNextPage: Schema.Boolean, endCursor: optionalText }),
       }),
     }),
-  ),
-);
+  }),
+});
 const REVIEW_THREADS = `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: ${PAGE}, after: $endCursor) { nodes { isResolved comments(first: 1) { nodes { databaseId } } } pageInfo { hasNextPage endCursor } } } } }`;
-const ProtectionJson = Schema.fromJsonString(
-  Schema.Struct({
-    data: Schema.Struct({
-      repository: Schema.Struct({
-        ref: Schema.NullOr(
+const Protection = Schema.Struct({
+  repository: Schema.Struct({
+    ref: Schema.NullOr(
+      Schema.Struct({
+        refUpdateRule: Schema.NullOr(
           Schema.Struct({
-            refUpdateRule: Schema.NullOr(
-              Schema.Struct({
-                requiredApprovingReviewCount: Schema.NullOr(Schema.Number),
-                requiresCodeOwnerReviews: Schema.Boolean,
-              }),
-            ),
+            requiredApprovingReviewCount: Schema.NullOr(Schema.Number),
+            requiresCodeOwnerReviews: Schema.Boolean,
           }),
         ),
       }),
-    }),
-  }),
-);
-const PROTECTION = `query($owner: String!, $name: String!, $ref: String!) { repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { refUpdateRule { requiredApprovingReviewCount requiresCodeOwnerReviews } } } }`;
-const BranchRulesJson = pagesOf(
-  Schema.Struct({
-    type: Schema.String,
-    parameters: Schema.optionalKey(
-      Schema.NullOr(
-        Schema.Struct({
-          required_approving_review_count: Schema.optionalKey(Schema.Number),
-          require_code_owner_review: optionalFlag,
-        }),
-      ),
     ),
   }),
-);
+});
+const PROTECTION = `query($owner: String!, $name: String!, $ref: String!) { repository(owner: $owner, name: $name) { ref(qualifiedName: $ref) { refUpdateRule { requiredApprovingReviewCount requiresCodeOwnerReviews } } } }`;
+const BranchRule = Schema.Struct({
+  type: Schema.String,
+  parameters: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        required_approving_review_count: Schema.optionalKey(Schema.Number),
+        require_code_owner_review: optionalFlag,
+      }),
+    ),
+  ),
+});
 
 /** The approving reviews `base` requires, or why that cannot be counted. */
-const requiredReviews = <R>(repo: string, base: string, cwd: string, run: Runner<R>) =>
+const requiredReviews = (repo: string, base: string, cwd: string) =>
   Effect.gen(function* () {
     const [owner = "", name = ""] = repo.split("/");
-    const classic = yield* run(
-      "gh",
-      [
-        "api",
-        "graphql",
-        "-f",
-        `query=${PROTECTION}`,
-        "-F",
-        `owner=${owner}`,
-        "-F",
-        `name=${name}`,
-        "-F",
-        `ref=refs/heads/${base}`,
-      ],
+    const protection = yield* graphqlAs(Protection, LOGIN, cwd, PROTECTION, {
+      owner,
+      name,
+      ref: `refs/heads/${base}`,
+    });
+    const rulesets = yield* pagesAs(
+      BranchRule,
+      LOGIN,
       cwd,
+      `repos/${repo}/rules/branches/${encodeURIComponent(base)}`,
     );
-    const protection = Schema.decodeUnknownOption(ProtectionJson)(classic.stdout);
-    const rules = yield* run(
-      "gh",
-      ["api", `repos/${repo}/rules/branches/${encodeURIComponent(base)}`, "--paginate", "--slurp"],
-      cwd,
-    );
-    const rulesets = Schema.decodeUnknownOption(BranchRulesJson)(rules.stdout);
-    if (
-      classic.code !== 0 ||
-      Option.isNone(protection) ||
-      rules.code !== 0 ||
-      Option.isNone(rulesets)
-    )
+    if (!protection.ok || !rulesets.ok)
       return {
         ok: false,
-        reason: `GitHub would not say how many approvals ${base} requires`,
+        reason: `GitHub would not say how many approvals ${base} requires: ${!protection.ok ? protection.reason : !rulesets.ok ? rulesets.reason : ""}`,
       } as const;
-    const rule = protection.value.data.repository.ref?.refUpdateRule ?? null;
-    const pullRules = rulesets.value.flat().filter((one) => one.type === "pull_request");
+    const rule = protection.value.repository.ref?.refUpdateRule ?? null;
+    const pullRules = rulesets.value.filter((one) => one.type === "pull_request");
     if (
       rule?.requiresCodeOwnerReviews === true ||
       pullRules.some((one) => one.parameters?.require_code_owner_review === true)
@@ -751,75 +662,65 @@ const requiredReviews = <R>(repo: string, base: string, cwd: string, run: Runner
  * The pull request's view, every page of its issue comments, review comments and reviews,
  * and which review threads are resolved.
  */
-function readReview<R>(
-  ref: MrRef,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<ReviewRead, never, R> {
+function readReview(ref: MrRef, cwd: string): Effect.Effect<ReviewRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     const where = mrWords(ref).label;
-    const reached = yield* ready(ref.project, cwd, run);
-    if (!reached.ok) return { ok: false, reason: reached.reason };
-    const me = yield* reviewLogin(cwd, run);
+    const me = yield* login(cwd);
     if (me === null) return { ok: false, reason: "gh will not say who it is logged in as" };
     const repo = mrPath(ref);
-    const view = yield* run(
-      "gh",
-      ["pr", "view", ref.iid, "--repo", repo, "--json", REVIEW_FIELDS],
+    const pull = yield* panelOf(ref, cwd);
+    if (!pull.ok) return { ok: false, reason: `could not read ${where}: ${pull.reason}` };
+    const issueComments = yield* pagesAs(
+      IssueComment,
+      LOGIN,
       cwd,
+      `repos/${repo}/issues/${ref.iid}/comments`,
     );
-    const pull = Schema.decodeUnknownOption(PullJson)(view.stdout);
-    if (view.code !== 0 || Option.isNone(pull))
-      return { ok: false, reason: `gh could not read ${where}` };
-    const list = <A>(schema: Schema.Codec<A, string>, route: string) =>
-      Effect.map(
-        run("gh", ["api", `repos/${repo}/${route}?per_page=${PAGE}`, "--paginate", "--slurp"], cwd),
-        (ran) =>
-          ran.code === 0 ? Option.getOrNull(Schema.decodeUnknownOption(schema)(ran.stdout)) : null,
-      );
-    const issueComments = yield* list(IssueCommentsJson, `issues/${ref.iid}/comments`);
-    const reviewComments = yield* list(ReviewCommentsJson, `pulls/${ref.iid}/comments`);
-    const reviews = yield* list(ReviewsJson, `pulls/${ref.iid}/reviews`);
+    if (!issueComments.ok) return issueComments;
+    const reviewComments = yield* pagesAs(
+      ReviewComment,
+      LOGIN,
+      cwd,
+      `repos/${repo}/pulls/${ref.iid}/comments`,
+    );
+    if (!reviewComments.ok) return reviewComments;
+    const reviews = yield* pagesAs(Review, LOGIN, cwd, `repos/${repo}/pulls/${ref.iid}/reviews`);
+    if (!reviews.ok) return reviews;
     const [owner = "", name = ""] = repo.split("/");
-    const threads = yield* run(
-      "gh",
-      [
-        "api",
-        "graphql",
-        "--paginate",
-        "--slurp",
-        "-f",
-        `query=${REVIEW_THREADS}`,
-        "-F",
-        `owner=${owner}`,
-        "-F",
-        `name=${name}`,
-        "-F",
-        `number=${ref.iid}`,
-      ],
-      cwd,
-    );
-    const resolvedThreads = Schema.decodeUnknownOption(ThreadsJson)(threads.stdout);
-    if (
-      issueComments === null ||
-      reviewComments === null ||
-      reviews === null ||
-      threads.code !== 0 ||
-      Option.isNone(resolvedThreads)
-    )
-      return { ok: false, reason: `gh could not read ${where}'s comments and reviews` };
-    const resolved = new Set(
-      resolvedThreads.value.flatMap((page) =>
-        page.data.repository.pullRequest.reviewThreads.nodes.flatMap((thread) => {
-          const first = thread.comments.nodes[0]?.databaseId;
-          return thread.isResolved && first != null ? [String(first)] : [];
-        }),
-      ),
-    );
+    const resolved = new Set<string>();
+    let endCursor: string | null = null;
+    for (;;) {
+      const page: Answered<typeof Threads.Type> = yield* graphqlAs(
+        Threads,
+        LOGIN,
+        cwd,
+        REVIEW_THREADS,
+        {
+          owner,
+          name,
+          number: Number(ref.iid),
+          endCursor,
+        },
+      );
+      if (!page.ok) return page;
+      const threads: typeof Threads.Type.repository.pullRequest.reviewThreads =
+        page.value.repository.pullRequest.reviewThreads;
+      for (const thread of threads.nodes) {
+        const first = thread.comments.nodes[0]?.databaseId;
+        if (thread.isResolved && first != null) resolved.add(String(first));
+      }
+      if (!threads.pageInfo.hasNextPage) break;
+      endCursor = threads.pageInfo.endCursor ?? null;
+      if (endCursor === null)
+        return {
+          ok: false,
+          reason: `GitHub did not name the next page of ${where}'s review threads`,
+        };
+    }
     const kindOf = (user: typeof User.Type | null): CommentKind =>
       user?.type === "Bot" ? "bot" : "person";
     const comments: ForgeComment[] = [
-      ...issueComments.flat().map((one) => ({
+      ...issueComments.value.map((one) => ({
         id: String(one.id),
         url: one.html_url,
         thread: null,
@@ -830,7 +731,7 @@ function readReview<R>(
         file: null,
         line: null,
       })),
-      ...reviewComments.flat().map((one) => ({
+      ...reviewComments.value.map((one) => ({
         id: String(one.id),
         url: one.html_url,
         thread: String(one.in_reply_to_id ?? one.id),
@@ -841,7 +742,7 @@ function readReview<R>(
         file: one.path ?? null,
         line: one.line ?? one.original_line ?? null,
       })),
-      ...reviews.flat().flatMap((one) =>
+      ...reviews.value.flatMap((one) =>
         (one.body ?? "") === ""
           ? []
           : [
@@ -861,7 +762,7 @@ function readReview<R>(
     ];
     // Each reviewer's latest review that is more than a comment is the one that stands.
     const standing = new Map<string, { readonly state: string; readonly bot: boolean }>();
-    for (const one of reviews.flat())
+    for (const one of reviews.value)
       if (one.user !== null && one.state !== "COMMENTED" && one.state !== "PENDING")
         standing.set(one.user.login, { state: one.state, bot: one.user.type === "Bot" });
     const approvers = [...standing]
@@ -871,14 +772,14 @@ function readReview<R>(
     const changesRequested = [...standing].some(
       ([who, review]) => review.state === "CHANGES_REQUESTED" && !review.bot && who !== me,
     );
-    const said = pull.value;
+    const said = pull.value.pull;
     const decision = said.reviewDecision ?? "";
     const unapproved = yield* Effect.gen(function* () {
       if (decision === "CHANGES_REQUESTED") return "changes were requested";
       if (decision === "REVIEW_REQUIRED") return "a review is still required";
       if (decision !== "APPROVED") return changesRequested ? "changes were requested" : "";
       if (!approvers.includes(me)) return "";
-      const required = yield* requiredReviews(repo, said.baseRefName ?? "", cwd, run);
+      const required = yield* requiredReviews(repo, said.baseRefName ?? "", cwd);
       if (!required.ok) return `${required.reason}, and ${me}'s own approval stands`;
       return others.length >= required.count
         ? ""
@@ -904,99 +805,82 @@ function readReview<R>(
       approvers: others,
       changesRequested,
       mergeable: mergeabilityOf(said) ?? null,
-      pipeline: rollupChecks(said.statusCheckRollup),
+      pipeline: rollupChecks(pull.value.rollup),
       comments: judgeComments(comments, me, resolved),
     };
   });
 }
 
 /** A reply in a review comment's thread, else a new comment on the pull request. */
-function reply<R>(
+function reply(
   ref: MrRef,
   to: Pick<ForgeComment, "thread">,
   body: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<Readiness, never, R> {
+): Effect.Effect<Readiness, never, ForgeHttp> {
   const repo = mrPath(ref);
   const route =
     to.thread === null
       ? `repos/${repo}/issues/${ref.iid}/comments`
       : `repos/${repo}/pulls/${ref.iid}/comments/${to.thread}/replies`;
-  return Effect.map(run("gh", ["api", route, "-X", "POST", "-f", `body=${body}`], cwd), (posted) =>
-    posted.code === 0
+  return Effect.map(request(LOGIN, cwd, "POST", route, { body }), (posted) =>
+    posted.ok
       ? { ok: true, reason: "" }
       : {
           ok: false,
-          reason: `gh could not reply on ${mrWords(ref).label}: ${whatItSaid(posted) || `exit ${posted.code}`}`,
+          reason: `could not reply on ${mrWords(ref).label}: ${posted.reason}; inspect the thread before retrying, since the reply may have landed`,
         },
   );
 }
 
-const MergeMethodJson = Schema.fromJsonString(
-  Schema.Struct({ viewerDefaultMergeMethod: Schema.Literals(["MERGE", "SQUASH", "REBASE"]) }),
-);
-const MergedJson = Schema.fromJsonString(
-  Schema.Struct({
-    state: Schema.String,
-    headRefOid: optionalText,
-    mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
-    mergedAt: optionalText,
-    mergedBy: Schema.optionalKey(Schema.NullOr(Login)),
-  }),
-);
+const MergeMethod = Schema.Struct({
+  repository: Schema.NullOr(
+    Schema.Struct({
+      viewerDefaultMergeMethod: Schema.Literals(["MERGE", "SQUASH", "REBASE"]),
+    }),
+  ),
+});
+const MERGE_METHOD = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { viewerDefaultMergeMethod } }`;
+const MergedPull = Schema.Struct({
+  state: Schema.String,
+  headRefOid: optionalText,
+  mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
+  mergedAt: optionalText,
+  mergedBy: Schema.optionalKey(Schema.NullOr(Login)),
+});
+const MergedData = Schema.Struct({
+  repository: Schema.NullOr(Schema.Struct({ pullRequest: Schema.NullOr(MergedPull) })),
+});
+const MERGED_PULL = `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { state headRefOid mergeCommit { oid } mergedAt mergedBy { login } } } }`;
 
 /** GitHub's merge endpoint at `head`, by the repository's default merge method for the viewer. */
-function merge<R>(
+function merge(
   ref: MrRef,
   head: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<MergeAnswer, never, R> {
+): Effect.Effect<MergeAnswer, never, ForgeHttp> {
   return Effect.gen(function* () {
     const where = mrWords(ref).label;
     const repo = mrPath(ref);
-    const viewed = yield* run(
-      "gh",
-      ["repo", "view", repo, "--json", "viewerDefaultMergeMethod"],
-      cwd,
-    );
-    const method = Schema.decodeUnknownOption(MergeMethodJson)(viewed.stdout);
-    if (viewed.code !== 0 || Option.isNone(method))
-      return { _tag: "Refused", reason: `gh would not say how ${repo} merges` };
-    const merging = yield* run(
-      "gh",
-      [
-        "api",
-        `repos/${repo}/pulls/${ref.iid}/merge`,
-        "-X",
-        "PUT",
-        "-f",
-        `sha=${head}`,
-        "-f",
-        `merge_method=${method.value.viewerDefaultMergeMethod.toLowerCase()}`,
-      ],
-      cwd,
-    );
-    const after = yield* run(
-      "gh",
-      [
-        "pr",
-        "view",
-        ref.iid,
-        "--repo",
-        repo,
-        "--json",
-        "state,headRefOid,mergeCommit,mergedAt,mergedBy",
-      ],
-      cwd,
-    );
-    const pull =
-      after.code === 0
-        ? Option.getOrNull(Schema.decodeUnknownOption(MergedJson)(after.stdout))
-        : null;
-    if (merging.code === 0) return { _tag: "Merged", merged: pull?.mergeCommit?.oid ?? "" };
-    const refusal = `GitHub refused to merge ${where}: ${whatItSaid(merging) || `exit ${merging.code}`}`;
+    const [owner = "", name = ""] = repo.split("/");
+    const method = yield* graphqlAs(MergeMethod, LOGIN, cwd, MERGE_METHOD, { owner, name });
+    if (!method.ok || method.value.repository === null)
+      return {
+        _tag: "Refused",
+        reason: `gh would not say how ${repo} merges${!method.ok ? `: ${method.reason}` : ""}`,
+      };
+    const merging = yield* request(LOGIN, cwd, "PUT", `repos/${repo}/pulls/${ref.iid}/merge`, {
+      sha: head,
+      merge_method: method.value.repository.viewerDefaultMergeMethod.toLowerCase(),
+    });
+    const after = yield* graphqlAs(MergedData, LOGIN, cwd, MERGED_PULL, {
+      owner,
+      name,
+      number: Number(ref.iid),
+    });
+    const pull = after.ok ? (after.value.repository?.pullRequest ?? null) : null;
+    if (merging.ok) return { _tag: "Merged", merged: pull?.mergeCommit?.oid ?? "" };
+    const refusal = `GitHub refused to merge ${where}: ${merging.reason}`;
     if (pull === null) return { _tag: "Refused", reason: refusal };
     if (pull.state === "MERGED")
       return {
@@ -1049,9 +933,7 @@ const Deployment = Schema.Struct({
   environment: Schema.String,
   production_environment: optionalFlag,
 });
-const DeploymentsJson = Schema.fromJsonString(Schema.Array(Schema.Array(Deployment)));
 const Statuses = Schema.Array(Schema.Struct({ state: Schema.String }));
-const StatusesJson = Schema.fromJsonString(Statuses);
 const Compare = Schema.Struct({ status: Schema.String });
 const RunState = Schema.Struct({ status: Schema.String, conclusion: optionalText });
 
@@ -1109,33 +991,25 @@ function liveTier(
 }
 
 /** The commit the newest deployment of `tier` whose latest status is `success` has. */
-function deployed<R>(
+function deployed(
   ref: MrRef,
   tier: DeployTier,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<DeployedRead, never, R> {
+): Effect.Effect<DeployedRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     if (ref.project === null) return { ok: false, reason: "no repository to read deployments of" };
     const repo = `repos/${mrPath(ref)}`;
-    const unread = { ok: false, reason: `gh could not read ${ref.project}'s deployments` } as const;
-    const listed = yield* run(
-      "gh",
-      ["api", `${repo}/deployments?per_page=100`, "--paginate", "--slurp"],
-      cwd,
-    );
-    const pages = Schema.decodeUnknownOption(DeploymentsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(pages)) return unread;
-    for (const deployment of pages.value.flat()) {
+    const pages = yield* pagesAs(Deployment, LOGIN, cwd, `${repo}/deployments`);
+    if (!pages.ok) return pages;
+    for (const deployment of pages.value) {
       if (tierOf(deployment.environment, deployment.production_environment === true) !== tier)
         continue;
-      const statuses = yield* run(
-        "gh",
-        ["api", `${repo}/deployments/${deployment.id}/statuses?per_page=1`],
+      const latest = yield* rest(
+        Statuses,
         cwd,
+        `${repo}/deployments/${deployment.id}/statuses?per_page=1`,
       );
-      const latest = Schema.decodeUnknownOption(StatusesJson)(statuses.stdout);
-      if (statuses.code !== 0 || Option.isNone(latest)) return unread;
+      if (!latest.ok) return latest;
       if (latest.value[0]?.state === "success") return { ok: true, sha: deployment.sha };
     }
     return { ok: true, sha: null };
@@ -1155,101 +1029,77 @@ function runStatus(url: string, cwd: string): Effect.Effect<string | null, never
   });
 }
 
-const RunJobsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      jobs: Schema.Array(
-        Schema.Struct({
-          name: Schema.String,
-          status: Schema.String,
-          conclusion: optionalText,
-          html_url: optionalText,
-        }),
-      ),
-    }),
-  ),
-);
-
-const RunIdentityJson = Schema.fromJsonString(
-  Schema.Struct({
-    status: Schema.String,
-    conclusion: optionalText,
-    head_branch: optionalText,
-    head_sha: Schema.String,
-  }),
-);
-const WorkflowRunsJson = Schema.fromJsonString(
-  Schema.Struct({ workflow_runs: Schema.Array(Schema.Struct({ html_url: Schema.String })) }),
-);
+const RunJob = Schema.Struct({
+  name: Schema.String,
+  status: Schema.String,
+  conclusion: optionalText,
+  html_url: optionalText,
+});
+const RunJobs = Schema.Struct({ jobs: Schema.Array(RunJob) });
+const RunIdentity = Schema.Struct({
+  status: Schema.String,
+  conclusion: optionalText,
+  head_branch: optionalText,
+  head_sha: Schema.String,
+});
+const WorkflowRuns = Schema.Struct({
+  workflow_runs: Schema.Array(Schema.Struct({ html_url: Schema.String })),
+});
 
 /** The newest Actions run `tag` started in `ref`'s repository, a push or a release. */
-function tagPipeline<R>(
+function tagPipeline(
   ref: MrRef,
   tag: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<TagPipelineRead, never, R> {
+): Effect.Effect<TagPipelineRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     if (ref.project === null) return { ok: false, reason: "no repository to read runs of" };
-    const listed = yield* run(
-      "gh",
-      ["api", `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&per_page=1`],
+    const runs = yield* rest(
+      WorkflowRuns,
       cwd,
+      `repos/${mrPath(ref)}/actions/runs?branch=${encodeURIComponent(tag)}&per_page=1`,
     );
-    const runs = Schema.decodeUnknownOption(WorkflowRunsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(runs))
-      return { ok: false, reason: `gh could not list ${tag}'s Actions runs in ${ref.project}` };
+    if (!runs.ok) return runs;
     return { ok: true, url: runs.value.workflow_runs[0]?.html_url ?? null };
   });
 }
 
 /** An Actions run and its jobs; one waiting on an environment's reviewers waits by hand. */
-function pipeline<R>(
-  url: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<PipelineRead, never, R> {
+function pipeline(url: string, cwd: string): Effect.Effect<PipelineRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     const m =
       /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/(\d+)(?:[/?#]\S*)?$/.exec(
         url.trim(),
       );
     if (!m) return { ok: false, reason: `${url} is not a GitHub Actions run` };
-    if ((yield* run("gh", ["auth", "status", "--hostname", HOST], cwd)).code !== 0)
-      return { ok: false, reason: `gh is not logged in to ${HOST}` };
     const route = `repos/${m[1]}/actions/runs/${m[2]}`;
-    const said = yield* run("gh", ["api", route], cwd);
-    const status = Schema.decodeUnknownOption(RunIdentityJson)(said.stdout);
-    if (said.code !== 0 || Option.isNone(status))
-      return { ok: false, reason: `gh could not read ${url}` };
-    const listed = yield* run(
-      "gh",
-      ["api", `${route}/jobs?per_page=100`, "--paginate", "--slurp"],
-      cwd,
-    );
-    const pages = Schema.decodeUnknownOption(RunJobsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(pages))
-      return { ok: false, reason: `gh could not list the jobs of ${url}` };
+    const status = yield* rest(RunIdentity, cwd, route);
+    if (!status.ok) return status;
+    const jobs: Array<typeof RunJob.Type> = [];
+    for (let page = 1; ; page++) {
+      const listed = yield* rest(RunJobs, cwd, `${route}/jobs?per_page=100&page=${page}`);
+      if (!listed.ok) return listed;
+      jobs.push(...listed.value.jobs);
+      if (listed.value.jobs.length < 100) break;
+    }
     return {
       ok: true,
       succeeded: status.value.conclusion === "success",
       project: `${HOST}/${m[1]}`,
       ref: status.value.head_branch ?? "",
       sha: status.value.head_sha,
-      jobs: pages.value
-        .flatMap((page) => page.jobs)
-        .map((one) => ({
-          name: one.name,
-          state:
-            one.status === "waiting"
-              ? "manual"
-              : one.status === "completed"
-                ? (CONCLUSIONS.get(one.conclusion ?? "") ?? "failed")
-                : one.status === "in_progress"
-                  ? "running"
-                  : "pending",
-          url: one.html_url ?? null,
-        })),
+      jobs: jobs.map((one) => ({
+        name: one.name,
+        state:
+          one.status === "waiting"
+            ? "manual"
+            : one.status === "completed"
+              ? (CONCLUSIONS.get(one.conclusion ?? "") ?? "failed")
+              : one.status === "in_progress"
+                ? "running"
+                : "pending",
+        url: one.html_url ?? null,
+      })),
     };
   });
 }

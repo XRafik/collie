@@ -186,10 +186,16 @@ const make = (run: Runner, fetch: FetchLike | undefined, base: string | null) =>
   });
 
 /** One request to the login's host, as `<cli> api` sent it: its parsed body, or why not. */
-export const request = (login: ForgeLogin, cwd: string, method: "GET" | "POST", path: string) =>
+export const request = (
+  login: ForgeLogin,
+  cwd: string,
+  method: "GET" | "POST" | "PUT",
+  path: string,
+  body?: Record<string, string>,
+) =>
   Effect.flatMap(ForgeHttp, (http) =>
     http.ask(login, cwd, (provider, signal) =>
-      provider.request<unknown>(method, path, { signal }).then((answer) => answer.data),
+      provider.request<unknown>(method, path, { signal, body }).then((answer) => answer.data),
     ),
   );
 

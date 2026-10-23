@@ -758,7 +758,7 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const deployed = (tier: "staging" | "production", over: Partial<ForgeModel>) =>
-            forge.deployed(ref(name), tier, "/w", fakeForge(name, model(name, over)).run);
+            against(name, model(name, over), (run) => forge.deployed(ref(name), tier, "/w", run));
           const both = { environments: environments("child", "0ld", MERGED) };
           expect(yield* deployed("staging", both)).toEqual({ ok: true, sha: "child" });
           expect(yield* deployed("production", both)).toEqual({ ok: true, sha: "0ld" });
@@ -788,7 +788,7 @@ for (const name of ["gitlab", "github"] as const) {
     runEffect(
       Effect.gen(function* () {
         const read = (url: string, runs: ForgeModel["runs"]) =>
-          forge.pipeline(url, "/w", fakeForge(name, model(name, { runs })).run);
+          against(name, model(name, { runs }), (run) => forge.pipeline(url, "/w", run));
         const done = { status: "completed", conclusion: "success" };
         expect(
           yield* read(URLS[name].run, {
@@ -833,7 +833,68 @@ for (const name of ["gitlab", "github"] as const) {
         expect((yield* read(URLS[name].run, {})).ok).toBe(false);
       }),
     ));
+
+  test(`the ${name} forge reads pipeline over HTTP from a cold login`, () => {
+    const fake = fakeForge(
+      name,
+      model(name, {
+        runs: {
+          "7": {
+            status: name === "gitlab" ? "success" : "completed",
+            conclusion: "success",
+            ref: "v1.2.0",
+            sha: MERGED,
+            jobs: [{ name: "publish", state: "manual" }],
+          },
+        },
+      }),
+    );
+    return runEffect(
+      Effect.gen(function* () {
+        expect(yield* forge.pipeline(URLS[name].run, "/w", fake.run)).toEqual({
+          ok: true,
+          succeeded: true,
+          project: PROJECT[name],
+          ref: "v1.2.0",
+          sha: MERGED,
+          jobs: [{ name: "publish", state: "manual", url: JOB_URL[name](1) }],
+        });
+        expect(fake.requests.length).toBeGreaterThan(0);
+        expect(fake.calls).toEqual(
+          READ_ONCE[name].map((command) =>
+            name === "gitlab"
+              ? `env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN ${command}`
+              : command,
+          ),
+        );
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
 }
+
+test("GitLab pipeline reads refuse an unknown host's environment token without a request", () => {
+  const fake = fakeForge("gitlab", model("gitlab", { envToken: "environment-only" }));
+  return runEffect(
+    Effect.gen(function* () {
+      expect(
+        (yield* fake.run("glab", ["config", "get", "token", "--host", "elsewhere.example"], "/w"))
+          .stdout,
+      ).toBe("environment-only\n");
+      fake.calls.length = 0;
+      expect(
+        yield* gitlab.pipeline("https://elsewhere.example/group/app/-/pipelines/7", "/w", fake.run),
+      ).toEqual({
+        ok: false,
+        reason: "glab is not logged in to elsewhere.example",
+      });
+      expect(fake.requests).toEqual([]);
+      expect(fake.calls).toEqual([
+        "env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN glab config get oauth2_expiry_date --host elsewhere.example",
+        "env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN glab config get token --host elsewhere.example",
+      ]);
+    }).pipe(Effect.provide(fake.layer)),
+  );
+});
 
 test("GitHub finds production beyond a full page of newer deployments over HTTP", () => {
   const fake = fakeForge(
@@ -860,7 +921,29 @@ test("GitHub finds production beyond a full page of newer deployments over HTTP"
   );
 });
 
-for (const name of ["gitlab", "github"] as const)
+for (const name of ["gitlab", "github"] as const) {
+  test(`the ${name} forge reads tagPipeline over HTTP from a cold login`, () => {
+    const fake = fakeForge(
+      name,
+      model(name, {
+        runs: {
+          "7": { status: "success", ref: "v1.2.0", sha: MERGED },
+          "8": { status: "running", ref: "main", sha: HEAD },
+        },
+      }),
+    );
+    return runEffect(
+      Effect.gen(function* () {
+        expect(yield* FORGES[name].tagPipeline(ref(name), "v1.2.0", "/w", fake.run)).toEqual({
+          ok: true,
+          url: URLS[name].run,
+        });
+        expect(fake.requests.length).toBeGreaterThan(0);
+        expect(fake.calls).toEqual([...READ_ONCE[name]]);
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
+
   test(`the ${name} forge finds the newest pipeline a tag started in the project, and none where it started none`, () =>
     runEffect(
       Effect.gen(function* () {
@@ -870,22 +953,21 @@ for (const name of ["gitlab", "github"] as const)
           "9": { status: "failed", ref: "v1.2.0", sha: MERGED },
         };
         const fake = fakeForge(name, model(name, { runs }));
-        const found = (tag: string) => FORGES[name].tagPipeline(ref(name), tag, "/w", fake.run);
+        const found = (tag: string) =>
+          FORGES[name].tagPipeline(ref(name), tag, "/w", fake.run).pipe(Effect.provide(fake.layer));
         expect(yield* found("v1.2.0")).toEqual({
           ok: true,
           url: URLS[name].run.replace(/7$/, "9"),
         });
         expect(yield* found("v9.9.9")).toEqual({ ok: true, url: null });
         expect(
-          (yield* FORGES[name].tagPipeline(
-            ref(name),
-            "v1.2.0",
-            "/w",
-            fakeForge(name, model(name, { runs, installed: false })).run,
+          (yield* against(name, model(name, { runs, installed: false }), (run) =>
+            FORGES[name].tagPipeline(ref(name), "v1.2.0", "/w", run),
           )).ok,
         ).toBe(false);
       }),
     ));
+}
 
 test("GitHub finds a tag's newest run whatever event started it, a release's among them", () =>
   runEffect(
@@ -895,7 +977,11 @@ test("GitHub finds a tag's newest run whatever event started it, a release's amo
         "9": { status: "failed", ref: "v1.2.0", sha: MERGED, event: "release" },
       };
       const fake = fakeForge("github", model("github", { runs }));
-      expect(yield* FORGES.github.tagPipeline(ref("github"), "v1.2.0", "/w", fake.run)).toEqual({
+      expect(
+        yield* FORGES.github
+          .tagPipeline(ref("github"), "v1.2.0", "/w", fake.run)
+          .pipe(Effect.provide(fake.layer)),
+      ).toEqual({
         ok: true,
         url: URLS.github.run.replace(/7$/, "9"),
       });
@@ -918,7 +1004,11 @@ test("GitLab finds a tier's deployment beyond a page of environments and of depl
           ],
         }),
       );
-      expect(yield* FORGES.gitlab.deployed(ref("gitlab"), "staging", "/w", fake.run)).toEqual({
+      expect(
+        yield* FORGES.gitlab
+          .deployed(ref("gitlab"), "staging", "/w", fake.run)
+          .pipe(Effect.provide(fake.layer)),
+      ).toEqual({
         ok: true,
         sha: "child",
       });
@@ -939,7 +1029,9 @@ test("GitHub reads every page of an Actions run's jobs", () =>
         "github",
         model("github", { runs: { "7": { status: "completed", conclusion: "failure", jobs } } }),
       );
-      const read = yield* FORGES.github.pipeline(URLS.github.run, "/w", fake.run);
+      const read = yield* FORGES.github
+        .pipeline(URLS.github.run, "/w", fake.run)
+        .pipe(Effect.provide(fake.layer));
       expect(read.ok && read.jobs.map((job) => job.state)).toEqual(jobs.map((job) => job.state));
     }),
   ));
@@ -1470,13 +1562,137 @@ for (const name of ["gitlab", "github"] as const) {
       : `${WEB.github}#${threaded ? "discussion_r" : "issuecomment-"}${id}`;
   const at = (minute: number) => `2026-10-20T10:${String(minute).padStart(2, "0")}:00Z`;
   const read = (over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
-    forge.readReview(
-      ref(name),
-      "/w",
-      fakeForge(name, model(name, { mrs: [mr(name, over)], ...rest })).run,
+    against(name, model(name, { mrs: [mr(name, over)], ...rest }), (run) =>
+      forge.readReview(ref(name), "/w", run),
     );
 
   describe(`the ${name} forge's review read`, () => {
+    test("merges over HTTP from a cold login", () => {
+      const fake = fakeForge(
+        name,
+        model(name, { mergeMethod: "SQUASH", mrs: [mr(name, { mergedSha: MERGED })] }),
+      );
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* forge.merge(ref(name), HEAD, "/w", fake.run)).toEqual({
+            _tag: "Merged",
+            merged: MERGED,
+          });
+          expect(fake.model().merges).toMatchObject([
+            { sha: HEAD, method: name === "github" ? "squash" : null },
+          ]);
+          expect(fake.requests.filter((one) => one.method === "PUT")).toHaveLength(1);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    for (const outcome of ["merged", "head moved"] as const)
+      test(`a merge returning 503 is sent once and reads that it ${outcome}`, () => {
+        const fake = fakeForge(name, model(name, { mrs: [mr(name, { mergedSha: MERGED })] }));
+        const layer = forgeHttpTest(fake.run, (input, init = {}) => {
+          const merging = init.method === "PUT" && input.endsWith("/merge");
+          if (merging && outcome === "head moved")
+            fake.set({ ...fake.model(), mrs: [mr(name, { head: "new-head" })] });
+          return fake
+            .fetch(input, init)
+            .then((response) =>
+              merging
+                ? new Response('{"message":"service unavailable"}', { status: 503 })
+                : response,
+            );
+        });
+        return runEffect(
+          Effect.gen(function* () {
+            expect(yield* forge.merge(ref(name), HEAD, "/w", fake.run)).toEqual(
+              outcome === "merged"
+                ? {
+                    _tag: "AlreadyMerged",
+                    merged: MERGED,
+                    head: HEAD,
+                    by: "me",
+                    at: "2026-10-20T12:00:00Z",
+                  }
+                : { _tag: "HeadMoved", head: "new-head" },
+            );
+            expect(fake.requests.filter((one) => one.method === "PUT")).toHaveLength(1);
+            expect(fake.model().merges?.length ?? 0).toBe(outcome === "merged" ? 1 : 0);
+            expect(fake.calls).toEqual([...READ_ONCE[name]]);
+          }).pipe(Effect.provide(layer)),
+        );
+      });
+
+    for (const threaded of [false, true])
+      test(`replies ${threaded ? "in a thread" : "on the merge request"} over HTTP from a cold login`, () => {
+        const fake = fakeForge(
+          name,
+          model(name, {
+            mrs: [
+              mr(name, {
+                comments: [
+                  { id: 11, author: "alice", at: at(1), body: "Fix this", thread: thread(11) },
+                ],
+              }),
+            ],
+          }),
+        );
+        const to = threaded ? thread(11) : null;
+        return runEffect(
+          Effect.gen(function* () {
+            expect(
+              yield* forge.reply(
+                ref(name),
+                { thread: to },
+                "Fixed\nSee the commit.",
+                "/w",
+                fake.run,
+              ),
+            ).toEqual({ ok: true, reason: "" });
+            expect(Object.values(fake.model().replies ?? {})).toEqual([
+              [{ thread: to, body: "Fixed\nSee the commit." }],
+            ]);
+            expect(fake.requests.filter((one) => one.method === "POST")).toHaveLength(1);
+            expect(fake.calls).toEqual([...READ_ONCE[name]]);
+          }).pipe(Effect.provide(fake.layer)),
+        );
+      });
+
+    test("reads a review over HTTP from a cold login", () => {
+      const fake = fakeForge(
+        name,
+        model(name, {
+          reviewsRequired: { classic: 1, rulesets: [1] },
+          mrs: [
+            mr(name, {
+              targetBranch: "main",
+              required: 1,
+              approvers: ["me", "alice"],
+              reviews: [
+                { id: 1, author: "me", state: "APPROVED", at: at(1) },
+                { id: 2, author: "alice", state: "APPROVED", at: at(2) },
+              ],
+              comments: [
+                { id: 11, author: "bob", at: at(3), body: "Fix this", thread: thread(11) },
+              ],
+            }),
+          ],
+        }),
+      );
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* forge.readReview(ref(name), "/w", fake.run)).toMatchObject({
+            ok: true,
+            head: HEAD,
+            approved: true,
+            approvers: ["alice"],
+            comments: [{ id: "11", body: "Fix this", external: true, answered: false }],
+          });
+          expect(fake.requests.length).toBeGreaterThan(0);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
     test("reads the state, head, pipeline, mergeability and every comment with its kind and place", () =>
       runEffect(
         Effect.gen(function* () {
@@ -1593,13 +1809,19 @@ for (const name of ["gitlab", "github"] as const) {
           );
           const body = "@file stays as written";
           expect(
-            yield* forge.reply(ref(name), { thread: thread(11) }, body, "/w", fake.run),
+            yield* forge
+              .reply(ref(name), { thread: thread(11) }, body, "/w", fake.run)
+              .pipe(Effect.provide(fake.layer)),
           ).toEqual({
             ok: true,
             reason: "",
           });
           const linked = `Not changed: ${urlOf(21, false)}`;
-          expect(yield* forge.reply(ref(name), { thread: null }, linked, "/w", fake.run)).toEqual({
+          expect(
+            yield* forge
+              .reply(ref(name), { thread: null }, linked, "/w", fake.run)
+              .pipe(Effect.provide(fake.layer)),
+          ).toEqual({
             ok: true,
             reason: "",
           });
@@ -1610,7 +1832,9 @@ for (const name of ["gitlab", "github"] as const) {
             ],
           });
           expect(fake.model().mrs[0]?.resolved).toBeUndefined();
-          const review = yield* forge.readReview(ref(name), "/w", fake.run);
+          const review = yield* forge
+            .readReview(ref(name), "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           if (!review.ok) throw new Error(review.reason);
           expect(
             review.comments.filter((one) => one.external).map((one) => [one.id, one.answered]),
@@ -1618,13 +1842,9 @@ for (const name of ["gitlab", "github"] as const) {
             ["11", true],
             ["21", true],
           ]);
-          const missing = yield* forge.reply(
-            ref(name),
-            { thread: thread(99) },
-            "x",
-            "/w",
-            fake.run,
-          );
+          const missing = yield* forge
+            .reply(ref(name), { thread: thread(99) }, "x", "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(missing.ok).toBe(false);
         }),
       ));
@@ -1640,7 +1860,9 @@ for (const name of ["gitlab", "github"] as const) {
               mrs: [mr(name, { mergedSha: MERGED })],
             }),
           );
-          expect(yield* forge.merge(ref(name), HEAD, "/w", fake.run)).toEqual({
+          expect(
+            yield* forge.merge(ref(name), HEAD, "/w", fake.run).pipe(Effect.provide(fake.layer)),
+          ).toEqual({
             _tag: "Merged",
             merged: MERGED,
           });
@@ -1664,10 +1886,13 @@ for (const name of ["gitlab", "github"] as const) {
         Effect.gen(function* () {
           const ask = (over: Partial<FakeMr>, head = HEAD) => {
             const fake = fakeForge(name, model(name, { mrs: [mr(name, over)] }));
-            return Effect.map(forge.merge(ref(name), head, "/w", fake.run), (answer) => ({
-              answer,
-              merges: fake.model().merges,
-            }));
+            return Effect.map(
+              forge.merge(ref(name), head, "/w", fake.run).pipe(Effect.provide(fake.layer)),
+              (answer) => ({
+                answer,
+                merges: fake.model().merges,
+              }),
+            );
           };
           expect(yield* ask({}, "0ld")).toEqual({
             answer: { _tag: "HeadMoved", head: HEAD },
@@ -1708,17 +1933,22 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const fake = fakeForge(name, model(name, { installed: false }));
-          const review = yield* forge.readReview(ref(name), "/w", fake.run);
+          const review = yield* forge
+            .readReview(ref(name), "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(review.ok).toBe(false);
           if (!review.ok) expect(review.reason).toContain(CLI[name]);
-          expect((yield* forge.reply(ref(name), { thread: null }, "x", "/w", fake.run)).ok).toBe(
-            false,
-          );
-          expect((yield* forge.merge(ref(name), HEAD, "/w", fake.run))._tag).toBe("Refused");
-          const unread = yield* forge.readReview(
-            { project: PROJECT[name], iid: "99" },
-            "/w",
-            fakeForge(name, model(name)).run,
+          expect(
+            (yield* forge
+              .reply(ref(name), { thread: null }, "x", "/w", fake.run)
+              .pipe(Effect.provide(fake.layer))).ok,
+          ).toBe(false);
+          expect(
+            (yield* forge.merge(ref(name), HEAD, "/w", fake.run).pipe(Effect.provide(fake.layer)))
+              ._tag,
+          ).toBe("Refused");
+          const unread = yield* against(name, model(name), (run) =>
+            forge.readReview({ project: PROJECT[name], iid: "99" }, "/w", run),
           );
           expect(unread.ok).toBe(false);
         }),
@@ -1742,12 +1972,47 @@ for (const name of ["gitlab", "github"] as const) {
 }
 
 const reviewOn = (name: MrForge, over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
-  FORGES[name].readReview(
-    ref(name),
-    "/w",
-    fakeForge(name, model(name, { mrs: [mr(name, { targetBranch: "main", ...over })], ...rest }))
-      .run,
+  against(
+    name,
+    model(name, { mrs: [mr(name, { targetBranch: "main", ...over })], ...rest }),
+    (run) => FORGES[name].readReview(ref(name), "/w", run),
   );
+
+test("GitHub reads a review comment beyond the first HTTP page", () => {
+  const fake = fakeForge(
+    "github",
+    model("github", {
+      mrs: [
+        mr("github", {
+          comments: Array.from({ length: 101 }, (_, n) => ({
+            id: n + 1,
+            author: "alice",
+            at: "2026-10-20T10:00:00Z",
+            body: `Finding ${n + 1}`,
+            thread: String(n + 1),
+          })),
+        }),
+      ],
+    }),
+  );
+  return runEffect(
+    Effect.gen(function* () {
+      const review = yield* FORGES.github.readReview(ref("github"), "/w", fake.run);
+      if (!review.ok) throw new Error(review.reason);
+      expect(review.comments).toHaveLength(101);
+      expect(review.comments[100]).toMatchObject({
+        id: "101",
+        body: "Finding 101",
+        external: true,
+        answered: false,
+      });
+      expect(
+        fake.requests.some((one) => one.url.includes("/pulls/30/comments?per_page=100&page=2")),
+      ).toBe(true);
+      expect(fake.calls).toEqual([...READ_ONCE.github]);
+    }).pipe(Effect.provide(fake.layer)),
+  );
+});
 
 const approval = (review: ReviewRead) => {
   if (!review.ok) throw new Error(review.reason);
@@ -2351,7 +2616,28 @@ for (const name of ["gitlab", "github"] as const)
         ));
   });
 
-for (const name of ["gitlab", "github"] as const)
+for (const name of ["gitlab", "github"] as const) {
+  test(`the ${name} forge reads deployed over HTTP from a cold login`, () => {
+    const fake = fakeForge(
+      name,
+      model(name, {
+        environments: [
+          { name: "production", tier: "production", deployed: "child", failed: "newer-failed" },
+        ],
+      }),
+    );
+    return runEffect(
+      Effect.gen(function* () {
+        expect(yield* FORGES[name].deployed(ref(name), "production", "/w", fake.run)).toEqual({
+          ok: true,
+          sha: "child",
+        });
+        expect(fake.requests.length).toBeGreaterThan(0);
+        expect(fake.calls).toEqual([...READ_ONCE[name]]);
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
+
   test(`the ${name} forge reads liveTier over HTTP from a cold start, running only credential reads`, () => {
     const fake = fakeForge(
       name,
@@ -2368,6 +2654,7 @@ for (const name of ["gitlab", "github"] as const)
       }).pipe(Effect.provide(fake.layer)),
     );
   });
+}
 
 test("GitLab reads protection beyond the first page over HTTP", () =>
   runEffect(

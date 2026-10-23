@@ -427,7 +427,11 @@ const userOf = (login: string, bot: boolean | undefined) => ({
 
 /** `gh api --paginate --slurp`'s pages of `items`. */
 const pagesOf = (items: ReadonlyArray<Schema.Json>, args: ReadonlyArray<string>): Answer =>
-  json(args.includes("--slurp") ? [[...items]] : [...items]);
+  json(
+    args.includes("--slurp")
+      ? [[...items]]
+      : pageOf(args.find((one) => one.startsWith("repos/")) ?? "", items),
+  );
 
 function issueAnswer(forge: MrForge, model: ForgeModel, args: ReadonlyArray<string>): Answer {
   const project = `${forge === "github" ? "github.com/" : ""}${flag(args, "--repo") ?? ""}`;
@@ -1095,6 +1099,7 @@ const ghPullNode = (model: ForgeModel, pull: FakeMr) => ({
   ...GITHUB_MERGE_STATE[pull.mergeable ?? "yes"],
   mergeCommit: pull.mergedSha === undefined ? null : { oid: pull.mergedSha },
   mergedAt: pull.mergedAt ?? null,
+  mergedBy: pull.mergedBy === undefined ? null : { login: pull.mergedBy },
   commits: {
     nodes: [
       {
@@ -1128,7 +1133,11 @@ const ghPullNode = (model: ForgeModel, pull: FakeMr) => ({
 function ghGraphql(model: ForgeModel, args: ReadonlyArray<string>): Answer | undefined {
   const query = field(args, "query") ?? "";
   const typed = (name: string) => field(args, name, "-F");
-  if (query.includes("statusCheckRollup")) {
+  if (query.includes("viewerDefaultMergeMethod"))
+    return json({
+      data: { repository: { viewerDefaultMergeMethod: model.mergeMethod ?? "MERGE" } },
+    });
+  if (query.includes("statusCheckRollup") || query.includes("mergedBy")) {
     const pull = model.mrs.find(
       (one) =>
         one.project === `github.com/${typed("owner")}/${typed("name")}` &&
@@ -1395,7 +1404,7 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
       ...GITHUB_RUN[job.state],
       html_url: `https://github.com/${runJobs[1]}/actions/runs/${runJobs[2]}/job/${at + 1}`,
     }));
-    if (!args.includes("--paginate")) return json({ jobs: jobs.slice(0, 100) });
+    if (!args.includes("--paginate")) return json({ jobs: pageOf(route, jobs) });
     const pages = [];
     for (let at = 0; at === 0 || at < jobs.length; at += 100)
       pages.push({ jobs: jobs.slice(at, at + 100) });
