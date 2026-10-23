@@ -16,6 +16,8 @@ import { epochMs } from "../time";
 import type {
   DeployTier,
   DeployedRead,
+  StagingEnvironment,
+  StagingRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -416,19 +418,19 @@ function fromBranch<R>(
 }
 
 const HeadJson = Schema.fromJsonString(Schema.Struct({ headRefOid: Schema.String }));
-const CheckRunsJson = Schema.fromJsonString(
-  Schema.Struct({
-    check_runs: Schema.Array(
-      Schema.Struct({
-        id: Schema.Number,
-        head_sha: Schema.String,
-        status: Schema.String,
-        conclusion: optionalText,
-        html_url: optionalText,
-      }),
-    ),
-  }),
-);
+const CheckRuns = Schema.Struct({
+  check_runs: Schema.Array(
+    Schema.Struct({
+      id: Schema.Number,
+      head_sha: Schema.String,
+      status: Schema.String,
+      conclusion: optionalText,
+      html_url: optionalText,
+    }),
+  ),
+});
+const CheckRunsJson = Schema.fromJsonString(CheckRuns);
+const CheckRunsPagesJson = Schema.fromJsonString(Schema.Array(CheckRuns));
 const BaseJson = Schema.fromJsonString(
   Schema.Struct({ baseRefName: Schema.String, headRefOid: Schema.String }),
 );
@@ -1016,7 +1018,14 @@ const DeploymentsJson = Schema.fromJsonString(
     ),
   ),
 );
-const StatusesJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ state: Schema.String })));
+const StatusesJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      state: Schema.String,
+      log_url: optionalText,
+    }),
+  ),
+);
 const CompareJson = Schema.fromJsonString(Schema.Struct({ status: Schema.String }));
 const RunJson = Schema.fromJsonString(
   Schema.Struct({ status: Schema.String, conclusion: optionalText }),
@@ -1114,6 +1123,102 @@ function deployed<R>(
       if (latest.value[0]?.state === "success") return { ok: true, sha: deployment.sha };
     }
     return { ok: true, sha: null };
+  });
+}
+
+const EnvironmentsJson = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({ environments: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+  ),
+);
+const EnvironmentDeploymentsJson = Schema.fromJsonString(
+  Schema.Array(Schema.Array(Schema.Struct({ id: Schema.Number, sha: Schema.String }))),
+);
+
+/** GitHub's environments have no tier, so a staging one is named for it: `stage-web`, `web_staging`. */
+const isStaging = (name: string) => /^(?:.+[-_/ ])?(?:stage|staging)(?:[-_/ ].+)?$/i.test(name);
+
+/**
+ * Each staging environment: its deployments newest first, the first whose latest status is
+ * `success` live. A selected job owns a deployment where its status's log names that job id.
+ */
+function stagingEnvironments<R>(
+  ref: MrRef,
+  commit: string | null,
+  cwd: string,
+  run: Runner<R>,
+  jobs?: ReadonlyArray<string>,
+): Effect.Effect<StagingRead, never, R> {
+  return Effect.gen(function* () {
+    if (ref.project === null) return { ok: false, reason: "no repository to read deployments of" };
+    const repo = `repos/${mrPath(ref)}`;
+    const unread = {
+      ok: false,
+      reason: `gh could not read ${ref.project}'s stage environments`,
+    } as const;
+    const pages = (route: string) =>
+      run("gh", ["api", `${repo}/${route}`, "--paginate", "--slurp"], cwd);
+    const selected = new Set<number>();
+    if (jobs !== undefined && commit !== null) {
+      for (const job of jobs) {
+        const listed = yield* pages(
+          `commits/${commit}/check-runs?check_name=${encodeURIComponent(job)}&filter=all&per_page=100`,
+        );
+        const checks = Schema.decodeUnknownOption(CheckRunsPagesJson)(listed.stdout);
+        if (listed.code !== 0 || Option.isNone(checks)) return unread;
+        for (const page of checks.value)
+          for (const check of page.check_runs) selected.add(check.id);
+      }
+    }
+    const listed = yield* pages("environments?per_page=100");
+    const named = Schema.decodeUnknownOption(EnvironmentsJson)(listed.stdout);
+    if (listed.code !== 0 || Option.isNone(named)) return unread;
+    const environments: StagingEnvironment[] = [];
+    for (const { name } of named.value.flatMap((page) => page.environments)) {
+      if (!isStaging(name)) continue;
+      const env = encodeURIComponent(name);
+      const deployments = (route: string) =>
+        Effect.map(pages(route), (answer) =>
+          answer.code === 0
+            ? Option.map(
+                Schema.decodeUnknownOption(EnvironmentDeploymentsJson)(answer.stdout),
+                (all) => all.flat(),
+              )
+            : Option.none(),
+        );
+      const all = yield* deployments(`deployments?environment=${env}&per_page=100`);
+      if (Option.isNone(all)) return unread;
+      let live: string | null = null;
+      let hasCommit = false;
+      for (const deployment of all.value) {
+        const candidate = deployment.sha === commit;
+        if (live !== null && (!candidate || hasCommit)) continue;
+        const statuses = yield* run(
+          "gh",
+          ["api", `${repo}/deployments/${deployment.id}/statuses?per_page=1`],
+          cwd,
+        );
+        const latest = Schema.decodeUnknownOption(StatusesJson)(statuses.stdout);
+        if (statuses.code !== 0 || Option.isNone(latest)) return unread;
+        if (live === null && latest.value[0]?.state === "success") {
+          live = deployment.sha;
+        }
+        const link =
+          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/\d+\/job\/(\d+)(?:[/?#]|$)/.exec(
+            latest.value[0]?.log_url ?? "",
+          );
+        if (
+          candidate &&
+          (jobs === undefined ||
+            (link !== null &&
+              link[1]?.toLowerCase() === mrPath(ref).toLowerCase() &&
+              selected.has(Number(link[2]))))
+        )
+          hasCommit = true;
+      }
+      environments.push({ name, live, hasCommit });
+    }
+    return { ok: true, environments };
   });
 }
 
@@ -1354,6 +1459,7 @@ export const github: Forge = {
   details,
   liveTier,
   deployed,
+  stagingEnvironments,
   runStatus,
   pipeline,
   tagPipeline,

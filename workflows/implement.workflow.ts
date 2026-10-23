@@ -212,6 +212,7 @@ const MERGE_TRIES = 2;
 const BUILDER = "build";
 
 const RELEASE = "Release";
+const STAGE = "Stage";
 const FINISH = "Finish";
 
 const Tree = Schema.Struct({ head: Schema.String, fingerprint: Schema.String });
@@ -267,7 +268,7 @@ const mergeRequest = step({
 const next = step({
   id: "next",
   title: "What next",
-  description: "Whether the open merge request is released or left as it is.",
+  description: "Whether the open merge request is released, staged or left as it is.",
   kind: "question",
 });
 const ciFix = step({
@@ -319,6 +320,14 @@ export default defineWorkflow({
       id: "release",
       title: "Release",
       workflow: "release",
+      when: "succeeded",
+      inputs: { mr: "merge-request" },
+      eligible: (facts) => facts.mrUrl !== null,
+    },
+    {
+      id: "stage",
+      title: "Stage",
+      workflow: "stage",
       when: "succeeded",
       inputs: { mr: "merge-request" },
       eligible: (facts) => facts.mrUrl !== null,
@@ -1240,14 +1249,28 @@ const releasing = (delivered: {
           ),
       });
       if (merging !== null) return mr;
-      const chosen = yield* next(
-        ask({
-          name: "next",
-          prompt: `${mr} is open. What next?`,
-          options: [RELEASE, FINISH],
-        }),
-      );
-      if (chosen !== RELEASE) return mr;
+      for (let n = 1; ; n++) {
+        const chosen = yield* next(
+          ask({
+            name: n === 1 ? "next" : `next-${n}`,
+            prompt: `${mr} is open. What next?`,
+            options: [RELEASE, STAGE, FINISH],
+          }),
+          { round: n },
+        );
+        if (chosen === STAGE) {
+          const children = yield* Children;
+          const invocation = `stage-${n}`;
+          const child = yield* children.start({ invocation, workflow: "stage", input: { mr } });
+          const result = yield* children
+            .result(child)
+            .pipe(Effect.match({ onSuccess: String, onFailure: (failure) => failure.reason }));
+          yield* host.record(runId, `${invocation}: ${result}`);
+          continue;
+        }
+        if (chosen !== RELEASE) return mr;
+        break;
+      }
     }
     const children = yield* Children;
     const child = yield* children.start({
