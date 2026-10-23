@@ -592,3 +592,61 @@ test("Pi is offered for the Flock chat and checks a provider-qualified model", (
     }),
   ).toEqual({ refused: expect.stringContaining("provider/model") });
 });
+
+test("the Flock chat's effort is kept beside its harness and model, an empty one unsets it, and a file from before it reads unset", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
+      yield* writeSettings(dir, { proactive: true, chatHarness: "claude", chatEffort: "high" });
+      expect(yield* readSettings(dir)).toEqual({
+        proactive: true,
+        chatHarness: "claude",
+        chatEffort: "high",
+      });
+      yield* fs.writeFileString(`${dir}/settings.json`, '{"proactive":true,"chatModel":"sonnet"}');
+      expect(yield* readSettings(dir)).toEqual({ proactive: true, chatModel: "sonnet" });
+      expect(
+        changeSettings({ proactive: true, chatEffort: "high" }, NO_FLOCK_SETTINGS, {
+          chatEffort: "",
+        }),
+      ).toEqual({ proactive: true });
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));
+
+test("another harness unsets the chat's model and effort unless the change sets them, and another model keeps the effort", () => {
+  const before = {
+    proactive: true,
+    chatHarness: "claude",
+    chatModel: "sonnet",
+    chatEffort: "high",
+  };
+  expect(changeSettings(before, NO_FLOCK_SETTINGS, { chatHarness: "pi" })).toEqual({
+    proactive: true,
+    chatHarness: "pi",
+  });
+  expect(
+    changeSettings(before, NO_FLOCK_SETTINGS, { chatHarness: "pi", chatEffort: "off" }),
+  ).toEqual({ proactive: true, chatHarness: "pi", chatEffort: "off" });
+  expect(changeSettings(before, NO_FLOCK_SETTINGS, { chatModel: "haiku" })).toEqual({
+    ...before,
+    chatModel: "haiku",
+  });
+});
+
+test("an effort the chat's harness does not take is refused with the ones it takes", () => {
+  const onPi = { proactive: true, chatHarness: "pi", chatEffort: "off" };
+  expect(
+    changeSettings(onPi, NO_FLOCK_SETTINGS, { chatHarness: "claude", chatEffort: "off" }),
+  ).toEqual({ refused: '"off" is not an effort claude takes (low, medium, high, xhigh, max)' });
+});
+
+test("a change of only the chat's effort is checked too", () => {
+  expect(changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatEffort: "off" })).toEqual({
+    refused: '"off" is not an effort claude takes (low, medium, high, xhigh, max)',
+  });
+  expect(changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, { chatEffort: "max" })).toEqual({
+    proactive: true,
+    chatEffort: "max",
+  });
+});

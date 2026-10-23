@@ -11,6 +11,9 @@ import { FILE_TOOLS } from "../desktop/src/bun/file-tools";
 import { piPrompt } from "../desktop/src/bun/pi-transcript";
 import { ends } from "../desktop/src/shared/agui";
 import { childEnv } from "../desktop/src/bun/login-env";
+import { chatChoice } from "../desktop/src/bun/settings";
+import type { DesktopSettings } from "../desktop/src/shared/flock";
+import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 
 const withPi = <A, E>(
   body: (
@@ -46,7 +49,7 @@ const withPi = <A, E>(
           machineRule: () => "",
           setMachineRule: () => Effect.void,
           inSync: () => Effect.succeed(""),
-          chatHarness: () => ({ harness: "pi", model: undefined, runsOn: null }),
+          chatHarness: () => ({ harness: "pi", model: undefined, effort: undefined, runsOn: null }),
           setChatHarness: () => Effect.succeed(null),
         },
         ask: () => Promise.resolve(null),
@@ -173,6 +176,40 @@ test("Pi's start isolates resources, keeps the token in its environment and send
       expect(details.prompt.message).toContain("Here");
       expect(details.prompt.message).toContain("A Run ended");
       expect(details.prompt.message).not.toContain("cGRm");
+    }),
+  ));
+
+test("Pi starts at the chat's set effort, and as it did before while the effort is unset", () =>
+  withPi((driver) =>
+    Effect.gen(function* () {
+      const startedWith = (settings: DesktopSettings) =>
+        Effect.gen(function* () {
+          const resolved = chatChoice(settings, NO_FLOCK_SETTINGS);
+          if (!resolved.ok) return yield* Effect.die(resolved.problem);
+          const session = yield* driver.open(
+            "pi-effort",
+            resolved.choice.model,
+            resolved.choice.effort ?? "",
+          );
+          yield* session.offer("inspect");
+          const events = yield* Stream.runCollect(session.events.pipe(Stream.takeUntil(ends)));
+          yield* session.close;
+          const text = events.find((event) => event.type === "TEXT_MESSAGE_CONTENT");
+          if (text?.type !== "TEXT_MESSAGE_CONTENT") throw new Error("No reply");
+          return Schema.decodeUnknownSync(
+            Schema.fromJsonString(Schema.Struct({ args: Schema.Array(Schema.String) })),
+          )(text.delta).args;
+        });
+      const model = "openai-codex/gpt-6.1-sol";
+      const high = yield* startedWith({
+        proactive: true,
+        chatHarness: "pi",
+        chatModel: model,
+        chatEffort: "high",
+      });
+      expect(high.slice(high.indexOf("--model"))).toEqual(["--model", model, "--thinking", "high"]);
+      const unset = yield* startedWith({ proactive: true, chatHarness: "pi", chatModel: model });
+      expect(unset.slice(unset.indexOf("--model"))).toEqual(["--model", model]);
     }),
   ));
 
@@ -378,7 +415,7 @@ test("a question's buttons can be clicked before Pi's HTTP call reaches Desktop"
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed(""),
         choice: () => ({ ok: true, choice: { harness: "pi", model: "default", effort: null } }),
-        chatHarness: () => ({ harness: "pi", model: undefined }),
+        chatHarness: () => ({ harness: "pi", model: undefined, effort: undefined }),
         setChatHarness: () => Effect.succeed(null),
         drivers: (context) =>
           loopbackTools(context).pipe(

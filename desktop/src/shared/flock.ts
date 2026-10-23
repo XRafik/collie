@@ -361,6 +361,8 @@ export const DesktopSettings = Schema.Struct({
   chatHarness: Schema.optionalKey(Schema.String),
   /** The model the Flock chat runs on; unset is the harness's own default. */
   chatModel: Schema.optionalKey(Schema.String),
+  /** The effort the Flock chat runs at; unset is the harness's own default. */
+  chatEffort: Schema.optionalKey(Schema.String),
 });
 export type DesktopSettings = typeof DesktopSettings.Type;
 
@@ -373,6 +375,8 @@ export const DesktopSettingsChange = Schema.Struct({
   chatHarness: Schema.optionalKey(Schema.String),
   /** Empty unsets it. */
   chatModel: Schema.optionalKey(Schema.String),
+  /** Empty unsets it. */
+  chatEffort: Schema.optionalKey(Schema.String),
 });
 export type DesktopSettingsChange = typeof DesktopSettingsChange.Type;
 

@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Stream } from "effect";
+import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver";
+import type { DriverContext } from "../desktop/src/bun/driver";
 import { sessionOptions, userMcpServers } from "../desktop/src/bun/session";
+import { chatChoice } from "../desktop/src/bun/settings";
+import type { DesktopSettings } from "../desktop/src/shared/flock";
+import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 let noticed: string | undefined;
 let rule: string | undefined;
 const machines = [
@@ -38,6 +43,39 @@ test("the session is on the model it is given at medium effort, resumed, on the 
     cwd: "/state/collie-desktop",
   });
 });
+
+const openedAt = (settings: DesktopSettings) =>
+  Effect.gen(function* () {
+    const efforts: string[] = [];
+    const claude: ClaudeCode<string> = {
+      query: ({ options }) => {
+        efforts.push(options.effort);
+        return Object.assign(Stream.toAsyncIterable(Stream.never), {
+          interrupt: () => Promise.resolve(),
+          close: () => {},
+        });
+      },
+      getSessionInfo: () => Promise.resolve(undefined),
+      getSessionMessages: () => Promise.resolve([]),
+      listSessions: () => Promise.resolve([]),
+      server: () => "collie",
+      userServers: () => Promise.resolve({}),
+    };
+    // SAFETY: opening a session reaches none of the context but its directory.
+    const driver = claudeDriver(claude, { dir: "/state/collie-desktop" } as DriverContext);
+    const resolved = chatChoice(settings, NO_FLOCK_SETTINGS);
+    if (!resolved.ok) return yield* Effect.die(resolved.problem);
+    yield* driver.open("conversation", resolved.choice.model, resolved.choice.effort ?? "");
+    return efforts;
+  }).pipe(Effect.scoped);
+
+test("the session is opened at the chat's set effort, and at medium while it is unset", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(yield* openedAt({ proactive: true, chatEffort: "high" })).toEqual(["high"]);
+      expect(yield* openedAt({ proactive: true })).toEqual(["medium"]);
+    }),
+  ));
 
 const BUILT_IN = ["Read", "Glob", "Grep", "Write", "Edit", "Bash"];
 

@@ -239,14 +239,24 @@ const flockOf = (asked: Asked[]) => ({
   chatHarness: () => ({
     harness: chat.chatHarness ?? "claude",
     model: chat.chatModel,
+    effort: chat.chatEffort,
     runsOn: "claude/opus",
   }),
   // Saved as Desktop saves it, with Settings' checks.
-  setChatHarness: ({ harness, model }: { harness?: string; model?: string }) =>
+  setChatHarness: ({
+    harness,
+    model,
+    effort,
+  }: {
+    harness?: string;
+    model?: string;
+    effort?: string;
+  }) =>
     Effect.sync(() => {
-      const changed: Partial<Record<"chatHarness" | "chatModel", string>> = {};
+      const changed: Partial<Record<"chatHarness" | "chatModel" | "chatEffort", string>> = {};
       if (harness !== undefined) changed.chatHarness = harness;
       if (model !== undefined) changed.chatModel = model;
+      if (effort !== undefined) changed.chatEffort = effort;
       const next = changeSettings(chat, NO_FLOCK_SETTINGS, changed);
       if ("refused" in next) return next.refused;
       chat = next;
@@ -532,7 +542,12 @@ test("a Machine whose host is older than the Flock chat is written to by nothing
         conversation: "flock@mk-pc",
         machineRule: () => undefined,
         setMachineRule: () => Effect.void,
-        chatHarness: () => ({ harness: "claude", model: undefined, runsOn: null }),
+        chatHarness: () => ({
+          harness: "claude",
+          model: undefined,
+          effort: undefined,
+          runsOn: null,
+        }),
         setChatHarness: () => Effect.succeed(null),
         inSync: () => Effect.succeed(""),
         attachments: () => undefined,
@@ -562,7 +577,12 @@ test("a Machine that stops answering costs a look for News its time, and the oth
         conversation: "flock@mk-pc",
         machineRule: () => undefined,
         setMachineRule: () => Effect.void,
-        chatHarness: () => ({ harness: "claude", model: undefined, runsOn: null }),
+        chatHarness: () => ({
+          harness: "claude",
+          model: undefined,
+          effort: undefined,
+          runsOn: null,
+        }),
         setChatHarness: () => Effect.succeed(null),
         inSync: () => Effect.succeed(""),
         attachments: () => undefined,
@@ -585,7 +605,7 @@ const withUnread = (asked: Asked[], board: ChatBoard) => ({
   conversation: "flock@mk-pc",
   machineRule: () => undefined,
   setMachineRule: () => Effect.void,
-  chatHarness: () => ({ harness: "claude", model: undefined, runsOn: null }),
+  chatHarness: () => ({ harness: "claude", model: undefined, effort: undefined, runsOn: null }),
   setChatHarness: () => Effect.succeed(null),
   inSync: () => Effect.succeed(""),
   attachments: () => undefined,
@@ -882,7 +902,12 @@ test("a Machine whose host cannot answer a read is told to upgrade, one that is 
         said: () => undefined,
         machineRule: () => undefined,
         setMachineRule: () => Effect.void,
-        chatHarness: () => ({ harness: "claude", model: undefined, runsOn: null }),
+        chatHarness: () => ({
+          harness: "claude",
+          model: undefined,
+          effort: undefined,
+          runsOn: null,
+        }),
         setChatHarness: () => Effect.succeed(null),
         inSync: () => Effect.succeed(""),
         attachments: () => undefined,
@@ -934,10 +959,10 @@ test("the chat reads what it runs on, and changes its model with Settings' check
     Effect.gen(function* () {
       chat = { proactive: true };
       expect(yield* call([], "collie_chat_harness", {})).toBe(
-        "The Flock chat is set to claude, with no model set: the harness's own default. This conversation runs on claude/opus now.",
+        "The Flock chat is set to claude, with no model set: the harness's own default, with no effort set: the harness's own default. This conversation runs on claude/opus now.",
       );
       expect(yield* call([], "collie_chat_harness", { model: "sonnet" })).toBe(
-        "The Flock chat is now set to claude, model sonnet. It applies once this turn has ended.",
+        "The Flock chat is now set to claude, model sonnet, with no effort set: the harness's own default. It applies once this turn has ended.",
       );
       expect(chat.chatModel).toBe("sonnet");
       const refused = yield* call([], "collie_chat_harness", { model: "gpt-6.1-sol" });
@@ -948,9 +973,34 @@ test("the chat reads what it runs on, and changes its model with Settings' check
       );
       expect(chat).toEqual({ proactive: true, chatModel: "sonnet" });
       expect(yield* call([], "collie_chat_harness", { model: "" })).toBe(
-        "The Flock chat is now set to claude, with no model set: the harness's own default. It applies once this turn has ended.",
+        "The Flock chat is now set to claude, with no model set: the harness's own default, with no effort set: the harness's own default. It applies once this turn has ended.",
       );
       expect(chat).toEqual({ proactive: true });
+    }),
+  ));
+
+test("the chat sets, refuses, unsets and reads back its effort", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      chat = { proactive: true, chatModel: "sonnet" };
+      expect(yield* call([], "collie_chat_harness", {})).toBe(
+        "The Flock chat is set to claude, model sonnet, with no effort set: the harness's own default. This conversation runs on claude/opus now.",
+      );
+      expect(yield* call([], "collie_chat_harness", { effort: "high" })).toBe(
+        "The Flock chat is now set to claude, model sonnet, at high effort. It applies once this turn has ended.",
+      );
+      expect(chat).toEqual({ proactive: true, chatModel: "sonnet", chatEffort: "high" });
+      expect(yield* call([], "collie_chat_harness", {})).toBe(
+        "The Flock chat is set to claude, model sonnet, at high effort. This conversation runs on claude/opus now.",
+      );
+      expect(yield* call([], "collie_chat_harness", { effort: "off" })).toBe(
+        '"off" is not an effort claude takes (low, medium, high, xhigh, max). Nothing was changed.',
+      );
+      expect(chat).toEqual({ proactive: true, chatModel: "sonnet", chatEffort: "high" });
+      expect(yield* call([], "collie_chat_harness", { effort: "" })).toBe(
+        "The Flock chat is now set to claude, model sonnet, with no effort set: the harness's own default. It applies once this turn has ended.",
+      );
+      expect(chat).toEqual({ proactive: true, chatModel: "sonnet" });
     }),
   ));
 
@@ -1177,7 +1227,12 @@ test("a Machine whose Collie has no such operation is told to upgrade, and the r
         said: () => undefined,
         machineRule: () => undefined,
         setMachineRule: () => Effect.void,
-        chatHarness: () => ({ harness: "claude", model: undefined, runsOn: null }),
+        chatHarness: () => ({
+          harness: "claude",
+          model: undefined,
+          effort: undefined,
+          runsOn: null,
+        }),
         setChatHarness: () => Effect.succeed(null),
         inSync: () => Effect.succeed(""),
         attachments: () => undefined,

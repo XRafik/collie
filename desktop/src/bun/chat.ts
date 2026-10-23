@@ -68,6 +68,7 @@ const SessionFile = Schema.fromJsonString(
 export interface ChatHarnessSet {
   readonly harness: string;
   readonly model: string | undefined;
+  readonly effort: string | undefined;
 }
 
 export interface FlockConversation {

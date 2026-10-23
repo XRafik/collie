@@ -729,11 +729,13 @@ const main = Effect.gen(function* () {
     chatHarness: () => ({
       harness: settings.chatHarness ?? DEFAULT_CHAT_HARNESS,
       model: settings.chatModel,
+      effort: settings.chatEffort,
     }),
-    setChatHarness: ({ harness, model }) => {
-      const changed: Partial<Record<"chatHarness" | "chatModel", string>> = {};
+    setChatHarness: ({ harness, model, effort }) => {
+      const changed: Partial<Record<"chatHarness" | "chatModel" | "chatEffort", string>> = {};
       if (harness !== undefined) changed.chatHarness = harness;
       if (model !== undefined) changed.chatModel = model.trim();
+      if (effort !== undefined) changed.chatEffort = effort.trim();
       return saveSettings(changed).pipe(
         Effect.as(null),
         Effect.catch(({ reason }) => Effect.succeed(reason)),

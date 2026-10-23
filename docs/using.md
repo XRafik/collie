@@ -1817,7 +1817,7 @@ Machine.
 **Settings › Chat** names the Flock chat's harness and model, for this computer only.
 The harness offers `claude` and `pi`, using your own install and login on this computer.
 Claude runs through the Agent SDK. Unset, its model is `opus`; a set model such as `sonnet`
-runs at medium effort with summarised thinking. None of your Claude settings, hooks, skills
+runs at medium effort, or the one set, with summarised thinking. None of your Claude settings, hooks, skills
 or CLAUDE.md loads, but your MCP servers do: those added at user scope (`claude mcp add
 --scope user`, read from `~/.claude.json` when each conversation starts) and your claude.ai
 connectors, such as Linear and Slack, signed in as Claude Code already is. Their tools ask
@@ -1837,6 +1837,14 @@ Explicit system and append sources exclude your `SYSTEM.md` and `APPEND_SYSTEM.m
 None of your Pi extensions, skills, prompt templates or context files loads. Its own
 `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls` tools reach this computer without
 asking first. Pi missing from PATH is said in the chat.
+
+The chat's effort is set by asking the chat, for example "answer at high effort from now
+on": `collie_chat_harness` saves it for this computer beside the harness and model, and
+Settings has no row for it. Claude takes `low`, `medium`, `high`, `xhigh` and `max`; Pi
+takes `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, passed as `--thinking`.
+Any other is refused with the ones the harness takes, and nothing is saved. Unset, Claude
+runs at `medium` and Pi at its configured thinking level. A new effort applies with the next
+message, in the same conversation; another harness unsets the model and the effort.
 
 Pi reaches Collie's tools, the five Machine file tools and AskUserQuestion through one
 streamable-HTTP MCP endpoint on `127.0.0.1`, started on its first session. A random bearer

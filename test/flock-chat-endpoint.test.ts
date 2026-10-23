@@ -29,7 +29,12 @@ test("the loopback tools require their token, list the chat's tools and match a 
         machineRule: () => "Here",
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed("In sync"),
-        chatHarness: () => ({ harness: "pi", model: undefined, runsOn: "pi/default" }),
+        chatHarness: () => ({
+          harness: "pi",
+          model: undefined,
+          effort: undefined,
+          runsOn: "pi/default",
+        }),
         setChatHarness: () => Effect.succeed(null),
       };
       const services = yield* Effect.context<Crypto.Crypto | FileSystem.FileSystem>();
