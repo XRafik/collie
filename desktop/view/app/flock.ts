@@ -98,6 +98,15 @@ export const desktopSettingsAtom = FlockClient.runtime
   )
   .pipe(Atom.keepAlive);
 
+/** What the Flock chat holds, runs on and is offered, told again after each change. */
+export const chatChoicesAtom = FlockClient.runtime
+  .atom(
+    held(
+      Stream.unwrap(FlockClient.use((client) => Effect.succeed(client("chatChoices", undefined)))),
+    ),
+  )
+  .pipe(Atom.keepAlive);
+
 /** Desktop's own update news, kept alive so a ready update is heard whenever it is. */
 export const updatesAtom = FlockClient.runtime
   .atom(

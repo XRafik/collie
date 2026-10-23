@@ -1496,14 +1496,12 @@ default, and the same refusals as the TUI. Durations — `quiet_ms`, `idle_close
 number of them, and still stored in milliseconds, so `config.json` and `collie settings` are
 unchanged. **Reset to default**, shown while a setting is set, unsets it. Each says whether
 **Every Machine** shares it or it is for **This computer only**. Under **Chat**, the Flock
-chat's **Flock chat harness**, **Flock chat model**, **Machine rule** and **Flock chat speaks
-first** are this computer's, like the bell in the chat's header. The harness offers
-`claude` and `pi`; the model is a one-line field, with **Unset: opus** for Claude and
-**Unset: pi's own default** for Pi. It is checked as a Run's model is, including
-**More Claude Code models** and Pi's `provider/model` form, and a refusal saves nothing.
+chat's **Machine rule** and **Flock chat speaks first** are this computer's, like the bell in
+the chat's header. The chat's harness, model and effort have no rows here: they are chosen
+beside its message box ([The Flock chat](#the-flock-chat)).
 A change to this computer's settings reaches every Desktop window at once, wherever it was
-made: Settings, the bell and both chat windows show it as soon as it is saved, a change the
-Flock chat made through `collie_chat_harness` included.
+made: Settings, the bell and both chat windows show it as soon as it is saved, a choice made
+beside the message box or through `collie_chat_harness` included.
 The groups, names, descriptions and
 units live with each key in the one list of settings (`src/settings.ts`) that the TUI's
 Settings reads too, so a new setting shows up in both, except those for this computer only,
@@ -1817,8 +1815,26 @@ state directory, links followed, because a Run's state changes only through the 
 Machine whose Collie is too old for files is told to upgrade. There is no shell on a
 Machine.
 
-**Settings › Chat** names the Flock chat's harness and model, for this computer only.
-The harness offers `claude` and `pi`, using your own install and login on this computer.
+Three selects in a row under the message box, in both chat windows, choose the chat's
+harness, model and effort for this computer only; the row wraps when the pane is narrow.
+A choice is saved at once, through the same checks as `collie_chat_harness`, and focus goes
+back to the message box. Settings › Chat has no rows for them.
+
+- **Harness** offers **Claude Code** (`claude`) and **Pi** (`pi`), using your own install and
+  login on this computer. One not installed is shown disabled, marked **Not installed on this
+  computer**.
+- **Model** starts with **Default · …**, named by the model an unset choice runs as and
+  described "What the chat runs with no model set"; choosing it unsets the model. Then come
+  the models Collie's table names for the harness, the Flock's **More … models** and the set
+  model, each by its id. It can be searched, and an id that is not listed is offered as
+  **Use <id>**. A typed model is checked as a Run's model is.
+- **Effort** starts with **Default · …**, named by the level an unset effort runs at and
+  described "What the chat runs with no effort set", then the levels the model takes. For a
+  model that takes none it is disabled, dashed, reading "<model> takes no effort".
+
+A refused choice is shown in red above the message box, ending "Nothing was saved.", with
+**Dismiss**; nothing is saved.
+
 Claude runs through the Agent SDK. Unset, its model is `opus`; a set model such as `sonnet`
 runs at medium effort, or the one set, with summarised thinking. None of your Claude settings, hooks, skills
 or CLAUDE.md loads, but your MCP servers do: those added at user scope (`claude mcp add
@@ -1832,22 +1848,26 @@ when you ask. Without a Helle token in Desktop it says how to make one. This wor
 harness.
 
 On Pi, write the model as `provider/model`, for example `openai-codex/gpt-6.1-sol`.
-Unset, Pi uses its configured default model and thinking level.
-Clearing a model override passes Pi's configured provider/model and thinking level explicitly,
-so reopening the same conversation does not restore its previous model override.
+Unset, the model is Pi's configured `defaultProvider/defaultModel`, or Pi's own default where
+none is configured. An unset effort is the level Pi configures for the model
+(`modelThinkingLevels`), else its `defaultThinkingLevel`, else `medium`, set model or not.
+Desktop reads Pi's `settings.json` (under `PI_CODING_AGENT_DIR`, else `~/.pi/agent`) as each
+session opens, and passes the model and level explicitly, so reopening the same conversation
+does not restore an older override.
 Desktop starts `pi --mode rpc` on its login PATH, with Collie's system prompt and its own session directory.
 Explicit system and append sources exclude your `SYSTEM.md` and `APPEND_SYSTEM.md` files.
 None of your Pi extensions, skills, prompt templates or context files loads. Its own
 `read`, `bash`, `edit`, `write`, `grep`, `find` and `ls` tools reach this computer without
 asking first. Pi missing from PATH is said in the chat.
 
-The chat's effort is set by asking the chat, for example "answer at high effort from now
-on": `collie_chat_harness` saves it for this computer beside the harness and model, and
-Settings has no row for it. Claude takes `low`, `medium`, `high`, `xhigh` and `max`; Pi
-takes `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`, passed as `--thinking`.
-Any other is refused with the ones the harness takes, and nothing is saved. Unset, Claude
-runs at `medium` and Pi at its configured thinking level. A new effort applies with the next
-message, in the same conversation; another harness unsets the model and the effort.
+The effort is chosen in its select, or by asking the chat, for example "answer at high
+effort from now on", which `collie_chat_harness` saves. Claude takes `low`, `medium`, `high`,
+`xhigh` and `max`; Pi takes `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`,
+passed as `--thinking`. An effort the model does not list is refused with the ones it takes,
+and any effort on a model that lists none; nothing is saved. Another model keeps the effort
+only where it lists it, unsetting the model included. Unset, Claude runs at `medium` and Pi
+at its configured level. A new effort applies with the next message, in the same
+conversation; another harness unsets the model and the effort.
 
 Pi reaches Collie's tools, the five Machine file tools and AskUserQuestion through one
 streamable-HTTP MCP endpoint on `127.0.0.1`, started on its first session. A random bearer
@@ -1867,7 +1887,9 @@ marked **Claude Code** or **Pi** beside its date. Reopening one from another har
 the chat to that harness, unsetting the model and the effort, and shows that conversation,
 never a new one; the menu's last line says so whenever it lists one. **Start fresh** stays on
 the set harness. You can ask the chat to read or change these settings through
-`collie_chat_harness`, with the same checks as Settings.
+`collie_chat_harness`, with the same checks as the selects. Its read says what an unset
+model and effort run as, the harness the conversation is held on, what its session runs on
+now or that none is warm, and each installed harness's models with their efforts.
 
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or

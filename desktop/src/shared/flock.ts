@@ -7,6 +7,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import { AguiEvent } from "./agui";
 import { Staged, StagedOrRefused } from "./attachments";
+import { ChatChoices } from "./chat-choices";
 import {
   About,
   Answers,
@@ -660,6 +661,8 @@ export const DesktopRpcs = RpcGroup.make(
   Rpc.make("desktopTurns", { success: DesktopTurn, stream: true }),
   /** Desktop's own settings, now and after every saved change. */
   Rpc.make("settings", { success: DesktopSettings, stream: true }),
+  /** What the Flock chat holds, runs on and is offered, now and after each change. */
+  Rpc.make("chatChoices", { success: ChatChoices, stream: true }),
   /** How the board's window is drawn, again whenever its zoom is decided again. */
   Rpc.make("drawn", { success: Drawn, stream: true }),
   /** What the settings are now, or why the change was refused and nothing kept. */

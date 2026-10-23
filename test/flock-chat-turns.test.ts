@@ -3,7 +3,19 @@
 
 import { expect, test } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import { Crypto, Deferred, Effect, Fiber, FileSystem, Path, Schema, Stream, Queue } from "effect";
+import {
+  Crypto,
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Option,
+  Path,
+  PubSub,
+  Schema,
+  Stream,
+  Queue,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { type Declaration, NewsBatch, PROTOCOL, type Significance } from "../src/board-model";
 import { stageAttachment } from "../desktop/src/bun/attachments";
@@ -12,8 +24,10 @@ import { type ClaudeCode, claudeDriver } from "../desktop/src/bun/claude-driver"
 import type { AguiEvent } from "../desktop/src/shared/agui";
 import type { TurnCost } from "../desktop/src/bun/driver";
 import type { ChatDriver, DriverContext } from "../desktop/src/bun/driver";
-import { changeSettings, chatChoice } from "../desktop/src/bun/settings";
+import { changeSettings } from "../desktop/src/bun/settings";
+import { offerOf, opensOn } from "../desktop/src/bun/chat-choices";
 import { DesktopSettings } from "../desktop/src/shared/flock";
+import type { ChatChoices } from "../desktop/src/shared/chat-choices";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import type { SdkMessage } from "../desktop/src/bun/agui";
 import {
@@ -102,7 +116,7 @@ const scripted = (
   query: ({ prompt, options }) => {
     const id = "resume" in options ? options.resume : options.sessionId;
     seen.servers.push(Object.keys(options.mcpServers));
-    seen.efforts.push(options.effort);
+    seen.efforts.push(options.effort ?? "none");
     seen.sessions.push({
       model: options.model,
       ...("resume" in options ? { resume: options.resume } : { sessionId: options.sessionId }),
@@ -278,6 +292,8 @@ const withChat = <A, E>(
     /** The current conversation's file, as an earlier Desktop left it. */
     readonly savedFile?: string;
     readonly transcripts?: ReadonlyArray<readonly [string, unknown[]]>;
+    /** Ticks as Desktop's saved settings or the Flock's models would. */
+    readonly retold?: Stream.Stream<unknown>;
   },
   reply: (text: string) => ReadonlyArray<SdkMessage>,
   body: (chat: {
@@ -326,7 +342,10 @@ const withChat = <A, E>(
         machineRule: () => opts.rule ?? "Everything is on the vm",
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed(""),
-        choice: () => chatChoice(settings.current, NO_FLOCK_SETTINGS),
+        choice: () => opensOn(settings.current, NO_FLOCK_SETTINGS, Effect.succeed({})),
+        offered: (harness) =>
+          offerOf(harness, settings.current, NO_FLOCK_SETTINGS, Effect.succeed({})),
+        retold: opts.retold ?? Stream.empty,
         chatHarness: () => ({
           harness: settings.current.chatHarness ?? "claude",
           model: settings.current.chatModel,
@@ -659,9 +678,15 @@ test("a session that fails as it starts is started again by the next message", (
     Effect.gen(function* () {
       const first = yield* Stream.runCollect(conversation.send("first", null, false));
       expect(first.at(-1)).toMatchObject({ type: "RUN_ERROR" });
+      expect((yield* account(conversation)).runsOn).toBeNull();
       const second = yield* Stream.runCollect(conversation.send("second", null, false));
       expect(second.at(-1)).toMatchObject({ type: "RUN_FINISHED" });
       expect(seen.prompts).toEqual(["second"]);
+      expect((yield* account(conversation)).runsOn).toEqual({
+        harness: "claude",
+        model: "opus",
+        effort: "medium",
+      });
     }),
   ));
 
@@ -776,7 +801,7 @@ test("the chat reports the model its conversation actually runs on, including th
     Effect.gen(function* () {
       yield* Stream.runDrain(conversation.send("hello", null, false));
       const said = yield* callFlockTool(seen.flock!, "collie_chat_harness", {});
-      expect(said).toContain("This conversation runs on claude/opus now.");
+      expect(said).toContain("Its session runs on claude/opus at medium effort now.");
     }),
   ));
 
@@ -846,7 +871,7 @@ test("a harness change saved mid-turn waits for the next message, which starts a
         );
         yield* eventually(() => seen.prompts.length === 1);
         expect(yield* callFlockTool(seen.flock!, "collie_chat_harness", { harness: "pi" })).toBe(
-          "The Flock chat is now set to pi, with no model set: the harness's own default, with no effort set: the harness's own default. It applies with the next message.",
+          "The Flock chat is now set to pi, with no model set, so it runs as pi's own default model, with no effort set, so it runs at medium. It applies with the next message.",
         );
         yield* Deferred.succeed(gate, undefined);
         expect((yield* Fiber.join(slow)).at(-1)).toMatchObject({ type: "RUN_FINISHED" });
@@ -1185,3 +1210,129 @@ test("Desktop's own turn on Pi records its harness, model and token counts", () 
         });
       }),
   ));
+
+const account = (conversation: Effect.Success<ReturnType<typeof openFlockChat>>) =>
+  conversation.choices.pipe(Stream.runHead, Effect.map(Option.getOrThrow));
+
+test("the account says a turn is under way only while one is, Desktop's own or the human's", () => {
+  const gate = Deferred.makeUnsafe<void>();
+  return withChat(
+    {
+      items: [item("r1:asking", "decision")],
+      proactive: true,
+      holds: (text) => text.startsWith(DESKTOP_SAID),
+      gate,
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        const told: boolean[] = [];
+        yield* conversation.choices.pipe(
+          Stream.runForEach(({ turning }) =>
+            Effect.sync(() => {
+              if (told.at(-1) !== turning) told.push(turning);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        yield* eventually(() => told.length === 1);
+        yield* TestClock.adjust("3 seconds");
+        yield* eventually(() => seen.prompts.length === 1);
+        yield* eventually(() => told.at(-1) === true);
+
+        const slow = yield* Stream.runCollect(conversation.send("slow", null, true)).pipe(
+          Effect.forkChild,
+        );
+        yield* eventually(() => seen.prompts.length === 2);
+        expect(told.at(-1)).toBe(true);
+        Deferred.doneUnsafe(gate, Effect.void);
+        yield* Fiber.join(slow);
+        yield* eventually(() => told.at(-1) === false);
+        expect(told).toEqual([false, true, false, true, false]);
+      }),
+  );
+});
+
+test("runsOn is null until a session opens, then what the driver was opened with, an unset model and effort resolved", () =>
+  withChat(
+    {
+      items: [],
+      proactive: false,
+      drivers: { pi: { ...fakeDriver([]).driver, installed: false } },
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        const before = yield* account(conversation);
+        expect(before).toMatchObject({ heldOn: "claude", runsOn: null, turning: false });
+        expect(
+          before.harnesses.map(({ harness, label, installed, offered }) => ({
+            harness,
+            label,
+            installed,
+            from: offered.from,
+          })),
+        ).toEqual([
+          { harness: "claude", label: "Claude Code", installed: true, from: "table" },
+          { harness: "pi", label: "Pi", installed: false, from: "table" },
+        ]);
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        expect((yield* account(conversation)).runsOn).toEqual({
+          harness: "claude",
+          model: "opus",
+          effort: "medium",
+        });
+        expect(seen.sessions).toEqual([{ model: "opus", sessionId: expect.any(String) }]);
+        expect(seen.efforts).toEqual(["medium"]);
+      }),
+  ));
+
+test("heldOn changes with the next message after a harness change, not when the change is saved", () => {
+  const settings = { current: { proactive: false, chatHarness: "claude" } };
+  const pi = fakeDriver([]);
+  return withChat(
+    { items: [], proactive: false, settings, drivers: { pi: pi.driver } },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        yield* callFlockTool(seen.flock!, "collie_chat_harness", { harness: "pi" });
+        expect(yield* account(conversation)).toMatchObject({
+          heldOn: "claude",
+          runsOn: { harness: "claude", model: "opus", effort: "medium" },
+        });
+        yield* Stream.runDrain(conversation.send("on Pi", null, false));
+        expect(yield* account(conversation)).toMatchObject({
+          heldOn: "pi",
+          runsOn: { harness: "pi", model: "default", effort: "medium" },
+        });
+      }),
+  );
+});
+
+test("the account is told again when Desktop retells it, with each harness's list as it is then", () => {
+  const settings = { current: Schema.decodeUnknownSync(DesktopSettings)({ proactive: false }) };
+  const retold = Effect.runSync(PubSub.unbounded<void>());
+  return withChat(
+    { items: [], proactive: false, settings, retold: Stream.fromPubSub(retold) },
+    answered,
+    ({ conversation }) =>
+      Effect.gen(function* () {
+        const told: ChatChoices[] = [];
+        yield* conversation.choices.pipe(
+          Stream.runForEach((choices) => Effect.sync(() => void told.push(choices))),
+          Effect.forkChild,
+        );
+        yield* eventually(() => told.length === 1);
+        settings.current = { proactive: false, chatModel: "claude-opus-5" };
+        yield* PubSub.publish(retold, undefined);
+        yield* eventually(() => told.length === 2);
+        const ids = (choices: ChatChoices) => {
+          const offered = choices.harnesses[0]!.offered;
+          return offered.from === "reading" ? [] : offered.models.map(({ id }) => id);
+        };
+        expect(ids(told[0]!)).not.toContain("claude-opus-5");
+        expect(ids(told[1]!)).toContain("claude-opus-5");
+      }),
+  );
+});

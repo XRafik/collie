@@ -11,6 +11,7 @@ import {
   harnessName,
   questionsOf,
 } from "../../../src/shared/chat-view";
+import type { DesktopSettingsChange } from "../../../src/shared/flock";
 import { DEFAULT_CHAT_HARNESS } from "../../../src/shared/flock-settings";
 
 defineProps<{ alone?: boolean }>();
@@ -33,6 +34,7 @@ const {
   setProactive,
 } = useFlockChat();
 const { desktopSettings } = useDesktopSettings();
+const { selects, refused: choiceRefused, choose: saveChoice, dismiss } = useChatChoices();
 const { openRecord } = useRecordOpener();
 const toast = useToast();
 const goneFromBoard = () =>
@@ -69,6 +71,12 @@ onBeforeUnmount(() => arrived.disconnect());
 const { chip, choose } = useChip();
 const { popIn } = usePopOut();
 const draft = ref("");
+const input = useTemplateRef("input");
+// Nuxt preserves focus moved outside the menu before it closes.
+const chooseSetting = (change: DesktopSettingsChange) => {
+  input.value?.textareaRef?.focus();
+  void saveChoice(change);
+};
 onMounted(reload);
 const files = useAttachments();
 
@@ -388,30 +396,61 @@ const queuedText = ({ content }: QueuedMessage) => {
     <p v-if="files.refused.value" data-testid="chat-refused" class="px-6 pt-2 text-sm text-error">
       {{ files.refused.value }}
     </p>
-    <form class="flex gap-2 border-t border-default px-6 py-3" @submit.prevent="send()">
-      <UTextarea
-        v-model="draft"
-        data-testid="chat-input"
-        class="flex-1"
-        :rows="2"
-        autoresize
-        :placeholder="
-          isLoading ? 'Enter queues it, Ctrl+Enter sends it now' : 'Ask about the Flock'
-        "
-        @keydown.enter.exact.prevent="send()"
-        @keydown.ctrl.enter.exact.prevent="send(true)"
-        @paste="pasted"
-      />
+    <div
+      v-if="choiceRefused !== null"
+      role="alert"
+      data-testid="chat-choice-refused"
+      class="mx-6 mt-2 flex items-start gap-2 rounded-md border border-error/30 bg-error/10 py-2 pr-2 pl-3 text-sm text-error"
+    >
+      <UIcon name="i-lucide-circle-alert" class="mt-0.5 size-4 shrink-0" />
+      <p class="grow wrap-anywhere">{{ choiceRefused }}</p>
       <UButton
-        icon="i-lucide-paperclip"
-        color="neutral"
+        icon="i-lucide-x"
+        color="error"
         variant="ghost"
-        aria-label="Attach files"
-        title="Attach files"
-        data-testid="chat-attach"
-        @click="files.pick()"
+        size="xs"
+        aria-label="Dismiss"
+        @click="dismiss()"
       />
-      <UButton type="submit" icon="i-lucide-send" aria-label="Send" />
+    </div>
+    <form class="flex flex-col gap-2 border-t border-default px-6 py-3" @submit.prevent="send()">
+      <div class="flex gap-2">
+        <UTextarea
+          ref="input"
+          v-model="draft"
+          data-testid="chat-input"
+          class="flex-1"
+          :rows="2"
+          autoresize
+          :placeholder="
+            isLoading ? 'Enter queues it, Ctrl+Enter sends it now' : 'Ask about the Flock'
+          "
+          @keydown.enter.exact.prevent="send()"
+          @keydown.ctrl.enter.exact.prevent="send(true)"
+          @paste="pasted"
+        />
+        <UButton
+          icon="i-lucide-paperclip"
+          color="neutral"
+          variant="ghost"
+          aria-label="Attach files"
+          title="Attach files"
+          data-testid="chat-attach"
+          @click="files.pick()"
+        />
+        <UButton type="submit" icon="i-lucide-send" aria-label="Send" />
+      </div>
+      <div data-testid="chat-choices" class="flex min-w-0 flex-wrap items-center gap-1">
+        <ChatChoiceSelect
+          :select="selects.harness"
+          @choose="chooseSetting({ chatHarness: $event })"
+        />
+        <ChatModelSelect :select="selects.model" @choose="chooseSetting({ chatModel: $event })" />
+        <ChatChoiceSelect
+          :select="selects.effort"
+          @choose="chooseSetting({ chatEffort: $event })"
+        />
+      </div>
     </form>
   </aside>
 </template>
