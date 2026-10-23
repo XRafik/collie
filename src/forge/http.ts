@@ -81,7 +81,6 @@ interface Sent<A> {
 }
 
 interface Slot {
-  readonly lock: Semaphore.Semaphore;
   provider: Promise<Provider> | null;
   token: string | null;
   expires: number | null;
@@ -90,11 +89,18 @@ interface Slot {
 const make = (run: Runner, fetch: FetchLike | undefined, base: string | null) =>
   Effect.sync(() => {
     const slots = new Map<string, Slot>();
+    const locks = new Map<string, Semaphore.Semaphore>();
+    const lockOf = (host: string) => {
+      const known = locks.get(host);
+      if (known !== undefined) return known;
+      const lock = Semaphore.makeUnsafe(1);
+      locks.set(host, lock);
+      return lock;
+    };
     const slotOf = (key: string) => {
       const known = slots.get(key);
       if (known !== undefined) return known;
       const slot: Slot = {
-        lock: Semaphore.makeUnsafe(1),
         provider: null,
         token: null,
         expires: null,
@@ -121,7 +127,7 @@ const make = (run: Runner, fetch: FetchLike | undefined, base: string | null) =>
 
     /** The host's token: the cached one while it has not expired, else the CLI's, refreshed first where it expired. */
     const tokenOf = (login: ForgeLogin, cwd: string, slot: Slot) =>
-      slot.lock.withPermits(1)(
+      lockOf(login.host).withPermits(1)(
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           if (slot.token !== null && (slot.expires === null || now < slot.expires))

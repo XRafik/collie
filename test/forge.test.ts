@@ -2694,6 +2694,45 @@ describe("GitLab's OAuth login over HTTP", () => {
   const job = (fake: ReturnType<typeof oauth>) =>
     gitlab.job(ref("gitlab"), "nuxi-typecheck", "/w", fake.run);
 
+  test("normal and stored-login reads serialize an expired host's credentials", () => {
+    const start = epochMs("2026-10-23T10:00:00Z");
+    const fake = oauth(start - 3_600_000, {
+      runs: { "7": { status: "success", ref: "v1.2.0", sha: MERGED, jobs: [] } },
+    });
+    let active = 0;
+    let mostActive = 0;
+    const run: Runner = (cmd, args, cwd) =>
+      Effect.gen(function* () {
+        active++;
+        mostActive = Math.max(mostActive, active);
+        yield* Effect.yieldNow;
+        const ran = yield* fake.run(cmd, args, cwd);
+        active--;
+        return ran;
+      });
+    return runEffect(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make();
+        yield* clock.setTime(start);
+        const [job, status, pipeline] = yield* Effect.all(
+          [
+            gitlab.job(ref("gitlab"), "nuxi-typecheck", "/w", run),
+            gitlab.runStatus(URLS.gitlab.run, "/w", run),
+            gitlab.pipeline(URLS.gitlab.run, "/w", run),
+          ],
+          { concurrency: "unbounded" },
+        ).pipe(Effect.provideService(Clock.Clock, clock));
+        expect(job).toMatchObject({ ok: true, state: "passed" });
+        expect(status).toBe("success");
+        expect(pipeline).toMatchObject({ ok: true, succeeded: true });
+        expect(mostActive).toBe(1);
+        expect(new Set(fake.requests.map((one) => one.token))).toEqual(
+          new Set(["oauth-1-refreshed"]),
+        );
+      }).pipe(Effect.provide(forgeHttpTest(run, fake.fetch))),
+    );
+  });
+
   test("an expired token is refreshed through glab before the token is read, and only the new one is sent", () => {
     const start = epochMs("2026-10-23T10:00:00Z");
     const fake = oauth(start - 3_600_000);
