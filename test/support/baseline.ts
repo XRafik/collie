@@ -427,7 +427,7 @@ scenario(
         const body = yield* persona("r-arch", "architecture");
         expect(body).toContain("You are an architect");
         expect(body).toContain("improve-codebase-architecture/SKILL.md");
-        expect((yield* launched())[0]?.args).toContain("--model opus --effort xhigh");
+        expect((yield* launched())[0]?.args).toContain("--model opus --effort high");
       }),
     ),
   120_000,
@@ -656,7 +656,7 @@ scenario(
         expect((yield* asked("r-plan", "spec")).replace(/\s+/g, " ")).toContain(
           "the spec does not restate them",
         );
-        expect((yield* launched())[0]?.args).toContain("--model opus --effort xhigh");
+        expect((yield* launched())[0]?.args).toContain("--model opus --effort high");
       }),
     ),
   120_000,
@@ -1330,7 +1330,7 @@ once(
         expect(planner?.kind).toBe("pi");
         expect(planner?.args).toContain("--model openai-codex/gpt-6-astra --thinking medium");
         expect(reviewer?.kind).toBe("claude");
-        expect(reviewer?.args).toContain("--model opus --effort xhigh");
+        expect(reviewer?.args).toContain("--model opus --effort high");
       }),
     ),
   120_000,
@@ -10131,7 +10131,7 @@ scenario(
         expect(said(result)).toBe(DONE.summary);
         const agents = yield* launched();
         expect(agents).toHaveLength(1);
-        expect(agents[0]?.args).toContain("--model opus --effort medium");
+        expect(agents[0]?.args).toContain("--model opus --effort high");
         const work = yield* asked("r-general", "task");
         expect(work).toContain(CHORE);
         expect(work).toContain(`Project root: ${rig.projectDir}`);

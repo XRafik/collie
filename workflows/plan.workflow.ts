@@ -148,8 +148,8 @@ export default defineWorkflow({
   agents: {
     harness: "claude",
     model: "opus",
-    effort: "xhigh",
-    roles: { reviewer: { harness: "claude", model: "opus", effort: "xhigh" } },
+    effort: "high",
+    roles: { reviewer: { harness: "claude", model: "opus", effort: "high" } },
   },
   hints: { goal: "goal" },
   // A plan proves it wrote tickets; nobody chooses that, so it is fixed rather than asked.

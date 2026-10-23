@@ -218,6 +218,15 @@ test("no thread yet means nothing to measure, not a context of zero", () =>
     }),
   ));
 
+test("a reachable App Server is ready before the first prompt creates its thread", () =>
+  runEffect(
+    Effect.gen(function* () {
+      fake.threads = [];
+      expect(yield* codex.ready!(ctx())).toBe(true);
+      expect(fake.calls).toEqual([]);
+    }),
+  ));
+
 test("the TUI's own ephemeral thread is not a second agent to choose between", () =>
   runEffect(
     Effect.gen(function* () {
