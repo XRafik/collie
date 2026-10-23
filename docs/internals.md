@@ -780,9 +780,9 @@ its state and address, a job waiting to be started by hand as `manual`: GitLab's
 job, or a GitHub job waiting on its environment's approval.
 An operation is added to the interface when its first caller moves onto it.
 
-### The reads that go over HTTP
+### The calls that go over HTTP
 
-These reads go to the forge in-process through the [`forges`](https://forges.link) library,
+These calls go to the forge in-process through the [`forges`](https://forges.link) library,
 pinned to one exact version, rather than through `gh` or `glab`
 ([ADR-draft-a-forge-is-asked-over-http-with-its-clis-login](adr/draft-a-forge-is-asked-over-http-with-its-clis-login.md)):
 
@@ -798,8 +798,16 @@ pinned to one exact version, rather than through `gh` or `glab`
 - Branch protection, `protects`, and deploy status, `liveTier`. GitHub pages its
   deployments and reads their latest statuses and commit comparisons; GitLab reads
   environments, successful deployments and their merge-bases on the same routes as glab.
+- Issues, review posting, my open merge requests and the login: `issues`, `fileIssue`,
+  `commentIssue`, `post`, `mine` and `login`. These use the library's modelled thread and
+  user operations. A review posts one note, then an approval only where asked. Lists are
+  read to the end; GitHub's issues exclude pull requests.
 
-Every other operation still runs the CLI. Only `src/forge/` imports `forges`, and
+`readReview`, `reply`, `merge`, `deployed`, `tagPipeline` and `pipeline` still run the CLI
+until the next transport slice. The CLI also keeps readiness and the doctor's checks,
+cloning, the credential helper, opening a browser, and commands an agent or reviewer is
+told to run, including job logs: the Machine still needs its CLI logged in. Only
+`src/forge/` imports `forges`, and
 `test/forge-boundary.test.ts` fails on an import anywhere else.
 
 **ForgeHttp** (`src/forge/http.ts`) is the Effect service that sends them. It keeps a
@@ -919,11 +927,10 @@ read, the watch stops nothing for that merge request until it can. Collie's logi
 operator's own, so a hand merge by that login, at the very head that was approved, after
 the attempt, cannot be told from Collie's, and is taken as the merge the go asked for.
 
-The interface also lists open issues, files issues, and comments on them. The adapters
-decode their own CLI answers into the shared issue shape. GitLab reads consecutive
-pages; GitHub requests all open issues through its list command. These flags follow the
-[GitLab issue list](https://docs.gitlab.com/cli/issue/list/) and
-[GitHub issue list](https://cli.github.com/manual/gh_issue_list) contracts.
+The interface decodes the library's issues into the shared issue shape. Filing an issue
+uses the returned number and URL. An issue or review write that fails is not sent again,
+apart from the single resend after a 401; its reason asks the caller to inspect the issue
+or merge request before retrying, since a lost answer may have followed a successful write.
 
 The Host service chooses the forge of the Run's recorded checkout. Before publishing,
 it applies Conversation redaction and checks text against other checkouts, including
@@ -944,8 +951,9 @@ Recovered workflows read reports after every saved generation has been registere
 
 An adapter runs its commands through a `Runner` (`src/mr.ts`), the same seam the tests
 fake. `test/support/forge.ts` is a fake of each forge built on one model of a forge, with
-two faces: a Runner answering the argv its adapter uses, and a `FakeBin` executable on
-PATH answering from the same model for host-driven tests. `test/forge.test.ts` runs one
+three faces: a Runner answering the argv its adapter uses, a `FakeBin` executable on
+PATH, and HTTP served on loopback for host-driven tests, all answering from the same model.
+`test/forge.test.ts` runs one
 contract against both. `test/forge-boundary.test.ts` fails on a `glab` or `gh` invocation
 in `src/` or `workflows/` outside its adapter, and on workflow content that names either; its
 allowlist names each file that still does, with the ticket that moves it.

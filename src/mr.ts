@@ -294,7 +294,7 @@ export function resolveAssignee<R>(
   forge: Forge,
   run: Runner<R>,
   project: string | null = null,
-): Effect.Effect<string | null, never, R> {
+): Effect.Effect<string | null, never, R | ForgeHttp> {
   return Effect.gen(function* () {
     if (configured !== undefined && isString(configured) && configured.trim() !== "")
       return configured.trim();

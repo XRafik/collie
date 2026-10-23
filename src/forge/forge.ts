@@ -138,21 +138,21 @@ export interface Forge {
     project: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<IssueList, never, R>;
+  ) => Effect.Effect<IssueList, never, R | ForgeHttp>;
   readonly fileIssue: <R>(
     project: string,
     title: string,
     body: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<FiledIssue, never, R>;
+  ) => Effect.Effect<FiledIssue, never, R | ForgeHttp>;
   readonly commentIssue: <R>(
     project: string,
     number: number,
     body: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<Readiness, never, R>;
+  ) => Effect.Effect<Readiness, never, R | ForgeHttp>;
   /** The CLI is installed and logged in to `project`'s host; a null project asks the checkout at `cwd`. */
   readonly ready: <R>(
     project: string | null,
@@ -164,7 +164,7 @@ export interface Forge {
     cwd: string,
     run: Runner<R>,
     project?: string | null,
-  ) => Effect.Effect<string | null, never, R>;
+  ) => Effect.Effect<string | null, never, R | ForgeHttp>;
   /** One merge request as the panel shows it. */
   readonly details: <R>(
     ref: MrRef,
@@ -296,7 +296,7 @@ export interface Forge {
     approve: boolean,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<Posted, never, R>;
+  ) => Effect.Effect<Posted, never, R | ForgeHttp>;
   /** The merge request's review: its state, approval, mergeability, pipeline and comments. */
   readonly readReview: <R>(
     ref: MrRef,
@@ -323,7 +323,11 @@ export interface Forge {
     project: string | null,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<ReadonlyArray<{ readonly iid: string; readonly title: string }>, never, R>;
+  ) => Effect.Effect<
+    ReadonlyArray<{ readonly iid: string; readonly title: string }>,
+    never,
+    R | ForgeHttp
+  >;
   /** Opens the merge request in a browser. */
   readonly open: <R>(ref: MrRef, cwd: string, run: Runner<R>) => Effect.Effect<Ran, never, R>;
   /** What a reviewer runs to read the change and its description, and to check it out. */

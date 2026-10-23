@@ -102,14 +102,26 @@ test("a checkout's forge is its origin's, else its upstream's, whatever else it 
 test("the assignee is the configured one, else whoever the forge's CLI is logged in as", () =>
   runEffect(
     Effect.gen(function* () {
-      const glab = runner({ "glab api user": { stdout: '{"username": "mk", "name": "Mads"}' } });
-      const ask = (configured: string | undefined, run: typeof glab) =>
-        resolveAssignee(rig.projectDir, configured, gitlab, run);
+      const glab = fakeForge("gitlab", {
+        installed: true,
+        loggedIn: [FORGE_HOST.gitlab],
+        login: "mk",
+        mrs: [],
+      });
+      const ask = (configured: string | undefined, fake: typeof glab) =>
+        resolveAssignee(rig.projectDir, configured, gitlab, fake.run, PROJECT.gitlab).pipe(
+          Effect.provide(fake.layer),
+        );
       expect(yield* ask("someone-else", glab)).toBe("someone-else");
       expect(yield* ask("  ", glab)).toBe("mk");
       expect(yield* ask(undefined, glab)).toBe("mk");
       // Not logged in, and nothing configured: say so rather than guess a username.
-      expect(yield* ask(undefined, runner({}))).toBeNull();
+      expect(
+        yield* ask(
+          undefined,
+          fakeForge("gitlab", { installed: true, loggedIn: [], login: null, mrs: [] }),
+        ),
+      ).toBeNull();
     }),
   ));
 
@@ -614,8 +626,9 @@ test("posting checks the login on the target's GitLab host", () =>
         "glab --version": { stdout: "glab" },
         "glab auth status --hostname gitlab.other.com": { stdout: "logged in" },
         "glab config get token --host gitlab.other.com": { stdout: "glpat-other\n" },
-        "glab api user": { stdout: '{"username":"local-me"}' },
-        "glab api user --hostname gitlab.other.com": { stdout: '{"username":"other-me"}' },
+        "glab api --hostname gitlab.other.com -X GET user": {
+          stdout: '{"id":1,"username":"other-me"}',
+        },
         [viewOf("42", "gitlab.other.com")]: {
           stdout: '{"state":"opened","assignees":[{"username":"other-me"}]}',
         },

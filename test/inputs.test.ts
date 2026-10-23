@@ -63,10 +63,11 @@ const glabListing = (lists: {
       "config get token") echo glpat-test ;;
       "api --hostname "*) case "$*" in
           *"merge_requests?source_branch="*) echo '${branchMrs(lists.branch ?? [])}' ;;
+          *"assignee_username="*) echo '${lists.assignee ?? "[]"}' ;;
+          *"author_username="*) echo '${lists.author ?? "[]"}' ;;
+          *"-X GET user") echo '{"id":1,"username":"me"}' ;;
           *) exit 1 ;;
         esac ;;
-      "mr list --assignee") echo '${lists.assignee ?? "[]"}' ;;
-      "mr list --author") echo '${lists.author ?? "[]"}' ;;
       *) exit 0 ;;
     esac`;
 

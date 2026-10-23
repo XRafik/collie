@@ -1528,6 +1528,7 @@ for (const name of ["gitlab", "github"] as const) {
         login: "tester",
         mrs: [{ project: PROJECT[name], iid: "30", state: "open", author: "ann" }],
       });
+      forgeApi = yield* serveForges(forge);
       return { bin, forge };
     });
   const posted = (runId: string, synthesis: typeof SYNTHESIS) =>

@@ -30,12 +30,19 @@ import type {
   Readiness,
 } from "./forge";
 import { ForgeHttp, pagesAs, request, requestAs, type Answered, type ForgeLogin } from "./http";
-import { filedIssueOf, type Issue } from "./issues";
+import {
+  listIssues,
+  createIssue,
+  commentIssue,
+  postReview,
+  viewerLogin,
+  myMergeRequests,
+} from "./threads";
 import { judgeComments, type ForgeComment, type MergeAnswer, type ReviewRead } from "./review";
 
-export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
-
 const UserJson = Schema.fromJsonString(Schema.Struct({ username: Schema.String }));
+
+export const MR_TEMPLATE = ".gitlab/merge_request_templates/default.md";
 
 /** The glab arguments that point a command at a project rather than at the cwd. */
 export function repoArgs(project: string | null): string[] {
@@ -282,6 +289,17 @@ export function gitlabForProject<R>(
  * is pushing it, and the two are different people whenever an assignee is set at all.
  */
 export function glabLogin<R>(
+  cwd: string,
+  run: Runner<R>,
+  project: string | null = null,
+): Effect.Effect<string | null, never, R | ForgeHttp> {
+  return Effect.gen(function* () {
+    const named = project ?? (yield* projectHere(cwd, run));
+    return yield* viewerLogin(glabLoginTo(hostOf(named) ?? "gitlab.com"), cwd);
+  });
+}
+
+function reviewLogin<R>(
   cwd: string,
   run: Runner<R>,
   project: string | null = null,
@@ -874,7 +892,7 @@ function readReview<R>(
     const reached = yield* projectApi(ref, cwd, run);
     if (!reached.ok) return reached;
     const { api } = reached;
-    const login = yield* glabLogin(cwd, run, ref.project);
+    const login = yield* reviewLogin(cwd, run, ref.project);
     if (login === null) return { ok: false, reason: "glab will not say who it is logged in as" };
     const route = `merge_requests/${ref.iid}`;
     const view = yield* api(route);
@@ -1057,12 +1075,6 @@ function template(cwd: string) {
   });
 }
 
-const MineJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({ iid: Schema.Union([Schema.String, Schema.Number]), title: optionalText }),
-  ),
-);
-
 const PipelineState = Schema.Struct({ status: Schema.String });
 
 /** `https://host/group/project/-/pipelines/7`'s status, or null where GitLab does not say. */
@@ -1197,71 +1209,13 @@ function clone<R>(
   });
 }
 
-const IssuesJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      iid: Schema.Int.check(Schema.isGreaterThan(0)),
-      title: Schema.String,
-      description: Schema.NullOr(Schema.String),
-      web_url: Schema.String,
-    }),
-  ),
-);
-
 export const gitlab: Forge = {
   name: "gitlab",
-  issues: (project, cwd, run) =>
-    Effect.gen(function* () {
-      const issues: Issue[] = [];
-      for (let page = 1; ; page++) {
-        const answer = yield* run(
-          "glab",
-          [
-            "issue",
-            "list",
-            ...repoArgs(project),
-            "--output",
-            "json",
-            "--page",
-            String(page),
-            "--per-page",
-            "100",
-          ],
-          cwd,
-        );
-        if (answer.code !== 0)
-          return { ok: false, reason: whatItSaid(answer) || "issue listing failed" };
-        const decoded = Schema.decodeUnknownOption(IssuesJson)(answer.stdout);
-        if (Option.isNone(decoded))
-          return { ok: false, reason: "issue listing returned invalid JSON" };
-        issues.push(
-          ...decoded.value.map((one) => ({
-            number: one.iid,
-            title: one.title,
-            body: one.description ?? "",
-            url: one.web_url,
-          })),
-        );
-        if (decoded.value.length < 100) return { ok: true, issues };
-      }
-    }),
-  fileIssue: (project, title, body, cwd, run) =>
-    Effect.map(
-      run(
-        "glab",
-        ["issue", "create", ...repoArgs(project), "--title", title, "--description", body, "--yes"],
-        cwd,
-      ),
-      (answer) => filedIssueOf(answer, project, true),
-    ),
-  commentIssue: (project, number, body, cwd, run) =>
-    Effect.map(
-      run("glab", ["issue", "note", String(number), ...repoArgs(project), "--message", body], cwd),
-      (answer) => ({
-        ok: answer.code === 0,
-        reason: answer.code === 0 ? "" : whatItSaid(answer) || "issue comment failed",
-      }),
-    ),
+  issues: (project, cwd) => listIssues(glabLoginTo(hostOf(project) ?? "gitlab.com"), project, cwd),
+  fileIssue: (project, title, body, cwd) =>
+    createIssue(glabLoginTo(hostOf(project) ?? "gitlab.com"), project, title, body, cwd),
+  commentIssue: (project, number, body, cwd) =>
+    commentIssue(glabLoginTo(hostOf(project) ?? "gitlab.com"), project, number, body, cwd),
   tagPipeline,
   clone,
   credentials: (project, into, run) => {
@@ -1313,42 +1267,24 @@ export const gitlab: Forge = {
   merge,
   post: (ref, body, approve, cwd, run) =>
     Effect.gen(function* () {
-      const where = whereOf(ref);
-      // `--repo` is what lets this work from a directory that is not that checkout.
-      const note = yield* run(
-        "glab",
-        ["mr", "note", ref.iid, ...repoArgs(ref.project), "--message", body],
+      const project = ref.project ?? (yield* projectHere(cwd, run));
+      if (project === null)
+        return { ok: false, message: `${whereOf(ref)} names no GitLab project` };
+      return yield* postReview(
+        glabLoginTo(hostOf(project) ?? "gitlab.com"),
+        project,
+        ref,
+        body,
+        approve,
         cwd,
       );
-      if (note.code !== 0)
-        return { ok: false, message: `glab mr note ${where} failed (exit ${note.code})` };
-      if (!approve) return { ok: true, message: `posted the review to ${where}` };
-      const approved = yield* run(
-        "glab",
-        ["mr", "approve", ref.iid, ...repoArgs(ref.project)],
-        cwd,
-      );
-      return {
-        ok: true,
-        message:
-          approved.code === 0
-            ? `posted the review to ${where} and approved it`
-            : `posted the review to ${where} and did not approve it: glab mr approve failed (exit ${approved.code})`,
-      };
     }),
-  mine: (_project, cwd, run) =>
+  mine: (named, cwd, run) =>
     Effect.gen(function* () {
-      const seen = new Map<string, string>();
-      for (const who of ["--assignee", "--author"]) {
-        const listed = yield* run("glab", ["mr", "list", who, "@me", "--output", "json"], cwd);
-        if (listed.code !== 0) continue;
-        for (const row of Option.getOrElse(
-          Schema.decodeUnknownOption(MineJson)(listed.stdout),
-          () => [],
-        ))
-          if (!seen.has(String(row.iid))) seen.set(String(row.iid), row.title ?? "");
-      }
-      return [...seen].map(([iid, title]) => ({ iid, title }));
+      const project = named ?? (yield* projectHere(cwd, run));
+      return project === null
+        ? []
+        : yield* myMergeRequests(glabLoginTo(hostOf(project) ?? "gitlab.com"), project, cwd);
     }),
   open: (ref, cwd, run) =>
     run("glab", ["mr", "view", ref.iid, ...repoArgs(ref.project), "--web"], cwd),

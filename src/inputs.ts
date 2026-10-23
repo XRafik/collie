@@ -428,7 +428,7 @@ function myOpenMrs(
   run: NonNullable<InferContext["run"]>,
   cwd: string,
   project: string | null,
-): Effect.Effect<Candidate[], never, ChildProcessSpawner.ChildProcessSpawner> {
+): Effect.Effect<Candidate[], never, ChildProcessSpawner.ChildProcessSpawner | ForgeHttp> {
   return Effect.map(forge.mine(project, cwd, run), (mine) =>
     [...mine]
       .sort((a, b) => Number(a.iid) - Number(b.iid))

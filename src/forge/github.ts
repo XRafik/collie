@@ -37,7 +37,14 @@ import {
   type Answered,
   type ForgeLogin,
 } from "./http";
-import { Issue, filedIssueOf } from "./issues";
+import {
+  listIssues,
+  createIssue,
+  commentIssue,
+  postReview,
+  viewerLogin,
+  myMergeRequests,
+} from "./threads";
 import {
   judgeComments,
   type CommentKind,
@@ -324,7 +331,9 @@ function ready<R>(
   });
 }
 
-function login<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, never, R> {
+const login = (cwd: string) => viewerLogin(LOGIN, cwd);
+
+function reviewLogin<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, never, R> {
   return Effect.gen(function* () {
     const me = yield* run("gh", ["api", "user", "--hostname", HOST], cwd);
     if (me.code !== 0) return null;
@@ -751,7 +760,7 @@ function readReview<R>(
     const where = mrWords(ref).label;
     const reached = yield* ready(ref.project, cwd, run);
     if (!reached.ok) return { ok: false, reason: reached.reason };
-    const me = yield* login(cwd, run);
+    const me = yield* reviewLogin(cwd, run);
     if (me === null) return { ok: false, reason: "gh will not say who it is logged in as" };
     const repo = mrPath(ref);
     const view = yield* run(
@@ -1034,10 +1043,6 @@ function template(cwd: string) {
   });
 }
 
-const MineJson = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ number: Schema.Number, title: optionalText })),
-);
-
 const Deployment = Schema.Struct({
   id: Schema.Number,
   sha: Schema.String,
@@ -1270,73 +1275,11 @@ function clone<R>(
   });
 }
 
-const IssuesJson = Schema.fromJsonString(Schema.Array(Issue));
-
 export const github: Forge = {
   name: "github",
-  issues: (project, cwd, run) =>
-    Effect.gen(function* () {
-      const answer = yield* run(
-        "gh",
-        [
-          "issue",
-          "list",
-          "--repo",
-          mrPath({ project, iid: "" }),
-          "--state",
-          "open",
-          "--limit",
-          String(2 ** 31 - 1),
-          "--json",
-          "number,title,body,url",
-        ],
-        cwd,
-      );
-      if (answer.code !== 0)
-        return { ok: false, reason: whatItSaid(answer) || "issue listing failed" };
-      const decoded = Schema.decodeUnknownOption(IssuesJson)(answer.stdout);
-      return Option.isSome(decoded)
-        ? { ok: true, issues: decoded.value }
-        : { ok: false, reason: "issue listing returned invalid JSON" };
-    }),
-  fileIssue: (project, title, body, cwd, run) =>
-    Effect.map(
-      run(
-        "gh",
-        [
-          "issue",
-          "create",
-          "--repo",
-          mrPath({ project, iid: "" }),
-          "--title",
-          title,
-          "--body",
-          body,
-        ],
-        cwd,
-      ),
-      (answer) => filedIssueOf(answer, project, false),
-    ),
-  commentIssue: (project, number, body, cwd, run) =>
-    Effect.map(
-      run(
-        "gh",
-        [
-          "issue",
-          "comment",
-          String(number),
-          "--repo",
-          mrPath({ project, iid: "" }),
-          "--body",
-          body,
-        ],
-        cwd,
-      ),
-      (answer) => ({
-        ok: answer.code === 0,
-        reason: answer.code === 0 ? "" : whatItSaid(answer) || "issue comment failed",
-      }),
-    ),
+  issues: (project, cwd) => listIssues(LOGIN, project, cwd),
+  fileIssue: (project, title, body, cwd) => createIssue(LOGIN, project, title, body, cwd),
+  commentIssue: (project, number, body, cwd) => commentIssue(LOGIN, project, number, body, cwd),
   clone,
   credentials: (_project, into, run) =>
     keepCredentialHelper(into, HOST, "!gh auth git-credential", run),
@@ -1373,57 +1316,12 @@ export const github: Forge = {
   readReview,
   reply,
   merge,
-  post: (ref, body, approve, cwd, run) =>
-    Effect.gen(function* () {
-      const where = mrWords(ref).label;
-      const repo = ["--repo", mrPath(ref)];
-      // One review that is both the note and the approval, as GitHub counts a review.
-      const reviewed = approve
-        ? yield* run("gh", ["pr", "review", ref.iid, ...repo, "--approve", "--body", body], cwd)
-        : null;
-      if (reviewed?.code === 0)
-        return { ok: true, message: `posted the review to ${where} and approved it` };
-      const note = yield* run("gh", ["pr", "comment", ref.iid, ...repo, "--body", body], cwd);
-      if (note.code !== 0)
-        return { ok: false, message: `gh pr comment ${where} failed (exit ${note.code})` };
-      return {
-        ok: true,
-        message:
-          reviewed === null
-            ? `posted the review to ${where}`
-            : `posted the review to ${where} and did not approve it: gh pr review --approve failed (exit ${reviewed.code})`,
-      };
-    }),
-  mine: (project, cwd, run) =>
-    Effect.gen(function* () {
-      if (project === null) return [];
-      const seen = new Map<string, string>();
-      for (const who of ["--assignee", "--author"]) {
-        const listed = yield* run(
-          "gh",
-          [
-            "pr",
-            "list",
-            "--repo",
-            mrPath({ project, iid: "" }),
-            who,
-            "@me",
-            "--state",
-            "open",
-            "--json",
-            "number,title",
-          ],
-          cwd,
-        );
-        if (listed.code !== 0) continue;
-        for (const row of Option.getOrElse(
-          Schema.decodeUnknownOption(MineJson)(listed.stdout),
-          () => [],
-        ))
-          if (!seen.has(String(row.number))) seen.set(String(row.number), row.title ?? "");
-      }
-      return [...seen].map(([iid, title]) => ({ iid, title }));
-    }),
+  post: (ref, body, approve, cwd) =>
+    ref.project === null
+      ? Effect.succeed({ ok: false, message: `${mrWords(ref).label} names no GitHub project` })
+      : postReview(LOGIN, ref.project, ref, body, approve, cwd),
+  mine: (project, cwd) =>
+    project === null ? Effect.succeed([]) : myMergeRequests(LOGIN, project, cwd),
   open: (ref, cwd, run) => run("gh", ["pr", "view", ref.iid, "--repo", mrPath(ref), "--web"], cwd),
   review: (ref) => {
     const repo = `--repo ${shellQuote(mrPath(ref))}`;

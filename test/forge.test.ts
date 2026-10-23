@@ -3,7 +3,7 @@ import { Clock, ConfigProvider, Effect, Fiber, FileSystem, Schema } from "effect
 import { TestClock } from "effect/testing";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
-import { forgeHttpLayer, type ForgeHttp } from "../src/forge/http";
+import { forgeHttpLayer, forgeHttpTest, type ForgeHttp } from "../src/forge/http";
 import { rollupChecks } from "../src/forge/github";
 import { gitlab, glabExpiry, pipelineChecks } from "../src/forge/gitlab";
 import type { ReviewRead } from "../src/forge/review";
@@ -62,7 +62,107 @@ for (const name of ["gitlab", "github"] as const) {
   const host = FORGE_HOST[name];
 
   describe(`the ${name} forge`, () => {
-    test("lists open issues, files one, and comments on it through its own CLI", () =>
+    test("lists only issues over HTTP from a cold login", () => {
+      const fake = fakeForge(
+        name,
+        model(name, {
+          issues: [
+            {
+              project: PROJECT[name],
+              number: 1,
+              title: "Problem",
+              body: "Evidence",
+              state: "open",
+            },
+          ],
+        }),
+      );
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* forge.issues(PROJECT[name], "/w", fake.run)).toMatchObject({
+            ok: true,
+            issues: [{ number: 1, title: "Problem", body: "Evidence" }],
+          });
+          expect(fake.requests.length).toBeGreaterThan(0);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("files an issue over HTTP from a cold login", () => {
+      const fake = fakeForge(name, model(name));
+      return runEffect(
+        Effect.gen(function* () {
+          const filed = yield* forge.fileIssue(
+            PROJECT[name],
+            "Problem",
+            "Evidence",
+            "/w",
+            fake.run,
+          );
+          expect(filed).toEqual({
+            ok: true,
+            number: 1,
+            url: `https://${PROJECT[name]}/${name === "gitlab" ? "-/issues" : "issues"}/1`,
+          });
+          expect(fake.model().issues).toMatchObject([{ title: "Problem", body: "Evidence" }]);
+          expect(fake.requests.filter((one) => one.method === "POST")).toHaveLength(1);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    for (const [failure, fault] of [
+      ["5xx", { status: 503 }],
+      ["network", "network"],
+    ] as const)
+      test(`sends issue creation only once on a ${failure} failure and asks for inspection`, () => {
+        const fake = fakeForge(name, model(name, { httpFault: fault }));
+        return runEffect(
+          Effect.gen(function* () {
+            const filed = yield* forge.fileIssue(
+              PROJECT[name],
+              "Problem",
+              "Evidence",
+              "/w",
+              fake.run,
+            );
+            expect(filed.ok).toBe(false);
+            if (filed.ok) throw new Error("issue creation should be unavailable");
+            expect(filed.reason).toContain("before retrying");
+            expect(fake.requests.filter((one) => one.method === "POST")).toHaveLength(1);
+          }).pipe(Effect.provide(fake.layer)),
+        );
+      });
+
+    test("comments on an issue over HTTP from a cold login", () => {
+      const fake = fakeForge(
+        name,
+        model(name, {
+          issues: [
+            {
+              project: PROJECT[name],
+              number: 1,
+              title: "Problem",
+              body: "Evidence",
+              state: "open",
+            },
+          ],
+        }),
+      );
+      return runEffect(
+        Effect.gen(function* () {
+          expect(
+            yield* forge.commentIssue(PROJECT[name], 1, "More evidence", "/w", fake.run),
+          ).toEqual({ ok: true, reason: "" });
+          expect(fake.model().issueNotes).toEqual({ [`${PROJECT[name]}#1`]: ["More evidence"] });
+          expect(fake.requests.filter((one) => one.method === "POST")).toHaveLength(1);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("lists open issues, files one, and comments on it", () =>
       runEffect(
         Effect.gen(function* () {
           const fake = fakeForge(
@@ -86,22 +186,30 @@ for (const name of ["gitlab", "github"] as const) {
               ],
             }),
           );
-          const first = yield* forge.issues(PROJECT[name], "/w", fake.run);
+          const first = yield* forge
+            .issues(PROJECT[name], "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(first).toMatchObject({
             ok: true,
             issues: [{ number: 1, title: "Open", body: "Evidence" }],
           });
-          const filed = yield* forge.fileIssue(PROJECT[name], "Problem", "Details", "/w", fake.run);
+          const filed = yield* forge
+            .fileIssue(PROJECT[name], "Problem", "Details", "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(filed).toMatchObject({ ok: true, number: 3 });
           if (!filed.ok) throw new Error(filed.reason);
           expect(filed.url).toBe(
             `https://${PROJECT[name]}/${name === "gitlab" ? "-/issues" : "issues"}/3`,
           );
           expect(
-            yield* forge.commentIssue(PROJECT[name], 3, "More evidence", "/w", fake.run),
+            yield* forge
+              .commentIssue(PROJECT[name], 3, "More evidence", "/w", fake.run)
+              .pipe(Effect.provide(fake.layer)),
           ).toEqual({ ok: true, reason: "" });
           expect(fake.model().issueNotes).toEqual({ [`${PROJECT[name]}#3`]: ["More evidence"] });
-          expect(yield* forge.issues(PROJECT[name], "/w", fake.run)).toMatchObject({
+          expect(
+            yield* forge.issues(PROJECT[name], "/w", fake.run).pipe(Effect.provide(fake.layer)),
+          ).toMatchObject({
             ok: true,
             issues: [{ number: 1 }, { number: 3, title: "Problem", body: "Details" }],
           });
@@ -123,7 +231,9 @@ for (const name of ["gitlab", "github"] as const) {
               })),
             }),
           );
-          const listed = yield* forge.issues(PROJECT[name], "/w", fake.run);
+          const listed = yield* forge
+            .issues(PROJECT[name], "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(listed.ok).toBe(true);
           if (!listed.ok) throw new Error(listed.reason);
           expect(listed.issues).toHaveLength(103);
@@ -135,17 +245,32 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const fake = fakeForge(name, model(name, { installed: false }));
-          expect((yield* forge.issues(PROJECT[name], "/w", fake.run)).ok).toBe(false);
           expect(
-            (yield* forge.fileIssue(PROJECT[name], "Problem", "Evidence", "/w", fake.run)).ok,
+            (yield* forge.issues(PROJECT[name], "/w", fake.run).pipe(Effect.provide(fake.layer)))
+              .ok,
           ).toBe(false);
-          expect((yield* forge.commentIssue(PROJECT[name], 1, "Evidence", "/w", fake.run)).ok).toBe(
-            false,
-          );
-          const broken = () => Effect.succeed({ code: 0, stdout: "unreadable" });
-          expect((yield* forge.issues(PROJECT[name], "/w", broken)).ok).toBe(false);
           expect(
-            (yield* forge.fileIssue(PROJECT[name], "Problem", "Evidence", "/w", broken)).ok,
+            (yield* forge
+              .fileIssue(PROJECT[name], "Problem", "Evidence", "/w", fake.run)
+              .pipe(Effect.provide(fake.layer))).ok,
+          ).toBe(false);
+          expect(
+            (yield* forge
+              .commentIssue(PROJECT[name], 1, "Evidence", "/w", fake.run)
+              .pipe(Effect.provide(fake.layer))).ok,
+          ).toBe(false);
+          const broken = fakeForge(name, model(name));
+          const malformed = forgeHttpTest(broken.run, () =>
+            Promise.resolve(new Response("unreadable")),
+          );
+          expect(
+            (yield* forge.issues(PROJECT[name], "/w", broken.run).pipe(Effect.provide(malformed)))
+              .ok,
+          ).toBe(false);
+          expect(
+            (yield* forge
+              .fileIssue(PROJECT[name], "Problem", "Evidence", "/w", broken.run)
+              .pipe(Effect.provide(malformed))).ok,
           ).toBe(false);
         }),
       ));
@@ -167,13 +292,28 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
+    test("reads the login over HTTP from a cold login", () => {
+      const fake = fakeForge(name, model(name));
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* forge.login("/w", fake.run, PROJECT[name])).toBe("me");
+          expect(fake.requests).toHaveLength(1);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
     test("says who its CLI is logged in as, and null where it will not", () =>
       runEffect(
         Effect.gen(function* () {
-          expect(yield* forge.login("/w", fakeForge(name, model(name)).run)).toBe("me");
-          expect(yield* forge.login("/w", fakeForge(name, model(name, { login: null })).run)).toBe(
-            null,
-          );
+          expect(
+            yield* against(name, model(name), (run) => forge.login("/w", run, PROJECT[name])),
+          ).toBe("me");
+          expect(
+            yield* against(name, model(name, { login: null }), (run) =>
+              forge.login("/w", run, PROJECT[name]),
+            ),
+          ).toBe(null);
         }),
       ));
 
@@ -308,25 +448,66 @@ for (const name of ["gitlab", "github"] as const) {
         }),
       ));
 
+    for (const approve of [false, true])
+      test(`posts one review note over HTTP from a cold login, approval ${approve}`, () => {
+        const fake = fakeForge(name, model(name));
+        return runEffect(
+          Effect.gen(function* () {
+            const posted = yield* forge.post(ref(name), "Clean", approve, "/w", fake.run);
+            expect(posted.ok).toBe(true);
+            expect(Object.values(fake.model().notes ?? {})).toEqual([["Clean"]]);
+            expect(fake.model().approved ?? []).toHaveLength(approve ? 1 : 0);
+            expect(fake.requests.filter((one) => one.method === "POST")).toHaveLength(
+              approve ? 2 : 1,
+            );
+            expect(fake.calls).toEqual([...READ_ONCE[name]]);
+          }).pipe(Effect.provide(fake.layer)),
+        );
+      });
+
+    for (const [failure, fault] of [
+      ["5xx", { status: 503 }],
+      ["network", "network"],
+    ] as const)
+      test(`keeps the posted note when approval has a ${failure} failure, without sending it again`, () => {
+        const fake = fakeForge(name, model(name));
+        const layer = forgeHttpTest(fake.run, (url, init) => {
+          if (url.endsWith(name === "github" ? "/reviews" : "/approve"))
+            fake.set({ ...fake.model(), httpFault: fault });
+          return fake.fetch(url, init);
+        });
+        return runEffect(
+          Effect.gen(function* () {
+            const posted = yield* forge.post(ref(name), "Clean", true, "/w", fake.run);
+            expect(posted.ok).toBe(true);
+            expect(posted.message).toContain("and did not approve it");
+            expect(posted.message).toContain("before approving again");
+            expect(Object.values(fake.model().notes ?? {})).toEqual([["Clean"]]);
+            expect(fake.model().approved ?? []).toEqual([]);
+            expect(fake.requests.filter((one) => one.method === "POST")).toHaveLength(2);
+          }).pipe(Effect.provide(layer)),
+        );
+      });
+
     test("posts one note, and approves only where asked, saying what landed", () =>
       runEffect(
         Effect.gen(function* () {
           const fake = fakeForge(name, model(name));
-          const noted = yield* forge.post(ref(name), "LGTM", false, "/w", fake.run);
+          const noted = yield* forge
+            .post(ref(name), "LGTM", false, "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(noted.ok).toBe(true);
           expect(noted.message).not.toContain("approved");
           expect(fake.model().approved ?? []).toEqual([]);
-          const approved = yield* forge.post(ref(name), "Clean", true, "/w", fake.run);
+          const approved = yield* forge
+            .post(ref(name), "Clean", true, "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(approved.message).toContain("and approved it");
           expect(Object.values(fake.model().notes ?? {})).toEqual([["LGTM", "Clean"]]);
           expect(fake.model().approved?.length).toBe(1);
-          const missed = yield* forge.post(
-            { project: PROJECT[name], iid: "99" },
-            "LGTM",
-            false,
-            "/w",
-            fake.run,
-          );
+          const missed = yield* forge
+            .post({ project: PROJECT[name], iid: "99" }, "LGTM", false, "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(missed.ok).toBe(false);
         }),
       ));
@@ -335,12 +516,35 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const fake = fakeForge(name, model(name, { refusesApproval: true }));
-          const posted = yield* forge.post(ref(name), "Clean", true, "/w", fake.run);
+          const posted = yield* forge
+            .post(ref(name), "Clean", true, "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
           expect(posted.ok).toBe(true);
           expect(posted.message).toContain("and did not approve it");
           expect(Object.values(fake.model().notes ?? {})).toEqual([["Clean"]]);
         }),
       ));
+
+    test("lists my merge requests over HTTP from a cold login", () => {
+      const fake = fakeForge(
+        name,
+        model(name, {
+          mrs: [
+            mr(name, { assignees: ["me"], author: "me", title: "Mine" }),
+            mr(name, { iid: "31", author: "ann" }),
+          ],
+        }),
+      );
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* forge.mine(PROJECT[name], "/w", fake.run)).toEqual([
+            { iid: "30", title: "Mine" },
+          ]);
+          expect(fake.requests.length).toBeGreaterThan(1);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
 
     test("lists my open merge requests, as assignee or author, once each", () =>
       runEffect(
@@ -352,7 +556,9 @@ for (const name of ["gitlab", "github"] as const) {
             mr(name, { iid: "34", author: "me", state: "merged" }),
           ];
           expect(
-            yield* forge.mine(PROJECT[name], "/w", fakeForge(name, model(name, { mrs })).run),
+            yield* against(name, model(name, { mrs }), (run) =>
+              forge.mine(PROJECT[name], "/w", run),
+            ),
           ).toEqual([
             { iid: "31", title: "Mine" },
             { iid: "32", title: "Both" },
@@ -763,7 +969,11 @@ test("each fake answers the same on PATH, logs what it got, and keeps what was p
             _tag: "Details",
             head: HEAD,
           });
-          expect((yield* FORGES[name].post(ref(name), "LGTM", false, "/", shell)).ok).toBe(true);
+          expect(
+            (yield* FORGES[name]
+              .post(ref(name), "LGTM", false, "/", shell)
+              .pipe(Effect.provide(forgeHttpOnPath))).ok,
+          ).toBe(true);
           expect(Object.values((yield* onPath.model()).notes ?? {})).toEqual([["LGTM"]]);
           expect((yield* onPath.calls()).length).toBeGreaterThan(0);
           yield* forgeOnPath(bin, name, model(name, { installed: false }));
