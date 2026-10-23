@@ -101,6 +101,7 @@ import { currentPid, signalProcess } from "./lock";
 import { skillDirs, skillFile, type CheckoutKind, type InputStrategy } from "./definitions";
 import { EXCLUSIVE_STRATEGIES } from "./strategies";
 import { appendMetric, noteVerification, metricsOf, readMetrics } from "./metrics";
+import { ForgeHttp, forgeHttpLayer } from "./forge/http";
 import { ciJob } from "./ci-job";
 import { land, LandingSchema, readLanding, takeOver } from "./landing";
 import {
@@ -2809,14 +2810,18 @@ export const hostLayer = (options: {
   readonly issuePrivacyBudget?: Duration.Input;
   /** How often a wait for review reads the merge request again. */
   readonly reviewPoll?: Duration.Input;
-}): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices> =>
+}): Layer.Layer<Host | Notifier | Oversight | Reliance, never, Store | BunServices | ForgeHttp> =>
   Layer.effectContext(
     Effect.gen(function* () {
       const dir = options.dir;
       const fs = yield* FileSystem.FileSystem;
       const store = yield* Store;
       // Captured, so a workflow asks for a verification without asking for a filesystem.
-      type Collecting = FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner;
+      type Collecting =
+        | FileSystem.FileSystem
+        | Path.Path
+        | ChildProcessSpawner.ChildProcessSpawner
+        | ForgeHttp;
       const services = yield* Effect.context<Collecting>();
       const bun = yield* Effect.context<BunServices>();
       const under = <A, E>(effect: Effect.Effect<A, E, Collecting>) =>
@@ -3053,7 +3058,7 @@ export const hostLayer = (options: {
             task: null,
           });
           return { cwd: checkout.cwd, branch: checkout.branch ?? "" };
-        }).pipe(Effect.provideContext(bun));
+        }).pipe(Effect.provideContext(bun), under);
       const issueCheckout = Effect.fn("Host.issueCheckout")(function* (runId: string) {
         const row = yield* store.run(runId);
         if (row === null) return yield* new WorkflowError({ reason: `there is no Run ${runId}` });
@@ -4836,7 +4841,8 @@ export type HostServices =
   | Agents
   | FileSystem.FileSystem
   | Path.Path
-  | ChildProcessSpawner.ChildProcessSpawner;
+  | ChildProcessSpawner.ChildProcessSpawner
+  | ForgeHttp;
 
 /**
  * Which modules a host holds and what it does with them, in front of one state directory.
@@ -5105,12 +5111,14 @@ export const foundationLayer = (options: {
   | WorkflowEngine.WorkflowEngine
   | MessageStorage.MessageStorage
   | SqlClient.SqlClient
-  | Reactivity.Reactivity,
+  | Reactivity.Reactivity
+  | ForgeHttp,
   ConfigError,
   BunServices
 > =>
   hostLayer(options).pipe(
     Layer.provideMerge(storeLayer.pipe(Layer.provideMerge(engineLayer(options)))),
+    Layer.provideMerge(forgeHttpLayer),
   );
 
 const makeRegistry: (
@@ -5310,6 +5318,7 @@ const makeRegistry: (
       run: runShell,
     }).pipe(
       Effect.catchTag("PlatformError", (cause) => Effect.die(cause)),
+      Effect.provideService(ForgeHttp, Context.get(hostServices, ForgeHttp)),
       Effect.provideContext(bun),
     );
   });
