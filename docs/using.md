@@ -2431,6 +2431,15 @@ own comments, bots' and system notes start nothing: to tell the Run something, s
 never resolves a thread; that stays the reviewer's. A check that fails on a pushed head
 goes to a fix round, and four of them in a row park the Run for you to repair and resume.
 
+To have it ask before it shares the merge request with your team, turn on
+`release.share_for_approval` and name your Slack channel in `release.approval_channel`
+under Settings ([Your defaults](#your-defaults)). While the merge request waits on a
+teammate's approval, the Run asks **Post for approval** or **Wait for changes**. Check the
+merge request first: **Post for approval** has its agent post the merge request in that
+channel, linked by its title and nothing else, and the Run's log keeps the message's link
+or why nothing was posted. **Wait for changes** posts nothing and asks again once the head
+moves.
+
 Then it asks **Release** or **Finish**, naming the head and who approved it. **Release**
 claims the repository, merges at exactly that head and tags the package; the Run ends
 only once the tag is on origin and its pipeline has finished and succeeded. **Finish**

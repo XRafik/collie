@@ -8019,6 +8019,25 @@ const agentPush = (
     };
   });
 
+/** Sharing for approval turned on as `collie settings set` writes it, in `channel` unless null. */
+const sharingIn = (channel: string | null) =>
+  FileSystem.FileSystem.pipe(
+    Effect.flatMap((fs) =>
+      fs.writeFileString(
+        `${rig.userDir}/config.json`,
+        asJson({
+          release:
+            channel === null
+              ? { share_for_approval: true }
+              : { share_for_approval: true, approval_channel: channel },
+        }),
+      ),
+    ),
+    Effect.orDie,
+  );
+
+const POSTED = { posted: true, link: "https://example.slack.com/archives/C01/p1700000000000100" };
+
 /** The replies Collie posted on the merge request, in order. */
 const repliesOf = (model: ForgeModel) => Object.values(model.replies ?? {}).flat();
 
@@ -8992,6 +9011,220 @@ for (const name of ["gitlab", "github"] as const) {
           expect(yield* runLog(runId)).toContain(
             `go 1 no longer holds for ${head.slice(0, 8)}: 1 unanswered comment(s)`,
           );
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `release on ${name}: sharing for approval is asked before the wait, posts once on the human's say, and is not asked again`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, changed } = yield* releasable(name, UNAPPROVED[name]);
+          const runId = `r-share-${name}`;
+          yield* sharingIn("#frontend");
+          yield* rig.queueOutputs([PACKAGED, POSTED]);
+          let moved = "";
+          const { status, decisions } = yield* driven(
+            { entry: shipped("release"), runId, input: { mr: target }, host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                const share = yield* goAsked(run.asked, "share-for-approval");
+                expect(share.prompt).toContain(mr);
+                expect(share.prompt).toContain(head.slice(0, 8));
+                expect(share.prompt).toContain("Check it first");
+                expect(share.prompt).toContain("#frontend");
+                expect(optionsOf([share], "share-for-approval")).toEqual([
+                  "Post for approval",
+                  "Wait for changes",
+                ]);
+                yield* run.answer("share-for-approval", "Post for approval");
+                yield* until(
+                  () => runLog(runId),
+                  (log) => log.includes(`shared ${mr}`),
+                );
+                moved = yield* pushedBySomebody(head);
+                yield* changed({ head: moved, ...approvedBy(name, "dave") });
+                const go = yield* goAsked(run.asked, "go-1");
+                expect(go.prompt).toContain(moved.slice(0, 8));
+                yield* run.answer("go-1", "Finish");
+                const status = yield* ended(run.status);
+                return { status, decisions: (yield* run.asked).map((row) => row.decision) };
+              }),
+          );
+          const model = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(decisions.filter((one) => one.startsWith("share"))).toEqual([
+            "share-for-approval",
+          ]);
+          expect(yield* runLog(runId)).toContain(
+            `shared ${mr} in #frontend for approval: ${POSTED.link}`,
+          );
+          expect(yield* clearance(runId, "share")).toBe(
+            `Cleared for this step: posting one Slack message in #frontend: ${mr} linked by its title, and nothing else.`,
+          );
+          const sharing = (yield* asked(runId, "share")).replace(/\s+/g, " ");
+          expect(sharing).toContain("shared for approval in the Slack channel #frontend");
+          expect(sharing).toContain(name === "gitlab" ? "glab mr view" : "gh pr view");
+          expect(repliesOf(model)).toEqual([]);
+          expect(model.merges ?? []).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+}
+
+{
+  const { mr, target } = RELEASING.gitlab;
+  const options = (runId: string) => ({ entry: shipped("release"), runId, input: { mr: target } });
+
+  once(
+    "release on gitlab: Wait for changes shares nothing, is asked again only at a new head, and a teammate's approval goes on to go 1",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, head, changed } = yield* releasable("gitlab", UNAPPROVED.gitlab);
+          const runId = "r-share-wait";
+          yield* sharingIn("#frontend");
+          yield* rig.queueOutputs([PACKAGED]);
+          let moved = "";
+          const { status, decisions } = yield* driven(
+            { ...options(runId), host: releaseHost() },
+            (run) =>
+              Effect.gen(function* () {
+                yield* goAsked(run.asked, "share-for-approval");
+                yield* run.answer("share-for-approval", "Wait for changes");
+                moved = yield* pushedBySomebody(head);
+                yield* changed({ head: moved });
+                const again = yield* goAsked(run.asked, "share-for-approval-2");
+                expect(again.prompt).toContain(moved.slice(0, 8));
+                yield* run.answer("share-for-approval-2", "Wait for changes");
+                yield* until(
+                  () => runLog(runId),
+                  (log) => log.includes(`not shared at ${moved.slice(0, 8)}`),
+                );
+                yield* changed(approvedBy("gitlab", "dave"));
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                const status = yield* ended(run.status);
+                return { status, decisions: (yield* run.asked).map((row) => row.decision) };
+              }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(decisions.filter((one) => one.startsWith("share"))).toEqual([
+            "share-for-approval",
+            "share-for-approval-2",
+          ]);
+          expect(yield* runLog(runId)).toContain(
+            `not shared at ${head.slice(0, 8)}: waiting for ${mr} to change`,
+          );
+          expect((yield* prompts()).filter((one) => one.includes(`/${runId}/share`))).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  once(
+    "release on gitlab: sharing turned on with no channel says so on the Run's log and asks nothing",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, changed } = yield* releasable("gitlab", UNAPPROVED.gitlab);
+          const runId = "r-share-nowhere";
+          yield* sharingIn(null);
+          yield* rig.queueOutputs([PACKAGED]);
+          const decisions = yield* driven({ ...options(runId), host: releaseHost() }, (run) =>
+            Effect.gen(function* () {
+              yield* until(
+                () => awaitingOn(runId),
+                (on) => on.includes("approval"),
+              );
+              yield* changed(approvedBy("gitlab", "dave"));
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Finish");
+              yield* ended(run.status);
+              return (yield* run.asked).map((row) => row.decision);
+            }),
+          );
+          yield* bin.restore();
+          expect(decisions.filter((one) => one.startsWith("share"))).toEqual([]);
+          expect(yield* runLog(runId)).toContain(
+            "release.share_for_approval is on but release.approval_channel names no channel, so nothing is shared for approval",
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  once(
+    "release on gitlab: a share step that fails is recorded, and the release goes on to go 1",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, changed } = yield* releasable("gitlab", UNAPPROVED.gitlab);
+          const runId = "r-share-failed";
+          yield* sharingIn("#frontend");
+          const unusable = { posted: "yes" };
+          yield* rig.queueOutputs([PACKAGED, unusable, unusable]);
+          const status = yield* driven({ ...options(runId), host: releaseHost() }, (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "share-for-approval");
+              yield* run.answer("share-for-approval", "Post for approval");
+              yield* until(
+                () => runLog(runId),
+                (log) => log.includes("did not share"),
+              );
+              yield* changed(approvedBy("gitlab", "dave"));
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(yield* runLog(runId)).toContain(
+            `did not share ${mr} in #frontend: output-unusable`,
+          );
+        }),
+      ),
+    120_000,
+  );
+
+  once(
+    "release on gitlab: a host restarted after sharing was turned off still asks what it asked, and a share that posted nothing says why",
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, changed } = yield* releasable("gitlab", UNAPPROVED.gitlab);
+          const runId = "r-share-replayed";
+          yield* sharingIn("#frontend");
+          yield* rig.queueOutputs([PACKAGED, { posted: false, why: "no Slack tool" }]);
+          yield* driven({ ...options(runId), host: releaseHost() }, (run) =>
+            goAsked(run.asked, "share-for-approval"),
+          );
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.writeFileString(`${rig.userDir}/config.json`, asJson({})).pipe(Effect.orDie);
+          const status = yield* driven(
+            { ...options(runId), host: releaseHost(), restarted: true },
+            (run) =>
+              Effect.gen(function* () {
+                yield* run.answer("share-for-approval", "Post for approval");
+                yield* until(
+                  () => runLog(runId),
+                  (log) => log.includes("did not share"),
+                );
+                yield* changed(approvedBy("gitlab", "dave"));
+                yield* goAsked(run.asked, "go-1");
+                yield* run.answer("go-1", "Finish");
+                return yield* ended(run.status);
+              }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was left open`);
+          expect(yield* runLog(runId)).toContain(`did not share ${mr} in #frontend: no Slack tool`);
         }),
       ),
     120_000,
