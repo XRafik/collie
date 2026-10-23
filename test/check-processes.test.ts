@@ -737,7 +737,7 @@ test.skipIf(process.platform !== "linux")(
               : read;
           },
         };
-        const { notes, checks } = yield* worldWith({}, proc);
+        const { notes, checks } = yield* worldWith({}, { fileSystem: proc });
         yield* runHeld(checks, notes);
         const ones = yield* startedIn(notes);
 
