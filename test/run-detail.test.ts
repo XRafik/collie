@@ -158,17 +158,20 @@ test(
       "collie-detail-mr-",
       (world) =>
         Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const bin = `${world.home}/bin`;
-          yield* fs.makeDirectory(bin, { recursive: true });
-          const view = `{"iid":7,"state":"opened","title":"Cards","web_url":"https://gitlab.example.com/mk/project/-/merge_requests/7"}`;
-          yield* fs.writeFileString(
-            `${bin}/glab`,
-            `#!/bin/sh\n[ "$1" = mr ] && [ "$2" = view ] && echo '${view}'\nexit 0\n`,
-            { mode: 0o755 },
-          );
+          const bin = yield* FakeBin.make(`${world.home}/bin`);
+          const gitlab = yield* forgeOnPath(bin, "gitlab", {
+            installed: true,
+            loggedIn: ["gitlab.example.com"],
+            login: "me",
+            mrs: [
+              { project: "gitlab.example.com/mk/project", iid: "7", state: "open", title: "Cards" },
+            ],
+          });
+          const COLLIE_FORGE_API = yield* serveForges(gitlab);
+          yield* bin.restore();
           const runId = yield* started(world, ["targeted", "--input", `target=${MR}`], {
-            PATH: `${bin}:/usr/bin:/bin`,
+            PATH: `${bin.dir}:/usr/bin:/bin`,
+            COLLIE_FORGE_API,
           });
           const door = yield* frontDoor(socketOf(world.state));
           const detail = yield* door

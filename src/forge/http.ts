@@ -4,7 +4,7 @@
 
 import { Clock, Config, Context, Effect, Layer, Option, Schema, Semaphore } from "effect";
 import { ChildProcessSpawner } from "effect/process";
-import type { FetchLike, ForgeProvider } from "forges";
+import type { FetchLike, ForgeProvider, GitHubProvider } from "forges";
 import type { MrForge } from "../board-model";
 import { shell, type Runner } from "../mr";
 
@@ -30,6 +30,9 @@ export interface ForgeLogin {
   readonly refresh: (run: Runner, cwd: string) => Effect.Effect<boolean>;
 }
 
+/** A host's provider: GitHub's also answers GraphQL. */
+export type Provider = ForgeProvider & Partial<Pick<GitHubProvider, "graphql">>;
+
 /** What a forge answered, or why it could not be asked. */
 export type Answered<A> =
   | { readonly ok: true; readonly value: A }
@@ -45,7 +48,7 @@ export class ForgeHttp extends Context.Service<
     readonly ask: <A>(
       login: ForgeLogin,
       cwd: string,
-      call: (provider: ForgeProvider, signal: AbortSignal) => Promise<A>,
+      call: (provider: Provider, signal: AbortSignal) => Promise<A>,
     ) => Effect.Effect<Answered<A>>;
   }
 >()("collie/ForgeHttp") {}
@@ -79,7 +82,7 @@ interface Sent<A> {
 
 interface Slot {
   readonly lock: Semaphore.Semaphore;
-  provider: Promise<ForgeProvider> | null;
+  provider: Promise<Provider> | null;
   token: string | null;
   expires: number | null;
 }
@@ -142,7 +145,7 @@ const make = (run: Runner, fetch: FetchLike | undefined, base: string | null) =>
     const ask = <A>(
       login: ForgeLogin,
       cwd: string,
-      call: (provider: ForgeProvider, signal: AbortSignal) => Promise<A>,
+      call: (provider: Provider, signal: AbortSignal) => Promise<A>,
     ): Effect.Effect<Answered<A>> =>
       Effect.gen(function* () {
         const slot = slotOf(login.key);
@@ -190,6 +193,33 @@ export const request = (login: ForgeLogin, cwd: string, method: "GET" | "POST", 
     ),
   );
 
+/** Reads `body` as `schema`, or says what was asked was answered in another shape. */
+const decodedAs =
+  <S extends Schema.Decoder<unknown>>(schema: S, login: ForgeLogin, what: string) =>
+  (answer: Answered<unknown>): Answered<S["Type"]> => {
+    if (!answer.ok) return answer;
+    const read = Schema.decodeUnknownOption(schema)(answer.value);
+    return Option.isSome(read)
+      ? { ok: true, value: read.value }
+      : { ok: false, reason: `${login.display} answered ${what} in a shape Collie does not read` };
+  };
+
+/** A GraphQL query's `data`, read as `schema`, or why not. */
+export const graphqlAs = <S extends Schema.Decoder<unknown>>(
+  schema: S,
+  login: ForgeLogin,
+  cwd: string,
+  query: string,
+  variables: Record<string, string | number | null>,
+): Effect.Effect<Answered<S["Type"]>, never, ForgeHttp> =>
+  Effect.flatMap(ForgeHttp, (http) =>
+    http.ask(login, cwd, (provider, signal) =>
+      provider.graphql === undefined
+        ? Promise.reject(new Error(`${login.display} answers no GraphQL`))
+        : provider.graphql<unknown>(query, variables, { signal }),
+    ),
+  ).pipe(Effect.map(decodedAs(schema, login, "a GraphQL query")));
+
 /** A GET of `path`, its body read as `schema`, or why not. */
 export const requestAs = <S extends Schema.Decoder<unknown>>(
   schema: S,
@@ -197,13 +227,27 @@ export const requestAs = <S extends Schema.Decoder<unknown>>(
   cwd: string,
   path: string,
 ): Effect.Effect<Answered<S["Type"]>, never, ForgeHttp> =>
-  Effect.map(request(login, cwd, "GET", path), (answer) => {
-    if (!answer.ok) return answer;
-    const read = Schema.decodeUnknownOption(schema)(answer.value);
-    return Option.isSome(read)
-      ? { ok: true, value: read.value }
-      : { ok: false, reason: `${login.display} answered ${path} in a shape Collie does not read` };
+  Effect.map(request(login, cwd, "GET", path), decodedAs(schema, login, path));
+
+/** Every page of a list at `path`, its items read as `schema`, or why not. */
+export const pagesAs = <S extends Schema.Decoder<unknown>>(
+  item: S,
+  login: ForgeLogin,
+  cwd: string,
+  path: string,
+): Effect.Effect<Answered<Array<S["Type"]>>, never, ForgeHttp> =>
+  Effect.gen(function* () {
+    const items: Array<S["Type"]> = [];
+    const pages = Schema.Array(item);
+    for (let page = 1; ; page++) {
+      const listed = yield* requestAs(pages, login, cwd, `${path}&per_page=${PAGE}&page=${page}`);
+      if (!listed.ok) return listed;
+      items.push(...listed.value);
+      if (listed.value.length < PAGE) return { ok: true, value: items };
+    }
   });
+
+const PAGE = 100;
 
 /**
  * ForgeHttp as Collie runs it: credential reads through the CLIs on PATH, and requests to

@@ -3012,7 +3012,7 @@ export const hostLayer = (options: {
             task: null,
           });
           return { cwd: checkout.cwd, branch: checkout.branch ?? "" };
-        }).pipe(Effect.provideContext(bun));
+        }).pipe(Effect.provideContext(bun), under);
       const issueCheckout = Effect.fn("Host.issueCheckout")(function* (runId: string) {
         const row = yield* store.run(runId);
         if (row === null) return yield* new WorkflowError({ reason: `there is no Run ${runId}` });
@@ -4794,7 +4794,8 @@ export type HostServices =
   | Agents
   | FileSystem.FileSystem
   | Path.Path
-  | ChildProcessSpawner.ChildProcessSpawner;
+  | ChildProcessSpawner.ChildProcessSpawner
+  | ForgeHttp;
 
 /**
  * Which modules a host holds and what it does with them, in front of one state directory.

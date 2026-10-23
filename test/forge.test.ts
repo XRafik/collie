@@ -3,10 +3,11 @@ import { Clock, ConfigProvider, Effect, Fiber, FileSystem, Schema } from "effect
 import { TestClock } from "effect/testing";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
+import type { ForgeHttp } from "../src/forge/http";
 import { rollupChecks } from "../src/forge/github";
 import { gitlab, glabExpiry, pipelineChecks } from "../src/forge/gitlab";
 import type { ReviewRead } from "../src/forge/review";
-import { shell } from "../src/mr";
+import { shell, type Runner } from "../src/mr";
 import { FakeBin } from "./support/bin";
 import { epochMs } from "../src/time";
 import { runEffect } from "./support/effect";
@@ -16,6 +17,7 @@ import {
   PROJECT,
   fakeForge,
   forgeBin,
+  forgeHttpOnPath,
   forgeOnPath,
   rfc822,
   CLI,
@@ -43,6 +45,16 @@ const model = (forge: MrForge, over: Partial<ForgeModel> = {}): ForgeModel => ({
 });
 
 const ref = (forge: MrForge) => ({ project: PROJECT[forge], iid: "30" });
+
+/** `read` against a fake forge answering from `start`, on both its faces. */
+const against = <A>(
+  forge: MrForge,
+  start: ForgeModel,
+  read: (run: Runner) => Effect.Effect<A, never, ForgeHttp>,
+) => {
+  const fake = fakeForge(forge, start);
+  return read(fake.run).pipe(Effect.provide(fake.layer));
+};
 
 for (const name of ["gitlab", "github"] as const) {
   const forge = FORGES[name];
@@ -168,10 +180,8 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const read = (over: Partial<FakeMr>) =>
-            forge.details(
-              ref(name),
-              "/w",
-              fakeForge(name, model(name, { mrs: [mr(name, over)] })).run,
+            against(name, model(name, { mrs: [mr(name, over)] }), (run) =>
+              forge.details(ref(name), "/w", run),
             );
           const open = yield* read({});
           expect(open).toMatchObject({
@@ -203,9 +213,9 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const mergeable = (over: Partial<FakeMr>) =>
-            forge
-              .details(ref(name), "/w", fakeForge(name, model(name, { mrs: [mr(name, over)] })).run)
-              .pipe(Effect.map((panel) => (panel._tag === "Details" ? panel.mergeable : null)));
+            against(name, model(name, { mrs: [mr(name, over)] }), (run) =>
+              forge.details(ref(name), "/w", run),
+            ).pipe(Effect.map((panel) => (panel._tag === "Details" ? panel.mergeable : null)));
           expect(yield* mergeable({})).toEqual({ state: "mergeable", said: "mergeable" });
           expect((yield* mergeable({ mergeable: "conflict" }))?.state).toBe("blocked");
           expect((yield* mergeable({ mergeable: "unapproved" }))?.state).toBe("blocked");
@@ -223,10 +233,8 @@ for (const name of ["gitlab", "github"] as const) {
       runEffect(
         Effect.gen(function* () {
           const read = (over: Partial<FakeMr>) =>
-            forge.details(
-              ref(name),
-              "/w",
-              fakeForge(name, model(name, { mrs: [mr(name, over)] })).run,
+            against(name, model(name, { mrs: [mr(name, over)] }), (run) =>
+              forge.details(ref(name), "/w", run),
             );
           expect(
             yield* read({
@@ -258,10 +266,8 @@ for (const name of ["gitlab", "github"] as const) {
         Effect.gen(function* () {
           for (const fork of [false, true])
             expect(
-              yield* forge.details(
-                ref(name),
-                "/w",
-                fakeForge(name, model(name, { mrs: [mr(name, { fork })] })).run,
+              yield* against(name, model(name, { mrs: [mr(name, { fork })] }), (run) =>
+                forge.details(ref(name), "/w", run),
               ),
             ).toMatchObject({ fork });
         }),
@@ -272,10 +278,8 @@ for (const name of ["gitlab", "github"] as const) {
         Effect.gen(function* () {
           const checksOf = (checks: FakeMr["checks"]) =>
             Effect.map(
-              forge.details(
-                ref(name),
-                "/w",
-                fakeForge(name, model(name, { mrs: [mr(name, { checks })] })).run,
+              against(name, model(name, { mrs: [mr(name, { checks })] }), (run) =>
+                forge.details(ref(name), "/w", run),
               ),
               (panel) => (panel._tag === "Details" ? panel.checks : undefined),
             );
@@ -296,10 +300,8 @@ for (const name of ["gitlab", "github"] as const) {
     test("says why a merge request it cannot read is unavailable", () =>
       runEffect(
         Effect.gen(function* () {
-          const gone = yield* forge.details(
-            { project: PROJECT[name], iid: "99" },
-            "/w",
-            fakeForge(name, model(name)).run,
+          const gone = yield* against(name, model(name), (run) =>
+            forge.details({ project: PROJECT[name], iid: "99" }, "/w", run),
           );
           expect(gone._tag).toBe("Unavailable");
         }),
@@ -749,7 +751,11 @@ test("each fake answers the same on PATH, logs what it got, and keeps what was p
       try {
         for (const name of ["gitlab", "github"] as const) {
           const onPath = yield* forgeOnPath(bin, name, model(name));
-          expect(yield* FORGES[name].details(ref(name), "/", shell)).toMatchObject({
+          expect(
+            yield* FORGES[name]
+              .details(ref(name), "/", shell)
+              .pipe(Effect.provide(forgeHttpOnPath)),
+          ).toMatchObject({
             _tag: "Details",
             head: HEAD,
           });
@@ -853,7 +859,9 @@ for (const name of ["gitlab", "github"] as const) {
       Effect.gen(function* () {
         const open = mr(name, { iid: "31", sourceBranch: "me/x" });
         const ask = (mrs: ReadonlyArray<FakeMr>) =>
-          forge.forBranch(PROJECT[name], "me/x", "/w", fakeForge(name, model(name, { mrs })).run);
+          against(name, model(name, { mrs }), (run) =>
+            forge.forBranch(PROJECT[name], "me/x", "/w", run),
+          );
         expect(yield* ask([mr(name, { sourceBranch: "other" })])).toEqual({ ok: true, open: null });
         expect(yield* ask([open])).toMatchObject({
           ok: true,
@@ -878,11 +886,8 @@ for (const name of ["gitlab", "github"] as const) {
           },
         });
         expect(
-          (yield* forge.forBranch(
-            PROJECT[name],
-            "me/x",
-            "/w",
-            fakeForge(name, model(name, { installed: false })).run,
+          (yield* against(name, model(name, { installed: false }), (run) =>
+            forge.forBranch(PROJECT[name], "me/x", "/w", run),
           )).ok,
         ).toBe(false);
       }),
@@ -927,11 +932,8 @@ for (const name of ["gitlab", "github"] as const) {
           from({ iid: "33", state: "closed", closedAt: "2026-10-15T09:00:00Z" }),
           mr(name, { iid: "34", sourceBranch: "other" }),
         ];
-        const listed = yield* forge.fromBranch(
-          PROJECT[name],
-          "me/x",
-          "/w",
-          fakeForge(name, model(name, { mrs })).run,
+        const listed = yield* against(name, model(name, { mrs }), (run) =>
+          forge.fromBranch(PROJECT[name], "me/x", "/w", run),
         );
         const url = (iid: string) =>
           name === "github"
@@ -965,11 +967,8 @@ for (const name of ["gitlab", "github"] as const) {
         });
         for (const over of [{ installed: false }, { loggedIn: [] }])
           expect(
-            (yield* forge.fromBranch(
-              PROJECT[name],
-              "me/x",
-              "/w",
-              fakeForge(name, model(name, { mrs, ...over })).run,
+            (yield* against(name, model(name, { mrs, ...over }), (run) =>
+              forge.fromBranch(PROJECT[name], "me/x", "/w", run),
             )).ok,
           ).toBe(false);
       }),
@@ -1172,15 +1171,12 @@ test("a GitLab pipeline of an older head is not this head's CI, and one that was
     Effect.gen(function* () {
       const checksOf = (over: Partial<FakeMr>) =>
         Effect.map(
-          gitlab.details(
-            ref("gitlab"),
-            "/w",
-            fakeForge(
-              "gitlab",
-              model("gitlab", {
-                mrs: [mr("gitlab", { checks: [{ name: "test", state: "passed" }], ...over })],
-              }),
-            ).run,
+          against(
+            "gitlab",
+            model("gitlab", {
+              mrs: [mr("gitlab", { checks: [{ name: "test", state: "passed" }], ...over })],
+            }),
+            (run) => gitlab.details(ref("gitlab"), "/w", run),
           ),
           (panel) => (panel._tag === "Details" ? panel.checks : undefined),
         );
@@ -1756,6 +1752,7 @@ for (const name of ["gitlab", "github"] as const) {
       model(name, {
         mrs: [
           mr(name, {
+            sourceBranch: "me/x",
             targetBranch: "main",
             jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "passed" }],
             base: { at: BASE, jobs: [{ name: "nuxi-typecheck", state: "passed" }] },
@@ -1776,6 +1773,18 @@ for (const name of ["gitlab", "github"] as const) {
       Effect.map(forge.retryJob(ref(name), "1", "/w", fake.run), (read) => read.ok),
     runStatus: (fake: Fake) =>
       Effect.map(forge.runStatus(URLS[name].run, "/w", fake.run), (status) => status !== null),
+    details: (fake: Fake) =>
+      Effect.map(forge.details(ref(name), "/w", fake.run), (panel) => panel._tag === "Details"),
+    forBranch: (fake: Fake) =>
+      Effect.map(
+        forge.forBranch(PROJECT[name], "me/x", "/w", fake.run),
+        (found) => found.ok && found.open?.iid === "30",
+      ),
+    fromBranch: (fake: Fake) =>
+      Effect.map(
+        forge.fromBranch(PROJECT[name], "me/x", "/w", fake.run),
+        (listed) => listed.ok && listed.mrs.length === 1,
+      ),
   };
 
   describe(`the ${name} forge over HTTP`, () => {
@@ -1926,6 +1935,155 @@ for (const name of ["gitlab", "github"] as const) {
     });
   });
 }
+
+/** `read` against a fake forge over HTTP, which must run nothing but credential reads. */
+const overHttp = <A>(
+  forge: MrForge,
+  over: Partial<ForgeModel>,
+  read: (fake: ReturnType<typeof fakeForge>) => Effect.Effect<A, never, ForgeHttp>,
+) => {
+  const fake = fakeForge(forge, model(forge, over));
+  return Effect.gen(function* () {
+    const answer = yield* read(fake);
+    expect(fake.requests.length).toBeGreaterThan(0);
+    expect(fake.calls.filter((call) => !CREDENTIAL_READ.test(call))).toEqual([]);
+    return answer;
+  }).pipe(Effect.provide(fake.layer));
+};
+
+describe("GitHub's pull request reads over HTTP", () => {
+  const github = FORGES.github;
+
+  test("a pull request with auto-merge on is found from its branch with auto-merge on", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const found = yield* overHttp(
+          "github",
+          { mrs: [mr("github", { sourceBranch: "me/x", autoMerge: true })] },
+          (fake) => github.forBranch(PROJECT.github, "me/x", "/w", fake.run),
+        );
+        expect(found).toEqual({
+          ok: true,
+          open: { iid: "30", url: "https://github.com/owner/repo/pull/30", autoMerge: true },
+        });
+      }),
+    ));
+
+  test("a draft that changes were requested on reads as a draft with changes requested", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const panel = yield* overHttp(
+          "github",
+          {
+            reviewsRequired: { classic: 1 },
+            mrs: [
+              mr("github", {
+                draft: true,
+                reviews: [
+                  { id: 1, author: "ann", state: "CHANGES_REQUESTED", at: "2026-10-20T12:00:00Z" },
+                ],
+              }),
+            ],
+          },
+          (fake) => github.details(ref("github"), "/w", fake.run),
+        );
+        expect(panel).toMatchObject({ state: "draft", approvals: "changes requested" });
+      }),
+    ));
+
+  test("a merged pull request reads with its merge commit", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const panel = yield* overHttp(
+          "github",
+          {
+            mrs: [
+              mr("github", {
+                state: "merged",
+                mergedSha: MERGED,
+                mergedAt: "2026-10-15T08:00:00Z",
+              }),
+            ],
+          },
+          (fake) => github.details(ref("github"), "/w", fake.run),
+        );
+        expect(panel).toMatchObject({
+          state: "merged",
+          mergedSha: MERGED,
+          mergedAt: "2026-10-15T08:00:00Z",
+        });
+      }),
+    ));
+});
+
+describe("GitLab's merge request reads over HTTP", () => {
+  test("a merge request whose discussions are unresolved reads as unresolved", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const panel = yield* overHttp(
+          "gitlab",
+          {
+            mrs: [
+              mr("gitlab", {
+                comments: [
+                  {
+                    id: 7,
+                    author: "ann",
+                    body: "Rename this",
+                    at: "2026-10-20T12:00:00Z",
+                    thread: "t1",
+                    file: "src/a.ts",
+                    line: 3,
+                  },
+                ],
+              }),
+            ],
+          },
+          (fake) => gitlab.details(ref("gitlab"), "/w", fake.run),
+        );
+        expect(panel).toMatchObject({ _tag: "Details", unresolved: true });
+      }),
+    ));
+
+  test("a branch with more than a page of merge requests has one on the second page found", () =>
+    runEffect(
+      Effect.gen(function* () {
+        const closed = Array.from({ length: 100 }, (_, at) =>
+          mr("gitlab", {
+            iid: String(100 + at),
+            state: "closed",
+            sourceBranch: "me/x",
+            createdAt: "2026-10-01T08:00:00Z",
+            closedAt: "2026-10-01T09:00:00Z",
+          }),
+        );
+        const listed = yield* overHttp(
+          "gitlab",
+          {
+            mrs: [
+              ...closed,
+              mr("gitlab", {
+                iid: "300",
+                state: "merged",
+                sourceBranch: "me/x",
+                createdAt: "2026-10-15T08:00:00Z",
+                mergedAt: "2026-10-15T08:40:00Z",
+              }),
+            ],
+          },
+          (fake) => gitlab.fromBranch(PROJECT.gitlab, "me/x", "/w", fake.run),
+        );
+        expect(listed.ok && listed.mrs.length).toBe(101);
+        expect(listed.ok && listed.mrs.find((one) => one.iid === "300")).toEqual({
+          iid: "300",
+          url: "https://gitlab.example.com/group/app/-/merge_requests/300",
+          state: "merged",
+          created: "2026-10-15T08:00:00Z",
+          ended: "2026-10-15T08:40:00Z",
+        });
+      }),
+    ));
+});
 
 describe("GitLab's OAuth login over HTTP", () => {
   test("glab's stored expiry is read in the zone it names, and one Collie cannot read is none", () => {

@@ -1,11 +1,14 @@
-// Times the forge interface's `job` read over the CLI, as the adapters asked it before
-// ADR-draft-a-forge-is-asked-over-http-with-its-clis-login, and over the `forges` library,
-// as they ask it now, against a live pull request and merge request. Manual, not a test:
+// Times the forge interface's `job` or `details` read over the CLI, as the adapters asked
+// it before ADR-draft-a-forge-is-asked-over-http-with-its-clis-login, and over the `forges`
+// library, as they ask it now, against a live pull request and merge request. Manual, not
+// a test:
 //
 //   bun run tools/forges-benchmark.ts \
 //     --github https://github.com/cego/collie/pull/181 --github-job check \
 //     --gitlab https://gitlab.example.com/group/app/-/merge_requests/7 --gitlab-job test \
-//     [--reads 20]
+//     [--read job|details] [--reads 20]
+//
+// `details` needs no job names.
 //
 // The reads alternate between the transports, so both see the same network. The library's
 // reads share one ForgeHttp, as a host's poll does: its first read pays the credential
@@ -26,10 +29,12 @@ const { values } = parseArgs({
     "github-job": { type: "string" },
     gitlab: { type: "string" },
     "gitlab-job": { type: "string" },
+    read: { type: "string", default: "job" },
     reads: { type: "string", default: "20" },
   },
 });
 const reads = Number(values.reads);
+const reading = values.read === "details" ? "details" : "job";
 
 const run = (cmd: string, args: string[]) => shell(cmd, args, process.cwd());
 const decoded = <S extends Schema.Decoder<unknown>>(schema: S, text: string) =>
@@ -81,6 +86,46 @@ const gitlabCli = Effect.fn("benchmark.gitlabCli")(function* (ref: MrRef, name: 
   }
 });
 
+const GITHUB_FIELDS = [
+  "title",
+  "state",
+  "isDraft",
+  "author",
+  "assignees",
+  "headRefName",
+  "isCrossRepository",
+  "baseRefName",
+  "headRefOid",
+  "mergeCommit",
+  "mergedAt",
+  "statusCheckRollup",
+  "reviewDecision",
+  "comments",
+  "updatedAt",
+  "url",
+  "autoMergeRequest",
+  "mergeable",
+  "mergeStateStatus",
+].join(",");
+
+/** The CLI's `details` before the move: the one `gh pr view` `src/forge/github.ts` ran. */
+const githubDetailsCli = Effect.fn("benchmark.githubDetailsCli")(function* (ref: MrRef) {
+  const repo = ref.project!.slice("github.com/".length);
+  const view = yield* run("gh", ["pr", "view", ref.iid, "--repo", repo, "--json", GITHUB_FIELDS]);
+  if (view.code !== 0) return yield* Effect.die(`gh could not read ${repo}#${ref.iid}`);
+});
+
+/** The CLI's `details` before the move: the commands `src/forge/gitlab.ts` ran. */
+const gitlabDetailsCli = Effect.fn("benchmark.gitlabDetailsCli")(function* (ref: MrRef) {
+  const project = ref.project!;
+  const host = project.split("/")[0]!;
+  yield* run("glab", ["--version"]);
+  if ((yield* run("glab", ["auth", "status", "--hostname", host])).code !== 0)
+    return yield* Effect.die(`glab is not logged in to ${host}`);
+  const view = yield* run("glab", ["mr", "view", ref.iid, "--repo", project, "-F", "json"]);
+  if (view.code !== 0) return yield* Effect.die(`glab could not read ${project}!${ref.iid}`);
+});
+
 /** How long `read` took, in ms. */
 const timed = <R>(read: Effect.Effect<void, never, R>) =>
   Effect.gen(function* () {
@@ -97,28 +142,35 @@ const quantile = (times: ReadonlyArray<number>, q: number) => {
 interface Measured {
   readonly url: string | undefined;
   readonly name: string | undefined;
-  readonly cli: (ref: MrRef, name: string) => Effect.Effect<void, never, BunServices.BunServices>;
+  readonly job: (ref: MrRef, name: string) => Effect.Effect<void, never, BunServices.BunServices>;
+  readonly details: (ref: MrRef) => Effect.Effect<void, never, BunServices.BunServices>;
 }
 
 const forgesProgram = Effect.gen(function* () {
   const rows: string[] = [];
   const medians: { cli: number; library: number }[] = [];
   const measured: Measured[] = [
-    { url: values.github, name: values["github-job"], cli: githubCli },
-    { url: values.gitlab, name: values["gitlab-job"], cli: gitlabCli },
+    { url: values.github, name: values["github-job"], job: githubCli, details: githubDetailsCli },
+    { url: values.gitlab, name: values["gitlab-job"], job: gitlabCli, details: gitlabDetailsCli },
   ];
-  for (const { url, name, cli } of measured) {
-    if (url === undefined || name === undefined) continue;
+  for (const { url, name = "", job, details } of measured) {
+    if (url === undefined || (reading === "job" && name === "")) continue;
     const ref = mrRefOf(url);
     if (ref === null) return yield* Effect.die(`${url} is not a merge request`);
     const forge = forgeOf(ref);
-    const library = Effect.flatMap(forge.job(ref, name, process.cwd(), shell), (read) =>
-      read.ok ? Effect.void : Effect.die(read.reason),
-    );
+    const cli = reading === "job" ? job(ref, name) : details(ref);
+    const library =
+      reading === "job"
+        ? Effect.flatMap(forge.job(ref, name, process.cwd(), shell), (read) =>
+            read.ok ? Effect.void : Effect.die(read.reason),
+          )
+        : Effect.flatMap(forge.details(ref, process.cwd(), shell), (panel) =>
+            panel._tag === "Details" ? Effect.void : Effect.die(panel.reason),
+          );
     const cliTimes: number[] = [];
     const libraryTimes: number[] = [];
     for (let n = 0; n < reads; n++) {
-      cliTimes.push(yield* timed(cli(ref, name)));
+      cliTimes.push(yield* timed(cli));
       libraryTimes.push(yield* timed(library));
     }
     medians.push({ cli: quantile(cliTimes, 0.5), library: quantile(libraryTimes, 0.5) });
@@ -137,7 +189,7 @@ const forgesProgram = Effect.gen(function* () {
       "| --- | --- | --- | --- | --- | --- |",
       ...rows,
       "",
-      `${go ? "Go" : "No-go"}: the library's median \`job\` is ${go ? "no slower than" : "slower than"} the CLI's on ${go ? "every forge measured" : "a forge measured"}.`,
+      `${go ? "Go" : "No-go"}: the library's median \`${reading}\` is ${go ? "no slower than" : "slower than"} the CLI's on ${go ? "every forge measured" : "a forge measured"}.`,
     ].join("\n"),
   );
 });

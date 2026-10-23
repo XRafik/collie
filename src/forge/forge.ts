@@ -170,7 +170,7 @@ export interface Forge {
     ref: MrRef,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<MrPanel, never, R>;
+  ) => Effect.Effect<MrPanel, never, R | ForgeHttp>;
   /** How far a merged commit has been deployed, or null where the forge does not say. */
   readonly liveTier: <R>(
     ref: MrRef,
@@ -191,7 +191,7 @@ export interface Forge {
     branch: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<ForBranch, never, R>;
+  ) => Effect.Effect<ForBranch, never, R | ForgeHttp>;
   /**
    * Whether `branch`, pushed or not, is the default branch or matches any protection rule
    * or ruleset, whatever the rule allows; null where the forge cannot say.
@@ -208,7 +208,7 @@ export interface Forge {
     branch: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<FromBranchList, never, R>;
+  ) => Effect.Effect<FromBranchList, never, R | ForgeHttp>;
   /** The job named `name` in the pipeline on the merge request's head commit. */
   readonly job: <R>(
     ref: MrRef,

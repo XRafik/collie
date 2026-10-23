@@ -13,7 +13,7 @@ import {
   type MrUnavailable,
 } from "../board-model";
 import { epochMs } from "../time";
-import { keepCredentialHelper, whatItSaid, type Runner } from "../mr";
+import { keepCredentialHelper, projectHere, whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type {
   DeployTier,
@@ -29,7 +29,7 @@ import type {
   TagPipelineRead,
   Readiness,
 } from "./forge";
-import { ForgeHttp, request, requestAs, type Answered, type ForgeLogin } from "./http";
+import { ForgeHttp, pagesAs, request, requestAs, type Answered, type ForgeLogin } from "./http";
 import { filedIssueOf, type Issue } from "./issues";
 import { judgeComments, type ForgeComment, type MergeAnswer, type ReviewRead } from "./review";
 
@@ -66,38 +66,45 @@ const optionalStatus = Schema.optionalKey(
   Schema.NullOr(Schema.Struct({ status: optionalText, sha: optionalText })),
 );
 
-const MrDetailsJson = Schema.fromJsonString(
-  Schema.Struct({
-    iid: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
-    title: optionalText,
-    state: optionalText,
-    draft: optionalFlag,
-    work_in_progress: optionalFlag,
-    author: Schema.optionalKey(Schema.NullOr(Schema.Struct({ username: optionalText }))),
-    assignees: Schema.optionalKey(
-      Schema.NullOr(Schema.Array(Schema.Struct({ username: optionalText }))),
-    ),
-    source_branch: optionalText,
-    source_project_id: optionalCount,
-    target_project_id: optionalCount,
-    target_branch: optionalText,
-    sha: optionalText,
-    merge_commit_sha: optionalText,
-    squash_commit_sha: optionalText,
-    merged_at: optionalText,
-    updated_at: optionalText,
-    web_url: optionalText,
-    head_pipeline: optionalStatus,
-    pipeline: optionalStatus,
-    blocking_discussions_resolved: optionalFlag,
-    merge_when_pipeline_succeeds: optionalFlag,
-    user_notes_count: optionalCount,
-    approvals_required: optionalCount,
-    approvals_left: optionalCount,
-    detailed_merge_status: optionalText,
-    merge_status: optionalText,
-  }),
-);
+const MrFields = Schema.Struct({
+  iid: Schema.optionalKey(Schema.NullOr(Schema.Union([Schema.String, Schema.Number]))),
+  title: optionalText,
+  state: optionalText,
+  draft: optionalFlag,
+  work_in_progress: optionalFlag,
+  author: Schema.optionalKey(Schema.NullOr(Schema.Struct({ username: optionalText }))),
+  assignees: Schema.optionalKey(
+    Schema.NullOr(Schema.Array(Schema.Struct({ username: optionalText }))),
+  ),
+  source_branch: optionalText,
+  source_project_id: optionalCount,
+  target_project_id: optionalCount,
+  target_branch: optionalText,
+  sha: optionalText,
+  merge_commit_sha: optionalText,
+  squash_commit_sha: optionalText,
+  merged_at: optionalText,
+  updated_at: optionalText,
+  web_url: optionalText,
+  head_pipeline: optionalStatus,
+  pipeline: optionalStatus,
+  blocking_discussions_resolved: optionalFlag,
+  merge_when_pipeline_succeeds: optionalFlag,
+  user_notes_count: optionalCount,
+  approvals_required: optionalCount,
+  approvals_left: optionalCount,
+  detailed_merge_status: optionalText,
+  merge_status: optionalText,
+});
+
+const Approvals = Schema.Struct({
+  approvals_required: optionalCount,
+  approvals_left: optionalCount,
+  approved_by: Schema.optionalKey(Schema.NullOr(Schema.Array(Schema.Struct({})))),
+});
+const Discussion = Schema.Struct({
+  notes: Schema.Array(Schema.Struct({ resolvable: optionalFlag, resolved: optionalFlag })),
+});
 
 /** What GitLab says while it is still working out whether it can merge. */
 const SETTLING_MERGE = new Set([
@@ -124,9 +131,7 @@ function mergeabilityOf(
 }
 
 /**
- * One merge request, in one `glab mr view` call. `gitlabForProject` first, because "no
- * glab" and "not logged in to that host" are answers a panel can state rather than
- * failures a fetch should discover.
+ * One merge request: the merge request, its approvals and its discussions, asked together.
  *
  * Never called from a render path and never for a list: the app fetches this when a Run
  * with a merge-request target becomes the Selection, and caches it per ref.
@@ -135,31 +140,29 @@ export function mrDetails<R>(
   ref: MrRef,
   cwd: string,
   run: Runner<R>,
-): Effect.Effect<MrPanel, never, R> {
+): Effect.Effect<MrPanel, never, R | ForgeHttp> {
   return Effect.gen(function* () {
-    const ready = yield* gitlabForProject(ref.project, cwd, run);
-    if (!ready.ok) return { _tag: "Unavailable", reason: ready.reason } satisfies MrUnavailable;
-
     const where = whereOf(ref);
-    const view = yield* run(
-      "glab",
-      ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
-      cwd,
+    // A bare `!42` is the checkout's own, as glab read it from the remote.
+    const named = ref.project ?? (yield* projectHere(cwd, run));
+    const reached = projectRest({ ...ref, project: named }, cwd);
+    if (!reached.ok) return { _tag: "Unavailable", reason: reached.reason } satisfies MrUnavailable;
+    const { rest, login, project } = reached;
+    const route = `${project}/merge_requests/${ref.iid}`;
+    const [read, approvals, discussions] = yield* Effect.all(
+      [
+        rest(MrFields, `merge_requests/${ref.iid}`),
+        rest(Approvals, `merge_requests/${ref.iid}/approvals`),
+        pagesAs(Discussion, login, cwd, `${route}/discussions?`),
+      ],
+      { concurrency: "unbounded" },
     );
-    if (view.code !== 0) {
+    if (!read.ok)
       return {
         _tag: "Unavailable",
-        reason: `glab could not read ${where}`,
+        reason: `could not read ${where}: ${read.reason}`,
       } satisfies MrUnavailable;
-    }
-    const decoded = Schema.decodeUnknownOption(MrDetailsJson)(view.stdout);
-    if (Option.isNone(decoded)) {
-      return {
-        _tag: "Unavailable",
-        reason: `what glab said about ${where} is not a merge request`,
-      } satisfies MrUnavailable;
-    }
-    const mr = decoded.value;
+    const mr = read.value;
     const draft = mr.draft === true || mr.work_in_progress === true;
     const pipeline = mr.head_pipeline?.status ?? mr.pipeline?.status ?? "";
     const updated = mr.updated_at ? epochMs(mr.updated_at) : Number.NaN;
@@ -179,8 +182,14 @@ export function mrDetails<R>(
       targetBranch: mr.target_branch ?? "",
       pipeline,
       checks: headChecks(mr.head_pipeline ?? mr.pipeline ?? null, mr.sha ?? ""),
-      approvals: approvalsLine(mr.approvals_required, mr.approvals_left),
-      unresolved: mr.blocking_discussions_resolved === false,
+      approvals: approvals.ok
+        ? approvalsOf(approvals.value)
+        : approvalsLine(mr.approvals_required, mr.approvals_left),
+      unresolved: discussions.ok
+        ? discussions.value.some((one) =>
+            one.notes.some((note) => note.resolvable === true && note.resolved !== true),
+          )
+        : mr.blocking_discussions_resolved === false,
       notes: mr.user_notes_count ?? 0,
       headSha: (mr.sha ?? "").slice(0, 7),
       head: mr.sha ?? "",
@@ -194,6 +203,12 @@ export function mrDetails<R>(
     return mergeable === undefined ? merged : { ...merged, mergeable };
   });
 }
+
+/** A merge request's approvals; one that requires none and has none says nothing. */
+const approvalsOf = (approvals: typeof Approvals.Type) =>
+  approvals.approvals_required === 0 && (approvals.approved_by ?? []).length === 0
+    ? ""
+    : approvalsLine(approvals.approvals_required, approvals.approvals_left);
 
 /**
  * Approvals are not on the merge-request object on every GitLab; where neither field is
@@ -387,39 +402,48 @@ function deployed<R>(
   });
 }
 
-const OpenMrsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      iid: Schema.Union([Schema.String, Schema.Number]),
-      web_url: optionalText,
-      merge_when_pipeline_succeeds: optionalFlag,
-    }),
-  ),
-);
+const BranchMr = Schema.Struct({
+  iid: Schema.Union([Schema.String, Schema.Number]),
+  web_url: optionalText,
+  merge_when_pipeline_succeeds: optionalFlag,
+  state: Schema.String,
+  created_at: Schema.String,
+  merged_at: optionalText,
+  closed_at: optionalText,
+});
 
-/** The open merge request from `branch`, read with `glab mr list`; a failed read is not "none". */
-function forBranch<R>(
+/** The merge requests from `branch` into `project`, `opened` or in any state, every page of them. */
+const mrsFrom = (
+  project: string,
+  branch: string,
+  state: "opened" | "all",
+  cwd: string,
+): Effect.Effect<Answered<Array<typeof BranchMr.Type>>, never, ForgeHttp> => {
+  const reached = projectRest({ project, iid: "" }, cwd);
+  if (!reached.ok) return Effect.succeed({ ok: false, reason: reached.reason });
+  const query = `source_branch=${encodeURIComponent(branch)}&state=${state}`;
+  return Effect.map(
+    pagesAs(BranchMr, reached.login, cwd, `${reached.project}/merge_requests?${query}`),
+    (listed) =>
+      listed.ok
+        ? listed
+        : ({
+            ok: false,
+            reason: `could not list ${project}'s merge requests from ${branch}: ${listed.reason}`,
+          } as const),
+  );
+};
+
+/** The open merge request from `branch`; a failed read is not "none". */
+function forBranch(
   project: string,
   branch: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<ForBranch, never, R> {
-  return Effect.gen(function* () {
-    const listed = yield* run(
-      "glab",
-      ["mr", "list", "--source-branch", branch, ...repoArgs(project), "--output", "json"],
-      cwd,
-    );
-    // An empty answer from a CLI that succeeded is an empty list.
-    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, open: null };
-    const decoded = Schema.decodeUnknownOption(OpenMrsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(decoded))
-      return {
-        ok: false,
-        reason: `glab could not list ${project}'s merge requests from ${branch}`,
-      };
+): Effect.Effect<ForBranch, never, ForgeHttp> {
+  return Effect.map(mrsFrom(project, branch, "opened", cwd), (listed) => {
+    if (!listed.ok) return listed;
     const mr =
-      decoded.value.find((one) => one.merge_when_pipeline_succeeds === true) ?? decoded.value[0];
+      listed.value.find((one) => one.merge_when_pipeline_succeeds === true) ?? listed.value[0];
     if (mr === undefined) return { ok: true, open: null };
     const iid = String(mr.iid);
     return {
@@ -465,42 +489,17 @@ function protects<R>(
   });
 }
 
-const BranchMrsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      iid: Schema.Union([Schema.String, Schema.Number]),
-      web_url: optionalText,
-      state: Schema.String,
-      created_at: Schema.String,
-      merged_at: optionalText,
-      closed_at: optionalText,
-    }),
-  ),
-);
-
-/** Every merge request from `branch`, read with `glab mr list --all`; a failed read is not "none". */
-function fromBranch<R>(
+/** Every merge request from `branch`, whatever its state; a failed read is not "none". */
+function fromBranch(
   project: string,
   branch: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<FromBranchList, never, R> {
-  return Effect.gen(function* () {
-    const listed = yield* run(
-      "glab",
-      ["mr", "list", "--source-branch", branch, "--all", ...repoArgs(project), "--output", "json"],
-      cwd,
-    );
-    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, mrs: [] };
-    const decoded = Schema.decodeUnknownOption(BranchMrsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(decoded))
-      return {
-        ok: false,
-        reason: `glab could not list ${project}'s merge requests from ${branch}`,
-      };
+): Effect.Effect<FromBranchList, never, ForgeHttp> {
+  return Effect.map(mrsFrom(project, branch, "all", cwd), (listed) => {
+    if (!listed.ok) return listed;
     return {
       ok: true,
-      mrs: decoded.value.map((mr): FromBranch => {
+      mrs: listed.value.map((mr): FromBranch => {
         const iid = String(mr.iid);
         return {
           iid,

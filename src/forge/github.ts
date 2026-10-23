@@ -28,7 +28,15 @@ import type {
   TagPipelineRead,
   Readiness,
 } from "./forge";
-import { ForgeHttp, request, requestAs, type Answered, type ForgeLogin } from "./http";
+import {
+  ForgeHttp,
+  graphqlAs,
+  pagesAs,
+  request,
+  requestAs,
+  type Answered,
+  type ForgeLogin,
+} from "./http";
 import { Issue, filedIssueOf } from "./issues";
 import {
   judgeComments,
@@ -85,7 +93,9 @@ const PullJson = Schema.fromJsonString(
 const MERGES = new Set(["CLEAN", "HAS_HOOKS", "UNSTABLE"]);
 
 /** GitHub's own answer to "can this merge now", which carries its branch protection. */
-function mergeabilityOf(pull: Pull): Mergeability | undefined {
+function mergeabilityOf(
+  pull: Pick<Pull, "mergeable" | "mergeStateStatus">,
+): Mergeability | undefined {
   if (pull.mergeable === "CONFLICTING") return { state: "blocked", said: "conflicting" };
   const status = pull.mergeStateStatus;
   if (status === undefined || status === null || status === "") {
@@ -109,7 +119,7 @@ const RED = new Set([
 const GREEN = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 /** A pull request's check rollup: a check run's conclusion, or a status context's state. */
-export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
+export function rollupChecks(rollup: typeof Rollup.Type | null | undefined): ForgeChecks {
   const checks = rollup ?? [];
   if (checks.length === 0) return { state: "none" };
   const verdicts = checks.map((one) => ({
@@ -125,27 +135,82 @@ export function rollupChecks(rollup: Pull["statusCheckRollup"]): ForgeChecks {
   return { state: "passed" };
 }
 
-const FIELDS = [
-  "title",
-  "state",
-  "isDraft",
-  "author",
-  "assignees",
-  "headRefName",
-  "isCrossRepository",
-  "baseRefName",
-  "headRefOid",
-  "mergeCommit",
-  "mergedAt",
-  "statusCheckRollup",
-  "reviewDecision",
-  "comments",
-  "updatedAt",
-  "url",
-  "autoMergeRequest",
-  "mergeable",
-  "mergeStateStatus",
-].join(",");
+const Rollup = Schema.Array(
+  Schema.Struct({
+    name: optionalText,
+    context: optionalText,
+    status: optionalText,
+    conclusion: optionalText,
+    state: optionalText,
+  }),
+);
+
+/** One page of a pull request's panel, as GitHub's GraphQL answers `PANEL`. */
+const PanelData = Schema.Struct({
+  repository: Schema.NullOr(
+    Schema.Struct({
+      pullRequest: Schema.NullOr(
+        Schema.Struct({
+          title: optionalText,
+          state: Schema.String,
+          isDraft: optionalFlag,
+          author: Schema.optionalKey(Schema.NullOr(Login)),
+          assignees: Schema.optionalKey(
+            Schema.NullOr(Schema.Struct({ nodes: Schema.Array(Login) })),
+          ),
+          headRefName: optionalText,
+          isCrossRepository: optionalFlag,
+          baseRefName: optionalText,
+          headRefOid: optionalText,
+          mergeCommit: Schema.optionalKey(Schema.NullOr(Schema.Struct({ oid: Schema.String }))),
+          mergedAt: optionalText,
+          reviewDecision: optionalText,
+          comments: Schema.optionalKey(Schema.NullOr(Schema.Struct({ totalCount: Schema.Number }))),
+          updatedAt: optionalText,
+          url: optionalText,
+          autoMergeRequest: Schema.optionalKey(Schema.NullOr(Schema.Struct({}))),
+          mergeable: optionalText,
+          mergeStateStatus: optionalText,
+          commits: Schema.Struct({
+            nodes: Schema.Array(
+              Schema.Struct({
+                commit: Schema.Struct({
+                  statusCheckRollup: Schema.NullOr(
+                    Schema.Struct({
+                      contexts: Schema.Struct({
+                        nodes: Rollup,
+                        pageInfo: Schema.Struct({
+                          hasNextPage: Schema.Boolean,
+                          endCursor: optionalText,
+                        }),
+                      }),
+                    }),
+                  ),
+                }),
+              }),
+            ),
+          }),
+        }),
+      ),
+    }),
+  ),
+});
+
+/** Every field `gh pr view --json` read for the panel, the head's checks a page at a time. */
+const PANEL = `query($owner: String!, $name: String!, $number: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      title state isDraft author { login } assignees(first: 100) { nodes { login } }
+      headRefName isCrossRepository baseRefName headRefOid mergeCommit { oid } mergedAt
+      reviewDecision comments { totalCount } updatedAt url autoMergeRequest { enabledAt }
+      mergeable mergeStateStatus
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100, after: $after) {
+        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
+        pageInfo { hasNextPage endCursor }
+      } } } } }
+    }
+  }
+}`;
 
 /** GitHub's review decision, phrased as a GitLab panel phrases its approvals. */
 const APPROVALS = new Map([
@@ -154,21 +219,50 @@ const APPROVALS = new Map([
   ["REVIEW_REQUIRED", "review required"],
 ]);
 
-/** One pull request, in one `gh pr view` call. */
-function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPanel, never, R> {
-  return Effect.gen(function* () {
-    const where = mrWords(ref).label;
-    const view = yield* run(
-      "gh",
-      ["pr", "view", ref.iid, "--repo", mrPath(ref), "--json", FIELDS],
-      cwd,
-    );
-    if (view.code !== 0) return { _tag: "Unavailable", reason: `gh could not read ${where}` };
-    const decoded = Schema.decodeUnknownOption(PullJson)(view.stdout);
-    if (Option.isNone(decoded))
-      return { _tag: "Unavailable", reason: `what gh said about ${where} is not a pull request` };
-    const pull = decoded.value;
-    const checks = rollupChecks(pull.statusCheckRollup);
+/** One page of `ref`'s panel, its checks from `after`. */
+const panelPage = (ref: MrRef, cwd: string, after: string | null) => {
+  const [owner = "", name = ""] = mrPath(ref).split("/");
+  return graphqlAs(PanelData, LOGIN, cwd, PANEL, { owner, name, number: Number(ref.iid), after });
+};
+
+type PanelPull = NonNullable<NonNullable<typeof PanelData.Type.repository>["pullRequest"]>;
+type PanelContexts = NonNullable<
+  PanelPull["commits"]["nodes"][number]["commit"]["statusCheckRollup"]
+>["contexts"];
+
+/** The pull request, with every page of its head's checks. */
+const panelOf = (
+  ref: MrRef,
+  cwd: string,
+): Effect.Effect<Answered<{ pull: PanelPull; rollup: typeof Rollup.Type }>, never, ForgeHttp> =>
+  Effect.gen(function* () {
+    const rollup: Array<(typeof Rollup.Type)[number]> = [];
+    let after: string | null = null;
+    for (;;) {
+      const page: Answered<typeof PanelData.Type> = yield* panelPage(ref, cwd, after);
+      if (!page.ok) return page;
+      const pull: PanelPull | null | undefined = page.value.repository?.pullRequest;
+      if (pull === undefined || pull === null)
+        return { ok: false, reason: "GitHub has no such pull request" };
+      const contexts: PanelContexts | undefined =
+        pull.commits.nodes[0]?.commit.statusCheckRollup?.contexts;
+      rollup.push(...(contexts?.nodes ?? []));
+      if (contexts?.pageInfo.hasNextPage !== true || !contexts.pageInfo.endCursor)
+        return { ok: true, value: { pull, rollup } };
+      after = contexts.pageInfo.endCursor;
+    }
+  });
+
+/** One pull request, in one GraphQL query, and one more per further page of its checks. */
+function details(ref: MrRef, cwd: string): Effect.Effect<MrPanel, never, ForgeHttp> {
+  return Effect.map(panelOf(ref, cwd), (read) => {
+    if (!read.ok)
+      return {
+        _tag: "Unavailable",
+        reason: `could not read ${mrWords(ref).label}: ${read.reason}`,
+      };
+    const { pull, rollup } = read.value;
+    const checks = rollupChecks(rollup);
     const head = pull.headRefOid ?? "";
     const updated = pull.updatedAt ? epochMs(pull.updatedAt) : Number.NaN;
     const mergeable = mergeabilityOf(pull);
@@ -179,7 +273,9 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       title: pull.title ?? "",
       state: pull.isDraft === true && pull.state === "OPEN" ? "draft" : pull.state.toLowerCase(),
       author: pull.author?.login ?? "",
-      assignees: (pull.assignees ?? []).map((one) => one.login ?? "").filter((name) => name !== ""),
+      assignees: (pull.assignees?.nodes ?? [])
+        .map((one) => one.login ?? "")
+        .filter((login) => login !== ""),
       sourceBranch: pull.headRefName ?? "",
       fork: pull.isCrossRepository === true,
       targetBranch: pull.baseRefName ?? "",
@@ -187,7 +283,7 @@ function details<R>(ref: MrRef, cwd: string, run: Runner<R>): Effect.Effect<MrPa
       checks,
       approvals: APPROVALS.get(pull.reviewDecision ?? "") ?? "",
       unresolved: false,
-      notes: pull.comments?.length ?? 0,
+      notes: pull.comments?.totalCount ?? 0,
       headSha: head.slice(0, 7),
       head,
       mergedSha: pull.mergeCommit?.oid ?? "",
@@ -239,15 +335,31 @@ function login<R>(cwd: string, run: Runner<R>): Effect.Effect<string | null, nev
   });
 }
 
-const OpenPullsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      number: Schema.Number,
-      url: optionalText,
-      autoMergeRequest: Schema.optionalKey(Schema.NullOr(Schema.Unknown)),
-    }),
-  ),
-);
+const BranchPull = Schema.Struct({
+  number: Schema.Number,
+  html_url: optionalText,
+  state: Schema.String,
+  created_at: Schema.String,
+  merged_at: optionalText,
+  closed_at: optionalText,
+  auto_merge: Schema.optionalKey(Schema.NullOr(Schema.Struct({}))),
+});
+
+/** The pull requests from `branch` of the repository's own, in `state`, every page of them. */
+const pullsFrom = (project: string, branch: string, state: "open" | "all", cwd: string) => {
+  const repo = mrPath({ project, iid: "" });
+  const head = encodeURIComponent(`${repo.split("/")[0]}:${branch}`);
+  return Effect.map(
+    pagesAs(BranchPull, LOGIN, cwd, `repos/${repo}/pulls?head=${head}&state=${state}`),
+    (listed) =>
+      listed.ok
+        ? listed
+        : ({
+            ok: false,
+            reason: `could not list ${repo}'s pull requests from ${branch}: ${listed.reason}`,
+          } as const),
+  );
+};
 
 const DefaultBranchJson = Schema.fromJsonString(Schema.Struct({ default_branch: Schema.String }));
 const RulesJson = Schema.fromJsonString(Schema.Array(Schema.Unknown));
@@ -305,103 +417,47 @@ function protects<R>(
   });
 }
 
-/** The open pull request from `branch`, read with `gh pr list`; a failed read is not "none". */
-function forBranch<R>(
+/** The open pull request from `branch`; a failed read is not "none". */
+function forBranch(
   project: string,
   branch: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<ForBranch, never, R> {
-  return Effect.gen(function* () {
-    const repo = mrPath({ project, iid: "" });
-    const listed = yield* run(
-      "gh",
-      [
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--head",
-        branch,
-        "--state",
-        "open",
-        "--json",
-        "number,url,autoMergeRequest",
-      ],
-      cwd,
-    );
-    // An empty answer from a CLI that succeeded is an empty list.
-    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, open: null };
-    const decoded = Schema.decodeUnknownOption(OpenPullsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(decoded))
-      return { ok: false, reason: `gh could not list ${repo}'s pull requests from ${branch}` };
-    const pull = decoded.value.find((one) => one.autoMergeRequest != null) ?? decoded.value[0];
+): Effect.Effect<ForBranch, never, ForgeHttp> {
+  return Effect.map(pullsFrom(project, branch, "open", cwd), (listed) => {
+    if (!listed.ok) return listed;
+    const pull = listed.value.find((one) => one.auto_merge != null) ?? listed.value[0];
     if (pull === undefined) return { ok: true, open: null };
     const iid = String(pull.number);
     return {
       ok: true,
       open: {
         iid,
-        url: pull.url ?? `https://${project}/pull/${iid}`,
-        autoMerge: pull.autoMergeRequest != null,
+        url: pull.html_url ?? `https://${project}/pull/${iid}`,
+        autoMerge: pull.auto_merge != null,
       },
     };
   });
 }
 
-const BranchPullsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      number: Schema.Number,
-      url: optionalText,
-      state: Schema.String,
-      createdAt: Schema.String,
-      mergedAt: optionalText,
-      closedAt: optionalText,
-    }),
-  ),
-);
-
-/** Every pull request from `branch`, read with `gh pr list --state all`; a failed read is not "none". */
-function fromBranch<R>(
+/** Every pull request from `branch`, whatever its state; a failed read is not "none". */
+function fromBranch(
   project: string,
   branch: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<FromBranchList, never, R> {
-  return Effect.gen(function* () {
-    const repo = mrPath({ project, iid: "" });
-    const listed = yield* run(
-      "gh",
-      [
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--head",
-        branch,
-        "--state",
-        "all",
-        "--json",
-        "number,url,state,createdAt,mergedAt,closedAt",
-      ],
-      cwd,
-    );
-    if (listed.code === 0 && listed.stdout.trim() === "") return { ok: true, mrs: [] };
-    const decoded = Schema.decodeUnknownOption(BranchPullsJson)(listed.stdout);
-    if (listed.code !== 0 || Option.isNone(decoded))
-      return { ok: false, reason: `gh could not list ${repo}'s pull requests from ${branch}` };
+): Effect.Effect<FromBranchList, never, ForgeHttp> {
+  return Effect.map(pullsFrom(project, branch, "all", cwd), (listed) => {
+    if (!listed.ok) return listed;
     return {
       ok: true,
-      mrs: decoded.value.map((pull): FromBranch => {
+      mrs: listed.value.map((pull): FromBranch => {
         const iid = String(pull.number);
         return {
           iid,
-          url: pull.url ?? `https://${project}/pull/${iid}`,
-          state: pull.state === "MERGED" ? "merged" : pull.state === "OPEN" ? "open" : "closed",
-          created: pull.createdAt,
+          url: pull.html_url ?? `https://${project}/pull/${iid}`,
+          state: pull.merged_at ? "merged" : pull.state === "open" ? "open" : "closed",
+          created: pull.created_at,
           // A merged pull request is closed too; when it merged is when it ended.
-          ended: pull.mergedAt ?? pull.closedAt ?? null,
+          ended: pull.merged_at ?? pull.closed_at ?? null,
         };
       }),
     };

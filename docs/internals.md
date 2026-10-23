@@ -780,14 +780,23 @@ its state and address, a job waiting to be started by hand as `manual`: GitLab's
 job, or a GitHub job waiting on its environment's approval.
 An operation is added to the interface when its first caller moves onto it.
 
-### The CI job reads over HTTP
+### The reads that go over HTTP
 
-The reads a check left to CI is proved by — `job`, `baseJob`, `retryJob` and `runStatus`
-— go to the forge in-process through the [`forges`](https://forges.link) library, pinned
-to one exact version, rather than through `gh` or `glab`
-([ADR-draft-a-forge-is-asked-over-http-with-its-clis-login](adr/draft-a-forge-is-asked-over-http-with-its-clis-login.md)).
-Each sends the REST requests its CLI sent, a merge request's head included. Every other
-operation still runs the CLI. Only `src/forge/` imports `forges`, and
+These reads go to the forge in-process through the [`forges`](https://forges.link) library,
+pinned to one exact version, rather than through `gh` or `glab`
+([ADR-draft-a-forge-is-asked-over-http-with-its-clis-login](adr/draft-a-forge-is-asked-over-http-with-its-clis-login.md)):
+
+- The CI job reads a check left to CI is proved by: `job`, `baseJob`, `retryJob` and
+  `runStatus`. Each sends the REST requests its CLI sent, a merge request's head included.
+- The merge request reads: `details`, the panel, and `forBranch` and `fromBranch`, a
+  branch's merge requests. GitHub's `details` is one GraphQL query for every field `gh pr
+  view --json` asked for, its check contexts paged; GitLab's reads the merge request, its
+  `/approvals` and its `/discussions` together, and says it has unresolved threads when a
+  resolvable note is unresolved. A branch's merge requests are the REST list filtered by
+  source branch (GitHub's `head=<owner>:<branch>`, so a fork's same-named branch is not
+  one), read page by page until a short page.
+
+Every other operation still runs the CLI. Only `src/forge/` imports `forges`, and
 `test/forge-boundary.test.ts` fails on an import anywhere else.
 
 **ForgeHttp** (`src/forge/http.ts`) is the Effect service that sends them. It keeps a
@@ -824,8 +833,11 @@ Runner face (argv), the FakeBin face (an executable on `PATH`) and the **HTTP fa
 every request. In-process tests give `fakeForge(...).layer`, ForgeHttp over the HTTP face
 and the Runner face, to the operation. A spawned host's credential reads go to FakeBin, and
 `COLLIE_FORGE_API`, read only by ForgeHttp, points every forge host at the HTTP face
-`serveForges` serves on loopback. `tools/forges-benchmark.ts` times `job` over the CLI and
-over the library against a live pull request and merge request.
+`serveForges` serves on loopback. A test that runs a merge request read through the CLI's
+`PATH`, rather than a model, gives it `forgeHttpOnPath` (ForgeHttp over whatever `glab` or
+`gh` is on `PATH`, answering each request as `<cli> api <route>`), or runs it with
+`runOnPath`. `tools/forges-benchmark.ts` times `job` or `details` over the CLI and over the
+library against a live pull request and merge request.
 
 A checkout Collie clones keeps a credential helper for its forge's host in its own git
 config, and no token: GitLab's asks `glab config get token --host <host>` at each use and

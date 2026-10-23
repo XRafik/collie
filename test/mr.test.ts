@@ -2,7 +2,14 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Effect, FileSystem } from "effect";
 import { runEffect } from "./support/effect";
 import { forgeOfHost } from "../src/forge/forge";
-import { fakeForge, CLI, FORGE_HOST, PROJECT, type ForgeModel } from "./support/forge";
+import {
+  fakeForge,
+  forgeHttpOver,
+  CLI,
+  FORGE_HOST,
+  PROJECT,
+  type ForgeModel,
+} from "./support/forge";
 import {
   autoMergingHere,
   forgeHere,
@@ -158,8 +165,12 @@ for (const name of ["gitlab", "github"] as const) {
     mrs: [{ project: PROJECT[name], iid: "30", state: "closed" }],
     ...over,
   });
-  const prepare = (model: ForgeModel, assignees = {}) =>
-    prepareMergeRequest({ cwd: rig.projectDir, assignees }, fakeForge(name, model).run);
+  const prepare = (model: ForgeModel, assignees = {}) => {
+    const fake = fakeForge(name, model);
+    return prepareMergeRequest({ cwd: rig.projectDir, assignees }, fake.run).pipe(
+      Effect.provide(fake.layer),
+    );
+  };
 
   test(`a merge request from a ${name} checkout is that forge's, with its login, template and commands`, () =>
     runEffect(
@@ -364,24 +375,26 @@ function recorder(table: Record<string, { code?: number; stdout?: string }>) {
   return { run, calls };
 }
 
-const READY = {
-  "glab --version": { stdout: "glab 1.40" },
-  "glab auth status --hostname gitlab.example.com": { stdout: "logged in" },
-};
+/** glab logged in to gitlab.example.com, as ForgeHttp reads its token. */
+const READY = { "glab config get token --host gitlab.example.com": { stdout: "glpat-test\n" } };
 
-test("a merge request answers the whole panel in one view call", () =>
+/** The request for merge request `iid` of g/p, as `glab api` is asked it. */
+const viewOf = (iid: string, host = "gitlab.example.com") =>
+  `glab api --hostname ${host} -X GET projects/g%2Fp/merge_requests/${iid}`;
+
+/** `mrDetails`, its requests answered as the recorded glab answers their routes. */
+const detailsOver = (ref: { project: string; iid: string }, glab: ReturnType<typeof recorder>) =>
+  mrDetails(ref, "/w/p", glab.run).pipe(Effect.provide(forgeHttpOver(glab.run)));
+
+test("a merge request answers the whole panel from one read of it", () =>
   runEffect(
     Effect.gen(function* () {
       const glab = recorder({
         ...READY,
-        "glab mr view 42 --repo gitlab.example.com/g/p -F json": { stdout: MR_JSON },
+        [viewOf("42")]: { stdout: MR_JSON },
       });
 
-      const details = yield* mrDetails(
-        { project: "gitlab.example.com/g/p", iid: "42" },
-        "/w/p",
-        glab.run,
-      );
+      const details = yield* detailsOver({ project: "gitlab.example.com/g/p", iid: "42" }, glab);
 
       expect(details._tag).toBe("Details");
       if (details._tag !== "Details") return;
@@ -400,53 +413,36 @@ test("a merge request answers the whole panel in one view call", () =>
       expect(details.updatedAt).toBe(epochMs("2026-09-02T11:00:00.000Z"));
       expect(details.url).toBe("https://gitlab.example.com/g/p/-/merge_requests/42");
 
-      // One call for the panel; the readiness probes are what precede it.
-      expect(glab.calls.filter((c) => c[1] === "mr")).toHaveLength(1);
+      // One read of the merge request itself; its approvals and discussions are others.
+      expect(glab.calls.filter((c) => c.join(" ") === viewOf("42"))).toHaveLength(1);
     }),
   ));
 
-test("no glab, no login and a dead merge request each come back as one stated line", () =>
+test("no login and a dead merge request each come back as one stated line", () =>
   runEffect(
     Effect.gen(function* () {
       const ref = { project: "gitlab.example.com/g/p", iid: "42" };
 
-      const noGlab = yield* mrDetails(ref, "/w/p", recorder({}).run);
-      expect(noGlab).toEqual({ _tag: "Unavailable", reason: "glab is not installed" });
-
-      const loggedOut = yield* mrDetails(
-        ref,
-        "/w/p",
-        recorder({ "glab --version": { stdout: "glab 1.40" } }).run,
-      );
-      expect(loggedOut).toEqual({
+      // No glab and a glab logged out alike hold no token for the host.
+      expect(yield* detailsOver(ref, recorder({}))).toEqual({
         _tag: "Unavailable",
-        reason: "glab is not logged in to gitlab.example.com",
+        reason:
+          "could not read gitlab.example.com/g/p!42: glab is not logged in to gitlab.example.com",
       });
 
-      // Ready, but glab cannot answer about this merge request.
-      const gone = yield* mrDetails(
-        ref,
-        "/w/p",
-        recorder({ ...READY, "glab mr view 42 --repo gitlab.example.com/g/p -F json": { code: 1 } })
-          .run,
-      );
-      expect(gone).toEqual({
+      // Logged in, but GitLab cannot answer about this merge request.
+      expect(yield* detailsOver(ref, recorder({ ...READY, [viewOf("42")]: { code: 1 } }))).toEqual({
         _tag: "Unavailable",
-        reason: "glab could not read gitlab.example.com/g/p!42",
+        reason: "could not read gitlab.example.com/g/p!42: GitLab answered 404: 404",
       });
 
-      // Ready and answering, with something that is not a merge request.
-      const nonsense = yield* mrDetails(
-        ref,
-        "/w/p",
-        recorder({
-          ...READY,
-          "glab mr view 42 --repo gitlab.example.com/g/p -F json": { stdout: "<html>login</html>" },
-        }).run,
-      );
-      expect(nonsense).toEqual({
+      // Answering, with something that is not a merge request.
+      expect(
+        yield* detailsOver(ref, recorder({ ...READY, [viewOf("42")]: { stdout: "[]" } })),
+      ).toEqual({
         _tag: "Unavailable",
-        reason: `what glab said about gitlab.example.com/g/p!42 is not a merge request`,
+        reason:
+          "could not read gitlab.example.com/g/p!42: GitLab answered projects/g%2Fp/merge_requests/42 in a shape Collie does not read",
       });
     }),
   ));
@@ -456,13 +452,9 @@ test("a merge request that has not moved since a review says so, and one that ha
     Effect.gen(function* () {
       const glab = recorder({
         ...READY,
-        "glab mr view 42 --repo gitlab.example.com/g/p -F json": { stdout: MR_JSON },
+        [viewOf("42")]: { stdout: MR_JSON },
       });
-      const details = yield* mrDetails(
-        { project: "gitlab.example.com/g/p", iid: "42" },
-        "/w/p",
-        glab.run,
-      );
+      const details = yield* detailsOver({ project: "gitlab.example.com/g/p", iid: "42" }, glab);
       if (details._tag !== "Details") throw new Error("expected details");
 
       // The review finished after the last change: nothing has moved, stop looking.
@@ -490,14 +482,10 @@ test("a real merge request decodes, nulls and absent approvals and all", () =>
       const real = yield* fs.readFileString("test/support/mr-view.json");
       const glab = recorder({
         ...READY,
-        "glab mr view 17 --repo gitlab.example.com/g/p -F json": { stdout: real },
+        [viewOf("17")]: { stdout: real },
       });
 
-      const details = yield* mrDetails(
-        { project: "gitlab.example.com/g/p", iid: "17" },
-        "/w/p",
-        glab.run,
-      );
+      const details = yield* detailsOver({ project: "gitlab.example.com/g/p", iid: "17" }, glab);
 
       expect(details._tag).toBe("Details");
       if (details._tag !== "Details") return;
@@ -520,16 +508,12 @@ test("a required-but-unknown approval count says what is required, not that none
     Effect.gen(function* () {
       const glab = recorder({
         ...READY,
-        "glab mr view 8 --repo gitlab.example.com/g/p -F json": {
+        [viewOf("8")]: {
           stdout: `{ "iid": 8, "approvals_required": 2 }`,
         },
       });
 
-      const details = yield* mrDetails(
-        { project: "gitlab.example.com/g/p", iid: "8" },
-        "/w/p",
-        glab.run,
-      );
+      const details = yield* detailsOver({ project: "gitlab.example.com/g/p", iid: "8" }, glab);
 
       if (details._tag !== "Details") throw new Error("expected details");
       // How many are left is what this GitLab did not answer; "2 of 2 still needed"
@@ -543,14 +527,10 @@ test("a null where a value could have been is the same as no value", () =>
     Effect.gen(function* () {
       const glab = recorder({
         ...READY,
-        "glab mr view 9 --repo gitlab.example.com/g/p -F json": { stdout: ALL_NULL },
+        [viewOf("9")]: { stdout: ALL_NULL },
       });
 
-      const details = yield* mrDetails(
-        { project: "gitlab.example.com/g/p", iid: "9" },
-        "/w/p",
-        glab.run,
-      );
+      const details = yield* detailsOver({ project: "gitlab.example.com/g/p", iid: "9" }, glab);
 
       // Every one of them nulled: the panel renders a merge request it knows little
       // about rather than refusing to render one at all.
@@ -616,7 +596,7 @@ for (const name of ["gitlab", "github"] as const) {
         const posted = yield* postNote(
           { target, cwd: "/w", body: "LGTM", approve: true },
           fake.run,
-        );
+        ).pipe(Effect.provide(fake.layer));
         expect(posted).toEqual({
           ok: false,
           message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
@@ -633,19 +613,22 @@ test("posting checks the login on the target's GitLab host", () =>
       const glab = recorder({
         "glab --version": { stdout: "glab" },
         "glab auth status --hostname gitlab.other.com": { stdout: "logged in" },
+        "glab config get token --host gitlab.other.com": { stdout: "glpat-other\n" },
         "glab api user": { stdout: '{"username":"local-me"}' },
         "glab api user --hostname gitlab.other.com": { stdout: '{"username":"other-me"}' },
-        "glab mr view 42 --repo gitlab.other.com/g/p -F json": {
+        [viewOf("42", "gitlab.other.com")]: {
           stdout: '{"state":"opened","assignees":[{"username":"other-me"}]}',
         },
         "glab mr": { stdout: "" },
       });
-      expect(yield* postNote({ target, cwd: "/w", body: "LGTM", approve: true }, glab.run)).toEqual(
-        {
-          ok: false,
-          message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
-        },
-      );
+      expect(
+        yield* postNote({ target, cwd: "/w", body: "LGTM", approve: true }, glab.run).pipe(
+          Effect.provide(forgeHttpOver(glab.run)),
+        ),
+      ).toEqual({
+        ok: false,
+        message: `${target} is assigned to you, so its findings are yours to fix rather than to post`,
+      });
       expect(glab.calls.some((call) => call[2] === "note" || call[2] === "approve")).toBe(false);
     }),
   ));
@@ -661,12 +644,15 @@ test("a legacy bare merge request never becomes a GitHub pull request", () =>
         mrs: [{ project: "github.com/owner/repo", iid: "42", state: "open" }],
       });
       const reason = "mr:42 is a GitLab target, but this checkout is on GitHub";
-      expect(yield* postNote({ target: "mr:42", cwd: "/w", body: "LGTM" }, fake.run)).toEqual({
-        ok: false,
-        message: reason,
-      });
       expect(
-        yield* prepareMergeRequest({ target: "mr:42", cwd: rig.projectDir }, fake.run),
+        yield* postNote({ target: "mr:42", cwd: "/w", body: "LGTM" }, fake.run).pipe(
+          Effect.provide(fake.layer),
+        ),
+      ).toEqual({ ok: false, message: reason });
+      expect(
+        yield* prepareMergeRequest({ target: "mr:42", cwd: rig.projectDir }, fake.run).pipe(
+          Effect.provide(fake.layer),
+        ),
       ).toMatchObject({ ok: false, reason });
       expect(fake.model().notes ?? {}).toEqual({});
     }),
@@ -683,7 +669,9 @@ test("a bare !42 is posted on the Flock's GitLab even where its name does not sa
         mrs: [{ project: "code.example.com/group/app", iid: "42", state: "open" }],
       });
       const post = (options: { readonly gitlabHost?: string }) =>
-        postNote({ target: "mr:42", cwd: "/w", body: "LGTM", ...options }, fake.run);
+        postNote({ target: "mr:42", cwd: "/w", body: "LGTM", ...options }, fake.run).pipe(
+          Effect.provide(fake.layer),
+        );
       expect((yield* post({})).message).toBe("code.example.com is neither GitHub nor GitLab");
       expect((yield* post({ gitlabHost: "code.example.com" })).ok).toBe(true);
     }),
@@ -692,22 +680,21 @@ test("a bare !42 is posted on the Flock's GitLab even where its name does not sa
 test("whether a branch's merge request merges itself is unknown, not no, where its forge cannot say", () =>
   runEffect(
     Effect.gen(function* () {
-      const asked = (listed: { code?: number; stdout?: string }) =>
-        Effect.result(
-          autoMergingHere(
-            "/w",
-            runner({
-              "git remote get-url origin": { stdout: "git@gitlab.example.com:group/app.git\n" },
-              "git rev-parse --abbrev-ref HEAD": { stdout: "feature\n" },
-              "glab mr": listed,
-            }),
-          ),
-        );
+      const asked = (listed: { code?: number; stdout?: string }) => {
+        const run = runner({
+          "git remote get-url origin": { stdout: "git@gitlab.example.com:group/app.git\n" },
+          "git rev-parse --abbrev-ref HEAD": { stdout: "feature\n" },
+          "glab config": { stdout: "glpat-test\n" },
+          "glab api": listed,
+        });
+        return Effect.result(autoMergingHere("/w", run)).pipe(Effect.provide(forgeHttpOver(run)));
+      };
       const merging = yield* asked({
-        stdout: '[{"iid":3,"web_url":"https://u/3","merge_when_pipeline_succeeds":true}]',
+        stdout:
+          '[{"iid":3,"web_url":"https://u/3","merge_when_pipeline_succeeds":true,"state":"opened","created_at":"2026-10-20T12:00:00Z"}]',
       });
       expect(merging).toMatchObject({ _tag: "Success", success: "https://u/3" });
-      expect(yield* asked({ stdout: "" })).toMatchObject({ _tag: "Success", success: null });
+      expect(yield* asked({ stdout: "[]" })).toMatchObject({ _tag: "Success", success: null });
       const unread = yield* asked({ code: 1 });
       expect(unread._tag).toBe("Failure");
       expect(unread._tag === "Failure" ? unread.failure : "").toContain(
