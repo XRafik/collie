@@ -178,13 +178,11 @@ const dropped = (event: DragEvent) => {
 /** The files a message part is, where it is one. */
 const attachedOf = (part: { readonly type: string }) => Option.getOrNull(attachedIn(part));
 
-/** Makes that conversation current, or a fresh one, saying why where it was refused. */
 const reopened = async (conversation: Parameters<typeof reopen>[0]) => {
   const refused = await reopen(conversation);
   if (refused !== null) toast.add({ title: refused, color: "error" });
 };
 
-/** An earlier conversation shows its harness beside its date. */
 type EarlierItem = DropdownMenuItem & { readonly harness: string; readonly slot: "earlier" };
 const earlier = ref<Array<Array<EarlierItem | DropdownMenuItem>>>([]);
 const listEarlier = async (open: boolean) => {
