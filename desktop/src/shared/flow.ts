@@ -120,6 +120,7 @@ export type FlowEntry = {
   readonly title: string;
   readonly nodes: ReadonlyArray<FlowRun>;
   readonly folded: boolean;
+  readonly wave?: number;
 };
 export const inspectorOf = (flow: Flow, selection: FlowSelection, now: number) => {
   const parent = nodeAt(flow, selection);
@@ -145,11 +146,21 @@ export const inspectorOf = (flow: Flow, selection: FlowSelection, now: number) =
       lines.push(
         `Answered ${question.answered}${question.by === null ? "" : ` by ${question.by}`}`,
       );
-  const first = all.findIndex((one) => one.state !== "done");
-  const count = first === -1 ? all.length : first;
-  const entries: FlowEntry[] = [];
-  if (count > 1) entries.push({ title: `${count} done`, nodes: all.slice(0, count), folded: true });
-  for (const one of all.slice(count > 1 ? count : 0))
+  const waves = [
+    ...new Set(all.flatMap((one) => (one.wave === undefined ? [] : [one.wave]))),
+  ].toSorted((one, other) => one - other);
+  const entries: FlowEntry[] = waves.map((wave) => ({
+    title: `Wave ${wave}`,
+    nodes: all.filter((one) => one.wave === wave),
+    folded: false,
+    wave,
+  }));
+  const ungrouped = all.filter((one) => one.wave === undefined);
+  const first = ungrouped.findIndex((one) => one.state !== "done");
+  const count = first === -1 ? ungrouped.length : first;
+  if (count > 1)
+    entries.push({ title: `${count} done`, nodes: ungrouped.slice(0, count), folded: true });
+  for (const one of ungrouped.slice(count > 1 ? count : 0))
     entries.push({ title: one.title, nodes: [one], folded: false });
   return {
     title: node.title,

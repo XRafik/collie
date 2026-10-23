@@ -131,6 +131,63 @@ test("the inspector folds completed Slices and scopes its header to a picked Sli
   expect(picked.lines).toContain("4 min so far");
 });
 
+test.each(["done", "expected"] as const)(
+  "the inspector groups Repo runs by Wave when the last repository is %s",
+  (state) => {
+    const repos = flowNode("repos", {
+      kind: "workflow",
+      runs: [
+        flowNode("r-a", {
+          title: "a",
+          kind: "link",
+          wave: 1,
+          state: "done",
+          link: { run: "r-a", machine: "laptop", state: "done", said: "!12 merged" },
+        }),
+        flowNode("r-b", {
+          title: "b",
+          kind: "link",
+          wave: 1,
+          state: "done",
+          link: { run: "r-b", machine: "laptop", state: "done", said: null },
+        }),
+        flowNode("repo:c", {
+          title: "c",
+          kind: "link",
+          wave: 2,
+          state,
+          link: { run: null, machine: null, state, said: null },
+        }),
+      ],
+    });
+    const flow = mainFlow([repos]);
+    const selection = { run: "build-run", node: "repos", item: null };
+    const entries = inspectorOf(flow, selection, 0)!.entries;
+    expect(
+      entries.map((entry) => ({
+        title: entry.title,
+        wave: entry.wave,
+        folded: entry.folded,
+        repos: entry.nodes.map((node) => [node.title, node.link?.run]),
+      })),
+    ).toEqual([
+      {
+        title: "Wave 1",
+        wave: 1,
+        folded: false,
+        repos: [
+          ["a", "r-a"],
+          ["b", "r-b"],
+        ],
+      },
+      { title: "Wave 2", wave: 2, folded: false, repos: [["c", null]] },
+    ]);
+    expect(
+      selectEntry(flow, selection, "r-b", [{ key: "local:b", machine: "laptop", runs: ["r-b"] }]),
+    ).toEqual({ kind: "open", card: "local:b", run: "r-b" });
+  },
+);
+
 test("picking an inspector entry scopes a Slice or opens its linked Task", () => {
   const selection = { run: "build-run", node: "build", item: null };
   expect(selectEntry(mainFlow(), selection, "build@04", [])).toMatchObject({

@@ -1096,7 +1096,8 @@ separate. Press the strip to open the Task's record on **Flow**. Older hosts sho
 
 The record opens on **Flow**, with one row per Run, oldest first, then Release. Select
 a Step to inspect its description, agent and model, times, attempts, Slices, rounds
-and Repo runs below the map. A completed prefix folds into a counted entry that can
+and Repo runs below the map. Repo runs stay grouped under their Wave headings.
+A completed prefix of Slices or rounds folds into a counted entry that can
 be expanded. **Open in** follows the selected Step's work to Plan, Review, Evidence,
 the merge request, Terminal or Log. Selecting an earlier Run keeps the same Task's
 map in view; the header names that Run and links back to the leading one.

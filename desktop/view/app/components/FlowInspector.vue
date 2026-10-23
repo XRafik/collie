@@ -62,7 +62,12 @@ const labels = {
         <component
           :is="entry.folded ? 'details' : 'div'"
           :open="entry.nodes.some((node) => node.id === selected.item)"
+          :role="entry.wave === undefined ? undefined : 'group'"
+          :aria-label="entry.wave === undefined ? undefined : entry.title"
         >
+          <h4 v-if="entry.wave !== undefined" class="mt-2 mb-1 text-xs font-semibold text-muted">
+            {{ entry.title }}
+          </h4>
           <summary v-if="entry.folded" class="cursor-pointer text-sm text-muted">
             {{ entry.title }}
           </summary>
