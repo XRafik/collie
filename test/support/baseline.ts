@@ -5616,8 +5616,10 @@ scenario(
         yield* approve(runId, ["unit", "lint"]);
         const fs = yield* FileSystem.FileSystem;
         const tool = `${rig.root}/tools/unit`;
+        const unitRuns = `${rig.root}/v2/unit-runs`;
         yield* fs.makeDirectory(`${rig.root}/tools`, { recursive: true });
-        yield* fs.writeFileString(tool, `#!/bin/sh\necho >> ${rig.root}/unit-runs\n`);
+        yield* fs.makeDirectory(`${rig.root}/v2`);
+        yield* fs.writeFileString(tool, `#!/bin/sh\necho >> ${unitRuns}\n`);
         yield* fs.chmod(tool, 0o755);
         yield* fs.writeFileString(
           `${evidenceDir(dir, runId)}/approved.json`,
@@ -5627,7 +5629,7 @@ scenario(
             counting(
               "lint",
               `${rig.root}/lint-runs`,
-              `grep -q v2 ${tool} || echo '# v2' >> ${tool}`,
+              `grep -Fqx '# v2' ${tool} || echo '# v2' >> ${tool}`,
             ),
           ]),
         );
@@ -5641,7 +5643,7 @@ scenario(
         yield* bin.restore();
 
         expect(said(result)).toBe(OPENED.mr_url);
-        expect(yield* runsOf(`${rig.root}/unit-runs`)).toBe(2);
+        expect(yield* runsOf(unitRuns)).toBe(2);
         expect(yield* runsOf(`${rig.root}/lint-runs`)).toBe(1);
       }),
     ),
