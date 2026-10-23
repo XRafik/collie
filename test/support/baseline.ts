@@ -113,6 +113,7 @@ let dir: string;
 let started: ChildAsk[] = [];
 /** The invocations whose child ends in failure. */
 let failing = new Set<string>();
+let childWaits = new Map<string, Deferred.Deferred<void>>();
 let renamed = false;
 
 /** The public id a shipped workflow is run under in this pass. */
@@ -166,9 +167,13 @@ const children = Layer.succeed(Children)(
         };
       }),
     result: (child) =>
-      failing.has(child.invocation)
-        ? Effect.fail(new WorkflowError({ reason: `${child.invocation} failed` }))
-        : Effect.succeed("done"),
+      Effect.gen(function* () {
+        const wait = childWaits.get(child.invocation);
+        if (wait !== undefined) yield* Deferred.await(wait);
+        if (failing.has(child.invocation))
+          return yield* Effect.fail(new WorkflowError({ reason: `${child.invocation} failed` }));
+        return "done";
+      }),
   }),
 );
 
@@ -1894,6 +1899,40 @@ scenario(
   120_000,
 );
 
+scenario("implement offers Stage as a follow-up on a succeeded Run with its merge request", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const declared = yield* loadEntry(shipped("implement")).pipe(
+        Effect.map((described) => declaredByModule(described.metadata)),
+        Effect.orDie,
+      );
+      const facts: ActionFacts = {
+        outcome: "feature",
+        succeeded: true,
+        branch: "feature",
+        mrUrl: OPENED.mr_url,
+        planIssues: 0,
+        disposed: false,
+        openFindings: 0,
+        diffTarget: null,
+        claim: null,
+      };
+      const offered = offersFrom(declared, facts, { self: idOf("implement") });
+      expect(offered.map((offer) => [offer.id, offer.title, offer.workflow])).toContainEqual([
+        "stage",
+        "Stage",
+        "stage",
+      ]);
+      const stage = offered.find((offer) => offer.id === "stage")!;
+      expect(inputsFor(stage, { runDir: "/r", facts, input: {} })).toEqual({ mr: OPENED.mr_url });
+      for (const over of [{ succeeded: false }, { mrUrl: null }, { disposed: true }])
+        expect(offersFrom(declared, { ...facts, ...over }).map((offer) => offer.id)).not.toContain(
+          "stage",
+        );
+    }),
+  ),
+);
+
 scenario("what a finished Run of each shipped module offers is the module's own declaration", () =>
   runEffect(
     Effect.gen(function* () {
@@ -1942,12 +1981,12 @@ scenario("what a finished Run of each shipped module offers is the module's own 
       expect(
         offersFrom(implement, facts({ succeeded: false, branch: "feature" })).map((o) => o.id),
       ).toEqual(["follow-up"]);
-      // A merge request still open is released later; a merged one, or none, is not.
       const mrUrl = "https://gitlab.example.com/group/project/-/merge_requests/7";
       const delivered = facts({ outcome: "feature", branch: "feature", mrUrl });
       const offered = offersFrom(implement, delivered, { self: idOf("implement") });
       expect(offered.map((o) => [o.id, o.title, o.workflow])).toEqual([
         ["release", "Release", "release"],
+        ["stage", "Stage", "stage"],
         ["follow-up", "Keep going on this", idOf("implement")],
       ]);
       expect(inputsFor(offered[0]!, { runDir: "/r", facts: delivered, input: {} })).toEqual({
@@ -3500,7 +3539,7 @@ scenario(
       Effect.gen(function* () {
         const runId = "r-impl-next";
         const { bin, plan, rows } = yield* deliveredAsking(runId);
-        expect(optionsOf(rows, "next")).toEqual(["Release", "Finish"]);
+        expect(optionsOf(rows, "next")).toEqual(["Release", "Stage", "Finish"]);
         expect(rows.find((row) => row.decision === "next")?.prompt).toContain(OPENED.mr_url);
 
         const result = yield* answered({
@@ -3514,6 +3553,104 @@ scenario(
 
         expect(said(result)).toBe(OPENED.mr_url);
         expect(started).toEqual([]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "implement offers Stage beside Release, waits for each Stage child in its checkout, then asks again until Finish",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-stage";
+        const { bin, plan } = yield* delivering(runId);
+        const staged = yield* Deferred.make<void>();
+        childWaits.set("stage-1", staged);
+        const status = yield* driven(
+          { entry: shipped("implement"), runId, input: { plan } },
+          (run) =>
+            Effect.gen(function* () {
+              const next = yield* goAsked(run.asked, "next");
+              expect(optionsOf([next], "next")).toEqual(["Release", "Stage", "Finish"]);
+              yield* run.answer("next", "Stage");
+              yield* until(
+                () => Effect.sync(() => started),
+                (now) => now.some((child) => child.invocation === "stage-1"),
+              );
+              expect((yield* run.asked).map((row) => row.decision)).not.toContain("next-2");
+              yield* Deferred.succeed(staged, undefined);
+              const again = yield* goAsked(run.asked, "next-2");
+              expect(optionsOf([again], "next-2")).toEqual(["Release", "Stage", "Finish"]);
+              yield* run.answer("next-2", "Stage");
+              const third = yield* goAsked(run.asked, "next-3");
+              expect(optionsOf([third], "next-3")).toEqual(["Release", "Stage", "Finish"]);
+              yield* run.answer("next-3", "Finish");
+              return yield* ended(run.status);
+            }),
+        );
+        yield* bin.restore();
+
+        expect(status.status).toBe("complete");
+        expect(outcomeText(status)).toBe(OPENED.mr_url);
+        expect(new Set(started.map((child) => child.invocation))).toEqual(
+          new Set(["stage-1", "stage-2"]),
+        );
+        expect(started).toContainEqual({
+          invocation: "stage-1",
+          workflow: "stage",
+          input: { mr: OPENED.mr_url },
+        });
+        expect(started).toContainEqual({
+          invocation: "stage-2",
+          workflow: "stage",
+          input: { mr: OPENED.mr_url },
+        });
+        const log = yield* runLog(runId);
+        expect(log).toContain("stage-1: done");
+        expect(log).toContain("stage-2: done");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "implement offers Stage again after a Stage child fails, records its reason and can Release from the next question",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const runId = "r-impl-stage-fails";
+        const { bin, plan } = yield* delivering(runId);
+        failing = new Set(["stage-1"]);
+        const status = yield* driven(
+          { entry: shipped("implement"), runId, input: { plan } },
+          (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "next");
+              yield* run.answer("next", "Stage");
+              const resumed = yield* until(
+                () => Effect.all({ status: run.status, rows: run.asked }),
+                (now) =>
+                  now.status.status === "failed" ||
+                  now.rows.some((row) => row.decision === "next-2" && row.answer === null),
+              );
+              expect(resumed.status.status).not.toBe("failed");
+              expect(optionsOf(resumed.rows, "next-2")).toEqual(["Release", "Stage", "Finish"]);
+              yield* run.answer("next-2", "Release");
+              return yield* ended(run.status);
+            }),
+        );
+        yield* bin.restore();
+
+        expect(status.status).toBe("complete");
+        expect(outcomeText(status)).toBe(`${OPENED.mr_url}; done`);
+        expect(started).toContainEqual({
+          invocation: "stage-1",
+          workflow: "stage",
+          input: { mr: OPENED.mr_url },
+        });
+        expect(yield* runLog(runId)).toContain("stage-1: stage-1 failed");
+        expect(started).toContainEqual(RELEASE_STARTED);
       }),
     ),
   120_000,
@@ -11629,6 +11766,7 @@ export const register = (pass: "shipped" | "unrelated") => {
         dir = `${rig.root}/host`;
         started = [];
         failing = new Set();
+        childWaits = new Map();
         yield* fs.makeDirectory(dir, { recursive: true });
         yield* fs.makeDirectory(rig.projectDir, { recursive: true });
         // The skills the shipped personas and steps name, installed where this machine

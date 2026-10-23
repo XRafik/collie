@@ -2339,9 +2339,16 @@ to the branch is proved again before anything is asked.
 An `implement` Run starts one for you. Once its merge request is open, it asks **What
 next?**: answer **Release** from the card's answer menu, Desktop, chat or `collie run answer
 <run> Release --decision next`, and the release runs as its child, in its checkout and held
-to its Checks, or **Finish** to end there. To release it later, a succeeded implement Run
-whose merge request is still open offers **Release** in the card's Actions, through
-`collie run action`, and in chat: "release it" takes that offer.
+to its Checks. **Stage** starts a Stage Run of the unmerged merge request as its child, in
+the same checkout, and waits for testing to end. The Stage child's result or failure reason
+is recorded, then **What next?** is asked again with **Release**, **Stage** and **Finish**,
+as `next-2`, `next-3`, and so on. A failed Stage child still returns to that question.
+**Finish** ends with the merge request URL. `then=finish` and `then=release` ask nothing;
+`then` has no `stage` value, so an unattended Run never holds stage for testing.
+
+A succeeded implement Run whose merge request is still open offers **Release** and
+**Stage** in the card's Actions, through `collie run action`, and in chat, so it can be
+released or staged later: "release it" or "stage it" takes that offer.
 
 A reviewer's comment is taken up as it comes: the Run's agent fixes what holds and
 pushes, or disputes it, and Collie replies on the forge with the commit or the reason. An

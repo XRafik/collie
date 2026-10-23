@@ -135,20 +135,26 @@ lists each with its command ([ADR-0055](adr/0055-a-run-never-asks-to-run-its-che
 
 **Ends:** with the merge request, then a question where `then` is empty. Once the merge
 request is open and its checks left to CI are settled, the Run asks **What next?**, named
-`next`, naming the merge request, with two answers:
+`next`, naming the merge request, with three answers:
 
 - **Release** starts a [`release`](#release) Run of the merge request as this Run's child,
   in this Run's own checkout and held to its Checks, and waits for it. The Run ends with
   `<merge request URL>; <the release's result>`, and a release that fails fails this Run
   with its reason. While the release waits on the review and the go, which can take days,
   this Run and its implementer stay live and idle.
+- **Stage** starts a [`stage`](#stage) Run of the merge request as this Run's child, in
+  this Run's checkout, and waits for it. Its result or failure reason is recorded, then
+  **What next?** is asked again as `next-2`, `next-3`, and so on, with the same three
+  answers. Each Stage child is named `stage-<n>`. A failed Stage child leaves the implement
+  Run asking what next; **Release** and **Finish** still end it as above and below.
 - **Finish** ends the Run with the merge request URL.
 
 `then=finish` ends at the merge request and `then=release` starts the release, without
 asking. A merge request set to merge itself once green is not asked about: the Run ends at
-it. A succeeded Run with a merge request also offers **Release** on its card, through
-`collie run action` and in chat, so it can be released later; once its merge request has
-merged, or anybody recorded what became of the work, it is not offered.
+it. `then` has no `stage` value: an unattended Run never starts a Stage child.
+A succeeded Run with a merge request also offers **Release** and **Stage** on its card,
+through `collie run action` and in chat, so it can be released or staged later; once its
+merge request has merged, or anybody recorded what became of the work, neither is offered.
 
 It fails with the reason there is no merge request — a ticket stopped
 on a blocking finding, acceptance criteria still unmet or unreadable, a review that halted — and says to
@@ -784,10 +790,13 @@ Every other shipped step clears nothing.
 - `self-improve` → `plan` with `then=implement`, once per Improvement, each its own card.
 - `implement` → `release`, on its merge request, from **Release** at its end, `then=release`,
   or the **Release** offer on a succeeded Run's card.
+- `implement` → `stage`, on its merge request, from **Stage** at its end or the **Stage**
+  offer on a succeeded Run's card. A Stage child returns to **What next?** however it ended.
 
 A chained run is a child of the one that started it, its input decoded against the child's
-own schema before it is admitted. It has a card of its own, the parent waits for it and
-ends with its result, and stopping the parent reaches it.
+own schema before it is admitted. It has a card of its own, the parent waits for it, and
+stopping the parent reaches it. The parent's Workflow decides whether to end with the
+child's result or ask what next again.
 
 ## `investigate`
 
