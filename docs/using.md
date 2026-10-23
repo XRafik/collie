@@ -2504,6 +2504,14 @@ naming where this installation keeps its application logs, for a stage deploy th
 be debugged. Leave any of them out and the workflow asks, or works from what the pipeline
 itself can tell it.
 
+`release.share_for_approval` ("Ask before sharing a merge request for approval", off until
+set) and `release.approval_channel` ("Slack channel for approval requests", such as
+`#frontend`) are under Settings' Runs, and nest in config.json as
+`"release": {"share_for_approval": true, "approval_channel": "#frontend"}`. Turned on with a
+channel, a release Run waiting on a teammate's approval asks you whether to post its merge
+request there ([Releasing a merge request](#releasing-a-merge-request)); turned on with no
+channel, it says so on its log and shares nothing.
+
 `chat_harness` is which native chat the Home opens with, `claude` or `pi`. It is
 independent of `harness`, which is what runs your work, and it is a preference for the
 **next** launch rather than a switch: see
