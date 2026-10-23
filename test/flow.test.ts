@@ -123,6 +123,60 @@ const nodeOf = (flow: Flow, id: string): FlowNode | undefined =>
 const statesOf = (flow: Flow) =>
   laneOf(flow).nodes.map((node) => ({ id: node.id, state: node.state }));
 
+test.each(["working", "blocked"])(
+  "RunDetail and run show offer Watch and Tell for a live %s agent",
+  (status) =>
+    flowing(
+      "collie-flow-live-",
+      (world) =>
+        Effect.gen(function* () {
+          const started = yield* collie(
+            world,
+            [
+              "run",
+              "start",
+              "stepped",
+              "--input",
+              "mode=declared",
+              "--input",
+              `gates=${gatesOf(world)}`,
+            ],
+            { FAKE_HERDR_OUTPUTS: outputsOf(world), FAKE_HERDR_AGENT_STATUS: status },
+          );
+          const { runId } = yield* Schema.decodeUnknownEffect(RunId)(started.envelope.data);
+          const flow = yield* until_(world, runId, (one) => nodeOf(one, "build")?.agent != null);
+          const build = nodeOf(flow, "build")!;
+          expect(build).toMatchObject({
+            primary: "terminal",
+            actions: expect.arrayContaining(["tell"]),
+          });
+          expect(build.wait).toBe(status === "blocked" ? "stalled" : null);
+          const shown = yield* cli(world, ["run", "show", runId]);
+          expect(shown.envelope.data).toMatchObject({
+            flow: {
+              lanes: [
+                {
+                  nodes: [
+                    expect.objectContaining({
+                      id: "build",
+                      agent: build.agent,
+                      primary: "terminal",
+                      actions: expect.arrayContaining(["tell"]),
+                      wait: status === "blocked" ? "stalled" : null,
+                    }),
+                    expect.anything(),
+                    expect.anything(),
+                  ],
+                },
+              ],
+            },
+          });
+        }),
+      0,
+    ),
+  120_000,
+);
+
 test(
   "a declared path is drawn in order: done with its agent, needs you, then expected",
   () =>

@@ -769,6 +769,8 @@ const handlers = (
                 {
                   env,
                   runs: all.map((one) => factsOfView(env.stateDir, one)),
+                  alive: (yield* liveHerds(new Herdr(env), env).pipe(Effect.flatMap(agentsIn)))
+                    .alive,
                   offers: (id) =>
                     registry.offers(id).pipe(
                       Effect.provideContext(hosted),
@@ -2635,6 +2637,7 @@ const frontDoorHandlers = (
               {
                 env,
                 runs,
+                alive: (yield* liveHerds(herdr, env).pipe(Effect.flatMap(agentsIn))).alive,
                 offers: (id) =>
                   registry.offers(id).pipe(
                     Effect.provideContext(hosted),
