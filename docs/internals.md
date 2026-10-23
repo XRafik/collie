@@ -694,7 +694,7 @@ after that, with the pointer already typed into a pane that was not yet its prom
 first prompt to a newly started agent waits for the harness's own sign, through the
 controls Collie installed (`ready` on its port in `compactors.ts`): Claude's first
 status-line call and Pi's `session_start` sample, both in the agent's control directory;
-the thread Codex's TUI binds on its App Server as it starts; OpenCode's TUI, which is its
+Codex's App Server accepting a connection; OpenCode's TUI, which is its
 own server, answering for the session Collie made. An agent launched without controls —
 compaction off, or a harness Collie has no port for — has no such sign, and herdr's word
 is all there is. The wait is two minutes past herdr's own; running out parks the step,
@@ -966,7 +966,14 @@ start time (`/proc/<pid>/stat`, or `ps -o lstart=`) and command, and by its thre
 in the agent's directory; notes its running turns and its session (or, without `/proc`,
 its descendants); sends it one SIGTERM, which drains it; sends `turn/interrupt` for each
 turn; waits for it to exit; and gives each noted process of its session still running one
-SIGTERM. Nothing gets a second signal: the record keeps what was signalled and what was
+SIGTERM. A thread no user message has materialized has no in-progress turn: its turns are
+read as none only when `thread/read` reports it `idle` with no turns and
+`thread/turns/list` refuses it with JSON-RPC `-32600` and Codex's "not materialized yet"
+text, after its directory has been checked. Codex has also refused such a thread with
+`-32601`, "list_turns is not supported yet", while `thread/read` reported it paginated: its
+turns are read as none only when `thread/read` reports it `idle` with no turns,
+history mode `paginated` and an empty preview, after the same check. Any other refusal, or
+either one on a thread that fails its conditions, fails the stop before any signal is sent. Nothing gets a second signal: the record keeps what was signalled and what was
 noted of the server's session, and a later stop of the same record interrupts again and
 signals only what it has not, proving survivors from that note after the server has gone.
 Every sweep stops a kept record again. The record is removed only once the agent is
