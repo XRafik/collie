@@ -11,7 +11,7 @@ import type { Settled } from "./strategies";
 import type { WorktreeRecord } from "./run";
 import type { Landing } from "./landing";
 import { awaitingLine, type Awaiting } from "./awaiting";
-import type { AskedFact, Execution } from "./flow";
+import type { AskedFact, Execution, UsageWait } from "./flow";
 
 /** Where a Run is, in the words every board and listing uses. */
 export type RunState = "running" | "waiting" | "succeeded" | "failed" | "stopped";
@@ -63,6 +63,8 @@ export interface RunFacts {
   readonly parked: string | null;
   /** What it waits for that ends without anyone repairing anything, or null. */
   readonly awaiting: Awaiting | null;
+  /** The Subscription its work waits on to reset, where it waits on one. */
+  readonly usage?: UsageWait | null;
   /** Whether the engine could not be asked about it, so nothing drives it. */
   readonly undriven: boolean;
   /** Why it is not moving or why it ended, in its own words, where it said. */
@@ -141,6 +143,7 @@ export const factsOfView = (stateDir: string, view: RunView): RunFacts => ({
   repo: view.options.repo ?? null,
   parked: view.parked,
   awaiting: view.awaiting,
+  usage: view.usage ?? null,
   undriven: view.diagnostic !== null,
   note:
     view.parked ??

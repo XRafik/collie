@@ -26,14 +26,21 @@ import { NO_OUTCOME, type RunRow } from "./workspace";
 import { latest, readDispositions } from "./disposition";
 import { readLaunches, runAgents } from "./launches";
 import { metricsOf, readMetrics } from "./metrics";
-import type { Disposition, MrPanel, Panel, PlanPanel, PlanTicket, RunDetail } from "./board-model";
+import type {
+  Disposition,
+  Flow,
+  MrPanel,
+  Panel,
+  PlanPanel,
+  PlanTicket,
+  RunDetail,
+} from "./board-model";
 import { newest, readCards, readCheckpoints } from "./cards";
 import { diffOf, PLAN_DIR, planDirOf } from "./run-detail";
 import { orderedTickets, REPO_LINE } from "./plan";
 import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
-import { flowFor } from "./flow-read";
 
 /** Long enough to answer "what did I do here", short enough to stay one read. */
 const HISTORY = 200;
@@ -446,6 +453,8 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
    * Run still going is never cached: it may be writing that plan as we read it.
    */
   plans?: PlanCache;
+  /** Its Task's Flow, as the board builds it. */
+  flow?: Flow | null;
 }) {
   const path = yield* Path.Path;
   const run =
@@ -538,7 +547,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
     ),
     agents: yield* runAgents(opts.env.stateDir, run.id),
     diff: yield* diffOf(run),
-    flow: yield* flowFor(opts.env, run, opts.runs ?? [run]),
+    flow: opts.flow ?? undefined,
   } satisfies RunDetail;
 });
 

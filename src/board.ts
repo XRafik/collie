@@ -41,7 +41,17 @@ import { readForge, readMrStates } from "./merges";
 import { filed, standingOf } from "./standing";
 import { offersOf } from "./lifecycle";
 import { shell } from "./mr";
-import type { Disposition, ForgeChecks, Mergeability, OfferView } from "./board-model";
+import type {
+  Disposition,
+  Flow,
+  ForgeChecks,
+  Mergeability,
+  OfferView,
+  RunningCheck,
+} from "./board-model";
+import { laneWaitOf, stripOf } from "./flow";
+import { taskFlowFor } from "./flow-read";
+import { machineName } from "./peers";
 import { everyDelivery, SENT_STATES, toldIn, type Delivery } from "./steering";
 import { readCards } from "./cards";
 import { owedLocally } from "./check-proof";
@@ -703,6 +713,14 @@ const fanOf = Effect.fn("Board.fanOf")(function* (
   const planned = plan === null || plan.refusal !== null ? [] : plan.waves;
   const unplanned = [...started.keys()].filter((repo) => !planned.flat().includes(repo));
   const waves = unplanned.length === 0 ? planned : [...planned, unplanned];
+  const placed = waves.flatMap((wave, at) =>
+    wave.map((repo) => ({
+      parent: parent.id,
+      repo,
+      wave: at + 1,
+      run: started.get(repo)?.id ?? null,
+    })),
+  );
   const rows = waves.flat().map((repo): BoardChild => {
     const run = started.get(repo);
     return {
@@ -717,6 +735,7 @@ const fanOf = Effect.fn("Board.fanOf")(function* (
     rows.filter((row) => row.state === state).map((row) => row.repo);
   return {
     children: rows,
+    waves: placed,
     wave: {
       at: reached + 1,
       of: waves.length,
@@ -881,6 +900,10 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
   deliveries?: ReadonlyArray<Delivery>;
   /** What a Run offers now; the host is asked where this is not given. */
   offers?: (runId: string) => Effect.Effect<ReadonlyArray<OfferView>>;
+  /** Only the Task this Run belongs to, however long ago it finished. */
+  only?: string;
+  /** Where each Task's whole Flow is put, by the Task's id. */
+  flows?: Map<string, Flow>;
 }) {
   const { stateDir } = opts.env;
   const now = opts.now ?? (yield* Clock.currentTimeMillis);
@@ -924,6 +947,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         const children = runs.flatMap((run) => repoRunsOf.get(run.id) ?? []);
         // What a card answers for and who works on it includes its Repo runs'.
         const everyRun = [...runs, ...children];
+        if (opts.only !== undefined && !everyRun.some((run) => run.id === opts.only)) return null;
         const pending = everyRun.flatMap((run) => pendingFor(proposals, run.id, now));
         const touched = new Map<string, number>();
         for (const run of everyRun) touched.set(run.id, yield* lastActivityAt(stateDir, run));
@@ -947,6 +971,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
         // Finished work older than a day is History's, behind `older…` — landed work only:
         // an unmerged branch from last week is still waiting on you, however old.
         if (
+          opts.only === undefined &&
           runs.every((run) => over(run, runs)) &&
           last < now - FINISHED_FOR_MS &&
           pending.length === 0 &&
@@ -1101,6 +1126,58 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           mergeable: forged?.mergeable ?? null,
         });
         const finishedAt = settledNow ? endedAt(leader) : 0;
+        // Only a ready plan's first action is an offer; asking every card would ask every refresh.
+        const offer = planReady ? primaryOf(yield* offersOfRun(leader.id)) : null;
+        const holders = new Map<string, string | null>();
+        for (const run of everyRun)
+          if (waitsOf(run).held) holders.set(run.id, (yield* holderOf(run))?.by ?? null);
+        const checking = new Map<string, RunningCheck | null>();
+        for (const run of runs)
+          checking.set(
+            run.id,
+            run === leader ? check : yield* runningCheck(run, all, markers, now),
+          );
+        const flow = yield* taskFlowFor(opts.env, {
+          rows: runs,
+          all,
+          repoRunsOf,
+          waves: fan?.waves ?? [],
+          leader,
+          settled: settledNow,
+          waitOf: (run) => {
+            const waits = waitsOf(run);
+            const running = checking.get(run.id) ?? null;
+            return laneWaitOf({
+              proposals: waits.proposals.length,
+              blocked: waits.blocked !== null,
+              parked: waits.parked,
+              heldBy: waits.held ? (holders.get(run.id) ?? "someone") : null,
+              memory: waits.memory !== null,
+              usage: waits.usage,
+              check: running,
+              awaiting: waits.awaiting !== null,
+              machine: opts.env.machine ?? machineName(),
+              sleeping:
+                (run.engine?.wakes ?? null) !== null ||
+                all.some((one) => one.parent === run.id && !ended(one)),
+            });
+          },
+          offer,
+          mr,
+          merging: merging.id,
+          mrState,
+          mrStates,
+          ci: forged?.checks ?? null,
+          readiness:
+            mr !== null && (mrState === null || mrState === "open")
+              ? readiness.ready
+                ? "Ready to release"
+                : (readiness.missing[0]?.said ?? null)
+              : null,
+          mrOf,
+          mrLabel: (one) => mrLabel(one),
+        });
+        opts.flows?.set(id, flow);
         const view: TaskView = {
           id,
           name,
@@ -1177,17 +1254,27 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           check,
           reopened,
           planReady,
-          // Only a ready plan's first action is an offer; asking every card would ask every refresh.
-          offer: planReady ? primaryOf(yield* offersOfRun(leader.id)) : null,
+          offer,
           run: leader.id,
           runs: runs.map((run) => run.id),
           at: at === 0 ? first : at,
+          flow: stripOf(flow, leader.id),
         };
         return task?.herd ? { ...view, herd: task.herd } : view;
       }),
     { concurrency: READS_AT_ONCE },
   );
   return sortBoard(views.filter((view) => view !== null));
+});
+
+/** The whole Flow of the Task a Run belongs to, built as its card is. */
+export const taskFlowOf = Effect.fn("Board.taskFlow")(function* (
+  opts: Omit<Parameters<typeof buildBoard>[0], "only" | "flows">,
+  runId: string,
+) {
+  const flows = new Map<string, Flow>();
+  const [view] = yield* buildBoard({ ...opts, only: runId, flows });
+  return view === undefined ? null : (flows.get(view.id) ?? null);
 });
 
 /** Each Ready to release card's Run, with the revision its checks passed at and its sentence. */

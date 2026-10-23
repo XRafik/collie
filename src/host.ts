@@ -71,7 +71,6 @@ import {
   type Locate,
 } from "./engine";
 import { RequestedBy } from "./board-model";
-import { flowFor } from "./flow-read";
 import {
   RunMetrics,
   RunCards,
@@ -151,7 +150,7 @@ import { currentEnv, leaveLauncher, withoutLauncher } from "./env";
 import { installation as installedRelease, RELEASE_TAG } from "./release";
 import { Herdr, isSettled, type AgentInfo } from "./herdr";
 import { serverSocket } from "./home";
-import { buildBoard, mrOf } from "./board";
+import { buildBoard, mrOf, taskFlowOf } from "./board";
 import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
 import { fetchRef, followDetail } from "./run-detail";
@@ -340,7 +339,7 @@ const RunShown = Schema.Struct({
   /** What of it waits for memory, as the card says it. Absent from an older host. */
   memory: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /** The same Flow as its details carry. Absent from an older host. */
-  flow: Schema.optionalKey(Flow),
+  flow: Schema.optionalKey(Schema.NullOr(Flow)),
 });
 
 const Loaded = Schema.Struct({
@@ -678,6 +677,7 @@ const handlers = (
             const view = yield* registry.view(runId);
             if (view === null) return null;
             const all = yield* registry.views(null);
+            const hosted = yield* Effect.context<HostServices>();
             return {
               view,
               agents: yield* runAgents(dir, runId),
@@ -696,11 +696,18 @@ const handlers = (
               memory: yield* Effect.map(memoryWaitOf(runDir(dir, runId)), (wait) =>
                 wait === null ? null : waitLine(wait),
               ),
-              flow: yield* flowFor(
-                env,
-                factsOfView(env.stateDir, view),
-                all.map((one) => factsOfView(env.stateDir, one)),
-              ),
+              flow: yield* taskFlowOf(
+                {
+                  env,
+                  runs: all.map((one) => factsOfView(env.stateDir, one)),
+                  offers: (id) =>
+                    registry.offers(id).pipe(
+                      Effect.provideContext(hosted),
+                      Effect.orElseSucceed(() => []),
+                    ),
+                },
+                runId,
+              ).pipe(Effect.orElseSucceed(() => null)),
             };
           }).pipe(Effect.provideContext(bun)),
         invite: (asked) =>
@@ -2485,7 +2492,20 @@ const frontDoorHandlers = (
             fresh = false;
             // Every Run, because another built from the same plan may have finished its tickets.
             const runs = (yield* registry.views(null)).map((one) => factsOfView(env.stateDir, one));
-            return yield* buildRunDetail({ env, runId, runs, mr, tail, pages, plans });
+            const hosted = yield* Effect.context<HostServices>();
+            const flow = yield* taskFlowOf(
+              {
+                env,
+                runs,
+                offers: (id) =>
+                  registry.offers(id).pipe(
+                    Effect.provideContext(hosted),
+                    Effect.orElseSucceed(() => []),
+                  ),
+              },
+              runId,
+            ).pipe(Effect.orElseSucceed(() => null));
+            return yield* buildRunDetail({ env, runId, runs, mr, tail, pages, plans, flow });
           }).pipe(Effect.provideContext(bun));
           return followDetail(detail, changed).pipe(Stream.orDie);
         },

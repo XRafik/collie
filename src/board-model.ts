@@ -35,6 +35,30 @@ export type StepState = typeof StepState.Type;
 export const BoardStep = Schema.Struct({ name: Schema.String, state: StepState });
 export type BoardStep = typeof BoardStep.Type;
 
+/** Where one Step stands, as every door draws it. */
+export const FlowState = Schema.Literals([
+  "done",
+  "running",
+  "needs-you",
+  "waiting",
+  "failed",
+  "stopped",
+  "not-run",
+  "expected",
+]);
+export type FlowState = typeof FlowState.Type;
+
+/** The strip a card draws: the leading Run's Steps, then its merge request's way out. */
+export const FlowStrip = Schema.Struct({
+  glyphs: Schema.Array(Schema.Struct({ title: Schema.String, state: FlowState })),
+  /** How many of the glyphs, at the end, are the Release row's. */
+  release: Schema.Number,
+  current: Schema.NullOr(
+    Schema.Struct({ title: Schema.String, said: Schema.NullOr(Schema.String) }),
+  ),
+});
+export type FlowStrip = typeof FlowStrip.Type;
+
 /** A question a Run's Driver is holding open, with the options to answer it with. */
 export const Question = Schema.Struct({
   kind: Schema.Literal("question"),
@@ -297,6 +321,8 @@ export const TaskView = Schema.Struct({
   runs: Schema.Array(Schema.String),
   /** When this Task last changed, in epoch milliseconds, which is what orders the board. */
   at: Schema.Number,
+  /** The strip its card draws of its Flow; absent from an older host. */
+  flow: Schema.optionalKey(FlowStrip),
 });
 export type TaskView = typeof TaskView.Type;
 
@@ -592,19 +618,6 @@ export const ranOn = (agent: RunAgent) => {
   return agent.why === null ? on : `${on} (${agent.why})`;
 };
 
-/** Where one Step stands, as every door draws it. */
-export const FlowState = Schema.Literals([
-  "done",
-  "running",
-  "needs-you",
-  "waiting",
-  "failed",
-  "stopped",
-  "not-run",
-  "expected",
-]);
-export type FlowState = typeof FlowState.Type;
-
 export const FlowAttempt = Schema.Struct({
   at: Schema.String,
   /** Why it ran again: the host restarted, or the Run was resumed. Null for the first. */
@@ -620,10 +633,34 @@ export const FlowQuestion = Schema.Struct({
 });
 export type FlowQuestion = typeof FlowQuestion.Type;
 
+/** What holds a Step up, where something other than its own work does. */
+export const FlowWait = Schema.Literals([
+  "timer",
+  "proposal",
+  "stalled",
+  "parked",
+  "hold",
+  "memory",
+  "usage",
+  "check",
+  "ci",
+]);
+export type FlowWait = typeof FlowWait.Type;
+
+/** Another Run a node stands for: a child of a Task of its own, or a Repo run. */
+export const FlowLink = Schema.Struct({
+  /** Null for a Repo run its fan-out has not started yet. */
+  run: Schema.NullOr(Schema.String),
+  machine: Schema.NullOr(Schema.String),
+  state: FlowState,
+  said: Schema.NullOr(Schema.String),
+});
+export type FlowLink = typeof FlowLink.Type;
+
 const FlowNodeFields = {
   id: Schema.String,
   title: Schema.String,
-  kind: Schema.Literals(["agent", "question", "workflow", "check"]),
+  kind: Schema.Literals(["agent", "question", "workflow", "check", "release", "offer", "link"]),
   description: Schema.String,
   role: Schema.NullOr(Schema.String),
   /** False for a node made from work no Step declared. */
@@ -631,7 +668,7 @@ const FlowNodeFields = {
   state: FlowState,
   /** Its fact line, worded once by the host. */
   said: Schema.NullOr(Schema.String),
-  wait: Schema.NullOr(Schema.String),
+  wait: Schema.NullOr(FlowWait),
   produces: Schema.NullOr(Schema.Literals(["plan", "review", "evidence", "merge-request"])),
   offPath: Schema.Boolean,
   /** The round or item a run of a Step is, as its title says it. */
@@ -641,6 +678,9 @@ const FlowNodeFields = {
   attempts: Schema.Array(FlowAttempt),
   ranOn: Schema.NullOr(Schema.String),
   questions: Schema.Array(FlowQuestion),
+  /** The Wave a Repo run's repository is in. */
+  wave: Schema.optional(Schema.Number),
+  link: Schema.optional(FlowLink),
 };
 
 /** One round or item of a Step. */
@@ -660,6 +700,10 @@ export const FlowLane = Schema.Struct({
   execution: Schema.Literals(["running", "suspended", "completed", "failed", "stopped", "died"]),
   declared: Schema.Boolean,
   nodes: Schema.Array(FlowNode),
+  /** The Run that started it into this Task, and that Run's Step it was started in. */
+  startedBy: Schema.optionalKey(
+    Schema.Struct({ run: Schema.String, step: Schema.NullOr(Schema.String) }),
+  ),
 });
 export type FlowLane = typeof FlowLane.Type;
 
@@ -668,6 +712,8 @@ export const Flow = Schema.Struct({
   lanes: Schema.Array(FlowLane),
   /** The Run and node the work is at, or null once it has settled. */
   current: Schema.NullOr(Schema.Struct({ run: Schema.String, node: Schema.String })),
+  /** The merge request's way through CI, the merge and deploys, once the Task has one. */
+  release: Schema.NullOr(Schema.Array(FlowNode)),
 });
 export type Flow = typeof Flow.Type;
 

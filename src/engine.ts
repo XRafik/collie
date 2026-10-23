@@ -608,6 +608,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly held: (runId: string) => Effect.Effect<boolean>;
     readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
     readonly record: (runId: string, event: string) => Effect.Effect<void>;
+    /** Records that its work waits on a Subscription to reset; null says it no longer does. */
+    readonly usageWait: (runId: string, wait: { readonly account: string; readonly resetsAt: string | null } | null) => Effect.Effect<void>;
     /** Records where the Run's work is among its Steps; \`step\` and \`forecast\` call it. */
     readonly step: (runId: string, note: { readonly kind: string } & Record<string, unknown>) => Effect.Effect<void>;
     /** Why this Run parked its own work, shown beside its status; null clears it. */
@@ -2526,6 +2528,14 @@ export const STOP = "stop";
 export const PARKED = "parked";
 /** A wait that ends by itself; the host clears it when the wait ends. */
 export const AWAITING = "awaiting";
+/** Work waiting for a Subscription to reset; cleared once it goes on. */
+export const USAGE = "usage";
+
+export const UsageWaitSchema = Schema.Struct({
+  account: Schema.String,
+  resetsAt: Schema.NullOr(Schema.String),
+});
+const UsageWaitJson = Schema.fromJsonString(UsageWaitSchema);
 
 /** What a Run nobody classified proves: the approved set, and no ticket's evidence. */
 const UNSPECIFIED = "unspecified";
@@ -3420,6 +3430,20 @@ export const hostLayer = (options: {
         checkoutReviewed,
         held: (runId) => set(HOLD, runId),
         stopRequested: (runId) => set(STOP, runId),
+        usageWait: (runId, wait) => {
+          const path = controlPath(dir, USAGE, runId);
+          return (
+            wait === null
+              ? fs.remove(path, { force: true })
+              : fs
+                  .makeDirectory(path.slice(0, path.lastIndexOf("/")), { recursive: true })
+                  .pipe(
+                    Effect.andThen(
+                      fs.writeFileString(path, Schema.encodeSync(UsageWaitJson)(wait)),
+                    ),
+                  )
+          ).pipe(Effect.orDie, Effect.andThen(store.announce));
+        },
         step: (runId, note) =>
           Effect.gen(function* () {
             const where = runDir(dir, runId);
@@ -4844,6 +4868,8 @@ export const RunView = Schema.Struct({
   landing: Schema.NullOr(LandingSchema),
   /** When a durable timer it sleeps on wakes it, or null; absent from an older host. */
   wakes: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** The Subscription its work waits on to reset, or null; absent from an older host. */
+  usage: Schema.optionalKey(Schema.NullOr(UsageWaitSchema)),
 });
 export type RunView = typeof RunView.Type;
 
@@ -6158,6 +6184,10 @@ const makeRegistry: (
         .pipe(Effect.orElseSucceed(() => null)),
       awaiting: yield* fs.readFileString(controlPath(dir, AWAITING, row.run)).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(AwaitingJson)),
+        Effect.orElseSucceed(() => null),
+      ),
+      usage: yield* fs.readFileString(controlPath(dir, USAGE, row.run)).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(UsageWaitJson)),
         Effect.orElseSucceed(() => null),
       ),
       mr: yield* mergeRequestOf(fs, dir, row.run),

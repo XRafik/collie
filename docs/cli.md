@@ -666,11 +666,15 @@ whether `type` is present.
 for this Run — `ready`, and `missing[]`, each a `fact` (`succeeded`, `leads`, `mr-open`,
 `not-draft`, `checks`, `ci`, `review` or `mergeable`), what is `said` of it, and whether it
 is `settling`, may still come by itself — or `null` from a host that cannot say. A Run that
-does not lead its Task's card is never ready. `data.flow` is the Run's **Flow**, the same
-value its details carry to Desktop: `lanes`, one row per Run with its `execution` and its
-`nodes` — each Step's `state`, the one fact line it `said`, its `attempts`, `questions`,
-`ranOn` and, for a Step called per item or round, its `runs` — and `current`, the node the
-work is at
+does not lead its Task's card is never ready. `data.flow` is the **Flow** of the Run's Task,
+the same whichever of its Runs you asked for, and the same value its details carry to
+Desktop: `lanes`, one row per Run of the Task, oldest first, with its `execution`, the
+`startedBy` Run and Step of a child started into the Task, and its `nodes` — each Step's
+`state`, the `wait` holding it up, the one fact line it `said`, its `attempts`, `questions`,
+`ranOn`, the `link` to a child started as a Task of its own and, for a Step called per item
+or round or a fan-out's Repo runs by `wave`, its `runs`; then `current`, the node the
+leading Run's work is at, `null` once the Task has settled; and `release`, the merge
+request's CI, Merged and furthest deploy, `null` until there is one
 ([ADR-draft-a-step-is-declared-where-its-work-is-written](adr/draft-a-step-is-declared-where-its-work-is-written.md)).
 Its human output is unchanged. Its `run` object carries:
 
@@ -754,6 +758,7 @@ Task of its own; a Repo run of a fan-out is its parent's `children` rather than 
 | `check`                   | The check Collie is running for the leading Run, as `collie run checks` gives `running` (with its `log` and `lastLines`), or `null`.                            |
 | `reopened`                | A finished Run whose agent took a steer after it ended: the `delivery`, the `agent`, the first line it was `told` and its `status` now; else `null`.            |
 | `run`, `runs[]`           | The Run a card acts on, and every Run of the Task.                                                                                                              |
+| `flow`                    | The card's **Flow** strip: `glyphs`, the leading Run's then the Release row's, `release`, how many are the Release row's, and `current`, or `null`.             |
 
 A fan-out finds its plan from its work source even where the kind was never recorded with
 its input, as for an implement Run started from a plan's end menu: a plan directory is the

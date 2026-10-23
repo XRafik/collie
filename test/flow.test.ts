@@ -7,6 +7,7 @@ import type { BunServices } from "@effect/platform-bun/BunServices";
 import { Clock, DateTime, Effect, FileSystem, Option, Schema, type Scope, Stream } from "effect";
 import type { Flow, FlowLane, FlowNode } from "../src/board-model";
 import { STEPS_FILE } from "../src/steps";
+import { writeTask } from "../src/task";
 import { epochMs } from "../src/time";
 import { runDir } from "../src/engine";
 import { frontDoor, ownerOf, socketOf } from "../src/host";
@@ -65,6 +66,30 @@ const start = (world: World, workflow: string, input: Readonly<Record<string, st
 
 const stepped = (world: World, mode: string) =>
   start(world, "stepped", { mode, gates: gatesOf(world) });
+
+const parented = (world: World, mode: string, task?: string) =>
+  cli(world, [
+    "run",
+    "start",
+    "parents",
+    "--input",
+    `mode=${mode}`,
+    ...(task === undefined ? [] : ["--task", task]),
+  ]).pipe(
+    Effect.flatMap(({ envelope }) => Schema.decodeUnknownEffect(RunId)(envelope.data)),
+    Effect.map(({ runId }) => runId),
+    Effect.orDie,
+  );
+
+/** A Task a Run can be started into, as one a workspace was opened for would be recorded. */
+const recordedTask = (world: World, id: string) =>
+  writeTask(world.state, {
+    id,
+    workspace: `w-${id}`,
+    label: `collie | ${id}`,
+    cwd: world.project,
+    created_at: "2026-10-23T07:00:00.000Z",
+  }).pipe(Effect.orDie);
 
 const open = (world: World, name: string) =>
   Effect.gen(function* () {
@@ -392,6 +417,120 @@ test(
           );
         }),
       0,
+    ),
+  120_000,
+);
+
+const RunShow = Schema.Struct({ flow: Schema.Unknown });
+
+const children = (world: World, parent: string) =>
+  until(
+    () => cli(world, ["run", "list"]),
+    ({ envelope }) => JSON.stringify(envelope.data ?? "").includes(`"parent":"${parent}"`),
+  ).pipe(
+    Effect.flatMap(({ envelope }) =>
+      Schema.decodeUnknownEffect(
+        Schema.Struct({
+          runs: Schema.Array(
+            Schema.Struct({ runId: Schema.String, parent: Schema.NullOr(Schema.String) }),
+          ),
+        }),
+      )(envelope.data),
+    ),
+    Effect.map(({ runs }) => runs.filter((one) => one.parent === parent).map((one) => one.runId)),
+    Effect.orDie,
+  );
+
+test(
+  "a child started into the same Task is a row of its own, and its parent's row has no node for it",
+  () =>
+    flowing(
+      "collie-flow-same-task-",
+      (world) =>
+        Effect.gen(function* () {
+          yield* recordedTask(world, "task-same");
+          const parent = yield* parented(world, "same", "task-same");
+          const flow = yield* until_(
+            world,
+            parent,
+            (one) =>
+              one.lanes.length === 2 && one.lanes.every((lane) => lane.execution === "completed"),
+          );
+          const [kid] = yield* children(world, parent);
+          expect(flow.lanes.map((lane) => lane.run)).toEqual([parent, kid!]);
+          expect(flow.lanes[1]!.startedBy).toEqual({ run: parent, step: "spawn" });
+          expect(flow.lanes[0]!.nodes.map((node) => [node.id, node.kind])).toEqual([
+            ["spawn", "workflow"],
+            ["wrap", "check"],
+          ]);
+          expect(flow.lanes[0]!.nodes[0]!.link).toBeUndefined();
+
+          // Either Run's details carry its Task's one Flow, and so does `run show`.
+          expect(yield* flowOf(world, kid!)).toEqual(flow);
+          const shown = yield* cli(world, ["run", "show", kid!]);
+          const { flow: carried } = yield* Schema.decodeUnknownEffect(RunShow)(
+            shown.envelope.data,
+          ).pipe(Effect.orDie);
+          expect(carried).toEqual(flow);
+
+          // The card's strip is the leading Run's row, as `--json board` carries it.
+          const board = yield* cli(world, ["board"]);
+          const { tasks } = yield* Schema.decodeUnknownEffect(
+            Schema.Struct({
+              tasks: Schema.Array(
+                Schema.Struct({
+                  run: Schema.String,
+                  runs: Schema.Array(Schema.String),
+                  flow: Schema.optionalKey(Schema.Unknown),
+                }),
+              ),
+            }),
+          )(board.envelope.data).pipe(Effect.orDie);
+          const card = tasks.find((one) => one.runs.includes(parent))!;
+          const leading = flow.lanes.find((lane) => lane.run === card.run)!;
+          expect(card.flow).toEqual({
+            glyphs: leading.nodes.map((node) => ({ title: node.title, state: node.state })),
+            release: 0,
+            current: null,
+          });
+
+          yield* recordedTask(world, "task-loose");
+          const loose = yield* parented(world, "loose", "task-loose");
+          const outside = yield* until_(
+            world,
+            loose,
+            (one) =>
+              one.lanes.length === 2 && one.lanes.every((lane) => lane.execution === "completed"),
+          );
+          expect(outside.lanes[1]!.startedBy).toEqual({ run: loose, step: null });
+          expect(outside.lanes[0]!.nodes.map((node) => [node.id, node.state])).toEqual([
+            ["spawn", "not-run"],
+            ["wrap", "done"],
+          ]);
+        }),
+      0,
+      ["parents.workflow.ts", "plain.workflow.ts"],
+    ),
+  120_000,
+);
+
+test(
+  "a child started as a Task of its own is a link on the Step that started it",
+  () =>
+    flowing(
+      "collie-flow-own-task-",
+      (world) =>
+        Effect.gen(function* () {
+          const parent = yield* parented(world, "own");
+          const flow = yield* until_(world, parent, (one) => laneOf(one).execution === "completed");
+          const [kid] = yield* children(world, parent);
+          expect(flow.lanes).toHaveLength(1);
+          expect(nodeOf(flow, "spawn")?.link).toMatchObject({ run: kid!, state: "done" });
+          const own = yield* until_(world, kid!, (one) => one.lanes.length > 0);
+          expect(own.lanes.map((lane) => lane.run)).toEqual([kid!]);
+        }),
+      0,
+      ["parents.workflow.ts", "plain.workflow.ts"],
     ),
   120_000,
 );

@@ -670,6 +670,11 @@ export interface HostApi {
   readonly held: (runId: string) => Effect.Effect<boolean>;
   readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
   readonly record: (runId: string, event: string) => Effect.Effect<void>;
+  /** Records that its work waits on a Subscription to reset; null says it no longer does. */
+  readonly usageWait: (
+    runId: string,
+    wait: { readonly account: string; readonly resetsAt: string | null } | null,
+  ) => Effect.Effect<void>;
   /** Records where the Run's work is among its Steps (ADR-draft-a-step-is-declared-where-its-work-is-written D4). */
   readonly step: (runId: string, note: StepNote) => Effect.Effect<void>;
   /**

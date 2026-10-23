@@ -3,6 +3,7 @@
 import { Effect } from "effect";
 import type { Awaiting } from "./awaiting";
 import type { BoardAgent, Question } from "./board-model";
+import type { UsageWait } from "./flow";
 import { memoryWaitOf, type MemoryWait } from "./memory-wait";
 import { pendingFor, type ProposalLine, type ProposalRecord } from "./proposals";
 import { settled, type RunFacts } from "./runs";
@@ -18,6 +19,7 @@ export interface RunWaits {
   readonly held: boolean;
   readonly memory: MemoryWait | null;
   readonly awaiting: Awaiting | null;
+  readonly usage: UsageWait | null;
 }
 
 export const runWaits = Effect.fn("RunWaits.of")(function* (
@@ -43,6 +45,7 @@ export const runWaits = Effect.fn("RunWaits.of")(function* (
     held: run.held && !settled(run),
     memory: yield* memoryWaitOf(run.dir),
     awaiting: run.awaiting,
+    usage: run.usage ?? null,
   };
   return waits;
 });

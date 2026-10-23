@@ -111,7 +111,7 @@ import { machineName } from "./peers";
 import { askRouteTo } from "./handoff";
 import { nowIso } from "./time";
 import { noteContext } from "./metrics";
-import { roomFor, subscriptionOf, type UsageReading } from "./usage-model";
+import { roomFor, subscriptionOf, usedFor, type UsageReading } from "./usage-model";
 import { ownCodexReading } from "./usage";
 import {
   lineageAgent,
@@ -210,6 +210,8 @@ export const RanOut = Schema.TaggedStruct("RanOut", {
   why: Schema.String,
   /** Where its harness keeps the conversation, where it said. */
   transcript: Schema.NullOr(Schema.String),
+  /** When its Subscription resets, where a reading says. */
+  resetsAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type RanOut = typeof RanOut.Type;
 const isRanOut = Schema.is(RanOut);
@@ -853,6 +855,12 @@ export const agentWork = <
             .say(runId, `${work.operation}: ${said(on)} ran out (${out.why}); ${next.why}`)
             .pipe(
               Effect.andThen(
+                host.usageWait(runId, {
+                  account: subscriptionOf(on) ?? on.harness,
+                  resetsAt: out.resetsAt ?? null,
+                }),
+              ),
+              Effect.andThen(
                 Effect.raceFirst(
                   collecting(
                     current,
@@ -862,6 +870,7 @@ export const agentWork = <
                   room,
                 ),
               ),
+              Effect.ensuring(host.usageWait(runId, null)),
             ),
         });
         if (isRanOut(collected)) continue;
@@ -2493,6 +2502,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
         const dir = yield* controlDir(host.env.stateDir, launched.agent);
         const on = pinned(choiceOfLaunch(launched));
         let readAt = Number.NEGATIVE_INFINITY;
+        let resetsAt: string | null = null;
         for (;;) {
           const reported = yield* ranOutSince(dir, launched.at ?? 0);
           const now = yield* Clock.currentTimeMillis;
@@ -2509,13 +2519,16 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
                 : [own, ...machine.filter((one) => one.subscription !== own.subscription)];
             const judged = roomFor(readings, now)(on, undefined);
             exhausted = judged.room ? null : judged.why;
+            resetsAt = usedFor(readings, on, now)?.resetsAt ?? null;
           }
           if (reported !== null)
             return RanOut.make({
               why: exhausted ?? reported.why,
               transcript: reported.transcript,
+              resetsAt,
             });
-          if (exhausted !== null) return RanOut.make({ why: exhausted, transcript: null });
+          if (exhausted !== null)
+            return RanOut.make({ why: exhausted, transcript: null, resetsAt });
           yield* Effect.sleep(Duration.millis(host.pollMs ?? DEFAULT_POLL_MS));
         }
       }).pipe(Effect.orDie),

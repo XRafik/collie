@@ -589,6 +589,10 @@ are ordinary panes — herdr's own keys move between them and resize them, and r
 Home reopens only a pane that has actually gone, so a divider you dragged stays where you
 put it.
 
+Each card carries a strip of its Task's [**Flow**](../CONTEXT.md): the Steps its leading
+Run has taken and expects, then its merge request's way to production, with each wait drawn
+on the Step it holds up. `collie run show --json` and chat's `collie_run` carry the whole of it.
+
 It is a board, not an engine: it draws the Runs the host holds, the register of live agents
 and the steering journals, so closing it loses nothing — the next run opens it again. The run
 itself is executed by the host, which has no pane at all.
