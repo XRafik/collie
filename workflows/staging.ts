@@ -188,8 +188,8 @@ export const staging = <R1, R2>(options: {
   ) => Effect.Effect<unknown, WorkflowError, R2>;
 }) => {
   const { runId, cwd } = options;
-  // Unknown until a read names them, and then every rollback is read in them.
-  let reached: ReadonlyArray<string> | undefined;
+  let reached: ReadonlyArray<string> = [];
+  let undiscovered = false;
   const heads: string[] = [];
   const played = new Set<string>();
   return {
@@ -209,8 +209,9 @@ export const staging = <R1, R2>(options: {
           success: StageReadSchema,
           execute: host.readStage({ runId, cwd, head, jobs }),
         });
-        const named = read._tag === "Moved" ? undefined : read.environments;
-        if (named !== undefined) reached = [...new Set([...(reached ?? []), ...named])];
+        const named = read.environments;
+        if (named === undefined) undiscovered = true;
+        else reached = [...new Set([...reached, ...named])];
         return { read, jobs };
       }),
     /** Takes stage off under the step `name`, or fails as `failing` where the forge cannot show it. */
@@ -218,6 +219,10 @@ export const staging = <R1, R2>(options: {
       Effect.gen(function* () {
         const host = yield* Host;
         yield* options.unstage(name, heads.at(-1) ?? "", failure, [...played]);
+        if (undiscovered)
+          return yield* new WorkflowError({
+            reason: `${failing}. Its rollback is not shown: stage environments could not be discovered`,
+          });
         const back = yield* Activity.make({
           name: `${name}.read`,
           success: RollbackReadSchema,

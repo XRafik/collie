@@ -834,6 +834,29 @@ test("GitHub finds a tag's newest run whatever event started it, a release's amo
     }),
   ));
 
+test("attribution: GitLab retains a merged-results deployment when asked about its earlier source head", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "gitlab",
+        model("gitlab", {
+          ancestry: { [MERGED]: [HEAD] },
+          environments: [
+            { name: "stage-spilnu", tier: "staging", job: "deploy-stage", deployed: MERGED },
+          ],
+        }),
+      );
+      expect(
+        yield* FORGES.gitlab.stagingEnvironments(ref("gitlab"), HEAD, "/w", fake.run, [
+          "deploy-stage",
+        ]),
+      ).toEqual({
+        ok: true,
+        environments: [{ name: "stage-spilnu", live: MERGED, hasCommit: true }],
+      });
+    }),
+  ));
+
 test("GitLab reads a stage environment per environment beyond a page of its deployments", () =>
   runEffect(
     Effect.gen(function* () {

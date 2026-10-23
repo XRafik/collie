@@ -146,6 +146,7 @@ export const ForgeModel = Schema.Struct({
   /** The token the CLI hands out for its host, where a test changes it. */
   token: Schema.optionalKey(Schema.String),
   mrs: Schema.Array(FakeMr),
+  checksAt: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(FakeJob))),
   issues: Schema.optionalKey(Schema.Array(FakeIssue)),
   issueNotes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   /** The checkout's `origin` and `upstream` remote URLs, and the branch it is on. */
@@ -728,7 +729,9 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     }
     const commit = /\/repository\/commits\/([^/?]+)$/.exec(route);
     if (commit) {
-      const parents = model.ancestry?.[commit[1]!];
+      const parents =
+        model.ancestry?.[commit[1]!] ??
+        (deploymentsOf(model).some((deployment) => deployment.sha === commit[1]) ? [] : undefined);
       return parents === undefined ? no() : json({ id: commit[1]!, parent_ids: [...parents] });
     }
     const pipeline = /\/pipelines\/(\d+)$/.exec(route);
@@ -1065,7 +1068,7 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
           ? [jobsOf(base.base?.jobs ?? [], 1000), sha]
           : target !== undefined
             ? [jobsOf(target.target!.jobs, 2000), target.target!.at]
-            : [[], sha];
+            : [jobsOf(model.checksAt?.[sha] ?? [], 0), sha];
     const page = {
       check_runs: jobs
         .filter(

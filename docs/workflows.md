@@ -646,8 +646,10 @@ Holding them, it reads the head again and fast-forwards to it, as the claims may
 waited, and the agent's `stage` step plays, retries and watches those jobs of the merge
 request's pipeline, and the stage checks after them. Collie reads stage back from the
 forge, one environment at a time, as `release` does: each stage job passed on the head's
-pipeline, and every stage environment it deployed to carries the head. Where the head moved
-first, that head is staged in its turn. Then it asks **`staged-<n>`**, in Needs you, naming
+pipeline, and every stage environment those jobs deployed to carries the head. Other jobs'
+deployments of the same commit are left untouched. Where the head moved first, that head
+is staged in its turn, keeping the earlier head's environments in the rollback proof.
+Then it asks **`staged-<n>`**, in Needs you, naming
 the merge request, the head, each stage job at its address, each application left off with
 who holds its projects, and the claims it holds:
 
@@ -669,7 +671,8 @@ Resuming retries the give-back before the Run can end.
 carries <mr> at <head>, unmerged`. A stage that fails is rolled back and proved off, its
 claims are given back, and the Run fails with `stage of <mr> at <head> failed: <why>; stage
 is back on what production carries`. A rollback the forge cannot show fails the Run and
-keeps the claims. A failed Run offers **Stage again** of the same merge request.
+keeps the claims, including where the environments a stage attempt reached could not be
+discovered. A failed Run offers **Stage again** of the same merge request.
 
 Module: [`workflows/stage.workflow.ts`](../workflows/stage.workflow.ts), with its content in
 [`workflows/stage.gitlab.md`](../workflows/stage.gitlab.md) and

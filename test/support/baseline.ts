@@ -10410,6 +10410,49 @@ for (const name of ["gitlab", "github"] as const) {
   );
 
   scenario(
+    `release on ${name}: attribution proves every old-head environment off before returning a claim after a move during staging`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, staged, onStage, rolledBack } = yield* perEnvironment;
+          claimed.length = 0;
+          const runId = `r-release-moved-env-${name}`;
+          const later = yield* pushedBySomebody(head);
+          const changed = (model: ForgeModel): ForgeModel => ({
+            ...model,
+            mrs: model.mrs.map((mr) => ({ ...mr, head: later })),
+            checksAt: { [head]: model.mrs[0]?.jobs ?? [] },
+            environments: model.environments?.filter((env) => env.name !== "stage-web"),
+          });
+          yield* rig.queueOutputs([
+            MONOREPO_STAGED,
+            { writes: [forge.holding(changed(onStage(staged)))], output: MONOREPO_STAGE },
+            { writes: [forge.holding(changed(rolledBack(staged)))], output: UNSTAGED },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "go-1");
+              yield* run.answer("go-1", "Stage the merge request");
+              const status = yield* until(
+                () => Effect.all([run.status, run.asked]),
+                ([status, asked]) =>
+                  status.status === "failed" || asked.some((q) => q.decision === "go-2"),
+              );
+              expect(status[0].status).toBe("failed");
+              return status[0];
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain(
+            `stage still carries ${head.slice(0, 8)} in \`stage-happytiger\``,
+          );
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
     `release on ${name}: go 1 offers only the staging the assessment found, and an application with neither fails before any wait`,
     () =>
       runEffect(
@@ -10663,6 +10706,65 @@ for (const name of ["gitlab", "github"] as const) {
   );
 
   scenario(
+    `stage on ${name}: attribution retains the earlier head's environment after a move and refuses Done while it still carries that head`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, head, base, onStage } = yield* stageOn();
+          claimed.length = 0;
+          const runId = `r-stage-moved-env-${name}`;
+          const later = yield* pushedBySomebody(head);
+          const model = onStage(later);
+          const at = (newLive: string): ForgeModel => ({
+            ...model,
+            checksAt: { [head]: model.mrs[0]?.jobs ?? [] },
+            environments: [
+              {
+                name: "stage-new",
+                tier: "staging",
+                job: "deploy-stage",
+                deployments: [
+                  { sha: newLive, status: "success" },
+                  { sha: later, status: "success" },
+                ],
+              },
+              { name: "stage-old", tier: "staging", job: "deploy-stage", deployed: head },
+              { name: "production", tier: "production", deployed: base },
+            ],
+          });
+          yield* rig.queueOutputs([
+            MR_STAGED,
+            {
+              writes: [
+                forge.holding({
+                  ...at(base),
+                  environments: at(base).environments?.filter((env) => env.name !== "stage-new"),
+                }),
+              ],
+              output: STAGED_MR,
+            },
+            { writes: [forge.holding(at(later))], output: STAGED_MR },
+            { writes: [forge.holding(at(base))], output: UNSTAGED },
+          ]);
+          const status = yield* driven(options(runId), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "staged-1");
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain(
+            `stage still carries ${head.slice(0, 8)} in \`stage-old\``,
+          );
+          expect(status.status).toBe("failed");
+          expect(claimed).toEqual([`claim ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
     `stage on ${name}: a failed stage check is rolled back, its claim given back, and the Run fails naming the job and offers Stage again`,
     () =>
       runEffect(
@@ -10855,6 +10957,29 @@ for (const name of ["gitlab", "github"] as const) {
           expect(reasonOf(result)).toContain("no stage environment");
           expect(reasonOf(result)).toContain("by `deploy-stage`, `e2e-stage`");
           expect(yield* wasAsked(runId, "staged-1")).toBe(false);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: attribution cannot give back claims when a refused environment read left the deployed environments unknown`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, onStage, unstaging } = yield* stageOn();
+          const runId = `r-stage-unknown-env-${name}`;
+          claimed.length = 0;
+          yield* rig.queueOutputs([
+            MR_STAGED,
+            { writes: [forge.holding({ ...onStage(), deploysDown: true })], output: STAGED_MR },
+            unstaging(),
+          ]);
+          const status = yield* driven(options(runId), (run) => ended(run.status));
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain("stage environments could not be discovered");
+          expect(status.status).toBe("failed");
+          expect(claimed).toEqual([`claim ${runId}`]);
         }),
       ),
     120_000,

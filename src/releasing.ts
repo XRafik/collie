@@ -111,7 +111,10 @@ export const StageReadSchema = Schema.Union([
     jobs: Schema.Array(JobLinkSchema),
     environments: Schema.Array(Schema.String),
   }),
-  Schema.TaggedStruct("Moved", { head: Schema.String }),
+  Schema.TaggedStruct("Moved", {
+    head: Schema.String,
+    environments: Schema.optionalKey(Schema.Array(Schema.String)),
+  }),
   Schema.TaggedStruct("Failed", {
     why: Schema.String,
     environments: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -393,11 +396,18 @@ export const readStage = Effect.fn("Releasing.readStage")(function* <R>(opts: {
   const on = `on the merge request's pipeline at ${short(opts.head)}`;
   const jobs: JobLink[] = [];
   let unpassed: string | null = null;
+  let moved: string | null = null;
   let commit = opts.head;
   for (const name of opts.jobs) {
     const job = yield* forgeOf(opts.ref).job(opts.ref, name, opts.cwd, opts.run);
-    if (!job.ok) return failed(`\`${name}\` could not be read: ${job.reason}`);
-    if (job.head !== opts.head) return { _tag: "Moved", head: job.head } satisfies StageRead;
+    if (!job.ok) {
+      unpassed ??= `\`${name}\` could not be read: ${job.reason}`;
+      continue;
+    }
+    if (job.head !== opts.head) {
+      moved = job.head;
+      continue;
+    }
     if (job.merge !== null) commit = job.merge;
     if (job.state !== "passed") unpassed ??= `\`${name}\` has not passed ${on}: it is ${job.state}`;
     jobs.push({ name, url: job.url ?? "" });
@@ -412,6 +422,7 @@ export const readStage = Effect.fn("Releasing.readStage")(function* <R>(opts: {
   if (!staging.ok) return failed(unpassed ?? `stage could not be read: ${staging.reason}`);
   const reached = staging.environments.filter((env) => env.hasCommit);
   const environments = reached.map((env) => env.name);
+  if (moved !== null) return { _tag: "Moved", head: moved, environments } satisfies StageRead;
   if (unpassed !== null) return failed(unpassed, environments);
   if (reached.length === 0)
     return failed(

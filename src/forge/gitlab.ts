@@ -424,6 +424,7 @@ function stagingEnvironments<R>(
       if (listed.value.length < 100) break;
     }
     const environments: StagingEnvironment[] = [];
+    const builtFrom = new Map<string, boolean>();
     for (const name of names) {
       let live: string | null = null;
       let hasCommit = false;
@@ -435,11 +436,21 @@ function stagingEnvironments<R>(
         if (deployments.code !== 0 || Option.isNone(newest)) return unread;
         for (const one of newest.value) {
           if (live === null && one.status === "success") live = one.sha;
-          if (
-            one.sha === commit &&
-            (jobs === undefined || jobs.includes(one.deployable?.name ?? ""))
-          )
+          if (hasCommit || commit === null) continue;
+          if (jobs !== undefined && !jobs.includes(one.deployable?.name ?? "")) continue;
+          if (one.sha === commit) {
             hasCommit = true;
+          } else if (jobs !== undefined) {
+            let matches = builtFrom.get(one.sha);
+            if (matches === undefined) {
+              const answer = yield* api(`repository/commits/${one.sha}`);
+              const parents = Schema.decodeUnknownOption(CommitJson)(answer.stdout);
+              if (answer.code !== 0 || Option.isNone(parents)) return unread;
+              matches = parents.value.parent_ids.includes(commit);
+              builtFrom.set(one.sha, matches);
+            }
+            hasCommit = matches;
+          }
         }
         if (newest.value.length < 100) break;
       }

@@ -501,7 +501,7 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   /** A merge request's head proved on stage, with its stage jobs and environments; its head moved; or why not, with the environments its pipeline reached where read. */
   export type StageRead =
     | { readonly _tag: "Staged"; readonly jobs: ReadonlyArray<JobLink>; readonly environments: ReadonlyArray<string> }
-    | { readonly _tag: "Moved"; readonly head: string }
+    | { readonly _tag: "Moved"; readonly head: string; readonly environments?: ReadonlyArray<string> }
     | { readonly _tag: "Failed"; readonly why: string; readonly environments?: ReadonlyArray<string> };
   export const StageReadSchema: Schema.Codec<StageRead, unknown, never, never>;
 
