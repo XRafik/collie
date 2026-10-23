@@ -125,6 +125,9 @@ test("a forges import outside the forge directory is a stray, however it is writ
         ["src/forge/http.ts", 'import type { ForgeProvider } from "forges";'],
         ["src/ci-job.ts", 'import { github } from "forges/github";'],
         ["src/mr.ts", "const lib = await import('forges');"],
+        ["src/outside.ts", 'import "forges";'],
+        ["src/another.ts", "import 'forges/github';"],
+        ["src/forge/side-effect.ts", 'import "forges";'],
         ["workflows/release.workflow.ts", 'import type { FetchLike } from "forges";'],
         ["src/other.ts", 'import { forgesFromThere } from "./forges-helper";'],
       ]),
@@ -132,6 +135,8 @@ test("a forges import outside the forge directory is a stray, however it is writ
   ).toEqual([
     "src/ci-job.ts imports forges",
     "src/mr.ts imports forges",
+    "src/outside.ts imports forges",
+    "src/another.ts imports forges",
     "workflows/release.workflow.ts imports forges",
   ]);
 });
