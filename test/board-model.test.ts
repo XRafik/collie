@@ -179,6 +179,32 @@ test("a terminal workflow error cannot retry a Step through resume", () => {
   ).toBeNull();
 });
 
+test.each([
+  ["ci", "failed", "https://forge/pipeline/7"],
+  ["merged", "stopped", "https://forge/mr/12"],
+] as const)(
+  "a forge Release node %s opens its address while its Run can resume",
+  (id, state, url) => {
+    const base = mainFlow();
+    const flow = {
+      ...base,
+      release: [flowNode(id, { kind: "release", declared: false, state, url })],
+    };
+    const offered = flowActions(flow, task({ run: "build-run", state: "stopped" }));
+    expect(offered.lanes[1]!.actions).toContain("resume");
+    expect(offered.release![0]!).toMatchObject({ primary: "open", actions: [] });
+  },
+);
+
+test("a Release node with no forge address offers no native Retry", () => {
+  const base = mainFlow();
+  const offered = flowActions(
+    { ...base, release: [flowNode("ci", { kind: "release", declared: false, state: "failed" })] },
+    task({ run: "build-run", state: "stopped" }),
+  );
+  expect(offered.release![0]!).toMatchObject({ primary: null, actions: [] });
+});
+
 test("a Step's reused agent stays addressable under another Run of the Task", () => {
   const offered = acting(
     { state: "running", agent: "builder" },

@@ -1901,7 +1901,11 @@ export function flowActions(
       if (live) actions.push("terminal");
     } else if (node.wait === "proposal" && proposal !== undefined) primary = "proposal";
     else if (node.wait === "hold" && facts.held) primary = "continue";
-    else if ((node.state === "failed" || node.state === "stopped") && facts.canResume)
+    else if (
+      node.kind !== "release" &&
+      (node.state === "failed" || node.state === "stopped") &&
+      facts.canResume
+    )
       primary = "retry";
     else if (
       node.url !== undefined &&
