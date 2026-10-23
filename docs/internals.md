@@ -850,7 +850,12 @@ Runner face (argv), the FakeBin face (an executable on `PATH`) and the **HTTP fa
 every request. In-process tests give `fakeForge(...).layer`, ForgeHttp over the HTTP face
 and the Runner face, to the operation. A spawned host's credential reads go to FakeBin, and
 `COLLIE_FORGE_API`, read only by ForgeHttp, points every forge host at the HTTP face
-`serveForges` serves on loopback. A test that runs a merge request read through the CLI's
+`serveForges` serves on loopback. Baseline workflow scenarios serve both fake forges for
+the whole scenario, and replacing a forge's model on `PATH` switches its HTTP face too.
+Their host sessions are bounded to 30 seconds, so a missing fake response cannot leave
+the suite waiting for the test harness's longer timeout.
+
+A test that runs a merge request read through the CLI's
 `PATH`, rather than a model, gives it `forgeHttpOnPath` (ForgeHttp over whatever `glab` or
 `gh` is on `PATH`, answering each request as `<cli> api <route>`), or runs it with
 `runOnPath`. `tools/forges-benchmark.ts` times `job` or `details` over the CLI and over the
