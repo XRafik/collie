@@ -4,6 +4,7 @@
 
 import { Clock, Effect, FileSystem } from "effect";
 import type { Flow, FlowLane, FlowNode, FlowRun, MrState } from "./board-model";
+import { mrRefOf, mrUrlOf } from "./board-model";
 import { readAudit, whoActed } from "./audit";
 import type { PluginEnv } from "./env";
 import {
@@ -59,6 +60,7 @@ const requestedLink = (notice: {
   readonly state: FlowRun["state"];
   readonly said: string | null;
   readonly at: string | null;
+  readonly canResume?: boolean;
 }): FlowRun => ({
   id: `run:${notice.machine.installation}:${notice.run}`,
   title: `${notice.workflow[0]?.toUpperCase() ?? ""}${notice.workflow.slice(1)} on ${notice.machine.name}`,
@@ -83,6 +85,7 @@ const requestedLink = (notice: {
     state: notice.state,
     said: notice.said,
     asOf: notice.at,
+    canResume: notice.canResume,
   },
 });
 
@@ -181,6 +184,10 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
     return {
       run: child.id,
       machine,
+      canResume:
+        child.engine?.execution !== "failed" &&
+        child.engine?.execution !== "completed" &&
+        (child.state === "stopped" || child.parked !== null || child.undriven),
       state: linkState(child.state),
       said: linkSaid({
         state: child.state,
@@ -258,13 +265,20 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
             state: link.state,
             said: link.said,
             at: null,
+            canResume: link.canResume,
           }),
         });
       }
     }
     const nodes: FlowNode[] = lane.nodes.map((node) => {
       const own = links.filter((one) => one.step === node.id);
-      return own.length === 0 ? node : { ...node, links: own.map((one) => one.node) };
+      const mr = mrRefOf(task.mrOf(run) ?? task.mr);
+      return {
+        ...node,
+        links: own.length === 0 ? node.links : own.map((one) => one.node),
+        url:
+          node.produces === "merge-request" && mr !== null ? (mrUrlOf(mr) ?? undefined) : node.url,
+      };
     });
     for (const link of links.filter((one) => !nodes.some((node) => node.id === one.step)))
       nodes.push({ ...link.node, offPath: true, runs: [] });
@@ -280,6 +294,13 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
   return {
     lanes,
     current: task.settled || leading === undefined ? null : currentOf(leading),
-    release: task.mr === null ? null : releaseRow({ mrState: task.mrState, ci: task.ci }),
+    release:
+      task.mr === null
+        ? null
+        : releaseRow({
+            mrState: task.mrState,
+            ci: task.ci,
+            mrUrl: mrRefOf(task.mr) === null ? null : mrUrlOf(mrRefOf(task.mr)!),
+          }),
   } satisfies Flow;
 });

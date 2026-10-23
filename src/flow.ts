@@ -35,6 +35,8 @@ export interface AskedFact {
   readonly answered: string | null;
   readonly by: string | null;
   readonly open: boolean;
+  readonly text?: string;
+  readonly options?: FlowQuestion["options"];
 }
 
 /** Everything one Run's row is built from. */
@@ -132,6 +134,10 @@ const placeSaid = (place: StepPlace | null) =>
   place === null ? null : "item" in place ? place.item : `Round ${place.round}`;
 
 const flowQuestion = (one: AskedFact): FlowQuestion => ({
+  id: one.name,
+  open: one.open,
+  text: one.text,
+  options: one.options,
   name: one.name,
   asked: one.asked,
   answered: one.answered,
@@ -206,6 +212,8 @@ export function laneOf(facts: LaneFacts): FlowLane {
     const last = facts.launches.findLast(({ launch }) => launch.step?.key === key);
     return last === undefined ? null : ranOn(agentOf(last.launch));
   };
+  const agentFor = (key: string) =>
+    facts.launches.findLast(({ launch }) => launch.step?.key === key)?.launch.agent ?? null;
   const questionsFor = (key: string) =>
     facts.questions.filter((one) => questionKey(one.name) === key);
 
@@ -266,6 +274,7 @@ export function laneOf(facts: LaneFacts): FlowLane {
       ended: one.left,
       attempts: one.attempts,
       ranOn: ranOnFor(one.key),
+      agent: agentFor(one.key),
       questions: questionsFor(one.key).map(flowQuestion),
       link: facts.children.find((child) => childIn.get(child.id) === one.key && child.wave === null)
         ?.link,
@@ -367,6 +376,7 @@ export function laneOf(facts: LaneFacts): FlowLane {
       ended: state === "done" ? (calls.at(-1)!.left ?? null) : null,
       attempts,
       ranOn: ranOnFor(current.key),
+      agent: agentFor(current.key),
       questions: calls.flatMap((one) => questionsFor(one.key)).map(flowQuestion),
       runs: [...(calls.length > 1 || listed.length > 0 ? all : []), ...fan],
       link: calls.length === 1 && listed.length === 0 ? link : undefined,
@@ -486,6 +496,7 @@ function undeclaredNodes(
         said: undeclaredSaid(state, started, asked, facts, now),
         started,
         ranOn: ranOn(agentOf(last.launch)),
+        agent: last.launch.agent,
         questions: asked.map(flowQuestion),
       },
     });
@@ -683,7 +694,11 @@ function undeclaredSaid(
 export function currentOf(lane: FlowLane): { readonly run: string; readonly node: string } | null {
   if (lane.execution !== "running" && lane.execution !== "suspended") return null;
   const at = lane.nodes.findLast(
-    (node) => node.state === "running" || node.state === "needs-you" || node.state === "waiting",
+    (node) =>
+      node.state === "running" ||
+      node.state === "needs-you" ||
+      node.state === "waiting" ||
+      node.state === "failed",
   );
   return at === undefined ? null : { run: lane.run, node: at.id };
 }
@@ -818,6 +833,7 @@ const releaseNode = (
 export function releaseRow(facts: {
   readonly mrState: MrState | null;
   readonly ci: ForgeChecks | null;
+  readonly mrUrl?: string | null;
 }): ReadonlyArray<FlowNode> {
   const landed = facts.mrState !== null && LANDED.has(facts.mrState);
   const ci = landed
@@ -840,7 +856,10 @@ export function releaseRow(facts: {
       : facts.mrState === "on-stage"
         ? [releaseNode("deployed", "On stage", "done", null)]
         : [];
-  return [ci, merged, ...deployed];
+  return [
+    { ...ci, url: facts.ci?.url },
+    ...[merged, ...deployed].map((node) => ({ ...node, url: facts.mrUrl ?? undefined })),
+  ];
 }
 
 /** The strip a card draws: the leading Run's Steps, then the Release row, and where it is. */

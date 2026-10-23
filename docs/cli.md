@@ -680,6 +680,30 @@ A Step's `links` are Runs its agents started, without expanding those Runs' Step
 Their `link.asOf` is null for live local state, or the last admission or settlement
 notice from a paired Machine. `run.linkNotices` records those deliveries on the started
 Run; human output names undelivered notices. A missed notice is not retried or polled.
+
+Each node's optional `primary` names its first action and `actions` lists the rest,
+without repeating it. A lane's `actions` are its own Run controls. `agent` names the
+latest agent launched in that Step; open `questions` carry their Choice `id`, text
+and options. A supplied forge address is in `url`. These are the same capabilities
+Desktop draws, recomputed on every read. Their state-changing routes are:
+
+| Action                | Route                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| `retry`, `resume`     | `run resume <run>`; a linked Run's retry names `link.run`                                  |
+| `answer`              | `run answer <run> <value> --decision <questions[].id>`                                     |
+| `proposal`            | `confirm <proposal.id>` or `decline <proposal.id>`                                         |
+| `continue`, `release` | `run release <run>`                                                                        |
+| `hold`, `stop`        | `run hold <run>` or `run stop <run>`                                                       |
+| `tell`                | `run steer <run> --operation <agent> <text>`                                               |
+| `start`               | `run action <run> <offer-id>`                                                              |
+| `follow-up`           | `run actions <run>`, then `run action <run> <follow-up-offer> --input <work-field>=<text>` |
+
+`terminal` addresses `agent` in the record's live Terminal, through the bridge's
+existing `focus` route and herdr's pane controller. `open` follows `url`, or opens
+the record named by `link`. A terminal Workflow error has no retry: the engine
+cannot resume it. A resumable failed Step records its failure and parks, keeping
+the completed work before it.
+
 Its `run` object carries:
 
 | Field                                    | What it tells you                                                                                                                                                                                    |

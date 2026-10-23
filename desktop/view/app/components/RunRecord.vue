@@ -23,6 +23,7 @@ import type { DiffTarget } from "./DiffTab.vue";
 const props = defineProps<{ placed: PlacedTask }>();
 const emit = defineEmits<{ close: [] }>();
 const shownRun = ref(props.placed.task.run);
+const requestedAgent = ref<string>();
 const { runAsked, runTaken } = usePage();
 watch(
   runAsked,
@@ -200,9 +201,10 @@ watch(shownRun, () => {
   logSearch.value = "";
   kept.value = new Set(["flow"]);
 });
-const openWork = (run: string, next: string) => {
+const openWork = (run: string, next: string, agent?: string) => {
   shownRun.value = run;
   chosen.value = next;
+  requestedAgent.value = agent;
 };
 
 const review = useWhole(
@@ -376,7 +378,12 @@ const locationOf = (file: string, line: number | null) =>
           :detail="detail"
           :installation="placed.installation"
         />
-        <TerminalTab v-if="tab === 'terminal'" :placed="recordPlaced" :went-to-pane="wentToPane" />
+        <TerminalTab
+          v-if="tab === 'terminal'"
+          :placed="recordPlaced"
+          :went-to-pane="wentToPane"
+          :agent="requestedAgent"
+        />
       </div>
     </div>
   </section>

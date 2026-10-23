@@ -48,6 +48,20 @@ export const FlowState = Schema.Literals([
 ]);
 export type FlowState = typeof FlowState.Type;
 
+export const FlowAction = Schema.Literals([
+  "terminal",
+  "tell",
+  "retry",
+  "answer",
+  "proposal",
+  "continue",
+  "open",
+  "start",
+]);
+export type FlowAction = typeof FlowAction.Type;
+export const FlowLaneAction = Schema.Literals(["hold", "release", "stop", "resume", "follow-up"]);
+export type FlowLaneAction = typeof FlowLaneAction.Type;
+
 /** The strip a card draws: the leading Run's Steps, then its merge request's way out. */
 export const FlowStrip = Schema.Struct({
   glyphs: Schema.Array(Schema.Struct({ title: Schema.String, state: FlowState })),
@@ -140,8 +154,15 @@ export type Checks = typeof Checks.Type;
  * skipped, or run on an older head.
  */
 export const ForgeChecks = Schema.Union([
-  Schema.Struct({ state: Schema.Literals(["passed", "running", "unknown", "none"]) }),
-  Schema.Struct({ state: Schema.Literal("failed"), name: Schema.String }),
+  Schema.Struct({
+    state: Schema.Literals(["passed", "running", "unknown", "none"]),
+    url: Schema.optionalKey(Schema.String),
+  }),
+  Schema.Struct({
+    state: Schema.Literal("failed"),
+    name: Schema.String,
+    url: Schema.optionalKey(Schema.String),
+  }),
 ]);
 export type ForgeChecks = typeof ForgeChecks.Type;
 
@@ -626,6 +647,10 @@ export const FlowAttempt = Schema.Struct({
 export type FlowAttempt = typeof FlowAttempt.Type;
 
 export const FlowQuestion = Schema.Struct({
+  id: Schema.optionalKey(Schema.String),
+  open: Schema.optionalKey(Schema.Boolean),
+  text: Schema.optional(Schema.String),
+  options: Schema.optional(Question.fields.options),
   name: Schema.String,
   asked: Schema.NullOr(Schema.String),
   answered: Schema.NullOr(Schema.String),
@@ -656,6 +681,7 @@ export const FlowLink = Schema.Struct({
   said: Schema.NullOr(Schema.String),
   /** When its host last told us; null on this host. */
   asOf: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  canResume: Schema.optional(Schema.Boolean),
 });
 export type FlowLink = typeof FlowLink.Type;
 
@@ -683,6 +709,11 @@ const FlowNodeFields = {
   /** The Wave a Repo run's repository is in. */
   wave: Schema.optional(Schema.Number),
   link: Schema.optional(FlowLink),
+  agent: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  primary: Schema.optionalKey(Schema.NullOr(FlowAction)),
+  actions: Schema.optionalKey(Schema.Array(FlowAction)),
+  url: Schema.optional(Schema.String),
+  proposal: Schema.optional(Proposal),
 };
 
 /** One round or item of a Step. */
@@ -693,7 +724,7 @@ export const FlowNode = Schema.Struct({
   ...FlowNodeFields,
   runs: Schema.Array(FlowRun),
   /** Runs its agents started outside this Flow. */
-  links: Schema.optionalKey(Schema.Array(FlowRun)),
+  links: Schema.optional(Schema.Array(FlowRun)),
 });
 export type FlowNode = typeof FlowNode.Type;
 
@@ -707,6 +738,7 @@ export const FlowLane = Schema.Struct({
   execution: Schema.Literals(["running", "suspended", "completed", "failed", "stopped", "died"]),
   declared: Schema.Boolean,
   nodes: Schema.Array(FlowNode),
+  actions: Schema.optionalKey(Schema.Array(FlowLaneAction)),
   /** The Run that started it into this Task, and that Run's Step it was started in. */
   startedBy: Schema.optionalKey(
     Schema.Struct({ run: Schema.String, step: Schema.NullOr(Schema.String) }),
@@ -1796,6 +1828,96 @@ export function isSettled(state: TaskState): boolean {
 /** It ended without finishing, so it can be taken up again where it stopped. */
 export function canResume(state: TaskState): boolean {
   return state === "failed" || state === "stopped" || state === "abandoned";
+}
+
+export interface FlowActionFacts {
+  readonly canResume: boolean;
+  readonly held: boolean;
+  readonly proposal: Proposal | null;
+}
+export function flowActions(
+  flow: Flow,
+  view: TaskView,
+  runs: ReadonlyMap<string, FlowActionFacts> = new Map(),
+): Flow {
+  const factsOf = (lane: FlowLane): FlowActionFacts =>
+    runs.get(lane.run) ?? {
+      canResume:
+        lane.execution !== "failed" &&
+        lane.execution !== "completed" &&
+        (lane.run === view.run
+          ? canResume(view.state)
+          : ["stopped", "died"].includes(lane.execution)),
+      held: lane.run === view.run && view.held !== null,
+      proposal: lane.run === view.run && view.decision?.kind === "proposal" ? view.decision : null,
+    };
+  const offered = (node: FlowRun, lane: FlowLane, facts: FlowActionFacts): FlowRun => {
+    let primary: FlowAction | null = null;
+    const actions: FlowAction[] = [];
+    const live =
+      node.agent != null &&
+      view.agents.some((one) => one.name === node.agent && one.run === lane.run);
+    const proposal = node.proposal ?? facts.proposal ?? undefined;
+    if (node.link !== undefined) {
+      if (node.link.run !== null) primary = "open";
+      if (node.link.canResume === true && node.link.machine === lane.machine) actions.push("retry");
+    } else if (node.kind === "offer") {
+      if (node.id === `offer:${view.offer?.id}` && lane.run === view.run) primary = "start";
+    } else if (
+      node.questions.some((one) => one.id !== undefined && (one.open ?? one.answered === null))
+    ) {
+      primary = "answer";
+      if (live) actions.push("terminal");
+    } else if (node.wait === "proposal" && proposal !== undefined) primary = "proposal";
+    else if (node.wait === "hold" && facts.held) primary = "continue";
+    else if ((node.state === "failed" || node.state === "stopped") && facts.canResume)
+      primary = "retry";
+    else if (
+      node.url !== undefined &&
+      (node.kind === "release" || node.produces === "merge-request")
+    )
+      primary = "open";
+    else if (live && node.state === "done") actions.push("tell");
+    else if (
+      live &&
+      (node.wait === "stalled" ||
+        node.wait === "parked" ||
+        (node.state === "running" && node.kind === "agent" && node.wait === null))
+    ) {
+      primary = "terminal";
+      actions.push("tell");
+    }
+    return { ...node, primary, actions, proposal: node.wait === "proposal" ? proposal : undefined };
+  };
+  const lanes = flow.lanes.map((lane): FlowLane => {
+    const facts = factsOf(lane);
+    const settled =
+      lane.run === view.run
+        ? isSettled(view.state)
+        : !["running", "suspended"].includes(lane.execution);
+    const actions: FlowLaneAction[] = [];
+    if (!settled) actions.push(facts.held ? "release" : "hold", "stop");
+    if (facts.canResume) actions.push("resume");
+    if (lane.run === view.run && view.state === "done") actions.push("follow-up");
+    return {
+      ...lane,
+      actions,
+      nodes: lane.nodes.map((node): FlowNode => ({
+        ...offered(node, lane, facts),
+        runs: node.runs.map((one) => offered(one, lane, facts)),
+        links: node.links?.map((one) => offered(one, lane, facts)),
+      })),
+    };
+  });
+  const leading = lanes.find((lane) => lane.run === view.run);
+  const release =
+    flow.release === null || leading === undefined
+      ? flow.release
+      : flow.release.map((node): FlowNode => ({
+          ...offered(node, leading, factsOf(leading)),
+          runs: node.runs,
+        }));
+  return { ...flow, lanes, release };
 }
 
 /** However the Task names its merge request: the URL one opened, or the target one was pointed at. */

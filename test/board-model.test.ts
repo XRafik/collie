@@ -6,6 +6,7 @@ import { runInNewContext } from "node:vm";
 import { Effect, Schema } from "effect";
 import {
   cardActions,
+  flowActions,
   givenOfferInput,
   mrUrlOf,
   mrWords,
@@ -18,6 +19,155 @@ import {
   TaskView,
 } from "../src/board-model";
 import { task } from "./support/task";
+import { flowNode, mainFlow } from "./support/flow";
+import type { FlowNode, TaskView as Task } from "../src/board-model";
+
+const acting = (node: Partial<FlowNode>, over: Partial<Task> = {}) => {
+  const base = mainFlow();
+  const flow = {
+    ...base,
+    lanes: [{ ...base.lanes[1]!, nodes: [flowNode("work", node)] }],
+    release: null,
+  };
+  return flowActions(
+    flow,
+    task({
+      run: "build-run",
+      agents: [{ name: "builder", status: "working", now: null, run: "build-run" }],
+      ...over,
+    }),
+  );
+};
+
+test.each([
+  [
+    "agent at work",
+    { kind: "agent", state: "running", agent: "builder" },
+    {},
+    "terminal",
+    ["tell"],
+  ],
+  ["failed Step", { state: "failed" }, { state: "failed" }, "retry", []],
+  ["stopped Step", { state: "stopped" }, { state: "stopped" }, "retry", []],
+  [
+    "open question",
+    {
+      kind: "question",
+      state: "needs-you",
+      questions: [{ name: "go", id: "go", open: true, asked: null, answered: null, by: null }],
+      agent: "builder",
+    },
+    {},
+    "answer",
+    ["terminal"],
+  ],
+  [
+    "pending proposal",
+    { state: "needs-you", wait: "proposal" },
+    { decision: { kind: "proposal", id: "p", hash: "h", text: "Proposed", actions: [] } },
+    "proposal",
+    [],
+  ],
+  [
+    "stalled agent",
+    { state: "needs-you", wait: "stalled", agent: "builder" },
+    {},
+    "terminal",
+    ["tell"],
+  ],
+  [
+    "parked agent",
+    { state: "waiting", wait: "parked", agent: "builder" },
+    {},
+    "terminal",
+    ["tell"],
+  ],
+  ["held Step", { state: "waiting", wait: "hold" }, { held: "Held" }, "continue", []],
+  ["done with agent open", { state: "done", agent: "builder" }, { state: "done" }, null, ["tell"]],
+  ["release", { kind: "release", url: "https://forge/pipeline/1" }, {}, "open", []],
+  ["merge request", { produces: "merge-request", url: "https://forge/mr/1" }, {}, "open", []],
+  [
+    "linked Run",
+    {
+      kind: "link",
+      link: { run: "child", machine: "laptop", state: "failed", said: null, canResume: true },
+    },
+    {},
+    "open",
+    ["retry"],
+  ],
+  [
+    "primary offer",
+    { id: "offer:next", kind: "offer" },
+    { offer: { id: "next", title: "Next" } },
+    "start",
+    [],
+  ],
+] as const)("the Flow offers only what works for %s", (_title, node, over, primary, actions) => {
+  const offered = acting(node, over).lanes[0]!.nodes[0]!;
+  expect(offered.primary).toBe(primary);
+  expect(offered.actions).toEqual([...actions]);
+});
+
+test.each([
+  ["running cannot retry", { state: "failed" }, {}],
+  ["agent gone", { state: "running", agent: "gone" }, {}],
+  ["no hold", { state: "waiting", wait: "hold" }, {}],
+  [
+    "answered question",
+    {
+      kind: "question",
+      state: "done",
+      questions: [{ name: "go", id: "go", open: false, asked: null, answered: "then", by: "mk" }],
+    },
+    {},
+  ],
+  ["memory", { state: "waiting", wait: "memory", agent: "builder" }, {}],
+  ["usage", { state: "waiting", wait: "usage", agent: "builder" }, {}],
+  ["timer", { state: "waiting", wait: "timer" }, {}],
+  ["check", { state: "waiting", wait: "check" }, {}],
+  ["expected", { state: "expected", agent: "builder" }, {}],
+  ["not run", { state: "not-run" }, {}],
+] as const)("the Flow takes away actions when %s", (_title, node, over) => {
+  expect(acting(node, over).lanes[0]!.nodes[0]!).toMatchObject({ primary: null, actions: [] });
+});
+
+test("a Flow lane offers controls for its own state, and follow-up only on its leader", () => {
+  expect(acting({ state: "running" }).lanes[0]!.actions).toEqual(["hold", "stop"]);
+  expect(acting({ state: "waiting", wait: "hold" }, { held: "Held" }).lanes[0]!.actions).toEqual([
+    "release",
+    "stop",
+  ]);
+  expect(acting({ state: "failed" }, { state: "failed" }).lanes[0]!.actions).toEqual(["resume"]);
+  const base = mainFlow();
+  expect(flowActions(base, task({ run: "build-run", state: "done" })).lanes[0]!.actions).toEqual(
+    [],
+  );
+  const done = {
+    ...base,
+    lanes: base.lanes.map((lane) => ({ ...lane, execution: "completed" as const })),
+  };
+  expect(flowActions(done, task({ run: "build-run", state: "done" })).lanes[1]!.actions).toEqual([
+    "follow-up",
+  ]);
+});
+
+test("a terminal workflow error cannot retry a Step through resume", () => {
+  const base = mainFlow();
+  const flow = {
+    ...base,
+    lanes: [
+      {
+        ...base.lanes[1]!,
+        execution: "failed" as const,
+        nodes: [flowNode("work", { state: "failed" })],
+      },
+    ],
+  };
+  expect(
+    flowActions(flow, task({ run: "build-run", state: "failed" })).lanes[0]!.nodes[0]!.primary,
+  ).toBeNull();
+});
 
 const MODULE = new URL("../src/board-model.ts", import.meta.url).pathname;
 const RUNTIME_ONLY = /^(bun(:|$)|node:|@effect\/platform-bun|@opentui\/)/;

@@ -71,6 +71,14 @@ test("Flow keys move by position between rows and stay at the ends", () => {
   expect(flowKey(flow, build, "Enter", false)?.select).toBe(true);
 });
 
+test("Shift Enter takes the node's primary and the menu keys open its menu", () => {
+  const flow = mainFlow();
+  const at = { run: "build-run", node: "build" };
+  expect(flowKey(flow, at, "Enter", false, true)).toMatchObject({ primary: true, select: false });
+  expect(flowKey(flow, at, "F10", false, true)).toMatchObject({ menu: true });
+  expect(flowKey(flow, at, "ContextMenu", false)).toMatchObject({ menu: true });
+});
+
 test("node names include state, fact and a missing link's destination or saved timestamp", () => {
   const build = mainFlow().lanes[1]!.nodes[0]!;
   expect(nodeName(build)).toBe("Build, running, Slice 4 of 6");

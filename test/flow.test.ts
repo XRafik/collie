@@ -146,6 +146,20 @@ test(
           expect(nodeOf(asking, "decide")?.said).toMatch(/^Asked .+ ago$/);
           expect(nodeOf(asking, "ship")?.said).toBeNull();
           expect(asking.current).toEqual({ run: runId, node: "decide" });
+          expect(nodeOf(asking, "decide")).toMatchObject({
+            primary: "answer",
+            questions: [
+              {
+                id: "go",
+                open: true,
+                text: "Ship it?",
+                options: [
+                  { id: "yes", title: "yes" },
+                  { id: "no", title: "no" },
+                ],
+              },
+            ],
+          });
 
           const answered = yield* cli(world, ["run", "answer", runId, "yes", "--decision", "go"]);
           expect(answered.envelope.ok).toBe(true);
@@ -321,6 +335,54 @@ test(
           ]);
         }),
       0,
+    ),
+  120_000,
+);
+
+test(
+  "a failed Step's action retries its own Run and records the resumed attempt",
+  () =>
+    flowing(
+      "collie-flow-retry-action-",
+      (world) =>
+        Effect.gen(function* () {
+          const started = yield* cli(world, [
+            "run",
+            "start",
+            "retry-steps",
+            "--input",
+            `gates=${gatesOf(world)}`,
+          ]);
+          expect(started.envelope).toMatchObject({ ok: true });
+          const { runId: run } = yield* Schema.decodeUnknownEffect(RunId)(
+            started.envelope.data,
+          ).pipe(Effect.orDie);
+          yield* until_(world, run, (flow) => laneOf(flow).execution === "suspended");
+          const shown = yield* cli(world, ["run", "show", run]);
+          const flow = (yield* Schema.decodeUnknownEffect(Schema.Struct({ flow: Schema.Unknown }))(
+            shown.envelope.data,
+          ).pipe(Effect.orDie)).flow;
+          expect(flow).toMatchObject({
+            current: { run, node: "second" },
+            lanes: [
+              {
+                nodes: [
+                  { id: "first", state: "done", primary: null },
+                  { id: "second", state: "failed", primary: "retry" },
+                ],
+              },
+            ],
+          });
+          yield* open(world, "pass");
+          expect((yield* cli(world, ["run", "resume", run])).envelope.ok).toBe(true);
+          const resumed = yield* until_(world, run, (one) => laneOf(one).execution === "completed");
+          expect(nodeOf(resumed, "second")?.attempts.map((one) => one.cause)).toEqual([
+            null,
+            "resumed",
+          ]);
+        }),
+      0,
+      ["retry-steps.workflow.ts"],
     ),
   120_000,
 );

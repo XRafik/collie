@@ -159,6 +159,8 @@ export const factsOfView = (stateDir: string, view: RunView): RunFacts => ({
       answered: one.answered ?? null,
       by: one.by ?? null,
       open: one.answer === null,
+      text: one.prompt,
+      options: one.options.map((value) => ({ id: value, title: value, subtitle: null })),
     })),
     wakes: view.wakes ?? null,
     execution: executionOf(view),

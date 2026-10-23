@@ -21,7 +21,7 @@ export const rowOrigin = (flow: Flow, run: string) => {
 };
 export const nodeName = (
   node: FlowRun,
-  options: { missing?: boolean; notLive?: boolean } = {},
+  options: { missing?: boolean; notLive?: boolean; action?: string } = {},
 ): string =>
   [
     node.title,
@@ -29,6 +29,7 @@ export const nodeName = (
     node.state === "expected" ? null : node.said,
     options.missing ? "not on the board" : null,
     options.notLive && node.link?.asOf != null ? `as of ${node.link.asOf}` : null,
+    options.action,
   ]
     .filter(Boolean)
     .join(", ");
@@ -56,7 +57,16 @@ export const flowKey = (
   focus: FlowSpot,
   key: string,
   open: boolean,
-): { focus: FlowSpot; close: boolean; select: boolean } | null => {
+  shift = false,
+): {
+  focus: FlowSpot;
+  close: boolean;
+  select: boolean;
+  primary?: boolean;
+  menu?: boolean;
+} | null => {
+  if (isFlowMenuKey(key, shift)) return { focus, close: false, select: false, menu: true };
+  if (key === "Enter" && shift) return { focus, close: false, select: false, primary: true };
   const rows = flowRows(flow).filter((row) => row.nodes.length > 0);
   let row = rows.findIndex((one) => one.run === focus.run);
   let at = rows[row]?.nodes.findIndex((one) => one.id === focus.node) ?? -1;
@@ -92,6 +102,8 @@ export const flowKey = (
   at = Math.max(0, Math.min(at, target.nodes.length - 1));
   return { focus: { run: target.run, node: target.nodes[at]!.id }, close: false, select: false };
 };
+export const isFlowMenuKey = (key: string, shift: boolean) =>
+  key === "ContextMenu" || (key === "F10" && shift);
 export interface FlowOpen {
   readonly run: string;
   readonly tab: "plan" | "review" | "evidence" | "mr" | "terminal" | "log";
@@ -115,6 +127,7 @@ export const inspectorOf = (flow: Flow, selection: FlowSelection, now: number) =
   const all = [...parent.runs, ...(parent.links ?? [])];
   const node = all.find((one) => one.id === selection.item) ?? parent;
   const lines: string[] = [];
+  if (node.agent != null) lines.push(`Agent ${node.agent}`);
   if (node.ranOn !== null) lines.push([node.role, node.ranOn].filter(Boolean).join(" · "));
   if (node.started !== null) {
     lines.push(`Started ${node.started}`);

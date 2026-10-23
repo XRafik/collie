@@ -57,6 +57,7 @@ import { readCards } from "./cards";
 import { owedLocally } from "./check-proof";
 import {
   Answered,
+  flowActions,
   mrLabel,
   mrWords,
   readMrRef,
@@ -1177,7 +1178,6 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           mrOf,
           mrLabel: (one) => mrLabel(one),
         });
-        opts.flows?.set(id, flow);
         const view: TaskView = {
           id,
           name,
@@ -1260,6 +1260,29 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           at: at === 0 ? first : at,
           flow: stripOf(flow, leader.id),
         };
+        opts.flows?.set(
+          id,
+          flowActions(
+            flow,
+            view,
+            new Map(
+              runs.map((run) => [
+                run.id,
+                {
+                  canResume:
+                    run.engine?.execution !== "failed" &&
+                    run.engine?.execution !== "completed" &&
+                    (run.state === "stopped" || run.parked !== null || run.undriven),
+                  held: waitsOf(run).held,
+                  proposal:
+                    waitsOf(run).proposals[0] === undefined
+                      ? null
+                      : asProposal(waitsOf(run).proposals[0]!),
+                },
+              ]),
+            ),
+          ),
+        );
         return task?.herd ? { ...view, herd: task.herd } : view;
       }),
     { concurrency: READS_AT_ONCE },

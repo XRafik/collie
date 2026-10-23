@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { Flow } from "../../../../src/board-model";
+import type { Flow, FlowAction } from "../../../../src/board-model";
+import { desktopFlowAction, nextMove, type FlowActionView } from "../../../src/shared/flow-actions";
 import type { PlacedTask } from "../../../src/shared/flock";
 import type { Gesture } from "../../../src/shared/board-clicks";
 import { inField, overlayOpen } from "../../../src/shared/board-clicks";
@@ -8,6 +9,7 @@ import {
   flowKey,
   flowRows,
   inspectorOf,
+  nodeAt,
   rowOrigin,
   selectEntry,
   selectNode,
@@ -16,7 +18,10 @@ import {
   type FlowSpot,
 } from "../../../src/shared/flow";
 const props = defineProps<{ flow: Flow; placed: PlacedTask; shown: boolean }>();
-const emit = defineEmits<{ run: [run: string]; open: [run: string, tab: string] }>();
+const emit = defineEmits<{
+  run: [run: string];
+  open: [run: string, tab: string, agent?: string];
+}>();
 const { everyTask, now } = useFlock();
 const cards = computed(() =>
   everyTask.value.map((one) => ({ key: one.key, machine: one.machine, runs: one.task.runs })),
@@ -38,10 +43,72 @@ const info = computed(() =>
 const source = computed(() =>
   selected.value === null ? null : rowOrigin(props.flow, selected.value.run),
 );
-const map = ref<{ focus: (spot: FlowSpot) => void; reveal: (spot: FlowSpot) => void } | null>(null);
+const map = ref<{
+  focus: (spot: FlowSpot) => void;
+  reveal: (spot: FlowSpot) => void;
+  menu: (spot: FlowSpot) => void;
+} | null>(null);
 const page = usePage();
 const gesture = inject<(done: Gesture, tab?: string) => void>("gesture")!;
 const offering = ref<{ run: string; offer: string } | null>(null);
+const controls = useFlowActions(
+  () => props.placed,
+  (effect) => {
+    if (effect.kind === "terminal") emit("open", effect.run, "terminal", effect.agent);
+    else if (effect.kind === "run") origin(effect.run, effect.machine ?? props.placed.machine);
+    else if (effect.kind === "offer") offering.value = { run: effect.run, offer: effect.offer };
+  },
+);
+const { asking } = controls;
+const lane = computed(
+  () =>
+    props.flow.lanes.find((row) => row.run === selected.value?.run) ??
+    (selected.value?.run === "release" ? props.flow.lanes.at(-1) : undefined),
+);
+const move = computed(() => nextMove(props.flow));
+const moveAction = computed(() =>
+  move.value === null
+    ? null
+    : desktopFlowAction(
+        move.value.action,
+        move.value.node,
+        move.value.lane,
+        props.placed.installation,
+        props.placed.asOf === null,
+      ),
+);
+const decision = computed(() => {
+  if (info.value === null || lane.value === undefined || info.value.node.primary == null)
+    return null;
+  const effect = desktopFlowAction(
+    info.value.node.primary,
+    info.value.node,
+    lane.value,
+    props.placed.installation,
+    props.placed.asOf === null,
+  )?.effect;
+  return effect?.kind === "answer" || effect?.kind === "proposal" ? effect : null;
+});
+const press = (action: FlowActionView, spot?: FlowSpot) =>
+  controls.press(action, () => {
+    if (spot !== undefined) {
+      selected.value = { ...spot, item: null };
+      emit("run", spot.run);
+    }
+  });
+const actNode = (kind: FlowAction, spot: FlowSpot) => {
+  const node = nodeAt(props.flow, spot);
+  const row = props.flow.lanes.find((one) => one.run === spot.run) ?? props.flow.lanes.at(-1);
+  if (node === null || row === undefined) return;
+  const action = desktopFlowAction(
+    kind,
+    node,
+    row,
+    props.placed.installation,
+    props.placed.asOf === null,
+  );
+  if (action !== null) press(action, spot);
+};
 const close = () => {
   const spot = selected.value;
   selected.value = null;
@@ -90,13 +157,18 @@ const key = (event: KeyboardEvent) => {
     event.key === "Escape" && selected.value !== null ? selected.value : focused.value,
     event.key,
     selected.value !== null,
+    event.shiftKey,
   );
   if (move === null) return;
   event.preventDefault();
   event.stopPropagation();
   focused.value = move.focus;
   if (move.close) close();
-  else if (move.select) choose(move.focus);
+  else if (move.menu) map.value?.menu(move.focus);
+  else if (move.primary) {
+    const primary = nodeAt(props.flow, move.focus)?.primary;
+    if (primary != null) actNode(primary, move.focus);
+  } else if (move.select) choose(move.focus);
   else map.value?.focus(move.focus);
 };
 const announcement = ref("");
@@ -131,7 +203,18 @@ watch(
     :class="{ 'opacity-50': placed.asOf !== null }"
     @keydown="key"
   >
-    <p class="text-sm">{{ placed.task.sentence }}</p>
+    <div class="flex items-center justify-between gap-3">
+      <p class="text-sm">{{ placed.task.sentence }}</p>
+      <UButton
+        v-if="moveAction !== null && flow.current !== null"
+        :label="moveAction.label"
+        :icon="moveAction.icon"
+        :color="moveAction.color"
+        variant="outline"
+        size="sm"
+        @click="press(moveAction, flow.current)"
+      />
+    </div>
     <p class="sr-only" aria-live="polite" aria-atomic="true">{{ announcement }}</p>
     <FlowMap
       ref="map"
@@ -141,9 +224,12 @@ watch(
       :cards="cards"
       :away="away"
       :now="now"
+      :installation="placed.installation"
+      :live="placed.asOf === null"
       @choose="choose"
       @focus="focused = $event"
       @origin="origin"
+      @act="press"
     />
     <FlowInspector
       v-if="info !== null && selected !== null"
@@ -153,13 +239,30 @@ watch(
       @item="chooseItem"
       @open="(run, tab) => emit('open', run, tab)"
     >
-      <UButton
-        v-if="source !== null"
-        variant="link"
-        class="self-start px-0"
-        :label="`Started by ${source.run} on ${source.machine}`"
-        @click="origin(source.run, source.machine)"
-      />
+      <template #actions
+        ><FlowActions
+          v-if="lane !== undefined"
+          :node="info.node"
+          :lane="lane"
+          :installation="placed.installation"
+          :live="placed.asOf === null"
+          @act="press"
+      /></template>
+      <template #decision
+        ><FlowDecision
+          v-if="decision !== null"
+          :effect="decision"
+          :machine="placed.machine"
+          :perform="controls.perform"
+      /></template>
+      <template #default
+        ><UButton
+          v-if="source !== null"
+          variant="link"
+          class="self-start px-0"
+          :label="`Started by ${source.run} on ${source.machine}`"
+          @click="origin(source.run, source.machine)"
+      /></template>
     </FlowInspector>
     <p v-else class="text-sm text-muted">
       Select a Step to inspect its work. Use the arrow keys to move between Steps and Runs.
@@ -170,6 +273,12 @@ watch(
       :run-id="offering.run"
       :chosen="offering.offer"
       @close="offering = null"
+    />
+    <TextDialog
+      :open="asking !== null"
+      :title="asking?.title ?? ''"
+      @update:open="(open: boolean) => !open && (asking = null)"
+      @send="controls.send"
     />
   </div>
 </template>

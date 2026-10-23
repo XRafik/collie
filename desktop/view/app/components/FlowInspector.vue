@@ -38,8 +38,10 @@ const labels: Record<string, string> = {
         @click="emit('close')"
       />
     </header>
+    <slot name="actions" />
     <p v-for="line in info.lines" :key="line" class="text-xs text-muted">{{ line }}</p>
     <p v-if="info.description" class="text-sm">{{ info.description }}</p>
+    <slot name="decision" />
     <UButton
       v-if="selected.item !== null"
       class="self-start"

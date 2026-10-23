@@ -1109,6 +1109,17 @@ of reach is faded and says **as of** its last notice's time. A Run absent from t
 board is named **not on the board** and opens nothing. A host without a Flow keeps
 the record's earlier tabs and opens on Summary.
 
+Each Flow node offers only what can work now. Its round button takes its first
+action: Watch the agent, Retry a resumable failed Step, Answer a question, Review a
+proposal, Continue a hold, Open the merge request or pipeline, or Start an offer.
+Retry says which done Steps it keeps. Questions and proposals can be answered in
+the inspector. **Tell the builder…** addresses that Step's agent. The node's menu
+and the inspector hold its remaining actions; the row's name and **Run controls**
+hold that Run's hold, release, stop, resume or follow-up. Shift+Enter takes the
+focused node's first action; Shift+F10, the menu key and a right-click open its menu.
+The line above the map carries the current node's action too. Saved Flows offer no
+actions until their Machine is reached again.
+
 Desktop is released with Collie, under the same tag and version. Install it for your user,
 on Linux with a desktop entry and on a Mac into `~/Applications`:
 

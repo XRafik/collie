@@ -12,6 +12,10 @@ and accessible name. `FlowGlyph.vue` draws the eight states with Nuxt UI tokens.
 `flowKey`, `nodeName` and `flowAnnouncements`. `FlowMap`, `FlowInspector` and
 `FlowTab` render those decisions. `recordTabs` puts Flow first where the host sends
 one; RunRecord can keep that map while subscribing to an earlier Run of its Task.
+`src/shared/flow-actions.ts` maps the host's node and lane capabilities to labels,
+icons and existing Desktop routes; `nextMove` and `retryCaption` supply their context.
+`useFlowActions` dispatches those routes, and `FlowActions` and `FlowDecision` render
+the inspector's controls without deriving capabilities themselves.
 
 | File                                    | What it owns                                                                                                                                                                                                                                           |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
