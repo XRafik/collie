@@ -229,14 +229,17 @@ export const untilAborted = <A, E, R>(
 ): Stream.Stream<A, E, R> =>
   signal === undefined
     ? stream
-    : signal.aborted
-      ? Stream.empty
-      : stream.pipe(
-          Stream.interruptWhen(
-            Effect.callback<void>((resume) => {
-              const aborted = () => resume(Effect.void);
-              signal.addEventListener("abort", aborted, { once: true });
-              return Effect.sync(() => signal.removeEventListener("abort", aborted));
-            }),
-          ),
-        );
+    : Stream.suspend(() =>
+        signal.aborted
+          ? Stream.empty
+          : stream.pipe(
+              Stream.interruptWhen(
+                Effect.callback<void>((resume) => {
+                  const aborted = () => resume(Effect.void);
+                  signal.addEventListener("abort", aborted, { once: true });
+                  if (signal.aborted) aborted();
+                  return Effect.sync(() => signal.removeEventListener("abort", aborted));
+                }),
+              ),
+            ),
+      );

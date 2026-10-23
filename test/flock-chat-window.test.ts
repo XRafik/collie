@@ -1,7 +1,7 @@
 // What the Flock chat's window says of a tool call and of the card a message is about.
 
 import { expect, test } from "bun:test";
-import { Stream } from "effect";
+import { Effect, Stream } from "effect";
 import {
   aboutLine,
   aboutNote,
@@ -212,4 +212,33 @@ test("a reply stopped before it starts never asks for the turn", () => {
   stop.abort();
   const asked = untilAborted(Stream.die("asked for the turn"), stop.signal);
   return expect(Array.fromAsync(Stream.toAsyncIterable(asked))).resolves.toEqual([]);
+});
+
+test("a reply stopped after it is asked for but before it runs never asks for the turn", () => {
+  const stop = new AbortController();
+  const asked = untilAborted(Stream.die("asked for the turn"), stop.signal);
+  stop.abort();
+  return expect(Array.fromAsync(Stream.toAsyncIterable(asked))).resolves.toEqual([]);
+});
+
+test("a reply stopped while its first part is awaited never asks for the turn", async () => {
+  const stop = new AbortController();
+  let asked = false;
+  const turn = untilAborted(
+    Stream.fromEffect(Effect.promise(() => Promise.resolve())).pipe(
+      Stream.flatMap(() =>
+        Stream.fromEffect(
+          Effect.sync(() => {
+            asked = true;
+            return "part";
+          }),
+        ),
+      ),
+    ),
+    stop.signal,
+  );
+  const first = Stream.toAsyncIterable(turn)[Symbol.asyncIterator]().next();
+  stop.abort();
+  expect((await first).done).toBe(true);
+  expect(asked).toBe(false);
 });
