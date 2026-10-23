@@ -17,6 +17,8 @@ import { epochMs } from "../time";
 import type {
   DeployTier,
   DeployedRead,
+  StagingEnvironment,
+  StagingRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -933,7 +935,7 @@ const Deployment = Schema.Struct({
   environment: Schema.String,
   production_environment: optionalFlag,
 });
-const Statuses = Schema.Array(Schema.Struct({ state: Schema.String }));
+const Statuses = Schema.Array(Schema.Struct({ state: Schema.String, log_url: optionalText }));
 const Compare = Schema.Struct({ status: Schema.String });
 const RunState = Schema.Struct({ status: Schema.String, conclusion: optionalText });
 
@@ -1013,6 +1015,92 @@ function deployed(
       if (latest.value[0]?.state === "success") return { ok: true, sha: deployment.sha };
     }
     return { ok: true, sha: null };
+  });
+}
+
+const EnvironmentPage = Schema.Struct({
+  environments: Schema.Array(Schema.Struct({ name: Schema.String })),
+});
+
+const isStaging = (name: string) => /^(?:.+[-_/ ])?(?:stage|staging)(?:[-_/ ].+)?$/i.test(name);
+
+function stagingEnvironments<R>(
+  ref: MrRef,
+  commit: string | null,
+  cwd: string,
+  _run: Runner<R>,
+  jobs?: ReadonlyArray<string>,
+): Effect.Effect<StagingRead, never, ForgeHttp> {
+  return Effect.gen(function* () {
+    if (ref.project === null) return { ok: false, reason: "no repository to read deployments of" };
+    const repo = `repos/${mrPath(ref)}`;
+    const unread = (reason: string) => ({
+      ok: false as const,
+      reason: `GitHub could not read ${ref.project}'s stage environments: ${reason}`,
+    });
+    const selected = new Set<number>();
+    if (jobs !== undefined && commit !== null) {
+      for (const job of jobs) {
+        for (let page = 1; ; page++) {
+          const checks = yield* rest(
+            CheckRuns,
+            cwd,
+            `${repo}/commits/${commit}/check-runs?check_name=${encodeURIComponent(job)}&filter=all&per_page=100&page=${page}`,
+          );
+          if (!checks.ok) return unread(checks.reason);
+          for (const check of checks.value.check_runs) selected.add(check.id);
+          if (checks.value.check_runs.length < 100) break;
+        }
+      }
+    }
+    const names: string[] = [];
+    for (let page = 1; ; page++) {
+      const named = yield* rest(
+        EnvironmentPage,
+        cwd,
+        `${repo}/environments?per_page=100&page=${page}`,
+      );
+      if (!named.ok) return unread(named.reason);
+      for (const { name } of named.value.environments) if (isStaging(name)) names.push(name);
+      if (named.value.environments.length < 100) break;
+    }
+    const environments: StagingEnvironment[] = [];
+    for (const name of names) {
+      const all = yield* pagesAs(
+        Deployment,
+        LOGIN,
+        cwd,
+        `${repo}/deployments?environment=${encodeURIComponent(name)}`,
+      );
+      if (!all.ok) return unread(all.reason);
+      let live: string | null = null;
+      let hasCommit = false;
+      for (const deployment of all.value) {
+        const candidate = deployment.sha === commit;
+        if (live !== null && (!candidate || hasCommit)) continue;
+        const latest = yield* rest(
+          Statuses,
+          cwd,
+          `${repo}/deployments/${deployment.id}/statuses?per_page=1`,
+        );
+        if (!latest.ok) return unread(latest.reason);
+        if (live === null && latest.value[0]?.state === "success") live = deployment.sha;
+        const link =
+          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/\d+\/job\/(\d+)(?:[/?#]|$)/.exec(
+            latest.value[0]?.log_url ?? "",
+          );
+        if (
+          candidate &&
+          (jobs === undefined ||
+            (link !== null &&
+              link[1]?.toLowerCase() === mrPath(ref).toLowerCase() &&
+              selected.has(Number(link[2]))))
+        )
+          hasCommit = true;
+      }
+      environments.push({ name, live, hasCommit });
+    }
+    return { ok: true, environments };
   });
 }
 
@@ -1160,6 +1248,7 @@ export const github: Forge = {
   details,
   liveTier,
   deployed,
+  stagingEnvironments,
   runStatus,
   pipeline,
   tagPipeline,

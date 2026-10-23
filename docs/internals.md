@@ -798,6 +798,9 @@ pinned to one exact version, rather than through `gh` or `glab`
 - Branch protection, `protects`, and deploy status, `liveTier`. GitHub pages its
   deployments and reads their latest statuses and commit comparisons; GitLab reads
   environments, successful deployments and their merge-bases on the same routes as glab.
+- Stage's `stagingEnvironments` pages environments and deployments through the same
+  transport. Selected-job attribution includes earlier attempts, and a refused read
+  leaves the deployed environments unknown so their claims cannot be given back.
 - Issues, review posting, my open merge requests and the login: `issues`, `fileIssue`,
   `commentIssue`, `post`, `mine` and `login`. These use the library's modelled thread and
   user operations. A review posts one note, then an approval only where asked. Lists are
@@ -1393,6 +1396,7 @@ prerequisite rather than a preference.
 
 ```sh
 bun install
+(cd desktop && bun install)
 bun run check          # formatting, lint, types, then the full test suite
 bun run build          # bin/collie for this platform
 bun run smoke          # bin/collie answers --help and returns typed envelopes
@@ -1409,8 +1413,10 @@ fake.
 pass. Keeping those phases separate avoids CPU contention with the subprocess-heavy tests.
 The individual scripts in `package.json` still work for focused feedback.
 
-Desktop has an install of its own, so its types are checked apart, with
-`cd desktop && bun install && bun run typecheck`; CI runs that as a job of its own.
+Root tests import Desktop modules and libraries, so install both sets of dependencies
+before running root checks. CI installs both with `--frozen-lockfile` before its root gate.
+Desktop's full typecheck, including its Vue views, runs separately with
+`cd desktop && bun run typecheck`; CI runs that as a job of its own.
 Desktop installs TypeScript twice. `@typescript/native` is TypeScript 7, the `tsc` that
 checks its `.ts` code, as the CLI's does. `typescript` is an alias for
 `@typescript/typescript6`, because TypeScript 7's package has no JS API and vue-tsc, which

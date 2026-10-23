@@ -18,6 +18,8 @@ import { shellQuote } from "../script";
 import type {
   DeployTier,
   DeployedRead,
+  StagingEnvironment,
+  StagingRead,
   Forge,
   ForBranch,
   FromBranch,
@@ -383,6 +385,82 @@ function deployed(
       if (found !== undefined) return { ok: true, sha: found.sha };
       if (newest.value.length < 100) return { ok: true, sha: null };
     }
+  });
+}
+
+const EnvironmentDeployment = Schema.Struct({
+  sha: Schema.String,
+  status: Schema.String,
+  deployable: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        name: Schema.String,
+        pipeline: Schema.optionalKey(
+          Schema.NullOr(Schema.Struct({ ref: Schema.String, sha: Schema.String })),
+        ),
+      }),
+    ),
+  ),
+});
+
+function stagingEnvironments<R>(
+  ref: MrRef,
+  commit: string | null,
+  cwd: string,
+  _run: Runner<R>,
+  jobs?: ReadonlyArray<string>,
+): Effect.Effect<StagingRead, never, ForgeHttp> {
+  return Effect.gen(function* () {
+    const api = projectRest(ref, cwd);
+    if (!api.ok) return api;
+    const unread = (reason: string) => ({
+      ok: false as const,
+      reason: `GitLab could not read ${ref.project}'s stage environments: ${reason}`,
+    });
+    const names: string[] = [];
+    for (let page = 1; ; page++) {
+      const listed = yield* api.rest(Environments, `environments?per_page=100&page=${page}`);
+      if (!listed.ok) return unread(listed.reason);
+      for (const env of listed.value) if (env.tier === "staging") names.push(env.name);
+      if (listed.value.length < 100) break;
+    }
+    const environments: StagingEnvironment[] = [];
+    const builtFrom = new Map<string, boolean>();
+    for (const name of names) {
+      let live: string | null = null;
+      let hasCommit = false;
+      for (let page = 1; live === null || (commit !== null && !hasCommit); page++) {
+        const newest = yield* api.rest(
+          Schema.Array(EnvironmentDeployment),
+          `deployments?environment=${encodeURIComponent(name)}&order_by=created_at&sort=desc&per_page=100&page=${page}`,
+        );
+        if (!newest.ok) return unread(newest.reason);
+        for (const one of newest.value) {
+          if (live === null && one.status === "success") live = one.sha;
+          if (hasCommit || commit === null) continue;
+          if (jobs !== undefined && !jobs.includes(one.deployable?.name ?? "")) continue;
+          if (one.sha === commit) {
+            hasCommit = true;
+          } else if (
+            jobs !== undefined &&
+            one.deployable?.pipeline?.ref === `refs/merge-requests/${ref.iid}/merge` &&
+            one.deployable.pipeline.sha === one.sha
+          ) {
+            let matches = builtFrom.get(one.sha);
+            if (matches === undefined) {
+              const parents = yield* api.rest(Commit, `repository/commits/${one.sha}`);
+              if (!parents.ok) return unread(parents.reason);
+              matches = parents.value.parent_ids.includes(commit);
+              builtFrom.set(one.sha, matches);
+            }
+            hasCommit = matches;
+          }
+        }
+        if (newest.value.length < 100) break;
+      }
+      environments.push({ name, live, hasCommit });
+    }
+    return { ok: true, environments };
   });
 }
 
@@ -1161,6 +1239,7 @@ export const gitlab: Forge = {
   details: mrDetails,
   liveTier,
   deployed,
+  stagingEnvironments,
   readReview,
   reply,
   merge,

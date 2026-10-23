@@ -767,6 +767,176 @@ for (const name of ["gitlab", "github"] as const) {
       ));
   });
 
+  describe(`the ${name} forge's stage per environment`, () => {
+    test("reads stage environments over HTTP with only the CLI login", () => {
+      const fake = fakeForge(
+        name,
+        model(name, {
+          environments: [
+            { name: "stage-web", tier: "staging", deployments: [{ sha: HEAD, status: "success" }] },
+          ],
+        }),
+      );
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* forge.stagingEnvironments(ref(name), HEAD, "/w", fake.run)).toEqual({
+            ok: true,
+            environments: [{ name: "stage-web", live: HEAD, hasCommit: true }],
+          });
+          expect(fake.requests.length).toBeGreaterThan(0);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    const read = (
+      commit: string | null,
+      environments: ForgeModel["environments"],
+      over: Partial<ForgeModel> = {},
+    ) =>
+      against(name, model(name, { environments, ...over }), (run) =>
+        forge.stagingEnvironments(ref(name), commit, "/w", run),
+      );
+    const success = (sha: string) => ({ sha, status: "success" as const });
+    const failed = (sha: string) => ({ sha, status: "failed" as const });
+
+    test("attribution: only selected jobs' deployments count, including a selected job's earlier attempt", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const fake = fakeForge(
+            name,
+            model(name, {
+              mrs: [
+                mr(name, {
+                  jobs: [
+                    { name: "stage:playground", state: "passed", id: 23 },
+                    { name: "stage:playground", state: "failed", id: 17 },
+                    { name: "stage:spilnu", state: "passed", id: 9 },
+                  ],
+                }),
+              ],
+              environments: [
+                {
+                  name: "stage-playground",
+                  tier: "staging",
+                  deployments: [
+                    { sha: HEAD, status: "success", job: "stage:playground", jobId: 17 },
+                  ],
+                },
+                {
+                  name: "stage-spilnu",
+                  tier: "staging",
+                  deployments: [{ sha: HEAD, status: "success", job: "stage:spilnu", jobId: 9 }],
+                },
+                {
+                  name: "stage-manual",
+                  tier: "staging",
+                  deployments: [{ sha: HEAD, status: "success", logUrl: "" }],
+                },
+                {
+                  name: "stage-bot",
+                  tier: "staging",
+                  deployments: [
+                    { sha: HEAD, status: "success", logUrl: "https://bot.example/log/17" },
+                  ],
+                },
+              ],
+            }),
+          );
+          const read = yield* forge
+            .stagingEnvironments(ref(name), HEAD, "/w", fake.run, ["stage:playground"])
+            .pipe(Effect.provide(fake.layer));
+          expect(read).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-playground", live: HEAD, hasCommit: true },
+              { name: "stage-spilnu", live: HEAD, hasCommit: false },
+              { name: "stage-manual", live: HEAD, hasCommit: false },
+              { name: "stage-bot", live: HEAD, hasCommit: false },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: each stage environment's newest successful deployment is read, even where another's is newer", () =>
+      runEffect(
+        Effect.gen(function* () {
+          expect(
+            yield* read(null, [
+              { name: "stage-spilnu", tier: "staging", deployments: [success("newer")] },
+              { name: "production", tier: "production", deployments: [success("prod")] },
+              { name: "stage-happytiger", tier: "staging", deployments: [success("older")] },
+              { name: "review-7", tier: "development", deployments: [success("preview")] },
+            ]),
+          ).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-spilnu", live: "newer", hasCommit: false },
+              { name: "stage-happytiger", live: "older", hasCommit: false },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: a newer failed deployment is not what is live, and none at all is null", () =>
+      runEffect(
+        Effect.gen(function* () {
+          expect(
+            yield* read(null, [
+              {
+                name: "stage-spilnu",
+                tier: "staging",
+                deployments: [failed("broken"), success("good")],
+              },
+              { name: "stage-happytiger", tier: "staging", deployments: [failed("broken")] },
+            ]),
+          ).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-spilnu", live: "good", hasCommit: false },
+              { name: "stage-happytiger", live: null, hasCommit: false },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: the environments with a deployment of a commit, whatever its status, are listed", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const read1 = yield* read(HEAD, [
+            {
+              name: "stage-spilnu",
+              tier: "staging",
+              deployments: [success("other"), failed(HEAD), success("older")],
+            },
+            { name: "stage-happytiger", tier: "staging", deployments: [success("older")] },
+            { name: "stage-web", tier: "staging", deployments: [success(HEAD)] },
+          ]);
+          expect(read1).toEqual({
+            ok: true,
+            environments: [
+              { name: "stage-spilnu", live: "other", hasCommit: true },
+              { name: "stage-happytiger", live: "older", hasCommit: false },
+              { name: "stage-web", live: HEAD, hasCommit: true },
+            ],
+          });
+        }),
+      ));
+
+    test("per environment: a read the forge does not answer is a refusal naming the project, not none", () =>
+      runEffect(
+        Effect.gen(function* () {
+          const refused = yield* read(
+            HEAD,
+            [{ name: "stage-spilnu", tier: "staging", deployments: [success(HEAD)] }],
+            { deploysDown: true },
+          );
+          expect(refused.ok).toBe(false);
+          expect(refused.ok ? "" : refused.reason).toContain(PROJECT[name]);
+        }),
+      ));
+  });
+
   test(`the ${name} forge says how its own pipeline or Actions run went, and nothing of the other's`, () =>
     runEffect(
       Effect.gen(function* () {
@@ -983,6 +1153,167 @@ test("GitHub finds a tag's newest run whatever event started it, a release's amo
       ).toEqual({
         ok: true,
         url: URLS.github.run.replace(/7$/, "9"),
+      });
+    }),
+  ));
+
+test("attribution: GitLab retains its earlier merged-results deployment without attributing descendants or another MR's merge", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "gitlab",
+        model("gitlab", {
+          mrs: [mr("gitlab", { head: "new-head" })],
+          ancestry: { [MERGED]: ["target", HEAD], "next-commit": [HEAD] },
+          environments: [
+            {
+              name: "stage-spilnu",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: MERGED,
+                  status: "success",
+                  pipeline: { ref: "refs/merge-requests/30/merge", sha: MERGED },
+                },
+              ],
+            },
+            {
+              name: "stage-teammate",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: "next-commit",
+                  status: "success",
+                  pipeline: { ref: "feature", sha: "next-commit" },
+                },
+              ],
+            },
+            {
+              name: "stage-branch-merge",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: MERGED,
+                  status: "success",
+                  pipeline: { ref: "feature", sha: MERGED },
+                },
+              ],
+            },
+            {
+              name: "stage-other-mr",
+              tier: "staging",
+              job: "deploy-stage",
+              deployments: [
+                {
+                  sha: MERGED,
+                  status: "success",
+                  pipeline: { ref: "refs/merge-requests/31/merge", sha: MERGED },
+                },
+              ],
+            },
+          ],
+        }),
+      );
+      expect(
+        yield* FORGES.gitlab
+          .stagingEnvironments(ref("gitlab"), HEAD, "/w", fake.run, ["deploy-stage"])
+          .pipe(Effect.provide(fake.layer)),
+      ).toEqual({
+        ok: true,
+        environments: [
+          { name: "stage-spilnu", live: MERGED, hasCommit: true },
+          { name: "stage-teammate", live: "next-commit", hasCommit: false },
+          { name: "stage-branch-merge", live: MERGED, hasCommit: false },
+          { name: "stage-other-mr", live: MERGED, hasCommit: false },
+        ],
+      });
+    }),
+  ));
+
+test("GitHub attributes stage beyond a page of environments, deployments and selected job attempts", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "github",
+        model("github", {
+          mrs: [
+            mr("github", {
+              jobs: Array.from({ length: 101 }, (_, at) => ({
+                name: "deploy-stage",
+                state: "passed" as const,
+                id: 101 - at,
+              })),
+            }),
+          ],
+          environments: [
+            ...Array.from({ length: 100 }, (_, at) => ({
+              name: `review-${at}`,
+              tier: "development" as const,
+            })),
+            {
+              name: "stage-web",
+              tier: "staging",
+              deployments: [
+                ...Array.from({ length: 100 }, () => ({
+                  sha: "other",
+                  status: "failed" as const,
+                })),
+                { sha: HEAD, status: "success", jobId: 1 },
+              ],
+            },
+          ],
+        }),
+      );
+      expect(
+        yield* FORGES.github
+          .stagingEnvironments(ref("github"), HEAD, "/w", fake.run, ["deploy-stage"])
+          .pipe(
+            Effect.provide(
+              forgeHttpTest(fake.run, (input, init) =>
+                Number(new URL(input).searchParams.get("page")) > 2
+                  ? Promise.resolve(new Response('{"message":"unexpected page"}', { status: 400 }))
+                  : fake.fetch(input, init),
+              ),
+            ),
+          ),
+      ).toEqual({
+        ok: true,
+        environments: [{ name: "stage-web", live: HEAD, hasCommit: true }],
+      });
+    }),
+  ));
+
+test("GitLab reads a stage environment per environment beyond a page of its deployments", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fake = fakeForge(
+        "gitlab",
+        model("gitlab", {
+          environments: [
+            {
+              name: "stage-spilnu",
+              tier: "staging",
+              deployments: [
+                ...Array.from({ length: 120 }, () => ({
+                  sha: "failing",
+                  status: "failed" as const,
+                })),
+                { sha: HEAD, status: "success" as const },
+              ],
+            },
+          ],
+        }),
+      );
+      expect(
+        yield* FORGES.gitlab
+          .stagingEnvironments(ref("gitlab"), HEAD, "/w", fake.run)
+          .pipe(Effect.provide(fake.layer)),
+      ).toEqual({
+        ok: true,
+        environments: [{ name: "stage-spilnu", live: HEAD, hasCommit: true }],
       });
     }),
   ));
