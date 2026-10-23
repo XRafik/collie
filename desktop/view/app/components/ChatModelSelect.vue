@@ -49,6 +49,15 @@ const items = computed(() => {
     :ui="{ content: 'min-w-72' }"
   >
     <span class="truncate">{{ select.label }}</span>
+    <template v-if="select.warning" #content-top>
+      <div
+        role="status"
+        class="flex items-start gap-2 border-b border-warning/25 bg-warning/10 px-3 py-2 text-xs text-warning"
+      >
+        <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+        <p>{{ select.warning }}</p>
+      </div>
+    </template>
     <template #item-label="{ item }">
       <template v-if="'typed' in item">
         Use <strong class="font-semibold">{{ item.typed }}</strong>
@@ -56,7 +65,18 @@ const items = computed(() => {
       <template v-else>{{ item.label }}</template>
     </template>
     <template v-if="select.note !== null" #content-bottom>
-      <p class="border-t border-default px-3 py-2 text-xs text-muted">{{ select.note }}</p>
+      <div
+        role="status"
+        class="flex items-start gap-2 border-t border-default px-3 py-2 text-xs text-muted"
+      >
+        <UIcon
+          v-if="select.reading"
+          name="i-lucide-loader-circle"
+          class="mt-0.5 size-3 shrink-0 animate-spin"
+          aria-hidden="true"
+        />
+        <p>{{ select.note }}</p>
+      </div>
     </template>
   </USelectMenu>
 </template>

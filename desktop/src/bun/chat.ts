@@ -251,9 +251,15 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   /** What a harness offers now. */
   readonly offered: (
     harness: string,
-  ) => Effect.Effect<Offer, never, FileSystem.FileSystem | Path.Path>;
+  ) => Effect.Effect<
+    Offer | { readonly from: "reading" },
+    never,
+    FileSystem.FileSystem | Path.Path
+  >;
   /** Saved settings or Flock model changes that require a fresh account. */
   readonly retold: Stream.Stream<unknown>;
+  readonly readModels?: (harness: string) => Effect.Effect<void>;
+  readonly modelsChanged?: Stream.Stream<unknown>;
   readonly chatHarness: () => ChatHarnessSet;
   readonly setChatHarness: FlockChat["setChatHarness"];
 }) {
@@ -292,7 +298,12 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
     inSync: opts.inSync,
     helle: opts.helle,
     chatHarness: opts.chatHarness,
-    chatChoices: Effect.suspend(() => accountOf(SubscriptionRef.getUnsafe(held))),
+    chatChoices: Effect.suspend(() =>
+      Effect.forEach(
+        Object.entries(drivers).filter(([, driver]) => driver.installed),
+        ([harness]) => readModels(harness),
+      ).pipe(Effect.andThen(Effect.suspend(() => accountOf(SubscriptionRef.getUnsafe(held))))),
+    ),
     setChatHarness: opts.setChatHarness,
   };
   const usage = (yield* Path.Path).join(opts.dir, "flock-usage.jsonl");
@@ -334,6 +345,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   });
 
   const drivers = Effect.isEffect(provided) ? yield* provided : provided;
+  const readModels = (harness: string) => opts.readModels?.(harness) ?? Effect.void;
 
   /** One session, live until its scope closes. */
   const start = Effect.fnUntraced(function* (driver: ChatDriver, id: string, choice: Resolved) {
@@ -397,7 +409,7 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
       live.choice.effort === choice.effort
     )
       return live.running;
-    yield* switchHarness;
+    yield* switchHarness(choice.harness);
     yield* end;
     const scope = yield* Scope.make();
     live = { running: yield* start(driver, id, choice).pipe(Scope.provide(scope)), scope, choice };
@@ -414,14 +426,14 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
   yield* Effect.addFinalizer(() => end);
 
   const turns = yield* Semaphore.make(1);
-  const switchHarness = Effect.gen(function* () {
-    const harness = opts.chatHarness().harness;
-    if (harness === heldOn) return;
-    yield* end;
-    id = yield* crypto.randomUUIDv4;
-    heldOn = harness;
-    yield* remember;
-  }).pipe(Effect.orDie);
+  const switchHarness = (harness: string) =>
+    Effect.gen(function* () {
+      if (harness === heldOn) return;
+      yield* end;
+      id = yield* crypto.randomUUIDv4;
+      heldOn = harness;
+      yield* remember;
+    }).pipe(Effect.orDie);
 
   // A throttle: the first board change in a while has Desktop look for News once things settle.
   let nudged = false;
@@ -563,6 +575,14 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
       Effect.provideContext(services),
     );
 
+  yield* Stream.merge(
+    opts.retold.pipe(Stream.tap(() => readModels(opts.chatHarness().harness))),
+    opts.modelsChanged ?? Stream.empty,
+  ).pipe(
+    Stream.runForEach(() => tell),
+    Effect.forkScoped,
+  );
+
   const conversation: FlockConversation = {
     send: (text, about, now, attachments = []) =>
       Stream.unwrap(
@@ -637,10 +657,13 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
     nudge,
     desktopTurns: SubscriptionRef.changes(desktopTurns),
     changed: SubscriptionRef.changes(changed),
-    choices: Stream.merge(
-      SubscriptionRef.changes(held),
-      opts.retold.pipe(Stream.mapEffect(() => SubscriptionRef.get(held))),
-    ).pipe(Stream.mapEffect(accountOf)),
+    choices: Stream.unwrap(
+      Effect.suspend(() =>
+        readModels(opts.chatHarness().harness).pipe(
+          Effect.as(SubscriptionRef.changes(held).pipe(Stream.mapEffect(accountOf))),
+        ),
+      ),
+    ),
   };
   return conversation;
 });

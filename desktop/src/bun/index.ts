@@ -61,7 +61,7 @@ import { clipboardPaths } from "../shared/attachments";
 import { readAttachment, stageAttachment, stagePath } from "./attachments";
 import { actionsLog } from "./sent";
 import { type FlockConversation, openFlockChat, refusal, untilStarted } from "./chat";
-import { claudeCode } from "./claude";
+import { claudeCode, claudeModels } from "./claude";
 import { claudeDriver } from "./claude-driver";
 import { loopbackTools } from "./chat-endpoint";
 import { piDriver } from "./pi-driver";
@@ -69,6 +69,7 @@ import { CHILD_CWD, childEnv, localShell, takeLoginEnv, which } from "./login-en
 import { type ChatMachine, chatDoor } from "./flock-tools";
 import { heldSettings, type Offers } from "./settings";
 import { offerOf, offersOf, opensOn, readPiConfig, retelling } from "./chat-choices";
+import { harnessLists } from "./harness-lists";
 import { followWindow, zoomWindow } from "./scale";
 import type { Drawn } from "../shared/scale";
 import {
@@ -250,11 +251,14 @@ const main = Effect.gen(function* () {
     version: manifest.version,
   }).pipe(Effect.ignore);
   const logged = yield* actionsLog(own);
+  const lists = yield* harnessLists({
+    claude: Effect.suspend(() => claudeModels(SubscriptionRef.getUnsafe(flockSettings), own)),
+  });
   const desktop = yield* heldSettings(
     own,
     (): FlockSettings => SubscriptionRef.getUnsafe(flockSettings),
     (now): Effect.Effect<Offers, never, FileSystem.FileSystem | Path.Path> =>
-      offersOf(now, SubscriptionRef.getUnsafe(flockSettings), readPiConfig(own)),
+      offersOf(now, SubscriptionRef.getUnsafe(flockSettings), readPiConfig(own), lists),
   );
   const settings = desktop.now;
   const saved = yield* readFlockSettings(own);
@@ -713,10 +717,19 @@ const main = Effect.gen(function* () {
         Effect.orDie,
         Effect.provide(BunServices.layer),
       ),
-    choice: () => opensOn(settings(), SubscriptionRef.getUnsafe(flockSettings), readPiConfig(own)),
+    choice: () =>
+      opensOn(settings(), SubscriptionRef.getUnsafe(flockSettings), readPiConfig(own), lists),
     offered: (harness) =>
-      offerOf(harness, settings(), SubscriptionRef.getUnsafe(flockSettings), readPiConfig(own)),
+      offerOf(
+        harness,
+        settings(),
+        SubscriptionRef.getUnsafe(flockSettings),
+        readPiConfig(own),
+        lists,
+      ),
     retold: retelling(desktop.changes, SubscriptionRef.changes(flockSettings)),
+    readModels: lists.need,
+    modelsChanged: lists.changes.pipe(Stream.drop(1)),
     chatHarness: () => ({
       harness: settings().chatHarness ?? DEFAULT_CHAT_HARNESS,
       model: settings().chatModel,

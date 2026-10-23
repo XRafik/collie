@@ -1825,9 +1825,10 @@ back to the message box. Settings › Chat has no rows for them.
   computer**.
 - **Model** starts with **Default · …**, named by the model an unset choice runs as and
   described "What the chat runs with no model set"; choosing it unsets the model. Then come
-  the models Collie's table names for the harness, the Flock's **More … models** and the set
-  model, each by its id. It can be searched, and an id that is not listed is offered as
-  **Use <id>**. A typed model is checked as a Run's model is.
+  Claude Code's own models with their names and descriptions; Pi currently uses Collie's
+  table, the Flock's **More … models** and the set model, each by its id. It can be searched,
+  and an id that is not listed is offered as **Use <id>**. A typed model is checked as a
+  Run's model is.
 - **Effort** starts with **Default · …**, named by the level an unset effort runs at and
   described "What the chat runs with no effort set", then the levels the model takes. For a
   model that takes none it is disabled, dashed, reading "<model> takes no effort".
@@ -1835,8 +1836,18 @@ back to the message box. Settings › Chat has no rows for them.
 A refused choice is shown in red above the message box, ending "Nothing was saved.", with
 **Dismiss**; nothing is saved.
 
+Claude Code's model list comes from your own install and login on this computer. Desktop
+reads it once per start, when the chat is first shown, with no turn started and no tokens
+spent, and keeps the successful list until it quits. Each model lists its own effort
+levels; Haiku 4.5 takes none. The menu says when the list is still being read and still lets
+you type an id. The first message waits at most 20 seconds for it. If the read fails or
+takes longer, the menu warns why and offers Collie's table, the Flock's **More Claude models**
+and the set model, named by id with the table's effort levels. A failed read is tried again
+when the list is next needed; a slow read can still replace the table once it arrives.
+
 Claude runs through the Agent SDK. Unset, its model is `opus`; a set model such as `sonnet`
-runs at medium effort, or the one set, with summarised thinking. None of your Claude settings, hooks, skills
+runs at medium effort, or the one set, with summarised thinking, unless the model lists no
+effort levels, in which case no effort is passed. None of your Claude settings, hooks, skills
 or CLAUDE.md loads, but your MCP servers do: those added at user scope (`claude mcp add
 --scope user`, read from `~/.claude.json` when each conversation starts) and your claude.ai
 connectors, such as Linear and Slack, signed in as Claude Code already is. Their tools ask
@@ -1889,7 +1900,8 @@ never a new one; the menu's last line says so whenever it lists one. **Start fre
 the set harness. You can ask the chat to read or change these settings through
 `collie_chat_harness`, with the same checks as the selects. Its read says what an unset
 model and effort run as, the harness the conversation is held on, what its session runs on
-now or that none is warm, and each installed harness's models with their efforts.
+now or that none is warm, and each installed harness's models with their efforts. It also
+says when a list is being read or comes from the table, and why a read failed.
 
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or

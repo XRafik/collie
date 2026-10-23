@@ -348,3 +348,44 @@ test("before the account arrives, each select shows what is set", () => {
     "High",
   ]);
 });
+
+test("a reading list keeps the set model and typed ids available and names the read beside a spinner", () => {
+  const reading: ChatChoices = {
+    ...ACCOUNT,
+    harnesses: [{ ...ACCOUNT.harnesses[0]!, offered: { from: "reading" } }],
+  };
+  const { model } = chatSelects({ proactive: true, chatModel: "sonnet" }, reading);
+  expect(model).toMatchObject({
+    label: "sonnet",
+    reading: true,
+    note: "Reading Claude Code's models… You can still type a model id.",
+  });
+  expect(model.options).toEqual([
+    { value: "", label: "Default" },
+    { value: "sonnet", label: "sonnet" },
+  ]);
+  expect(typedEntry("claude-opus-5", model)).toEqual({
+    value: "claude-opus-5",
+    label: "Use claude-opus-5",
+  });
+});
+
+test("a failed list explains the table fallback while a harness list names its source", () => {
+  const listed = { unset: { harness: "claude", model: "opus", effort: "medium" }, models: CLAUDE };
+  const failed: ChatChoices = {
+    ...ACCOUNT,
+    harnesses: [
+      { ...ACCOUNT.harnesses[0]!, offered: { ...listed, from: "table", why: "Login expired" } },
+    ],
+  };
+  expect(chatSelects({ proactive: true }, failed).model.warning).toBe(
+    "Claude Code's list could not be read: Login expired. Showing Collie's table, so models are named by id.",
+  );
+  const own: ChatChoices = {
+    ...ACCOUNT,
+    harnesses: [{ ...ACCOUNT.harnesses[0]!, offered: { ...listed, from: "harness" } }],
+  };
+  expect(chatSelects({ proactive: true }, own).model.note).toBe(
+    "Listed by Claude Code on this computer",
+  );
+});

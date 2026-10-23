@@ -13,6 +13,7 @@ import {
   Path,
   PubSub,
   Schema,
+  type Scope,
   Stream,
   Queue,
 } from "effect";
@@ -26,6 +27,8 @@ import type { TurnCost } from "../desktop/src/bun/driver";
 import type { ChatDriver, DriverContext } from "../desktop/src/bun/driver";
 import { changeSettings } from "../desktop/src/bun/settings";
 import { offerOf, opensOn } from "../desktop/src/bun/chat-choices";
+import { harnessLists } from "../desktop/src/bun/harness-lists";
+import type { ListedModel } from "../desktop/src/bun/claude-models";
 import { DesktopSettings } from "../desktop/src/shared/flock";
 import type { ChatChoices } from "../desktop/src/shared/chat-choices";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
@@ -294,6 +297,7 @@ const withChat = <A, E>(
     readonly transcripts?: ReadonlyArray<readonly [string, unknown[]]>;
     /** Ticks as Desktop's saved settings or the Flock's models would. */
     readonly retold?: Stream.Stream<unknown>;
+    readonly readers?: Readonly<Record<string, Effect.Effect<ReadonlyArray<ListedModel>, string>>>;
   },
   reply: (text: string) => ReadonlyArray<SdkMessage>,
   body: (chat: {
@@ -301,7 +305,7 @@ const withChat = <A, E>(
     readonly seen: Seen;
     readonly read: string[];
     readonly dir: string;
-  }) => Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path>,
+  }) => Effect.Effect<A, E, Crypto.Crypto | FileSystem.FileSystem | Path.Path | Scope.Scope>,
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -324,6 +328,7 @@ const withChat = <A, E>(
       if (opts.savedFile !== undefined)
         yield* fs.writeFileString(`${dir}/flock-chat.json`, opts.savedFile);
       const settings = opts.settings ?? { current: { proactive: opts.proactive } };
+      const lists = opts.readers === undefined ? undefined : yield* harnessLists(opts.readers);
       const conversation = yield* openFlockChat({
         drivers: (context) => {
           const drivers: ScriptedDrivers = {
@@ -342,9 +347,11 @@ const withChat = <A, E>(
         machineRule: () => opts.rule ?? "Everything is on the vm",
         setMachineRule: () => Effect.void,
         inSync: () => Effect.succeed(""),
-        choice: () => opensOn(settings.current, NO_FLOCK_SETTINGS, Effect.succeed({})),
+        choice: () => opensOn(settings.current, NO_FLOCK_SETTINGS, Effect.succeed({}), lists),
         offered: (harness) =>
-          offerOf(harness, settings.current, NO_FLOCK_SETTINGS, Effect.succeed({})),
+          offerOf(harness, settings.current, NO_FLOCK_SETTINGS, Effect.succeed({}), lists),
+        readModels: lists?.need,
+        modelsChanged: lists?.changes.pipe(Stream.drop(1)),
         retold: opts.retold ?? Stream.empty,
         chatHarness: () => ({
           harness: settings.current.chatHarness ?? "claude",
@@ -1333,6 +1340,121 @@ test("the account is told again when Desktop retells it, with each harness's lis
         };
         expect(ids(told[0]!)).not.toContain("claude-opus-5");
         expect(ids(told[1]!)).toContain("claude-opus-5");
+      }),
+  );
+});
+
+test("windows start the set harness's read, choosing another starts its read, and the chat tool retries a failed list", () => {
+  const settings = { current: Schema.decodeUnknownSync(DesktopSettings)({ proactive: false }) };
+  const changed = Effect.runSync(PubSub.unbounded<void>());
+  const reads = { claude: 0, pi: 0 };
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings,
+      drivers: { pi: fakeDriver([]).driver },
+      retold: Stream.fromPubSub(changed),
+      readers: {
+        claude: Effect.sync(() => {
+          reads.claude++;
+        }).pipe(
+          Effect.andThen(Effect.sleep("2 seconds")),
+          Effect.as([{ id: "opus", label: "Opus 5", efforts: [] }]),
+        ),
+        pi: Effect.suspend(() => {
+          reads.pi++;
+          return Effect.sleep("2 seconds").pipe(
+            Effect.andThen(
+              reads.pi === 1
+                ? Effect.fail("Login expired")
+                : Effect.succeed([
+                    { id: "openai-codex/gpt-6.1-sol", label: "Sol", efforts: ["low", "high"] },
+                  ]),
+            ),
+          );
+        }),
+      },
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        expect(reads).toEqual({ claude: 0, pi: 0 });
+        const told: ChatChoices[] = [];
+        yield* conversation.choices.pipe(
+          Stream.runForEach((choices) =>
+            Effect.sync(() => {
+              told.push(choices);
+            }),
+          ),
+          Effect.forkScoped,
+        );
+        yield* eventually(() => told.length > 0);
+        expect(told[0]!.harnesses[0]!.offered).toEqual({ from: "reading" });
+        expect(reads).toEqual({ claude: 1, pi: 0 });
+        yield* TestClock.adjust("2 seconds");
+        yield* eventually(() => told.at(-1)?.harnesses[0]?.offered.from === "harness");
+        yield* Stream.runDrain(conversation.send("hello", null, false));
+        expect(seen.efforts).toEqual(["none"]);
+        yield* account(conversation);
+        expect(reads.claude).toBe(1);
+        settings.current = { proactive: false, chatHarness: "pi" };
+        yield* PubSub.publish(changed, undefined);
+        yield* eventually(() => reads.pi === 1);
+        expect(told.at(-1)!.harnesses[1]!.offered).toEqual({ from: "reading" });
+        yield* TestClock.adjust("2 seconds");
+        yield* eventually(() => told.at(-1)?.harnesses[1]?.offered.from === "table");
+        expect(told.at(-1)!.harnesses[1]!.offered).toMatchObject({
+          from: "table",
+          why: "Login expired",
+        });
+        expect(yield* callFlockTool(seen.flock!, "collie_chat_harness", {})).toContain(
+          "pi's models are still being read",
+        );
+        expect(reads.pi).toBe(2);
+        yield* TestClock.adjust("2 seconds");
+        yield* eventually(() => told.at(-1)?.harnesses[1]?.offered.from === "harness");
+        expect(reads).toEqual({ claude: 1, pi: 2 });
+      }),
+  );
+});
+
+test("a harness changed while the first message waits for its list applies to the following message", () => {
+  const settings = { current: Schema.decodeUnknownSync(DesktopSettings)({ proactive: false }) };
+  const pi = fakeDriver([]);
+  return withChat(
+    {
+      items: [],
+      proactive: false,
+      settings,
+      drivers: { pi: pi.driver },
+      readers: {
+        claude: Effect.sleep("2 seconds").pipe(
+          Effect.as([{ id: "opus", label: "Opus 5", efforts: [] }]),
+        ),
+      },
+    },
+    answered,
+    ({ conversation, seen }) =>
+      Effect.gen(function* () {
+        const first = yield* Stream.runDrain(conversation.send("first", null, false)).pipe(
+          Effect.forkScoped,
+        );
+        yield* TestClock.adjust("1 second");
+        expect(seen.sessions).toEqual([]);
+        settings.current = { proactive: false, chatHarness: "pi" };
+        yield* TestClock.adjust("1 second");
+        yield* Fiber.join(first);
+        expect(yield* account(conversation)).toMatchObject({
+          heldOn: "claude",
+          runsOn: { harness: "claude", model: "opus", effort: null },
+        });
+        yield* Stream.runDrain(conversation.send("next", null, false));
+        expect(yield* account(conversation)).toMatchObject({
+          heldOn: "pi",
+          runsOn: { harness: "pi" },
+        });
+        expect(pi.opened).toHaveLength(1);
       }),
   );
 });

@@ -8,6 +8,7 @@ import { type Offer, PiConfig, runsAs } from "../shared/chat-choices";
 import type { DesktopSettings } from "../shared/flock";
 import { CHAT_HARNESSES, DEFAULT_CHAT_HARNESS, type FlockSettings } from "../shared/flock-settings";
 import { childEnv } from "./login-env";
+import type { HarnessList, HarnessLists } from "./harness-lists";
 import { chatChoice, extraModels, type Offers } from "./settings";
 
 /** Pi's configuration as it is now; nothing where it has none or it cannot be read. */
@@ -56,23 +57,54 @@ export const tableOffer = (
 const configFor = <R>(harness: string, pi: Effect.Effect<PiConfig, never, R>) =>
   harness === "pi" ? pi : Effect.succeed<PiConfig>({});
 
+const withList = (table: Offer, list: HarnessList | undefined, pi: PiConfig): Offer => {
+  if (list?.from === "table") return { ...table, why: list.why };
+  if (list?.from !== "harness") return table;
+  const harness = table.unset.harness;
+  return {
+    from: "harness",
+    unset: runsAs({ harness }, list.models, pi),
+    models: list.models.map((model) => ({
+      ...model,
+      unsetEffort: runsAs({ harness, model: model.id }, list.models, pi).effort,
+    })),
+  };
+};
+
 /** What `harness` offers now, with Pi's configuration as `pi` reads it. */
 export const offerOf = <R>(
   harness: string,
   settings: DesktopSettings,
   flock: FlockSettings,
   pi: Effect.Effect<PiConfig, never, R>,
+  lists?: HarnessLists,
 ) =>
-  configFor(harness, pi).pipe(Effect.map((config) => tableOffer(harness, settings, flock, config)));
+  configFor(harness, pi).pipe(
+    Effect.map((config) => {
+      const list = lists?.now(harness);
+      return list?.from === "reading"
+        ? list
+        : withList(tableOffer(harness, settings, flock, config), list, config);
+    }),
+  );
 
 /** What every harness the chat has a driver for offers now. */
 export const offersOf = <R>(
   settings: DesktopSettings,
   flock: FlockSettings,
   pi: Effect.Effect<PiConfig, never, R>,
+  lists?: HarnessLists,
 ) =>
   Effect.forEach(CHAT_HARNESSES, (harness) =>
-    offerOf(harness, settings, flock, pi).pipe(Effect.map((offer) => [harness, offer] as const)),
+    configFor(harness, pi).pipe(
+      Effect.map(
+        (config) =>
+          [
+            harness,
+            withList(tableOffer(harness, settings, flock, config), lists?.now(harness), config),
+          ] as const,
+      ),
+    ),
   ).pipe(Effect.map((offered): Offers => Object.fromEntries(offered)));
 
 /** The checked session choice, with Pi's configuration read afresh. */
@@ -80,17 +112,19 @@ export const opensOn = <R>(
   settings: DesktopSettings,
   flock: FlockSettings,
   pi: Effect.Effect<PiConfig, never, R>,
+  lists?: HarnessLists,
 ) =>
   Effect.gen(function* () {
     const checked = chatChoice(settings, flock);
     if (!checked.ok) return checked;
     const { harness } = checked.choice;
+    if (lists !== undefined) yield* lists.ready(harness);
     const config = yield* configFor(harness, pi);
     return {
       ok: true as const,
       choice: runsAs(
         { harness, model: settings.chatModel, effort: settings.chatEffort },
-        tableOffer(harness, settings, flock, config).models,
+        withList(tableOffer(harness, settings, flock, config), lists?.now(harness), config).models,
         config,
       ),
     };

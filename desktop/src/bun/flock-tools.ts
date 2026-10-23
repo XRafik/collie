@@ -1106,22 +1106,27 @@ const chatHarness = (
             ? "No session is warm."
             : `Its session runs on ${runsSaid(choices.runsOn)} now.`
         }`,
-        ...choices.harnesses.flatMap(({ harness, installed, offered }) =>
-          !installed
-            ? []
-            : offered.from === "reading"
-              ? [`${harness}'s models are still being read.`]
-              : offered.models.length === 0
-                ? [`${harness} offers no model by name.`]
-                : [
-                    `${harness} offers ${offered.models
-                      .map(
-                        ({ id, efforts }) =>
-                          `${id} (${efforts.length === 0 ? "no effort" : efforts.join(", ")})`,
-                      )
-                      .join(", ")}.`,
-                  ],
-        ),
+        ...choices.harnesses.flatMap(({ harness, label, installed, offered }) => {
+          if (!installed) return [];
+          if (offered.from === "reading") return [`${harness}'s models are still being read.`];
+          return [
+            ...(offered.from !== "table"
+              ? []
+              : [
+                  offered.why === undefined
+                    ? `${label}'s models are from Collie's table.`
+                    : `${label}'s list could not be read: ${offered.why.replace(/\.$/, "")}. Showing Collie's table.`,
+                ]),
+            offered.models.length === 0
+              ? `${harness} offers no model by name.`
+              : `${harness} offers ${offered.models
+                  .map(
+                    ({ id, efforts }) =>
+                      `${id} (${efforts.length === 0 ? "no effort" : efforts.join(", ")})`,
+                  )
+                  .join(", ")}.`,
+          ];
+        }),
       ].join("\n");
     }
     const refused = yield* flock.setChatHarness(change);

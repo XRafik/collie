@@ -141,6 +141,8 @@ export interface ChoiceSelect {
   readonly options: ReadonlyArray<ChoiceOption>;
   /** The menu's last line; null where it has none. */
   readonly note: string | null;
+  readonly reading?: true;
+  readonly warning?: string;
   readonly disabled: boolean;
 }
 
@@ -180,7 +182,21 @@ export const chatSelects = (settings: DesktopSettings, choices: ChatChoices | nu
   if (entry === undefined || entry.offered.from === "reading")
     return {
       harness: harnessSelect,
-      model: select("Model", set ?? "", set ?? "Default", [], null),
+      model: {
+        ...select(
+          "Model",
+          set ?? "",
+          set ?? "Default",
+          [
+            { value: "", label: "Default" },
+            ...(set === undefined ? [] : [{ value: set, label: set }]),
+          ],
+          entry === undefined
+            ? null
+            : `Reading ${entry.label}'s models… You can still type a model id.`,
+        ),
+        ...(entry !== undefined && { reading: true as const }),
+      },
       effort: select(
         "Effort",
         effortSet ?? "",
@@ -194,23 +210,29 @@ export const chatSelects = (settings: DesktopSettings, choices: ChatChoices | nu
     offer.models.find((model) => model.id === id)?.label ??
     (id === DEFAULT_MODEL ? `${entry.label}'s own` : id);
   const unsetModel = `Default · ${modelLabel(offer.unset.model)}`;
-  const model = select(
-    "Model",
-    set ?? "",
-    set === undefined ? unsetModel : modelLabel(set),
-    [
-      { value: "", label: unsetModel, description: "What the chat runs with no model set" },
-      ...offer.models.map(({ id, label, description }) =>
-        description === undefined ? { value: id, label } : { value: id, label, description },
-      ),
-      ...(set === undefined || offer.models.some(({ id }) => id === set)
-        ? []
-        : [{ value: set, label: set }]),
-    ],
-    offer.from === "table"
-      ? "Collie's table, so models are named by id"
-      : `Listed by ${entry.label} on this computer`,
-  );
+  const model: ChoiceSelect = {
+    ...select(
+      "Model",
+      set ?? "",
+      set === undefined ? unsetModel : modelLabel(set),
+      [
+        { value: "", label: unsetModel, description: "What the chat runs with no model set" },
+        ...offer.models.map(({ id, label, description }) =>
+          description === undefined ? { value: id, label } : { value: id, label, description },
+        ),
+        ...(set === undefined || offer.models.some(({ id }) => id === set)
+          ? []
+          : [{ value: set, label: set }]),
+      ],
+      offer.from === "table"
+        ? "Collie's table, so models are named by id"
+        : `Listed by ${entry.label} on this computer`,
+    ),
+    ...(offer.from === "table" &&
+      offer.why !== undefined && {
+        warning: `${entry.label}'s list could not be read: ${offer.why.replace(/\.$/, "")}. Showing Collie's table, so models are named by id.`,
+      }),
+  };
   const runs = runsAsOffered({ harness, model: set }, offer);
   if (runs.effort === null) {
     const none = `${modelLabel(runs.model)} takes no effort`;

@@ -978,6 +978,39 @@ test("the Machine rule is read back as saved, and replaced with what the human a
 const HELD =
   "The conversation is held on claude. Its session runs on claude/opus at medium effort now.";
 
+test("the chat's model listing explains reads in progress and the table fallback reason", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const read = (offered: ChatChoices["harnesses"][number]["offered"]) =>
+        callFlockTool(
+          {
+            ...flockOf([]),
+            chatChoices: Effect.succeed({
+              heldOn: "claude",
+              runsOn: null,
+              turning: false,
+              harnesses: [{ harness: "claude", label: "Claude Code", installed: true, offered }],
+            }),
+          },
+          "collie_chat_harness",
+          {},
+        ).pipe(Effect.provide(BunServices.layer));
+      expect(yield* read({ from: "reading" })).toContain("claude's models are still being read.");
+      const failed = yield* read({
+        from: "table",
+        why: "Claude Code exited before answering",
+        unset: { harness: "claude", model: "opus", effort: "medium" },
+        models: [
+          { id: "opus", label: "opus", efforts: ["low", "medium", "high"], unsetEffort: "medium" },
+        ],
+      });
+      expect(failed).toContain(
+        "Claude Code's list could not be read: Claude Code exited before answering. Showing Collie's table.",
+      );
+      expect(failed).toContain("claude offers opus (low, medium, high).");
+    }),
+  ));
+
 test("the chat reads what it runs on, and changes its model with Settings' checks, from the next message", () =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -1105,7 +1138,9 @@ test("the chat's read names where the conversation is held, that no session is w
         [
           "The Flock chat is set to pi, with no model set, so it runs as openai-codex/gpt-6.1-sol, with no effort set, so it runs at high.",
           "The conversation is held on claude; the next message starts a new one on pi. No session is warm.",
+          "Claude Code's models are from Collie's table.",
           "claude offers opus (low, medium, high), claude-haiku-4-5-20251001 (no effort).",
+          "Pi's models are from Collie's table.",
           "pi offers openai-codex/gpt-5.5 (low, high).",
         ].join("\n"),
       );
