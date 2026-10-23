@@ -39,7 +39,8 @@ and its [harness amendment](../docs/adr/0011-the-conversation-is-a-native-harnes
 The harness, model and effort are chosen in three selects under the message box. A model change waits for the next message and keeps the conversation; a harness change waits for the next message too, which starts a new conversation on it. Every window follows the `chatChoices` stream: the account of the harness the conversation is held on, what its session runs on, whether a turn is under way, and what each harness offers. Tested in
 `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`, `test/flock-chat-turns.test.ts`,
 `test/desktop-settings.test.ts`, `test/desktop-chat-choices.test.ts`,
-`test/desktop-claude-models.test.ts`, `test/desktop-harness-lists.test.ts` and `test/flock-tools.test.ts`.
+`test/desktop-claude-models.test.ts`, `test/desktop-pi-models.test.ts`,
+`test/desktop-harness-lists.test.ts` and `test/flock-tools.test.ts`.
 
 | File                         | What it owns                                                                                                                                                                                                                     |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -50,6 +51,7 @@ The harness, model and effort are chosen in three selects under the message box.
 | `src/bun/claude-models.ts`   | Claude Code's own model names, descriptions and effort levels, read through an SDK query that sends no message and closes after the read                                                                                         |
 | `src/bun/harness-lists.ts`   | The lists kept in memory until Desktop quits; lazy reads shared by every window, their reading and failure states, retries after failure, and the first open's 20-second wait                                                    |
 | `src/bun/pi-driver.ts`       | Pi over RPC                                                                                                                                                                                                                      |
+| `src/bun/pi-models.ts`       | Pi's models and per-model thinking levels, read serially by RPC without setup, a session or a package check                                                                                                                      |
 | `src/bun/pi-agui.ts`         | Pi events as AG-UI                                                                                                                                                                                                               |
 | `src/bun/pi-transcript.ts`   | Pi session files read back                                                                                                                                                                                                       |
 | `src/bun/agui.ts`            | SDK messages as AG-UI                                                                                                                                                                                                            |

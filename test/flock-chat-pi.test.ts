@@ -15,6 +15,11 @@ import { offerOf, opensOn, readPiConfig } from "../desktop/src/bun/chat-choices"
 import { PiConfig } from "../desktop/src/shared/chat-choices";
 import type { DesktopSettings } from "../desktop/src/shared/flock";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
+import { harnessLists } from "../desktop/src/bun/harness-lists";
+import { readPiModels } from "../desktop/src/bun/pi-models";
+import { changeSettings } from "../desktop/src/bun/settings";
+import { chatSelects } from "../desktop/src/shared/chat-choices";
+import { callFlockTool } from "../desktop/src/bun/flock-tools";
 
 const withPi = <A, E>(
   body: (
@@ -261,6 +266,112 @@ test("Pi starts a set model at the level its configuration names for it while th
         "--thinking",
         "low",
       ]);
+    }),
+  ));
+
+test("Pi's own per-model levels constrain settings, selects, the tool and the session's configured default", () =>
+  withPi((driver, context) =>
+    Effect.gen(function* () {
+      const lists = yield* harnessLists({
+        pi: readPiModels(NO_FLOCK_SETTINGS, context.dir, [
+          "bun",
+          `${import.meta.dir}/fixtures/pi-models.ts`,
+          "list",
+        ]),
+      });
+      yield* lists.ready("pi");
+      for (const { model, configured, expected, label } of [
+        {
+          model: "openai-codex/gpt-5.5",
+          configured: "max",
+          expected: "xhigh",
+          label: "Default · Extra high",
+        },
+        {
+          model: "openai-codex/gpt-6.1-sol",
+          configured: "off",
+          expected: "minimal",
+          label: "Default · Minimal",
+        },
+        {
+          model: "openai-codex/gpt-5.5",
+          configured: "high",
+          expected: "high",
+          label: "Default · High",
+        },
+      ]) {
+        yield* writePiConfig({
+          defaultProvider: "openai-codex",
+          defaultModel: "gpt-6.1-sol",
+          defaultThinkingLevel: "max",
+          modelThinkingLevels: { [model]: configured },
+        });
+        const settings: DesktopSettings = { proactive: true, chatHarness: "pi", chatModel: model };
+        const choice = yield* opensOn(
+          settings,
+          NO_FLOCK_SETTINGS,
+          readPiConfig(context.dir),
+          lists,
+        );
+        expect(choice).toEqual({ ok: true, choice: { harness: "pi", model, effort: expected } });
+        if (!choice.ok) return yield* Effect.die(choice.problem);
+        const session = yield* driver.open("clamped", choice.choice.model, choice.choice.effort);
+        yield* session.offer("inspect");
+        const inspectedSession = inspected(
+          yield* Stream.runCollect(session.events.pipe(Stream.takeUntil(ends))),
+        );
+        yield* session.close;
+        expect(inspectedSession).toMatchObject({ model, thinking: expected });
+        const offered = yield* offerOf(
+          "pi",
+          settings,
+          NO_FLOCK_SETTINGS,
+          readPiConfig(context.dir),
+          lists,
+        );
+        if (offered.from === "reading") return yield* Effect.die("List did not finish");
+        const account = {
+          heldOn: "pi",
+          runsOn: choice.choice,
+          turning: false,
+          harnesses: [{ harness: "pi", label: "Pi", installed: true, offered }],
+        };
+        const selects = chatSelects(settings, account);
+        expect(selects.effort.options[0]?.label).toBe(label);
+        expect(selects.model.note).toBe("Listed by Pi on this computer");
+        expect(selects.model.options.map(({ label }) => label)).toContain("GPT-5.5");
+        const said = yield* callFlockTool(
+          {
+            ...context.flock,
+            chatHarness: () => ({ harness: "pi", model, effort: undefined }),
+            chatChoices: Effect.succeed(account),
+          },
+          "collie_chat_harness",
+          {},
+        );
+        expect(said).toContain(
+          "pi offers openai-codex/gpt-5.5 (off, minimal, low, medium, high, xhigh), openai-codex/gpt-6.1-sol (minimal, low, medium, high, xhigh, max), local/only-off (no effort), local/plain (no effort).",
+        );
+        const offers = { pi: offered };
+        expect(
+          changeSettings(
+            settings,
+            NO_FLOCK_SETTINGS,
+            { chatModel: "openai-codex/gpt-5.5", chatEffort: "max" },
+            offers,
+          ),
+        ).toEqual({
+          refused: '"max" is not an effort GPT-5.5 takes (off, minimal, low, medium, high, xhigh)',
+        });
+        expect(
+          changeSettings(
+            { ...settings, chatModel: "openai-codex/gpt-6.1-sol", chatEffort: "max" },
+            NO_FLOCK_SETTINGS,
+            { chatModel: "openai-codex/gpt-5.5" },
+            offers,
+          ),
+        ).toEqual({ proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" });
+      }
     }),
   ));
 

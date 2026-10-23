@@ -70,6 +70,7 @@ import { type ChatMachine, chatDoor } from "./flock-tools";
 import { heldSettings, type Offers } from "./settings";
 import { offerOf, offersOf, opensOn, readPiConfig, retelling } from "./chat-choices";
 import { harnessLists } from "./harness-lists";
+import { readPiModels } from "./pi-models";
 import { followWindow, zoomWindow } from "./scale";
 import type { Drawn } from "../shared/scale";
 import {
@@ -253,6 +254,7 @@ const main = Effect.gen(function* () {
   const logged = yield* actionsLog(own);
   const lists = yield* harnessLists({
     claude: Effect.suspend(() => claudeModels(SubscriptionRef.getUnsafe(flockSettings), own)),
+    pi: Effect.suspend(() => readPiModels(SubscriptionRef.getUnsafe(flockSettings), own)),
   });
   const desktop = yield* heldSettings(
     own,

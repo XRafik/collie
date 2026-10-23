@@ -1825,8 +1825,7 @@ back to the message box. Settings › Chat has no rows for them.
   computer**.
 - **Model** starts with **Default · …**, named by the model an unset choice runs as and
   described "What the chat runs with no model set"; choosing it unsets the model. Then come
-  Claude Code's own models with their names and descriptions; Pi currently uses Collie's
-  table, the Flock's **More … models** and the set model, each by its id. It can be searched,
+  Claude Code's own models with their names and descriptions, or Pi's with its own names. It can be searched,
   and an id that is not listed is offered as **Use <id>**. A typed model is checked as a
   Run's model is.
 - **Effort** starts with **Default · …**, named by the level an unset effort runs at and
@@ -1859,9 +1858,19 @@ when you ask. Without a Helle token in Desktop it says how to make one. This wor
 harness.
 
 On Pi, write the model as `provider/model`, for example `openai-codex/gpt-6.1-sol`.
+Desktop reads the models and each model's thinking levels from your own Pi install and
+login, once per Desktop start. The reader runs offline, keeps no session, loads none of
+your extensions, skills, prompt templates or context files, and skips Pi's package check.
+Only the levels a model takes are offered; a non-reasoning model or one whose only level
+is `off` takes no effort. Reading, retries, the first message's 20-second wait and fallback
+work as for Claude Code; a failed read offers the Flock's **More Pi models** and the set
+model, named by id with the table's levels, and says why.
 Unset, the model is Pi's configured `defaultProvider/defaultModel`, or Pi's own default where
 none is configured. An unset effort is the level Pi configures for the model
 (`modelThinkingLevels`), else its `defaultThinkingLevel`, else `medium`, set model or not.
+Where that level is unavailable, Desktop uses Pi's clamp: the next available level above
+it, or the highest available level if none is above. Below the lowest gives the lowest;
+above the highest gives the highest. A model that takes no effort is passed none.
 Desktop reads Pi's `settings.json` (under `PI_CODING_AGENT_DIR`, else `~/.pi/agent`) as each
 session opens, and passes the model and level explicitly, so reopening the same conversation
 does not restore an older override.
@@ -1872,12 +1881,12 @@ None of your Pi extensions, skills, prompt templates or context files loads. Its
 asking first. Pi missing from PATH is said in the chat.
 
 The effort is chosen in its select, or by asking the chat, for example "answer at high
-effort from now on", which `collie_chat_harness` saves. Claude takes `low`, `medium`, `high`,
-`xhigh` and `max`; Pi takes `off`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`,
-passed as `--thinking`. An effort the model does not list is refused with the ones it takes,
+effort from now on", which `collie_chat_harness` saves. Claude's levels range from `low` to
+`max`; Pi's from `off` to `max`, passed as `--thinking`. Each model offers its own subset.
+An effort the model does not list is refused with the ones it takes,
 and any effort on a model that lists none; nothing is saved. Another model keeps the effort
 only where it lists it, unsetting the model included. Unset, Claude runs at `medium` and Pi
-at its configured level. A new effort applies with the next message, in the same
+at its configured level clamped to the model's available levels. A new effort applies with the next message, in the same
 conversation; another harness unsets the model and the effort.
 
 Pi reaches Collie's tools, the five Machine file tools and AskUserQuestion through one

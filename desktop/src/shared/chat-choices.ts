@@ -83,6 +83,19 @@ const unsetModel = (harness: string, pi: PiConfig) =>
       : DEFAULT_MODEL
     : (HARNESS_MODELS[harness]?.defaultModel ?? DEFAULT_MODEL);
 
+const piLevel = (configured: string, available: ReadonlyArray<string>): string | null => {
+  if (available.includes(configured)) return configured;
+  const order = HARNESS_MODELS.pi?.efforts ?? [];
+  const at = order.indexOf(configured);
+  if (at < 0) return available[0] ?? null;
+  return (
+    order.slice(at).find((level) => available.includes(level)) ??
+    order.slice(0, at).findLast((level) => available.includes(level)) ??
+    available[0] ??
+    null
+  );
+};
+
 /** What a choice runs as: an unset model and effort as its harness, or Pi's configuration, has them. */
 export const runsAs = (
   set: SetChoice,
@@ -97,11 +110,14 @@ export const runsAs = (
     set.harness === "pi"
       ? (pi.modelThinkingLevels?.[model] ?? pi.defaultThinkingLevel ?? "medium")
       : "medium";
+  const efforts = effortsOf(set.harness, model, offered);
   return {
     harness: set.harness,
     model,
     effort:
-      effortsOf(set.harness, model, offered).length === 0 ? null : (set.effort ?? unsetEffort),
+      efforts.length === 0
+        ? null
+        : (set.effort ?? (set.harness === "pi" ? piLevel(unsetEffort, efforts) : unsetEffort)),
   };
 };
 
