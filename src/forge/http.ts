@@ -239,8 +239,14 @@ export const pagesAs = <S extends Schema.Decoder<unknown>>(
   Effect.gen(function* () {
     const items: Array<S["Type"]> = [];
     const pages = Schema.Array(item);
+    const separator = path.includes("?") ? "&" : "?";
     for (let page = 1; ; page++) {
-      const listed = yield* requestAs(pages, login, cwd, `${path}&per_page=${PAGE}&page=${page}`);
+      const listed = yield* requestAs(
+        pages,
+        login,
+        cwd,
+        `${path}${separator}per_page=${PAGE}&page=${page}`,
+      );
       if (!listed.ok) return listed;
       items.push(...listed.value);
       if (listed.value.length < PAGE) return { ok: true, value: items };

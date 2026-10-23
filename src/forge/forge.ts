@@ -177,7 +177,7 @@ export interface Forge {
     mergedSha: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<DeployTier | null, never, R>;
+  ) => Effect.Effect<DeployTier | null, never, R | ForgeHttp>;
   /** The commit `tier`'s newest successful deployment has, in `ref`'s project (ADR-0050 D7). */
   readonly deployed: <R>(
     ref: MrRef,
@@ -201,7 +201,7 @@ export interface Forge {
     branch: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<boolean | null, never, R>;
+  ) => Effect.Effect<boolean | null, never, R | ForgeHttp>;
   /** Every merge request whose source branch is `branch`, whatever its state. */
   readonly fromBranch: <R>(
     project: string,

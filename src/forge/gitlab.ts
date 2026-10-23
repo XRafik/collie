@@ -297,15 +297,13 @@ export function glabLogin<R>(
   });
 }
 
-const EnvironmentsJson = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ name: Schema.String, tier: optionalText })),
+const Environments = Schema.Array(Schema.Struct({ name: Schema.String, tier: optionalText }));
+const EnvironmentsJson = Schema.fromJsonString(Environments);
+const Deployments = Schema.Array(
+  Schema.Struct({ sha: Schema.String, environment: Schema.Struct({ name: Schema.String }) }),
 );
-const DeploymentsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({ sha: Schema.String, environment: Schema.Struct({ name: Schema.String }) }),
-  ),
-);
-const MergeBaseJson = Schema.fromJsonString(Schema.Struct({ id: optionalText }));
+const DeploymentsJson = Schema.fromJsonString(Deployments);
+const MergeBase = Schema.Struct({ id: optionalText });
 
 /**
  * The furthest a merged commit has got: live in production, live on staging, or neither.
@@ -314,45 +312,41 @@ const MergeBaseJson = Schema.fromJsonString(Schema.Struct({ id: optionalText }))
  * with no staging or production environment answers null, and so does GitLab not
  * answering: the board then says "merged", which is true, rather than guessing further.
  */
-export function liveTier<R>(
+export function liveTier(
   ref: MrRef,
   mergedSha: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<DeployTier | null, never, R> {
+): Effect.Effect<DeployTier | null, never, ForgeHttp> {
   return Effect.gen(function* () {
-    const host = hostOf(ref.project);
-    if (!host || !ref.project || mergedSha === "") return null;
-    const path = encodeURIComponent(ref.project.slice(host.length + 1));
-    const api = (route: string) =>
-      run("glab", ["api", "--hostname", host, `projects/${path}/${route}`], cwd);
-    const environments = yield* api("environments");
+    if (mergedSha === "") return null;
+    const api = projectRest(ref, cwd);
+    if (!api.ok) return null;
+    const environments = yield* api.rest(Environments, "environments");
+    if (!environments.ok) return null;
     const tiers = new Map<string, DeployTier>();
-    for (const env of Option.getOrElse(
-      Schema.decodeUnknownOption(EnvironmentsJson)(environments.stdout),
-      () => [],
-    )) {
+    for (const env of environments.value) {
       if (env.tier === "production" || env.tier === "staging") tiers.set(env.name, env.tier);
     }
     if (tiers.size === 0) return null;
-    const deployments = yield* api(
+    const deployments = yield* api.rest(
+      Deployments,
       "deployments?status=success&order_by=created_at&sort=desc&per_page=50",
     );
+    if (!deployments.ok) return null;
     // Newest first, so the first deployment seen per environment is what is live there.
     const live = new Map<string, string>();
-    for (const deployment of Option.getOrElse(
-      Schema.decodeUnknownOption(DeploymentsJson)(deployments.stdout),
-      () => [],
-    )) {
+    for (const deployment of deployments.value) {
       if (tiers.has(deployment.environment.name) && !live.has(deployment.environment.name))
         live.set(deployment.environment.name, deployment.sha);
     }
     const carries = (sha: string) =>
       Effect.gen(function* () {
         if (sha === mergedSha) return true;
-        const base = yield* api(`repository/merge_base?refs[]=${mergedSha}&refs[]=${sha}`);
-        const decoded = Schema.decodeUnknownOption(MergeBaseJson)(base.stdout);
-        return Option.isSome(decoded) && decoded.value.id === mergedSha;
+        const base = yield* api.rest(
+          MergeBase,
+          `repository/merge_base?refs[]=${mergedSha}&refs[]=${sha}`,
+        );
+        return base.ok && base.value.id === mergedSha;
       });
     for (const tier of ["production", "staging"] as const) {
       for (const [name, sha] of live) {
@@ -457,8 +451,8 @@ function forBranch(
   });
 }
 
-const DefaultBranchJson = Schema.fromJsonString(Schema.Struct({ default_branch: Schema.String }));
-const ProtectedJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ name: Schema.String })));
+const DefaultBranch = Schema.Struct({ default_branch: Schema.String });
+const ProtectedBranch = Schema.Struct({ name: Schema.String });
 const PAGE = 100;
 
 /** GitLab's `*` stands for any run of characters, `/` included. */
@@ -466,25 +460,21 @@ const wildcard = (pattern: string) =>
   new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`);
 
 /** The default branch, or a protected branch as listed, wildcards matched; null where either is unread. */
-function protects<R>(
+function protects(
   project: string,
   branch: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<boolean | null, never, R> {
+): Effect.Effect<boolean | null, never, ForgeHttp> {
   return Effect.gen(function* () {
     const host = hostOf(project);
     if (host === null) return null;
     const route = `projects/${encodeURIComponent(project.slice(host.length + 1))}`;
-    const api = (path: string) => run("glab", ["api", "--hostname", host, path], cwd);
-    const repo = yield* api(route);
-    const named = Schema.decodeUnknownOption(DefaultBranchJson)(repo.stdout);
-    if (repo.code !== 0 || Option.isNone(named)) return null;
-    if (named.value.default_branch === branch) return true;
-    const listed = yield* api(`${route}/protected_branches?per_page=${PAGE}`);
-    const rules = Schema.decodeUnknownOption(ProtectedJson)(listed.stdout);
-    // ponytail: one page; a full one is a project with more rules than it reads, so it cannot say.
-    if (listed.code !== 0 || Option.isNone(rules) || rules.value.length >= PAGE) return null;
+    const login = glabLoginTo(host);
+    const repo = yield* requestAs(DefaultBranch, login, cwd, route);
+    if (!repo.ok) return null;
+    if (repo.value.default_branch === branch) return true;
+    const rules = yield* pagesAs(ProtectedBranch, login, cwd, `${route}/protected_branches`);
+    if (!rules.ok) return null;
     return rules.value.some((rule) => wildcard(rule.name).test(branch));
   });
 }

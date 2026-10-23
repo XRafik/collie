@@ -153,7 +153,7 @@ import { serverSocket } from "./home";
 import { buildBoard, mrOf } from "./board";
 import { readForge, watchedMr, type MrPanels } from "./merges";
 import { shell } from "./mr";
-import { ForgeHttp } from "./forge/http";
+import { ForgeHttp, forgeHttpLayer } from "./forge/http";
 import { fetchRef, followDetail } from "./run-detail";
 import { buildRunDetail, type PlanCache } from "./views";
 import {
@@ -2829,6 +2829,7 @@ const own = (dir: string, checks: CheckProcessesApi) =>
           }).pipe(Layer.provideMerge(Layer.succeed(CheckProcesses, checks))),
         ),
         Layer.provide(yield* configuredAgents(dir, usage.readings)),
+        Layer.provide(forgeHttpLayer),
       ),
     );
   }).pipe(Effect.provide(usageLayer), Effect.orDie);

@@ -689,10 +689,13 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>, under: Under): Ans
       return model.protectionDown === true
         ? no()
         : json(
-            (model.protectedBranches ?? []).map((one) => ({
-              name: one.name,
-              allow_force_push: one.allowForcePush ?? false,
-            })),
+            pageOf(
+              route,
+              (model.protectedBranches ?? []).map((one) => ({
+                name: one.name,
+                allow_force_push: one.allowForcePush ?? false,
+              })),
+            ),
           );
     if (model.deploysDown === true) return no();
     const environments = model.environments ?? [];
@@ -1165,7 +1168,7 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
       environment,
       production_environment: tierOf(environment) === "production",
     }));
-    if (!args.includes("--paginate")) return json(deployments.slice(0, 100));
+    if (!args.includes("--paginate")) return json(pageOf(route, deployments));
     const pages = [];
     for (let at = 0; at < deployments.length; at += 100)
       pages.push(deployments.slice(at, at + 100));
@@ -1783,11 +1786,15 @@ export const serveForges = (
             const forge = apiHost === "api.github.com" ? "github" : "gitlab";
             const face = onPath.find((one) => one.forge === forge)?.face;
             if (face === undefined) return new Response(null, { status: 404 });
-            return face(`https://${apiHost}/${rest.join("/")}${url.search}`, {
-              method: request.method,
-              headers: request.headers,
-              signal: request.signal,
-            });
+            const body = request.body === null ? Promise.resolve(undefined) : request.text();
+            return body.then((body) =>
+              face(`https://${apiHost}/${rest.join("/")}${url.search}`, {
+                method: request.method,
+                headers: request.headers,
+                signal: request.signal,
+                body,
+              }),
+            );
           },
         }),
       ),

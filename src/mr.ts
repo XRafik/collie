@@ -243,7 +243,7 @@ export function productionCarries<R>(
   sha: string,
   run: Runner<R>,
   gitlabHost?: string,
-): Effect.Effect<boolean, never, R> {
+): Effect.Effect<boolean, never, R | ForgeHttp> {
   return Effect.gen(function* () {
     const here = yield* forgeHere(cwd, run, gitlabHost);
     if (!here.ok) return false;

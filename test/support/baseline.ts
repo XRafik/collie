@@ -13,6 +13,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import {
+  ConfigProvider,
   DateTime,
   Deferred,
   Duration,
@@ -36,6 +37,7 @@ import {
   FORGE_HOST,
   PROJECT,
   forgeOnPath,
+  serveForges,
   type FakeJob,
   type FakeComment,
   type FakeMr,
@@ -109,6 +111,7 @@ type Shipped = keyof typeof UNRELATED;
 
 let rig: Rig;
 let dir: string;
+let forgeApi = "";
 let started: ChildAsk[] = [];
 /** The invocations whose child ends in failure. */
 let failing = new Set<string>();
@@ -209,6 +212,9 @@ const session = <A, E>(
       override === undefined
         ? foundationLayer(foundation())
         : override.pipe(Layer.provideMerge(foundationLayer(foundation()))),
+    ),
+    Effect.provide(
+      ConfigProvider.layerAdd(ConfigProvider.fromUnknown({ COLLIE_FORGE_API: forgeApi })),
     ),
     Effect.scoped,
     Effect.orDie,
@@ -6931,7 +6937,13 @@ const renovatable = () =>
       }),
     );
     const bin = yield* FakeBin.make(`${rig.root}/bin`);
-    yield* bin.add("glab", `exit 0`);
+    const forge = yield* forgeOnPath(bin, "gitlab", {
+      installed: true,
+      loggedIn: [FORGE_HOST.gitlab],
+      login: "tester",
+      mrs: [],
+    });
+    forgeApi = yield* serveForges(forge);
     yield* repository();
     return bin;
   });
@@ -7312,6 +7324,7 @@ const deploying = (name: MrForge, environments: ForgeModel["environments"]) =>
       environments,
     };
     const forge = yield* forgeOnPath(bin, name, model);
+    forgeApi = yield* serveForges(forge);
     // origin stays the bare repository, whose default branch the Run reads.
     yield* exec(["git", "remote", "set-url", "upstream", RENOVATING[name].origin], {
       cwd: rig.projectDir,
@@ -7388,10 +7401,10 @@ for (const name of ["gitlab", "github"] as const) {
           const waiting = `production to carry \`${head.slice(0, 8)}\` of ${url}, holding the claim on \`project\``;
           const polled = (more: number) =>
             Effect.gen(function* () {
-              const before = (yield* forge.calls()).length;
+              const before = forge.requests().length;
               yield* until(
-                () => forge.calls(),
-                (calls) => calls.length >= before + more,
+                () => Effect.sync(forge.requests),
+                (requests) => requests.length >= before + more,
               );
             });
 
@@ -7517,8 +7530,8 @@ scenario(
                 (on) => on !== "",
               );
               yield* until(
-                () => forge.calls(),
-                (calls) => calls.some((call) => call.includes("deployments")),
+                () => Effect.sync(forge.requests),
+                (requests) => requests.some((request) => request.url.includes("deployments")),
               );
               const fs = yield* FileSystem.FileSystem;
               yield* fs.writeFileString(controlPath(dir, HOLD, runId), "").pipe(Effect.orDie);
@@ -7795,6 +7808,7 @@ const releasable = (name: MrForge, over: Partial<FakeMr> = {}, tagged = true) =>
       reviewsRequired: { classic: name === "github" ? 1 : 0 },
     };
     const forge = yield* forgeOnPath(bin, name, model);
+    forgeApi = yield* serveForges(forge);
     /** The merge request changed on the forge, as a reviewer or a push changes it. */
     const changed = (over: Partial<FakeMr>) =>
       Effect.gen(function* () {
@@ -10643,6 +10657,7 @@ export const register = (pass: "shipped" | "unrelated") => {
         rig = yield* Rig.make();
         const fs = yield* FileSystem.FileSystem;
         dir = `${rig.root}/host`;
+        forgeApi = "";
         started = [];
         failing = new Set();
         yield* fs.makeDirectory(dir, { recursive: true });

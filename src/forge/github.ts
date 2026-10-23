@@ -361,19 +361,14 @@ const pullsFrom = (project: string, branch: string, state: "open" | "all", cwd: 
   );
 };
 
-const DefaultBranchJson = Schema.fromJsonString(Schema.Struct({ default_branch: Schema.String }));
-const RulesJson = Schema.fromJsonString(Schema.Array(Schema.Unknown));
-const ClassicRulesJson = Schema.fromJsonString(
-  Schema.Struct({
-    data: Schema.Struct({
-      repository: Schema.Struct({
-        branchProtectionRules: Schema.Struct({
-          nodes: Schema.Array(Schema.Struct({ pattern: Schema.String })),
-        }),
-      }),
+const DefaultBranch = Schema.Struct({ default_branch: Schema.String });
+const ClassicRules = Schema.Struct({
+  repository: Schema.Struct({
+    branchProtectionRules: Schema.Struct({
+      nodes: Schema.Array(Schema.Struct({ pattern: Schema.String })),
     }),
   }),
-);
+});
 const PAGE = 100;
 const CLASSIC_RULES = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { branchProtectionRules(first: ${PAGE}) { nodes { pattern } } } }`;
 
@@ -381,37 +376,28 @@ const CLASSIC_RULES = `query($owner: String!, $name: String!) { repository(owner
  * The default branch, the rules active for the name (which GitHub answers for a branch not
  * pushed yet), and the classic protection rules' patterns; null where any is unread.
  */
-function protects<R>(
+function protects(
   project: string,
   branch: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<boolean | null, never, R> {
+): Effect.Effect<boolean | null, never, ForgeHttp> {
   return Effect.gen(function* () {
     const repo = mrPath({ project, iid: "" });
-    const api = (...args: ReadonlyArray<string>) => run("gh", ["api", ...args], cwd);
-    const about = yield* api(`repos/${repo}`);
-    const named = Schema.decodeUnknownOption(DefaultBranchJson)(about.stdout);
-    if (about.code !== 0 || Option.isNone(named)) return null;
-    if (named.value.default_branch === branch) return true;
-    const active = yield* api(`repos/${repo}/rules/branches/${encodeURIComponent(branch)}`);
-    const rules = Schema.decodeUnknownOption(RulesJson)(active.stdout);
-    if (active.code !== 0 || Option.isNone(rules)) return null;
-    if (rules.value.length > 0) return true;
-    const [owner = "", name = ""] = repo.split("/");
-    const classic = yield* api(
-      "graphql",
-      "-f",
-      `query=${CLASSIC_RULES}`,
-      "-F",
-      `owner=${owner}`,
-      "-F",
-      `name=${name}`,
+    const about = yield* rest(DefaultBranch, cwd, `repos/${repo}`);
+    if (!about.ok) return null;
+    if (about.value.default_branch === branch) return true;
+    const active = yield* rest(
+      Schema.Array(Schema.Unknown),
+      cwd,
+      `repos/${repo}/rules/branches/${encodeURIComponent(branch)}`,
     );
-    const patterns = Schema.decodeUnknownOption(ClassicRulesJson)(classic.stdout);
-    if (classic.code !== 0 || Option.isNone(patterns)) return null;
-    const nodes = patterns.value.data.repository.branchProtectionRules.nodes;
-    // ponytail: one page; a full one is a repository with more rules than it reads, so it cannot say.
+    if (!active.ok) return null;
+    if (active.value.length > 0) return true;
+    const [owner = "", name = ""] = repo.split("/");
+    const classic = yield* graphqlAs(ClassicRules, LOGIN, cwd, CLASSIC_RULES, { owner, name });
+    if (!classic.ok) return null;
+    const nodes = classic.value.repository.branchProtectionRules.nodes;
+    // A full page leaves protection unknown.
     if (nodes.length >= PAGE) return null;
     return nodes.some((rule) => new Bun.Glob(rule.pattern).match(branch));
   });
@@ -1052,20 +1038,16 @@ const MineJson = Schema.fromJsonString(
   Schema.Array(Schema.Struct({ number: Schema.Number, title: optionalText })),
 );
 
-const DeploymentsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Array(
-      Schema.Struct({
-        id: Schema.Number,
-        sha: Schema.String,
-        environment: Schema.String,
-        production_environment: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
-      }),
-    ),
-  ),
-);
-const StatusesJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ state: Schema.String })));
-const CompareJson = Schema.fromJsonString(Schema.Struct({ status: Schema.String }));
+const Deployment = Schema.Struct({
+  id: Schema.Number,
+  sha: Schema.String,
+  environment: Schema.String,
+  production_environment: optionalFlag,
+});
+const DeploymentsJson = Schema.fromJsonString(Schema.Array(Schema.Array(Deployment)));
+const Statuses = Schema.Array(Schema.Struct({ state: Schema.String }));
+const StatusesJson = Schema.fromJsonString(Statuses);
+const Compare = Schema.Struct({ status: Schema.String });
 const RunState = Schema.Struct({ status: Schema.String, conclusion: optionalText });
 
 /** Production by the flag or by name, staging by name; any other environment is neither. */
@@ -1082,45 +1064,37 @@ function tierOf(environment: string, production: boolean): DeployTier | null {
  * merge where GitHub's compare of the two says `identical` or `ahead`. No such
  * environment, or no answer, is null, and the card says "Merged." and nothing more.
  */
-function liveTier<R>(
+function liveTier(
   ref: MrRef,
   mergedSha: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<DeployTier | null, never, R> {
+): Effect.Effect<DeployTier | null, never, ForgeHttp> {
   return Effect.gen(function* () {
     if (mergedSha === "" || ref.project === null) return null;
     const repo = `repos/${mrPath(ref)}`;
-    const api = (route: string) => run("gh", ["api", `${repo}/${route}`], cwd);
-    const listed = yield* run(
-      "gh",
-      ["api", `${repo}/deployments?per_page=100`, "--paginate", "--slurp"],
-      cwd,
-    );
-    if (listed.code !== 0) return null;
-    const deployments = Option.getOrElse(
-      Schema.decodeUnknownOption(DeploymentsJson)(listed.stdout),
-      () => [],
-    ).flat();
+    const listed = yield* pagesAs(Deployment, LOGIN, cwd, `${repo}/deployments`);
+    if (!listed.ok) return null;
     // Newest first, so the first successful one seen per environment is what is live there.
     const live = new Map<string, { readonly sha: string; readonly tier: DeployTier }>();
-    for (const deployment of deployments) {
+    for (const deployment of listed.value) {
       const tier = tierOf(deployment.environment, deployment.production_environment === true);
       if (tier === null || live.has(deployment.environment)) continue;
-      const statuses = yield* api(`deployments/${deployment.id}/statuses?per_page=1`);
-      const [latest] = Option.getOrElse(
-        Schema.decodeUnknownOption(StatusesJson)(statuses.stdout),
-        () => [],
+      const statuses = yield* rest(
+        Statuses,
+        cwd,
+        `${repo}/deployments/${deployment.id}/statuses?per_page=1`,
       );
-      if (latest?.state === "success")
+      if (statuses.ok && statuses.value[0]?.state === "success")
         live.set(deployment.environment, { sha: deployment.sha, tier });
     }
     const carries = (sha: string) =>
       Effect.gen(function* () {
         if (sha === mergedSha) return true;
-        const compared = yield* api(`compare/${mergedSha}...${sha}`);
-        const status = Option.getOrNull(Schema.decodeUnknownOption(CompareJson)(compared.stdout));
-        return status?.status === "identical" || status?.status === "ahead";
+        const compared = yield* rest(Compare, cwd, `${repo}/compare/${mergedSha}...${sha}`);
+        return (
+          compared.ok &&
+          (compared.value.status === "identical" || compared.value.status === "ahead")
+        );
       });
     for (const tier of ["production", "staging"] as const)
       for (const one of live.values())

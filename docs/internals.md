@@ -795,6 +795,9 @@ pinned to one exact version, rather than through `gh` or `glab`
   resolvable note is unresolved. A branch's merge requests are the REST list filtered by
   source branch (GitHub's `head=<owner>:<branch>`, so a fork's same-named branch is not
   one), read page by page until a short page.
+- Branch protection, `protects`, and deploy status, `liveTier`. GitHub pages its
+  deployments and reads their latest statuses and commit comparisons; GitLab reads
+  environments, successful deployments and their merge-bases on the same routes as glab.
 
 Every other operation still runs the CLI. Only `src/forge/` imports `forges`, and
 `test/forge-boundary.test.ts` fails on an import anywhere else.
@@ -847,10 +850,11 @@ never answers first. Setting it again changes nothing.
 
 `protects(project, branch)` says whether a branch, pushed or not, is protected: `true`
 where it is the default branch or matches any protection rule or ruleset, whatever the rule
-allows, and `null` where the forge cannot say. GitLab reads the project's default branch
-and its protected branches, matching their wildcards; GitHub reads the default branch, the
-rules active for the name (`rules/branches/<name>`), and the classic protection rules'
-patterns through GraphQL. A Claude agent's launch reads it for the branch its Run created,
+allows, and `null` where the forge cannot say. Both forges are read over HTTP with their
+CLI's login. GitLab reads the project's default branch and every page of its protected
+branches, matching their wildcards; GitHub reads the default branch, the rules active for
+the name (`rules/branches/<name>`), and the classic protection rules' patterns through
+GraphQL. A Claude agent's launch reads it for the branch its Run created,
 and only `false` gives the agent the history allowance
 ([What a Claude agent's auto mode is told](using.md#what-a-claude-agents-auto-mode-is-told)).
 

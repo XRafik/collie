@@ -3,7 +3,7 @@ import { Clock, ConfigProvider, Effect, Fiber, FileSystem, Schema } from "effect
 import { TestClock } from "effect/testing";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
-import type { ForgeHttp } from "../src/forge/http";
+import { forgeHttpLayer, type ForgeHttp } from "../src/forge/http";
 import { rollupChecks } from "../src/forge/github";
 import { gitlab, glabExpiry, pipelineChecks } from "../src/forge/gitlab";
 import type { ReviewRead } from "../src/forge/review";
@@ -19,6 +19,7 @@ import {
   forgeBin,
   forgeHttpOnPath,
   forgeOnPath,
+  serveForges,
   rfc822,
   CLI,
   type FakeMr,
@@ -514,7 +515,7 @@ for (const name of ["gitlab", "github"] as const) {
 
   describe(`the ${name} forge's deploys`, () => {
     const tierOf = (over: Partial<ForgeModel>) =>
-      forge.liveTier(ref(name), MERGED, "/w", fakeForge(name, model(name, over)).run);
+      against(name, model(name, over), (run) => forge.liveTier(ref(name), MERGED, "/w", run));
     const environments = (stage: string, prod: string, failed = "") => [
       { name: "stage", tier: "staging", deployed: stage },
       { name: "production", tier: "production", deployed: prod, failed },
@@ -628,27 +629,30 @@ for (const name of ["gitlab", "github"] as const) {
     ));
 }
 
-test("GitHub finds production beyond a full page of newer deployments", () =>
-  runEffect(
+test("GitHub finds production beyond a full page of newer deployments over HTTP", () => {
+  const fake = fakeForge(
+    "github",
+    model("github", {
+      environments: [
+        ...Array.from({ length: 100 }, (_, at) => ({
+          name: `preview-${at}`,
+          tier: "development",
+          deployed: "preview",
+        })),
+        { name: "production", tier: "production", deployed: MERGED },
+      ],
+    }),
+  );
+  return runEffect(
     Effect.gen(function* () {
-      const fake = fakeForge(
-        "github",
-        model("github", {
-          environments: [
-            ...Array.from({ length: 100 }, (_, at) => ({
-              name: `preview-${at}`,
-              tier: "development",
-              deployed: "preview",
-            })),
-            { name: "production", tier: "production", deployed: MERGED },
-          ],
-        }),
-      );
       expect(yield* FORGES.github.liveTier(ref("github"), MERGED, "/w", fake.run)).toBe(
         "production",
       );
-    }),
-  ));
+      expect(fake.requests.some((request) => request.url.includes("page=2"))).toBe(true);
+      expect(fake.calls).toEqual([...READ_ONCE.github]);
+    }).pipe(Effect.provide(fake.layer)),
+  );
+});
 
 for (const name of ["gitlab", "github"] as const)
   test(`the ${name} forge finds the newest pipeline a tag started in the project, and none where it started none`, () =>
@@ -897,11 +901,8 @@ for (const name of ["gitlab", "github"] as const) {
     runEffect(
       Effect.gen(function* () {
         const ask = (branch: string, over: Partial<ForgeModel> = {}) =>
-          forge.protects(
-            PROJECT[name],
-            branch,
-            "/w",
-            fakeForge(name, model(name, { defaultBranch: "main", ...over })).run,
+          against(name, model(name, { defaultBranch: "main", ...over }), (run) =>
+            forge.protects(PROJECT[name], branch, "/w", run),
           );
         const rule =
           name === "gitlab"
@@ -2084,6 +2085,96 @@ describe("GitLab's merge request reads over HTTP", () => {
       }),
     ));
 });
+
+test("GitHub reads its panel through the served HTTP face", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const bin = yield* FakeBin.make(yield* fs.makeTempDirectoryScoped({ prefix: "forge-http-" }));
+      try {
+        const fake = yield* forgeOnPath(
+          bin,
+          "github",
+          model("github", { mrs: [mr("github", { draft: true, title: "Release health" })] }),
+        );
+        const api = yield* serveForges(fake);
+        const panel = yield* FORGES.github
+          .details(ref("github"), bin.dir, shell)
+          .pipe(
+            Effect.provide(forgeHttpLayer),
+            Effect.provide(
+              ConfigProvider.layerAdd(ConfigProvider.fromUnknown({ COLLIE_FORGE_API: api })),
+            ),
+          );
+        expect(panel).toMatchObject({ _tag: "Details", title: "Release health", state: "draft" });
+        expect(yield* fake.calls()).toEqual([...READ_ONCE.github]);
+      } finally {
+        yield* bin.restore();
+      }
+    }),
+  ));
+
+for (const name of ["gitlab", "github"] as const)
+  describe(`the ${name} forge's protection over HTTP`, () => {
+    test("reads protection for an unpushed branch from a cold start, running only credential reads", () => {
+      const fake = fakeForge(name, model(name, { protectedBranches: [{ name: "release/*" }] }));
+      return runEffect(
+        Effect.gen(function* () {
+          expect(yield* FORGES[name].protects(PROJECT[name], "release/2.0", "/w", fake.run)).toBe(
+            true,
+          );
+          expect(fake.requests.length).toBeGreaterThan(0);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    for (const [failure, fault] of [
+      ["403", { status: 403 }],
+      ["network", "network"],
+    ] as const)
+      test(`answers unknown protection on ${failure}, never unprotected`, () =>
+        runEffect(
+          overHttp(name, { httpFault: fault }, (fake) =>
+            FORGES[name].protects(PROJECT[name], "me/x", "/w", fake.run),
+          ).pipe(Effect.map((protectedBranch) => expect(protectedBranch).toBeNull())),
+        ));
+  });
+
+for (const name of ["gitlab", "github"] as const)
+  test(`the ${name} forge reads liveTier over HTTP from a cold start, running only credential reads`, () => {
+    const fake = fakeForge(
+      name,
+      model(name, {
+        environments: [{ name: "production", tier: "production", deployed: "child" }],
+        ancestry: { child: [MERGED] },
+      }),
+    );
+    return runEffect(
+      Effect.gen(function* () {
+        expect(yield* FORGES[name].liveTier(ref(name), MERGED, "/w", fake.run)).toBe("production");
+        expect(fake.requests.length).toBeGreaterThan(0);
+        expect(fake.calls).toEqual([...READ_ONCE[name]]);
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
+
+test("GitLab reads protection beyond the first page over HTTP", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const protectedBranch = yield* overHttp(
+        "gitlab",
+        {
+          protectedBranches: [
+            ...Array.from({ length: 100 }, (_, at) => ({ name: `preview-${at}` })),
+            { name: "release/*" },
+          ],
+        },
+        (fake) => FORGES.gitlab.protects(PROJECT.gitlab, "release/2.0", "/w", fake.run),
+      );
+      expect(protectedBranch).toBe(true);
+    }),
+  ));
 
 describe("GitLab's OAuth login over HTTP", () => {
   test("glab's stored expiry is read in the zone it names, and one Collie cannot read is none", () => {
