@@ -6,6 +6,9 @@ root's `test/desktop-*.test.ts` and `test/flock-*.test.ts`; the view's logic in 
 
 ## The board and the record
 
+`src/shared/flow-strip.ts`'s `cardFlow` gives BoardCard its glyph groups, fold, label
+and accessible name. `FlowGlyph.vue` draws the eight states with Nuxt UI tokens.
+
 | File                                    | What it owns                                                                                                                                                                                                                                           |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `src/bun/machine.ts`                    | A Machine reached through `collie bridge`; `act` carries out an action, `Deliver` as one `deliver`, word for word (`test/desktop-deliver.test.ts`)                                                                                                     |

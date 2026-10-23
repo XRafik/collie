@@ -1089,6 +1089,11 @@ the header sentence are counted across the Flock. Once there is more than one Ma
 card names its Machine, and its Herd too when that Machine runs more than one herdr
 session.
 
+Each card's **Flow** strip sits under its sentence: the leading Run's Steps, a gap,
+then the release. The glyphs show their states and the label names the current Step.
+With more than ten Steps, done Steps fold into one counted glyph; release glyphs stay
+separate. Press the strip to open the Task's record. Older hosts show no strip.
+
 Desktop is released with Collie, under the same tag and version. Install it for your user,
 on Linux with a desktop entry and on a Mac into `~/Applications`:
 
