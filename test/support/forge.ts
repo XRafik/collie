@@ -146,6 +146,7 @@ export const ForgeModel = Schema.Struct({
   /** The token the CLI hands out for its host, where a test changes it. */
   token: Schema.optionalKey(Schema.String),
   mrs: Schema.Array(FakeMr),
+  checksAt: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(FakeJob))),
   issues: Schema.optionalKey(Schema.Array(FakeIssue)),
   issueNotes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
   /** The checkout's `origin` and `upstream` remote URLs, and the branch it is on. */
@@ -161,6 +162,22 @@ export const ForgeModel = Schema.Struct({
         deployed: Schema.optionalKey(Schema.String),
         /** A newer deployment there that failed, which is not what is live. */
         failed: Schema.optionalKey(Schema.String),
+        job: Schema.optionalKey(Schema.String),
+        /** Every deployment there, newest first; `deployed` and `failed` are not read where set. */
+        deployments: Schema.optionalKey(
+          Schema.Array(
+            Schema.Struct({
+              sha: Schema.String,
+              status: Schema.Literals(["success", "failed", "running"]),
+              job: Schema.optionalKey(Schema.String),
+              jobId: Schema.optionalKey(Schema.Number),
+              logUrl: Schema.optionalKey(Schema.String),
+              pipeline: Schema.optionalKey(
+                Schema.Struct({ ref: Schema.String, sha: Schema.String }),
+              ),
+            }),
+          ),
+        ),
       }),
     ),
   ),
@@ -640,11 +657,12 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
       return json(
         pageOf(
           route,
-          environments.flatMap((env) =>
-            env.deployed === undefined
-              ? []
-              : [{ sha: env.deployed, environment: { name: env.name } }],
-          ),
+          deploymentsAsked(model, route).map(({ sha, status, environment, job, pipeline }) => ({
+            sha,
+            status,
+            environment: { name: environment },
+            deployable: job === undefined ? null : { name: job, pipeline: pipeline ?? null },
+          })),
         ),
       );
     const onMr = /^projects\/([^/]+)\/merge_requests\/(\d+)(?:\/(.+))?$/.exec(route);
@@ -714,7 +732,9 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
     }
     const commit = /\/repository\/commits\/([^/?]+)$/.exec(route);
     if (commit) {
-      const parents = model.ancestry?.[commit[1]!];
+      const parents =
+        model.ancestry?.[commit[1]!] ??
+        (deploymentsOf(model).some((deployment) => deployment.sha === commit[1]) ? [] : undefined);
       return parents === undefined ? no() : json({ id: commit[1]!, parent_ids: [...parents] });
     }
     const pipeline = /\/pipelines\/(\d+)$/.exec(route);
@@ -895,16 +915,43 @@ function ghGraphql(model: ForgeModel, args: ReadonlyArray<string>): Answer | und
   return undefined;
 }
 
-/** Each environment's deployments, newest first: a failed newer one, then what is live. */
+/** Each environment's deployments, newest first: by default a failed newer one, then what is live. */
 const deploymentsOf = (model: ForgeModel) =>
-  (model.environments ?? []).flatMap((env, at) => [
-    ...(env.failed === undefined || env.failed === ""
-      ? []
-      : [{ id: at * 10 + 1, sha: env.failed, environment: env.name, state: "failure" }]),
-    ...(env.deployed === undefined
-      ? []
-      : [{ id: at * 10 + 2, sha: env.deployed, environment: env.name, state: "success" }]),
-  ]);
+  (model.environments ?? []).flatMap((env, at) =>
+    (
+      env.deployments ?? [
+        ...(env.failed === undefined || env.failed === ""
+          ? []
+          : [{ sha: env.failed, status: "failed" as const }]),
+        ...(env.deployed === undefined ? [] : [{ sha: env.deployed, status: "success" as const }]),
+      ]
+    ).map((one, n) => ({
+      id: at * 1000 + n + 1,
+      sha: one.sha,
+      environment: env.name,
+      state:
+        one.status === "failed" ? "failure" : one.status === "running" ? "in_progress" : one.status,
+      status: one.status,
+      job: "job" in one ? one.job : env.job,
+      jobId: "jobId" in one ? one.jobId : undefined,
+      logUrl: "logUrl" in one ? one.logUrl : undefined,
+      pipeline: "pipeline" in one ? one.pipeline : undefined,
+    })),
+  );
+
+/** The deployments a deployment list route asks for, by its `environment`, `sha` and `status`. */
+const deploymentsAsked = (model: ForgeModel, route: string) => {
+  const query = new URLSearchParams(route.split("?")[1] ?? "");
+  const environment = query.get("environment");
+  const sha = query.get("sha");
+  const status = query.get("status");
+  return deploymentsOf(model).filter(
+    (one) =>
+      (environment === null || one.environment === environment) &&
+      (sha === null || one.sha === sha) &&
+      (status === null || one.status === status),
+  );
+};
 
 /** `gh api repos/<o>/<r>/…`, for deployments, compare and Actions runs. */
 function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): Answer {
@@ -958,8 +1005,13 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   if (model.deploysDown === true) return no();
   const tierOf = (name: string) =>
     (model.environments ?? []).find((env) => env.name === name)?.tier;
+  if (/\/environments\?/.test(route)) {
+    const environments = (model.environments ?? []).map((env) => ({ name: env.name }));
+    const page = { total_count: environments.length, environments };
+    return json(args.includes("--slurp") ? [page] : page);
+  }
   if (/\/deployments\?/.test(route)) {
-    const deployments = deploymentsOf(model).map(({ id, sha, environment }) => ({
+    const deployments = deploymentsAsked(model, route).map(({ id, sha, environment }) => ({
       id,
       sha,
       environment,
@@ -974,7 +1026,19 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   const statuses = /\/deployments\/(\d+)\/statuses/.exec(route);
   if (statuses) {
     const one = deploymentsOf(model).find((deployment) => deployment.id === Number(statuses[1]));
-    return one === undefined ? no() : json([{ state: one.state }]);
+    if (one === undefined) return no();
+    const mr = model.mrs[0];
+    const jobId =
+      one.jobId ??
+      (mr?.jobs ?? []).find((job) => job.name === one.job)?.id ??
+      (mr?.jobs ?? []).findIndex((job) => job.name === one.job) + 1;
+    return json([
+      {
+        state: one.state,
+        log_url:
+          one.logUrl ?? (jobId > 0 ? `https://${mr?.project}/actions/runs/7/job/${jobId}` : ""),
+      },
+    ]);
   }
   const compare = /\/compare\/([^.]+)\.\.\.(.+)$/.exec(route);
   if (compare) {
@@ -992,7 +1056,9 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
     });
   }
   const checkRuns =
-    /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?(?:check_name=(.+)|per_page=1)$/.exec(route);
+    /^repos\/(.+)\/commits\/([^/]+)\/check-runs\?(?:check_name=([^&]+)(?:&.*)?|per_page=1)$/.exec(
+      route,
+    );
   if (checkRuns) {
     const [, repo = "", sha = "", name] = checkRuns;
     const ofRepo = model.mrs.filter((one) => one.project === `github.com/${repo}`);
@@ -1006,22 +1072,28 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
           ? [jobsOf(base.base?.jobs ?? [], 1000), sha]
           : target !== undefined
             ? [jobsOf(target.target!.jobs, 2000), target.target!.at]
-            : [[], sha];
-    return json({
-      check_runs: jobs.flatMap((job) =>
-        name === undefined || job.name === decodeURIComponent(name)
-          ? [
-              {
-                id: job.id,
-                name: job.name,
-                head_sha: at,
-                ...GITHUB_RUN[job.state],
-                html_url: `https://github.com/${repo}/runs/${job.id}`,
-              },
-            ]
-          : [],
-      ),
-    });
+            : [jobsOf(model.checksAt?.[sha] ?? [], 0), sha];
+    const page = {
+      check_runs: jobs
+        .filter(
+          (job, at) =>
+            route.includes("filter=all") || jobs.findIndex((one) => one.name === job.name) === at,
+        )
+        .flatMap((job) =>
+          name === undefined || job.name === decodeURIComponent(name)
+            ? [
+                {
+                  id: job.id,
+                  name: job.name,
+                  head_sha: at,
+                  ...GITHUB_RUN[job.state],
+                  html_url: `https://github.com/${repo}/runs/${job.id}`,
+                },
+              ]
+            : [],
+        ),
+    };
+    return args.includes("--slurp") ? json([page]) : json(page);
   }
   const rerun = /^repos\/(.+)\/actions\/jobs\/(\d+)\/rerun$/.exec(route);
   if (rerun && args.includes("POST")) {

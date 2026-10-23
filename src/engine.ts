@@ -91,6 +91,7 @@ import {
   HelleClaimSchema,
   HelleError,
   credentials,
+  helleHolders,
   releaseClaim,
   waitForHelle,
   type HelleClaim,
@@ -399,11 +400,24 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | { readonly _tag: "Refused"; readonly reason: string };
   export const MergeOutcomeSchema: Schema.Codec<MergeOutcome, unknown, never, never>;
 
-  /** What claim holds, or why the claims a Run needs could not be settled. */
+  /** What claim holds, with what a free-only claim left to whom, or why the claims a Run needs could not be settled. */
   export type Claimed =
-    | { readonly slugs: ReadonlyArray<string> }
+    | {
+        readonly slugs: ReadonlyArray<string>;
+        readonly left?: ReadonlyArray<{ readonly slug: string; readonly holder: string }>;
+      }
     | { readonly unresolved: string };
   export const ClaimedSchema: Schema.Codec<Claimed, unknown, never, never>;
+  /** Who else holds each project a claim needs (null: free), what each application needs, and the applications each deploy job names. */
+  export type Holders =
+    | {
+        readonly _tag: "Read";
+        readonly projects: ReadonlyArray<{ readonly slug: string; readonly holder: string | null }>;
+        readonly applications: ReadonlyArray<{ readonly name: string; readonly needs: ReadonlyArray<string> }>;
+        readonly jobs: ReadonlyArray<{ readonly name: string; readonly applications: ReadonlyArray<string> }>;
+      }
+    | { readonly _tag: "Unresolved"; readonly why: string };
+  export const HoldersSchema: Schema.Codec<Holders, unknown, never, never>;
 
   /** An external comment nobody has answered yet. */
   export interface OpenComment {
@@ -484,11 +498,11 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   /** Stage shown back on what production carries, or why not. */
   export type RollbackRead = { readonly _tag: "Shown" } | { readonly _tag: "Unshown"; readonly why: string };
   export const RollbackReadSchema: Schema.Codec<RollbackRead, unknown, never, never>;
-  /** A merge request's head proved on stage, with its stage jobs; its head moved; or why not. */
+  /** A merge request's head proved on stage, with its stage jobs and environments; its head moved; or why not, with the environments its pipeline reached where read. */
   export type StageRead =
-    | { readonly _tag: "Staged"; readonly jobs: ReadonlyArray<JobLink> }
-    | { readonly _tag: "Moved"; readonly head: string }
-    | { readonly _tag: "Failed"; readonly why: string };
+    | { readonly _tag: "Staged"; readonly jobs: ReadonlyArray<JobLink>; readonly environments: ReadonlyArray<string> }
+    | { readonly _tag: "Moved"; readonly head: string; readonly environments?: ReadonlyArray<string> }
+    | { readonly _tag: "Failed"; readonly why: string; readonly environments?: ReadonlyArray<string> };
   export const StageReadSchema: Schema.Codec<StageRead, unknown, never, never>;
 
   /** A landing taken over from the Run that made it, or why there was none to take. */
@@ -687,7 +701,18 @@ export const SDK_DECLARATIONS = `declare module "collie" {
         readonly applications: ReadonlyArray<string>;
         readonly jobs: ReadonlyArray<string>;
       };
+      /** Takes only what nobody else holds or queues for, waits for none, and names what it left. */
+      readonly free?: boolean;
     }) => Effect.Effect<Claimed, WorkflowError | E, R>;
+    /** Who holds each claim for the same deploys, joining no queue. */
+    readonly holders: (options: {
+      readonly runId: string;
+      readonly cwd: string;
+      readonly deploys?: {
+        readonly applications: ReadonlyArray<string>;
+        readonly jobs: ReadonlyArray<string>;
+      };
+    }) => Effect.Effect<Holders, WorkflowError>;
     /** Gives every claim back, answering those Helle kept. Only a finished Run releases. */
     readonly release: (runId: string) => Effect.Effect<ReadonlyArray<string>>;
     /** Records the merge request this Run opened, as a fact its card reads. */
@@ -768,18 +793,19 @@ export const SDK_DECLARATIONS = `declare module "collie" {
       readonly pipeline: string;
       readonly jobs: ReadonlyArray<string>;
     }) => Effect.Effect<ProductionRead>;
-    /** The merge request's head on stage: its \`jobs\` passed there, and stage carries it. Take it inside an Activity. */
+    /** The merge request's head on stage: its \`jobs\` passed there, and every stage environment its pipeline deployed to carries it. Take it inside an Activity. */
     readonly readStage: (options: {
       readonly runId: string;
       readonly cwd: string;
       readonly head: string;
       readonly jobs: ReadonlyArray<string>;
     }) => Effect.Effect<StageRead>;
-    /** Whether stage is shown back on what production carries, and off \`off\`. Take it inside an Activity. */
+    /** Whether stage is shown back on what production carries, and off \`off\`, in \`environments\` where named. Take it inside an Activity. */
     readonly readRollback: (options: {
       readonly runId: string;
       readonly cwd: string;
-      readonly off: string;
+      readonly off: ReadonlyArray<string>;
+      readonly environments?: ReadonlyArray<string>;
     }) => Effect.Effect<RollbackRead>;
     /** Takes over the landing of a merged merge request from the failed Run that made it. Take it inside an Activity. */
     readonly takeOverLanding: (options: {
@@ -2605,6 +2631,26 @@ const declaredProjects = (cwd: string) =>
     return read.projects;
   });
 
+const helleWhere = (
+  cwd: string,
+  deploys:
+    | { readonly applications: ReadonlyArray<string>; readonly jobs: ReadonlyArray<string> }
+    | undefined,
+) =>
+  Effect.gen(function* () {
+    const env = yield* currentEnv.pipe(Effect.orDie);
+    return {
+      home: env.home,
+      envFile: env.raw.HELLE_ENV_FILE ?? null,
+      url: helleUrlOf(env.raw),
+      repositoryPath: yield* projectHere(cwd, runShell),
+      // Roaming checkout names do not identify Helle projects.
+      repoName: (yield* repositoryName(runShell, cwd)) ?? (yield* Path.Path).basename(cwd),
+      deploys: deploys ?? null,
+      declared: yield* declaredProjects(cwd),
+    };
+  });
+
 /**
  * The Run's Check a command is, with the latest record this host collected of it on this
  * tree, or null where the command is none of the Run's Checks.
@@ -3526,23 +3572,13 @@ export const hostLayer = (options: {
             readonly applications: ReadonlyArray<string>;
             readonly jobs: ReadonlyArray<string>;
           };
+          readonly free?: boolean;
         }): Effect.Effect<Sdk.Claimed, WorkflowError | E, R> =>
           Effect.gen(function* () {
-            const env = yield* currentEnv.pipe(Effect.orDie);
             const file = claimPath(dir, asked.runId);
             const held = yield* waitForHelle({
-              home: env.home,
-              envFile: env.raw.HELLE_ENV_FILE ?? null,
-              url: helleUrlOf(env.raw),
-              repositoryPath: yield* projectHere(asked.cwd, runShell),
-              // git's repository, never the checkout's basename: a roaming Run's directory
-              // is named after the workflow, and a Helle project under that name is a
-              // project that does not exist for a repository that has one.
-              repoName:
-                (yield* repositoryName(runShell, asked.cwd)) ??
-                (yield* Path.Path).basename(asked.cwd),
-              deploys: asked.deploys ?? null,
-              declared: yield* declaredProjects(asked.cwd),
+              ...(yield* helleWhere(asked.cwd, asked.deploys)),
+              free: asked.free ?? false,
               claimed: yield* recordedClaims(file),
               record: (claim) =>
                 Effect.gen(function* () {
@@ -3598,7 +3634,10 @@ export const hostLayer = (options: {
                 }),
               ended: () => waitOn(asked.runId, null),
             });
-            return held._tag === "Held" ? { slugs: held.slugs } : { unresolved: held.why };
+            if (held._tag === "Unresolved") return { unresolved: held.why };
+            return held.left === undefined
+              ? { slugs: held.slugs }
+              : { slugs: held.slugs, left: held.left };
           }).pipe(
             Effect.provide(FetchHttpClient.layer),
             Effect.provideContext(services),
@@ -3607,6 +3646,14 @@ export const hostLayer = (options: {
             Effect.mapError((cause: HelleError | E) =>
               cause instanceof HelleError ? new WorkflowError({ reason: cause.message }) : cause,
             ),
+          ),
+        holders: (asked) =>
+          Effect.gen(function* () {
+            return yield* helleHolders(yield* helleWhere(asked.cwd, asked.deploys));
+          }).pipe(
+            Effect.provide(FetchHttpClient.layer),
+            Effect.provideContext(services),
+            Effect.mapError((cause) => new WorkflowError({ reason: cause.message })),
           ),
         release: (runId) =>
           Effect.gen(function* () {

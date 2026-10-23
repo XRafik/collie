@@ -210,6 +210,7 @@ const MERGE_TRIES = 2;
 const BUILDER = "build";
 
 const RELEASE = "Release";
+const STAGE = "Stage";
 const FINISH = "Finish";
 const HAND_BACK = "Hand back";
 const STOP = "Stop";
@@ -276,6 +277,14 @@ export default defineWorkflow({
       id: "release",
       title: "Release",
       workflow: "release",
+      when: "succeeded",
+      inputs: { mr: "merge-request" },
+      eligible: (facts) => facts.mrUrl !== null,
+    },
+    {
+      id: "stage",
+      title: "Stage",
+      workflow: "stage",
       when: "succeeded",
       inputs: { mr: "merge-request" },
       eligible: (facts) => facts.mrUrl !== null,
@@ -1209,12 +1218,25 @@ const releasing = (delivered: {
           ),
       });
       if (merging !== null) return mr;
-      const chosen = yield* ask({
-        name: "next",
-        prompt: `${mr} is open. What next?`,
-        options: [RELEASE, FINISH],
-      });
-      if (chosen !== RELEASE) return mr;
+      for (let n = 1; ; n++) {
+        const chosen = yield* ask({
+          name: n === 1 ? "next" : `next-${n}`,
+          prompt: `${mr} is open. What next?`,
+          options: [RELEASE, STAGE, FINISH],
+        });
+        if (chosen === STAGE) {
+          const children = yield* Children;
+          const invocation = `stage-${n}`;
+          const child = yield* children.start({ invocation, workflow: "stage", input: { mr } });
+          const result = yield* children
+            .result(child)
+            .pipe(Effect.match({ onSuccess: String, onFailure: (failure) => failure.reason }));
+          yield* host.record(runId, `${invocation}: ${result}`);
+          continue;
+        }
+        if (chosen !== RELEASE) return mr;
+        break;
+      }
     }
     const children = yield* Children;
     const child = yield* children.start({
