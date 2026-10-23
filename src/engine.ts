@@ -11,6 +11,7 @@
 
 import type { Asker } from "./proposals";
 import { actorOf, readAudit, whoActed, type ScheduledBy } from "./audit";
+import { LinkDelivery, readLinkDeliveries } from "./run-links";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
@@ -4824,6 +4825,7 @@ export const Steered = Schema.Struct({
 export const RunView = Schema.Struct({
   requestedBy: Schema.optional(RequestedBy),
   report: Schema.optional(RunReport),
+  linkNotices: Schema.optional(Schema.Array(LinkDelivery)),
   closes: Schema.optional(Schema.Literal("reported")),
   runId: Schema.String,
   workflow: Schema.String,
@@ -6149,10 +6151,14 @@ const makeRegistry: (
           .pipe(Effect.orElseSucceed(() => "")),
       ),
     );
+    const linkNotices = yield* readLinkDeliveries(runDir(dir, row.run)).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+    );
     const admitted = {
       requestedBy: placing?.requestedBy,
       closes: placing?.closes,
       report,
+      linkNotices: linkNotices.length === 0 ? undefined : linkNotices,
       runId: row.run,
       workflow: row.workflow,
       project: row.project,

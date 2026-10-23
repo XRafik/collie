@@ -676,7 +676,11 @@ or round or a fan-out's Repo runs by `wave`, its `runs`; then `current`, the nod
 leading Run's work is at, `null` once the Task has settled; and `release`, the merge
 request's CI, Merged and furthest deploy, `null` until there is one
 ([ADR-draft-a-step-is-declared-where-its-work-is-written](adr/draft-a-step-is-declared-where-its-work-is-written.md)).
-Its human output is unchanged. Its `run` object carries:
+A Step's `links` are Runs its agents started, without expanding those Runs' Steps.
+Their `link.asOf` is null for live local state, or the last admission or settlement
+notice from a paired Machine. `run.linkNotices` records those deliveries on the started
+Run; human output names undelivered notices. A missed notice is not retried or polled.
+Its `run` object carries:
 
 | Field                                    | What it tells you                                                                                                                                                                                    |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -516,6 +516,9 @@ const runShow = Command.make(
                     `  Report ${view.report.state}: ${view.report.note}`,
                     ...(view.report.closure === undefined ? [] : [`  ${view.report.closure}`]),
                   ]),
+              ...(view.linkNotices ?? [])
+                .filter((one) => one.state === "undelivered")
+                .map((one) => `  ${one.phase} link notice undelivered: ${one.note}`),
               ...agentLines(agents),
               ...describeWaiting(view),
               ...children.map((child) => `  ${child.runId}\t${child.workflow}\t${statusOf(child)}`),

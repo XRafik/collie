@@ -3,7 +3,7 @@
 // handed to `flow.ts`'s rules.
 
 import { Clock, Effect, FileSystem } from "effect";
-import type { Flow, FlowLane, MrState } from "./board-model";
+import type { Flow, FlowLane, FlowNode, FlowRun, MrState } from "./board-model";
 import { readAudit, whoActed } from "./audit";
 import type { PluginEnv } from "./env";
 import {
@@ -21,6 +21,8 @@ import { runTitle } from "./naming";
 import { machineName } from "./peers";
 import type { RunFacts, RunState } from "./runs";
 import { readStepLines } from "./steps";
+import { readRunLinks } from "./run-links";
+import { epochMs } from "./time";
 
 const executionOfState = (state: RunState): Execution => {
   switch (state) {
@@ -49,6 +51,40 @@ export interface LaneContext {
 const ALONE: LaneContext = { children: [], toCome: [], wait: null, offer: null, readiness: null };
 
 const machineOf = (env: PluginEnv) => env.machine ?? machineName();
+
+const requestedLink = (notice: {
+  readonly run: string;
+  readonly workflow: string;
+  readonly machine: { readonly name: string; readonly installation: string };
+  readonly state: FlowRun["state"];
+  readonly said: string | null;
+  readonly at: string | null;
+}): FlowRun => ({
+  id: `run:${notice.machine.installation}:${notice.run}`,
+  title: `${notice.workflow[0]?.toUpperCase() ?? ""}${notice.workflow.slice(1)} on ${notice.machine.name}`,
+  kind: "link",
+  description: "",
+  role: null,
+  declared: false,
+  state: notice.state,
+  said: notice.said,
+  wait: null,
+  produces: null,
+  offPath: false,
+  place: null,
+  started: null,
+  ended: null,
+  attempts: [],
+  ranOn: null,
+  questions: [],
+  link: {
+    run: notice.run,
+    machine: notice.machine.name,
+    state: notice.state,
+    said: notice.said,
+    asOf: notice.at,
+  },
+});
 
 /** One Run's row, from what it recorded and what its Task says around it. */
 export const laneFor = Effect.fn("Flow.lane")(function* (
@@ -133,6 +169,10 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
   const rows = [...task.rows].sort((one, other) => one.created.localeCompare(other.created));
   const inTask = new Set(rows.map((run) => run.id));
   const machine = machineOf(env);
+  const fs = yield* FileSystem.FileSystem;
+  const installation = (yield* fs
+    .readFileString(`${env.stateDir}/installation`)
+    .pipe(Effect.orElseSucceed(() => ""))).trim();
 
   const linkOf = Effect.fn("Flow.link")(function* (child: RunFacts) {
     const lane = yield* laneFor(env, child);
@@ -190,11 +230,50 @@ export const taskFlowFor = Effect.fn("Flow.task")(function* (env: PluginEnv, tas
       offer: run.id === task.leader.id ? task.offer : null,
       readiness: run.id === task.merging ? task.readiness : null,
     });
+    const links = (yield* readRunLinks(run.dir)).map((one) => ({
+      step: one.step,
+      node: requestedLink(one),
+    }));
+    const requested = task.all.filter(
+      (one) =>
+        !inTask.has(one.id) &&
+        one.requestedBy?.run === run.id &&
+        one.requestedBy.machine.installation === installation,
+    );
+    if (requested.length > 0) {
+      const launches = yield* readLaunches(env.stateDir, run.id);
+      for (const child of requested) {
+        const launch = launches.findLast(
+          (one) =>
+            one.agent === child.requestedBy?.agent &&
+            (one.at === undefined || one.at <= epochMs(child.created)),
+        );
+        const link = yield* linkOf(child);
+        links.push({
+          step: launch?.step?.step ?? null,
+          node: requestedLink({
+            run: child.id,
+            workflow: child.workflow,
+            machine: { installation, name: machine },
+            state: link.state,
+            said: link.said,
+            at: null,
+          }),
+        });
+      }
+    }
+    const nodes: FlowNode[] = lane.nodes.map((node) => {
+      const own = links.filter((one) => one.step === node.id);
+      return own.length === 0 ? node : { ...node, links: own.map((one) => one.node) };
+    });
+    for (const link of links.filter((one) => !nodes.some((node) => node.id === one.step)))
+      nodes.push({ ...link.node, offPath: true, runs: [] });
+    const linked = { ...lane, nodes };
     const parent = run.parent === null ? undefined : rows.find((one) => one.id === run.parent);
     lanes.push(
       parent === undefined
-        ? lane
-        : { ...lane, startedBy: { run: parent.id, step: yield* startedIn(parent, run.id) } },
+        ? linked
+        : { ...linked, startedBy: { run: parent.id, step: yield* startedIn(parent, run.id) } },
     );
   }
   const leading = lanes.find((lane) => lane.run === task.leader.id);

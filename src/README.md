@@ -79,6 +79,8 @@ Desktop. `harness.ts` owns how those choices launch and reexports the shared int
 | `steps.ts`             | What a Step is as data, and the records the host keeps of a Run's work entering and leaving one           |
 | `flow.ts`              | A Run's Flow, built from its Step records, launches, questions and children (pure)                        |
 | `flow-read.ts`         | A Run's Flow as the host reads it: those records gathered from its directory and the engine               |
+| `run-links.ts`         | Notices of agent-requested Runs and the recorded delivery of each notice                                  |
+| `run-link-delivery.ts` | Admission and settlement notices sent to a requesting Run's paired host                                   |
 | `side-jobs.ts`         | What the host does with no pane open: the merge watch, each Herd's News, cleanup and Home tokens          |
 | `cleanup.ts`           | What a sweep removes and keeps, one sweeper per kind, and the journal of what went (ADR-0045)             |
 | `bytes.ts`             | A size as `collie cleanup` and Desktop say it (pure)                                                      |

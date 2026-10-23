@@ -238,7 +238,16 @@ import { reason } from "./naming";
 import { editString, globFiles, grepFiles, readPart, writeWhole } from "./host-files";
 import { receive, uploadsDir } from "./uploads";
 import { loadDefaults, SettingRefused, sharedSettings, takeShared } from "./config";
-import { decodeAnswer, machineName, relayOf, runShell, startPeers, type Peers } from "./peers";
+import {
+  decodeAnswer,
+  machineName,
+  peersOf,
+  relayOf,
+  runShell,
+  startPeers,
+  type Peers,
+} from "./peers";
+import { RunLinkNotice, readRunLinks, recordRunLink } from "./run-links";
 import type { SshMachine } from "./ssh-connection";
 import { LADDER_BOUND } from "./peer-transport";
 import {
@@ -250,7 +259,7 @@ import {
   type RelayHeader,
 } from "./peers-model";
 import { latest, readDispositions } from "./disposition";
-import { operationsOf, runAgents } from "./launches";
+import { operationsOf, readLaunches, runAgents } from "./launches";
 import { factsOfView, settled, type RunFacts } from "./runs";
 import { Store } from "./store";
 import { SESSIONS_EVERY, agentsIn, focusPane, herdChanges, liveHerds } from "./herds";
@@ -368,6 +377,11 @@ const outcomeSaying = (removed: ReadonlyArray<string>, outcome: SteerOutcome): S
  */
 export const HostRpcs = RpcGroup.make(
   Rpc.make("identity", { success: Identity }),
+  Rpc.make("linkNotice", {
+    payload: { notice: RunLinkNotice, request: Schema.String },
+    success: Schema.Boolean,
+    error: Schema.Union([HostRefused, RequestConflict]),
+  }),
   Rpc.make("load", {
     payload: { entry: Schema.String },
     success: Loaded,
@@ -562,6 +576,7 @@ const handlers = (
       const registry = yield* Registry;
       const bun = yield* Effect.context<BunServices>();
       const pid = yield* currentPid;
+      const recordingLinks = yield* Semaphore.make(1);
       // The installation this host belongs to, which the client that started it named.
       const env = yield* currentEnv.pipe(Effect.orDie);
       const catalogue = (project: string) =>
@@ -575,6 +590,58 @@ const handlers = (
           Effect.mapError((cause) => new HostRefused({ reason: reason(cause) })),
         );
       return HostRpcs.of({
+        linkNotice: ({ notice, request }, { client }) =>
+          Effect.gen(function* () {
+            const actor = stampIn(declared, client);
+            const sender = actor.from?.machine;
+            const peer =
+              sender === undefined
+                ? undefined
+                : (yield* peersOf(dir)).find((one) => one.installation === sender.installation);
+            if (peer === undefined || sender?.installation !== notice.machine.installation)
+              return yield* new HostRefused({
+                reason: "only a paired Machine can send a Run link notice",
+              });
+            if (notice.requestedBy.machine.installation !== installation)
+              return yield* new HostRefused({
+                reason: "the requesting Run belongs to another Machine",
+              });
+            const runId = notice.requestedBy.run;
+            if ((yield* registry.view(runId)) === null)
+              return yield* new HostRefused({ reason: `No Run "${runId}".` });
+            const launch = (yield* readLaunches(dir, runId)).findLast(
+              (one) => one.agent === notice.requestedBy.agent,
+            );
+            if (launch === undefined)
+              return yield* new HostRefused({
+                reason: "the requesting agent was not launched by that Run",
+              });
+            return yield* recordingLinks.withPermits(1)(
+              once(
+                runDir(dir, runId),
+                {
+                  operation: "run-link",
+                  request,
+                  ...actor,
+                  asked: Schema.encodeSync(RunLinkNotice)(notice),
+                  result: Schema.Boolean,
+                },
+                Effect.gen(function* () {
+                  const prior = (yield* readRunLinks(runDir(dir, runId))).find(
+                    (one) =>
+                      one.run === notice.run &&
+                      one.machine.installation === notice.machine.installation,
+                  );
+                  yield* recordRunLink(runDir(dir, runId), {
+                    ...notice,
+                    machine: { ...notice.machine, name: peer.name },
+                    step: prior?.step ?? launch.step?.step ?? null,
+                  }).pipe(Effect.orDie);
+                  return true;
+                }),
+              ),
+            );
+          }).pipe(Effect.provideContext(bun)),
         identity: () =>
           Effect.succeed({
             build: BUILD,
@@ -1487,6 +1554,25 @@ const frontDoorHandlers = (
                             intent,
                             verify,
                             attachments,
+                          }),
+                        ),
+                        Effect.tap((started) =>
+                          Effect.gen(function* () {
+                            const view = yield* registry.view(started.runId);
+                            if (
+                              view?.requestedBy === undefined ||
+                              view.requestedBy.machine.installation === installation
+                            )
+                              return;
+                            const { notifyRunLink } = yield* Effect.promise(
+                              () => import("./run-link-delivery"),
+                            );
+                            yield* notifyRunLink(
+                              { ...env, hostStamp: stamp },
+                              installation,
+                              view,
+                              "admitted",
+                            );
                           }),
                         ),
                         Effect.map(saying(scrubbed.removed)),

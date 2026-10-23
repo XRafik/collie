@@ -654,6 +654,8 @@ export const FlowLink = Schema.Struct({
   machine: Schema.NullOr(Schema.String),
   state: FlowState,
   said: Schema.NullOr(Schema.String),
+  /** When its host last told us; null on this host. */
+  asOf: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type FlowLink = typeof FlowLink.Type;
 
@@ -687,7 +689,12 @@ const FlowNodeFields = {
 export const FlowRun = Schema.Struct(FlowNodeFields);
 export type FlowRun = typeof FlowRun.Type;
 
-export const FlowNode = Schema.Struct({ ...FlowNodeFields, runs: Schema.Array(FlowRun) });
+export const FlowNode = Schema.Struct({
+  ...FlowNodeFields,
+  runs: Schema.Array(FlowRun),
+  /** Runs its agents started outside this Flow. */
+  links: Schema.optionalKey(Schema.Array(FlowRun)),
+});
 export type FlowNode = typeof FlowNode.Type;
 
 /** One Run's row of Steps. */
