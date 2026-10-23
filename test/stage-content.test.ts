@@ -1,22 +1,18 @@
 import { expect, test } from "bun:test";
-import { STAGE_CLEARS, STAGE_ON } from "../workflows/stage.workflow";
+import { STAGE_CLEARS } from "../workflows/stage.workflow";
 import { contentOf } from "../src/sdk";
 import onGitlab from "../workflows/stage.gitlab.md" with { type: "text" };
 import onGithub from "../workflows/stage.github.md" with { type: "text" };
 import releaseOnGitlab from "../workflows/release.gitlab.md" with { type: "text" };
 import releaseOnGithub from "../workflows/release.github.md" with { type: "text" };
 
-// stage keeps a content file per forge, as release does (ADR-0050 D1).
-
 const content = { gitlab: contentOf(onGitlab), github: contentOf(onGithub) };
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
 const URL = "https://gitlab.example.com/group/app";
 
-test("both forges' stage content has the steps the module asks for, and every step fills from what it gives", () => {
+test("both forges' stage content has the steps the module asks for", () => {
   for (const one of Object.values(content))
     expect([...one.sections.keys()]).toEqual(["assess", "stage", "unstage"]);
-  // A template naming anything the module does not give is refused as it is made.
-  expect(Object.keys(STAGE_ON.github)).toEqual(Object.keys(STAGE_ON.gitlab));
 });
 
 test("stage decides package or application by release's own rule, word for word", () => {

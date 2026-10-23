@@ -22,7 +22,6 @@ export const nth = (name: string, n: number) => (n === 1 ? name : `${name}-${n}`
 
 export const quoted = (jobs: ReadonlyArray<string>) => jobs.map((job) => `\`${job}\``).join(", ");
 
-/** Jobs as a human plays them: by name, at the forge's address. */
 export const plays = (jobs: ReadonlyArray<JobLink>) =>
   jobs.map((job) => `\`${job.name}\` at ${job.url}`).join(", ");
 
