@@ -136,16 +136,19 @@ export const opensOn = <R>(
     const { harness } = checked.choice;
     if (lists !== undefined) yield* lists.ready(harness);
     const config = yield* configFor(harness, pi);
+    const offered = withList(
+      tableOffer(harness, settings, flock, config),
+      lists?.now(harness),
+      config,
+      settings,
+    );
+    const ready = chatChoice(settings, flock, { [harness]: offered });
+    if (!ready.ok) return ready;
     return {
       ok: true as const,
       choice: runsAs(
         { harness, model: settings.chatModel, effort: settings.chatEffort },
-        withList(
-          tableOffer(harness, settings, flock, config),
-          lists?.now(harness),
-          config,
-          settings,
-        ).models,
+        offered.models,
         config,
       ),
     };

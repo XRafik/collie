@@ -1891,6 +1891,9 @@ and any effort on a model that lists none; nothing is saved. Another model keeps
 only where it lists it, unsetting the model included. Unset, Claude runs at `medium` and Pi
 at its configured level clamped to the model's available levels. A new effort applies with the next message, in the same
 conversation; another harness unsets the model and the effort.
+Before a session opens, Desktop checks a saved explicit effort against the model list
+it obtained. If a choice saved before that read is unsupported, the message is refused
+with the available levels; the saved choice stays set for you to change or clear.
 
 Pi reaches Collie's tools, the five Machine file tools and AskUserQuestion through one
 streamable-HTTP MCP endpoint on `127.0.0.1`, started on its first session. A random bearer

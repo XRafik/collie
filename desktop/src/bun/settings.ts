@@ -96,7 +96,11 @@ export const extraModels = (flock: FlockSettings) =>
   );
 
 /** The harness, model and effort the Flock chat is set to, checked as a Run's are. */
-export const chatChoice = (settings: DesktopSettings, flock: FlockSettings) => {
+export const chatChoice = (
+  settings: DesktopSettings,
+  flock: FlockSettings,
+  offers: Offers = {},
+) => {
   const harness = settings.chatHarness ?? DEFAULT_CHAT_HARNESS;
   if (!CHAT_HARNESSES.includes(harness))
     return {
@@ -117,7 +121,20 @@ export const chatChoice = (settings: DesktopSettings, flock: FlockSettings) => {
       ok: false as const,
       problem: `${resolved.problem}. Write provider/model, for example openai-codex/gpt-6.1-sol.`,
     };
-  return resolved;
+  if (!resolved.ok || settings.chatEffort === undefined) return resolved;
+  const { label, efforts } = modelOf(settings, offers);
+  const effort = settings.chatEffort;
+  if (efforts.length === 0)
+    return {
+      ok: false as const,
+      problem: `${label} takes no effort, so "${effort}" cannot be asked of it`,
+    };
+  return efforts.includes(effort)
+    ? resolved
+    : {
+        ok: false as const,
+        problem: `"${effort}" is not an effort ${label} takes (${efforts.join(", ")})`,
+      };
 };
 
 /**
@@ -137,16 +154,8 @@ export const changeSettings = (
     change.chatEffort === undefined
   )
     return changed;
-  const checked = chatChoice(changed, flock);
-  if (!checked.ok) return { refused: checked.problem };
-  const effort = changed.chatEffort;
-  if (effort === undefined) return changed;
-  const { label, efforts } = modelOf(changed, offers);
-  if (efforts.length === 0)
-    return { refused: `${label} takes no effort, so "${effort}" cannot be asked of it` };
-  return efforts.includes(effort)
-    ? changed
-    : { refused: `"${effort}" is not an effort ${label} takes (${efforts.join(", ")})` };
+  const checked = chatChoice(changed, flock, offers);
+  return checked.ok ? changed : { refused: checked.problem };
 };
 
 /** Desktop's settings, saved one change at a time through the check and told to whoever follows them. */

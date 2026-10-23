@@ -3,11 +3,67 @@ import { Effect, Fiber, Stream } from "effect";
 import { TestClock } from "effect/testing";
 import { offerOf, opensOn } from "../desktop/src/bun/chat-choices";
 import { harnessLists, type HarnessList } from "../desktop/src/bun/harness-lists";
+import { changeSettings } from "../desktop/src/bun/settings";
 import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 
 const MODELS = [
   { id: "opus", label: "Opus 5", description: "Complex work", efforts: ["low", "medium", "high"] },
 ];
+
+test("opening rechecks a saved explicit effort after the harness finishes listing its model's levels", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      for (const { harness, model, effort, listed, problem } of [
+        {
+          harness: "pi",
+          model: "openai-codex/gpt-5.5",
+          effort: "max",
+          listed: {
+            id: "openai-codex/gpt-5.5",
+            label: "GPT-5.5",
+            efforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+          },
+          problem: '"max" is not an effort GPT-5.5 takes (off, minimal, low, medium, high, xhigh)',
+        },
+        {
+          harness: "claude",
+          model: "claude-haiku-4-5",
+          effort: "high",
+          listed: { id: "claude-haiku-4-5", label: "Haiku 4.5", efforts: [] },
+          problem: 'Haiku 4.5 takes no effort, so "high" cannot be asked of it',
+        },
+      ]) {
+        const lists = yield* harnessLists({
+          [harness]: Effect.sleep("2 seconds").pipe(Effect.as([listed])),
+        });
+        const saved = changeSettings({ proactive: true }, NO_FLOCK_SETTINGS, {
+          chatHarness: harness,
+          chatModel: model,
+          chatEffort: effort,
+        });
+        if ("refused" in saved) return yield* Effect.die(saved.refused);
+        const first = yield* opensOn(saved, NO_FLOCK_SETTINGS, Effect.succeed({}), lists).pipe(
+          Effect.forkScoped,
+        );
+        yield* TestClock.adjust("1 second");
+        expect(lists.now(harness)).toEqual({ from: "reading" });
+        yield* TestClock.adjust("1 second");
+        expect(yield* Fiber.join(first)).toEqual({ ok: false, problem });
+        expect(saved.chatEffort).toBe(effort);
+        expect(
+          yield* opensOn(
+            { ...saved, chatEffort: undefined },
+            NO_FLOCK_SETTINGS,
+            Effect.succeed({}),
+            lists,
+          ),
+        ).toEqual({
+          ok: true,
+          choice: { harness, model, effort: harness === "pi" ? "medium" : null },
+        });
+      }
+    }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  ));
 
 test("a list pushes reading, failure with its reason, retry, and success kept for Desktop's lifetime", () =>
   Effect.runPromise(
