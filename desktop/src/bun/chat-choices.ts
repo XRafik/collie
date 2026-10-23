@@ -57,13 +57,24 @@ export const tableOffer = (
 const configFor = <R>(harness: string, pi: Effect.Effect<PiConfig, never, R>) =>
   harness === "pi" ? pi : Effect.succeed<PiConfig>({});
 
-const withList = (table: Offer, list: HarnessList | undefined, pi: PiConfig): Offer => {
+const withList = (
+  table: Offer,
+  list: HarnessList | undefined,
+  pi: PiConfig,
+  settings: DesktopSettings,
+): Offer => {
   if (list?.from === "table") return { ...table, why: list.why };
   if (list?.from !== "harness") return table;
   const harness = table.unset.harness;
+  const typed =
+    (settings.chatHarness ?? DEFAULT_CHAT_HARNESS) === harness &&
+    table.models.find(
+      ({ id }) => id === settings.chatModel && !list.models.some((model) => model.id === id),
+    );
   return {
     from: "harness",
     unset: runsAs({ harness }, list.models, pi),
+    ...(typed && { typed: runsAs({ harness, model: typed.id }, list.models, pi) }),
     models: list.models.map((model) => ({
       ...model,
       unsetEffort: runsAs({ harness, model: model.id }, list.models, pi).effort,
@@ -84,7 +95,7 @@ export const offerOf = <R>(
       const list = lists?.now(harness);
       return list?.from === "reading"
         ? list
-        : withList(tableOffer(harness, settings, flock, config), list, config);
+        : withList(tableOffer(harness, settings, flock, config), list, config, settings);
     }),
   );
 
@@ -101,7 +112,12 @@ export const offersOf = <R>(
         (config) =>
           [
             harness,
-            withList(tableOffer(harness, settings, flock, config), lists?.now(harness), config),
+            withList(
+              tableOffer(harness, settings, flock, config),
+              lists?.now(harness),
+              config,
+              settings,
+            ),
           ] as const,
       ),
     ),
@@ -124,7 +140,12 @@ export const opensOn = <R>(
       ok: true as const,
       choice: runsAs(
         { harness, model: settings.chatModel, effort: settings.chatEffort },
-        withList(tableOffer(harness, settings, flock, config), lists?.now(harness), config).models,
+        withList(
+          tableOffer(harness, settings, flock, config),
+          lists?.now(harness),
+          config,
+          settings,
+        ).models,
         config,
       ),
     };

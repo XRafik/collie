@@ -1869,6 +1869,8 @@ model, named by id with the table's levels, and says why.
 Unset, the model is Pi's configured `defaultProvider/defaultModel`, or Pi's own default where
 none is configured. An unset effort is the level Pi configures for the model
 (`modelThinkingLevels`), else its `defaultThinkingLevel`, else `medium`, set model or not.
+A typed model absent from Pi's list still uses its own configured level; the selects,
+reply notice and chat's settings read show that same default.
 Where that level is unavailable, Desktop uses Pi's clamp: the next available level above
 it, or the highest available level if none is above. Below the lowest gives the lowest;
 above the highest gives the highest. A model that takes no effort is passed none.

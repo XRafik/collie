@@ -32,6 +32,8 @@ export const Offer = Schema.Struct({
   from: Schema.Literals(["harness", "table"]),
   why: Schema.optionalKey(Schema.String),
   unset: Resolved,
+  /** The set model's defaults when it is absent from the harness list. */
+  typed: Schema.optionalKey(Resolved),
   models: Schema.Array(Offered),
 });
 export type Offer = typeof Offer.Type;
@@ -136,6 +138,7 @@ export const runsAsOffered = (set: SetChoice, offer: Offer): Resolved => {
         ? null
         : (set.effort ??
           offer.models.find(({ id }) => id === model)?.unsetEffort ??
+          (offer.typed?.model === model ? offer.typed.effort : undefined) ??
           offer.unset.effort ??
           "medium"),
   };

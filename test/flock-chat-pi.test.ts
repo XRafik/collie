@@ -18,7 +18,7 @@ import { NO_FLOCK_SETTINGS } from "../desktop/src/shared/flock-settings";
 import { harnessLists } from "../desktop/src/bun/harness-lists";
 import { readPiModels } from "../desktop/src/bun/pi-models";
 import { changeSettings } from "../desktop/src/bun/settings";
-import { chatSelects } from "../desktop/src/shared/chat-choices";
+import { chatSelects, choiceNotices } from "../desktop/src/shared/chat-choices";
 import { callFlockTool } from "../desktop/src/bun/flock-tools";
 
 const withPi = <A, E>(
@@ -372,6 +372,70 @@ test("Pi's own per-model levels constrain settings, selects, the tool and the se
           ),
         ).toEqual({ proactive: true, chatHarness: "pi", chatModel: "openai-codex/gpt-5.5" });
       }
+    }),
+  ));
+
+test("an unlisted Pi model's configured default agrees in the session, selects, notice and tool", () =>
+  withPi((driver, context) =>
+    Effect.gen(function* () {
+      const model = "openai-codex/gpt-6-astra";
+      yield* writePiConfig({
+        defaultProvider: "openai-codex",
+        defaultModel: "gpt-6.1-sol",
+        defaultThinkingLevel: "low",
+        modelThinkingLevels: { [model]: "high" },
+      });
+      const lists = yield* harnessLists({
+        pi: readPiModels(NO_FLOCK_SETTINGS, context.dir, [
+          "bun",
+          `${import.meta.dir}/fixtures/pi-models.ts`,
+          "list",
+        ]),
+      });
+      const settings: DesktopSettings = { proactive: true, chatHarness: "pi", chatModel: model };
+      const opened = yield* opensOn(settings, NO_FLOCK_SETTINGS, readPiConfig(context.dir), lists);
+      expect(opened).toEqual({ ok: true, choice: { harness: "pi", model, effort: "high" } });
+      if (!opened.ok) return yield* Effect.die(opened.problem);
+      const session = yield* driver.open(
+        "typed-default",
+        opened.choice.model,
+        opened.choice.effort,
+      );
+      yield* Effect.addFinalizer(() => session.close);
+      yield* session.offer("inspect");
+      expect(
+        inspected(yield* Stream.runCollect(session.events.pipe(Stream.takeUntil(ends)))),
+      ).toMatchObject({
+        model,
+        thinking: "high",
+      });
+      const offered = yield* offerOf(
+        "pi",
+        settings,
+        NO_FLOCK_SETTINGS,
+        readPiConfig(context.dir),
+        lists,
+      );
+      const account = {
+        heldOn: "pi",
+        runsOn: { harness: "pi", model: "openai-codex/gpt-6.1-sol", effort: "low" },
+        turning: true,
+        harnesses: [{ harness: "pi", label: "Pi", installed: true, offered }],
+      };
+      expect(chatSelects(settings, account).effort.label).toBe("Default · High");
+      expect(choiceNotices(settings, account).reply?.next).toBe("openai-codex/gpt-6-astra · High");
+      expect(choiceNotices(settings, { ...account, runsOn: opened.choice }).reply).toBeNull();
+      expect(
+        yield* callFlockTool(
+          {
+            ...context.flock,
+            chatHarness: () => ({ harness: "pi", model, effort: undefined }),
+            chatChoices: Effect.succeed(account),
+          },
+          "collie_chat_harness",
+          {},
+        ),
+      ).toContain("model openai-codex/gpt-6-astra, with no effort set, so it runs at high");
     }),
   ));
 
