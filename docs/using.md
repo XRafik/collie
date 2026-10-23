@@ -1501,6 +1501,9 @@ first** are this computer's, like the bell in the chat's header. The harness off
 `claude` and `pi`; the model is a one-line field, with **Unset: opus** for Claude and
 **Unset: pi's own default** for Pi. It is checked as a Run's model is, including
 **More Claude Code models** and Pi's `provider/model` form, and a refusal saves nothing.
+A change to this computer's settings reaches every Desktop window at once, wherever it was
+made: Settings, the bell and both chat windows show it as soon as it is saved, a change the
+Flock chat made through `collie_chat_harness` included.
 The groups, names, descriptions and
 units live with each key in the one list of settings (`src/settings.ts`) that the TUI's
 Settings reads too, so a new setting shows up in both, except those for this computer only,
@@ -1855,12 +1858,16 @@ endpoint remains until Desktop quits. Its
 24-hour tool timeout leaves time for a question click or a slow Machine read. A question
 in a turn Desktop starts is answered at once that the human is not in that turn.
 
-A model change waits for the turn under way to end, then the next message continues the
-same conversation on the new model. A harness change waits too, then starts a fresh
-conversation and clears its model; both chat windows reload it. Earlier conversations
-lists the current harness's history. Switching back to Claude shows its own conversations
-again. You can ask the chat to read or change these settings through `collie_chat_harness`,
-with the same checks as Settings.
+A change applies with the next message, yours or one of Desktop's own about News, and never
+to the turn under way. A new model continues the same conversation on it. A new harness
+unsets the model and the effort, and the conversation stays on screen, with its transcript,
+until the next message, which starts a new conversation on that harness. Earlier
+conversations lists every installed harness's history, ten at most, newest first, each
+marked **Claude Code** or **Pi** beside its date. Reopening one from another harness moves
+the chat to that harness, unsetting the model and the effort, and shows that conversation,
+never a new one; the menu's last line says so whenever it lists one. **Start fresh** stays on
+the set harness. You can ask the chat to read or change these settings through
+`collie_chat_harness`, with the same checks as Settings.
 
 Your first message starts the session, and it stays warm between turns. Its session id
 and harness are kept in `$XDG_STATE_HOME/collie-desktop/flock-chat.json` (or
@@ -1986,7 +1993,7 @@ and a Run the rule placed on another Machine still opens with Go to pane over th
 Machine's own connection.
 
 **Start fresh** (the pen) mints a new session and makes it current; the history (the clock)
-lists the earlier ones on this computer, newest first, and reopens one. Either way the
+lists the earlier ones on this computer, every harness's, newest first, and reopens one. Either way the
 session before it ends: there is only ever one live conversation. **Pop out** moves the
 chat into its own window, which follows the same conversation (between turns: a window
 the chat leaves would take its turn with it) and opens no board of its own, so no Machine is

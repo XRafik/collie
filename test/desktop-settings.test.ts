@@ -3,7 +3,7 @@
 
 import { expect, test } from "bun:test";
 import { BunServices } from "@effect/platform-bun";
-import { Effect, FileSystem, SubscriptionRef } from "effect";
+import { Effect, Fiber, FileSystem, Stream, SubscriptionRef } from "effect";
 import { HostRefused, type SharedSetting, type SharedSettings } from "../src/board-model";
 import {
   desktopChange,
@@ -24,6 +24,7 @@ import { settingStored } from "../src/settings";
 import {
   applyChange,
   changeSettings,
+  heldSettings,
   readSettings,
   writeSettings,
 } from "../desktop/src/bun/settings";
@@ -650,3 +651,35 @@ test("a change of only the chat's effort is checked too", () => {
     chatEffort: "max",
   });
 });
+
+test("Desktop's settings are saved through the check in one place and told to every window, and a refused change tells nothing", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped({ prefix: "desktop-settings-" });
+      yield* writeSettings(dir, { proactive: true, chatModel: "sonnet" });
+      const held = yield* heldSettings(dir, () => NO_FLOCK_SETTINGS);
+      const told = yield* held.changes.pipe(Stream.take(3), Stream.runCollect, Effect.forkChild);
+      yield* Effect.yieldNow;
+
+      // As collie_chat_harness saves a change.
+      expect(yield* held.save({ chatHarness: "pi", chatEffort: "off" })).toEqual({
+        proactive: true,
+        chatHarness: "pi",
+        chatEffort: "off",
+      });
+      const refused = yield* Effect.flip(held.save({ chatHarness: "claude", chatEffort: "off" }));
+      expect(refused.reason).toBe(
+        '"off" is not an effort claude takes (low, medium, high, xhigh, max)',
+      );
+      yield* held.save({ proactive: false });
+
+      expect(yield* Fiber.join(told)).toEqual([
+        { proactive: true, chatModel: "sonnet" },
+        { proactive: true, chatHarness: "pi", chatEffort: "off" },
+        { proactive: false, chatHarness: "pi", chatEffort: "off" },
+      ]);
+      expect(held.now()).toEqual({ proactive: false, chatHarness: "pi", chatEffort: "off" });
+      expect(yield* readSettings(dir)).toEqual(held.now());
+    }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
+  ));

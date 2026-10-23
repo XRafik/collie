@@ -21,7 +21,6 @@ import {
   Schedule,
   Schema,
   Scope,
-  Semaphore,
   Stream,
   SubscriptionRef,
 } from "effect";
@@ -41,7 +40,6 @@ import {
   CREDENTIALS,
   type Credentials,
   DesktopRpcs,
-  type DesktopSettings,
   type DesktopSettingsChange,
   EMPTY_FLOCK,
   type FlockItem,
@@ -69,7 +67,7 @@ import { loopbackTools } from "./chat-endpoint";
 import { piDriver } from "./pi-driver";
 import { CHILD_CWD, childEnv, localShell, takeLoginEnv, which } from "./login-env";
 import { type ChatMachine, chatDoor } from "./flock-tools";
-import { changeSettings, chatChoice, readSettings, writeSettings } from "./settings";
+import { chatChoice, heldSettings } from "./settings";
 import { followWindow, zoomWindow } from "./scale";
 import type { Drawn } from "../shared/scale";
 import {
@@ -80,7 +78,7 @@ import {
   writeFlockDefinitions,
   writeFlockSettings,
 } from "./flock-settings";
-import { DEFAULT_CHAT_HARNESS, editSetting } from "../shared/flock-settings";
+import { DEFAULT_CHAT_HARNESS, editSetting, type FlockSettings } from "../shared/flock-settings";
 import { nowIso } from "../../../src/time";
 import { changedLine } from "../../../src/schedule-model";
 import { SettingValue, settingText } from "../../../src/settings";
@@ -251,13 +249,17 @@ const main = Effect.gen(function* () {
     version: manifest.version,
   }).pipe(Effect.ignore);
   const logged = yield* actionsLog(own);
-  let settings = yield* readSettings(own);
+  const desktop = yield* heldSettings(own, (): FlockSettings =>
+    SubscriptionRef.getUnsafe(flockSettings),
+  );
+  const settings = desktop.now;
   const saved = yield* readFlockSettings(own);
   // The GitLab host an earlier Desktop kept as its own becomes the Flock's.
+  const ownGitlabHost = settings().gitlabHost;
   const seeded =
-    settings.gitlabHost === undefined || saved.settings.gitlab_host !== undefined
+    ownGitlabHost === undefined || saved.settings.gitlab_host !== undefined
       ? saved
-      : editSetting(saved, "gitlab_host", settings.gitlabHost, yield* nowIso());
+      : editSetting(saved, "gitlab_host", ownGitlabHost, yield* nowIso());
   const flockSettings = yield* SubscriptionRef.make("refused" in seeded ? saved : seeded);
   const flockDefinitions = yield* SubscriptionRef.make(yield* readFlockDefinitions(own));
   const defaultGitlab = yield* Config.String("COLLIE_DESKTOP_GITLAB").pipe(
@@ -420,7 +422,7 @@ const main = Effect.gen(function* () {
       window.on("close", () => Deferred.doneUnsafe(closed, Effect.void));
       yield* asked.pipe(
         Stream.runForEach(() =>
-          Effect.flatMap(zoomWindow(window, title, settings.zoom ?? 1), told),
+          Effect.flatMap(zoomWindow(window, title, settings().zoom ?? 1), told),
         ),
         Effect.raceFirst(Deferred.await(closed)),
         Effect.ensuring(Effect.sync(() => zoomAgain.delete(again))),
@@ -635,34 +637,16 @@ const main = Effect.gen(function* () {
     });
 
   /** Desktop's own settings, one change at a time, as Settings and the Flock chat make them. */
-  const settingsWrite = Semaphore.makeUnsafe(1);
-  const saveSettings = (
-    changed: DesktopSettingsChange,
-  ): Effect.Effect<
-    DesktopSettings,
-    ActionFailed,
-    Crypto.Crypto | FileSystem.FileSystem | Path.Path
-  > =>
-    Effect.gen(function* () {
-      const merged = changeSettings(settings, SubscriptionRef.getUnsafe(flockSettings), changed);
-      if ("refused" in merged) return yield* new ActionFailed({ reason: merged.refused });
-      yield* writeSettings(own, merged).pipe(
-        Effect.mapError((error) => new ActionFailed({ reason: error.message })),
-        Effect.andThen(
-          Effect.sync(() => {
-            settings = merged;
-          }),
-        ),
-        Effect.andThen(
+  const saveSettings = (changed: DesktopSettingsChange) =>
+    desktop
+      .save(changed)
+      .pipe(
+        Effect.tap(() =>
           changed.zoom === undefined
             ? Effect.void
             : Effect.forEach(zoomAgain, (again) => again, { discard: true }),
         ),
       );
-      if (changed.chatHarness !== undefined)
-        yield* withChat((opened) => opened.refresh, undefined).pipe(Effect.forkIn(scope));
-      return settings;
-    }).pipe(settingsWrite.withPermits(1));
 
   /** Files named by path, each copied in or refused in words. */
   const stagedFrom = (paths: ReadonlyArray<string>) =>
@@ -717,19 +701,19 @@ const main = Effect.gen(function* () {
       ),
     dir: own,
     conversation: `flock@${local}`,
-    proactive: () => settings.proactive,
-    machineRule: () => settings.machineRule,
+    proactive: () => settings().proactive,
+    machineRule: () => settings().machineRule,
     setMachineRule: (machineRule) =>
       saveSettings({ machineRule }).pipe(
         Effect.asVoid,
         Effect.orDie,
         Effect.provide(BunServices.layer),
       ),
-    choice: () => chatChoice(settings, SubscriptionRef.getUnsafe(flockSettings)),
+    choice: () => chatChoice(settings(), SubscriptionRef.getUnsafe(flockSettings)),
     chatHarness: () => ({
-      harness: settings.chatHarness ?? DEFAULT_CHAT_HARNESS,
-      model: settings.chatModel,
-      effort: settings.chatEffort,
+      harness: settings().chatHarness ?? DEFAULT_CHAT_HARNESS,
+      model: settings().chatModel,
+      effort: settings().chatEffort,
     }),
     setChatHarness: ({ harness, model, effort }) => {
       const changed: Partial<Record<"chatHarness" | "chatModel" | "chatEffort", string>> = {};
@@ -1167,7 +1151,12 @@ const main = Effect.gen(function* () {
       withChat((opened) => opened.answer(toolCallId, answers), undefined),
     transcript: () => withChat((opened) => opened.transcript, []),
     conversations: () => withChat((opened) => opened.conversations, { current: "", earlier: [] }),
-    reopen: ({ session }) => withChat((opened) => opened.reopen(session), undefined),
+    reopen: ({ conversation }) =>
+      withChat((opened) => opened.reopen(conversation), null).pipe(
+        Effect.flatMap((refused) =>
+          refused === null ? Effect.void : Effect.fail(new ActionFailed({ reason: refused })),
+        ),
+      ),
     // Annotated because it serves its own window through `servedOn`, which needs these handlers.
     popOut: (): Effect.Effect<void, never, Crypto.Crypto | FileSystem.FileSystem | Path.Path> =>
       Effect.gen(function* () {
@@ -1195,7 +1184,7 @@ const main = Effect.gen(function* () {
       Stream.unwrap(withChat((opened) => Effect.succeed(opened.changed), Stream.empty)),
     desktopTurns: () =>
       Stream.unwrap(withChat((opened) => Effect.succeed(opened.desktopTurns), Stream.empty)),
-    settings: () => Effect.sync(() => settings),
+    settings: () => desktop.changes,
     drawn: () => SubscriptionRef.changes(drawn).pipe(Stream.filter((now) => now !== null)),
     setSettings: saveSettings,
   });

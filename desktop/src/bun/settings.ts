@@ -1,9 +1,9 @@
 // What the human set in Desktop, kept on this computer beside the Flock chat's session.
 
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema, Semaphore, SubscriptionRef } from "effect";
 import { resolveChoice } from "../../../src/harness-choice";
 import { isString } from "../../../src/schema";
-import { DesktopSettings, type DesktopSettingsChange } from "../shared/flock";
+import { ActionFailed, DesktopSettings, type DesktopSettingsChange } from "../shared/flock";
 import { CHAT_HARNESSES, DEFAULT_CHAT_HARNESS, type FlockSettings } from "../shared/flock-settings";
 
 const SettingsFile = Schema.fromJsonString(DesktopSettings);
@@ -103,3 +103,29 @@ export const changeSettings = (
   const checked = chatChoice(changed, flock);
   return checked.ok ? changed : { refused: checked.problem };
 };
+
+/** Desktop's settings, saved one change at a time through the check and told to whoever follows them. */
+export const heldSettings = Effect.fn("Settings.held")(function* (
+  dir: string,
+  flock: () => FlockSettings,
+) {
+  const held = yield* SubscriptionRef.make(yield* readSettings(dir));
+  const writing = yield* Semaphore.make(1);
+  const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
+  return {
+    now: () => SubscriptionRef.getUnsafe(held),
+    /** The settings now, then each saved change. */
+    changes: SubscriptionRef.changes(held),
+    /** What was saved, or why the change was refused and nothing kept. */
+    save: (change: DesktopSettingsChange) =>
+      Effect.gen(function* () {
+        const changed = changeSettings(SubscriptionRef.getUnsafe(held), flock(), change);
+        if ("refused" in changed) return yield* new ActionFailed({ reason: changed.refused });
+        yield* writeSettings(dir, changed).pipe(
+          Effect.mapError((error) => new ActionFailed({ reason: error.message })),
+        );
+        yield* SubscriptionRef.set(held, changed);
+        return changed;
+      }).pipe(writing.withPermits(1), Effect.provideContext(services)),
+  };
+});

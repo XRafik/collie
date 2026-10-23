@@ -91,6 +91,13 @@ export const flockAtom = FlockClient.runtime
   )
   .pipe(Atom.keepAlive);
 
+/** Desktop's own settings, told again after every saved change, wherever it was made. */
+export const desktopSettingsAtom = FlockClient.runtime
+  .atom(
+    held(Stream.unwrap(FlockClient.use((client) => Effect.succeed(client("settings", undefined))))),
+  )
+  .pipe(Atom.keepAlive);
+
 /** Desktop's own update news, kept alive so a ready update is heard whenever it is. */
 export const updatesAtom = FlockClient.runtime
   .atom(

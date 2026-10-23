@@ -176,7 +176,8 @@ const ChatHarnessTool = Tool.make("collie_chat_harness", {
     "Without arguments they are read back, with what the conversation runs on now; with " +
     "`harness`, `model` or `effort` they are replaced, checked as Settings checks them, and " +
     "an empty `model` or `effort` unsets it. Another harness unsets the model and the effort. " +
-    "A change applies once this turn has ended. Change them only when the human asks.",
+    "A change applies with the next message, and another harness starts a new conversation " +
+    "with it. Change them only when the human asks.",
   parameters: Schema.Struct({
     harness: Schema.optionalKey(Schema.String),
     model: Schema.optionalKey(Schema.String),
@@ -1084,7 +1085,7 @@ const chatHarness = (
     }
     const refused = yield* flock.setChatHarness(change);
     return refused === null
-      ? `The Flock chat is now set to ${setTo()}. It applies once this turn has ended.`
+      ? `The Flock chat is now set to ${setTo()}. It applies with the next message.`
       : `${refused}. Nothing was changed.`;
   });
 

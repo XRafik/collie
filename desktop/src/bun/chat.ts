@@ -39,6 +39,7 @@ import {
   type Conversations,
   DESKTOP_SAID,
   type DesktopTurn,
+  type HeldConversation,
 } from "../shared/chat-view";
 import { type AgentChoice, pinned, said as choiceSaid } from "../../../src/harness-choice";
 import { appendJournal } from "../../../src/journal";
@@ -87,14 +88,16 @@ export interface FlockConversation {
   readonly answer: (toolCallId: string, answers: Answers) => Effect.Effect<void>;
   readonly transcript: Effect.Effect<ReadonlyArray<ChatMessage>>;
   readonly conversations: Effect.Effect<Conversations>;
-  /** Ends the current session and makes that one current, or a fresh one. */
-  readonly reopen: (session: string | null) => Effect.Effect<void>;
+  /**
+   * Ends the current session and makes that conversation current, moving the chat to its
+   * harness; or a fresh one on the set harness. Why not, where that harness is refused.
+   */
+  readonly reopen: (conversation: HeldConversation | null) => Effect.Effect<string | null>;
   /** Something changed on a board: News may be waiting, worth a turn of Desktop's own. */
   readonly nudge: Effect.Effect<void>;
   /** When a turn of Desktop's own starts and ends. */
   readonly desktopTurns: Stream.Stream<DesktopTurn>;
   readonly changed: Stream.Stream<string>;
-  readonly refresh: Effect.Effect<void>;
 }
 
 /** A turn of Desktop's own, recorded as usage on this computer: data, never a limit. */
@@ -392,7 +395,6 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
     heldOn = harness;
     yield* remember;
   }).pipe(Effect.orDie);
-  const refresh = turns.withPermits(1)(switchHarness).pipe(Effect.orDie);
 
   /** The session a turn is under way on, if one is. */
   let turning: Live | undefined;
@@ -553,31 +555,46 @@ export const openFlockChat = Effect.fn("FlockChat.open")(function* (opts: {
       }),
     transcript: Effect.suspend(() => drivers[heldOn]?.transcript(id) ?? Effect.succeed([])),
     conversations: Effect.suspend(() =>
-      (drivers[heldOn]?.earlier(HISTORY + 1) ?? Effect.succeed([])).pipe(
-        Effect.map((sessions) => ({
+      Effect.forEach(
+        Object.entries(drivers).filter(([, driver]) => driver.installed),
+        ([harness, driver]) =>
+          driver
+            .earlier(HISTORY + 1)
+            .pipe(Effect.map((sessions) => sessions.map((one) => ({ ...one, harness })))),
+        { concurrency: "unbounded" },
+      ).pipe(
+        Effect.map((listed) => ({
           current: id,
-          earlier: sessions.filter(({ session }) => session !== id).slice(0, HISTORY),
+          earlier: listed
+            .flat()
+            .filter(({ session }) => session !== id)
+            .sort((a, b) => b.at - a.at)
+            .slice(0, HISTORY),
         })),
       ),
     ),
     // A turn under way is interrupted, and the session it ran on ends before the next starts.
-    reopen: (session) =>
+    reopen: (conversation) =>
       Effect.gen(function* () {
         if (turning !== undefined) yield* turning.session.interrupt;
-        yield* turns.withPermits(1)(
+        return yield* turns.withPermits(1)(
           Effect.gen(function* () {
+            const set = opts.chatHarness().harness;
+            if (conversation !== null && conversation.harness !== set) {
+              const refused = yield* opts.setChatHarness({ harness: conversation.harness });
+              if (refused !== null) return refused;
+            }
             yield* end;
-            id = session ?? (yield* crypto.randomUUIDv4);
-            heldOn = opts.chatHarness().harness;
+            id = conversation?.session ?? (yield* crypto.randomUUIDv4);
+            heldOn = conversation?.harness ?? set;
             yield* remember;
+            return null;
           }),
         );
       }).pipe(Effect.orDie),
     nudge,
     desktopTurns: SubscriptionRef.changes(desktopTurns),
     changed: SubscriptionRef.changes(changed),
-    refresh,
   };
-  yield* refresh;
   return conversation;
 });

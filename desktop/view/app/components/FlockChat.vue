@@ -4,7 +4,14 @@ import type { QueuedMessage } from "@tanstack/ai-client";
 import { DateTime, Option, type Schema } from "effect";
 import { isString } from "../../../../src/schema";
 import { attachedIn, dropKind, pastedImages, uriListPaths } from "../../../src/shared/attachments";
-import { aboutLine, DESKTOP_SAID, questionsOf } from "../../../src/shared/chat-view";
+import {
+  aboutLine,
+  DESKTOP_SAID,
+  earlierNote,
+  harnessName,
+  questionsOf,
+} from "../../../src/shared/chat-view";
+import { DEFAULT_CHAT_HARNESS } from "../../../src/shared/flock-settings";
 
 defineProps<{ alone?: boolean }>();
 const emit = defineEmits<{ popOut: []; collapse: [] }>();
@@ -25,6 +32,7 @@ const {
   proactive,
   setProactive,
 } = useFlockChat();
+const { desktopSettings } = useDesktopSettings();
 const { openRecord } = useRecordOpener();
 const toast = useToast();
 const goneFromBoard = () =>
@@ -115,21 +123,39 @@ const dropped = (event: DragEvent) => {
 /** The files a message part is, where it is one. */
 const attachedOf = (part: { readonly type: string }) => Option.getOrNull(attachedIn(part));
 
-const earlier = ref<DropdownMenuItem[]>([]);
+/** Makes that conversation current, or a fresh one, saying why where it was refused. */
+const reopened = async (conversation: Parameters<typeof reopen>[0]) => {
+  const refused = await reopen(conversation);
+  if (refused !== null) toast.add({ title: refused, color: "error" });
+};
+
+/** An earlier conversation shows its harness beside its date. */
+type EarlierItem = DropdownMenuItem & { readonly harness: string; readonly slot: "earlier" };
+const earlier = ref<Array<Array<EarlierItem | DropdownMenuItem>>>([]);
 const listEarlier = async (open: boolean) => {
   if (!open) return;
   const listed = await conversations();
-  earlier.value =
-    listed === null || listed.earlier.length === 0
-      ? [{ label: "No earlier conversations", disabled: true }]
-      : listed.earlier.map(({ session, title, at }) => ({
-          label: title,
-          description: DateTime.format(DateTime.makeUnsafe(at), {
-            dateStyle: "medium",
-            timeStyle: "short",
-          }),
-          onSelect: () => void reopen(session),
-        }));
+  if (listed === null || listed.earlier.length === 0)
+    return void (earlier.value = [[{ label: "No earlier conversations", disabled: true }]]);
+  const note = earlierNote(
+    listed.earlier,
+    desktopSettings.value.chatHarness ?? DEFAULT_CHAT_HARNESS,
+  );
+  earlier.value = [
+    listed.earlier.map(({ session, title, at, harness }) => ({
+      label: title,
+      description: DateTime.format(DateTime.makeUnsafe(at), {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }),
+      harness: harnessName(harness),
+      slot: "earlier" as const,
+      onSelect: () => void reopened({ session, harness }),
+    })),
+    ...(note === null
+      ? []
+      : [[{ type: "label" as const, label: note, ui: { label: "font-normal text-muted" } }]]),
+  ];
 };
 
 const outputOf = (output: Schema.Json | undefined) =>
@@ -160,7 +186,7 @@ const queuedText = ({ content }: QueuedMessage) => {
         aria-label="Start fresh"
         title="Start fresh"
         data-testid="chat-fresh"
-        @click="reopen(null)"
+        @click="reopened(null)"
       />
       <UButton
         :icon="proactive ? 'i-lucide-bell' : 'i-lucide-bell-off'"
@@ -172,7 +198,12 @@ const queuedText = ({ content }: QueuedMessage) => {
         data-testid="chat-proactive"
         @click="setProactive(!proactive)"
       />
-      <UDropdownMenu :items="earlier" :content="{ align: 'end' }" @update:open="listEarlier">
+      <UDropdownMenu
+        :items="earlier"
+        :content="{ align: 'end' }"
+        :ui="{ content: 'w-85' }"
+        @update:open="listEarlier"
+      >
         <UButton
           icon="i-lucide-history"
           color="neutral"
@@ -182,6 +213,14 @@ const queuedText = ({ content }: QueuedMessage) => {
           title="Earlier conversations"
           data-testid="chat-history"
         />
+        <template #earlier-description="{ item }">
+          <span class="flex items-center gap-1.5">
+            {{ item.description }}<span aria-hidden="true">·</span>
+            <span class="rounded border border-accented px-1.5 text-default">{{
+              item.harness
+            }}</span>
+          </span>
+        </template>
       </UDropdownMenu>
       <UButton
         v-if="alone"

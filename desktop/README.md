@@ -36,7 +36,7 @@ decides nothing from it.
 
 [ADR-0011](../docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-05-a-herds-chat-per-home-and-one-flock-chat-per-desktop)
 and its [harness amendment](../docs/adr/0011-the-conversation-is-a-native-harness.md#amended-2026-10-09-the-flock-chat-runs-on-the-harness-settings-names).
-A model change waits for the current turn and keeps the conversation. Tested in
+A model change waits for the next message and keeps the conversation; a harness change waits for the next message too, which starts a new conversation on it. Tested in
 `test/flock-chat-pi.test.ts`, `test/flock-chat-endpoint.test.ts`, `test/flock-chat-turns.test.ts`,
 `test/desktop-settings.test.ts` and `test/flock-tools.test.ts`.
 
