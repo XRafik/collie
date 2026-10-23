@@ -569,7 +569,7 @@ export const renovation = (landing: Landing = shippedLanding) =>
               input: {
                 ...here.input,
                 merge_request: String(current.iid),
-                  merge_operation: index === 0 ? "merge" : `merge-${index + 1}`,
+                merge_operation: index === 0 ? "merge" : `merge-${index + 1}`,
               },
             }),
             { item: String(current.iid), items: pending.map((one) => String(one.iid)) },

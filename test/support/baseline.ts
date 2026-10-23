@@ -7593,7 +7593,7 @@ scenario(
           rest: [RELEASED, RECORDED],
           continueWith: (one) =>
             nodeIn(one, "merge")?.runs[1]?.state === "running"
-                ? { operation: "merge-2", output: second, rest: [RELEASED, RECORDED] }
+              ? { operation: "merge-2", output: second, rest: [RELEASED, RECORDED] }
               : { operation: "release", output: RELEASED, rest: [RECORDED] },
         });
         yield* bin.restore();

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { ComponentPublicInstance } from "vue";
 import type { Flow, FlowRun } from "../../../../src/board-model";
 import { stepSteering } from "../../../src/shared/step-steering";
 import {
@@ -35,7 +36,7 @@ const emit = defineEmits<{
 const rows = computed(() => flowRows(props.flow));
 const buttons = new Map<string, HTMLElement>();
 const keyOf = (spot: FlowSpot) => JSON.stringify([spot.run, spot.node]);
-const remember = (spot: FlowSpot, element: unknown) => {
+const remember = (spot: FlowSpot, element: Element | ComponentPublicInstance | null) => {
   if (element instanceof HTMLElement) buttons.set(keyOf(spot), element);
   else buttons.delete(keyOf(spot));
 };

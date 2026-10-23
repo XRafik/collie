@@ -6,7 +6,7 @@ const emit = defineEmits<{
   item: [id: string | null];
   open: [run: string, tab: string];
 }>();
-const labels: Record<string, string> = {
+const labels = {
   plan: "Plan",
   review: "Review",
   evidence: "Evidence",
