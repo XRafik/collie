@@ -2419,9 +2419,16 @@ to the branch is proved again before anything is asked.
 An `implement` Run starts one for you. Once its merge request is open, it asks **What
 next?**: answer **Release** from the card's answer menu, Desktop, chat or `collie run answer
 <run> Release --decision next`, and the release runs as its child, in its checkout and held
-to its Checks, or **Finish** to end there. To release it later, a succeeded implement Run
-whose merge request is still open offers **Release** in the card's Actions, through
-`collie run action`, and in chat: "release it" takes that offer.
+to its Checks. **Stage** starts a Stage Run of the unmerged merge request as its child, in
+the same checkout, and waits for testing to end. The Stage child's result or failure reason
+is recorded, then **What next?** is asked again with **Release**, **Stage** and **Finish**,
+as `next-2`, `next-3`, and so on. A failed Stage child still returns to that question.
+**Finish** ends with the merge request URL. `then=finish` and `then=release` ask nothing;
+`then` has no `stage` value, so an unattended Run never holds stage for testing.
+
+A succeeded implement Run whose merge request is still open offers **Release** and
+**Stage** in the card's Actions, through `collie run action`, and in chat, so it can be
+released or staged later: "release it" or "stage it" takes that offer.
 
 A reviewer's comment is taken up as it comes: the Run's agent fixes what holds and
 pushes, or disputes it, and Collie replies on the forge with the commit or the reason. An
@@ -2462,6 +2469,35 @@ Either way the Run holds the claim until the forge shows production carries the 
 application whose pipelines deploy nothing to stage is refused at the start. If a Run fails after
 it merged, **Release again** tags what it merged rather than merging anything again, and
 asks the second go afresh ([`release`](workflows.md#release)).
+
+## Staging a merge request for testing
+
+`collie run start stage --input mr=<target>` — or **stage** from the board's start menu, or
+"put !355 on stage" in chat — puts one open merge request's head on stage for you to test,
+unmerged, and nothing more. It does not wait for an approval, answered or resolved
+comments, a green pipeline or mergeability, asks for no go and runs none of the Run's
+checks: the stage checks of a merge request's pipeline run after its stage deploy anyway.
+It never merges, tags, pushes, posts or plays a production job. The target is the same as a
+review's, and the Run joins that merge request's Task.
+
+A merged merge request is refused, because its stage is its release's, and so is a closed
+one, a package, or an application whose merge request pipeline deploys nothing to stage.
+Otherwise it claims in Helle every project the stage deploys under, as a release does,
+plays the merge request pipeline's stage jobs at the head, and reads from the forge that
+every stage environment the pipeline deployed to carries it. Where a teammate holds some of
+those projects, it first asks **`claims-1`**: **Wait for all** queues for them, **Stage
+what is free** stages only the applications whose projects nobody else has, leaving the
+teammate's stage environments as they are, and **Finish** stages nothing. Then it asks
+**`staged-1`**, naming the head, the stage jobs at their addresses, any application left
+off and the claims it holds, while stage is yours to test:
+
+- **Done** rolls stage back, proves it off and gives the claims back.
+- **Stage again** stages the merge request's head as it is now, keeping the claims.
+- **Leave it on stage** gives the claims back and leaves stage as it is.
+
+A stage that fails is rolled back and its claims are given back; the Run fails saying what
+failed and offers **Stage again**. A rollback the forge cannot show fails the Run and keeps
+the claims ([`stage`](workflows.md#stage)).
 
 ## Your defaults
 

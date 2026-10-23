@@ -176,7 +176,7 @@ export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* readsSessions)) return [];
-  const found = yield* Effect.forEach(
+  const looked = yield* Effect.forEach(
     yield* fs.readDirectory(PROC).pipe(Effect.orElseSucceed(() => [])),
     (name) =>
       Effect.gen(function* () {
@@ -187,9 +187,10 @@ export const boundProcesses = Effect.fn("Processes.boundProcesses")(function* (
         const bound = yield* bindingsOf(pid, names);
         return bound !== null && Object.keys(bound).length > 0 ? { pid, started, bound } : null;
       }),
-    { concurrency: 256 },
+    // One at a time, a busy machine's thousands of processes take seconds to read.
+    { concurrency: 32 },
   );
-  return found.filter((one) => one !== null);
+  return looked.filter((one) => one !== null);
 });
 
 /** Whether this process is still the one that was looked at. */
