@@ -48,6 +48,19 @@ test("the stage step is cleared for the jobs it was given, and never a productio
   expect(said).not.toMatch(/playing[^;]*production/);
 });
 
+test("a monorepo's many stage jobs keep the Clearance within what a step may be given, counted where they do not fit", () => {
+  const apps = ["bingo", "casino", "happytiger", "lobby", "playground", "poker", "spilnu"];
+  const jobs = apps.map((app) => `deploy-stage:${app}`);
+  for (const clears of Object.values(STAGE_CLEARS)) {
+    const said = clears(URL, jobs).join("; ");
+    expect(said.length).toBeLessThanOrEqual(400);
+    expect(said.includes("7 stage jobs") || jobs.every((job) => said.includes(`\`${job}\``))).toBe(
+      true,
+    );
+  }
+  expect(STAGE_CLEARS.stage(URL, jobs).join("; ")).toContain("the 7 stage jobs its task names");
+});
+
 test("the content's preamble says what a Stage Run does in staging words", () => {
   for (const markdown of [onGitlab, onGithub]) {
     const preamble = markdown

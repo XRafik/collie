@@ -2397,9 +2397,12 @@ A merged merge request is refused, because its stage is its release's, and so is
 one, a package, or an application whose merge request pipeline deploys nothing to stage.
 Otherwise it claims in Helle every project the stage deploys under, as a release does,
 plays the merge request pipeline's stage jobs at the head, and reads from the forge that
-every stage environment the pipeline deployed to carries it. Then it asks **`staged-1`**,
-naming the head, the stage jobs at their addresses and the claims it holds, while stage is
-yours to test:
+every stage environment the pipeline deployed to carries it. Where a teammate holds some of
+those projects, it first asks **`claims-1`**: **Wait for all** queues for them, **Stage
+what is free** stages only the applications whose projects nobody else has, leaving the
+teammate's stage environments as they are, and **Finish** stages nothing. Then it asks
+**`staged-1`**, naming the head, the stage jobs at their addresses, any application left
+off and the claims it holds, while stage is yours to test:
 
 - **Done** rolls stage back, proves it off and gives the claims back.
 - **Stage again** stages the merge request's head as it is now, keeping the claims.

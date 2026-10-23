@@ -80,26 +80,30 @@ export interface ClaimWords {
   readonly went: (why: string) => string;
 }
 
+export interface Deploys {
+  readonly applications: ReadonlyArray<string>;
+  readonly jobs: ReadonlyArray<string>;
+}
+
 /**
  * Every Helle claim `deploys` needs, taken under the step `name`: none only on the human's
- * say, and null where they finished instead. `park` stops the Run where Helle would not take
- * back a claim it no longer wants.
+ * say, and null where they finished instead. `free` takes only what nobody else has, and
+ * says what it left. `park` stops the Run where Helle would not take back a claim it no
+ * longer wants.
  */
 export const claiming =
   <R>(options: {
     readonly runId: string;
     readonly cwd: string;
-    readonly deploys: {
-      readonly applications: ReadonlyArray<string>;
-      readonly jobs: ReadonlyArray<string>;
-    };
+    readonly deploys: Deploys;
     readonly words: ClaimWords;
     readonly park: (reason: string) => Effect.Effect<never, never, R>;
   }) =>
-  (name: string) =>
+  (name: string, how: { readonly deploys?: Deploys; readonly free?: boolean } = {}) =>
     Effect.gen(function* () {
       const host = yield* Host;
-      const { runId, cwd, deploys, words } = options;
+      const { runId, cwd, words } = options;
+      const deploys = how.deploys ?? options.deploys;
       // A claim given back mid-Run must not be taken again when the Run replays, so it is
       // journaled, and the adopt question is asked outside the Activity.
       const attempt = (at: string, n: number) =>
@@ -114,6 +118,7 @@ export const claiming =
                 cwd,
                 adopting,
                 deploys,
+                free: how.free ?? false,
                 say: (line) => host.record(runId, line),
               }),
             });
@@ -134,7 +139,7 @@ export const claiming =
       for (let n = 1; ; n++) {
         const at = nth(name, n);
         const held = yield* attempt(at, n);
-        if ("slugs" in held) return held.slugs;
+        if ("slugs" in held) return held;
         const answer = yield* ask({
           name: `${at}.unclaimed`,
           prompt: words.unclaimed(held.unresolved),
@@ -154,14 +159,14 @@ export const claiming =
         });
         if (answer === words.finish) return null;
         yield* host.record(runId, words.went(held.unresolved));
-        return [];
+        return { slugs: [] };
       }
     });
 
 /**
  * A merge request's head put on stage by a step of the caller's, proved from the forge, and
  * taken off again. Every head it staged, and every stage environment one reached, is read
- * by the rollback.
+ * by the rollback, which is told every job it played.
  */
 export const staging = <R1, R2>(options: {
   readonly runId: string;
@@ -171,25 +176,32 @@ export const staging = <R1, R2>(options: {
   readonly stage: (
     name: string,
     head: string,
+    jobs: ReadonlyArray<string>,
   ) => Effect.Effect<typeof StagedMergeRequest.Type, WorkflowError, R1>;
   readonly unstage: (
     name: string,
     head: string,
     failure: string,
+    jobs: ReadonlyArray<string>,
   ) => Effect.Effect<unknown, WorkflowError, R2>;
 }) => {
   const { runId, cwd } = options;
   // Unknown until a read names them, and then every rollback is read in them.
   let reached: ReadonlyArray<string> | undefined;
   const heads: string[] = [];
+  const played = new Set<string>();
   return {
-    /** Stages `head` under the step `name`, and the forge's read of it with the jobs it read. */
-    put: (name: string, head: string) =>
+    /**
+     * Stages `head` under the step `name` with `only` of the jobs, all where not given, and
+     * the forge's read of it with the jobs it read.
+     */
+    put: (name: string, head: string, only: ReadonlyArray<string> = options.jobs) =>
       Effect.gen(function* () {
         const host = yield* Host;
-        const staged = yield* options.stage(name, head);
+        const staged = yield* options.stage(name, head, only);
         heads.push(head);
-        const jobs = [...new Set([...options.jobs, ...(staged.stage_jobs ?? [])])];
+        for (const job of only) played.add(job);
+        const jobs = [...new Set([...only, ...(staged.stage_jobs ?? [])])];
         const read = yield* Activity.make({
           name: `${name}.read`,
           success: StageReadSchema,
@@ -203,7 +215,7 @@ export const staging = <R1, R2>(options: {
     off: (name: string, failure: string, failing: string) =>
       Effect.gen(function* () {
         const host = yield* Host;
-        yield* options.unstage(name, heads.at(-1) ?? "", failure);
+        yield* options.unstage(name, heads.at(-1) ?? "", failure, [...played]);
         const back = yield* Activity.make({
           name: `${name}.read`,
           success: RollbackReadSchema,

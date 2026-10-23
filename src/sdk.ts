@@ -59,6 +59,7 @@ import type { Integration } from "./integrate";
 import type { MergeOutcome, Takeover } from "./landing";
 import type { ReviewHead, ReviewStanding } from "./review-wait";
 import type { FastForward, ProductionRead, RollbackRead, StageRead, TagRead } from "./releasing";
+import type { Holders } from "./helle";
 
 export { EXCLUSIVE_STRATEGIES } from "./strategies";
 
@@ -109,6 +110,8 @@ export {
   type StageRead,
   type TagRead,
 } from "./releasing";
+/** Who holds the shared claims a Run needs (`HostApi.holders`). */
+export { HoldersSchema, type Holders } from "./helle";
 
 export {
   CheckSchema,
@@ -589,10 +592,21 @@ export const definitionOf = (written: WrittenDefinition): WorkflowDefinition => 
  * from the attempt that first ran.
  */
 /** What `claim` holds, or why the claims a Run needs could not be settled. */
-export type Claimed = { readonly slugs: ReadonlyArray<string> } | { readonly unresolved: string };
+export type Claimed =
+  | {
+      readonly slugs: ReadonlyArray<string>;
+      /** What a free-only claim left to whoever holds it. */
+      readonly left?: ReadonlyArray<{ readonly slug: string; readonly holder: string }>;
+    }
+  | { readonly unresolved: string };
 
 const Holding = Schema.Union([
-  Schema.Struct({ slugs: Schema.Array(Schema.String) }),
+  Schema.Struct({
+    slugs: Schema.Array(Schema.String),
+    left: Schema.optionalKey(
+      Schema.Array(Schema.Struct({ slug: Schema.String, holder: Schema.String })),
+    ),
+  }),
   Schema.Struct({ unresolved: Schema.String }),
 ]);
 
@@ -785,7 +799,25 @@ export interface HostApi {
       readonly applications: ReadonlyArray<string>;
       readonly jobs: ReadonlyArray<string>;
     };
+    /**
+     * Takes only the projects nobody else holds or queues for and waits for none; `left`
+     * names each it did not take, and who has it.
+     */
+    readonly free?: boolean;
   }) => Effect.Effect<Claimed, WorkflowError | E, R>;
+  /**
+   * Who holds each shared claim `claim` would take for the same `deploys`, read without
+   * joining any queue, with the projects each application needs and the applications each
+   * deploy job names.
+   */
+  readonly holders: (options: {
+    readonly runId: string;
+    readonly cwd: string;
+    readonly deploys?: {
+      readonly applications: ReadonlyArray<string>;
+      readonly jobs: ReadonlyArray<string>;
+    };
+  }) => Effect.Effect<Holders, WorkflowError>;
   /**
    * Gives every claim back, and answers those Helle would not take, which stay recorded.
    * Only a Run that has finished its work releases: holding it across a consultation is

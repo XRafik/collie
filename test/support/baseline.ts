@@ -7850,6 +7850,7 @@ const releaseHost = (
           host
             .reply(asked)
             .pipe(Effect.tap(() => (++replies >= stallAfterReplies ? Effect.never : Effect.void))),
+        holders: () => Effect.succeed({ _tag: "Read", projects: [], applications: [], jobs: [] }),
         // As the host's own claim, one a replay takes again is the one the Run already holds.
         claim: (options) =>
           helle !== undefined
@@ -10679,6 +10680,417 @@ for (const name of ["gitlab", "github"] as const) {
           expect(outcomeText(status)).toBe(`${mr} was not staged`);
           expect(yield* wasAsked(runId, "stage")).toBe(false);
           expect(claimed).toEqual([`release ${runId}`]);
+        }),
+      ),
+    120_000,
+  );
+
+  const APPS = ["bingo", "casino", "happytiger", "lobby", "playground", "poker", "spilnu"] as const;
+  const appJob = (app: string) => `stage:${app}`;
+  const BUSY_ASSESSED = {
+    ...APP_ASSESSED,
+    applications: [...APPS],
+    stage_jobs: { merge_request: APPS.map(appJob), tag: [] },
+  };
+  // An unknown commit makes a teammate's deployment incomparable with this checkout.
+  const TEAMMATE = "7ea3a7e0".repeat(5);
+
+  interface BusyHelle {
+    readonly holders: Record<string, string | null>;
+    readonly racing?: Record<string, string>;
+    readonly handedOver?: Deferred.Deferred<void>;
+    readonly declared?: ReadonlyArray<string>;
+    unresolved?: string;
+  }
+  const busyHost = (helle: BusyHelle): HostOverride =>
+    Layer.effect(Host)(
+      Effect.gen(function* () {
+        const host = yield* Host;
+        const held = new Set<string>();
+        const needsOf = (app: string) => [...(helle.declared ?? [app])];
+        const neededFor = (deploys?: { readonly applications: ReadonlyArray<string> }) =>
+          [...new Set((deploys?.applications ?? []).flatMap(needsOf))].sort();
+        const holderOf = (slug: string) => (held.has(slug) ? null : (helle.holders[slug] ?? null));
+        return Host.of({
+          ...host,
+          holders: (asked) =>
+            Effect.succeed({
+              _tag: "Read" as const,
+              projects: neededFor(asked.deploys).map((slug) => ({ slug, holder: holderOf(slug) })),
+              applications: (asked.deploys?.applications ?? []).map((app) => ({
+                name: app,
+                needs: needsOf(app),
+              })),
+              jobs: (asked.deploys?.jobs ?? []).map((job) => ({
+                name: job,
+                applications: APPS.filter((app) => job === appJob(app)),
+              })),
+            }),
+          claim: (options) =>
+            Effect.gen(function* () {
+              const needed = neededFor(options.deploys);
+              const take = (slug: string) => {
+                if (!held.has(slug)) claimed.push(`claim ${options.runId} ${slug}`);
+                held.add(slug);
+              };
+              if (options.free !== true) {
+                claimed.push(`wait ${options.runId}`);
+                if (helle.handedOver !== undefined) yield* Deferred.await(helle.handedOver);
+                needed.forEach(take);
+                return { slugs: needed };
+              }
+              if (helle.unresolved !== undefined) return { unresolved: helle.unresolved };
+              const left: Array<{ slug: string; holder: string }> = [];
+              for (const slug of needed) {
+                const holder = holderOf(slug) ?? helle.racing?.[slug] ?? null;
+                if (holder === null) take(slug);
+                else left.push({ slug, holder });
+              }
+              return { slugs: [...held].sort(), left };
+            }),
+          release: (runId) =>
+            Effect.sync(() => {
+              for (const slug of [...held].sort()) claimed.push(`release ${runId} ${slug}`);
+              held.clear();
+              return [];
+            }),
+        });
+      }),
+    );
+
+  const busyStage = (busy: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const made = yield* releasable(name, UNAPPROVED[name], false);
+      const success = (sha: string) => ({ sha, status: "success" as const });
+      const start = (app: string) => (busy.includes(app) ? [TEAMMATE] : [made.base]);
+      const before = yield* made.forge.model();
+      const at = (deployed: Partial<Record<string, ReadonlyArray<string>>>): ForgeModel => ({
+        ...before,
+        mrs: before.mrs.map((one) => ({
+          ...one,
+          head: made.head,
+          jobs: APPS.map((app) => ({ name: appJob(app), state: "passed" as const })),
+        })),
+        environments: [
+          ...APPS.map((app) => ({
+            name: `stage-${app}`,
+            tier: "staging",
+            deployments: (deployed[app] ?? start(app)).map(success),
+          })),
+          { name: "production", tier: "production", deployments: [success(made.base)] },
+        ],
+      });
+      const model = at({});
+      yield* made.forge.set(model);
+      const onEach = (apps: ReadonlyArray<string>, shas: (app: string) => ReadonlyArray<string>) =>
+        Object.fromEntries(apps.map((app) => [app, shas(app)]));
+      const staged = (apps: ReadonlyArray<string>) => ({
+        writes: [made.forge.holding(at(onEach(apps, (app) => [made.head, ...start(app)])))],
+        output: { verdict: "clean", stage_jobs: apps.map(appJob) },
+      });
+      const unstaged = (apps: ReadonlyArray<string>) => ({
+        writes: [
+          made.forge.holding(at(onEach(apps, (app) => [made.base, made.head, ...start(app)]))),
+        ],
+        output: UNSTAGED,
+      });
+      return { ...made, model, staged, unstaged };
+    });
+
+  const leftOff = (prompt: string) => /Left off stage[^:]*: ([^.]*)\./.exec(prompt)?.[1] ?? "";
+
+  scenario(
+    `stage on ${name}: busy claims: where every project is free, no claims question is asked and every application is staged`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, staged, unstaged } = yield* busyStage([]);
+          claimed.length = 0;
+          const runId = `r-busy-free-${name}`;
+          const helle = { holders: {} };
+          yield* rig.queueOutputs([BUSY_ASSESSED, staged(APPS), unstaged(APPS)]);
+          const status = yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              const question = yield* goAsked(run.asked, "staged-1");
+              expect((yield* run.asked).map((row) => row.decision)).not.toContain("claims-1");
+              expect(leftOff(question.prompt)).toBe("");
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain("stage is rolled back");
+          for (const app of APPS)
+            expect(yield* asked(runId, "stage")).toContain(`\`${appJob(app)}\``);
+          expect(claimed).toEqual([
+            `wait ${runId}`,
+            ...APPS.map((app) => `claim ${runId} ${app}`),
+            ...APPS.map((app) => `release ${runId} ${app}`),
+          ]);
+        }),
+      ),
+    120_000,
+  );
+
+  const DANNS = APPS.filter((app) => app !== "playground");
+  const dann = (): BusyHelle & { holders: Record<string, string | null> } => ({
+    holders: Object.fromEntries(DANNS.map((app): [string, string | null] => [app, "Dann"])),
+  });
+
+  scenario(
+    `stage on ${name}: busy claims: six of seven projects held by Dann, Stage what is free stages only the free application, names the six left off, rolls back only its environment and gives back only its project`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, forge, model, staged, unstaged } = yield* busyStage(DANNS);
+          claimed.length = 0;
+          const runId = `r-busy-355-${name}`;
+          yield* rig.queueOutputs([
+            BUSY_ASSESSED,
+            staged(["playground"]),
+            unstaged(["playground"]),
+          ]);
+          const status = yield* driven(options(runId, busyHost(dann())), (run) =>
+            Effect.gen(function* () {
+              const claims = yield* goAsked(run.asked, "claims-1");
+              expect(optionsOf([claims], "claims-1")).toEqual([
+                "Wait for all",
+                "Stage what is free",
+                "Finish",
+              ]);
+              for (const app of DANNS) expect(claims.prompt).toContain(`${app} (Dann)`);
+              expect(claims.prompt).not.toContain("playground (");
+              expect(yield* wasAsked(runId, "stage")).toBe(false);
+              yield* run.answer("claims-1", "Stage what is free");
+              const question = yield* goAsked(run.asked, "staged-1");
+              expect(leftOff(question.prompt).split(", ").sort()).toEqual([...DANNS]);
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          const after = yield* forge.model();
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain("stage is rolled back");
+          const stage = yield* clearance(runId, "stage");
+          const unstage = yield* clearance(runId, "unstage");
+          expect(stage).toContain("`stage:playground`");
+          expect(unstage).toContain("`stage:playground`");
+          for (const app of DANNS) {
+            expect(stage).not.toContain(appJob(app));
+            expect(unstage).not.toContain(appJob(app));
+          }
+          const others = (environments: ForgeModel["environments"]) =>
+            (environments ?? []).filter((env) => DANNS.some((app) => env.name === `stage-${app}`));
+          expect(others(after.environments)).toEqual(others(model.environments));
+          expect(claimed).toEqual([`claim ${runId} playground`, `release ${runId} playground`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: Wait for all stages nothing until every project is handed over, then stages every application`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, staged, unstaged } = yield* busyStage(DANNS);
+          claimed.length = 0;
+          const runId = `r-busy-wait-${name}`;
+          const helle = { ...dann(), handedOver: yield* Deferred.make<void>() };
+          yield* rig.queueOutputs([BUSY_ASSESSED, staged(APPS), unstaged(APPS)]);
+          const status = yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "claims-1");
+              yield* run.answer("claims-1", "Wait for all");
+              yield* until(
+                () => Effect.sync(() => claimed),
+                (now) => now.includes(`wait ${runId}`),
+              );
+              expect(yield* wasAsked(runId, "stage")).toBe(false);
+              yield* Deferred.succeed(helle.handedOver, undefined);
+              const question = yield* goAsked(run.asked, "staged-1");
+              expect(leftOff(question.prompt)).toBe("");
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain("stage is rolled back");
+          for (const app of APPS)
+            expect(yield* asked(runId, "stage")).toContain(`\`${appJob(app)}\``);
+          expect(claimed).toContain(`claim ${runId} spilnu`);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: Finish at the claims question claims nothing and stages nothing`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* busyStage(DANNS);
+          claimed.length = 0;
+          const runId = `r-busy-finish-${name}`;
+          yield* rig.queueOutputs([BUSY_ASSESSED]);
+          const status = yield* driven(options(runId, busyHost(dann())), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "claims-1");
+              yield* run.answer("claims-1", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toBe(`${mr} was not staged`);
+          expect(yield* wasAsked(runId, "stage")).toBe(false);
+          expect(claimed).toEqual([]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: a project someone takes between the read and the take is left off and named`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const busy = DANNS.filter((app) => app !== "poker");
+          const { bin, staged, unstaged } = yield* busyStage(busy);
+          claimed.length = 0;
+          const runId = `r-busy-race-${name}`;
+          const helle = {
+            holders: Object.fromEntries(busy.map((app) => [app, "Dann"])),
+            racing: { poker: "Mona" },
+          };
+          yield* rig.queueOutputs([
+            BUSY_ASSESSED,
+            staged(["playground"]),
+            unstaged(["playground"]),
+          ]);
+          yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              const claims = yield* goAsked(run.asked, "claims-1");
+              expect(claims.prompt).not.toContain("poker (");
+              yield* run.answer("claims-1", "Stage what is free");
+              const question = yield* goAsked(run.asked, "staged-1");
+              expect(leftOff(question.prompt).split(", ").sort()).toEqual(
+                [...busy, "poker"].sort(),
+              );
+              expect(question.prompt).toContain("poker (Mona)");
+              yield* run.answer("staged-1", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(yield* clearance(runId, "stage")).not.toContain("stage:poker");
+          expect(claimed).toEqual([`claim ${runId} playground`, `release ${runId} playground`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: Stage again takes a left-off project that became free, stages that application too, and no longer names it left off`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, staged, unstaged } = yield* busyStage(DANNS);
+          claimed.length = 0;
+          const runId = `r-busy-again-${name}`;
+          const helle = dann();
+          const both = ["playground", "spilnu"];
+          yield* rig.queueOutputs([
+            BUSY_ASSESSED,
+            staged(["playground"]),
+            staged(both),
+            unstaged(both),
+          ]);
+          yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "claims-1");
+              yield* run.answer("claims-1", "Stage what is free");
+              yield* goAsked(run.asked, "staged-1");
+              helle.holders.spilnu = null;
+              yield* run.answer("staged-1", "Stage again");
+              const again = yield* goAsked(run.asked, "staged-2");
+              expect(leftOff(again.prompt).split(", ").sort()).toEqual(
+                DANNS.filter((app) => app !== "spilnu"),
+              );
+              expect(claimed).toEqual([`claim ${runId} playground`, `claim ${runId} spilnu`]);
+              yield* run.answer("staged-2", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          const again = yield* clearance(runId, "stage-2");
+          expect(again).toContain("`stage:playground`");
+          expect(again).toContain("`stage:spilnu`");
+          expect(again).not.toContain("stage:poker");
+          expect(yield* clearance(runId, "unstage-2")).toContain("`stage:spilnu`");
+          expect(claimed.slice(2)).toEqual([
+            `release ${runId} playground`,
+            `release ${runId} spilnu`,
+          ]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: Finish where Stage again cannot settle the left-off claims rolls stage back and gives back what it holds`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, staged, unstaged } = yield* busyStage(DANNS);
+          claimed.length = 0;
+          const runId = `r-busy-again-finish-${name}`;
+          const helle = dann();
+          yield* rig.queueOutputs([
+            BUSY_ASSESSED,
+            staged(["playground"]),
+            unstaged(["playground"]),
+          ]);
+          const status = yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "claims-1");
+              yield* run.answer("claims-1", "Stage what is free");
+              yield* goAsked(run.asked, "staged-1");
+              helle.unresolved = "Helle is down";
+              yield* run.answer("staged-1", "Stage again");
+              yield* goAsked(run.asked, "staged-1.claim.unclaimed");
+              yield* run.answer("staged-1.claim.unclaimed", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain("stage is rolled back");
+          expect(yield* clearance(runId, "unstage")).toContain("`stage:playground`");
+          expect(claimed).toEqual([`claim ${runId} playground`, `release ${runId} playground`]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: a repository whose .collie/helle.json declares its projects, one of them busy, is not offered Stage what is free`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin } = yield* busyStage(["spilnu"]);
+          claimed.length = 0;
+          const runId = `r-busy-declared-${name}`;
+          const helle = { holders: { spilnu: "Dann" }, declared: ["playground", "spilnu"] };
+          yield* rig.queueOutputs([BUSY_ASSESSED]);
+          yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              const claims = yield* goAsked(run.asked, "claims-1");
+              expect(optionsOf([claims], "claims-1")).toEqual(["Wait for all", "Finish"]);
+              yield* run.answer("claims-1", "Finish");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(claimed).toEqual([]);
         }),
       ),
     120_000,

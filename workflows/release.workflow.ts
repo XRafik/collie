@@ -399,7 +399,7 @@ export default defineWorkflow({
       let landed: Landed;
       if (recovering !== null) {
         // That go was given and spent: no wait, no go and no merge, only what is left.
-        const slugs = yield* claimed("claim");
+        const slugs = (yield* claimed("claim"))?.slugs ?? null;
         if (slugs === null)
           return yield* fail(
             `${mr} was merged at ${recovering.sha}, and its release was stopped without the Helle claims it needs, so nothing was tagged`,
@@ -626,7 +626,7 @@ export default defineWorkflow({
             yield* host.record(runId, `go ${gos}: finished with ${mr} left open`);
             return `${mr} was left open`;
           }
-          const slugs = yield* claimed(`go-${gos}.claim`);
+          const slugs = (yield* claimed(`go-${gos}.claim`))?.slugs ?? null;
           if (slugs === null) {
             yield* host.record(
               runId,

@@ -491,8 +491,10 @@ the later ones it holds or is queued for, and takes them again in order — aski
 take over any that were already the operator's — so two releases never each hold what the
 other waits for: the repository's own, and each
 project of the repository's group that an application the assessment named, or a deploy
-job's name (`stage:spilnu`), names — a monorepo needs several. A repository's
-`.collie/helle.json`, `{"projects": [...]}`, names them instead, and `[]` declares none.
+job's name (`stage:spilnu`), names, by the project's slug or one of its Helle shorthands,
+ignoring case — a monorepo needs several. A name two projects answer to is not guessed
+between: it is unsettled, naming both. A repository's `.collie/helle.json`,
+`{"projects": [...]}`, names them instead, by slug or shorthand, and `[]` declares none.
 Where they cannot be settled — an application with no project, nothing found, Helle
 refusing — nothing is merged or tagged: it asks **`go-<n>.claim.unclaimed`**, saying why,
 with **Try again**, **Release without a Helle claim**, recorded on its log as the human's
@@ -611,11 +613,28 @@ refusal parks the Run with why.
 its release's, and a closed one fails. One agent assesses, read only and by release's own
 rule, whether the repository is a package or an application, and names the stage deploy
 jobs of its merge request pipelines: a package fails, and so does an application with
-none. Collie fast-forwards the checkout to the head, and then claims in Helle every project
-the stage deploys under, as a Release Run claims them: in Helle's order, each waited for at
-no token cost, asking first to take over any already the operator's. Where they cannot be
-settled it asks **`claim.unclaimed`** with **Try again**, **Stage without a Helle claim**,
-recorded on its log as the human's say, and **Finish**, which stages nothing.
+none. Collie fast-forwards the checkout to the head, and reads in Helle who holds each
+project the stage deploys under, found as a Release Run finds them, by slug or Helle
+shorthand, joining no queue. Each application needs its own project and the repository's;
+with a `.collie/helle.json`, every application needs every project it declares. Where every
+project is free or already the operator's, it claims them all, as a Release Run does: in
+Helle's order, asking first to take over any already the operator's. Where someone else holds
+or queues for some of them, it asks **`claims-1`**, naming each such project and who has it:
+
+- **Wait for all** queues for every project in Helle's order, at no token cost, and stages
+  everything once all are handed over.
+- **Stage what is free** takes only the free projects, waiting for none, and stages only the
+  applications whose projects it holds: only their stage jobs are played, read back and
+  rolled back. An application it left is never played, retried or rolled back, so a
+  teammate's stage of it stays as it was. A project someone takes between the read and the
+  take is given back and left off too. It is offered only where it would stage something: a
+  stage job that names no application belongs to every one, and a declared set is all or
+  nothing.
+- **Finish** ends the Run, claiming and staging nothing.
+
+Where the claims cannot be settled it asks **`claim.unclaimed`** with **Try again**, **Stage
+without a Helle claim**, recorded on its log as the human's say, and **Finish**, which
+stages nothing.
 
 Holding them, it reads the head again and fast-forwards to it, as the claims may have
 waited, and the agent's `stage` step plays, retries and watches those jobs of the merge
@@ -623,12 +642,14 @@ request's pipeline, and the stage checks after them. Collie reads stage back fro
 forge, one environment at a time, as `release` does: each stage job passed on the head's
 pipeline, and every stage environment it deployed to carries the head. Where the head moved
 first, that head is staged in its turn. Then it asks **`staged-<n>`**, in Needs you, naming
-the merge request, the head, each stage job at its address and the claims it holds:
+the merge request, the head, each stage job at its address, each application left off with
+who holds its projects, and the claims it holds:
 
 - **Done** rolls stage back, proves it off in each environment the head reached, and gives
   the claims back.
 - **Stage again** stages the merge request's head as it is then, keeping the claims, and
-  asks again.
+  asks again. Under **Stage what is free** it also takes, free-only, any left-off project
+  that is free by then, and stages that application too.
 - **Leave it on stage** gives the claims back and leaves stage as it is.
 
 **Ends:** with `<mr> was staged at <head> for testing; stage is rolled back`, or `stage

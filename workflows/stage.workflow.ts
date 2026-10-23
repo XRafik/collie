@@ -4,6 +4,7 @@
 
 import {
   Host,
+  HoldersSchema,
   ReviewHeadSchema,
   ReviewStandingSchema,
   Run,
@@ -15,6 +16,7 @@ import {
   forgeOfRef,
   mrUrlOf,
   readMrRef,
+  type Holders,
 } from "collie";
 import { Effect, Schema } from "effect";
 import * as Activity from "effect/workflow/Activity";
@@ -62,21 +64,64 @@ const stepsOf = (markdown: string) => {
 /** The shipped content per forge: the procedure differs, not only the commands (ADR-0050 D1). */
 export const STAGE_ON = { gitlab: stepsOf(onGitlab), github: stepsOf(onGithub) };
 
+const CLEARANCE_CHARS = 400;
+
+const naming =
+  (clears: (url: string, jobs: string) => string[]) =>
+  (url: string, jobs: ReadonlyArray<string>) => {
+    const named = clears(url, quoted(jobs));
+    return named.join("; ").length <= CLEARANCE_CHARS
+      ? named
+      : clears(url, `the ${jobs.length} stage jobs its task names`);
+  };
+
 export const STAGE_CLEARS = {
-  stage: (url: string, jobs: ReadonlyArray<string>) => [
-    `playing, retrying and watching ${quoted(jobs)} of ${url}'s merge request pipeline, and the stage check jobs (e2e-stage, smoke or the like) that follow them`,
+  stage: naming((url, jobs) => [
+    `playing, retrying and watching ${jobs} of ${url}'s merge request pipeline, and the stage check jobs (e2e-stage, smoke or the like) that follow them`,
     `rolling back only the stage environments those jobs deploy to on ${url}, to the newest release production carries`,
     "never a production job",
-  ],
-  unstage: (url: string, jobs: ReadonlyArray<string>) => [
-    `rolling back only the stage environments ${quoted(jobs)} deployed to on ${url}, to the newest release production carries, never a production job`,
-  ],
+  ]),
+  unstage: naming((url, jobs) => [
+    `rolling back only the stage environments ${jobs} deployed to on ${url}, to the newest release production carries, never a production job`,
+  ]),
 };
 
 /** One agent for the whole Run, which each step continues. */
 export const STAGER = "stage";
 
 const STAGED = { done: "Done", again: "Stage again", leave: "Leave it on stage" } as const;
+const CLAIMS = { wait: "Wait for all", free: "Stage what is free", finish: "Finish" } as const;
+
+type Read = Extract<Holders, { readonly _tag: "Read" }>;
+
+const named = (holders: ReadonlyMap<string, string>) =>
+  [...holders].map(([slug, holder]) => `${slug} (${holder})`).join(", ");
+
+const holding = (read: Read, held: ReadonlySet<string>) =>
+  read.applications
+    .filter((one) => one.needs.every((slug) => held.has(slug)))
+    .map((one) => one.name);
+
+/** Jobs without an application require every application. */
+const jobsOf = (read: Read, jobs: ReadonlyArray<string>, applications: ReadonlyArray<string>) =>
+  jobs.filter((job) => {
+    const named = read.jobs.find((one) => one.name === job)?.applications ?? [];
+    const owners = named.length > 0 ? named : read.applications.map((one) => one.name);
+    return owners.every((owner) => applications.includes(owner));
+  });
+
+const freeDeploys = (
+  read: Read,
+  jobs: ReadonlyArray<string>,
+  others: ReadonlyMap<string, string>,
+) => {
+  const applications = holding(
+    read,
+    new Set(read.projects.map((one) => one.slug).filter((slug) => !others.has(slug))),
+  );
+  return { applications, jobs: jobsOf(read, jobs, applications) };
+};
+
 const UNCLAIMED = {
   again: "Try again",
   without: "Stage without a Helle claim",
@@ -189,10 +234,11 @@ export default defineWorkflow({
         });
       yield* moveTo("fast-forward", "head" in start ? start.head : "");
 
+      const deploys = { applications: assessed.applications ?? [], jobs };
       const claimed = claiming({
         runId,
         cwd,
-        deploys: { applications: assessed.applications ?? [], jobs },
+        deploys,
         park,
         words: {
           adopt: "You already hold or are queued for a claim this stage needs. Take it over?",
@@ -202,34 +248,76 @@ export default defineWorkflow({
           went: (why) => `staged without a Helle claim on the human's say: ${why}`,
         },
       });
-      const slugs = yield* claimed("claim");
-      if (slugs === null) return `${mr} was not staged`;
-      const holding =
-        slugs.length === 0
-          ? "This Run holds no Helle claim."
-          : `This Run holds the Helle claims of ${slugs.join(", ")}.`;
-      const giveBack =
-        slugs.length === 0
+
+      // Read first so waiting on another holder needs the human's say.
+      const holders = yield* Activity.make({
+        name: "holders",
+        success: HoldersSchema,
+        error: WorkflowError,
+        execute: host.holders({ runId, cwd, deploys }),
+      }).pipe(Effect.result);
+      const read =
+        holders._tag === "Success" && holders.success._tag === "Read" ? holders.success : null;
+      const others = new Map<string, string>(
+        (read?.projects ?? []).flatMap((one) =>
+          one.holder === null ? [] : [[one.slug, one.holder] as const],
+        ),
+      );
+      const freeNow = read === null ? null : freeDeploys(read, jobs, others);
+      let free = false;
+      if (freeNow !== null && others.size > 0) {
+        const offered = freeNow.jobs.length > 0;
+        const answer = yield* ask({
+          name: "claims-1",
+          prompt: `${mr}'s stage needs Helle projects someone else holds: ${named(others)}. ${CLAIMS.wait} queues for every project and stages everything once all are handed over${offered ? `; ${CLAIMS.free} takes only what is free and stages only ${freeNow.applications.join(", ")}, leaving every other application's stage as it is` : ""}; ${CLAIMS.finish} stops here, claiming nothing.`,
+          options: [CLAIMS.wait, ...(offered ? [CLAIMS.free] : []), CLAIMS.finish],
+        });
+        if (answer === CLAIMS.finish) return `${mr} was not staged`;
+        free = answer === CLAIMS.free;
+      }
+
+      const first = yield* claimed(
+        "claim",
+        free && freeNow !== null ? { deploys: freeNow, free: true } : {},
+      );
+      if (first === null) return `${mr} was not staged`;
+      // An explicit waiver permits staging every application.
+      if (first.left === undefined) free = false;
+      const held = new Set(first.slugs);
+      const take = (claim: { readonly left?: ReadonlyArray<{ slug: string; holder: string }> }) => {
+        for (const one of claim.left ?? []) others.set(one.slug, one.holder);
+        for (const slug of held) others.delete(slug);
+      };
+      take(first);
+      const staged = () => (free && read !== null ? holding(read, held) : deploys.applications);
+      const playing = () => (free && read !== null ? jobsOf(read, jobs, staged()) : jobs);
+      const giveBack = Effect.suspend(() =>
+        held.size === 0
           ? Effect.void
-          : Activity.make({ name: "give-back", execute: Effect.asVoid(host.release(runId)) });
+          : Activity.make({ name: "give-back", execute: Effect.asVoid(host.release(runId)) }),
+      );
+      if (playing().length === 0) {
+        yield* giveBack;
+        return `${mr} was not staged: someone else took every project it was to stage`;
+      }
 
       const stage = staging({
         runId,
         cwd,
         jobs,
-        stage: (name, head) =>
+        stage: (name, head, only) =>
           agentWork({
             ...as(name),
-            input: { ...input, head, stage_jobs: quoted(jobs) },
-            clears: STAGE_CLEARS.stage(url, jobs),
+            input: { ...input, head, stage_jobs: quoted(only) },
+            clears: STAGE_CLEARS.stage(url, only),
             instructions: steps.stage,
             output: StagedMergeRequest,
           }),
-        unstage: (name, head, failure) =>
+        unstage: (name, head, failure, played) =>
           agentWork({
             ...as(name),
-            input: { ...input, head, failure, stage_jobs: quoted(jobs) },
-            clears: STAGE_CLEARS.unstage(url, jobs),
+            input: { ...input, head, failure, stage_jobs: quoted(played) },
+            clears: STAGE_CLEARS.unstage(url, played),
             instructions: steps.unstage,
             output: RolledBack,
           }),
@@ -245,27 +333,54 @@ export default defineWorkflow({
             .pipe(Effect.catch((failed) => park(failed.reason))),
         });
         const head = yield* moveTo(`fast-forward.${n}`, now.head);
-        const { read } = yield* stage.put(nth("stage", n), head);
-        if (read._tag === "Moved") {
+        const { read: onStage } = yield* stage.put(nth("stage", n), head, playing());
+        if (onStage._tag === "Moved") {
           yield* host.record(
             runId,
-            `the head moved from ${short(head)} to ${short(read.head)} before stage was proved, so that head is staged instead`,
+            `the head moved from ${short(head)} to ${short(onStage.head)} before stage was proved, so that head is staged instead`,
           );
           continue;
         }
-        if (read._tag === "Failed") {
-          const failed = `stage of ${mr} at ${short(head)} failed: ${read.why}`;
-          yield* stage.off(nth("unstage", n), read.why, failed);
+        if (onStage._tag === "Failed") {
+          const failed = `stage of ${mr} at ${short(head)} failed: ${onStage.why}`;
+          yield* stage.off(nth("unstage", n), onStage.why, failed);
           yield* giveBack;
           return yield* fail(`${failed}; stage is back on what production carries`);
         }
         asks += 1;
+        const leftApps = deploys.applications.filter((app) => !staged().includes(app));
+        const leftOff =
+          leftApps.length === 0
+            ? ""
+            : ` Left off stage: ${leftApps.join(", ")}. Their Helle projects are held by others: ${named(others)}.`;
+        const holds =
+          held.size === 0
+            ? "This Run holds no Helle claim."
+            : `This Run holds the Helle claims of ${[...held].join(", ")}.`;
         const answer = yield* ask({
           name: `staged-${asks}`,
-          prompt: `Stage carries ${mr} at \`${short(head)}\` for testing, unmerged: ${plays(read.jobs)}. ${holding} Test it there, then: ${STAGED.done} rolls stage back and gives the claims back; ${STAGED.again} stages the merge request's head as it is then, keeping the claims; ${STAGED.leave} gives the claims back and leaves stage as it is.`,
+          prompt: `Stage carries ${mr} at \`${short(head)}\` for testing, unmerged: ${plays(onStage.jobs)}.${leftOff} ${holds} Test it there, then: ${STAGED.done} rolls stage back and gives the claims back; ${STAGED.again} stages the merge request's head as it is then, keeping the claims${leftApps.length === 0 ? "" : " and taking any left-off project that is free by then"}; ${STAGED.leave} gives the claims back and leaves stage as it is.`,
           options: [STAGED.done, STAGED.again, STAGED.leave],
         });
-        if (answer === STAGED.again) continue;
+        if (answer === STAGED.again) {
+          if (leftApps.length > 0 && read !== null) {
+            const more = yield* claimed(`staged-${asks}.claim`, { deploys, free: true });
+            if (more === null) {
+              yield* stage.off(
+                nth("unstage", n),
+                `the human finished testing ${mr}`,
+                `${mr} was staged at ${short(head)} for testing`,
+              );
+              yield* giveBack;
+              return `${mr} was staged at ${short(head)} for testing; stage is rolled back`;
+            }
+            if (more.left !== undefined) {
+              for (const slug of more.slugs) held.add(slug);
+              take(more);
+            }
+          }
+          continue;
+        }
         if (answer === STAGED.leave) {
           yield* giveBack;
           return `stage carries ${mr} at ${short(head)}, unmerged`;
