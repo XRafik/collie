@@ -242,10 +242,15 @@ export default defineWorkflow({
         park,
         words: {
           adopt: "You already hold or are queued for a claim this stage needs. Take it over?",
-          unclaimed: (why) =>
-            `${mr} cannot hold the Helle claims its stage needs: ${why}. Nothing goes on stage without them. ${UNCLAIMED.again} claims them again; ${UNCLAIMED.without} goes on holding none; ${UNCLAIMED.finish} stops here.`,
+          unclaimed: (why, retaining) =>
+            retaining
+              ? `${mr} cannot refresh its Helle claims: ${why}. Its existing claims stay held. ${UNCLAIMED.again} tries the refresh again; ${UNCLAIMED.without} stages only the applications it already holds; ${UNCLAIMED.finish} rolls stage back before giving its claims back.`
+              : `${mr} cannot hold the Helle claims its stage needs: ${why}. Nothing goes on stage without them. ${UNCLAIMED.again} claims them again; ${UNCLAIMED.without} goes on holding none; ${UNCLAIMED.finish} stops here.`,
           ...UNCLAIMED,
-          went: (why) => `staged without a Helle claim on the human's say: ${why}`,
+          went: (why, retaining) =>
+            retaining
+              ? `staged with existing Helle claims only on the human's say: ${why}`
+              : `staged without a Helle claim on the human's say: ${why}`,
         },
       });
 
@@ -364,7 +369,11 @@ export default defineWorkflow({
         });
         if (answer === STAGED.again) {
           if (leftApps.length > 0 && read !== null) {
-            const more = yield* claimed(`staged-${asks}.claim`, { deploys, free: true });
+            const more = yield* claimed(`staged-${asks}.claim`, {
+              deploys,
+              free: true,
+              retaining: true,
+            });
             if (more === null) {
               yield* stage.off(
                 nth("unstage", n),

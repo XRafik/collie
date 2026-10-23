@@ -72,12 +72,12 @@ const ADOPTING = "the claim is already the operator's own";
 /** What a caller's claim questions and record say. */
 export interface ClaimWords {
   readonly adopt: string;
-  readonly unclaimed: (why: string) => string;
+  readonly unclaimed: (why: string, retaining: boolean) => string;
   readonly again: string;
   readonly without: string;
   readonly finish: string;
   /** The record line for going on without a claim, on the human's say. */
-  readonly went: (why: string) => string;
+  readonly went: (why: string, retaining: boolean) => string;
 }
 
 export interface Deploys {
@@ -99,7 +99,10 @@ export const claiming =
     readonly words: ClaimWords;
     readonly park: (reason: string) => Effect.Effect<never, never, R>;
   }) =>
-  (name: string, how: { readonly deploys?: Deploys; readonly free?: boolean } = {}) =>
+  (
+    name: string,
+    how: { readonly deploys?: Deploys; readonly free?: boolean; readonly retaining?: boolean } = {},
+  ) =>
     Effect.gen(function* () {
       const host = yield* Host;
       const { runId, cwd, words } = options;
@@ -142,23 +145,23 @@ export const claiming =
         if ("slugs" in held) return held;
         const answer = yield* ask({
           name: `${at}.unclaimed`,
-          prompt: words.unclaimed(held.unresolved),
+          prompt: words.unclaimed(held.unresolved, how.retaining ?? false),
           options: [words.again, words.without, words.finish],
         });
         if (answer === words.again) continue;
-        // Whatever it did take is given back, so going on without claims holds none.
-        yield* Activity.make({
-          name: `${at}.give-back`,
-          execute: Effect.flatMap(host.release(runId), (kept) =>
-            kept.length === 0
-              ? Effect.void
-              : options.park(
-                  `Helle would not take back ${kept.join(", ")}, which this Run still holds, so it neither finishes nor goes on without its claims`,
-                ),
-          ),
-        });
+        if (how.retaining !== true)
+          yield* Activity.make({
+            name: `${at}.give-back`,
+            execute: Effect.flatMap(host.release(runId), (kept) =>
+              kept.length === 0
+                ? Effect.void
+                : options.park(
+                    `Helle would not take back ${kept.join(", ")}, which this Run still holds, so it neither finishes nor goes on without its claims`,
+                  ),
+            ),
+          });
         if (answer === words.finish) return null;
-        yield* host.record(runId, words.went(held.unresolved));
+        yield* host.record(runId, words.went(held.unresolved, how.retaining ?? false));
         return { slugs: [] };
       }
     });

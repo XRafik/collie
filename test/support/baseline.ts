@@ -10837,6 +10837,7 @@ for (const name of ["gitlab", "github"] as const) {
     readonly racing?: Record<string, string>;
     readonly handedOver?: Deferred.Deferred<void>;
     readonly declared?: ReadonlyArray<string>;
+    readonly events?: string[];
     unresolved?: string;
   }
   const busyHost = (helle: BusyHelle): HostOverride =>
@@ -10850,6 +10851,13 @@ for (const name of ["gitlab", "github"] as const) {
         const holderOf = (slug: string) => (held.has(slug) ? null : (helle.holders[slug] ?? null));
         return Host.of({
           ...host,
+          readRollback: (options) =>
+            Effect.gen(function* () {
+              helle.events?.push("rollback-started");
+              const back = yield* host.readRollback(options);
+              if (back._tag === "Shown") helle.events?.push("rollback-proved");
+              return back;
+            }),
           holders: (asked) =>
             Effect.succeed({
               _tag: "Read" as const,
@@ -10887,6 +10895,7 @@ for (const name of ["gitlab", "github"] as const) {
             }),
           release: (runId) =>
             Effect.sync(() => {
+              helle.events?.push("claims-released");
               for (const slug of [...held].sort()) claimed.push(`release ${runId} ${slug}`);
               held.clear();
               return [];
@@ -11181,7 +11190,8 @@ for (const name of ["gitlab", "github"] as const) {
           const { bin, staged, unstaged } = yield* busyStage(DANNS);
           claimed.length = 0;
           const runId = `r-busy-again-finish-${name}`;
-          const helle = dann();
+          const events: string[] = [];
+          const helle: BusyHelle = { ...dann(), events };
           yield* rig.queueOutputs([
             BUSY_ASSESSED,
             staged(["playground"]),
@@ -11202,6 +11212,48 @@ for (const name of ["gitlab", "github"] as const) {
           yield* bin.restore();
           expect(outcomeText(status)).toContain("stage is rolled back");
           expect(yield* clearance(runId, "unstage")).toContain("`stage:playground`");
+          expect(claimed).toEqual([`claim ${runId} playground`, `release ${runId} playground`]);
+          expect(events).toEqual(["rollback-started", "rollback-proved", "claims-released"]);
+        }),
+      ),
+    120_000,
+  );
+
+  scenario(
+    `stage on ${name}: busy claims: a failed refresh waived by the human retains the live application's claim through restaging and rollback`,
+    () =>
+      runEffect(
+        Effect.gen(function* () {
+          const { bin, staged, unstaged } = yield* busyStage(DANNS);
+          claimed.length = 0;
+          const runId = `r-busy-refresh-without-${name}`;
+          const events: string[] = [];
+          const helle: BusyHelle = { ...dann(), events };
+          yield* rig.queueOutputs([
+            BUSY_ASSESSED,
+            staged(["playground"]),
+            staged(["playground"]),
+            unstaged(["playground"]),
+          ]);
+          const status = yield* driven(options(runId, busyHost(helle)), (run) =>
+            Effect.gen(function* () {
+              yield* goAsked(run.asked, "claims-1");
+              yield* run.answer("claims-1", "Stage what is free");
+              yield* goAsked(run.asked, "staged-1");
+              helle.unresolved = "Helle is down";
+              yield* run.answer("staged-1", "Stage again");
+              yield* goAsked(run.asked, "staged-1.claim.unclaimed");
+              yield* run.answer("staged-1.claim.unclaimed", "Stage without a Helle claim");
+              const again = yield* goAsked(run.asked, "staged-2");
+              expect(again.prompt).toContain("holds the Helle claims of playground");
+              expect(events).toEqual([]);
+              yield* run.answer("staged-2", "Done");
+              return yield* ended(run.status);
+            }),
+          );
+          yield* bin.restore();
+          expect(outcomeText(status)).toContain("stage is rolled back");
+          expect(events).toEqual(["rollback-started", "rollback-proved", "claims-released"]);
           expect(claimed).toEqual([`claim ${runId} playground`, `release ${runId} playground`]);
         }),
       ),

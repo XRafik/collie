@@ -658,6 +658,10 @@ who holds its projects, and the claims it holds:
   that is free by then, and stages that application too.
 - **Leave it on stage** gives the claims back and leaves stage as it is.
 
+If refreshing claims for **Stage again** fails, the existing claims stay held. **Finish**
+rolls stage back before giving them back; continuing without the refresh stages only the
+applications the Run already holds.
+
 **Ends:** with `<mr> was staged at <head> for testing; stage is rolled back`, or `stage
 carries <mr> at <head>, unmerged`. A stage that fails is rolled back and proved off, its
 claims are given back, and the Run fails with `stage of <mr> at <head> failed: <why>; stage
