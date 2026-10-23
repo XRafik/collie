@@ -74,7 +74,6 @@ const reasonOf = (
   return `${display} could not be asked: ${error.message}`;
 };
 
-/** One send's answer, and whether the forge refused its token. */
 interface Sent<A> {
   readonly sent: Answered<A>;
   readonly refused: boolean;

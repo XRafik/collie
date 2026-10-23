@@ -47,7 +47,6 @@ const model = (forge: MrForge, over: Partial<ForgeModel> = {}): ForgeModel => ({
 
 const ref = (forge: MrForge) => ({ project: PROJECT[forge], iid: "30" });
 
-/** `read` against a fake forge answering from `start`, on both its faces. */
 const against = <A>(
   forge: MrForge,
   start: ForgeModel,

@@ -71,7 +71,6 @@ const glabListing = (lists: {
       *) exit 0 ;;
     esac`;
 
-/** GitLab's merge requests from a branch, open, by iid. */
 const branchMrs = (iids: ReadonlyArray<number>) =>
   `[${iids.map((iid) => `{"iid": ${iid}, "state": "opened", "created_at": "2026-10-20T12:00:00Z"}`).join(",")}]`;
 

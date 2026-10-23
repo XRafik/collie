@@ -659,7 +659,6 @@ const projectRest = (ref: MrRef, cwd: string) => {
   return { ok: true, login, project, rest } as const;
 };
 
-/** The job named `name` in pipeline `id`. */
 const jobIn = (rest: Rest, id: number, name: string) =>
   Effect.gen(function* () {
     let found: (typeof Jobs.Type)[number] | undefined;
