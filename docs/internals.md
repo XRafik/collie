@@ -1280,7 +1280,10 @@ tree and the runner into `<Collie directory>/release.new` with `placed.json`, ea
 sha256, copies every file of the current `release/` that differs from its own record into
 `kept/`, then swaps the two. In a placed release `install.sh` and `prepare.sh` leave
 `bin/collie` as it was placed. `tools/smoke.sh` checks the built runner places its release
-at its own version.
+at its own version. Its forge check asks the compiled runner for a missing review target
+against a temporary checkout: the missing-input response must offer the pull request
+served by the fake forge over HTTP. This exercises the lazily loaded provider without
+starting a Run.
 
 `install.sh` authenticates that download with `COLLIE_TOKEN` where it is set, and otherwise
 borrows the token `glab` or `gh` already holds for the release host — see
