@@ -3429,7 +3429,10 @@ export const hostLayer = (options: {
               ? fs.remove(path, { force: true }).pipe(Effect.orDie)
               : Effect.gen(function* () {
                   const before = yield* fs.readFileString(path).pipe(Effect.option);
-                  yield* fs.writeFileString(path, why).pipe(Effect.orDie);
+                  // Renamed into place, so a reader never sees it empty.
+                  yield* fs
+                    .writeFileString(`${path}.new`, why)
+                    .pipe(Effect.andThen(fs.rename(`${path}.new`, path)), Effect.orDie);
                   if (Option.getOrNull(before) === why) return;
                   yield* under(
                     Effect.gen(function* () {
@@ -5222,7 +5225,10 @@ const makeRegistry: (
         Option.isSome(old) &&
         !(yield* fs.exists(controlPath(dir, PARKED, runId)).pipe(Effect.orDie))
       ) {
-        yield* fs.writeFileString(controlPath(dir, PARKED, runId), old.value).pipe(Effect.orDie);
+        const path = controlPath(dir, PARKED, runId);
+        yield* fs
+          .writeFileString(`${path}.new`, old.value)
+          .pipe(Effect.andThen(fs.rename(`${path}.new`, path)), Effect.orDie);
         yield* store.announce;
       }
     });
