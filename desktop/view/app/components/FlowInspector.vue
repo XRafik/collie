@@ -1,0 +1,83 @@
+<script setup lang="ts">
+import { nodeName, type inspectorOf, type FlowSelection } from "../../../src/shared/flow";
+defineProps<{ info: NonNullable<ReturnType<typeof inspectorOf>>; selected: FlowSelection }>();
+const emit = defineEmits<{
+  close: [];
+  item: [id: string | null];
+  open: [run: string, tab: string];
+}>();
+const labels: Record<string, string> = {
+  plan: "Plan",
+  review: "Review",
+  evidence: "Evidence",
+  mr: "Merge request",
+  terminal: "Terminal",
+  log: "Log",
+};
+</script>
+
+<template>
+  <section
+    data-flow-inspector
+    class="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto border-t border-default pt-4"
+    aria-label="Step inspector"
+  >
+    <header class="flex items-start justify-between gap-3">
+      <div>
+        <h3 class="flex items-center gap-2 font-semibold">
+          <FlowGlyph :state="info.state" />{{ info.title }}
+          <span class="text-sm font-normal text-muted">{{ info.state.replaceAll("-", " ") }}</span>
+        </h3>
+        <p v-if="info.said" class="text-sm">{{ info.said }}</p>
+      </div>
+      <UButton
+        color="neutral"
+        variant="ghost"
+        icon="i-lucide-x"
+        aria-label="Close inspector"
+        @click="emit('close')"
+      />
+    </header>
+    <p v-for="line in info.lines" :key="line" class="text-xs text-muted">{{ line }}</p>
+    <p v-if="info.description" class="text-sm">{{ info.description }}</p>
+    <UButton
+      v-if="selected.item !== null"
+      class="self-start"
+      variant="link"
+      label="All runs of this Step"
+      @click="emit('item', null)"
+    />
+    <ol v-if="info.entries.length > 0" class="flex flex-col gap-1">
+      <li v-for="(entry, at) in info.entries" :key="at">
+        <component
+          :is="entry.folded ? 'details' : 'div'"
+          :open="entry.nodes.some((node) => node.id === selected.item)"
+        >
+          <summary v-if="entry.folded" class="cursor-pointer text-sm text-muted">
+            {{ entry.title }}
+          </summary>
+          <button
+            v-for="node in entry.nodes"
+            :key="node.id"
+            type="button"
+            class="flex w-full items-center gap-2 rounded p-2 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-primary"
+            :aria-label="nodeName(node)"
+            :aria-pressed="node.id === selected.item"
+            @click="emit('item', node.id)"
+          >
+            <FlowGlyph :state="node.state" /><span class="text-sm">{{ node.title }}</span
+            ><span class="text-xs text-muted">{{ node.said }}</span
+            ><UIcon v-if="node.link !== undefined" name="i-lucide-arrow-up-right" />
+          </button>
+        </component>
+      </li>
+    </ol>
+    <UButton
+      variant="link"
+      class="self-start px-0"
+      :label="`Open in ${labels[info.open.tab] ?? info.open.tab}`"
+      @click="emit('open', info.open.run, info.open.tab)"
+    />
+    <slot />
+  </section>
+</template>

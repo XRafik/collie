@@ -8,6 +8,10 @@ root's `test/desktop-*.test.ts` and `test/flock-*.test.ts`; the view's logic in 
 
 `src/shared/flow-strip.ts`'s `cardFlow` gives BoardCard its glyph groups, fold, label
 and accessible name. `FlowGlyph.vue` draws the eight states with Nuxt UI tokens.
+`src/shared/flow.ts` owns `selectNode`, `selectEntry`, `inspectorOf`, `openIn`,
+`flowKey`, `nodeName` and `flowAnnouncements`. `FlowMap`, `FlowInspector` and
+`FlowTab` render those decisions. `recordTabs` puts Flow first where the host sends
+one; RunRecord can keep that map while subscribing to an earlier Run of its Task.
 
 | File                                    | What it owns                                                                                                                                                                                                                                           |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

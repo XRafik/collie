@@ -17,21 +17,47 @@ import {
   typedIn,
 } from "../../../src/shared/record";
 import { runDetailAtom, runDetailKey } from "../flock";
+import type { Flow } from "../../../../src/board-model";
 import type { DiffTarget } from "./DiffTab.vue";
 
 const props = defineProps<{ placed: PlacedTask }>();
 const emit = defineEmits<{ close: [] }>();
+const shownRun = ref(props.placed.task.run);
+const { runAsked, runTaken } = usePage();
+watch(
+  runAsked,
+  (run) => {
+    if (run === null) return;
+    shownRun.value = run;
+    runTaken();
+  },
+  { immediate: true },
+);
+const recordPlaced = computed(() => ({
+  ...props.placed,
+  task: { ...props.placed.task, run: shownRun.value },
+}));
 
 const { value: read, trouble } = useHeld(() =>
-  runDetailAtom(
-    runDetailKey({ installation: props.placed.installation, runId: props.placed.task.run }),
-  ),
+  runDetailAtom(runDetailKey({ installation: props.placed.installation, runId: shownRun.value })),
 );
 const detail = computed(() => read.value ?? null);
+const flow = shallowRef<Flow | null>(null);
+watch(
+  detail,
+  (shown) => {
+    if (shown?.flow !== undefined) flow.value = shown.flow;
+  },
+  { immediate: true },
+);
 const { notLive, protocolOf } = useFlock();
 const away = computed(() => notLive(props.placed.installation));
 const loading = computed(
-  () => trouble.value === null && away.value === null && read.value === undefined,
+  () =>
+    trouble.value === null &&
+    away.value === null &&
+    read.value === undefined &&
+    flow.value === null,
 );
 
 /** The location last followed: opened in the diff, or read-only in Review where there is none. */
@@ -60,7 +86,8 @@ provide("recordScroller", scroller);
 const tabs = computed(() => {
   const shown = detail.value;
   return recordTabs({
-    loaded: shown !== null,
+    loaded: shown !== null || flow.value !== null,
+    flow: flow.value !== null,
     plan: Boolean(shown?.plan),
     reviewText: shown?.review._tag === "Text",
     findings: (shown?.findings.length ?? 0) > 0,
@@ -70,7 +97,7 @@ const tabs = computed(() => {
     mr: shown?.mr ? mrTab(props.placed.task.mr) : null,
   });
 });
-/** The tab the human chose while it is there, else the first: Summary, where there is one. */
+/** The chosen tab while present, else the first the host supports. */
 const chosen = ref<string>();
 const { asked: tabAsked, taken } = usePage();
 const wentToPane = ref(false);
@@ -166,9 +193,20 @@ watch(tab, (now) => now !== undefined && (kept.value = tabsKept(kept.value, now)
   immediate: true,
 });
 provide("recordTab", tab);
+watch(shownRun, () => {
+  target.value = null;
+  memory = new Map();
+  logPlace.value = FOLLOWING_LOG;
+  logSearch.value = "";
+  kept.value = new Set(["flow"]);
+});
+const openWork = (run: string, next: string) => {
+  shownRun.value = run;
+  chosen.value = next;
+};
 
 const review = useWhole(
-  () => ({ installation: props.placed.installation, runId: props.placed.task.run }),
+  () => ({ installation: props.placed.installation, runId: shownRun.value }),
   "review",
   () => detail.value?.review ?? { _tag: "None", reason: "" },
   useActions().textOf,
@@ -181,8 +219,15 @@ const locationOf = (file: string, line: number | null) =>
   <section ref="record" data-testid="record" class="flex flex-col bg-default">
     <PageHeader :title="placed.task.name" @back="emit('close')">
       <p class="text-sm text-muted" data-testid="record-description">
-        {{ detail?.title ?? placed.task.run }}
+        {{ detail?.title ?? shownRun }} · {{ shownRun }}
       </p>
+      <UButton
+        v-if="shownRun !== placed.task.run"
+        variant="link"
+        size="xs"
+        label="Back to the leading Run"
+        @click="shownRun = placed.task.run"
+      />
     </PageHeader>
     <div
       ref="scroller"
@@ -222,8 +267,20 @@ const locationOf = (file: string, line: number | null) =>
         v-if="!loading"
         ref="body"
         class="flex flex-col gap-4"
-        :class="[columnClass(tab ?? ''), { 'min-h-0 flex-1': tab === 'terminal' }]"
+        :class="[
+          columnClass(tab ?? ''),
+          { 'min-h-0 flex-1': tab === 'terminal' || tab === 'flow' },
+        ]"
       >
+        <FlowTab
+          v-if="flow !== null && kept.has('flow')"
+          v-show="tab === 'flow'"
+          :flow="flow"
+          :placed="placed"
+          :shown="tab === 'flow'"
+          @run="shownRun = $event"
+          @open="openWork"
+        />
         <template v-if="detail !== null">
           <ReviewComments
             v-if="tab === 'plan' || tab === 'diff'"
@@ -319,7 +376,7 @@ const locationOf = (file: string, line: number | null) =>
           :detail="detail"
           :installation="placed.installation"
         />
-        <TerminalTab v-if="tab === 'terminal'" :placed="placed" :went-to-pane="wentToPane" />
+        <TerminalTab v-if="tab === 'terminal'" :placed="recordPlaced" :went-to-pane="wentToPane" />
       </div>
     </div>
   </section>
