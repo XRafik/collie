@@ -8051,6 +8051,7 @@ const driven = <A, E>(
       ReadonlyArray<{ decision: string; prompt: string; options: string; answer: string | null }>
     >;
     readonly answer: (decision: string, value: string) => Effect.Effect<void>;
+    readonly resume: Effect.Effect<void>;
   }) => Effect.Effect<A, E, FileSystem.FileSystem>,
 ) =>
   session(
@@ -8067,6 +8068,7 @@ const driven = <A, E>(
         return yield* drive({
           status: engine.poll(made.workflow, id).pipe(Effect.map((got) => pollStatus(got, ""))),
           asked: store.asked(options.runId),
+          resume: engine.resume(made.workflow, id),
           answer: (decision, value) =>
             answerDecision(made, { name: decision, executionId: id, value }).pipe(
               Effect.orDie,
@@ -10821,6 +10823,50 @@ for (const name of ["gitlab", "github"] as const) {
       ),
     120_000,
   );
+
+  for (const ending of ["Done", "Leave it on stage", "failed stage"])
+    scenario(
+      `stage on ${name}: a refused claim give-back parks on ${ending} and retries it on resume`,
+      () =>
+        runEffect(
+          Effect.gen(function* () {
+            const { bin, staging, unstaging } = yield* stageOn();
+            claimed.length = 0;
+            refusedBack.length = 0;
+            refusedBack.push(["project"]);
+            const failed = ending === "failed stage";
+            const runId = `r-stage-retained-${name}-${failed ? "failed" : ending === "Done" ? "done" : "leave"}`;
+            yield* rig.queueOutputs([
+              MR_STAGED,
+              staging(undefined, failed ? "failed" : "passed"),
+              ...(ending === "Leave it on stage" ? [] : [unstaging()]),
+            ]);
+            const status = yield* driven(options(runId), (run) =>
+              Effect.gen(function* () {
+                if (!failed) {
+                  yield* goAsked(run.asked, "staged-1");
+                  yield* run.answer("staged-1", ending);
+                }
+                const [status, why] = yield* until(
+                  () => Effect.all([run.status, parkedWhy(runId)]),
+                  ([status, why]) =>
+                    status.status === "complete" || status.status === "failed" || why !== "",
+                );
+                expect(why).toContain("project");
+                expect(status.status).not.toBe("complete");
+                expect(status.status).not.toBe("failed");
+                expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
+                yield* run.resume;
+                return yield* ended(run.status);
+              }),
+            );
+            yield* bin.restore();
+            expect(status.status).toBe(failed ? "failed" : "complete");
+            expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`, `release ${runId}`]);
+          }),
+        ),
+      120_000,
+    );
 
   const APPS = ["bingo", "casino", "happytiger", "lobby", "playground", "poker", "spilnu"] as const;
   const appJob = (app: string) => `stage:${app}`;

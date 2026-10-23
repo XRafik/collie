@@ -299,7 +299,16 @@ export default defineWorkflow({
       const giveBack = Effect.suspend(() =>
         held.size === 0
           ? Effect.void
-          : Activity.make({ name: "give-back", execute: Effect.asVoid(host.release(runId)) }),
+          : Activity.make({
+              name: "give-back",
+              execute: Effect.flatMap(host.release(runId), (kept) =>
+                kept.length === 0
+                  ? Effect.void
+                  : park(
+                      `Helle would not take back ${kept.join(", ")}, which this Run still holds`,
+                    ),
+              ),
+            }),
       );
       if (playing().length === 0) {
         yield* giveBack;

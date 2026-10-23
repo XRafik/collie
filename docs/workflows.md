@@ -662,6 +662,9 @@ If refreshing claims for **Stage again** fails, the existing claims stay held. *
 rolls stage back before giving them back; continuing without the refresh stages only the
 applications the Run already holds.
 
+If Helle refuses a give-back, the Run parks with the names of the claims still held.
+Resuming retries the give-back before the Run can end.
+
 **Ends:** with `<mr> was staged at <head> for testing; stage is rolled back`, or `stage
 carries <mr> at <head>, unmerged`. A stage that fails is rolled back and proved off, its
 claims are given back, and the Run fails with `stage of <mr> at <head> failed: <why>; stage
