@@ -144,7 +144,8 @@ test.each(["working", "blocked"])(
             { FAKE_HERDR_OUTPUTS: outputsOf(world), FAKE_HERDR_AGENT_STATUS: status },
           );
           const { runId } = yield* Schema.decodeUnknownEffect(RunId)(started.envelope.data);
-          const flow = yield* until_(world, runId, (one) => nodeOf(one, "build")?.agent != null);
+          // The node names its agent before the host has polled that agent's status.
+          const flow = yield* until_(world, runId, (one) => nodeOf(one, "build")?.primary != null);
           const build = nodeOf(flow, "build")!;
           expect(build).toMatchObject({
             primary: "terminal",
