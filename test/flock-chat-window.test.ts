@@ -221,7 +221,7 @@ test("a reply stopped after it is asked for but before it runs never asks for th
   return expect(Array.fromAsync(Stream.toAsyncIterable(asked))).resolves.toEqual([]);
 });
 
-test("a reply stopped while its first part is awaited never asks for the turn", async () => {
+test("a reply stopped while its first part is awaited never asks for the turn", () => {
   const stop = new AbortController();
   let asked = false;
   const turn = untilAborted(
@@ -239,6 +239,8 @@ test("a reply stopped while its first part is awaited never asks for the turn", 
   );
   const first = Stream.toAsyncIterable(turn)[Symbol.asyncIterator]().next();
   stop.abort();
-  expect((await first).done).toBe(true);
-  expect(asked).toBe(false);
+  return first.then(({ done }) => {
+    expect(done).toBe(true);
+    expect(asked).toBe(false);
+  });
 });
