@@ -49,6 +49,7 @@ import { mrLabel, mrTarget, type FlowLane, type MrForge } from "../../src/board-
 import { laneFor } from "../../src/flow-read";
 import type { RunState } from "../../src/runs";
 import { runFacts } from "./records";
+import { readLaunches } from "../../src/launches";
 import { AwaitingJson } from "../../src/awaiting";
 import { installFakeSkills } from "./defs";
 import { Agents, agentsLayer, type AgentHost } from "../../src/agents";
@@ -292,6 +293,7 @@ const laneWhen = (options: {
   readonly input: Readonly<Record<string, Schema.Json>>;
   readonly options?: Readonly<Record<string, string>>;
   readonly ready: (lane: FlowLane) => boolean;
+  readonly host?: HostOverride;
   /**
    * The agent working when it is read, given its Output by hand, and the Outputs after it
    * that take the Run to where it stops: left running, the engine would wait out its
@@ -300,6 +302,12 @@ const laneWhen = (options: {
   readonly outputs: ReadonlyArray<Schema.Json>;
   readonly working: { readonly operation: string; readonly output: unknown };
   readonly rest: ReadonlyArray<Schema.Json>;
+  readonly finish?: { readonly decision: string; readonly value: string };
+  readonly continueWith?: (lane: FlowLane) => {
+    readonly operation: string;
+    readonly output: unknown;
+    readonly rest: ReadonlyArray<Schema.Json>;
+  };
 }) =>
   session(
     Effect.gen(function* () {
@@ -315,28 +323,57 @@ const laneWhen = (options: {
       return yield* Effect.gen(function* () {
         yield* made.workflow.execute(payload, { discard: true });
         const lane = yield* until(() => laneIn(options.runId), options.ready);
+        const completing = options.continueWith?.(lane) ?? {
+          ...options.working,
+          rest: options.rest,
+        };
         // The fake reads its queue by position, so what was taken stays where it was.
-        yield* rig.queueOutputs([...options.outputs, null, ...options.rest]).pipe(Effect.orDie);
+        yield* rig.queueOutputs([...options.outputs, null, ...completing.rest]).pipe(Effect.orDie);
         yield* (yield* FileSystem.FileSystem)
           .writeFileString(
-            `${dir}/agents/${options.runId}/${options.working.operation}.json`,
-            asJson(options.working.output),
+            `${dir}/agents/${options.runId}/${completing.operation}.json`,
+            asJson(completing.output),
           )
           .pipe(Effect.orDie);
         const execution = yield* made.workflow.executionId(payload);
+        if (options.finish !== undefined) {
+          const finish = options.finish;
+          const store = yield* Store;
+          yield* until(
+            () => store.asked(options.runId),
+            (rows) => rows.some((row) => row.decision === finish.decision && row.answer === null),
+          );
+          yield* answerDecision(made, {
+            name: finish.decision,
+            executionId: execution,
+            value: finish.value,
+          }).pipe(Effect.orDie);
+          yield* made.workflow.execute(payload, { discard: true });
+        }
         yield* until(() => made.workflow.poll(execution), Option.isSome);
         return lane;
       }).pipe(Effect.provide(made.layer));
     }),
+    options.host,
   );
 
-/**
- * Work a shipped plan, implement or release Run did outside every Step, which only a
- * child started into the same Task may be.
- */
 const undeclaredWork = () =>
   Effect.gen(function* () {
-    const ours = new Set((["plan", "implement", "release"] as const).map(shipped));
+    const ours = new Set(
+      (
+        [
+          "plan",
+          "implement",
+          "release",
+          "review",
+          "architecture",
+          "renovate",
+          "general",
+          "investigate",
+          "self-improve",
+        ] as const
+      ).map(shipped),
+    );
     const loose: Array<readonly [string, string]> = [];
     for (const [runId, entry] of modules)
       if (ours.has(entry))
@@ -526,6 +563,28 @@ const REPORT = {
   slug: "one-registry",
   outcome: "refactor",
 };
+
+scenario(
+  "Flow: architecture's report is done while its menu needs you",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([REPORT]);
+        yield* parked({
+          entry: shipped("architecture"),
+          runId: "r-architecture-flow",
+          input: { goal: "Find the next improvement" },
+          decision: "next",
+        });
+        const lane = yield* laneNow("r-architecture-flow", "waiting");
+        expect(lane.nodes.map((node) => [node.title, node.state, node.declared])).toEqual([
+          ["Architecture", "done", true],
+          ["What next", "needs-you", true],
+        ]);
+      }),
+    ),
+  120_000,
+);
 
 scenario(
   "architecture reads the project it was started for, as the architect, with the skill started",
@@ -2253,6 +2312,26 @@ const ran = (options: {
     }),
     options.host,
   );
+
+scenario(
+  "Flow: investigate's reported work is one completed Investigate Step",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        yield* rig.queueOutputs([{ summary: "The peer build is stale", findings: [] }]);
+        yield* ran({
+          entry: shipped("investigate"),
+          runId: "r-investigate-flow",
+          input: { goal: "Why is the peer behind?" },
+        });
+        const lane = yield* laneNow("r-investigate-flow", "succeeded");
+        expect(lane.nodes.map((node) => [node.title, node.state, node.produces])).toEqual([
+          ["Investigate", "done", "evidence"],
+        ]);
+      }),
+    ),
+  120_000,
+);
 
 scenario(
   "investigate asks one investigator and returns findings without proof or offers",
@@ -7487,6 +7566,52 @@ scenario(
 
 const PACKAGE = { verdict: "clean", up_to_date: false, is_package: true, merge_requests: BUMPS };
 
+scenario(
+  "Flow: renovate merges its second MR as Slice 2 of 2 on the same agent",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const bin = yield* renovatable();
+        const second = { ...MERGED, outcomes: [{ iid: 13, outcome: "merged" }] };
+        const lane = yield* laneWhen({
+          entry: shipped("renovate"),
+          runId: "r-renovate-flow",
+          input: {},
+          host: withoutHelle,
+          outputs: [
+            TRACKED,
+            { ...PACKAGE, merge_requests: [...BUMPS, { iid: 13, title: "Update Bun" }] },
+            MERGED,
+          ],
+          ready: (one) =>
+            one.nodes.some(
+              (node) =>
+                (node.id === "release" && node.state === "running") ||
+                (node.id === "merge" && node.runs[1]?.state === "running"),
+            ),
+          working: { operation: "merge-2", output: second },
+          rest: [RELEASED, RECORDED],
+          continueWith: (one) =>
+            nodeIn(one, "merge")?.runs[1]?.state === "running"
+                ? { operation: "merge-2", output: second, rest: [RELEASED, RECORDED] }
+              : { operation: "release", output: RELEASED, rest: [RECORDED] },
+        });
+        yield* bin.restore();
+        const merging = nodeIn(lane, "merge");
+        expect(merging?.said).toBe("Slice 2 of 2");
+        expect(merging?.runs.map((one) => [one.place, one.state])).toEqual([
+          ["12", "done"],
+          ["13", "running"],
+        ]);
+        expect(yield* asked("r-renovate-flow", "merge-2")).toContain("request `13`");
+        expect(
+          new Set((yield* readLaunches(dir, "r-renovate-flow")).map((one) => one.agent)).size,
+        ).toBe(1);
+      }),
+    ),
+  120_000,
+);
+
 /** An application's Outputs up to the release, which each scenario below says itself. */
 const APPLICATION: ReadonlyArray<Schema.Json> = [
   TRACKED,
@@ -10316,6 +10441,53 @@ const CHORE = "upgrade the VM's install to 0.45.1";
 const DONE = { summary: "Upgraded the VM's install to 0.45.1 and restarted the host." };
 
 scenario(
+  "Flow: review's reviewer runs before its expected menu",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const lane = yield* laneWhen({
+          entry: shipped("review"),
+          runId: "r-review-flow",
+          input: { target: "worktree" },
+          ready: (one) => one.nodes.some((node) => node.ranOn !== null),
+          outputs: [],
+          working: { operation: "review-1", output: CLEAN_SYNTHESIS },
+          rest: [],
+          finish: { decision: "post-1", value: "Don't post" },
+        });
+        expect(lane.nodes.map((node) => [node.title, node.state, node.declared])).toEqual([
+          ["Review", "running", true],
+          ["What next", "expected", true],
+        ]);
+        expect(nodeIn(lane, "review")?.ranOn).toBe("claude/opus high");
+      }),
+    ),
+  120_000,
+);
+
+scenario(
+  "Flow: general's Task runs while its agent works",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        const lane = yield* laneWhen({
+          entry: shipped("general"),
+          runId: "r-general-flow",
+          input: { goal: CHORE },
+          ready: (one) => one.nodes.some((node) => node.ranOn !== null),
+          outputs: [],
+          working: { operation: "task", output: DONE },
+          rest: [],
+        });
+        expect(lane.nodes.map((node) => [node.title, node.state, node.declared])).toEqual([
+          ["Task", "running", true],
+        ]);
+      }),
+    ),
+  120_000,
+);
+
+scenario(
   "a general Run launches one generalist on the goal and ends with its summary",
   () =>
     runEffect(
@@ -10518,6 +10690,32 @@ const triaged = (
   improvements,
   left_out: [{ what: "an outage of the package registry", why: "a service nobody here runs" }],
 });
+
+scenario(
+  "Flow: self-improve starts one Improvements run per named improvement",
+  () =>
+    runEffect(
+      Effect.gen(function* () {
+        freshDay();
+        yield* rig.queueOutputs([
+          triaged(
+            [finding({ key: "one" }), finding({ key: "two" })],
+            [
+              { name: "first", keys: ["one"], why: "Fix the first defect" },
+              { name: "second", keys: ["two"], why: "Fix the second defect" },
+            ],
+          ),
+        ]);
+        yield* improved("r-improvements-flow", { runs: "machine", improvements: 2 });
+        const lane = yield* laneNow("r-improvements-flow", "succeeded");
+        expect(nodeIn(lane, "improvements")?.runs.map((one) => [one.place, one.state])).toEqual([
+          ["first", "done"],
+          ["second", "done"],
+        ]);
+      }),
+    ),
+  120_000,
+);
 
 const agentPrompts = () =>
   rig.calls().pipe(Effect.map((calls) => calls.filter((call) => call.cmd === "agent prompt")));

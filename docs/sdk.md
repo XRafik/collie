@@ -264,6 +264,13 @@ merge request, for a Clearance like the shipped one's), so a fork keeps a sectio
 sections, so a fork written before there were two reads what it read; `asRenovator`
 is who does the work and the `input` every shipped section reads.
 
+`Landing.merge` is called once per Renovate merge request on the same conversation.
+`at.input.merge_request` names that turn's request; `asRenovator` gives later turns
+distinct operations. Keep that scope in a fork's instructions, and return any newly
+opened requests in `Merged.remaining_requests` so each gets its own turn. For an
+application, the approved batch is merged once and each original request is then settled
+against it. The release and record functions are still called once for the repository.
+
 Nothing was added to Collie to make that possible, and nothing needs to be. A workflow
 that wants to be varied takes functions, or takes a service and lets a fork provide a
 different Layer for it. There is no step to patch and no engine to copy.

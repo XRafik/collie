@@ -105,6 +105,15 @@ export const reviewRound = step({
   produces: "review",
 });
 
+export const synthesisStep = step({
+  id: "synthesis",
+  title: "Synthesis",
+  description: "Reconcile the reviewers' findings into one report.",
+  kind: "agent",
+  role: "reviewer",
+  produces: "review",
+});
+
 /** What one pass is about, and where in a rally it stands. */
 export interface ReviewAsk {
   readonly target: string;
@@ -214,16 +223,18 @@ export const reviewPass = (ask: ReviewAsk) =>
       { concurrency: "unbounded" },
     );
 
-    const reconciled: SynthesisReport = yield* agentWork({
-      operation: synthesis,
-      role: "reviewer",
-      instructions: SYNTHESIZE,
-      input: {
-        ...input,
-        fan_in: seats.map(({ operation }) => `- ${agents.outputFor(id, operation)}`).join("\n"),
-      },
-      output: SynthesisSchema,
-    });
+    const reconciled: SynthesisReport = yield* synthesisStep(
+      agentWork({
+        operation: synthesis,
+        role: "reviewer",
+        instructions: SYNTHESIZE,
+        input: {
+          ...input,
+          fan_in: seats.map(({ operation }) => `- ${agents.outputFor(id, operation)}`).join("\n"),
+        },
+        output: SynthesisSchema,
+      }),
+    );
     // The prose a human reads and the findings a card counts, where both are looked for.
     yield* leaveReview(dir, reconciled);
     return reconciled;

@@ -345,6 +345,10 @@ change breaks is exactly the blocker worth raising. Minor findings are exempt.
   left to fix. Offered only where the target is a merge request, on either forge.
 - **Don't post** — ends the run.
 
+Its Flow forecasts Review and What next, with Synthesis between them when a fork seats
+multiple reviewers. Fix findings is drawn off the path; each review and menu round keeps
+its own run. Implement starts a separate row in the same Task.
+
 Module: [`workflows/review.workflow.ts`](../workflows/review.workflow.ts), with its prompts
 in [`workflows/review.md`](../workflows/review.md).
 
@@ -434,6 +438,15 @@ every one of them. A run with no open Renovate merge requests reports the reposi
 date, creates no tag, and still leaves the checklist correct.
 
 **Ends:** with the repository checked off, or with what stopped it. There is no menu.
+
+Its Flow forecasts Bind the Renovate issue, Assess, Claim, Merge, Tag and watch the
+release, Record the result, and Watch production. An application's path also includes
+Batch, Stage and Approval before Merge. Merge has one run and one agent turn per Renovate
+merge request, on the same conversation. Each turn preserves the approval and held-branch
+rules and returns newly discovered requests for turns of their own. The application batch
+is merged once; later turns settle each original request against that merged batch.
+Recording still precedes the final wait for production, so the shared issue is updated
+while the claim remains held.
 
 Module: [`workflows/renovate.workflow.ts`](../workflows/renovate.workflow.ts), with its
 content in [`workflows/renovate.gitlab.md`](../workflows/renovate.gitlab.md) for a GitLab
@@ -619,6 +632,9 @@ is the work you agreed on: `architecture`'s goal is a question rather than a nam
 every architecture run in a repo would be handed the same branch
 ([how the branch is chosen](cli.md#start-a-run)).
 
+Its Flow forecasts Architecture, which produces the plan, and What next. Implement now
+starts a separate row in the same Task.
+
 Module: [`workflows/architecture.workflow.ts`](../workflows/architecture.workflow.ts), with
 its prompts in [`workflows/architecture.md`](../workflows/architecture.md).
 
@@ -647,6 +663,8 @@ root — and Collie runs the named checks there when the run ends.
 **Ends:** when the agent writes its Output. Its `summary` is the run's result and what the
 card says, as `Finished; it says: “…”` — a claim, shown as one. A `blocked` reason fails the run with that reason. There
 is no menu, and the agent takes steering after the run has ended.
+
+Its Flow forecasts one Step, Task, containing the generalist's work.
 
 Module: [`workflows/general.workflow.ts`](../workflows/general.workflow.ts), with its
 prompt in [`workflows/general.md`](../workflows/general.md).
@@ -733,6 +751,8 @@ proves nothing beyond its decoded Output and offers no next steps. The host repo
 the result to the agent that started it, then closes the investigator and its Task
 workspace unless another Run or a human pane needs it (`closes: "reported"`).
 
+Its Flow forecasts one Step, Investigate, which produces evidence.
+
 Module: [`workflows/investigate.workflow.ts`](../workflows/investigate.workflow.ts),
 with its prompt in [`workflows/investigate.md`](../workflows/investigate.md).
 
@@ -760,6 +780,10 @@ themselves. Nobody is asked anything, and nothing is merged. See
 [Self-improve](using.md#self-improve).
 
 **Ends:** once its Improvements have, with `summary.md` in its Run directory.
+
+Its Flow forecasts Retrospective window, Retro, Triage, Filing and Improvements. The
+window is read from the requested scope without a question. Improvements has one run per
+named improvement, each starting a plan in its own Task.
 
 Module: [`workflows/self-improve.workflow.ts`](../workflows/self-improve.workflow.ts),
 with its prompt in [`workflows/self-improve.md`](../workflows/self-improve.md).
