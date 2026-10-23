@@ -11011,11 +11011,12 @@ for (const name of ["gitlab", "github"] as const) {
                 const [status, why] = yield* until(
                   () => Effect.all([run.status, parkedWhy(runId)]),
                   ([status, why]) =>
-                    status.status === "complete" || status.status === "failed" || why !== "",
+                    status.status === "complete" ||
+                    status.status === "failed" ||
+                    (status.status === "suspended" && why !== ""),
                 );
                 expect(why).toContain("project");
-                expect(status.status).not.toBe("complete");
-                expect(status.status).not.toBe("failed");
+                expect(status.status).toBe("suspended");
                 expect(claimed).toEqual([`claim ${runId}`, `release ${runId}`]);
                 yield* run.resume;
                 return yield* ended(run.status);
