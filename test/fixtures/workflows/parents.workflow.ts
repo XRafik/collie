@@ -1,6 +1,3 @@
-// A parent that starts one `plain` child, into its own Task or into a Task of the child's
-// own, inside a Step or outside every Step, so a test can read where its Flow draws it.
-
 import { child, defineWorkflow, step } from "collie";
 import { Effect, Schema } from "effect";
 
@@ -11,12 +8,22 @@ export default defineWorkflow({
   id: "parents",
   title: "Start a child",
   description: "Starts one plain child in the shape its mode names.",
-  input: Schema.Struct({ mode: Schema.Literals(["same", "loose", "own"]) }),
+  input: Schema.Struct({ mode: Schema.Literals(["same", "loose", "own", "own-items"]) }),
   hints: { mode: "goal" },
   output: Schema.String,
   path: [spawn, wrap],
   run: ({ input }) =>
     Effect.gen(function* () {
+      if (input.mode === "own-items") {
+        const items = ["first", "second"];
+        yield* Effect.forEach(items, (item) =>
+          spawn(
+            child({ invocation: item, workflow: "plain", input: { note: item }, ownTask: true }),
+            { item, items },
+          ),
+        );
+        return input.mode;
+      }
       const started = child({
         invocation: "kid",
         workflow: "plain",

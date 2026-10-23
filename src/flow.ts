@@ -267,6 +267,8 @@ export function laneOf(facts: LaneFacts): FlowLane {
       attempts: one.attempts,
       ranOn: ranOnFor(one.key),
       questions: questionsFor(one.key).map(flowQuestion),
+      link: facts.children.find((child) => childIn.get(child.id) === one.key && child.wave === null)
+        ?.link,
     };
   };
 
@@ -367,7 +369,7 @@ export function laneOf(facts: LaneFacts): FlowLane {
       ranOn: ranOnFor(current.key),
       questions: calls.flatMap((one) => questionsFor(one.key)).map(flowQuestion),
       runs: [...(calls.length > 1 || listed.length > 0 ? all : []), ...fan],
-      link,
+      link: calls.length === 1 && listed.length === 0 ? link : undefined,
     };
   };
 

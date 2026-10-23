@@ -534,3 +534,28 @@ test(
     ),
   120_000,
 );
+
+test(
+  "each item of a workflow Step links to the Task it started",
+  () =>
+    flowing(
+      "collie-flow-item-tasks-",
+      (world) =>
+        Effect.gen(function* () {
+          const parent = yield* parented(world, "own-items");
+          const flow = yield* until_(world, parent, (one) => laneOf(one).execution === "completed");
+          const kids = yield* children(world, parent);
+          const spawn = nodeOf(flow, "spawn")!;
+          expect(spawn.link).toBeUndefined();
+          expect(spawn.runs.map((one) => [one.title, one.link?.state])).toEqual([
+            ["first", "done"],
+            ["second", "done"],
+          ]);
+          expect(new Set(spawn.runs.map((one) => one.link?.run))).toEqual(new Set(kids));
+          expect(new Set(spawn.runs.map((one) => one.link?.run)).size).toBe(2);
+        }),
+      0,
+      ["parents.workflow.ts", "plain.workflow.ts"],
+    ),
+  120_000,
+);
