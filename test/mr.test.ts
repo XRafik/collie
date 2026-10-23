@@ -565,16 +565,17 @@ test("a null where a value could have been is the same as no value", () =>
     }),
   ));
 
-test("a pipeline's status is read from GitLab by its address", () =>
-  runEffect(
+test("a pipeline's status is read from GitLab by its address", () => {
+  const fake = fakeForge("gitlab", {
+    installed: true,
+    loggedIn: ["gitlab.example.com"],
+    login: "me",
+    mrs: [],
+    runs: { "77": { status: "failed" } },
+  });
+  return runEffect(
     Effect.gen(function* () {
-      const glab = recorder({
-        "glab auth status --hostname gitlab.example.com": { stdout: "logged in" },
-        "glab api --hostname gitlab.example.com projects/g%2Fp/pipelines/77": {
-          stdout: '{"id":77,"status":"failed"}',
-        },
-      });
-      const status = (url: string) => gitlab.runStatus(url, "/w", glab.run);
+      const status = (url: string) => gitlab.runStatus(url, "/w", fake.run);
       expect(yield* status("https://gitlab.example.com/g/p/-/pipelines/77")).toBe("failed");
       expect(yield* status("https://gitlab.example.com/g/p/-/pipelines/77/failures")).toBe(
         "failed",
@@ -582,23 +583,14 @@ test("a pipeline's status is read from GitLab by its address", () =>
       // Not answered, or not a pipeline at all: nothing to say.
       expect(yield* status("https://gitlab.example.com/g/p/-/pipelines/78")).toBeNull();
       expect(yield* status("https://gitlab.example.com/g/p/-/merge_requests/1")).toBeNull();
-    }),
-  ));
-
-test("a pipeline on a host glab is not logged in to is never asked about", () =>
-  runEffect(
-    Effect.gen(function* () {
-      const glab = recorder({
-        "glab api --hostname elsewhere.example projects/x%2Fy/pipelines/1": {
-          stdout: '{"id":1,"status":"success"}',
-        },
-      });
-      expect(
-        yield* gitlab.runStatus("https://elsewhere.example/x/y/-/pipelines/1", "/w", glab.run),
-      ).toBeNull();
-      expect(glab.calls.filter(([, verb]) => verb === "api")).toEqual([]);
-    }),
-  ));
+      expect(fake.requests.map((one) => one.url)).toEqual([
+        "https://gitlab.example.com/api/v4/projects/g%2Fp/pipelines/77",
+        "https://gitlab.example.com/api/v4/projects/g%2Fp/pipelines/77",
+        "https://gitlab.example.com/api/v4/projects/g%2Fp/pipelines/78",
+      ]);
+    }).pipe(Effect.provide(fake.layer)),
+  );
+});
 
 test("a command's answer is its stdout, and a human is told both streams", () =>
   runEffect(

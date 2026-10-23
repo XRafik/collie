@@ -1,4 +1,5 @@
-// The GitHub adapter: everything Collie asks GitHub, through `gh`. Only github.com.
+// The GitHub adapter: everything Collie asks GitHub, through `gh` or over HTTP with gh's
+// token. Only github.com.
 
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
 import {
@@ -27,6 +28,7 @@ import type {
   TagPipelineRead,
   Readiness,
 } from "./forge";
+import { ForgeHttp, request, requestAs, type Answered, type ForgeLogin } from "./http";
 import { Issue, filedIssueOf } from "./issues";
 import {
   judgeComments,
@@ -406,26 +408,24 @@ function fromBranch<R>(
   });
 }
 
-const HeadJson = Schema.fromJsonString(Schema.Struct({ headRefOid: Schema.String }));
-const CheckRunsJson = Schema.fromJsonString(
-  Schema.Struct({
-    check_runs: Schema.Array(
-      Schema.Struct({
-        id: Schema.Number,
-        head_sha: Schema.String,
-        status: Schema.String,
-        conclusion: optionalText,
-        html_url: optionalText,
-      }),
-    ),
-  }),
-);
-const BaseJson = Schema.fromJsonString(
-  Schema.Struct({ baseRefName: Schema.String, headRefOid: Schema.String }),
-);
-const MergeBaseJson = Schema.fromJsonString(
-  Schema.Struct({ merge_base_commit: Schema.NullOr(Schema.Struct({ sha: Schema.String })) }),
-);
+const CheckRuns = Schema.Struct({
+  check_runs: Schema.Array(
+    Schema.Struct({
+      id: Schema.Number,
+      head_sha: Schema.String,
+      status: Schema.String,
+      conclusion: optionalText,
+      html_url: optionalText,
+    }),
+  ),
+});
+const PullRefs = Schema.Struct({
+  head: Schema.Struct({ sha: Schema.String }),
+  base: Schema.Struct({ ref: Schema.String }),
+});
+const MergeBase = Schema.Struct({
+  merge_base_commit: Schema.NullOr(Schema.Struct({ sha: Schema.String })),
+});
 
 const CONCLUSIONS = new Map<string, JobState>([
   ["success", "passed"],
@@ -438,52 +438,59 @@ const CONCLUSIONS = new Map<string, JobState>([
   ["neutral", "skipped"],
 ]);
 
+/** gh's login to github.com, which ForgeHttp asks GitHub with; its token does not expire. */
+const LOGIN: ForgeLogin = {
+  forge: "github",
+  host: HOST,
+  key: HOST,
+  display: "GitHub",
+  cli: "gh",
+  notReady: `gh is not logged in to ${HOST}`,
+  relogin: `gh auth login --hostname ${HOST}`,
+  expiry: () => Effect.succeed(null),
+  token: (run, cwd) =>
+    Effect.map(run("gh", ["auth", "token", "--hostname", HOST], cwd), (ran) =>
+      ran.code === 0 && ran.stdout.trim() !== "" ? ran.stdout.trim() : null,
+    ),
+  refresh: () => Effect.succeed(false),
+};
+
+const rest = <S extends Schema.Decoder<unknown>>(schema: S, cwd: string, path: string) =>
+  requestAs(schema, LOGIN, cwd, path);
+
 /** The check run of that name on the pull request's head commit; GitHub lists the newest first. */
-function job<R>(
-  ref: MrRef,
-  name: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<JobRead, never, R> {
+function job(ref: MrRef, name: string, cwd: string): Effect.Effect<JobRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     const where = mrWords(ref).label;
     const repo = mrPath({ project: ref.project, iid: "" });
-    const view = yield* run(
-      "gh",
-      ["pr", "view", ref.iid, "--repo", repo, "--json", "headRefOid"],
-      cwd,
-    );
-    const pull = Schema.decodeUnknownOption(HeadJson)(view.stdout);
-    if (view.code !== 0 || Option.isNone(pull))
-      return { ok: false, reason: `gh could not read ${where}` };
-    const head = pull.value.headRefOid;
-    const found = yield* checkRun(repo, head, name, cwd, run);
-    if (found === null) return { ok: false, reason: `gh could not list the check runs on ${head}` };
+    const pull = yield* rest(PullRefs, cwd, `repos/${repo}/pulls/${ref.iid}`);
+    if (!pull.ok) return { ok: false, reason: `could not read ${where}: ${pull.reason}` };
+    const head = pull.value.head.sha;
+    const found = yield* checkRun(repo, head, name, cwd);
+    if (!found.ok)
+      return { ok: false, reason: `could not list the check runs on ${head}: ${found.reason}` };
     return {
       ok: true,
       head,
-      state: found === undefined ? "missing" : stateOf(found),
-      url: found?.html_url ?? null,
-      id: found === undefined ? null : String(found.id),
+      state: found.value === undefined ? "missing" : stateOf(found.value),
+      url: found.value?.html_url ?? null,
+      id: found.value === undefined ? null : String(found.value.id),
       merge: null,
     };
   });
 }
 
-/** The newest check run named `name` on `ref`, undefined for none, null where gh could not say. */
-const checkRun = <R>(repo: string, ref: string, name: string, cwd: string, run: Runner<R>) =>
+/** The newest check run named `name` on `ref`, undefined for none. */
+const checkRun = (repo: string, ref: string, name: string, cwd: string) =>
   Effect.map(
-    checkRuns(repo, ref, `check_name=${encodeURIComponent(name)}`, cwd, run),
-    (runs) => runs && runs[0],
+    checkRuns(repo, ref, `check_name=${encodeURIComponent(name)}`, cwd),
+    (runs): Answered<(typeof CheckRuns.Type)["check_runs"][number] | undefined> =>
+      runs.ok ? { ok: true, value: runs.value[0] } : runs,
   );
 
-const checkRuns = <R>(repo: string, ref: string, query: string, cwd: string, run: Runner<R>) =>
-  Effect.map(
-    run("gh", ["api", `repos/${repo}/commits/${ref}/check-runs?${query}`], cwd),
-    (listed) => {
-      const runs = Schema.decodeUnknownOption(CheckRunsJson)(listed.stdout);
-      return listed.code !== 0 || Option.isNone(runs) ? null : runs.value.check_runs;
-    },
+const checkRuns = (repo: string, ref: string, query: string, cwd: string) =>
+  Effect.map(rest(CheckRuns, cwd, `repos/${repo}/commits/${ref}/check-runs?${query}`), (listed) =>
+    listed.ok ? ({ ok: true, value: listed.value.check_runs } as const) : listed,
   );
 
 const stateOf = (found: {
@@ -497,40 +504,41 @@ const stateOf = (found: {
     : (CONCLUSIONS.get(found.conclusion ?? "") ?? "failed");
 
 /** The check run at the pull request's merge-base, else on its base branch's tip. */
-function baseJob<R>(
+function baseJob(
   ref: MrRef,
   name: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<BaseJobRead, never, R> {
+): Effect.Effect<BaseJobRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     const where = mrWords(ref).label;
     const repo = mrPath({ project: ref.project, iid: "" });
-    const view = yield* run(
-      "gh",
-      ["pr", "view", ref.iid, "--repo", repo, "--json", "baseRefName,headRefOid"],
-      cwd,
-    );
-    const pull = Schema.decodeUnknownOption(BaseJson)(view.stdout);
-    if (view.code !== 0 || Option.isNone(pull))
-      return { ok: false, reason: `gh could not read ${where}` };
-    const { baseRefName: target, headRefOid: head } = pull.value;
-    const compared = yield* run("gh", ["api", `repos/${repo}/compare/${target}...${head}`], cwd);
-    const base = Option.getOrNull(Schema.decodeUnknownOption(MergeBaseJson)(compared.stdout))
-      ?.merge_base_commit?.sha;
-    if (compared.code !== 0 || base === undefined)
-      return { ok: false, reason: `GitHub would not say where ${where} leaves ${target}` };
-    const unread = { ok: false, reason: `gh could not list the check runs at ${base}` } as const;
-    const there = yield* checkRun(repo, base, name, cwd, run);
-    if (there === null) return unread;
-    if (there === undefined) {
+    const pull = yield* rest(PullRefs, cwd, `repos/${repo}/pulls/${ref.iid}`);
+    if (!pull.ok) return { ok: false, reason: `could not read ${where}: ${pull.reason}` };
+    const {
+      base: { ref: target },
+      head: { sha: head },
+    } = pull.value;
+    const compared = yield* rest(MergeBase, cwd, `repos/${repo}/compare/${target}...${head}`);
+    const base = compared.ok ? compared.value.merge_base_commit?.sha : undefined;
+    if (base === undefined)
+      return {
+        ok: false,
+        reason: `GitHub would not say where ${where} leaves ${target}${compared.ok ? "" : `: ${compared.reason}`}`,
+      };
+    const unread = (why: string) =>
+      ({ ok: false, reason: `could not list the check runs at ${base}: ${why}` }) as const;
+    const there = yield* checkRun(repo, base, name, cwd);
+    if (!there.ok) return unread(there.reason);
+    if (there.value === undefined) {
       // Only where CI never ran at the merge-base does the target branch's tip stand in for it.
-      const any = yield* checkRuns(repo, base, "per_page=1", cwd, run);
-      if (any === null) return unread;
-      if (any.length > 0) return { ok: true, at: base, state: "missing", url: null };
+      const any = yield* checkRuns(repo, base, "per_page=1", cwd);
+      if (!any.ok) return unread(any.reason);
+      if (any.value.length > 0) return { ok: true, at: base, state: "missing", url: null };
     }
-    const found = there ?? (yield* checkRun(repo, target, name, cwd, run));
-    if (found === null || found === undefined)
+    const tip = there.value === undefined ? yield* checkRun(repo, target, name, cwd) : there;
+    if (!tip.ok) return unread(tip.reason);
+    const found = tip.value;
+    if (found === undefined)
       return {
         ok: false,
         reason: `no check run ${name} at ${base.slice(0, 12)} or on ${target}`,
@@ -952,19 +960,12 @@ function merge<R>(
   });
 }
 
-function retryJob<R>(
-  ref: MrRef,
-  id: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<Readiness, never, R> {
+function retryJob(ref: MrRef, id: string, cwd: string): Effect.Effect<Readiness, never, ForgeHttp> {
   const repo = mrPath({ project: ref.project, iid: "" });
-  return Effect.map(
-    run("gh", ["api", `repos/${repo}/actions/jobs/${id}/rerun`, "-X", "POST"], cwd),
-    (ran) =>
-      ran.code === 0
-        ? { ok: true, reason: "" }
-        : { ok: false, reason: `gh could not rerun job ${id} of ${mrWords(ref).label}` },
+  return Effect.map(request(LOGIN, cwd, "POST", `repos/${repo}/actions/jobs/${id}/rerun`), (ran) =>
+    ran.ok
+      ? { ok: true, reason: "" }
+      : { ok: false, reason: `could not rerun job ${id} of ${mrWords(ref).label}: ${ran.reason}` },
   );
 }
 
@@ -1009,9 +1010,7 @@ const DeploymentsJson = Schema.fromJsonString(
 );
 const StatusesJson = Schema.fromJsonString(Schema.Array(Schema.Struct({ state: Schema.String })));
 const CompareJson = Schema.fromJsonString(Schema.Struct({ status: Schema.String }));
-const RunJson = Schema.fromJsonString(
-  Schema.Struct({ status: Schema.String, conclusion: optionalText }),
-);
+const RunState = Schema.Struct({ status: Schema.String, conclusion: optionalText });
 
 /** Production by the flag or by name, staging by name; any other environment is neither. */
 function tierOf(environment: string, production: boolean): DeployTier | null {
@@ -1109,22 +1108,15 @@ function deployed<R>(
 }
 
 /** `https://github.com/<o>/<r>/actions/runs/<id>`'s conclusion, or its status while it runs. */
-function runStatus<R>(
-  url: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<string | null, never, R> {
+function runStatus(url: string, cwd: string): Effect.Effect<string | null, never, ForgeHttp> {
   return Effect.gen(function* () {
     const m =
       /^https?:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/(\d+)(?:[/?#]\S*)?$/.exec(
         url.trim(),
       );
     if (!m) return null;
-    if ((yield* run("gh", ["auth", "status", "--hostname", HOST], cwd)).code !== 0) return null;
-    const answer = yield* run("gh", ["api", `repos/${m[1]}/actions/runs/${m[2]}`], cwd);
-    if (answer.code !== 0) return null;
-    const said = Option.getOrNull(Schema.decodeUnknownOption(RunJson)(answer.stdout));
-    return said === null ? null : (said.conclusion ?? said.status);
+    const said = yield* rest(RunState, cwd, `repos/${m[1]}/actions/runs/${m[2]}`);
+    return said.ok ? (said.value.conclusion ?? said.value.status) : null;
   });
 }
 

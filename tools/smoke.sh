@@ -46,6 +46,10 @@ envelope "invalid input" 2 '^{"ok":false' workflow show
 # this binary. A release that lost either would only fail at the next agent launch, in
 # someone else's session — so the binary is asked to be that helper here.
 grep -q "collie-compact" "$BIN" || fail "the binary does not carry its bundled compaction controls"
+# The forges library is imported only once a forge is first asked, so a build that left
+# it out would start and fail at a Run's first CI read.
+grep -q "Credentials were rejected by the forge" "$BIN" ||
+  fail "the binary does not carry the forges library its forge reads go through"
 CONTROLS="$STATE/controls"
 mkdir -p "$CONTROLS"
 line=$(echo '{"session_id":"smoke","context_window":{"total_input_tokens":9,"total_output_tokens":1,"used_percentage":3,"current_usage":{"input_tokens":9}}}' \

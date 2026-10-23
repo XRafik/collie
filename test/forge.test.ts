@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ConfigProvider, Effect, FileSystem, Schema } from "effect";
+import { Clock, ConfigProvider, Effect, Fiber, FileSystem, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import type { MrForge } from "../src/board-model";
 import { FORGES } from "../src/forge/forge";
 import { rollupChecks } from "../src/forge/github";
-import { gitlab, pipelineChecks } from "../src/forge/gitlab";
+import { gitlab, glabExpiry, pipelineChecks } from "../src/forge/gitlab";
 import type { ReviewRead } from "../src/forge/review";
 import { shell } from "../src/mr";
 import { FakeBin } from "./support/bin";
@@ -16,6 +17,7 @@ import {
   fakeForge,
   forgeBin,
   forgeOnPath,
+  rfc822,
   CLI,
   type FakeMr,
   type ForgeModel,
@@ -560,8 +562,10 @@ for (const name of ["gitlab", "github"] as const) {
   test(`the ${name} forge says how its own pipeline or Actions run went, and nothing of the other's`, () =>
     runEffect(
       Effect.gen(function* () {
-        const status = (url: string, runs: ForgeModel["runs"]) =>
-          forge.runStatus(url, "/w", fakeForge(name, model(name, { runs })).run);
+        const status = (url: string, runs: ForgeModel["runs"]) => {
+          const fake = fakeForge(name, model(name, { runs }));
+          return forge.runStatus(url, "/w", fake.run).pipe(Effect.provide(fake.layer));
+        };
         expect(
           yield* status(URLS[name].run, { "7": { status: "completed", conclusion: "success" } }),
         ).toBe(name === "gitlab" ? "completed" : "success");
@@ -974,13 +978,12 @@ for (const name of ["gitlab", "github"] as const) {
   test(`the ${name} forge reads a check's job on the merge request's head, in every state, and says when it cannot`, () =>
     runEffect(
       Effect.gen(function* () {
-        const read = (over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) =>
-          forge.job(
-            ref(name),
-            "nuxi-typecheck",
-            "/w",
-            fakeForge(name, model(name, { mrs: [mr(name, over)], ...rest })).run,
-          );
+        const read = (over: Partial<FakeMr>, rest: Partial<ForgeModel> = {}) => {
+          const fake = fakeForge(name, model(name, { mrs: [mr(name, over)], ...rest }));
+          return forge
+            .job(ref(name), "nuxi-typecheck", "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
+        };
         const url =
           name === "github"
             ? "https://github.com/owner/repo/runs/2"
@@ -1021,14 +1024,15 @@ for (const name of ["gitlab", "github"] as const) {
         const TIP = "c".repeat(40);
         const failed = [{ name: "nuxi-typecheck", state: "failed" as const }];
         const passed = [{ name: "nuxi-typecheck", state: "passed" as const }];
-        const read = (over: Partial<FakeMr>) =>
-          forge.baseJob(
-            ref(name),
-            "nuxi-typecheck",
-            "/w",
-            fakeForge(name, model(name, { mrs: [mr(name, { targetBranch: "main", ...over })] }))
-              .run,
+        const read = (over: Partial<FakeMr>) => {
+          const fake = fakeForge(
+            name,
+            model(name, { mrs: [mr(name, { targetBranch: "main", ...over })] }),
           );
+          return forge
+            .baseJob(ref(name), "nuxi-typecheck", "/w", fake.run)
+            .pipe(Effect.provide(fake.layer));
+        };
         expect(
           yield* read({ base: { at: BASE, jobs: failed }, target: { at: TIP, jobs: passed } }),
         ).toMatchObject({ ok: true, at: BASE, state: "failed" });
@@ -1047,17 +1051,15 @@ for (const name of ["gitlab", "github"] as const) {
       }),
     ));
 
-  test(`the ${name} forge retries a job once asked, and says how to read its log`, () =>
-    runEffect(
+  test(`the ${name} forge retries a job once asked, and says how to read its log`, () => {
+    const fake = fakeForge(
+      name,
+      model(name, {
+        mrs: [mr(name, { jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "passed" }] })],
+      }),
+    );
+    return runEffect(
       Effect.gen(function* () {
-        const fake = fakeForge(
-          name,
-          model(name, {
-            mrs: [
-              mr(name, { jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "passed" }] }),
-            ],
-          }),
-        );
         const job = () => forge.job(ref(name), "nuxi-typecheck", "/w", fake.run);
         expect(yield* job()).toMatchObject({ state: "failed", id: "1" });
         expect(yield* forge.retryJob(ref(name), "1", "/w", fake.run)).toEqual({
@@ -1071,8 +1073,9 @@ for (const name of ["gitlab", "github"] as const) {
             ? "glab ci trace 1 --repo gitlab.example.com/group/app"
             : "gh run view --job 1 --log --repo owner/repo",
         );
-      }),
-    ));
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
 
   test(`the ${name} forge finds the repository's template wherever it keeps one, and none`, () =>
     runEffect(
@@ -1200,13 +1203,11 @@ test("a GitLab job past the first page of its pipeline's jobs is found", () =>
         })),
         { name: "nuxi-typecheck", state: "passed" as const },
       ];
+      const fake = fakeForge("gitlab", model("gitlab", { mrs: [mr("gitlab", { jobs })] }));
       expect(
-        yield* gitlab.job(
-          ref("gitlab"),
-          "nuxi-typecheck",
-          "/w",
-          fakeForge("gitlab", model("gitlab", { mrs: [mr("gitlab", { jobs })] })).run,
-        ),
+        yield* gitlab
+          .job(ref("gitlab"), "nuxi-typecheck", "/w", fake.run)
+          .pipe(Effect.provide(fake.layer)),
       ).toMatchObject({ ok: true, state: "passed", id: "101" });
     }),
   ));
@@ -1216,19 +1217,18 @@ test("a GitLab merged-results pipeline counts for the head it was built from, an
     Effect.gen(function* () {
       const MERGE = "9f8e7d6c5b4a39281706f5e4d3c2b1a098765432";
       const TARGET = "0000000000000000000000000000000000000001";
-      const read = (over: Partial<FakeMr>, ancestry: Record<string, ReadonlyArray<string>>) =>
-        gitlab.job(
-          ref("gitlab"),
-          "nuxi-typecheck",
-          "/w",
-          fakeForge(
-            "gitlab",
-            model("gitlab", {
-              mrs: [mr("gitlab", { jobs: [{ name: "nuxi-typecheck", state: "passed" }], ...over })],
-              ancestry,
-            }),
-          ).run,
+      const read = (over: Partial<FakeMr>, ancestry: Record<string, ReadonlyArray<string>>) => {
+        const fake = fakeForge(
+          "gitlab",
+          model("gitlab", {
+            mrs: [mr("gitlab", { jobs: [{ name: "nuxi-typecheck", state: "passed" }], ...over })],
+            ancestry,
+          }),
         );
+        return gitlab
+          .job(ref("gitlab"), "nuxi-typecheck", "/w", fake.run)
+          .pipe(Effect.provide(fake.layer));
+      };
       expect(yield* read({ pipelineAt: MERGE }, { [MERGE]: [TARGET, HEAD] })).toEqual({
         ok: true,
         head: HEAD,
@@ -1727,3 +1727,286 @@ test("GitHub with no review required is approved unless an external reviewer ask
       expect(withdrawn).toMatchObject({ ok: true, approved: true, changesRequested: false });
     }),
   ));
+
+/** What ForgeHttp may run: a credential read, and nothing else. */
+const CREDENTIAL_READ =
+  /^(?:gh auth token --hostname github\.com|(?:env -u GITLAB_TOKEN -u GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN )?glab config get (?:token|oauth2_expiry_date) --host \S+|glab auth status --hostname \S+)$/;
+
+/** The commands one cold credential read of a forge's host runs. */
+const READ_ONCE = {
+  github: ["gh auth token --hostname github.com"],
+  gitlab: [
+    "glab config get oauth2_expiry_date --host gitlab.example.com",
+    "glab config get token --host gitlab.example.com",
+  ],
+} as const;
+
+const FIRST_TOKEN = { gitlab: "glpat-fake", github: "gho-fake" } as const;
+const RELOGIN = {
+  gitlab: "glab auth login --hostname gitlab.example.com",
+  github: "gh auth login --hostname github.com",
+} as const;
+
+for (const name of ["gitlab", "github"] as const) {
+  const forge = FORGES[name];
+  const BASE = "b".repeat(40);
+  const jobbed = (over: Partial<ForgeModel> = {}) =>
+    fakeForge(
+      name,
+      model(name, {
+        mrs: [
+          mr(name, {
+            targetBranch: "main",
+            jobs: [{ name: "nuxi-typecheck", state: "failed", retried: "passed" }],
+            base: { at: BASE, jobs: [{ name: "nuxi-typecheck", state: "passed" }] },
+          }),
+        ],
+        runs: { "7": { status: "completed", conclusion: "success" } },
+        ...over,
+      }),
+    );
+  type Fake = ReturnType<typeof jobbed>;
+  const job = (fake: Fake) => forge.job(ref(name), "nuxi-typecheck", "/w", fake.run);
+  /** Each operation moved onto HTTP, and whether the forge answered it. */
+  const asked = {
+    job: (fake: Fake) => Effect.map(job(fake), (read) => read.ok),
+    baseJob: (fake: Fake) =>
+      Effect.map(forge.baseJob(ref(name), "nuxi-typecheck", "/w", fake.run), (read) => read.ok),
+    retryJob: (fake: Fake) =>
+      Effect.map(forge.retryJob(ref(name), "1", "/w", fake.run), (read) => read.ok),
+    runStatus: (fake: Fake) =>
+      Effect.map(forge.runStatus(URLS[name].run, "/w", fake.run), (status) => status !== null),
+  };
+
+  describe(`the ${name} forge over HTTP`, () => {
+    for (const [operation, ask] of Object.entries(asked))
+      test(`answers ${operation} from a cold start with requests, running only credential reads`, () => {
+        const fake = jobbed();
+        return runEffect(
+          Effect.gen(function* () {
+            expect(yield* ask(fake)).toBe(true);
+            expect(fake.requests.length).toBeGreaterThan(0);
+            expect(fake.calls.filter((call) => !CREDENTIAL_READ.test(call))).toEqual([]);
+          }).pipe(Effect.provide(fake.layer)),
+        );
+      });
+
+    test("answers a 404 as unavailable, naming the status", () => {
+      const fake = jobbed();
+      return runEffect(
+        Effect.gen(function* () {
+          const read = yield* forge.job(
+            { ...ref(name), iid: "99" },
+            "nuxi-typecheck",
+            "/w",
+            fake.run,
+          );
+          expect(read.ok).toBe(false);
+          if (!read.ok) expect(read.reason).toContain("404");
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("after a 401 reads the token once more and resends the request with it, once", () => {
+      const fake = jobbed();
+      return runEffect(
+        Effect.gen(function* () {
+          const before = yield* job(fake);
+          fake.set({ ...fake.model(), token: "rotated" });
+          fake.calls.length = 0;
+          fake.requests.length = 0;
+          expect(yield* job(fake)).toEqual(before);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+          const [refused, resent, ...rest] = fake.requests;
+          expect(resent?.url).toBe(refused?.url);
+          expect([refused?.token, resent?.token, ...rest.map((one) => one.token)]).toEqual([
+            FIRST_TOKEN[name],
+            ...Array.from({ length: rest.length + 1 }, () => "rotated"),
+          ]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("a second 401 answers unavailable, naming the login command, with no third request", () => {
+      const fake = jobbed({ revoked: true });
+      return runEffect(
+        Effect.gen(function* () {
+          const read = yield* job(fake);
+          expect(read.ok).toBe(false);
+          if (!read.ok) expect(read.reason).toContain(RELOGIN[name]);
+          expect(fake.requests).toHaveLength(2);
+          expect(fake.calls).toEqual([...READ_ONCE[name], ...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("a retry refused with a 401 once is resent once, and runs", () => {
+      const fake = jobbed();
+      return runEffect(
+        Effect.gen(function* () {
+          yield* job(fake);
+          fake.set({ ...fake.model(), token: "rotated" });
+          fake.requests.length = 0;
+          expect(yield* forge.retryJob(ref(name), "1", "/w", fake.run)).toEqual({
+            ok: true,
+            reason: "",
+          });
+          expect(fake.requests.map((one) => [one.method, one.token])).toEqual([
+            ["POST", FIRST_TOKEN[name]],
+            ["POST", "rotated"],
+          ]);
+          expect(yield* job(fake)).toMatchObject({ state: "passed" });
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("a retry that fails with a 5xx is sent exactly once", () => {
+      const fake = jobbed({ httpFault: { status: 502 } });
+      return runEffect(
+        Effect.gen(function* () {
+          const retried = yield* forge.retryJob(ref(name), "1", "/w", fake.run);
+          expect(retried.ok).toBe(false);
+          expect(retried.reason).toContain("502");
+          expect(fake.requests).toHaveLength(1);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("a rate limit answers unavailable until its reset", () => {
+      const fake = jobbed({
+        httpFault: {
+          status: 429,
+          headers: {
+            "x-ratelimit-remaining": "0",
+            "x-ratelimit-reset": String(epochMs("2026-10-23T12:00:00Z") / 1000),
+          },
+        },
+      });
+      return runEffect(
+        Effect.gen(function* () {
+          const read = yield* job(fake);
+          expect(read.ok).toBe(false);
+          if (!read.ok) expect(read.reason).toContain("2026-10-23T12:00:00.000Z");
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("a network failure answers unavailable", () => {
+      const fake = jobbed({ httpFault: "network" });
+      return runEffect(
+        Effect.gen(function* () {
+          const read = yield* job(fake);
+          expect(read.ok).toBe(false);
+          if (!read.ok) expect(read.reason).toContain("could not be reached");
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("two calls on a cold cache make one credential read", () => {
+      const fake = jobbed();
+      return runEffect(
+        Effect.gen(function* () {
+          const [one, two] = yield* Effect.all([job(fake), job(fake)], { concurrency: 2 });
+          expect(one.ok && two.ok).toBe(true);
+          expect(fake.calls).toEqual([...READ_ONCE[name]]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+
+    test("interrupting a read aborts the request the forge holds open", () => {
+      const fake = jobbed({ httpFault: "hold" });
+      return runEffect(
+        Effect.gen(function* () {
+          const reading = yield* Effect.forkChild(job(fake));
+          yield* Effect.yieldNow.pipe(Effect.repeat({ until: () => fake.requests.length > 0 }));
+          yield* Fiber.interrupt(reading);
+          expect(fake.aborted).toEqual([fake.requests[0]!.url]);
+        }).pipe(Effect.provide(fake.layer)),
+      );
+    });
+  });
+}
+
+describe("GitLab's OAuth login over HTTP", () => {
+  test("glab's stored expiry is read in the zone it names, and one Collie cannot read is none", () => {
+    expect(glabExpiry("23 Oct 26 10:00 UTC")).toBe(epochMs("2026-10-23T10:00:00Z"));
+    expect(glabExpiry("23 Oct 26 12:00 +0200")).toBe(epochMs("2026-10-23T10:00:00Z"));
+    expect(glabExpiry("23 Oct 26 05:30 -0430")).toBe(epochMs("2026-10-23T10:00:00Z"));
+    expect(glabExpiry("2026-10-23T10:00:00Z")).toBeNull();
+    expect(glabExpiry("23 Okt 26 10:00 UTC")).toBeNull();
+  });
+
+  const oauth = (expiry: number, over: Partial<ForgeModel> = {}) =>
+    fakeForge(
+      "gitlab",
+      model("gitlab", {
+        mrs: [mr("gitlab", { jobs: [{ name: "nuxi-typecheck", state: "passed" }] })],
+        oauth: { token: "oauth-1", expiry: rfc822(expiry) },
+        ...over,
+      }),
+    );
+  const job = (fake: ReturnType<typeof oauth>) =>
+    gitlab.job(ref("gitlab"), "nuxi-typecheck", "/w", fake.run);
+
+  test("an expired token is refreshed through glab before the token is read, and only the new one is sent", () => {
+    const start = epochMs("2026-10-23T10:00:00Z");
+    const fake = oauth(start - 3_600_000);
+    return runEffect(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make();
+        yield* clock.setTime(start);
+        expect(yield* job(fake).pipe(Effect.provideService(Clock.Clock, clock))).toMatchObject({
+          ok: true,
+          state: "passed",
+        });
+        const refreshed = fake.calls.indexOf("glab auth status --hostname gitlab.example.com");
+        expect(refreshed).toBeGreaterThanOrEqual(0);
+        expect(refreshed).toBeLessThan(
+          fake.calls.indexOf("glab config get token --host gitlab.example.com"),
+        );
+        expect(new Set(fake.requests.map((one) => one.token))).toEqual(
+          new Set(["oauth-1-refreshed"]),
+        );
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
+
+  test("a cached token whose expiry passes is refreshed before the next request, with no 401 first", () => {
+    const start = epochMs("2026-10-23T10:00:00Z");
+    const fake = oauth(start + 1_800_000);
+    return runEffect(
+      Effect.gen(function* () {
+        const clock = yield* TestClock.make();
+        yield* clock.setTime(start);
+        yield* Effect.gen(function* () {
+          expect(yield* job(fake)).toMatchObject({ ok: true });
+          const first = fake.requests.length;
+          yield* clock.adjust(3_600_000);
+          fake.requests.length = 0;
+          expect(yield* job(fake)).toMatchObject({ ok: true });
+          expect(fake.calls).toContain("glab auth status --hostname gitlab.example.com");
+          expect(fake.requests).toHaveLength(first);
+          expect(new Set(fake.requests.map((one) => one.token))).toEqual(
+            new Set(["oauth-1-refreshed"]),
+          );
+        }).pipe(Effect.provideService(Clock.Clock, clock));
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
+
+  test("a pipeline on a host glab holds no login for is never asked about, whatever token the environment holds", () => {
+    const fake = fakeForge("gitlab", model("gitlab", { envToken: "from-the-environment" }));
+    return runEffect(
+      Effect.gen(function* () {
+        expect(
+          (yield* fake.run("glab", ["config", "get", "token", "--host", "elsewhere.example"], "/w"))
+            .stdout,
+        ).toBe("from-the-environment\n");
+        expect(
+          yield* gitlab.runStatus("https://elsewhere.example/x/y/-/pipelines/1", "/w", fake.run),
+        ).toBeNull();
+        expect(fake.requests).toEqual([]);
+      }).pipe(Effect.provide(fake.layer)),
+    );
+  });
+});

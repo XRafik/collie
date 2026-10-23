@@ -2,8 +2,10 @@
 // a FakeBin executable answering from the same model for host-driven tests. Both log
 // every call they get.
 
-import { Config, Effect, FileSystem, Path, Schema } from "effect";
+import { Clock, Config, DateTime, Effect, FileSystem, Path, Schema } from "effect";
 import type { MrForge } from "../../src/board-model";
+import { forgeHttpTest } from "../../src/forge/http";
+import { glabExpiry, MONTHS } from "../../src/forge/gitlab";
 import type { Ran, Runner } from "../../src/mr";
 import type { FakeBin } from "./bin";
 import { shellQuote } from "../../src/script";
@@ -145,6 +147,22 @@ export const ForgeModel = Schema.Struct({
   login: Schema.NullOr(Schema.String),
   /** The token the CLI hands out for its host, where a test changes it. */
   token: Schema.optionalKey(Schema.String),
+  /** glab's OAuth login: its token and its expiry as glab stores it (RFC 822). */
+  oauth: Schema.optionalKey(Schema.Struct({ token: Schema.String, expiry: Schema.String })),
+  /** A token in glab's environment, which a plain `glab config get token` gives for any host. */
+  envToken: Schema.optionalKey(Schema.String),
+  /** The forge refuses every token, though the CLI still hands its own out. */
+  revoked: Schema.optionalKey(Schema.Boolean),
+  /** What the HTTP face answers every request with instead of the model. */
+  httpFault: Schema.optionalKey(
+    Schema.Union([
+      Schema.Struct({
+        status: Schema.Number,
+        headers: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+      }),
+      Schema.Literals(["network", "hold"]),
+    ]),
+  ),
   mrs: Schema.Array(FakeMr),
   issues: Schema.optionalKey(Schema.Array(FakeIssue)),
   issueNotes: Schema.optionalKey(Schema.Record(Schema.String, Schema.Array(Schema.String))),
@@ -268,6 +286,7 @@ interface Answer {
   readonly noted?: { readonly key: string; readonly body: string };
   readonly approved?: string;
   readonly retried?: { readonly mr: FakeMr; readonly at: number };
+  readonly oauth?: { readonly token: string; readonly expiry: string };
   readonly replied?: { readonly mr: FakeMr; readonly thread: string | null; readonly body: string };
   readonly merged?: {
     readonly mr: FakeMr;
@@ -553,14 +572,52 @@ function glabMrJson(mr: FakeMr) {
   };
 }
 
-function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
+/** What a CLI is run under: the clock, and whether it sees a token in its environment. */
+interface Under {
+  readonly now: number;
+  readonly environment: boolean;
+}
+
+/** The token the forge accepts, as its CLI hands it out. */
+export const tokenOf = (forge: MrForge, model: ForgeModel) =>
+  forge === "gitlab"
+    ? (model.oauth?.token ?? model.token ?? "glpat-fake")
+    : (model.token ?? "gho-fake");
+
+/** A time as glab stores an OAuth token's expiry: Go's RFC 822, in UTC. */
+export const rfc822 = (ms: number) => {
+  const at = DateTime.toPartsUtc(DateTime.makeUnsafe(ms));
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(at.day)} ${MONTHS[at.month - 1]} ${two(at.year % 100)} ${two(at.hour)}:${two(at.minute)} UTC`;
+};
+
+function glab(model: ForgeModel, args: ReadonlyArray<string>, under: Under): Answer {
   if (!model.installed) return no(127);
   const [verb, sub] = args;
   if (verb === "issue") return issueAnswer("gitlab", model, args);
   if (verb === "--version") return ok("glab 1.0.0");
   if (verb === "auth" && sub === "status") {
     const host = flag(args, "--hostname");
-    return host === undefined || model.loggedIn.includes(host) ? ok() : no();
+    if (host !== undefined && !model.loggedIn.includes(host)) return no();
+    const login = model.oauth;
+    const expires = login === undefined ? null : glabExpiry(login.expiry);
+    // Building its API client refreshes an expired OAuth token, as glab 1.53.0 does.
+    return login !== undefined && expires !== null && expires <= under.now
+      ? {
+          ...ok(),
+          oauth: { token: `${login.token}-refreshed`, expiry: rfc822(under.now + 7_200_000) },
+        }
+      : ok();
+  }
+  if (verb === "config" && sub === "get") {
+    const host = flag(args, "--host") ?? "";
+    const signedIn = model.loggedIn.includes(host);
+    if (args[2] === "token") {
+      if (under.environment && model.envToken !== undefined) return ok(`${model.envToken}\n`);
+      return ok(signedIn ? `${tokenOf("gitlab", model)}\n` : "");
+    }
+    if (args[2] === "oauth2_expiry_date")
+      return ok(signedIn && model.oauth !== undefined ? `${model.oauth.expiry}\n` : "");
   }
   if (verb === "api" && sub === "user")
     return model.login === null ? no() : json({ username: model.login });
@@ -593,10 +650,6 @@ function glab(model: ForgeModel, args: ReadonlyArray<string>): Answer {
           closed_at: one.closedAt ?? null,
         })),
     );
-  }
-  if (verb === "config" && sub === "get" && args[2] === "token") {
-    const host = flag(args, "--host") ?? "";
-    return model.loggedIn.includes(host) ? ok(`${model.token ?? "glpat-fake"}\n`) : ok("");
   }
   if (verb === "mr" && sub === "list" && args[3] === "@me")
     return json(
@@ -935,6 +988,19 @@ function ghApi(model: ForgeModel, route: string, args: ReadonlyArray<string>): A
   }
   const asked = route === "graphql" ? ghGraphql(model, args) : undefined;
   if (asked !== undefined) return asked;
+  const pullOnly = /^repos\/([^/]+\/[^/]+)\/pulls\/(\d+)$/.exec(route);
+  if (pullOnly) {
+    const pull = model.mrs.find(
+      (one) => one.project === `github.com/${pullOnly[1]}` && one.iid === pullOnly[2],
+    );
+    return pull === undefined
+      ? no()
+      : json({
+          number: Number(pull.iid),
+          head: { sha: pull.head ?? "", ref: pull.sourceBranch ?? "" },
+          base: { ref: pull.targetBranch ?? "" },
+        });
+  }
   const onPull = /^repos\/([^/]+\/[^/]+)\/(pulls|issues)\/(\d+)\/(.+)$/.exec(route);
   if (onPull) {
     const [, repo = "", kind = "", number = "", rest = ""] = onPull;
@@ -1083,9 +1149,10 @@ function gh(model: ForgeModel, args: ReadonlyArray<string>): Answer {
   if (verb === "auth" && sub === "status")
     return model.loggedIn.includes(flag(args, "--hostname") ?? FORGE_HOST.github) ? ok() : no();
   if (!model.loggedIn.includes(FORGE_HOST.github)) return no(4);
+  if (verb === "auth" && sub === "token") return ok(`${tokenOf("github", model)}\n`);
   if (verb === "auth" && sub === "git-credential" && args[2] === "get")
     return ok(
-      `protocol=https\nhost=${FORGE_HOST.github}\nusername=x-access-token\npassword=${model.token ?? "gho-fake"}\n`,
+      `protocol=https\nhost=${FORGE_HOST.github}\nusername=x-access-token\npassword=${tokenOf("github", model)}\n`,
     );
   if (verb === "issue") return issueAnswer("github", model, args);
   if (verb === "api" && sub === "user")
@@ -1197,7 +1264,17 @@ export function answer(
   model: ForgeModel,
   cmd: string,
   args: ReadonlyArray<string>,
+  under: Under,
 ): Answered {
+  // `env -u NAME… <cmd> <args…>`: the command, without those variables.
+  if (cmd === "env" && args[0] === "-u") {
+    let at = 0;
+    while (args[at] === "-u") at += 2;
+    return answer(forge, model, args[at] ?? "", args.slice(at + 1), {
+      ...under,
+      environment: false,
+    });
+  }
   if (cmd === "git") {
     const said =
       args[0] === "remote" && args[1] === "get-url"
@@ -1224,8 +1301,9 @@ export function answer(
       model: { ...model, cloned: [...(model.cloned ?? []), `${cloning[1]} ${args.at(-1)}`] },
     };
   if (cmd !== CLI[forge]) return { ran: no(127).ran, model };
-  const said = forge === "gitlab" ? glab(model, args) : gh(model, args);
+  const said = forge === "gitlab" ? glab(model, args, under) : gh(model, args);
   let after = model;
+  if (said.oauth !== undefined) after = { ...after, oauth: said.oauth };
   if (said.filedIssue !== undefined)
     after = { ...after, issues: [...(after.issues ?? []), said.filedIssue] };
   if (said.issueNoted !== undefined) {
@@ -1299,19 +1377,123 @@ export function answer(
   return { ran: said.ran, model: after };
 }
 
-/** The Runner face: answers from the model, and logs `cmd args…` to `calls`. */
+/** One request the HTTP face got, with the token it carried. */
+export interface FakeRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly token: string;
+}
+
+const API = { gitlab: "/api/v4/", github: "/" } as const;
+/** An error body as the forges write one. */
+const Said = Schema.fromJsonString(Schema.Struct({ message: Schema.String }));
+
+/**
+ * The HTTP face: a `fetch` answering the routes the adapters request from the same model,
+ * as `<cli> api` would. It accepts only the token the CLI hands out for a host it is
+ * logged in to, and logs every request to `requests`; one it holds open and sees aborted
+ * goes to `aborted` too.
+ */
+export function httpFace(
+  forge: MrForge,
+  state: {
+    readonly read: Effect.Effect<ForgeModel>;
+    readonly write: (next: ForgeModel) => Effect.Effect<void>;
+  },
+  requests: Array<FakeRequest>,
+  aborted: Array<string>,
+) {
+  const answered = (status: number, body: string, headers: Record<string, string> = {}) =>
+    new Response(body === "" ? null : body, {
+      status,
+      headers: { "content-type": "application/json", ...headers },
+    });
+  const respond = Effect.fn("forge.httpFace")(function* (input: string, init: RequestInit) {
+    const method = (init.method ?? "GET").toUpperCase();
+    const token = (new Headers(init.headers).get("authorization") ?? "").replace(/^Bearer /, "");
+    requests.push({ method, url: input, token });
+    const model = yield* state.read;
+    const fault = model.httpFault;
+    if (fault === "network") return yield* Effect.die(new TypeError("fetch failed"));
+    if (fault === "hold")
+      return yield* Effect.callback<Response>((resume) => {
+        const abort = () => {
+          aborted.push(input);
+          resume(Effect.die(init.signal?.reason));
+        };
+        if (init.signal?.aborted) abort();
+        else init.signal?.addEventListener("abort", abort);
+      });
+    if (fault !== undefined)
+      return answered(fault.status, `{"message":"${fault.status}"}`, fault.headers);
+    const url = new URL(input);
+    const host = forge === "github" ? FORGE_HOST.github : url.host;
+    if (!model.loggedIn.includes(host) || model.revoked === true || token !== tokenOf(forge, model))
+      return answered(401, `{"message":"401 Unauthorized"}`);
+    const route = `${url.pathname.slice(API[forge].length)}${url.search}`;
+    const args =
+      forge === "github"
+        ? ["api", route, "-X", method]
+        : ["api", "--hostname", host, "-X", method, route];
+    const reachable = { ...model, installed: true };
+    const now = yield* Clock.currentTimeMillis;
+    const said = answer(forge, reachable, CLI[forge], args, { now, environment: true });
+    if (said.model !== reachable) yield* state.write({ ...said.model, installed: model.installed });
+    if (said.ran.code === 0) return answered(said.ran.stdout === "" ? 204 : 200, said.ran.stdout);
+    const status = Number(/^(\d{3})\b/.exec(said.ran.stderr ?? "")?.[1] ?? "404");
+    return answered(status, Schema.encodeSync(Said)({ message: said.ran.stderr || `${status}` }));
+  });
+  return (input: string, init: RequestInit = {}) => Effect.runPromise(respond(input, init));
+}
+
+/**
+ * The Runner face, which logs `cmd args…` to `calls`, and the HTTP face, which logs to
+ * `requests`, answering from one model; `layer` is ForgeHttp reaching the forge through both.
+ */
 export function fakeForge(forge: MrForge, start: ForgeModel) {
   const calls: string[] = [];
+  const requests: FakeRequest[] = [];
+  const aborted: string[] = [];
   let model = start;
   const run: Runner = (cmd, args) =>
-    Effect.sync(() => {
+    Effect.map(Clock.currentTimeMillis, (now) => {
       calls.push([cmd, ...args].join(" "));
-      const said = answer(forge, model, cmd, args);
+      const said = answer(forge, model, cmd, args, { now, environment: true });
       model = said.model;
       return said.ran;
     });
-  return { run, calls, model: () => model };
+  const fetch = httpFace(
+    forge,
+    {
+      read: Effect.sync(() => model),
+      write: (next) =>
+        Effect.sync(() => {
+          model = next;
+        }),
+    },
+    requests,
+    aborted,
+  );
+  return {
+    run,
+    calls,
+    requests,
+    aborted,
+    fetch,
+    layer: forgeHttpTest(run, fetch),
+    model: () => model,
+    set: (next: ForgeModel) => {
+      model = next;
+    },
+  };
 }
+
+/** Whether glab sees a token in its own environment, as it would answer one for any host. */
+const glabEnvironment = Effect.gen(function* () {
+  for (const name of ["GITLAB_TOKEN", "GITLAB_ACCESS_TOKEN", "OAUTH_TOKEN"])
+    if ((yield* Config.String(name).pipe(Config.withDefault(""))) !== "") return true;
+  return false;
+}).pipe(Effect.orElseSucceed(() => false));
 
 /** The FakeBin face: the compiled fake or `bun forge-bin.ts`, with the same arguments. */
 export const forgeBin = Effect.fn("forge.bin")(function* (
@@ -1322,7 +1504,10 @@ export const forgeBin = Effect.fn("forge.bin")(function* (
   const fs = yield* FileSystem.FileSystem;
   const model = Schema.decodeSync(ModelJson)(yield* fs.readFileString(file));
   yield* fs.writeFileString(`${file}.log`, `${[CLI[forge], ...args].join(" ")}\n`, { flag: "a" });
-  const said = answer(forge, model, CLI[forge], args);
+  const said = answer(forge, model, CLI[forge], args, {
+    now: yield* Clock.currentTimeMillis,
+    environment: yield* glabEnvironment,
+  });
   // Writing back an unchanged model would undo a test's write that landed since the read.
   if (said.model !== model)
     yield* fs.writeFileString(file, Schema.encodeSync(ModelJson)(said.model));
@@ -1346,7 +1531,21 @@ export const forgeOnPath = Effect.fn("forge.onPath")(function* (
   const binary = yield* Config.String("COLLIE_TEST_FAKE_FORGE").pipe(Config.withDefault(""));
   const command = binary === "" ? [process.execPath, script] : [binary];
   yield* bin.add(CLI[forge], `exec ${[...command, forge, file].map(shellQuote).join(" ")} "$@"`);
+  const requests: FakeRequest[] = [];
+  const face = httpFace(
+    forge,
+    {
+      read: Effect.orDie(Effect.map(fs.readFileString(file), Schema.decodeSync(ModelJson))),
+      write: (next) => Effect.orDie(fs.writeFileString(file, Schema.encodeSync(ModelJson)(next))),
+    },
+    requests,
+    [],
+  );
   return {
+    forge,
+    /** The HTTP face over the same model file; `serveForges` serves it. */
+    face,
+    requests: () => [...requests],
     /** The model file holding `next`, as an agent's scripted write would leave it. */
     holding: (next: ForgeModel) => ({ path: file, text: Schema.encodeSync(ModelJson)(next) }),
     set: (next: ForgeModel) => fs.writeFileString(file, Schema.encodeSync(ModelJson)(next)),
@@ -1358,3 +1557,38 @@ export const forgeOnPath = Effect.fn("forge.onPath")(function* (
       ),
   };
 });
+
+/**
+ * The HTTP faces of forges on PATH on one loopback port, until the scope closes: what
+ * `COLLIE_FORGE_API` points a host at, each forge host's API under `/<its API host>`.
+ */
+export const serveForges = (
+  ...onPath: ReadonlyArray<{
+    readonly forge: MrForge;
+    readonly face: (input: string, init?: RequestInit) => Promise<Response>;
+  }>
+) =>
+  Effect.map(
+    Effect.acquireRelease(
+      Effect.sync(() =>
+        Bun.serve({
+          hostname: "127.0.0.1",
+          port: 0,
+          fetch: (request) => {
+            const url = new URL(request.url);
+            const [, apiHost = "", ...rest] = url.pathname.split("/");
+            const forge = apiHost === "api.github.com" ? "github" : "gitlab";
+            const face = onPath.find((one) => one.forge === forge)?.face;
+            if (face === undefined) return new Response(null, { status: 404 });
+            return face(`https://${apiHost}/${rest.join("/")}${url.search}`, {
+              method: request.method,
+              headers: request.headers,
+              signal: request.signal,
+            });
+          },
+        }),
+      ),
+      (server) => Effect.promise(() => server.stop(true)),
+    ),
+    (server) => `http://127.0.0.1:${server.port}`,
+  );

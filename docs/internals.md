@@ -765,7 +765,8 @@ falls all the way through to the current directory.
 
 Collie reaches GitLab and GitHub through one interface, `Forge` in `src/forge/forge.ts`,
 with an adapter per forge: `src/forge/gitlab.ts` runs `glab`, and `src/forge/github.ts`
-runs `gh` ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1). Each forge's doctor
+runs `gh` ([ADR-0050](adr/0050-a-merge-request-is-its-forges.md) D1), or asks its forge
+over HTTP with that CLI's token (below). Each forge's doctor
 checks sit beside its adapter, in `src/forge/gitlab-checks.ts` and
 `src/forge/github-checks.ts`, and a workflow's content file for one forge
 (`<name>.gitlab.md`, `<name>.github.md`) may name that forge's CLI. A caller asks the
@@ -778,6 +779,53 @@ merge), and a note. A pipeline read whole by its address (`pipeline`) names each
 its state and address, a job waiting to be started by hand as `manual`: GitLab's manual
 job, or a GitHub job waiting on its environment's approval.
 An operation is added to the interface when its first caller moves onto it.
+
+### The CI job reads over HTTP
+
+The reads a check left to CI is proved by — `job`, `baseJob`, `retryJob` and `runStatus`
+— go to the forge in-process through the [`forges`](https://forges.link) library, pinned
+to one exact version, rather than through `gh` or `glab`
+([ADR-draft-a-forge-is-asked-over-http-with-its-clis-login](adr/draft-a-forge-is-asked-over-http-with-its-clis-login.md)).
+Each sends the REST requests its CLI sent, a merge request's head included. Every other
+operation still runs the CLI. Only `src/forge/` imports `forges`, and
+`test/forge-boundary.test.ts` fails on an import anywhere else.
+
+**ForgeHttp** (`src/forge/http.ts`) is the Effect service that sends them. It keeps a
+`forges` provider per forge host, provided live in both front doors: the host's
+`foundationLayer` and the `collie` CLI. Its token is the CLI's login for that host, read
+by **credential reads**, the only commands it runs:
+
+- GitHub: `gh auth token --hostname github.com`. The token is kept until a 401.
+- GitLab: `glab config get oauth2_expiry_date --host <host>`, then `glab config get token
+  --host <host>`. An empty expiry is a personal access token, kept until a 401. An OAuth
+  token is kept until its expiry, checked against Effect's Clock before each request.
+  `glab config get` never refreshes one, so once the expiry has passed, ForgeHttp runs `glab
+  auth status --hostname <host>` first: that builds glab's API client, which refreshes the
+  token and writes it back. A refresh that fails answers as not ready.
+
+One credential read per host is in flight at a time, so concurrent calls on a cold cache
+share one, and two refreshes never race. A host whose CLI gives no token answers as not
+ready, with the reason `ready` gives, and is sent nothing. After a 401 the token is read
+again once and the rejected request sent once more, a write's included, since a forge that
+answers 401 applied nothing. A second 401 answers unavailable, naming the login command.
+No other request is resent by Collie: a write that times out, fails on the network or gets
+a 5xx may have been applied. A failure is an answer, never a defect: its reason names the
+forge, the HTTP status and the forge's message, and a rate limit's reset. Interrupting a
+call aborts its request.
+
+`runStatus` takes its address from agent text. GitLab's is asked only where glab's own
+config or keyring holds a token for that host, read with `env -u GITLAB_TOKEN -u
+GITLAB_ACCESS_TOKEN -u OAUTH_TOKEN glab config get token`: glab hands an environment token
+to every host, and that token is never sent to a host an agent named.
+
+The fake forge (`test/support/forge.ts`) answers from one model through three faces: the
+Runner face (argv), the FakeBin face (an executable on `PATH`) and the **HTTP face**, a
+`fetch` answering the same routes, accepting only the token the CLI hands out, and logging
+every request. In-process tests give `fakeForge(...).layer`, ForgeHttp over the HTTP face
+and the Runner face, to the operation. A spawned host's credential reads go to FakeBin, and
+`COLLIE_FORGE_API`, read only by ForgeHttp, points every forge host at the HTTP face
+`serveForges` serves on loopback. `tools/forges-benchmark.ts` times `job` over the CLI and
+over the library against a live pull request and merge request.
 
 A checkout Collie clones keeps a credential helper for its forge's host in its own git
 config, and no token: GitLab's asks `glab config get token --host <host>` at each use and

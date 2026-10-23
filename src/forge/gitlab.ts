@@ -1,6 +1,7 @@
-// The GitLab adapter: everything Collie asks GitLab, through `glab`.
+// The GitLab adapter: everything Collie asks GitLab, through `glab` or over HTTP with
+// glab's token.
 
-import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { DateTime, Effect, FileSystem, Option, Path, Schema } from "effect";
 import {
   mrPath,
   mrWords,
@@ -12,7 +13,7 @@ import {
   type MrUnavailable,
 } from "../board-model";
 import { epochMs } from "../time";
-import { keepCredentialHelper, whatItSaid, type Ran, type Runner } from "../mr";
+import { keepCredentialHelper, whatItSaid, type Runner } from "../mr";
 import { shellQuote } from "../script";
 import type {
   DeployTier,
@@ -28,6 +29,7 @@ import type {
   TagPipelineRead,
   Readiness,
 } from "./forge";
+import { ForgeHttp, request, requestAs, type Answered, type ForgeLogin } from "./http";
 import { filedIssueOf, type Issue } from "./issues";
 import { judgeComments, type ForgeComment, type MergeAnswer, type ReviewRead } from "./review";
 
@@ -512,36 +514,28 @@ function fromBranch<R>(
   });
 }
 
-const MrHeadJson = Schema.fromJsonString(
-  Schema.Struct({
-    sha: optionalText,
-    head_pipeline: Schema.optionalKey(
-      Schema.NullOr(Schema.Struct({ id: Schema.Number, sha: optionalText })),
-    ),
-  }),
-);
-const CommitJson = Schema.fromJsonString(
-  Schema.Struct({ parent_ids: Schema.Array(Schema.String) }),
-);
-const JobsJson = Schema.fromJsonString(
-  Schema.Array(
-    Schema.Struct({
-      id: Schema.Number,
-      name: Schema.String,
-      status: Schema.String,
-      web_url: optionalText,
-    }),
+const MrHead = Schema.Struct({
+  sha: optionalText,
+  head_pipeline: Schema.optionalKey(
+    Schema.NullOr(Schema.Struct({ id: Schema.Number, sha: optionalText })),
   ),
-);
-const PipelinesJson = Schema.fromJsonString(
-  Schema.Array(Schema.Struct({ id: Schema.Number, sha: Schema.String })),
-);
-const MrBaseJson = Schema.fromJsonString(
+});
+const Commit = Schema.Struct({ parent_ids: Schema.Array(Schema.String) });
+const Jobs = Schema.Array(
   Schema.Struct({
-    target_branch: optionalText,
-    diff_refs: Schema.optionalKey(Schema.NullOr(Schema.Struct({ base_sha: optionalText }))),
+    id: Schema.Number,
+    name: Schema.String,
+    status: Schema.String,
+    web_url: optionalText,
   }),
 );
+const JobsJson = Schema.fromJsonString(Jobs);
+const Pipelines = Schema.Array(Schema.Struct({ id: Schema.Number, sha: Schema.String }));
+const PipelinesJson = Schema.fromJsonString(Pipelines);
+const MrBase = Schema.Struct({
+  target_branch: optionalText,
+  diff_refs: Schema.optionalKey(Schema.NullOr(Schema.Struct({ base_sha: optionalText }))),
+});
 
 const JOB_STATES = new Map<string, JobState>([
   ["success", "passed"],
@@ -558,52 +552,135 @@ const JOB_STATES = new Map<string, JobState>([
  * The job on the merge request's head pipeline. A merged-results pipeline runs on a merge
  * commit, which counts for the head only where GitLab shows that commit's parent is it.
  */
-function job<R>(
-  ref: MrRef,
-  name: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<JobRead, never, R> {
+function job(ref: MrRef, name: string, cwd: string): Effect.Effect<JobRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     const where = whereOf(ref);
-    const reached = yield* projectApi(ref, cwd, run);
+    const reached = projectRest(ref, cwd);
     if (!reached.ok) return reached;
-    const { api } = reached;
-    const view = yield* run(
-      "glab",
-      ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
-      cwd,
-    );
-    const mr = Schema.decodeUnknownOption(MrHeadJson)(view.stdout);
-    if (view.code !== 0 || Option.isNone(mr))
-      return { ok: false, reason: `glab could not read ${where}` };
+    const { rest } = reached;
+    const mr = yield* rest(MrHead, `merge_requests/${ref.iid}`);
+    if (!mr.ok) return { ok: false, reason: `could not read ${where}: ${mr.reason}` };
     const head = mr.value.sha ?? "";
     const pipeline = mr.value.head_pipeline ?? null;
     const waiting = { ok: true, head, state: "pending", url: null, id: null, merge: null } as const;
     if (pipeline === null) return waiting;
     let merge: string | null = null;
     if (pipeline.sha && pipeline.sha !== head) {
-      const commit = Schema.decodeUnknownOption(CommitJson)(
-        (yield* api(`repository/commits/${pipeline.sha}`)).stdout,
-      );
-      if (Option.isNone(commit))
+      const commit = yield* rest(Commit, `repository/commits/${pipeline.sha}`);
+      if (!commit.ok)
         return {
           ok: false,
-          reason: `GitLab would not say which head ${where}'s pipeline ${pipeline.id} at ${pipeline.sha} was built from`,
+          reason: `GitLab would not say which head ${where}'s pipeline ${pipeline.id} at ${pipeline.sha} was built from: ${commit.reason}`,
         };
       // An older head's: this head's pipeline has not started.
       if (!commit.value.parent_ids.includes(head)) return waiting;
       merge = pipeline.sha;
     }
-    const found = yield* jobIn(api, pipeline.id, name);
-    if (found === null)
+    const found = yield* jobIn(rest, pipeline.id, name);
+    if (!found.ok)
       return {
         ok: false,
-        reason: `glab could not list the jobs of ${where}'s pipeline ${pipeline.id}`,
+        reason: `could not list the jobs of ${where}'s pipeline ${pipeline.id}: ${found.reason}`,
       };
-    return { ok: true, head, ...found, merge };
+    return { ok: true, head, ...found.value, merge };
   });
 }
+
+/** glab's login to `host`, which ForgeHttp asks GitLab with. */
+export function glabLoginTo(host: string, stored = false): ForgeLogin {
+  // glab answers a token in its environment for any host; a stored login is the host's own.
+  const glab = (args: ReadonlyArray<string>, run: Runner, cwd: string) =>
+    stored
+      ? run(
+          "env",
+          ["-u", "GITLAB_TOKEN", "-u", "GITLAB_ACCESS_TOKEN", "-u", "OAUTH_TOKEN", "glab", ...args],
+          cwd,
+        )
+      : run("glab", [...args], cwd);
+  const value = (key: string, run: Runner, cwd: string) =>
+    Effect.map(glab(["config", "get", key, "--host", host], run, cwd), (ran) =>
+      ran.code === 0 ? ran.stdout.trim() : "",
+    );
+  return {
+    forge: "gitlab",
+    host,
+    key: stored ? `${host} stored` : host,
+    display: "GitLab",
+    cli: "glab",
+    notReady: `glab is not logged in to ${host}`,
+    relogin: `glab auth login --hostname ${host}`,
+    // Empty for a personal access token, which does not expire.
+    expiry: (run, cwd) =>
+      Effect.map(value("oauth2_expiry_date", run, cwd), (said) =>
+        said === "" ? null : glabExpiry(said),
+      ),
+    token: (run, cwd) =>
+      Effect.map(value("token", run, cwd), (said) => (said === "" ? null : said)),
+    // glab refreshes an expired OAuth token only when it builds an API client, as this does.
+    refresh: (run, cwd) =>
+      Effect.map(run("glab", ["auth", "status", "--hostname", host], cwd), (ran) => ran.code === 0),
+  };
+}
+
+export const MONTHS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+/**
+ * When an OAuth token glab stored expires: Go's RFC 822, `02 Jan 06 15:04 MST`, written in
+ * the Machine's own zone, so a zone named by its abbreviation is this Machine's.
+ */
+export function glabExpiry(said: string): number | null {
+  const m = /^(\d{2}) (\w{3}) (\d{2}) (\d{2}):(\d{2}) (\S+)$/.exec(said.trim());
+  if (m === null) return null;
+  const [, day, month, year, hour, minute, zone = ""] = m;
+  const offset = /^([+-])(\d{2})(\d{2})$/.exec(zone);
+  const timeZone =
+    zone === "UTC" || zone === "GMT"
+      ? 0
+      : offset === null
+        ? DateTime.zoneMakeLocal()
+        : (offset[1] === "-" ? -1 : 1) * (Number(offset[2]) * 60 + Number(offset[3])) * 60_000;
+  const at = DateTime.makeZoned(
+    {
+      year: 2000 + Number(year),
+      month: MONTHS.indexOf(month!) + 1,
+      day: Number(day),
+      hour: Number(hour),
+      minute: Number(minute),
+    },
+    { timeZone, adjustForTimeZone: true },
+  );
+  return MONTHS.includes(month!) ? Option.getOrNull(Option.map(at, DateTime.toEpochMillis)) : null;
+}
+
+/** A GET of a route under one project, its body read as `schema`. */
+type Rest = <S extends Schema.Decoder<unknown>>(
+  schema: S,
+  route: string,
+) => Effect.Effect<Answered<S["Type"]>, never, ForgeHttp>;
+
+/** Requests to the merge request's project, as its host's glab login, or why there are none. */
+const projectRest = (ref: MrRef, cwd: string) => {
+  const host = hostOf(ref.project);
+  if (host === null || ref.project === null)
+    return { ok: false, reason: `${whereOf(ref)} names no GitLab project` } as const;
+  const login = glabLoginTo(host);
+  const project = `projects/${encodeURIComponent(ref.project.slice(host.length + 1))}`;
+  const rest: Rest = (schema, route) => requestAs(schema, login, cwd, `${project}/${route}`);
+  return { ok: true, login, project, rest } as const;
+};
 
 /** `glab api` on the merge request's project, or why there is none. */
 const projectApi = <R>(ref: MrRef, cwd: string, run: Runner<R>) =>
@@ -637,64 +714,69 @@ const projectApi = <R>(ref: MrRef, cwd: string, run: Runner<R>) =>
     } as const;
   });
 
-/** The job named `name` in pipeline `id`, or null where its jobs could not be listed. */
-const jobIn = <R>(api: (route: string) => Effect.Effect<Ran, never, R>, id: number, name: string) =>
+/** The job named `name` in pipeline `id`. */
+const jobIn = (rest: Rest, id: number, name: string) =>
   Effect.gen(function* () {
-    let found: (typeof JobsJson.Type)[number] | undefined;
+    let found: (typeof Jobs.Type)[number] | undefined;
     for (let page = 1; found === undefined; page++) {
-      const listed = yield* api(`pipelines/${id}/jobs?per_page=100&page=${page}`);
-      const jobs = Schema.decodeUnknownOption(JobsJson)(listed.stdout);
-      if (listed.code !== 0 || Option.isNone(jobs)) return null;
+      const jobs = yield* rest(Jobs, `pipelines/${id}/jobs?per_page=100&page=${page}`);
+      if (!jobs.ok) return jobs;
       found = jobs.value.find((one) => one.name === name);
       if (jobs.value.length < 100) break;
     }
     return {
-      state: found === undefined ? "missing" : (JOB_STATES.get(found.status) ?? "pending"),
-      url: found?.web_url ?? null,
-      id: found === undefined ? null : String(found.id),
+      ok: true,
+      value: {
+        state: found === undefined ? "missing" : (JOB_STATES.get(found.status) ?? "pending"),
+        url: found?.web_url ?? null,
+        id: found === undefined ? null : String(found.id),
+      },
     } as const;
   });
 
 /** The job at the merge request's merge-base pipeline, else on its target branch's latest. */
-function baseJob<R>(
+function baseJob(
   ref: MrRef,
   name: string,
   cwd: string,
-  run: Runner<R>,
-): Effect.Effect<BaseJobRead, never, R> {
+): Effect.Effect<BaseJobRead, never, ForgeHttp> {
   return Effect.gen(function* () {
     const where = whereOf(ref);
-    const reached = yield* projectApi(ref, cwd, run);
+    const reached = projectRest(ref, cwd);
     if (!reached.ok) return reached;
-    const { api } = reached;
-    const view = yield* run(
-      "glab",
-      ["mr", "view", ref.iid, ...repoArgs(ref.project), "-F", "json"],
-      cwd,
-    );
-    const mr = Schema.decodeUnknownOption(MrBaseJson)(view.stdout);
-    if (view.code !== 0 || Option.isNone(mr))
-      return { ok: false, reason: `glab could not read ${where}` };
+    const { rest } = reached;
+    const mr = yield* rest(MrBase, `merge_requests/${ref.iid}`);
+    if (!mr.ok) return { ok: false, reason: `could not read ${where}: ${mr.reason}` };
     const base = mr.value.diff_refs?.base_sha;
     const target = mr.value.target_branch;
     if (!base || !target)
       return { ok: false, reason: `GitLab would not say where ${where} leaves its target branch` };
-    // undefined where there is no pipeline, null where GitLab would not say.
     const latest = (query: string) =>
-      Effect.map(api(`pipelines?${query}&per_page=1`), (ran) => {
-        const listed = Schema.decodeUnknownOption(PipelinesJson)(ran.stdout);
-        return ran.code === 0 && Option.isSome(listed) ? listed.value[0] : null;
-      });
+      Effect.map(rest(Pipelines, `pipelines?${query}&per_page=1`), (listed) =>
+        listed.ok ? ({ ok: true, value: listed.value[0] } as const) : listed,
+      );
     const at = yield* latest(`sha=${base}`);
-    const pipeline = at === undefined ? yield* latest(`ref=${encodeURIComponent(target)}`) : at;
-    if (pipeline === null)
-      return { ok: false, reason: `glab could not list the pipelines of ${where}'s target` };
+    if (!at.ok)
+      return {
+        ok: false,
+        reason: `could not list the pipelines of ${where}'s target: ${at.reason}`,
+      };
+    const tip = at.value === undefined ? yield* latest(`ref=${encodeURIComponent(target)}`) : at;
+    if (!tip.ok)
+      return {
+        ok: false,
+        reason: `could not list the pipelines of ${where}'s target: ${tip.reason}`,
+      };
+    const pipeline = tip.value;
     if (pipeline === undefined)
       return { ok: false, reason: `no pipeline at ${base.slice(0, 12)} or on ${target}` };
-    const found = yield* jobIn(api, pipeline.id, name);
-    if (found === null)
-      return { ok: false, reason: `glab could not list the jobs of pipeline ${pipeline.id}` };
-    return { ok: true, at: pipeline.sha, state: found.state, url: found.url };
+    const found = yield* jobIn(rest, pipeline.id, name);
+    if (!found.ok)
+      return {
+        ok: false,
+        reason: `could not list the jobs of pipeline ${pipeline.id}: ${found.reason}`,
+      };
+    return { ok: true, at: pipeline.sha, state: found.value.state, url: found.value.url };
   });
 }
 
@@ -964,20 +1046,14 @@ function merge<R>(
   });
 }
 
-function retryJob<R>(
-  ref: MrRef,
-  id: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<Readiness, never, R> {
+function retryJob(ref: MrRef, id: string, cwd: string): Effect.Effect<Readiness, never, ForgeHttp> {
   return Effect.gen(function* () {
-    const reached = yield* projectApi(ref, cwd, run);
+    const reached = projectRest(ref, cwd);
     if (!reached.ok) return reached;
-    const { api } = reached;
-    const ran = yield* api(`jobs/${id}/retry`, "POST");
-    return ran.code === 0
+    const ran = yield* request(reached.login, cwd, "POST", `${reached.project}/jobs/${id}/retry`);
+    return ran.ok
       ? { ok: true, reason: "" }
-      : { ok: false, reason: `glab could not retry job ${id} of ${whereOf(ref)}` };
+      : { ok: false, reason: `could not retry job ${id} of ${whereOf(ref)}: ${ran.reason}` };
   });
 }
 
@@ -998,29 +1074,22 @@ const MineJson = Schema.fromJsonString(
   ),
 );
 
-const PipelineJson = Schema.fromJsonString(Schema.Struct({ status: Schema.String }));
+const PipelineState = Schema.Struct({ status: Schema.String });
 
 /** `https://host/group/project/-/pipelines/7`'s status, or null where GitLab does not say. */
-function pipelineStatus<R>(
-  url: string,
-  cwd: string,
-  run: Runner<R>,
-): Effect.Effect<string | null, never, R> {
+function pipelineStatus(url: string, cwd: string): Effect.Effect<string | null, never, ForgeHttp> {
   return Effect.gen(function* () {
     const m = /^https?:\/\/([^/\s]+)\/(.+?)\/-\/pipelines\/(\d+)(?:[/?#]\S*)?$/.exec(url.trim());
     if (!m) return null;
     const [, host, project, id] = m;
-    // The address is agent text: only a host the human signed glab in to is called.
-    if ((yield* run("glab", ["auth", "status", "--hostname", host!], cwd)).code !== 0) return null;
-    const answer = yield* run(
-      "glab",
-      ["api", "--hostname", host!, `projects/${encodeURIComponent(project!)}/pipelines/${id}`],
+    // The address is agent text: only a host the human signed glab in to is asked.
+    const said = yield* requestAs(
+      PipelineState,
+      glabLoginTo(host!, true),
       cwd,
+      `projects/${encodeURIComponent(project!)}/pipelines/${id}`,
     );
-    if (answer.code !== 0) return null;
-    return Option.getOrNull(
-      Option.map(Schema.decodeUnknownOption(PipelineJson)(answer.stdout), (one) => one.status),
-    );
+    return said.ok ? said.value.status : null;
   });
 }
 

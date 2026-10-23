@@ -18,7 +18,7 @@ import { writeTask } from "../src/task";
 import { FakeBin } from "./support/bin";
 import { exec } from "./support/command";
 import { fastForward, runEffect } from "./support/effect";
-import { forgeOnPath } from "./support/forge";
+import { forgeOnPath, serveForges } from "./support/forge";
 import { stopHost } from "./support/host";
 import { collie, proves } from "./support/world";
 
@@ -348,7 +348,7 @@ test(
             created_at: "2026-10-01T09:00:00Z",
           }).pipe(Effect.orDie);
           const bin = yield* FakeBin.make(`${world.home}/bin`);
-          yield* forgeOnPath(bin, "gitlab", {
+          const gitlab = yield* forgeOnPath(bin, "gitlab", {
             installed: true,
             loggedIn: ["gitlab.example.com"],
             login: "me",
@@ -364,6 +364,7 @@ test(
             ],
           });
           const PATH = `${bin.dir}:/usr/bin:/bin`;
+          const COLLIE_FORGE_API = yield* serveForges(gitlab);
           yield* bin.restore();
           const started = yield* collie(
             world,
@@ -380,7 +381,7 @@ test(
               "--verify",
               `{"name":"nuxi","executable":"true","argv":[],"cwd":".","ci":"nuxi-job"}`,
             ],
-            { PATH },
+            { PATH, COLLIE_FORGE_API },
           );
           expect(started.envelope.ok).toBe(true);
           const runId = yield* runIdOf(started.envelope);

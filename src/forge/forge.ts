@@ -10,6 +10,7 @@ import type { Ran, Runner } from "../mr";
 import type { Posted } from "../sdk";
 import { github } from "./github";
 import { gitlab } from "./gitlab";
+import type { ForgeHttp } from "./http";
 import type { FiledIssue, IssueList } from "./issues";
 import type { ForgeComment, MergeAnswer, ReviewRead } from "./review";
 
@@ -214,7 +215,7 @@ export interface Forge {
     name: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<JobRead, never, R>;
+  ) => Effect.Effect<JobRead, never, R | ForgeHttp>;
   /**
    * The job named `name` at the merge-base of the merge request's head and its target
    * branch, or on the target branch's latest pipeline where that commit has none.
@@ -224,14 +225,14 @@ export interface Forge {
     name: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<BaseJobRead, never, R>;
+  ) => Effect.Effect<BaseJobRead, never, R | ForgeHttp>;
   /** Runs the job `id` again: GitLab's retry, GitHub's rerun. */
   readonly retryJob: <R>(
     ref: MrRef,
     id: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<Readiness, never, R>;
+  ) => Effect.Effect<Readiness, never, R | ForgeHttp>;
   /** The command line that prints job `id`'s log, for an agent to run. */
   readonly jobLog: (ref: MrRef, id: string) => string;
   /** The repository's merge request template, relative to the checkout, or null. */
@@ -250,7 +251,7 @@ export interface Forge {
     url: string,
     cwd: string,
     run: Runner<R>,
-  ) => Effect.Effect<string | null, never, R>;
+  ) => Effect.Effect<string | null, never, R | ForgeHttp>;
   /** The pipeline or Actions run at `url`, with its jobs; another forge's is refused. */
   readonly pipeline: <R>(
     url: string,
