@@ -11,6 +11,7 @@ import type { Settled } from "./strategies";
 import type { WorktreeRecord } from "./run";
 import type { Landing } from "./landing";
 import { awaitingLine, type Awaiting } from "./awaiting";
+import type { AskedFact, Execution } from "./flow";
 
 /** Where a Run is, in the words every board and listing uses. */
 export type RunState = "running" | "waiting" | "succeeded" | "failed" | "stopped";
@@ -67,6 +68,15 @@ export interface RunFacts {
   /** Why it is not moving or why it ended, in its own words, where it said. */
   readonly note: string | null;
   readonly summary: string | null;
+  /**
+   * What the engine stored of its work: every question it asked, when it next wakes on a
+   * durable timer, and where its execution is. Absent where it was not read from a view.
+   */
+  readonly engine?: {
+    readonly questions: ReadonlyArray<AskedFact>;
+    readonly wakes: string | null;
+    readonly execution: Execution;
+  };
 }
 
 const isText = Schema.is(Schema.String);
@@ -139,7 +149,33 @@ export const factsOfView = (stateDir: string, view: RunView): RunFacts => ({
       ? [view.status.reason, view.diagnostic].filter((part) => part !== null).join(" — ")
       : view.diagnostic),
   summary: view.status.status === "complete" ? resultText(view.status.value) : null,
+  engine: {
+    questions: view.waiting.map((one) => ({
+      name: one.name,
+      asked: one.asked ?? null,
+      answered: one.answered ?? null,
+      by: one.by ?? null,
+      open: one.answer === null,
+    })),
+    wakes: view.wakes ?? null,
+    execution: executionOf(view),
+  },
 });
+
+const executionOf = (view: RunView): Execution => {
+  if (view.controls.includes(STOP)) return "stopped";
+  if (view.diagnostic !== null && view.status.status === "pending") return "died";
+  switch (view.status.status) {
+    case "pending":
+      return "running";
+    case "suspended":
+      return "suspended";
+    case "complete":
+      return "completed";
+    case "failed":
+      return "failed";
+  }
+};
 
 type Client = FileSystem.FileSystem | ChildProcessSpawner.ChildProcessSpawner;
 

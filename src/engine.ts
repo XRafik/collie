@@ -10,7 +10,7 @@
 // pieces below is upstream's rather than Collie's.
 
 import type { Asker } from "./proposals";
-import { actorOf, readAudit, type ScheduledBy } from "./audit";
+import { actorOf, readAudit, whoActed, type ScheduledBy } from "./audit";
 import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient";
 import {
@@ -44,6 +44,7 @@ import type { PlatformError } from "effect/PlatformError";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Reactivity from "effect/reactivity/Reactivity";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Activity from "effect/workflow/Activity";
 import * as DurableDeferred from "effect/workflow/DurableDeferred";
 import * as WorkflowModules from "effect/workflow";
 import * as ProcessModules from "effect/process";
@@ -191,6 +192,14 @@ import { StartedSchema, type RunAuthority, type Started } from "./automode";
 import { WorktreeRecordSchema, type WorktreeRecord } from "./run";
 import { listTasks, newTask, readTask, taskOfWorkspace, writeTask } from "./task";
 import { nowIso, epochMs } from "./time";
+import {
+  CurrentStep,
+  encodeStepLine,
+  readStepLines,
+  STEPS_FILE,
+  type StepLine,
+  type StepNote,
+} from "./steps";
 import { classifyGivenTarget, classifyWorkSource, defaultBase } from "./inputs";
 import type { BunServices } from "@effect/platform-bun/BunServices";
 import {
@@ -599,6 +608,8 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     readonly held: (runId: string) => Effect.Effect<boolean>;
     readonly stopRequested: (runId: string) => Effect.Effect<boolean>;
     readonly record: (runId: string, event: string) => Effect.Effect<void>;
+    /** Records where the Run's work is among its Steps; \`step\` and \`forecast\` call it. */
+    readonly step: (runId: string, note: { readonly kind: string } & Record<string, unknown>) => Effect.Effect<void>;
     /** Why this Run parked its own work, shown beside its status; null clears it. */
     readonly parked: (runId: string, why: string | null) => Effect.Effect<void>;
     readonly asking: (runId: string, question: DecisionSpec, asker?: string) => Effect.Effect<void>;
@@ -972,8 +983,10 @@ export const SDK_DECLARATIONS = `declare module "collie" {
     | Path.Path
     | ChildProcessSpawner.ChildProcessSpawner;
 
-  /** What a definition declares about itself beside what it does. None of it is a step. */
+  /** What a definition declares about itself beside what it does. */
   export interface Declarations {
+    /** The Steps it expects to take, in order: a forecast, never a precondition. */
+    readonly path?: ReadonlyArray<Step>;
     readonly hints?: Readonly<Record<string, string>>;
     readonly outcome?: OutcomeContract;
     /** A worktree the host cuts before the Run exists; absent works where it was started. */
@@ -1067,6 +1080,51 @@ export const SDK_DECLARATIONS = `declare module "collie" {
   export function child(
     ask: ChildAsk,
   ): Effect.Effect<unknown, WorkflowError, Children>;
+
+  export type StepKind = "agent" | "question" | "workflow" | "check";
+  export type Produces = "plan" | "review" | "evidence" | "merge-request";
+
+  /** What a reader needs of a Step before it runs. */
+  export interface StepMeta {
+    readonly id: string;
+    readonly title: string;
+    readonly description: string;
+    readonly kind: StepKind;
+    readonly role: string | null;
+    readonly produces: Produces | null;
+  }
+
+  /** What an author declares of a Step. */
+  export interface StepDeclaration {
+    readonly id: string;
+    readonly title: string;
+    readonly description?: string;
+    readonly kind: StepKind;
+    readonly role?: string;
+    readonly produces?: Produces;
+  }
+
+  /** Which run of a Step a call is: a round under its bound, or an item of its list. */
+  export type StepCall =
+    | { readonly round: number; readonly of?: number }
+    | { readonly item: string; readonly items: ReadonlyArray<string> };
+
+  /** Called around the Effect that does its work: it runs it unchanged and records it. */
+  export interface Step extends StepMeta {
+    <A, E, R>(
+      work: Effect.Effect<A, E, R>,
+      place?: StepCall,
+    ): Effect.Effect<A, E, R | Run | Host | WorkflowEngine | WorkflowInstance>;
+    readonly meta: StepMeta;
+  }
+
+  /** A Step, made where its work is written. */
+  export function step(declared: StepDeclaration): Step;
+
+  /** The path from here, once the Run knows which branch it takes. Never a precondition. */
+  export function forecast(
+    path: ReadonlyArray<Step>,
+  ): Effect.Effect<void, never, Run | Host | WorkflowEngine | WorkflowInstance>;
 
 
   /** A schema that decodes an agent's Output without services of its own. */
@@ -1980,6 +2038,7 @@ const isWritten = (exported: unknown): exported is WrittenDefinition =>
 /** A definition as the entry the rest of the host reads. */
 const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
   const { outcome, checkout, closes, followUps, actions } = definition;
+  const path = definition.path?.map((one) => one.meta);
   const hints =
     definition.hints === undefined
       ? undefined
@@ -1987,7 +2046,7 @@ const entryOf = (definition: WorkflowDefinition): WorkflowEntry => {
           Object.entries(definition.hints).map(([name, hint]) => [name, strategyNamed(hint)]),
         );
   const declared = Object.fromEntries(
-    Object.entries({ hints, outcome, checkout, closes, followUps, actions }).filter(
+    Object.entries({ hints, outcome, checkout, closes, followUps, actions, path }).filter(
       ([, value]) => value !== undefined,
     ),
   );
@@ -2011,6 +2070,21 @@ const WorkflowHints = Context.Reference<Readonly<Record<string, InputStrategy>>>
 
 /** The envelope a definition is executed with, read where the host hands it over. */
 const readEnvelope = Schema.decodeUnknownSync(Schema.Struct({ runId: Schema.String }));
+
+/** One line of a Run's Step records, stamped now. The host is their only writer. */
+const noteStep = (dir: string, note: StepNote) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    // SAFETY: a note is a line without its time, which is added here.
+    const line = { ...note, at: yield* nowIso() } as StepLine;
+    yield* fs.makeDirectory(dir, { recursive: true }).pipe(Effect.orDie);
+    yield* fs
+      .writeFileString(`${dir}/${STEPS_FILE}`, `${encodeStepLine(line)}\n`, { flag: "a" })
+      .pipe(Effect.orDie);
+  });
+
+/** Why a Run's work is about to be entered again, where it goes on with work left part-done. */
+const entryCauses = new Map<string, "restarted" | "resumed">();
 
 /** Observed Run entries; upstream resume returns no wake acknowledgment. */
 const entriesOf = new WeakMap<HostWorkflow, Map<string, number>>();
@@ -2043,12 +2117,26 @@ const registrationOf = (definition: WorkflowDefinition, name: string): Registrat
   });
   const entries = new Map<string, number>();
   entriesOf.set(workflow, entries);
+  const path = definition.path?.map((one) => one.meta) ?? [];
   const body = workflow.toLayer((envelope) => {
     // SAFETY: the envelope decoded against the definition's own input struct.
     const input = envelope.input as never;
     const run = Run.of({ id: readEnvelope(envelope).runId, workflow: definition.id });
-    entries.set(run.id, (entries.get(run.id) ?? 0) + 1);
-    return definition.run({ input }).pipe(
+    const before = entries.get(run.id) ?? 0;
+    entries.set(run.id, before + 1);
+    // A host's first entry into work some host entered before goes on where that one died.
+    const cause = entryCauses.get(run.id) ?? (before === 0 ? "restarted" : null);
+    entryCauses.delete(run.id);
+    const entered = Effect.gen(function* () {
+      const host = yield* Host;
+      yield* host.step(run.id, { kind: "entry", cause });
+      if (path.length > 0)
+        yield* Activity.make({
+          name: "path",
+          execute: host.step(run.id, { kind: "forecast", steps: path }),
+        });
+    });
+    return entered.pipe(Effect.andThen(definition.run({ input }))).pipe(
       Effect.provideService(Run, run),
       Effect.provideService(WorkflowAgents, definition.agents),
       Effect.provideService(WorkflowHints, definition.hints ?? {}),
@@ -3332,6 +3420,15 @@ export const hostLayer = (options: {
         checkoutReviewed,
         held: (runId) => set(HOLD, runId),
         stopRequested: (runId) => set(STOP, runId),
+        step: (runId, note) =>
+          Effect.gen(function* () {
+            const where = runDir(dir, runId);
+            const first =
+              note.kind === "entry" &&
+              note.cause === "restarted" &&
+              !(yield* readStepLines(where)).some((line) => line.kind === "entry");
+            yield* noteStep(where, first ? { kind: "entry", cause: null } : note);
+          }).pipe(Effect.provideService(FileSystem.FileSystem, fs)),
         record: (runId, event) =>
           // A replay writes its records again, as it re-enters every step: the log is what
           // the Run did each time it ran, not a deduplicated story.
@@ -3414,7 +3511,17 @@ export const hostLayer = (options: {
               });
             }),
           ).pipe(Effect.orDie),
-        verify: (asked) => check(asked, passAsked(asked)),
+        verify: (asked) =>
+          Effect.gen(function* () {
+            const at = yield* CurrentStep;
+            if (at !== null)
+              yield* noteStep(runDir(dir, asked.runId), {
+                kind: "check",
+                key: at.key,
+                name: asked.name,
+              }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+            return yield* check(asked, passAsked(asked));
+          }),
         approved: (runId) => under(approvedOf(dir, runId)),
         config: (dotted) =>
           under(
@@ -4658,6 +4765,11 @@ export const OpenDecision = Schema.Struct({
   options: Schema.Array(Schema.String),
   /** What settled it, or null while it is still open. */
   answer: Schema.NullOr(Schema.String),
+  /** When it was asked and answered; absent from an older host. */
+  asked: Schema.optionalKey(Schema.String),
+  answered: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** Who answered it, as an agent's name or the front door a human used. */
+  by: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type OpenDecision = typeof OpenDecision.Type;
 
@@ -4730,6 +4842,8 @@ export const RunView = Schema.Struct({
   mr: Schema.NullOr(Schema.String),
   /** Its landing of that merge request through the host's merge, or null. */
   landing: Schema.NullOr(LandingSchema),
+  /** When a durable timer it sleeps on wakes it, or null; absent from an older host. */
+  wakes: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 export type RunView = typeof RunView.Type;
 
@@ -5768,6 +5882,13 @@ const makeRegistry: (
     // The parent hands its own children over, so the receipt is written here: a host
     // sweep dispatching one would give the engine a child with no parent to wake.
     yield* store.accepted(claimed.row.run);
+    const at = yield* CurrentStep;
+    if (at !== null && claimed.fresh)
+      yield* noteStep(runDir(dir, parent.run), {
+        kind: "child",
+        key: at.key,
+        run: claimed.row.run,
+      }).pipe(Effect.provideService(FileSystem.FileSystem, fs));
     return {
       runId: claimed.row.run,
       workflow: generation.id,
@@ -5976,6 +6097,19 @@ const makeRegistry: (
     return status;
   });
 
+  /** When the engine's durable clock next wakes this execution, read from its own table. */
+  const wakeOf = Effect.fn("Engine.wakeOf")(function* (execution: string) {
+    const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+    if (Option.isNone(sql)) return null;
+    const rows = yield* sql.value<{ readonly deliver_at: number | null }>`
+      SELECT deliver_at FROM cluster_messages
+      WHERE entity_type = 'Workflow/-/DurableClock' AND entity_id = ${execution} AND processed = 0
+      ORDER BY deliver_at LIMIT 1
+    `.pipe(Effect.orElseSucceed(() => []));
+    const at = rows[0]?.deliver_at ?? null;
+    return at === null ? null : DateTime.formatIso(DateTime.makeUnsafe(Number(at)));
+  });
+
   const viewOf = Effect.fn("Engine.viewOf")(function* (row: RunRow) {
     const input = yield* decodeInput(row.input).pipe(Effect.orElseSucceed(() => ({})));
     const placing = Option.getOrUndefined(decodePlacing(row.placing ?? ""));
@@ -6047,6 +6181,7 @@ const makeRegistry: (
     return {
       ...about,
       status,
+      wakes: status.status === "suspended" ? yield* wakeOf(row.execution) : null,
       diagnostic:
         kept === null
           ? null
@@ -6134,6 +6269,9 @@ const makeRegistry: (
           prompt: row.prompt,
           options,
           answer: row.answer,
+          asked: row.asked,
+          answered: row.answered,
+          by: row.answerer === null ? null : whoActed(row.answerer),
         })),
       ),
     );
@@ -6663,8 +6801,10 @@ const makeRegistry: (
 
     resume: Effect.fn("Engine.Registry.resume")(function* (runId: string) {
       const recovered = yield* recover();
+      entryCauses.set(runId, "resumed");
       const controlled = yield* applyControl(runId, STOP, false, recovered.takenUp).pipe(
         Effect.result,
+        Effect.ensuring(Effect.sync(() => entryCauses.delete(runId))),
       );
       const recorded = { runId, control: STOP, set: false, left: [] };
       if (controlled._tag === "Failure")

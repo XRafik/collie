@@ -516,7 +516,7 @@ const STEP_STATE: Readonly<Record<RunState, StepState>> = {
 };
 
 /** The Task's pipeline: its Runs in the order they started, each as it now stands. */
-function stepsOf(runs: ReadonlyArray<RunFacts>): BoardStep[] {
+function glyphsOf(runs: ReadonlyArray<RunFacts>): BoardStep[] {
   return [...runs].reverse().map((run) => ({ name: run.workflow, state: STEP_STATE[run.state] }));
 }
 
@@ -1106,7 +1106,7 @@ export const buildBoard = Effect.fn("Board.build")(function* (opts: {
           name,
           project,
           state,
-          steps: stepsOf(runs),
+          steps: glyphsOf(runs),
           sentence: sentenceFor({
             mr,
             mrState,

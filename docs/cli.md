@@ -652,12 +652,13 @@ Answer what the wait returned with `run answer <run-id> <option> --decision <nam
 `--follow` streams instead of returning one envelope: one newline-delimited
 `{"type":"status","run":…}` line each time the run's status changes, carrying the same
 `run` object as `run show`, and one line for each other change, with the Run's id as `run`:
-`{"type":"step","operation":…,"agent":…,"state":"started"|"finished"}`,
+`{"type":"operation","operation":…,"agent":…,"state":"started"|"finished"}` for an agent's
+Operation, which a Step may hold several of or none,
 `{"type":"agent","agent":…,"operation":…}` when an agent is launched,
 `{"type":"parked","reason":…}`, `{"type":"awaiting","on":…,"who":…}` when it starts
 waiting for something that comes by itself, `{"type":"mr","mr":…}` when the merge request opens and
 `{"type":"ci","ci":…}` when the forge's pipeline changes state. Without `--json` each is
-one line: `run-1a2b: step 01-a.md finished`, `run-1a2b: parked: …`, `run-1a2b: CI running`. Failures still arrive as a normal envelope — a timeout, or a
+one line: `run-1a2b: operation 01-a.md finished`, `run-1a2b: parked: …`, `run-1a2b: CI running`. Failures still arrive as a normal envelope — a timeout, or a
 run the host could not watch — so a consumer reads each line as JSON and branches on
 whether `type` is present.
 
@@ -665,7 +666,13 @@ whether `type` is present.
 for this Run — `ready`, and `missing[]`, each a `fact` (`succeeded`, `leads`, `mr-open`,
 `not-draft`, `checks`, `ci`, `review` or `mergeable`), what is `said` of it, and whether it
 is `settling`, may still come by itself — or `null` from a host that cannot say. A Run that
-does not lead its Task's card is never ready. Its `run` object carries:
+does not lead its Task's card is never ready. `data.flow` is the Run's **Flow**, the same
+value its details carry to Desktop: `lanes`, one row per Run with its `execution` and its
+`nodes` — each Step's `state`, the one fact line it `said`, its `attempts`, `questions`,
+`ranOn` and, for a Step called per item or round, its `runs` — and `current`, the node the
+work is at
+([ADR-draft-a-step-is-declared-where-its-work-is-written](adr/draft-a-step-is-declared-where-its-work-is-written.md)).
+Its human output is unchanged. Its `run` object carries:
 
 | Field                                    | What it tells you                                                                                                                                                                                    |
 | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

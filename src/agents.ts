@@ -30,6 +30,7 @@ import type { BunServices } from "@effect/platform-bun/BunServices";
 import * as Activity from "effect/workflow/Activity";
 import { attachmentsDir, listAttachments, type Attachment } from "./attachments";
 import { Launched, LAUNCH_ORDER, LAUNCH_SUFFIX, launchDir, readLaunches, stemOf } from "./launches";
+import { CurrentStep, type At } from "./steps";
 export { Launched } from "./launches";
 import * as Workflow from "effect/workflow/Workflow";
 import * as WorkflowEngine from "effect/workflow/WorkflowEngine";
@@ -189,6 +190,8 @@ export interface AgentAsk {
   readonly why?: string;
   /** Which agent of this work it is: past 1, one taking over from an agent that ran out. */
   readonly sequence?: number;
+  /** The Step run this work is in, where it is in one. */
+  readonly step?: At;
 }
 
 /**
@@ -679,6 +682,8 @@ export const agentWork = <
     };
     fellBack(ask, choice.from, choice.why);
     if (held !== null && held.sequence > 1) ask.sequence = held.sequence;
+    const at = yield* CurrentStep;
+    if (at !== null) ask.step = at;
     if (given.clears !== undefined) ask.clears = given.clears;
     if ((given.clears ?? []).length > 0) {
       const step = agents.stepMessage(ask);
@@ -1967,6 +1972,7 @@ const makeAgents = (host: AgentHost, under: Under, collecting: CollectingApi): A
               effort: ask.effort,
             };
             if ((ask.sequence ?? 1) > 1) landed.sequence = ask.sequence;
+            if (ask.step !== undefined) landed.step = ask.step;
             landed.at = yield* Clock.currentTimeMillis;
             fellBack(landed, ask.from, ask.why);
             if (incarnation !== undefined) {

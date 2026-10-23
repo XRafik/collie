@@ -71,6 +71,7 @@ import {
   type Locate,
 } from "./engine";
 import { RequestedBy } from "./board-model";
+import { flowFor } from "./flow-read";
 import {
   RunMetrics,
   RunCards,
@@ -159,6 +160,7 @@ import {
   Answered,
   ASKED_KINDS,
   RunAgent,
+  Flow,
   Controlled,
   Disposition,
   FrontDoorRpcs,
@@ -249,7 +251,7 @@ import {
   type RelayHeader,
 } from "./peers-model";
 import { latest, readDispositions } from "./disposition";
-import { runAgents, stepsOf } from "./launches";
+import { operationsOf, runAgents } from "./launches";
 import { factsOfView, settled, type RunFacts } from "./runs";
 import { Store } from "./store";
 import { SESSIONS_EVERY, agentsIn, focusPane, herdChanges, liveHerds } from "./herds";
@@ -337,6 +339,8 @@ const RunShown = Schema.Struct({
   ),
   /** What of it waits for memory, as the card says it. Absent from an older host. */
   memory: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  /** The same Flow as its details carry. Absent from an older host. */
+  flow: Schema.optionalKey(Flow),
 });
 
 const Loaded = Schema.Struct({
@@ -691,6 +695,11 @@ const handlers = (
               })),
               memory: yield* Effect.map(memoryWaitOf(runDir(dir, runId)), (wait) =>
                 wait === null ? null : waitLine(wait),
+              ),
+              flow: yield* flowFor(
+                env,
+                factsOfView(env.stateDir, view),
+                all.map((one) => factsOfView(env.stateDir, one)),
               ),
             };
           }).pipe(Effect.provideContext(bun)),
@@ -2452,7 +2461,7 @@ const frontDoorHandlers = (
                 view.status.status === "complete" || view.status.status === "failed",
               ),
               ci: forged?.checks ?? null,
-              steps: yield* stepsOf(env.stateDir, runId),
+              steps: yield* operationsOf(env.stateDir, runId),
             };
           }).pipe(Effect.provideContext(bun)),
         runDetail: ({ runId, tail, pages, refreshMr }) => {

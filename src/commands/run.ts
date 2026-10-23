@@ -473,6 +473,7 @@ const runShow = Command.make(
             startedBy,
             handoffs = [],
             memory = null,
+            flow = null,
           } = shown;
           // A Task is this Machine's, so a Run on another is never outside it.
           const task = yield* selectedTask(global);
@@ -496,6 +497,7 @@ const runShow = Command.make(
               handoffs,
               ready,
               memory,
+              flow,
             },
             human: [
               `${view.runId}\t${statusLine(statusOf(view), disposition)}\t${view.workflow}`,

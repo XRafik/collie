@@ -592,6 +592,85 @@ export const ranOn = (agent: RunAgent) => {
   return agent.why === null ? on : `${on} (${agent.why})`;
 };
 
+/** Where one Step stands, as every door draws it. */
+export const FlowState = Schema.Literals([
+  "done",
+  "running",
+  "needs-you",
+  "waiting",
+  "failed",
+  "stopped",
+  "not-run",
+  "expected",
+]);
+export type FlowState = typeof FlowState.Type;
+
+export const FlowAttempt = Schema.Struct({
+  at: Schema.String,
+  /** Why it ran again: the host restarted, or the Run was resumed. Null for the first. */
+  cause: Schema.NullOr(Schema.Literals(["restarted", "resumed"])),
+});
+export type FlowAttempt = typeof FlowAttempt.Type;
+
+export const FlowQuestion = Schema.Struct({
+  name: Schema.String,
+  asked: Schema.NullOr(Schema.String),
+  answered: Schema.NullOr(Schema.String),
+  by: Schema.NullOr(Schema.String),
+});
+export type FlowQuestion = typeof FlowQuestion.Type;
+
+const FlowNodeFields = {
+  id: Schema.String,
+  title: Schema.String,
+  kind: Schema.Literals(["agent", "question", "workflow", "check"]),
+  description: Schema.String,
+  role: Schema.NullOr(Schema.String),
+  /** False for a node made from work no Step declared. */
+  declared: Schema.Boolean,
+  state: FlowState,
+  /** Its fact line, worded once by the host. */
+  said: Schema.NullOr(Schema.String),
+  wait: Schema.NullOr(Schema.String),
+  produces: Schema.NullOr(Schema.Literals(["plan", "review", "evidence", "merge-request"])),
+  offPath: Schema.Boolean,
+  /** The round or item a run of a Step is, as its title says it. */
+  place: Schema.NullOr(Schema.String),
+  started: Schema.NullOr(Schema.String),
+  ended: Schema.NullOr(Schema.String),
+  attempts: Schema.Array(FlowAttempt),
+  ranOn: Schema.NullOr(Schema.String),
+  questions: Schema.Array(FlowQuestion),
+};
+
+/** One round or item of a Step. */
+export const FlowRun = Schema.Struct(FlowNodeFields);
+export type FlowRun = typeof FlowRun.Type;
+
+export const FlowNode = Schema.Struct({ ...FlowNodeFields, runs: Schema.Array(FlowRun) });
+export type FlowNode = typeof FlowNode.Type;
+
+/** One Run's row of Steps. */
+export const FlowLane = Schema.Struct({
+  run: Schema.String,
+  workflow: Schema.String,
+  title: Schema.String,
+  machine: Schema.String,
+  requestedBy: Schema.NullOr(RequestedBy),
+  execution: Schema.Literals(["running", "suspended", "completed", "failed", "stopped", "died"]),
+  declared: Schema.Boolean,
+  nodes: Schema.Array(FlowNode),
+});
+export type FlowLane = typeof FlowLane.Type;
+
+/** A Task drawn as the Steps its Runs took (ADR-draft-a-step-is-declared-where-its-work-is-written). */
+export const Flow = Schema.Struct({
+  lanes: Schema.Array(FlowLane),
+  /** The Run and node the work is at, or null once it has settled. */
+  current: Schema.NullOr(Schema.Struct({ run: Schema.String, node: Schema.String })),
+});
+export type Flow = typeof Flow.Type;
+
 /** Everything the detail panel shows for the selected Run. */
 export const RunDetail = Schema.Struct({
   id: Schema.String,
@@ -669,6 +748,8 @@ export const RunDetail = Schema.Struct({
   diff: Schema.NullOr(RunDiff),
   /** Every agent the Run started, in launch order. Absent from an older host. */
   agents: Schema.optional(Schema.Array(RunAgent)),
+  /** Its Task's Flow. Absent from an older host. */
+  flow: Schema.optional(Flow),
 });
 export type RunDetail = typeof RunDetail.Type;
 

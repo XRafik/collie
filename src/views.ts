@@ -33,6 +33,7 @@ import { orderedTickets, REPO_LINE } from "./plan";
 import { workSourceOf } from "./strategies";
 import { readVerifications } from "./verify";
 import { readAudit, startedBy } from "./audit";
+import { flowFor } from "./flow-read";
 
 /** Long enough to answer "what did I do here", short enough to stay one read. */
 const HISTORY = 200;
@@ -537,6 +538,7 @@ export const buildRunDetail = Effect.fn("Views.buildRunDetail")(function* (opts:
     ),
     agents: yield* runAgents(opts.env.stateDir, run.id),
     diff: yield* diffOf(run),
+    flow: yield* flowFor(opts.env, run, opts.runs ?? [run]),
   } satisfies RunDetail;
 });
 
