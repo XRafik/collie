@@ -1,7 +1,8 @@
 // What holds one Run up, read for that Run alone.
 
 import { expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import type { BoardAgent } from "../src/board-model";
 import type { ProposalLine } from "../src/proposals";
 import { runWaits } from "../src/run-waits";
@@ -25,6 +26,42 @@ const proposal = (id: string, run: string, expires_at = "2026-09-14T11:00:00Z"):
   by: "evaluator:call-1",
   state: "pending",
 });
+
+test("a memory wait belongs only to the Run whose directory records it", () =>
+  runEffect(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "collie-run-waits-" });
+      const a = runFacts({ id: "a", dir: `${root}/a` });
+      const b = runFacts({ id: "b", dir: `${root}/b` });
+      yield* fs.makeDirectory(`${a.dir}/memory-waits`, { recursive: true });
+      yield* fs.makeDirectory(b.dir);
+      yield* fs.writeFileString(
+        `${a.dir}/memory-waits/0-1.json`,
+        Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+          what: "build's agent",
+          sentence: "waiting for memory on vm-mk: 2.0 of 100.0 GB available",
+          since: 0,
+          read: 0,
+          every: 15_000,
+          asker: "a-build",
+        }),
+      );
+
+      const waiting = yield* runWaits(a, [], [], now);
+      const free = yield* runWaits(b, [], [], now);
+
+      expect(waiting.memory).toEqual({
+        what: "build's agent",
+        sentence: "waiting for memory on vm-mk: 2.0 of 100.0 GB available",
+        since: 0,
+        read: 0,
+        every: 15_000,
+        asker: "a-build",
+      });
+      expect(free.memory).toBeNull();
+    }).pipe(Effect.provide(TestClock.layer())),
+  ));
 
 test("each Run's blocked agent is its own, never another Run's", () =>
   runEffect(
