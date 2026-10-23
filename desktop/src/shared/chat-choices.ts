@@ -299,7 +299,6 @@ export const typedEntry = (search: string, model: ChoiceSelect): ChoiceOption | 
     : { value: id, label: `Use ${id}` };
 };
 
-/** The model menu's groups and the search query that filters them. */
 export const modelMenu = (search: string, model: ChoiceSelect) => {
   const query = search.trim();
   const [first, ...rest] = model.options;
